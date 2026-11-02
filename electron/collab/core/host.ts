@@ -20,6 +20,7 @@ import { DivergenceChecker, type DivergenceCheckerOptions } from "./divergence";
 import { DocHub, type RejectedEdit, type ReplicaConnection } from "./doc-hub";
 import { PendingCommands, type PendingCommandEvent } from "./pending-commands";
 import type { ReplicaPort } from "./ports";
+import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { DocHubRegistry, type AcquireOptions } from "./registry";
 import { HostStore } from "./store";
 import {
@@ -56,6 +57,8 @@ export interface CollabHostOptions {
   appVersion: string;
   /** Stable per installation; combined with the account id into the sync clientId. */
   installationId: string;
+  /** Sequence identity for a scoped database; omitted for legacy stores. */
+  clientNamespace?: string;
   clock?: Clock;
   random?: () => number;
   logger?: Logger;
@@ -206,7 +209,7 @@ export class CollabHost {
     this.telemetryInstance = new TelemetryReporter({
       source: {
         api: () => this.apiClient,
-        clientId: () => (this.account ? syncClientId(this.options.installationId, this.account.accountId) : null),
+        clientId: () => (this.account ? syncClientId(this.options.installationId, this.options.clientNamespace ?? this.account.accountId) : null),
         gauges: () => this.telemetryGauges(),
       },
       journal: this.journal,
@@ -351,7 +354,7 @@ export class CollabHost {
   }
 
   private connectAccount(account: CollabAccount): void {
-    const clientId = syncClientId(this.options.installationId, account.accountId);
+    const clientId = syncClientId(this.options.installationId, this.options.clientNamespace ?? account.accountId);
     this.apiClient = new ApiClient({
       baseUrl: account.serverUrl,
       tokenProvider: account.tokenProvider,
@@ -550,5 +553,20 @@ export class CollabHost {
     const hub = this.registryInstance?.get(docId);
     if (hub) hub.clearReadOnly();
     else this.store.updateDocMeta(docId, { readOnlyReason: null });
+  }
+
+  setProjectRole(projectId: string, role: Role): void {
+    for (const hub of this.registry.hubs()) if (hub.getMeta().projectId === projectId) hub.setRole(role);
+    this.store.setProjectRole(projectId, role);
+  }
+
+  /** Rejoining is explicit authorization; stale unacknowledged edits stay in recovery. */
+  restoreProjectAccess(projectId: string, role: Role): void {
+    for (const docId of this.store.projectDocIds(projectId)) {
+      const hub = this.acquire(docId);
+      try { hub.restoreAccess(role); }
+      finally { this.release(docId); }
+    }
+    this.setProjectRole(projectId, role);
   }
 }

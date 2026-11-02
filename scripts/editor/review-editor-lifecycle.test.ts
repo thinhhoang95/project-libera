@@ -41,6 +41,8 @@ async function mountReview(untitled = false) {
   const calls: string[] = [];
   let syncEdits: unknown;
   globalThis.fetch = async (url, init) => {
+    // The editor's agent-review store loads on mount; it is not a review reload.
+    if (String(url) === "/api/agent/review") return Response.json({ files: [] });
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     const action = body?.action ?? "reload";
     calls.push(action);

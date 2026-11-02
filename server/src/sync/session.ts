@@ -7,7 +7,7 @@ import type { RawData, WebSocket } from "ws";
 import * as Y from "yjs";
 
 import { minProtocolVersion } from "../api/system.js";
-import { documentAccess, hasActiveSession, projectRole } from "../auth/access.js";
+import { documentAccess, hasActiveSession, projectRole, type DocAccess } from "../auth/access.js";
 import { TokenError, verifyAccessToken } from "../auth/tokens.js";
 import { isClientId } from "../ids.js";
 import {
@@ -63,6 +63,27 @@ export class Session implements RoomMember {
   private chain: Promise<void> = Promise.resolve();
   private helloTimer: NodeJS.Timeout | undefined;
   private expiryTimer: NodeJS.Timeout | undefined;
+  private membershipVersion = 0;
+
+  /** Includes pending opens, which are not yet present in docs. */
+  membershipChanged(projectId: string, role: Role | null): void {
+    this.membershipVersion += 1;
+    for (const [docId, open] of [...this.docs]) {
+      if (open.projectId !== projectId) continue;
+      if (role === null) this.closeDoc(docId, "access-revoked");
+      else open.role = role;
+    }
+  }
+
+  /** Do not use a lookup whose membership changed while it was in flight. */
+  async currentAccess(docId: string): Promise<DocAccess | null> {
+    while (!this.closed) {
+      const version = this.membershipVersion;
+      const access = await documentAccess(this.server.context.db, docId, this.accountId);
+      if (version === this.membershipVersion) return this.closed ? null : access;
+    }
+    return null;
+  }
 
   constructor(
     private readonly server: SyncServer,
@@ -252,7 +273,7 @@ export class Session implements RoomMember {
 
   private async open(message: OpenMessage): Promise<void> {
     const { docId } = message;
-    const access = await documentAccess(this.server.context.db, docId, this.accountId);
+    const access = await this.currentAccess(docId);
     if (this.closed) return;
     if (!access) {
       // A returning member may have missed the manifest deletion while offline.
@@ -278,14 +299,24 @@ export class Session implements RoomMember {
     // Joining and computing the diff inside the room queue means the socket
     // receives `remote` for exactly the updates after the diff: none are
     // missed and none are sent twice.
-    const opened = await room.queue.run(() => {
+    const opened = await room.queue.run(async () => {
       if (this.closed || room.disposed) return false;
       if (existing && this.docs.get(docId) !== existing) return false;
+      // Admission must use the membership at the head of the queue, not
+      // the one observed before a slow load/operation held it up.
+      const current = await this.currentAccess(docId);
+      if (this.closed || room.disposed) return false;
+      if (existing && this.docs.get(docId) !== existing) return false;
+      if (!current) {
+        if (existing) this.closeDoc(docId, "access-revoked");
+        else this.send({ type: MessageType.Closed, docId, reason: "not-found" });
+        return false;
+      }
       if (existing) {
-        existing.role = access.role;
+        existing.role = current.role;
       } else {
-        this.docs.set(docId, { room, projectId: access.projectId, role: access.role });
-        this.projectDocs.set(access.projectId, (this.projectDocs.get(access.projectId) ?? 0) + 1);
+        this.docs.set(docId, { room, projectId: current.projectId, role: current.role });
+        this.projectDocs.set(current.projectId, (this.projectDocs.get(current.projectId) ?? 0) + 1);
         room.join(this);
       }
       const subdocs = [];
@@ -304,7 +335,7 @@ export class Session implements RoomMember {
         type: MessageType.Opened,
         docId,
         projectId: room.projectId,
-        role: access.role,
+        role: current.role,
         schemaVersion: room.schemaVersion,
         serverSeq: room.serverSeq,
         subdocs,

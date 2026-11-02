@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Download, Layers, Save, X } from "lucide-react";
+import { Download, Layers, X } from "lucide-react";
 import { photoViewMatrix, photoViewSize } from "@/lib/ink/frame";
 import type { GalleryContents } from "@/lib/image-generation";
 import { apiRequest } from "../api-client";
@@ -20,7 +20,7 @@ import { useInkTools } from "./use-ink-tools";
  * turns and crop of edits since) over the file shown today. The layer sits on
  * the photo's measured box in the viewer, so the viewer's zoom is its size.
  *
- * It takes input only in the viewer's Draw mode, and is written only on Save
+ * It takes input only in the viewer's Draw mode, and is written only when saved
  * (pending-saves.ts). When the photo changed outside Libera, the ink is dimmed
  * until the reader keeps or discards it.
  */
@@ -48,6 +48,18 @@ export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, o
 
   // An edit or revert changed the file under the ink: fetch the new view.
   useEffect(() => { void reload(); }, [version, reload]);
+
+  // Ctrl+S saves the ink (the leave prompt offers Save too). Captured: the viewer covers
+  // the workspace, whose tab must not take the shortcut.
+  useEffect(() => {
+    function handleSaveKey(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      if (unsaved && !busy) void ink.save().catch(() => undefined);
+    }
+    window.addEventListener("keydown", handleSaveKey, true);
+    return () => window.removeEventListener("keydown", handleSaveKey, true);
+  }, [busy, ink, unsaved]);
 
   const photo = ink.photo;
   const matrix = useMemo<InkMatrix>(() => {
@@ -113,10 +125,6 @@ export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, o
         <span className="libera-photo-ink-tools" onPointerDown={halt} onPointerMove={halt} onPointerUp={halt} onPointerCancel={halt} onDoubleClick={halt}>
           <InkToolbar canUndo={ink.canUndo} canRedo={ink.canRedo} onUndo={ink.undo} onRedo={ink.redo} />
           <span className="libera-photo-ink-actions" role="group" aria-label="Save ink">
-            <button type="button" className="libera-photo-ink-action is-primary" disabled={!unsaved || busy} title="Save the ink (Ctrl+S)" onClick={() => { void ink.save().catch(() => undefined); }}>
-              {unsaved ? <Save aria-hidden className="h-3.5 w-3.5" /> : <Check aria-hidden className="h-3.5 w-3.5" />}
-              {unsaved ? "Save" : "Saved"}
-            </button>
             <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy} title="Save the ink, then download a copy of the photo with the ink drawn on it"
               onClick={() => { void ink.save().then(() => downloadImage({ name: "photo-with-ink", src: `/api/gallery/photos/ink/export?id=${encodeURIComponent(photoId)}` }), () => undefined); }}>
               <Download aria-hidden className="h-3.5 w-3.5" />

@@ -84,11 +84,14 @@ test("a synced notebook folder survives stale copies, other writers and takedown
 
     await t.test("a legacy marker is claimed by the host that loads it", async () => {
       const legacy = readMarkerFile(root);
+      const knownFolderId = legacy.folderId;
       delete legacy.writer;
+      delete legacy.folderId;
       writeMarkerFile(root, legacy);
       await alice.service.stop();
       await alice.service.start();
       assert.equal(readMarkerFile(root).writer, alice.host.installationId);
+      assert.equal(readMarkerFile(root).folderId, knownFolderId, "an omitted legacy field must not fork the folder's lease identity");
       assert.equal(alice.service.localProjects().length, 1);
     });
 
@@ -104,7 +107,7 @@ test("a synced notebook folder survives stale copies, other writers and takedown
       assert.equal(readMarkerFile(root).writer, alice.host.installationId);
     });
 
-    await t.test("takedown and revocation leave markers that are not theirs", async () => {
+    await t.test("takedown preserves a newer share's marker and revocation updates every copy of the old share", async () => {
       const link = await invite(server, aliceAuth, projectId, "bob@example.test", "editor");
       const joined = await bob.router.call("POST", ControlRoutes.join, { invitation: link });
       assert.equal(joined.status, 200, JSON.stringify(joined.body));
@@ -125,7 +128,10 @@ test("a synced notebook folder survives stale copies, other writers and takedown
       assert.deepEqual(readMarkerFile(root), newer);
 
       await until(() => bob.service.localProjects()[0]?.revoked === true, "Bob to lose shared access");
-      assert.deepEqual(readMarkerFile(bobRoot), bobMarker);
+      const { revoked, revokedAt, ...unchanged } = readMarkerFile(bobRoot);
+      assert.equal(revoked, true, "the account's recovery copy is deletable even when another installation was its writer");
+      assert.ok(revokedAt);
+      assert.deepEqual(unchanged, bobMarker);
     });
   } finally {
     for (const peer of peers) await closePeer(peer).catch(() => undefined);

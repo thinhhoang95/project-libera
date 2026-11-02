@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { after, afterEach, before, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { act, createElement, useState } from "react";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import * as Y from "yjs";
 import type { Root } from "react-dom/client";
 import { emptyTree } from "../../src/components/libera/api-client";
 import type { ReferencesPanelProps } from "../../src/components/libera/references/references-panel";
@@ -15,6 +18,7 @@ import {
   type ReferenceLibraryOp,
 } from "../../src/lib/references/types";
 import type { LiberaFileNode, LiberaTree } from "../../src/lib/types";
+import type { LatexEditorHandle } from "../../src/components/libera/latex/latex-editor";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost", pretendToBeVisual: true });
 for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement", "HTMLAnchorElement", "Element", "Node", "CustomEvent", "KeyboardEvent", "MouseEvent", "MutationObserver"] as const) {
@@ -108,7 +112,7 @@ function treeWith(paths: string[]): LiberaTree {
     kind: "notebook", name: "Notes", path: "Notes", color: "#008888", emoji: "📓", groupId: null, createdAt: NOW, updatedAt: NOW,
     children: paths.map((path) => ({
       kind: "file", name: path.split("/").at(-1)!, path, notebook: "Notes",
-      fileType: path.endsWith(".pdf") ? "pdf" : path.endsWith(".md") ? "markdown" : "text", createdAt: NOW, updatedAt: NOW, size: 1,
+      fileType: path.endsWith(".pdf") ? "pdf" : path.endsWith(".md") ? "markdown" : /\.(tex|bib|sty|cls)$/.test(path) ? "latex" : "text", createdAt: NOW, updatedAt: NOW, size: 1,
     } satisfies LiberaFileNode)),
   }];
   return tree;
@@ -386,10 +390,94 @@ test("Cite at cursor is disabled with a tooltip without an active Markdown edito
   const { host, calls } = await renderPanel({ canCite: false });
   const cite = byLabel(host, "Cite godel1931 at cursor") as HTMLButtonElement;
   assert.equal(cite.disabled, true);
-  assert.match(cite.title, /Open a Markdown document/);
+  assert.match(cite.title, /Open a Markdown or LaTeX document/);
   await key(byLabel(host, "References")!, "ArrowDown");
   await key(byLabel(host, "References")!, "Enter", { metaKey: true });
   assert.deepEqual(calls.cited, []);
+});
+
+test("in a LaTeX document Cite at cursor offers \\cite and \\citep, and its \\cite commands count as cited", async () => {
+  fakeServer(sampleLibrary());
+  const cited: Array<{ key: string; command?: string }> = [];
+  const { host } = await renderPanel({
+    citeSyntax: "latex",
+    activeLatexDraft: "As shown \\citep[p.~3]{godel1931}. % \\cite{smith2020}",
+    onCite: (key, command) => cited.push({ key, command }),
+  });
+  await settle(320);
+  assert.equal(byLabel(host, "Cite godel1931 at cursor"), null, "the Markdown action is replaced");
+  // A backslash is an escape in selectors, so these labels are matched directly.
+  const labelled = (label: string) => [...host.querySelectorAll("[aria-label]")].find((element) => element.getAttribute("aria-label") === label);
+  await click(labelled("\\cite godel1931 at cursor"));
+  await click(labelled("\\citep godel1931 at cursor"));
+  await key(byLabel(host, "References")!, "ArrowDown");
+  await key(byLabel(host, "References")!, "Enter", { metaKey: true, shiftKey: true });
+  assert.deepEqual(cited, [{ key: "godel1931", command: "cite" }, { key: "godel1931", command: "citep" }, { key: "godel1931", command: "citep" }]);
+  assert.equal(host.querySelector('[data-entry-id="ref_godel"]')!.getAttribute("data-cited"), "true");
+  assert.equal(host.querySelector('[data-entry-id="ref_smith"]')!.getAttribute("data-cited"), null, "a commented-out \\cite does not count");
+});
+
+test("LaTeX card shortcuts cite rather than confirm, and both header buttons have accessible labels", async () => {
+  const server = fakeServer(sampleLibrary());
+  const cited: Array<{ key: string; command?: string }> = [];
+  const { host } = await renderPanel({ citeSyntax: "latex", activeLatexDraft: "", onCite: (key, command) => cited.push({ key, command }) });
+  await click(host.querySelector('[data-entry-id="ref_smith"]'));
+  const card = byLabel(host, "Reference smith2020sparse")!;
+  const labelled = (label: string) => [...card.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === label);
+  await click(labelled("\\cite at cursor"));
+  await click(labelled("\\citep at cursor"));
+  await key(card, "Enter", { ctrlKey: true });
+  await key(card, "Enter", { metaKey: true, shiftKey: true });
+  assert.deepEqual(cited.map(({ command }) => command), ["cite", "citep", "cite", "citep"]);
+  assert.equal(server.patches().length, 0, "citing does not confirm a reference awaiting review");
+});
+
+test("LaTeX bulk actions and web/native menus offer both citation commands", async () => {
+  fakeServer(sampleLibrary());
+  const cited: string[] = [];
+  const many: Array<{ keys: string[]; command?: string }> = [];
+  const { host } = await renderPanel({ citeSyntax: "latex", onCite: (_key, command) => cited.push(command!), onCiteMany: (keys, command) => many.push({ keys, command }) });
+  await modifiedClick(host.querySelector('[data-entry-id="ref_godel"]')!, { ctrlKey: true });
+  await modifiedClick(host.querySelector('[data-entry-id="ref_anon"]')!, { ctrlKey: true });
+  const toolbar = byLabel(host, "2 selected references")!;
+  const actions = [...toolbar.querySelectorAll("button")];
+  await click(actions.find((button) => button.getAttribute("aria-label") === "\\cite the selection at the cursor"));
+  await click(actions.find((button) => button.getAttribute("aria-label") === "\\citep the selection at the cursor"));
+  assert.deepEqual(many, [{ keys: ["godel1931", "uncited2019"], command: "cite" }, { keys: ["godel1931", "uncited2019"], command: "citep" }]);
+  await click(byLabel(host, "Actions for godel1931"));
+  const menu = document.querySelector('[role="menu"]')!;
+  assert.ok(buttonByText(menu, "\\cite at cursor"));
+  await click(buttonByText(menu, "\\citep at cursor"));
+  type Input = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0];
+  const menus: Input[] = [];
+  window.liberaMenu = { popup: async (input) => { menus.push(input); return "citep"; } };
+  try {
+    await click(byLabel(host, "Actions for godel1931"));
+    assert.deepEqual(menus[0].items.slice(0, 2).map((item) => "label" in item ? item.label : ""), ["\\cite at cursor", "\\citep at cursor"]);
+    assert.deepEqual(cited, ["citep", "citep"]);
+  } finally { delete window.liberaMenu; }
+});
+
+test("saving a LaTeX document refreshes citation counts after its draft is removed", async () => {
+  const server = fakeServer(sampleLibrary());
+  const panel = await renderPanel({ tree: treeWith(["Notes/main.tex"]), openDrafts: [{ path: "Notes/main.tex", text: "\\cite{godel1931}" }] });
+  const loads = server.requests.filter((request) => request.url.startsWith("/api/references/citations")).length;
+  server.citations = { byFile: { "Notes/main.tex": ["godel1931"] }, byKey: { godel1931: ["Notes/main.tex"] } };
+  const tree = treeWith(["Notes/main.tex"]);
+  (tree.notebooks[0].children[0] as LiberaFileNode).updatedAt = "2026-10-02T00:00:00.000Z";
+  await panel.update({ tree, openDrafts: [] });
+  await settle(320);
+  assert.ok(server.requests.filter((request) => request.url.startsWith("/api/references/citations")).length > loads);
+  assert.ok(panel.host.querySelector('[data-entry-id="ref_godel"] [aria-label="Cited by 1 document"]'));
+});
+
+test("switching citation syntax never scans the previous draft with the new parser", async () => {
+  fakeServer(sampleLibrary());
+  const panel = await renderPanel({ activeMarkdownDraft: "Text [@godel1931] and \\cite{smith2020}" });
+  await panel.update({ activeMarkdownDraft: null, activeLatexDraft: "\\cite{godel1931}", citeSyntax: "latex" });
+  assert.equal(panel.host.querySelector('[data-entry-id="ref_smith"]')!.getAttribute("data-cited"), null);
+  await settle(320);
+  assert.equal(panel.host.querySelector('[data-entry-id="ref_godel"]')!.getAttribute("data-cited"), "true");
 });
 
 test("rows open PDFs and citing documents from the actions menu, and copy formatted references", async () => {
@@ -863,10 +951,14 @@ test("long libraries render only the rows in view", async () => {
   assert.equal(host.querySelector('[aria-selected="true"][data-entry-id]')?.getAttribute("data-entry-id"), "ref_119");
 });
 
-test("insertCitation puts [@key] at the caret in the source editor and queues an inline insertion in the visual editor", async () => {
+test("insertCitation uses Markdown source/visual editors and the mounted LaTeX view, including shared edits", async (context) => {
   const { useLiberaWorkspace } = await import("../../src/components/libera/use-libera-workspace");
   const { emptyWorkspaceLibrary } = await import("../../src/lib/workspaces");
   globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).startsWith("/api/files?path=")) {
+      const path = new URL(String(url), "http://localhost").searchParams.get("path")!;
+      return Response.json({ file: treeWith([path]).notebooks[0].children[0], content: "Hello world" });
+    }
     if (String(url).startsWith("/api/workspaces")) return Response.json(init?.method === "PUT" ? { saved: true } : emptyWorkspaceLibrary());
     return Response.json({ ...emptyTree(), root: "/test/references" });
   }) as typeof fetch;
@@ -904,6 +996,48 @@ test("insertCitation puts [@key] at the caret in the source editor and queues an
   await settle();
   assert.equal(workspace.activeTab!.draft, "Hello[@smith2020] world");
   textarea.remove();
+
+  const { registerLatexEditor } = await import("../../src/components/libera/latex/latex-editor-registry");
+  const { collabExtension } = await import("../../src/lib/collab/bindings/codemirror");
+  context.mock.method(EditorView.prototype, "requestMeasure", () => {});
+  Object.defineProperty(globalThis, "Window", { value: dom.window.Window, configurable: true });
+  await act(async () => { await workspace.openFile(treeWith(["Notes/main.tex"]).notebooks[0].children[0] as LiberaFileNode); });
+  assert.equal(workspace.insertCitation("a"), false, "an unmounted LaTeX tab is left untouched");
+  const doc = new Y.Doc();
+  const text = doc.getText("source");
+  text.insert(0, "Hello world");
+  const binding = collabExtension({ ytext: text, awareness: null, user: { name: "Test", color: "#123456" } });
+  const view = new EditorView({ state: EditorState.create({ doc: text.toString(), selection: { anchor: 6, head: 11 }, extensions: [binding.extension] }), parent: host });
+  const unregister = registerLatexEditor(workspace.activeTab!.id, { current: { view } as LatexEditorHandle });
+  try {
+    assert.equal(workspace.insertCitation(["a", "b"], "citep"), true);
+    assert.equal(view.state.doc.toString(), "Hello \\citep{a,b}");
+    assert.equal(text.toString(), view.state.doc.toString(), "the binding publishes the insertion to Y.Text");
+    assert.equal(view.state.selection.main.head, text.length);
+    doc.transact(() => text.insert(0, "Remote "), "remote");
+    assert.equal(workspace.insertCitation("c"), true);
+    assert.equal(text.toString(), "Remote Hello \\citep{a,b}\\cite{c}");
+    binding.undoManager.undo();
+    assert.equal(text.toString(), "Remote Hello world", "undo retains the remote edit");
+    binding.setReadOnly(view, true);
+    assert.equal(workspace.insertCitation("d"), false);
+    assert.equal(text.toString(), "Remote Hello world");
+    binding.setReadOnly(view, false);
+    await act(async () => { assert.equal(workspace.insertCitation("a%b"), false); });
+    assert.match(workspace.workspaceError, /cannot be inserted into LaTeX/);
+    assert.equal(text.toString(), "Remote Hello world", "unsafe keys do not comment out the rest of the source");
+    for (const fileName of ["refs.bib", "style.sty", "class.cls"]) {
+      await act(async () => { await workspace.openFile(treeWith([`Notes/${fileName}`]).notebooks[0].children[0] as LiberaFileNode); });
+      const release = registerLatexEditor(workspace.activeTab!.id, { current: { view } as LatexEditorHandle });
+      try { assert.equal(workspace.insertCitation("a"), false, fileName); } finally { release(); }
+      assert.equal(workspace.activeTab!.draft, "Hello world");
+    }
+  } finally {
+    unregister();
+    view.destroy();
+    binding.destroy();
+    doc.destroy();
+  }
 });
 
 test("References uses native row menus for right-click and more actions", async () => {
@@ -1065,7 +1199,7 @@ test("the card attaches notebook files and links, removes attachments, and lists
   const { host } = await renderPanel({
     tree: treeWith(["Notes/papers/godel.pdf", "Notes/papers/other.pdf", "Notes/paper.md"]),
     openDrafts: [{ path: "Notes/paper.md", text }],
-    onOpenCitation: (path, range) => opened.push({ path, ...range }),
+    onOpenCitation: (path, { start, end, line }) => opened.push({ path, start, end, line }),
   });
   await click(host.querySelector('[data-entry-id="ref_godel"]'));
 
@@ -1090,6 +1224,64 @@ test("the card attaches notebook files and links, removes attachments, and lists
 
   await click(byLabel(host, "Remove attachment other.pdf"));
   assert.deepEqual(server.patches().at(-1), [{ op: "detach", id: "ref_godel", attachment: { kind: "pdf", path: "Notes/papers/other.pdf" } }]);
+});
+
+test("Find citation in current file goes through each citation of the open Markdown or LaTeX file in turn", async () => {
+  fakeServer(sampleLibrary());
+  const opened: Array<{ path: string; start: number }> = [];
+  const markdown = "A [@godel1931] then [@uncited2019] and again [@godel1931, p. 2].";
+  const { host, update } = await renderPanel({
+    activeMarkdownDraft: markdown,
+    activeDocumentPath: "Notes/paper.md",
+    onOpenCitation: (path, { start }) => opened.push({ path, start }),
+  });
+  await settle(320);
+  const find = async (key: string) => {
+    await click(byLabel(host, `Actions for ${key}`));
+    return buttonByText(document.querySelector('[role="menu"]')!, "Find citation in current file") as HTMLButtonElement;
+  };
+  await click(await find("godel1931"));
+  await click(await find("godel1931"));
+  await click(await find("godel1931"));
+  const first = markdown.indexOf("[@godel1931]");
+  const second = markdown.lastIndexOf("[@godel1931");
+  assert.deepEqual(opened, [{ path: "Notes/paper.md", start: first }, { path: "Notes/paper.md", start: second }, { path: "Notes/paper.md", start: first }], "it wraps around after the last");
+  const knuth = await find("smith2020sparsea");
+  assert.equal(knuth.disabled, true, "disabled for a reference the file does not cite");
+  await key(document.body, "Escape");
+
+  const latex = "% \\cite{godel1931}\nShown \\citep{godel1931}.";
+  await update({ activeMarkdownDraft: null, activeDocumentPath: null, activeLatexDraft: latex, activeLatexPath: "Notes/paper.tex", citeSyntax: "latex" });
+  await settle(320);
+  opened.length = 0;
+  await click(await find("godel1931"));
+  assert.deepEqual(opened, [{ path: "Notes/paper.tex", start: latex.indexOf("\\citep") }], "the commented-out \\cite is skipped");
+  await key(document.body, "Escape");
+  await update({ activeLatexPath: null });
+  assert.equal((await find("godel1931")).disabled, true, "disabled for an unsaved file");
+});
+
+test("the card finds \\cite commands in a LaTeX source and opens them", async () => {
+  const server = fakeServer(sampleLibrary());
+  server.citations = { byFile: { "Notes/paper.tex": ["godel1931"] }, byKey: { godel1931: ["Notes/paper.tex"] } };
+  const opened: Array<{ path: string; start: number; end: number; line: number }> = [];
+  const text = "\\section{Intro}\n% \\cite{godel1931}\nAs shown \\citep[p.~3]{smith2020, godel1931}, it holds.";
+  const { host } = await renderPanel({
+    tree: treeWith(["Notes/paper.tex"]),
+    openDrafts: [{ path: "Notes/paper.tex", text }],
+    onOpenCitation: (path, { start, end, line, snippet }) => {
+      assert.equal(snippet?.match, "\\citep[p.~3]{smith2020, godel1931}");
+      opened.push({ path, start, end, line });
+    },
+  });
+  await click(host.querySelector('[data-entry-id="ref_godel"]'));
+  await click(byLabel(host, "Show citations in paper.tex"));
+  const snippets = host.querySelectorAll('[aria-label="Citations in paper.tex"] button');
+  assert.equal(snippets.length, 1, "the commented-out \\cite is not listed");
+  assert.match(snippets[0].textContent ?? "", /As shown \\citep\[p\.~3\]\{smith2020, godel1931\}, it holds\./);
+  await click(snippets[0]);
+  const start = text.indexOf("\\citep");
+  assert.deepEqual(opened, [{ path: "Notes/paper.tex", start, end: text.indexOf("}, it") + 1, line: 3 }]);
 });
 
 test("reference files dropped from the computer are imported from their text without uploading", async () => {

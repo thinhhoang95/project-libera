@@ -54,7 +54,7 @@ test("pane bodies skip unrelated drafts and scrolling while callbacks and link p
     markdownEditorMode: "source", activePreviewTabId: null, onActivePreviewTabIdChange: noOp,
     files: [], aiFormatting: false, canStartScreenshotSnip: false, firstNotebook: "", imageMarkdownConverting: false,
     yourName: "", markdownPreferences: normalizeMarkdownPreferences({}), recentFiles: [], screenshotSnipSession: null,
-    tabs: [], textareaRef: { current: null }, onAiFormatSelection: asyncNoOp, onAiImageToMarkdown: asyncNoOp,
+    tabs: [], textareaRef: { current: null }, onAiFormatSelection: asyncNoOp, onShiftMarkdownList: noOp, onAiImageToMarkdown: asyncNoOp,
     onAiRewriteSelection: asyncNoOp, onAiWriteAt: asyncNoOp, onCreateMarkdown: asyncNoOp, onCreateSlides: asyncNoOp, onCreateNotebook: noOp, fileTags: {}, onEditFileTags: noOp,
     onCancelScreenshotSnip: noOp, onCompleteScreenshotSnip: asyncNoOp, onInsertExistingImage: asyncNoOp,
     onFinishVisualInsertion: noOp, onCreateMarkdownBesidePdf: async () => { throw new Error("unused"); }, onWriteConvertedMarkdown: asyncNoOp,

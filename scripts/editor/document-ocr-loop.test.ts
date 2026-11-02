@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-// @ts-expect-error The worker helpers are plain ES modules without types.
 import { completeBlocks, loopCutoff } from "../../electron/document-ocr-loop.mjs";
 
 // Token ids: 1-9 are text, 100+ are <loc_N> tags.

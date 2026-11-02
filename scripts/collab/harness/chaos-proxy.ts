@@ -319,7 +319,10 @@ function hardReset(socket: Socket | null): void {
   if (!socket || socket.destroyed) return;
   const resettable = socket as Socket & { resetAndDestroy?: () => Socket };
   try {
-    if (resettable.resetAndDestroy && !socket.connecting) resettable.resetAndDestroy();
+    // After end() a shutdown is pending, and libuv refuses the RST
+    // (uv_tcp_close_reset: EINVAL). Node then marks the handle closing without
+    // closing it, and the process spins in exit cleanup forever. destroy().
+    if (resettable.resetAndDestroy && !socket.connecting && !socket.writableEnded) resettable.resetAndDestroy();
     else socket.destroy();
   } catch {
     socket.destroy();

@@ -12,6 +12,32 @@ before(async () => {
 after(() => h.close());
 
 describe("projects", () => {
+  test("creation keys isolate audiences, serialize retries, and survive project deletion", async () => {
+    const owner = await register(h, "creation-key-owner");
+    const other = await register(h, "creation-key-other");
+    const body = { name: "Same title", creationId: "share_creation_key_test" };
+    const existing = await createProject(h, owner, body.name);
+    const results = await Promise.all(Array.from({ length: 3 }, () => request(h, "POST", "/v1/projects", owner, body)));
+    for (const response of results) {
+      assert.equal(response.status, 201);
+      assert.equal(response.body.creationId, body.creationId);
+      assert.equal(response.body.id, results[0].body.id);
+      assert.notEqual(response.body.id, existing.id);
+    }
+    const id = results[0].body.id;
+    const audit = await h.context.db.selectFrom("audit_log").select("id").where("project_id", "=", id).where("action", "=", "project.create").execute();
+    assert.equal(audit.length, 1, "retries do not create duplicate creation events");
+    const independent = await request(h, "POST", "/v1/projects", other, body);
+    assert.equal(independent.status, 201);
+    assert.notEqual(independent.body.id, id);
+    assert.equal((await request(h, "POST", "/v1/projects", owner, { ...body, name: "Changed request" })).status, 409);
+    assert.equal((await request(h, "POST", "/v1/projects", owner, { ...body, kind: "album" })).status, 409);
+    assert.equal((await request(h, "DELETE", `/v1/projects/${id}`, owner)).status, 204);
+    assert.equal((await request(h, "POST", "/v1/projects", owner, body)).status, 404, "a late retry cannot recreate a taken-down project");
+    const retained = await h.context.db.selectFrom("project_creations").select("project_id").where("account_id", "=", owner.id).where("operation_id", "=", body.creationId).execute();
+    assert.deepEqual(retained.map((row) => row.project_id), [id]);
+  });
+
   test("create makes an owner membership and an empty manifest document", async () => {
     const owner = await register(h, "p-owner");
     const project = await createProject(h, owner, "Thesis");

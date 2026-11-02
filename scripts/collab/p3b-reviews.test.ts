@@ -131,7 +131,8 @@ test("review requests: selection scope, approvals bound to revisions, outdated, 
         Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(note, "Is JSON right?");
         note.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
       });
-      await act(async () => { button(document, "Request review")!.click(); });
+      // The tab bar trigger is also labelled "Request review": submit inside the dialog.
+      await act(async () => { button(document.querySelector("[role=dialog]")!, "Request review")!.click(); });
       await until(async () => { await flush(1); return !document.querySelector('form[aria-label="Review request"]'); }, "the dialog to close");
       await mounted.unmount();
       mounted = null;

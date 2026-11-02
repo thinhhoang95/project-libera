@@ -5,6 +5,8 @@ import { shiftMarkdownListItems, type ListIndentDirection } from "@/lib/markdown
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isTextFileType } from "@/lib/types";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
+import { isLatexCitingPath, latexCitation, type LatexCiteCommand } from "@/lib/references/latex-cite-syntax";
+import { getLatexEditor } from "@/components/libera/latex/latex-editor-registry";
 import type {
   LiberaFileMovePayload,
   LiberaFileNode,
@@ -17,6 +19,7 @@ import type {
   PdfAnnotationsPayload,
 } from "@/lib/types";
 import { apiRequest, emptyTree, encodeFilePath } from "@/components/libera/api-client";
+import { monitorSessionExpiration } from "./session-expiration";
 import { pendingSaves } from "@/components/libera/pending-saves";
 import { pythonSidecarHref } from "@/lib/python/sidecar";
 import { latestPdfAnnotations } from "@/components/libera/pdf-annotation-events";
@@ -72,6 +75,7 @@ import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
+import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
 import { resolvePdfQuote, showPdfQuoteNotice } from "@/components/libera/references/pdf-quote-cite";
 import { parsePdfQuoteSource, PDF_QUOTE_CITE_EVENT, quoteBlockInsertion, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import { MARKDOWN_TABLE_FIRST_HEADER, markdownTable } from "@/lib/markdown-table";
@@ -322,6 +326,8 @@ const FOCUS_TREE_REFRESH_INTERVAL_MS = 5000;
 
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
+  const sessionEndedRef = useRef(false);
+  const sessionCleanupRef = useRef<AbortController | null>(null);
   const [saveDraftTabId, setSaveDraftTabId] = useState<string | null>(null);
   const [saveDraftError, setSaveDraftError] = useState("");
   const [saveDraftSubmitting, setSaveDraftSubmitting] = useState(false);
@@ -441,6 +447,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     },
   });
   const visibleTree = workspaceManager.visibleTree;
+  const expireSessionRef = useRef(expireSession);
+  useLayoutEffect(() => { expireSessionRef.current = expireSession; });
+  useEffect(() => {
+    if (!authenticated) return;
+    return monitorSessionExpiration(() => expireSessionRef.current());
+  }, [authenticated]);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const firstNotebook = visibleTree.notebooks[0]?.name ?? "";
   const selectedNotebook = visibleTree.notebooks.find(
@@ -752,6 +764,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // A slow response from expiry cleanup must not clear the new login cookie.
+    sessionCleanupRef.current?.abort();
+    sessionCleanupRef.current = null;
     setBusy(true);
     setAuthError("");
 
@@ -760,6 +775,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         method: "POST",
         body: JSON.stringify({ password }),
       });
+      sessionEndedRef.current = false;
       setAuthenticated(true);
       setPassword("");
       // The desktop app opens this user's sign-in screen at the next start.
@@ -772,13 +788,42 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function handleLogout() {
+    if (sessionEndedRef.current) return;
     try { await workspaceManager.checkpoint(); await flushPendingState(); }
-    catch { setWorkspaceError("Could not save your workspace. Please try signing out again."); return; }
-    await window.liberaProfiles?.signedOut();
+    catch {
+      if (!sessionEndedRef.current) setWorkspaceError("Could not save your workspace. Please try signing out again.");
+      return;
+    }
+    if (sessionEndedRef.current) return;
+    await window.liberaProfiles?.signedOut().catch(() => undefined);
     await apiRequest<{ authenticated: false }>("/api/auth/logout", {
       method: "POST",
     }).catch(() => null);
+    clearSignedInWorkspace();
+  }
+
+  function expireSession() {
+    if (sessionEndedRef.current) return;
+    sessionEndedRef.current = true;
+    try { workspaceManager.checkpointLocally(); }
+    catch { /* A recovery failure must not keep an expired session open. */ }
+    clearSignedInWorkspace();
+    setAuthError("Your session expired. Please sign in again.");
+    // Neither native bookkeeping nor a server request may delay the lock screen.
+    void window.liberaProfiles?.signedOut().catch(() => undefined);
+    const cleanup = new AbortController();
+    sessionCleanupRef.current = cleanup;
+    void apiRequest("/api/auth/logout", { method: "POST", signal: cleanup.signal })
+      .catch(() => undefined)
+      .finally(() => { if (sessionCleanupRef.current === cleanup) sessionCleanupRef.current = null; });
+  }
+
+  function clearSignedInWorkspace() {
+    sessionEndedRef.current = true;
     setAuthenticated(false);
+    setBusy(false);
+    setPassword("");
+    setWorkspaceError("");
     setTree(emptyTree());
     latestDraftByTabIdRef.current = {};
     setTabs([]);
@@ -1409,6 +1454,21 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   /**
+   * Manual review rejected the agent's changes and wrote the file's baseline
+   * to disk. The baseline already holds the user's own edits made while
+   * reviewing, so the tab takes it as both draft and saved copy.
+   */
+  function replaceTabFromDisk(path: string, content: string, expectedDraft?: string | null) {
+    const tab = tabs.find((item) => item.id === path && !item.untitled);
+    if (!tab || !mayTakeContentFromDisk(tab.id, isSharedTab)) return;
+    const draft = readOpenTabDraft(path);
+    const follow = expectedDraft === undefined || draft === expectedDraft || draft === content;
+    if (follow) rememberTabDraft(path, content);
+    updateTab(path, (current) => ({ ...current, saved: content, draft: follow ? content : draft ?? current.draft,
+      status: (follow ? content : draft) === content ? "clean" : "dirty", error: undefined }));
+  }
+
+  /**
    * A citation key rewrite reaching an open tab (Update citations in the
    * References panel): the live draft gets the same rewrite, and the saved
    * copy too when the file on disk was rewritten. Returns the draft before and
@@ -1678,11 +1738,29 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     restoreMarkdownTextarea({ ...scrollState, ...selection });
   }
 
-  /** Cites `key` (or several keys, as one citation `[@a; @b]`) at the caret of the active Markdown editor, in the source or the visual editor. */
-  function insertCitation(key: string | string[]) {
-    if (!activeTab || activeTab.file.fileType !== "markdown") return false;
+  /**
+   * Cites `key` (or several keys, as one citation `[@a; @b]`) at the caret of
+   * the active Markdown editor, in the source or the visual editor; in a
+   * LaTeX source, as `\cite{a,b}` or `\citep{a,b}`, replacing the selection.
+   */
+  function insertCitation(key: string | string[], command: LatexCiteCommand = "cite") {
+    if (!activeTab) return false;
     const keys = typeof key === "string" ? [key] : key;
     if (!keys.length) return false;
+    if (activeTab.file.fileType === "latex" && isLatexCitingPath(activeTab.file.name)) {
+      const view = getLatexEditor(activeTab.id)?.view;
+      if (!view || view.state.readOnly) return false;
+      const citation = latexCitation(keys, command);
+      if (!citation) {
+        setWorkspaceError("These citation keys cannot be inserted into LaTeX. Rename keys containing spaces, commas, braces, backslashes or percent signs first.");
+        return false;
+      }
+      const { from, to } = view.state.selection.main;
+      view.dispatch({ changes: { from, to, insert: citation }, selection: { anchor: from + citation.length }, scrollIntoView: true, userEvent: "input" });
+      view.focus();
+      return true;
+    }
+    if (activeTab.file.fileType !== "markdown") return false;
     const citation = `[${keys.map((item) => `@${item}`).join("; ")}]`;
     const visual = (activeTab.viewState?.markdown?.editorMode ?? "visual") === "visual" && !isMarkdownSlidesPath(activeTab.file.path);
     if (visual) queueVisualInsertion(activeTab.id, citation, { inline: true });
@@ -2490,14 +2568,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const controller = new AbortController();
+    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.format, cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
     try {
       const payload = await apiRequest<{ formattedText: string }>("/api/ai-format", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({ text: selectedText }),
       });
+      if (controller.signal.aborted) return;
       const nextDraft = `${draft.slice(0, selection.start)}${payload.formattedText}${draft.slice(
         selection.end,
       )}`;
@@ -2521,12 +2603,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
-      updateTab(tabId, (tab) => ({
+      if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "AI formatting failed.",
       }));
     } finally {
+      endActivity();
       setAiFormatting(false);
     }
   }
@@ -2548,6 +2631,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const controller = new AbortController();
+    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.rewrite, cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
@@ -2556,6 +2641,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const thread = aiEditThreadFor(activeTab.file.path, includeDocument);
       const payload = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({
           text: selectedText,
           prompt,
@@ -2565,6 +2651,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           thread,
         }),
       });
+      if (controller.signal.aborted) return;
       recordAiEditTurn(activeTab.file.path, includeDocument, thread, payload.thread);
       const nextDraft = `${draft.slice(0, selection.start)}${payload.rewrittenText}${draft.slice(
         selection.end,
@@ -2588,12 +2675,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
-      updateTab(tabId, (tab) => ({
+      if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "AI rewrite failed.",
       }));
     } finally {
+      endActivity();
       setAiFormatting(false);
     }
   }
@@ -2608,6 +2696,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const position = findMarkdownBlockInsertionOffset(draft, offset);
     const scrollState = getMarkdownTextareaScrollState();
 
+    const controller = new AbortController();
+    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.write, cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
@@ -2616,12 +2706,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const thread = aiEditThreadFor(activeTab.file.path, includeDocument);
       const payload = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({
           prompt,
           ...(includeDocument ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
           thread,
         }),
       });
+      if (controller.signal.aborted) return;
       recordAiEditTurn(activeTab.file.path, includeDocument, thread, payload.thread);
       const insertion = insertMarkdownBlock(draft, position, payload.markdown);
       const suggested = suggestSharedAi(tabId, draft, {
@@ -2647,12 +2739,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         selectionEnd: suggested ? position : insertion.end,
       });
     } catch (error) {
-      updateTab(tabId, (tab) => ({
+      if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "Write with AI failed.",
       }));
     } finally {
+      endActivity();
       setAiFormatting(false);
     }
   }
@@ -2671,18 +2764,22 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const controller = new AbortController();
+    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.image, cancel: () => controller.abort() });
     setImageMarkdownConverting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
     try {
       const payload = await apiRequest<{ markdown: string }>("/api/ai-image-to-markdown", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({
           documentPath: activeTab.file.path,
           imageSource: image.src,
           alt: image.alt,
         }),
       });
+      if (controller.signal.aborted) return;
       const nextDraft = `${draft.slice(0, image.start)}${payload.markdown}${draft.slice(
         image.end,
       )}`;
@@ -2722,12 +2819,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
-      updateTab(tabId, (tab) => ({
+      if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "AI image conversion failed.",
       }));
     } finally {
+      endActivity();
       setImageMarkdownConverting(false);
     }
   }
@@ -2992,6 +3090,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   function setWorkspaceInputDialogError(error: string) {
     setWorkspaceInputDialog((current) => (current ? { ...current, error } : current));
+  }
+
+  /** Copies an illustration into a notebook as its cover; null goes back to a random one. */
+  async function changeNotebookIllustration(notebook: string, illustration: string | null) {
+    const nextTree = await apiRequest<LiberaTree>("/api/notebooks/illustration", {
+      method: "PUT",
+      body: JSON.stringify({ notebook, illustration }),
+    });
+    await applyCompleteTree(nextTree);
   }
 
   async function submitNotebookDialog(values: NotebookFormValues) {
@@ -4412,6 +4519,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       readOpenTabDraft,
       syncTabFromDisk,
       restoreTabAfterUndo,
+      replaceTabFromDisk,
       applyCitationRewriteToTab,
       revertCitationRewriteInTab,
       refreshAfterAgentChanges,
@@ -4430,6 +4538,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       toggleFileStar,
       toggleNotebook,
       updateNotebookViewOptions,
+      changeNotebookIllustration,
       openFileTagsDialog,
       closeFileTagsDialog,
       saveFileTags,

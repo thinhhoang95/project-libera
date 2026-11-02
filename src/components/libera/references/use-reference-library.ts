@@ -29,6 +29,7 @@ type Store = {
   state: ReferenceLibraryState;
   listeners: Set<() => void>;
   loading: Promise<ReferenceLibrary> | null;
+  reloadQueued: boolean;
   /** Changes from this window apply one at a time, so they never conflict with each other. */
   queue: Promise<unknown>;
 };
@@ -39,7 +40,7 @@ const stores = new Map<string, Store>();
 function storeFor(notebook: string) {
   let store = stores.get(notebook);
   if (!store) {
-    store = { state: EMPTY_STATE, listeners: new Set(), loading: null, queue: Promise.resolve() };
+    store = { state: EMPTY_STATE, listeners: new Set(), loading: null, reloadQueued: false, queue: Promise.resolve() };
     stores.set(notebook, store);
   }
   return store;
@@ -85,6 +86,10 @@ export function fetchReferenceLibrary(notebook: string): Promise<ReferenceLibrar
       throw error;
     } finally {
       store.loading = null;
+      if (store.reloadQueued) {
+        store.reloadQueued = false;
+        void fetchReferenceLibrary(notebook).catch(() => undefined);
+      }
     }
   })();
   store.loading = request;
@@ -171,6 +176,7 @@ function reloadIfNewer(notebook: unknown, revision: unknown) {
   if (!store || !store.listeners.size) return;
   const known = store.state.library?.revision;
   if (typeof revision === "number" && known !== undefined && revision <= known) return;
+  if (store.loading) { store.reloadQueued = true; return; }
   void fetchReferenceLibrary(notebook).catch(() => undefined);
 }
 

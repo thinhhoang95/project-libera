@@ -16,6 +16,9 @@ import { bindTiptapToYText, type TiptapYTextBridge, type TiptapYTextBridgeOption
 import { TiptapCollabHistory } from "../../src/lib/collab/bindings/tiptap-history";
 import { serializeRun, editorMarkdownCodec } from "../../src/lib/collab/bindings/tiptap-blocks";
 
+// prosemirror-keymap reads Node's own navigator when it is imported, before
+// jsdom's replaces it: on macOS, Mod is Cmd. Key events use the same modifier.
+export const modKey = /Mac|iP(hone|[oa]d)/.test(globalThis.navigator?.platform ?? "") ? "metaKey" : "ctrlKey";
 export const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "DOMParser", "MutationObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const) {
   const value = (dom.window as unknown as Record<string, unknown>)[key];

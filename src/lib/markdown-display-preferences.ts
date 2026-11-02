@@ -13,7 +13,7 @@ export function normalizeMarkdownDisplayPreferences(input: Partial<MarkdownDispl
       : fallback;
   return {
     textWidth: normalize(input.textWidth, 75, 0, 100),
-    textScale: normalize(input.textScale, 100, 75, 150),
+    textScale: normalize(input.textScale, 100, 75, 250),
     outlineExpansionLevel: normalize(input.outlineExpansionLevel, 6, 1, 6),
   };
 }

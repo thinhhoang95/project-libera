@@ -4,6 +4,7 @@ import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promis
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { scheduleBibMirror } from "@/lib/references/bib-mirror";
+import { publishReferenceEvent } from "@/lib/references/library-events";
 import { applyLibraryOps, attachmentIdentity, emptyReferenceLibrary, LibraryOpError } from "@/lib/references/library-ops";
 import { REFERENCE_LIBRARY_VERSION, type ReferenceAttachment, type ReferenceLibrary, type ReferenceLibraryOp } from "@/lib/references/types";
 import { StorageError } from "@/lib/storage/errors";
@@ -92,6 +93,8 @@ const lockState = globalThis as { [LOCK_CHAINS]?: Map<string, Promise<unknown>> 
 const lockChains = lockState[LOCK_CHAINS] ??= new Map<string, Promise<unknown>>();
 
 /** One writer per library: queued in this process, and an OS lock file across Next workers. */
+export { withLibraryLock as withReferenceFileLock };
+
 async function withLibraryLock<T>(target: string, fn: () => Promise<T>): Promise<T> {
   const previous = lockChains.get(target) ?? Promise.resolve();
   const task = previous.catch(() => undefined).then(() => withFileLock(target, fn));
@@ -152,7 +155,7 @@ export async function readReferenceLibrary(notebook: string): Promise<ReferenceL
  * throws ReferenceRevisionConflict. Invalid ops throw LibraryOpError and
  * nothing is written.
  */
-export async function updateReferenceLibrary(notebook: string, expectedRevision: number | null, ops: ReferenceLibraryOp[]): Promise<ReferenceLibrary> {
+export async function updateReferenceLibrary(notebook: string, expectedRevision: number | null, ops: ReferenceLibraryOp[], beforeCommit?: () => Promise<void>): Promise<ReferenceLibrary> {
   const target = referenceLibraryPath(notebook);
   await assertNotebookExists(notebook);
   if (!Array.isArray(ops)) throw new LibraryOpError("Library changes must be a list.");
@@ -161,13 +164,17 @@ export async function updateReferenceLibrary(notebook: string, expectedRevision:
     const current = await readForWrite(target);
     if (expectedRevision !== null && current.revision !== expectedRevision) throw new ReferenceRevisionConflict(current);
     const { library, changed } = applyLibraryOps(current, prepared, new Date().toISOString());
-    if (!changed) return current;
+    if (!changed) { await beforeCommit?.(); return current; }
     const next = { ...library, revision: current.revision + 1 };
-    await writeJsonAtomically(target, next);
+    // Prepare the JSON before the tether writes its file, under the same
+    // revision lock. A full disk or failed .bib write commits neither side.
+    await writeJsonAtomically(target, next, beforeCommit);
     // The notebook's generated references.bib follows the library when it is turned on.
     scheduleBibMirror(notebook, next);
     // Global Search indexes the entries as their own source.
     notifySearchReferenceChanges([notebook]);
+    // A tethered .bib follows (bib-tether.ts), and open windows reload.
+    publishReferenceEvent({ type: "library", notebook, revision: next.revision });
     return next;
   });
 }
@@ -316,6 +323,7 @@ function underPath(candidate: string, root: string) {
  */
 export async function moveReferenceAttachments(from: string, to: string) {
   if (from === to) return;
+  publishReferenceEvent({ type: "moved", from, to });
   try {
     await remapReferenceAttachments((current) => underPath(current, from) ? to + current.slice(from.length) : current);
   } catch (error) {

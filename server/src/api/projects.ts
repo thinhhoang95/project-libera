@@ -27,6 +27,7 @@ import { aiHintSchema, iso, notifyRooms, pathId, publish, requireAccount, route 
 const projectName = z.string().trim().min(1).max(200);
 
 const createProjectBody = z.object({
+  creationId: z.string().regex(/^[A-Za-z0-9_-]{8,80}$/).optional(),
   name: projectName,
   kind: z.string().refine(isProjectKind, "Unknown project kind.").optional(),
 });
@@ -50,11 +51,26 @@ const MIN_LEASE_MS = 500;
 const MAX_LEASE_MS = 10 * 60_000;
 
 /** Creates a project, its owner membership and its empty manifest document. */
-export async function createProjectRecord(db: Kysely<DB>, ownerId: string, name: string, kind: ProjectKind = "notebook"): Promise<ProjectSummary> {
+export async function createProjectRecord(db: Kysely<DB>, ownerId: string, name: string, kind: ProjectKind = "notebook", creationId?: string): Promise<ProjectSummary> {
   const projectId = newId("prj");
   const manifestDocId = newId("doc");
   const createdAt = new Date();
-  await db.transaction().execute(async (trx) => {
+  return db.transaction().execute(async (trx) => {
+    if (creationId) {
+      // The unique insertion waits for an overlapping creator's commit.
+      // Reserving the key and creating the project share one transaction.
+      const reserved = await trx.insertInto("project_creations")
+        .values({ account_id: ownerId, operation_id: creationId, project_id: projectId, name, kind })
+        .onConflict((oc) => oc.columns(["account_id", "operation_id"]).doNothing())
+        .returning("project_id").executeTakeFirst();
+      if (!reserved) {
+        const prior = await trx.selectFrom("project_creations").selectAll()
+          .where("account_id", "=", ownerId).where("operation_id", "=", creationId).executeTakeFirstOrThrow();
+        if (prior.name !== name || prior.kind !== kind) throw new HttpError("conflict", "This creation attempt belongs to a different project request.");
+        // A retained key whose project was deleted fails closed via 404.
+        return { ...await projectSummary(trx, prior.project_id, ownerId), creationId };
+      }
+    }
     await trx
       .insertInto("projects")
       .values({ id: projectId, name, owner_id: ownerId, manifest_doc_id: manifestDocId, kind, created_at: createdAt })
@@ -67,8 +83,10 @@ export async function createProjectRecord(db: Kysely<DB>, ownerId: string, name:
       .insertInto("documents")
       .values({ id: manifestDocId, project_id: projectId, kind: "manifest", file_id: null, created_by: ownerId, created_at: createdAt })
       .execute();
+    await writeAudit(trx, { projectId, actor: bindActor(ownerId, undefined), accountId: ownerId,
+      action: "project.create", target: projectId, details: { name, kind } });
+    return { id: projectId, name, role: "owner" as const, ownerId, manifestDocId, createdAt: createdAt.toISOString(), kind, ...(creationId ? { creationId } : {}) };
   });
-  return { id: projectId, name, role: "owner", ownerId, manifestDocId, createdAt: createdAt.toISOString(), kind };
 }
 
 export async function projectSummary(db: Kysely<DB>, projectId: string, accountId: string): Promise<ProjectSummary> {
@@ -128,15 +146,7 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
   app.post(ApiRoutes.projects, async (request, reply) => {
     const { accountId } = await requireAccount(context, request);
     const body = createProjectBody.parse(request.body);
-    const project = await createProjectRecord(db, accountId, body.name, body.kind as ProjectKind | undefined);
-    await writeAudit(db, {
-      projectId: project.id,
-      actor: bindActor(accountId, undefined),
-      accountId,
-      action: "project.create",
-      target: project.id,
-      details: { name: project.name, kind: project.kind },
-    });
+    const project = await createProjectRecord(db, accountId, body.name, body.kind as ProjectKind | undefined, body.creationId);
     return reply.status(201).send(project);
   });
 

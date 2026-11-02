@@ -8,6 +8,7 @@
 
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
+import { readNotebookBinding, readNotebookLifecycle, recordNotebookBinding, recordNotebookLifecycle, sameNotebookIdentity } from "../../../src/lib/collab/local-notebook-state";
 
 import type {
   AlbumOriginalResponse,
@@ -40,9 +41,10 @@ import {
 import { ApiClientError, type ApiClient } from "../core/api-client";
 import { consoleLogger, type Logger } from "../core/clock";
 import type { CollabHostEvent } from "../core/host";
+import { normalizedServerUrl, sameAuthority } from "../core/authority";
 import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter, type NotebookService } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { ARCHIVE_DIRECTORY, PathRefusedError, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic } from "./fs-ops";
+import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord } from "./layout";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
@@ -81,7 +83,8 @@ export interface UnjoinedFolder {
   notebook: string;
   projectId: string;
   /** The server answered 404 (not a member, or deleted) or 403. */
-  status: 404 | 403;
+  status: 404 | 403 | 409;
+  reason?: "unreadable-marker" | "ambiguous-copy";
 }
 
 /**
@@ -145,6 +148,7 @@ interface ProjectHandle {
   role: Role;
   manifestDocId: string;
   revoked: boolean;
+  revoking?: boolean;
   runtime: SharedProject | null;
   index: Map<string, IndexedDoc>;
   reconcilePending: number;
@@ -154,6 +158,8 @@ interface ProjectHandle {
   folderId: string | null;
   /** False once the server turned out to predate writer leases. */
   leaseSupported: boolean;
+  /** Conservative monotonic deadline, never extended by a failed renewal. */
+  leaseDeadline?: number;
 }
 
 function newHandle(projectId: string, name: string, root: string, role: Role, marker: SharedMarker): ProjectHandle {
@@ -231,10 +237,12 @@ function toControlError(error: unknown): unknown {
     return new ControlError(error.status, error.code, error.message);
   }
   if (error instanceof PathRefusedError) return new ControlError(400, "bad-request", error.message);
+  if (error instanceof WriteCancelledError) return new ControlError(409, "notebook-changed", "The notebook or account changed while sharing. Its checkpoint was preserved for recovery.");
   return error;
 }
 
 export class NotebookServiceImpl implements NotebookService {
+  readonly lifecycleDirectory: string;
   private readonly deps: Omit<ControlDeps, "notebooks">;
   private readonly logger: Logger;
   private readonly timings: Timings;
@@ -260,6 +268,7 @@ export class NotebookServiceImpl implements NotebookService {
 
   constructor(deps: Omit<ControlDeps, "notebooks">, options: NotebookServiceOptions = {}) {
     this.deps = deps;
+    this.lifecycleDirectory = deps.lifecycleDir ?? path.join(path.dirname(deps.host.store.path), "notebook-lifecycle");
     this.galleryRoot = deps.galleryRoot ?? path.join(deps.libraryRoot, "..", "..", "gallery");
     this.logger = options.logger ?? consoleLogger;
     this.timings = { ...DEFAULT_TIMINGS, ...options.timings };
@@ -274,7 +283,8 @@ export class NotebookServiceImpl implements NotebookService {
     if (this.started) return;
     this.started = true;
     this.unsubscribeHost = this.deps.host.on((event) => this.hostEvent(event));
-    await this.loadProjects();
+    await this.loadProjects().catch((error) => this.logger.warn("Shared notebooks could not all start; discovery will retry.", error));
+    if (!this.started) return;
     this.leaseTimer = setInterval(() => void this.tick(), Math.max(100, Math.floor(this.leaseTtlMs / 3)));
     this.leaseTimer.unref?.();
   }
@@ -285,6 +295,7 @@ export class NotebookServiceImpl implements NotebookService {
     this.unsubscribeHost = null;
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     this.leaseTimer = null;
+    this.deps.host.api?.cancelPending();
     await this.loading?.catch(() => undefined);
     await this.ticking?.catch(() => undefined);
     await Promise.all([...this.projects.values()].map((handle) => handle.runtime?.stop()));
@@ -309,30 +320,97 @@ export class NotebookServiceImpl implements NotebookService {
 
   private loadProjects(): Promise<void> {
     this.loading = (async () => {
-      for (const row of this.deps.host.store.listProjects()) {
-        if (!row.localRoot || this.projects.has(row.projectId)) continue;
-        const marker = await readMarker(row.localRoot).catch(() => null);
+      await this.loadStoredProjects();
+      await this.adoptMarkers();
+    })();
+    return this.loading;
+  }
+
+  private async folderRoots(): Promise<string[]> {
+    const folders: string[] = [];
+    for (const base of [this.deps.libraryRoot, this.galleryRoot]) {
+      const entries: Dirent[] = await fs.readdir(base, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) if (entry.isDirectory() && !entry.name.startsWith(".")) folders.push(path.join(base, entry.name));
+    }
+    return folders;
+  }
+
+  private async movedRoot(projectId: string, previous: string): Promise<string | null> {
+    const binding = readNotebookBinding(this.lifecycleDirectory, previous);
+    const api = this.deps.host.api;
+    const accountId = api ? await this.accountId().catch(() => null) : null;
+    const candidates: string[] = [];
+    for (const root of await this.folderRoots()) {
+      if (this.pendingRoots.has(root)) continue;
+      const marker = await readMarker(root).catch(() => null);
+      if (!marker || marker.projectId !== projectId) continue;
+      if (binding ? !sameNotebookIdentity(binding, marker) :
+          !api || marker.accountId !== accountId || marker.serverUrl.replace(/\/+$/, "") !== api.baseUrl) continue;
+      candidates.push(root);
+    }
+    if (candidates.length !== 1) {
+      for (const root of candidates) this.unjoined.set(root, { notebook: path.basename(root), projectId, status: 409, reason: "ambiguous-copy" });
+      return null;
+    }
+    if (!binding) {
+      // Legacy rows have no local binding: require fresh server identity too.
+      const project = await api!.getProject(projectId).catch(() => null);
+      const marker = await readMarker(candidates[0]);
+      if (!project || project.manifestDocId !== marker?.manifestDocId) return null;
+    }
+    return candidates[0];
+  }
+
+  private async loadStoredProjects(): Promise<void> {
+    for (const row of this.deps.host.store.listProjects()) {
+      if (!this.started) return;
+      if (!row.localRoot || this.projects.has(row.projectId) || this.pendingRoots.has(row.localRoot)) continue;
+      try {
+        let root = row.localRoot;
+        let marker = await readMarker(root).catch(() => null);
         if (!marker || marker.projectId !== row.projectId) {
-          this.logger.warn(`Shared notebook folder for ${row.name} is missing; it is not synced.`, row.localRoot);
+          // A present foreign/corrupt root is not a move. Rebind only a missing
+          // old directory to one unique compatible discovered identity.
+          if (await statIfExists(root)) continue;
+          const moved = await this.movedRoot(row.projectId, root);
+          if (!moved) continue;
+          root = moved;
+          marker = await readMarker(root);
+          if (!marker) continue;
+          this.deps.host.store.upsertProject({ ...row, localRoot: root });
+          this.unjoined.delete(root);
+        }
+        if (!this.markerAuthorityMatches(marker)) continue;
+        if (await this.repairEndedMarker(root, marker) === "local") {
+          this.deps.host.store.deleteProject(row.projectId);
           continue;
         }
-        const handle = newHandle(row.projectId, row.name, row.localRoot, row.role ?? "viewer", marker);
+        marker = await readMarker(root);
+        if (!marker) continue;
+        const handle = newHandle(row.projectId, row.name, root, row.role ?? "viewer", marker);
         this.projects.set(handle.projectId, handle);
         if (handle.revoked) {
-          const { docs, reconcilePending } = await SharedProject.readIndex(handle.root);
+          const { docs, reconcilePending } = await SharedProject.readIndex(root);
           handle.index = indexOf(docs);
           handle.reconcilePending = reconcilePending;
         } else {
           handle.writer = await this.claimRole(handle, marker);
           await this.run(handle);
         }
+        this.unjoined.delete(root);
+      } catch (error) {
+        const handle = this.projects.get(row.projectId);
+        await handle?.runtime?.stop({ persist: false }).catch(() => undefined);
+        this.projects.delete(row.projectId);
+        this.logger.warn(`Shared notebook ${row.name} could not start; other notebooks will continue and this one will retry.`, error);
       }
-      await this.adoptMarkers();
-    })();
-    return this.loading;
+    }
   }
 
   private async run(handle: ProjectHandle): Promise<void> {
+    const marker = await readMarker(handle.root);
+    if (!this.matchesMarker(handle, marker) || !this.markerAuthorityMatches(marker)) throw new ControlError(409, "notebook-unavailable", "The notebook folder identity changed while it was opening.");
+    recordNotebookBinding(this.lifecycleDirectory, handle.root, marker);
     const runtime = await SharedProject.open(this.context(), {
       projectId: handle.projectId,
       name: handle.name,
@@ -341,9 +419,15 @@ export class NotebookServiceImpl implements NotebookService {
       role: handle.role,
       manifestDocId: handle.manifestDocId,
       folderId: handle.folderId ?? undefined,
+      accountId: marker.accountId,
+      serverUrl: marker.serverUrl,
       follower: !handle.writer,
       ...(handle.kind === "album" ? { album: true } : {}),
     });
+    if (handle.writer && (handle.leaseDeadline ?? 0) <= performance.now()) {
+      handle.writer = false;
+      runtime.info.follower = true;
+    }
     handle.runtime = runtime;
     this.reindex(handle.projectId);
     runtime.start();
@@ -360,35 +444,37 @@ export class NotebookServiceImpl implements NotebookService {
   // folder's state.json, and the stale-copy guard (state.ts) keeps late
   // copies of older versions from undoing newer edits.
   //
-  // While the server cannot be reached, the role stays as it is: a lone
-  // device offline keeps taking in its own disk edits. Another installation
-  // may take over meanwhile; the first one gives the role up when its next
-  // renewal is refused.
+  // Automatic disk work stops when the last confirmed lease expires. Editors
+  // and explicit shared file operations still work through the follower path.
 
   /** Whether this installation writes the folder, settling its lease and marker. */
   private async claimRole(handle: ProjectHandle, marker: SharedMarker): Promise<boolean> {
     const named = !marker.writer || marker.writer === this.installationId;
     if (!marker.folderId && named) {
-      // An older marker: its writer gives it an identity, the lease key.
-      // Until then no other installation can take over.
-      handle.folderId = randomId("fld");
-      await this.updateMarker(handle, { writer: this.installationId, folderId: handle.folderId });
+      const binding = readNotebookBinding(this.lifecycleDirectory, handle.root);
+      if (binding && !sameNotebookIdentity({ ...binding, folderId: undefined }, marker)) return false;
+      // Restore a locally known identity if a cloud delivery omitted it;
+      // genuinely old markers receive a new lease key only once.
+      const legacyKey = sha256(Buffer.from(JSON.stringify([marker.serverUrl.replace(/\/+$/, ""), marker.accountId, marker.projectId, marker.manifestDocId, marker.sharedAt]))).slice(0, 32);
+      const upgraded = { ...marker, folderId: binding?.folderId ?? `fld_${legacyKey}` };
+      await writeMarker(handle.root, upgraded, {
+        root: handle.root,
+        canCommit: async () => JSON.stringify(await readMarker(handle.root).catch(() => null)) === JSON.stringify(marker),
+      });
+      recordNotebookBinding(this.lifecycleDirectory, handle.root, upgraded);
+      handle.folderId = upgraded.folderId;
     }
     const lease = await this.lease(handle);
-    const writer = this.keepsWriting(lease, marker);
+    const writer = this.keepsWriting(handle, lease, marker);
     if (writer) await this.updateMarker(handle, { writer: this.installationId, ...(lease.contended ? { syncedElsewhere: true } : {}) });
     return writer;
   }
 
   /**
    * Whether this installation writes the folder, given its lease and the
-   * marker. The lease decides when the server answers. Without an answer
-   * the marker does: offline, the installation it names keeps writing (a
-   * lone device keeps taking in its own disk edits). Signed out, that holds
-   * only for a folder no other installation has used, since another may
-   * hold the lease now.
+   * marker. No marker can extend the last confirmed server lease.
    */
-  private keepsWriting(lease: Lease, marker: SharedMarker): boolean {
+  private keepsWriting(handle: ProjectHandle, lease: Lease, marker: SharedMarker): boolean {
     const named = !marker.writer || marker.writer === this.installationId;
     switch (lease.outcome) {
       case "granted":
@@ -396,9 +482,10 @@ export class NotebookServiceImpl implements NotebookService {
       case "refused":
         return false;
       case "signed-out":
-        return named && !marker.syncedElsewhere;
+      case "unsupported":
+        return false;
       default:
-        return named;
+        return named && (handle.leaseDeadline ?? 0) > performance.now();
     }
   }
 
@@ -407,13 +494,18 @@ export class NotebookServiceImpl implements NotebookService {
     if (!api) return { outcome: "signed-out", contended: false };
     if (!handle.leaseSupported) return { outcome: "unsupported", contended: false };
     if (!handle.folderId) return { outcome: "unavailable", contended: false };
+    const requestedAt = performance.now();
     try {
-      const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs });
+      const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs }, { timeoutMs: Math.min(5000, Math.max(100, Math.floor(this.leaseTtlMs / 3))) });
+      if (!this.started || this.releasing) return { outcome: "unavailable", contended: false };
+      handle.leaseDeadline = lease.granted
+        ? requestedAt + Math.max(0, Math.min(this.leaseTtlMs, Date.parse(lease.expiresAt ?? "") - Date.now()))
+        : 0;
       return { outcome: lease.granted ? "granted" : "refused", contended: lease.contended === true };
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 404) {
         // The project is gone (revocation follows), or the server predates leases.
-        const exists = await api.getProject(handle.projectId).then(
+        const exists = await api.getProject(handle.projectId, { timeoutMs: 5000 }).then(
           () => true,
           () => false,
         );
@@ -428,6 +520,7 @@ export class NotebookServiceImpl implements NotebookService {
   }
 
   private async releaseLease(handle: ProjectHandle): Promise<void> {
+    handle.leaseDeadline = 0;
     const api = this.deps.host.api;
     if (!api || !handle.writer || !handle.folderId || !handle.leaseSupported || handle.revoked) return;
     await api.releaseFolderLease(handle.projectId, handle.folderId, this.installationId).catch(() => undefined);
@@ -436,10 +529,13 @@ export class NotebookServiceImpl implements NotebookService {
   /** Changes this project's marker (only a writer calls this; nothing happens when the marker is not this project's). */
   private async updateMarker(handle: ProjectHandle, patch: Partial<SharedMarker>): Promise<void> {
     const marker = await readMarker(handle.root).catch(() => null);
-    if (!marker || marker.projectId !== handle.projectId || marker.revoked) return;
+    if (!this.matchesMarker(handle, marker) || marker.revoked) return;
     const next: SharedMarker = { ...marker, ...patch };
     if (JSON.stringify(next) === JSON.stringify(marker)) return;
-    await writeMarker(handle.root, next).catch((error: unknown) => this.logger.warn(`Could not update the marker of ${handle.name}.`, error));
+    await writeMarker(handle.root, next, {
+      root: handle.root,
+      canCommit: async () => JSON.stringify(await readMarker(handle.root).catch(() => null)) === JSON.stringify(marker),
+    }).catch((error: unknown) => this.logger.warn(`Could not update the marker of ${handle.name}.`, error));
   }
 
   /**
@@ -449,6 +545,7 @@ export class NotebookServiceImpl implements NotebookService {
    */
   async beforeAccountChange(): Promise<void> {
     this.releasing = true;
+    this.deps.host.api?.cancelPending();
     await this.ticking?.catch(() => undefined);
     await Promise.all([...this.projects.values()].map((handle) => this.releaseLease(handle)));
   }
@@ -459,10 +556,19 @@ export class NotebookServiceImpl implements NotebookService {
     this.ticking = (async () => {
       try {
         await this.loading?.catch(() => undefined);
+        await this.loadStoredProjects();
         for (const handle of [...this.projects.values()]) {
           if (!this.started || this.releasing) return;
-          if (handle.revoked) continue;
-          await this.locked(`project:${handle.projectId}`, () => this.checkLease(handle));
+          await this.locked(`project:${handle.projectId}`, async () => {
+            if (handle.revoked) {
+              const marker = await readMarker(handle.root).catch(() => null);
+              if (this.matchesMarker(handle, marker)) {
+                const reason = this.deps.host.store.getDocMeta(handle.manifestDocId)?.readOnlyReason;
+                if (reason === "access-revoked" || reason === "document-deleted") recordNotebookLifecycle(this.lifecycleDirectory, marker, "revoked");
+                await this.repairEndedMarker(handle.root, marker);
+              }
+            } else await this.checkLease(handle);
+          }).catch((error) => this.logger.warn(`Shared notebook ${handle.name}: lifecycle/lease check will retry.`, error));
         }
         if (this.started && !this.releasing) await this.adoptMarkers();
       } catch (error) {
@@ -476,13 +582,18 @@ export class NotebookServiceImpl implements NotebookService {
 
   private async checkLease(handle: ProjectHandle): Promise<void> {
     if (!this.started || this.releasing || this.projects.get(handle.projectId) !== handle || handle.revoked || !handle.runtime) return;
+    const reason = this.deps.host.store.getDocMeta(handle.manifestDocId)?.readOnlyReason;
+    if (reason === "access-revoked" || reason === "document-deleted") {
+      await this.doRevoke(handle.projectId, reason === "document-deleted");
+      return;
+    }
     // The marker is read every time: a writer named there by another
     // installation (which held the lease) wins even when the lease cannot be checked.
     const marker = await readMarker(handle.root).catch(() => null);
-    if (!marker || marker.projectId !== handle.projectId) return;
+    if (!this.matchesMarker(handle, marker)) return;
     handle.folderId ??= marker.folderId ?? null;
     const lease = await this.lease(handle);
-    const writer = this.keepsWriting(lease, marker);
+    const writer = this.keepsWriting(handle, lease, marker);
     if (writer !== handle.writer) await this.switchRole(handle, writer);
     else if (writer && lease.outcome === "granted") {
       await this.updateMarker(handle, { writer: this.installationId, ...(lease.contended ? { syncedElsewhere: true } : {}) });
@@ -518,23 +629,56 @@ export class NotebookServiceImpl implements NotebookService {
    */
   private async adoptMarkers(): Promise<void> {
     const api = this.deps.host.api;
-    if (!api) return;
-    const accountId = await this.accountId().catch(() => null);
-    if (!accountId) return;
-    const folders: string[] = [];
-    for (const base of [this.deps.libraryRoot, this.galleryRoot]) {
-      const entries: Dirent[] = await fs.readdir(base, { withFileTypes: true }).catch(() => []);
-      for (const entry of entries) if (entry.isDirectory() && !entry.name.startsWith(".")) folders.push(path.join(base, entry.name));
-    }
-    for (const root of folders) {
+    const accountId = api ? await this.accountId().catch(() => null) : null;
+    for (const root of await this.folderRoots()) {
       if (!this.started) return;
       if (this.pendingRoots.has(root)) continue;
-      const marker = await readMarker(root).catch(() => null);
-      if (!marker || marker.revoked || marker.accountId !== accountId || marker.serverUrl.replace(/\/+$/, "") !== api.baseUrl) continue;
-      if (this.projects.has(marker.projectId) || this.deps.host.store.getProject(marker.projectId)) continue;
-      if (this.unjoined.get(root)?.projectId === marker.projectId) continue;
-      await this.locked(`project:${marker.projectId}`, () => this.adopt(api, root, marker));
+      try {
+        const marker = await readMarker(root).catch(() => null);
+        if (!marker) {
+          if (await statIfExists(path.join(root, ".libera-shared.json"))) this.unjoined.set(root, { notebook: path.basename(root), projectId: "", status: 409, reason: "unreadable-marker" });
+          continue;
+        }
+        if (await this.repairEndedMarker(root, marker)) continue;
+        const binding = readNotebookBinding(this.lifecycleDirectory, root);
+        if (binding && !sameNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding)) {
+          this.unjoined.set(root, { notebook: path.basename(root), projectId: marker.projectId, status: 409, reason: "ambiguous-copy" });
+          continue;
+        }
+        if (!api || !accountId) continue;
+        if (!marker || marker.revoked || marker.accountId !== accountId || marker.serverUrl.replace(/\/+$/, "") !== api.baseUrl) continue;
+        if (this.projects.has(marker.projectId) || this.deps.host.store.getProject(marker.projectId)) continue;
+        if (this.unjoined.get(root)?.projectId === marker.projectId) continue;
+        await this.locked(`project:${marker.projectId}`, () => this.adopt(api, root, marker))
+          .catch((error) => this.logger.warn(`Shared folder ${path.basename(root)} could not be adopted; discovery will retry.`, error));
+      } catch (error) {
+        this.logger.warn(`Shared folder ${path.basename(root)} could not be checked; other folders will continue.`, error);
+      }
     }
+  }
+
+  private async repairEndedMarker(root: string, marker: SharedMarker): Promise<"local" | "revoked" | null> {
+    const binding = readNotebookBinding(this.lifecycleDirectory, root);
+    if (binding && !sameNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding)) return null;
+    const outcome = readNotebookLifecycle(this.lifecycleDirectory, marker);
+    if (!outcome) return null;
+    const current = await readMarker(root).catch(() => null);
+    if (!current || !sameNotebookIdentity(marker, current)) return outcome;
+    if (outcome === "local") await deleteMarker(root);
+    else if (!current.revoked) await writeMarker(root, { ...current, revoked: true, revokedAt: new Date().toISOString() }, {
+      root,
+      canCommit: async () => {
+        const latest = await readMarker(root).catch(() => null);
+        return latest !== null && sameNotebookIdentity(current, latest);
+      },
+    });
+    return outcome;
+  }
+
+  private async rememberEnded(handle: ProjectHandle, outcome: "local" | "revoked"): Promise<void> {
+    const marker = await readMarker(handle.root).catch(() => null);
+    const binding = this.matchesMarker(handle, marker) ? marker : readNotebookBinding(this.lifecycleDirectory, handle.root);
+    if (this.matchesMarker(handle, binding)) recordNotebookLifecycle(this.lifecycleDirectory, binding, outcome);
   }
 
   private async adopt(api: ApiClient, root: string, marker: SharedMarker): Promise<void> {
@@ -546,7 +690,15 @@ export class NotebookServiceImpl implements NotebookService {
       if (error instanceof ApiClientError && (error.status === 404 || error.status === 403)) {
         const notebook = path.basename(root);
         this.unjoined.set(root, { notebook, projectId: marker.projectId, status: error.status });
-        this.logger.warn(`Shared notebook folder ${notebook} is for a notebook this account cannot open (${error.message}); it is left alone.`, root);
+        // 404: the project was taken down, or this account lost access, while
+        // the installation that writes the folder was away. Nothing would
+        // ever clear the marker then, so it is marked revoked like a lost
+        // share: the folder stays as a read-only copy that can be deleted.
+        const revoked = error.status === 404 && (await this.revokeOrphanMarker(root, marker));
+        this.logger.warn(
+          `Shared notebook folder ${notebook} is for a notebook this account cannot open (${error.message}); ${revoked ? "it is kept as a read-only copy" : "it is left alone"}.`,
+          root,
+        );
       }
       return;
     }
@@ -560,6 +712,23 @@ export class NotebookServiceImpl implements NotebookService {
     this.deps.statusChanged?.();
   }
 
+  /** Marks the marker of a project the server no longer has revoked, unless the folder holds another marker by now. */
+  private async revokeOrphanMarker(root: string, marker: SharedMarker): Promise<boolean> {
+    const current = await readMarker(root).catch(() => null);
+    if (!current || !sameNotebookIdentity(current, marker) || current.revoked) return false;
+    recordNotebookLifecycle(this.lifecycleDirectory, current, "revoked");
+    return writeMarker(root, { ...current, revoked: true, revokedAt: new Date().toISOString() }, {
+      root,
+      canCommit: async () => JSON.stringify(await readMarker(root).catch(() => null)) === JSON.stringify(current),
+    }).then(
+      () => true,
+      (error: unknown) => {
+        this.logger.warn(`Could not mark the marker of ${path.basename(root)} revoked.`, error);
+        return false;
+      },
+    );
+  }
+
   private context(): ProjectContext {
     return {
       host: this.deps.host,
@@ -567,9 +736,14 @@ export class NotebookServiceImpl implements NotebookService {
       timings: this.timings,
       emit: (event) => this.deps.emit(event),
       accountId: () => this.accountId(),
-      revoked: (projectId) => void this.revoke(projectId),
+      revoked: (projectId) => void this.revoke(projectId).catch((error) => this.logger.warn("Could not finish notebook revocation; it will be retried.", error)),
       roleChanged: (projectId, role) => this.setRole(projectId, role),
       layoutChanged: (projectId) => this.reindex(projectId),
+      canWriteDisk: (projectId) => {
+        const handle = this.projects.get(projectId);
+        return !!handle && handle.writer && !handle.revoked && !handle.revoking && !this.releasing &&
+          (handle.leaseDeadline ?? 0) > performance.now();
+      },
     };
   }
 
@@ -593,6 +767,20 @@ export class NotebookServiceImpl implements NotebookService {
   /** Whether this installation may rewrite or remove the marker: it is this project's, and no other installation keeps the folder. */
   private ownsMarker(marker: SharedMarker, projectId: string): boolean {
     return marker.projectId === projectId && (!marker.writer || marker.writer === this.installationId);
+  }
+
+  private markerAuthorityMatches(marker: SharedMarker): boolean {
+    if (this.deps.authority) return sameAuthority(marker, this.deps.authority);
+    const host = this.deps.host;
+    return !host.serverUrl || (normalizedServerUrl(marker.serverUrl) === normalizedServerUrl(host.serverUrl) && marker.accountId === host.accountId);
+  }
+
+  private matchesMarker(handle: ProjectHandle, marker: SharedMarker | null): marker is SharedMarker {
+    if (marker === null || marker.projectId !== handle.projectId || marker.manifestDocId !== handle.manifestDocId ||
+        (handle.folderId && marker.folderId !== handle.folderId)) return false;
+    const binding = readNotebookBinding(this.lifecycleDirectory, handle.root);
+    return !binding || binding.projectId !== handle.projectId || binding.manifestDocId !== handle.manifestDocId ||
+      sameNotebookIdentity(binding, marker);
   }
 
   private async accountId(): Promise<string> {
@@ -631,7 +819,7 @@ export class NotebookServiceImpl implements NotebookService {
       path: `${handle.notebook}/${doc.path}`,
       kind: doc.docKind,
       role: handle.role,
-      readOnly: handle.revoked || !roleAtLeast(handle.role, "editor"),
+      readOnly: handle.revoked || handle.revoking === true || !roleAtLeast(handle.role, "editor"),
       ...(handle.revoked ? { revoked: true } : {}),
     };
   }
@@ -649,7 +837,7 @@ export class NotebookServiceImpl implements NotebookService {
           path: `${handle.notebook}/${doc.path}`,
           kind: doc.docKind,
           role: handle.role,
-          readOnly: handle.revoked || !roleAtLeast(handle.role, "editor"),
+          readOnly: handle.revoked || handle.revoking === true || !roleAtLeast(handle.role, "editor"),
           ...(handle.revoked ? { revoked: true } : {}),
         };
       }
@@ -698,9 +886,9 @@ export class NotebookServiceImpl implements NotebookService {
     // Project-scope events are about any member; only ours matter here.
     const aboutMe = scope === "user" || (this.cachedAccountId !== null && data.accountId === this.cachedAccountId);
     if (kind === EventKind.ProjectDeleted) {
-      void this.revoke(projectId, { deleted: true });
+      void this.revoke(projectId, { deleted: true }).catch((error) => this.logger.warn("Could not finish notebook takedown.", error));
     } else if (kind === EventKind.MemberRemoved && aboutMe) {
-      void this.revoke(projectId);
+      void this.revoke(projectId).catch((error) => this.logger.warn("Could not finish notebook revocation.", error));
     } else if (kind === EventKind.RoleChanged && aboutMe && isRole(data.role)) {
       this.setRole(projectId, data.role);
     }
@@ -718,7 +906,7 @@ export class NotebookServiceImpl implements NotebookService {
 
   private async doRevoke(projectId: string, deleted: boolean): Promise<void> {
     const handle = this.projects.get(projectId);
-    if (!handle || handle.revoked) return;
+    if (!handle || handle.revoked || handle.revoking) return;
     // Owners cannot be removed, so an owner losing access means the project
     // was deleted; confirm that unless the server said so.
     if (handle.role === "owner" && (deleted || (await this.projectGone(projectId)))) {
@@ -729,17 +917,28 @@ export class NotebookServiceImpl implements NotebookService {
       await this.takeAlbumAway(handle);
       return;
     }
-    handle.revoked = true;
-    const runtime = handle.runtime;
-    handle.runtime = null;
-    if (runtime) {
-      handle.index = indexOf(runtime.indexedDocs());
-      handle.reconcilePending = runtime.reconcilePending;
-      await runtime.stop();
+    handle.revoking = true;
+    try {
+      const runtime = handle.runtime;
+      if (runtime) {
+        handle.index = indexOf(runtime.indexedDocs());
+        handle.reconcilePending = runtime.reconcilePending;
+        await runtime.stop({ preserveContent: true });
+      }
+      await this.rememberEnded(handle, "revoked");
+      // Revocation is terminal for this account on every copy. A follower must
+      // not wait for an offline former writer to make its recovery copy deletable.
+      const marker = await readMarker(handle.root).catch(() => null);
+      if (this.matchesMarker(handle, marker)) await writeMarker(handle.root, { ...marker, revoked: true, revokedAt: new Date().toISOString() }, {
+        root: handle.root,
+        canCommit: async () => this.matchesMarker(handle, await readMarker(handle.root).catch(() => null)),
+      });
+      handle.runtime = null;
+      handle.revoked = true;
+      this.deps.emit({ t: "project-changed", projectId });
+    } finally {
+      handle.revoking = false;
     }
-    const marker = handle.writer ? await readMarker(handle.root).catch(() => null) : null;
-    if (marker && this.ownsMarker(marker, projectId)) await writeMarker(handle.root, { ...marker, revoked: true, revokedAt: new Date().toISOString() }).catch(() => undefined);
-    this.deps.emit({ t: "project-changed", projectId });
   }
 
   private setRole(projectId: string, role: Role): void {
@@ -747,6 +946,7 @@ export class NotebookServiceImpl implements NotebookService {
     if (!handle || handle.role === role) return;
     handle.role = role;
     if (handle.runtime) handle.runtime.role = role;
+    this.deps.host.setProjectRole(projectId, role);
     this.deps.host.store.upsertProject({ projectId, name: handle.name, localRoot: handle.root, role });
     this.deps.emit({ t: "project-changed", projectId });
   }
@@ -780,19 +980,19 @@ export class NotebookServiceImpl implements NotebookService {
 
   /**
    * After the project was deleted on the server: stops syncing and forgets
-   * it. The writer returns the folder to a local notebook; a follower leaves
-   * the folder to its writer, which sees the deletion too.
+   * it. Every installation preserves its latest text and returns its own
+   * copy to a local notebook, without depending on an offline former writer.
    */
   private async removeLocally(handle: ProjectHandle): Promise<void> {
     const { projectId } = handle;
-    await handle.runtime?.stop();
+    await handle.runtime?.stop({ preserveContent: true });
+    await this.rememberEnded(handle, "local");
     handle.runtime = null;
-    if (handle.writer) {
-      await deleteSharePlan(handle.root);
-      // The folder may meanwhile hold another share's marker (shared again,
-      // or synced in from another device); that one stays.
-      const marker = await readMarker(handle.root).catch(() => null);
-      if (marker && this.ownsMarker(marker, projectId)) await deleteMarker(handle.root);
+    // The folder may meanwhile hold another share's marker; that one stays.
+    const marker = await readMarker(handle.root).catch(() => null);
+    if (this.matchesMarker(handle, marker)) {
+      if (handle.writer) await deleteSharePlan(handle.root);
+      if (this.matchesMarker(handle, await readMarker(handle.root).catch(() => null))) await deleteMarker(handle.root);
     }
     this.deps.host.store.deleteProject(projectId);
     this.projects.delete(projectId);
@@ -810,6 +1010,7 @@ export class NotebookServiceImpl implements NotebookService {
     const runtime = handle.runtime;
     const photos = runtime?.albumState().photos ?? [];
     await runtime?.stop();
+    await this.rememberEnded(handle, "revoked");
     handle.runtime = null;
     if (handle.writer) {
       const accountId = this.cachedAccountId ?? (await this.accountId().catch(() => null));
@@ -964,19 +1165,71 @@ export class NotebookServiceImpl implements NotebookService {
   }
 
   private async doShare(target: ShareTarget, requestedName: string | undefined): Promise<ShareResult> {
+    this.pendingRoots.add(target.root);
+    try { return await this.shareAttempt(target, requestedName); }
+    catch (error) { throw toControlError(error); }
+    finally { this.pendingRoots.delete(target.root); }
+  }
+
+  private async shareAttempt(target: ShareTarget, requestedName: string | undefined): Promise<ShareResult> {
     const api = this.requireApi();
     const { root, notebook, album } = target;
-    if (await readMarker(root)) throw new ControlError(409, "already-shared", `${notebook} is already shared.`);
+    const originalRoot = await fs.lstat(root);
+    if (!originalRoot.isDirectory() || originalRoot.isSymbolicLink()) throw new WriteCancelledError();
+    if (await statIfExists(path.join(root, SHARED_MARKER_FILE))) throw new ControlError(409, "already-shared", `${notebook} already has a sharing marker.`);
     const accountId = await this.accountId();
+    const initialPlanBytes = await readIfExists(path.join(root, SHARE_PENDING_FILE));
 
     // The plan: every id chosen once and written down before anything is
     // uploaded, so a retry after a crash or network failure reuses them and
     // the server's idempotency (document replays, content-addressed blobs)
     // turns the repeat into no-ops.
     const existing = await readSharePlan(root);
+    if (initialPlanBytes && !existing) throw new ControlError(409, "invalid-checkpoint", "The share checkpoint is unreadable; it was preserved for recovery.");
+    if (existing?.operationId !== undefined && (typeof existing.operationId !== "string" || !/^[A-Za-z0-9_-]{8,80}$/.test(existing.operationId))) {
+      throw new ControlError(409, "invalid-checkpoint", "The share checkpoint has an invalid operation identity; it was preserved for recovery.");
+    }
+    if (existing && requestedName?.trim() && requestedName.trim().slice(0, 200) !== existing.name) {
+      throw new ControlError(409, "checkpoint-name", "Resume this share with its saved project name. The checkpoint was left intact.");
+    }
+    if (existing && ((existing.accountId !== undefined || existing.serverUrl !== undefined) &&
+        (existing.accountId !== accountId || typeof existing.serverUrl !== "string" || normalizedServerUrl(existing.serverUrl) !== normalizedServerUrl(api.baseUrl)))) {
+      throw new ControlError(409, "checkpoint-authority", "This checkpoint belongs to another account or server. It was left intact.");
+    }
+    if (existing?.kind && existing.kind !== target.kind) throw new ControlError(409, "checkpoint-kind", "This checkpoint belongs to a different kind of share.");
+    if (existing && !existing.projectId && existing.files.some((file) => file.uploaded)) throw new ControlError(409, "invalid-checkpoint", "Uploaded entries have no recorded project identity; the checkpoint was preserved.");
+    const operationId = existing?.operationId ?? randomId("share");
+    let checkpointed = false;
+    let installedMarker: SharedMarker | null = null;
+    const guard: WriteGuard = { root, canCommit: async () => {
+      if (!this.started || this.releasing || this.deps.host.api !== api || this.deps.host.accountId !== accountId) return false;
+      const currentRoot = await statIfExists(root);
+      if (!currentRoot?.isDirectory() || currentRoot.isSymbolicLink() || currentRoot.dev !== originalRoot.dev ||
+          currentRoot.ino !== originalRoot.ino || currentRoot.birthtimeMs !== originalRoot.birthtimeMs) return false;
+      if (installedMarker) {
+        const current = await readMarker(root);
+        if (!current || current.revoked || !sameNotebookIdentity(installedMarker, current)) return false;
+      } else if (await statIfExists(path.join(root, SHARED_MARKER_FILE))) return false;
+      const currentPlan = await readIfExists(path.join(root, SHARE_PENDING_FILE));
+      if (!checkpointed) return initialPlanBytes === null ? currentPlan === null : currentPlan !== null && currentPlan.equals(initialPlanBytes);
+      try {
+        const value = JSON.parse(currentPlan?.toString("utf8") ?? "null") as SharePlan | null;
+        return value?.operationId === operationId && value.accountId === accountId && value.serverUrl === api.baseUrl;
+      } catch { return false; }
+    } };
+    const authorize = async (projectId: string, manifestDocId: string | undefined): Promise<ProjectSummary> => {
+      await checkWriteGuard(guard);
+      const project = await api.getProject(projectId);
+      if (project.ownerId !== accountId || project.role !== "owner" || project.manifestDocId !== manifestDocId ||
+          (project.kind ?? "notebook") !== target.kind) throw new ControlError(409, "checkpoint-project", "The checkpoint does not identify this account's current owned project.");
+      await checkWriteGuard(guard);
+      return project;
+    };
+    if (existing?.projectId) await authorize(existing.projectId, existing.manifestDocId);
     const name = (requestedName?.trim() || existing?.name || notebook).slice(0, 200);
     const previous = new Map((existing?.files ?? []).map((file) => [file.path, file]));
-    const { entries: everything, skipped } = await walkNotebook(root);
+    const { entries: everything, skipped, complete } = await walkNotebook(root);
+    if (!complete) throw new ControlError(409, "scan-incomplete", "The notebook folder could not be read completely. Wait for its files to finish syncing and try again.");
     // An album shares its top-level photos; anything else in the folder stays local.
     const walked = album ? everything.filter((item) => item.kind === "file" && !item.relative.includes("/") && albumImageType(item.relative)) : everything;
     if (album) skipped.push(...everything.filter((item) => item.kind === "file" && !walked.includes(item)).map((item) => item.relative));
@@ -996,7 +1249,7 @@ export class NotebookServiceImpl implements NotebookService {
         // copy on disk is the one the members get (the watcher compares hashes).
         const stripped = stripPhotoMetadata(bytes, albumImageType(item.relative) ?? "");
         if (stripped) {
-          await writeFileAtomic(absolute, stripped);
+          await writeFileAtomic(absolute, stripped, contentGuard(absolute, sha256(bytes), guard));
           bytes = stripped;
         }
       }
@@ -1031,25 +1284,35 @@ export class NotebookServiceImpl implements NotebookService {
     }
     const plan: SharePlan = {
       version: 1,
+      operationId, accountId, serverUrl: api.baseUrl, kind: target.kind,
       name,
       startedAt: existing?.startedAt ?? Date.now(),
       ...(existing?.projectId ? { projectId: existing.projectId, manifestDocId: existing.manifestDocId } : {}),
       files,
     };
-    await writeSharePlan(root, plan);
+    const recoveryFile = path.join(this.lifecycleDirectory, "share-attempts", `${operationId}.json`);
+    const savePlan = async () => {
+      // Recovery belongs to this profile, even if the cloud root disappears.
+      await writeFileAtomic(recoveryFile, Buffer.from(JSON.stringify({ root, plan })));
+      await writeSharePlan(root, plan, guard);
+      checkpointed = true;
+    };
+    await savePlan();
 
     try {
       this.progress(notebook, { phase: "creating-project", done: 0, total: 1 });
       if (!plan.projectId) {
-        const project =
-          (await this.orphanProject(api, accountId, name, plan.startedAt, target.kind)) ??
-          (await api.createProject(album ? { name, kind: "album" } : { name }));
+        const version = await api.version();
+        if (!version.projectCreationKeys) throw new ControlError(409, "update-required", "Update the collaboration server before starting a new share; durable project creation keys are required.");
+        await checkWriteGuard(guard);
+        const project = await api.createProject({ name, kind: target.kind, creationId: operationId });
+        if (project.creationId !== operationId) throw new ControlError(409, "update-required", "The server did not confirm the saved project creation key.");
         if (album && project.kind !== "album") {
           throw new ControlError(409, "update-required", "The collaboration server is too old for shared albums. Ask its administrator to update it.");
         }
         plan.projectId = project.id;
         plan.manifestDocId = project.manifestDocId;
-        await writeSharePlan(root, plan);
+        await savePlan();
       }
       const projectId = plan.projectId;
       const manifestDocId = plan.manifestDocId as string;
@@ -1059,10 +1322,11 @@ export class NotebookServiceImpl implements NotebookService {
       this.progress(notebook, { phase: "importing-documents", done, total: documents.length });
       for (const file of documents) {
         if (file.uploaded) continue;
+        await checkWriteGuard(guard);
         await createSharedDocument(api, projectId, { docId: file.docId as string, fileId: file.fileId }, file.docKind!, texts.get(file.path) ?? "");
         file.uploaded = true;
         done += 1;
-        await writeSharePlan(root, plan);
+        await savePlan();
         this.progress(notebook, { phase: "importing-documents", done, total: documents.length });
       }
 
@@ -1075,19 +1339,22 @@ export class NotebookServiceImpl implements NotebookService {
         if (!bytes || sha256(bytes) !== file.blobHash) {
           throw new ControlError(409, "conflict", `${file.path} changed while it was being shared. Share again to continue.`);
         }
+        await checkWriteGuard(guard);
         await api.uploadBlob(projectId, bytes, file.mime ?? "application/octet-stream");
-        if (album) await recordShareUpload(root, file);
+        if (album) await recordShareUpload(root, file, guard);
         file.uploaded = true;
         done += 1;
-        if (!album) await writeSharePlan(root, plan);
+        if (!album) await savePlan();
         this.progress(notebook, { phase: "uploading-files", done, total: blobs.length });
       }
 
+      await authorize(projectId, manifestDocId);
       // The manifest, through the manifest hub, in one transaction. Entries
       // are keyed by fileId with fixed timestamps, so writing them again on a
       // retry changes nothing that matters.
       this.progress(notebook, { phase: "writing-manifest", done: 0, total: 1 });
-      const folderId = randomId("fld");
+      // Copies/retries of one cloud checkpoint must contend for the same lease.
+      const folderId = `fld_${sha256(Buffer.from(operationId)).slice(0, 32)}`;
       const hub = this.deps.host.acquire(manifestDocId, { kind: "manifest", projectId });
       let synced = false;
       try {
@@ -1132,6 +1399,10 @@ export class NotebookServiceImpl implements NotebookService {
           { source: "import" },
         );
 
+        synced = await waitUntil(() => hub.isClosed || !!hub.readOnlyReason || this.deps.host.api !== api || !this.started ||
+          (hub.pendingCount === 0 && hubHasState(this.deps.host, hub, "manifest") && hub.getStatus().state === "saved-remote"), this.shareSyncTimeoutMs);
+        if (hub.isClosed || hub.readOnlyReason) throw new ControlError(409, "access-changed", "Project access changed before sharing completed; the checkpoint was preserved.");
+        await checkWriteGuard(guard);
         // The layout as it is on disk now: the materializer starts from it and
         // treats anything that differs (edits during the share) as new edits.
         const state = emptyState();
@@ -1142,20 +1413,22 @@ export class NotebookServiceImpl implements NotebookService {
             kind: file.kind,
             ...(file.kind === "doc" ? { docId: file.docId, docKind: file.docKind } : {}),
             ...(file.kind !== "folder" ? { hash: file.blobHash } : {}),
-            ...(stats ? { size: stats.size, mtimeMs: stats.mtimeMs } : {}),
+            // Until the first verified scan/adoption, the uploaded hash and
+            // current disk stat may describe different versions (a retry or
+            // an edit during sharing). Do not pair an old hash with new mtime.
+            ...(stats && file.kind === "folder" ? { size: stats.size, mtimeMs: stats.mtimeMs } : {}),
           };
           if (file.kind === "doc" && file.docId) {
             const text = texts.get(file.path);
-            if (text !== undefined && sha256(Buffer.from(text, "utf8")) === file.blobHash) await writeBase(root, file.docId, text);
+            if (text !== undefined && sha256(Buffer.from(text, "utf8")) === file.blobHash) await writeBase(root, file.docId, text, guard);
             this.deps.host.store.upsertDoc({ docId: file.docId, projectId, fileId: file.fileId, path: file.path, materializedHash: file.blobHash ?? null });
           }
           if (file.kind === "blob" && file.blobHash) {
             this.deps.host.store.putBlob({ hash: file.blobHash, localPath: path.join(root, ...file.path.split("/")), size: file.size ?? 0 });
           }
         }
-        await writeState(root, state);
-        this.pendingRoots.add(root);
-        await writeMarker(root, {
+        await writeState(root, state, guard);
+        const marker: SharedMarker = {
           projectId,
           serverUrl: api.baseUrl,
           accountId,
@@ -1164,10 +1437,11 @@ export class NotebookServiceImpl implements NotebookService {
           ...(album ? { kind: "album" as const } : {}),
           writer: this.installationId,
           folderId,
-        });
+        };
+        await writeMarker(root, marker, guard);
+        installedMarker = marker;
+        await checkWriteGuard(guard);
         this.deps.host.store.upsertProject({ projectId, name, localRoot: root, role: "owner" });
-        await deleteSharePlan(root);
-        synced = await waitUntil(() => hub.isClosed || (hub.pendingCount === 0 && hubHasState(this.deps.host, hub, "manifest") && hub.getStatus().state === "saved-remote"), this.shareSyncTimeoutMs);
       } finally {
         this.deps.host.release(manifestDocId);
       }
@@ -1189,9 +1463,11 @@ export class NotebookServiceImpl implements NotebookService {
         leaseSupported: true,
       };
       this.projects.set(projectId, handle);
-      this.pendingRoots.delete(root);
-      await this.lease(handle);
+      handle.writer = await this.claimRole(handle, installedMarker!);
+      await checkWriteGuard(guard);
       await this.run(handle);
+      await deleteSharePlan(root, guard);
+      await fs.rm(recoveryFile, { force: true });
       this.progress(notebook, { phase: "done", done: files.length, total: files.length });
       this.deps.emit({ t: "project-changed", projectId });
       return {
@@ -1207,29 +1483,7 @@ export class NotebookServiceImpl implements NotebookService {
       };
     } catch (error) {
       throw toControlError(error);
-    } finally {
-      this.pendingRoots.delete(root);
     }
-  }
-
-  /**
-   * A project an earlier attempt created but did not record (it died between
-   * the server's answer and writing the plan): ours, same name, created after
-   * the plan started, not used locally, and with an empty manifest.
-   */
-  private async orphanProject(api: ApiClient, accountId: string, name: string, startedAt: number, kind: ProjectKind): Promise<ProjectSummary | null> {
-    const projects = await api.listProjects();
-    for (const project of projects) {
-      if (project.ownerId !== accountId || project.name !== name || (project.kind ?? "notebook") !== kind) continue;
-      if (Date.parse(project.createdAt) < startedAt - 60_000) continue;
-      if (this.deps.host.store.getProject(project.id)) continue;
-      // Documents are only created after the plan records the project, so an
-      // orphan has none; an untouched manifest confirms nobody used it.
-      const manifest = await api.getDocument(project.manifestDocId).catch(() => null);
-      if (manifest && manifest.lastServerSeq > 0) continue;
-      return project;
-    }
-    return null;
   }
 
   // ------------------------------------------------------------ join
@@ -1247,6 +1501,10 @@ export class NotebookServiceImpl implements NotebookService {
     } catch (error) {
       throw toControlError(error);
     }
+    return this.locked(`project:${project.id}`, () => this.finishJoin(api, project));
+  }
+
+  private async finishJoin(api: ApiClient, project: ProjectSummary): Promise<JoinResult> {
     const accountId = await this.accountId();
     const known = this.projects.get(project.id);
     const kind: ProjectKind = project.kind === "album" ? "album" : "notebook";
@@ -1272,6 +1530,8 @@ export class NotebookServiceImpl implements NotebookService {
         writer: this.installationId,
         folderId,
       });
+      const marker = await readMarker(root);
+      if (marker) recordNotebookBinding(this.lifecycleDirectory, root, marker);
       this.deps.host.store.upsertProject({ projectId: project.id, name: project.name, localRoot: root, role: project.role });
     } finally {
       this.pendingRoots.delete(root);
@@ -1297,6 +1557,7 @@ export class NotebookServiceImpl implements NotebookService {
       leaseSupported: true,
     };
     this.projects.set(project.id, handle);
+    this.deps.host.restoreProjectAccess(project.id, project.role);
     await this.lease(handle);
     await this.run(handle);
     const runtime = handle.runtime as SharedProject | null;
@@ -1333,7 +1594,7 @@ export class NotebookServiceImpl implements NotebookService {
       // this Libera has not joined (another account's, or not adopted yet).
       throw new ControlError(404, "not-joined", "This notebook is not joined in this Libera, so it cannot be changed here.");
     }
-    if (handle.revoked) throw new ControlError(403, "access-revoked", "Access to this notebook was revoked.");
+    if (handle.revoked || handle.revoking) throw new ControlError(403, "access-revoked", "Access to this notebook was revoked.");
     if (!handle.runtime) throw new ControlError(503, "offline", "The notebook is restarting; try again in a moment.");
     return handle.runtime;
   }

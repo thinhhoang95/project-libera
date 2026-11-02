@@ -2,7 +2,7 @@
 
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/display/api";
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
-import { pdfDetailRegion, pdfRectContains, type PdfRect } from "@/components/libera/pdf-rendering";
+import { pdfDetailRegion, pdfRectContains, retainPdfPage, type PdfRect } from "@/components/libera/pdf-rendering";
 import { pieceVariable } from "@/components/libera/pdf-space-raster";
 import { IDENTITY_PAGE_GEOMETRY, type PdfPageGeometry } from "@/lib/pdf-space-geometry";
 
@@ -126,6 +126,19 @@ export function usePdfDetailCanvas({
   background?: string;
   active?: boolean;
 }) {
+  // Keep resources across zooms while displayed. Render leases below also keep
+  // them alive during asynchronous cancellation after this owner unmounts.
+  useEffect(() => {
+    if (!active) return;
+    let disposed = false;
+    let release: (() => void) | undefined;
+    void pdfDocument.getPage(pageNumber).then((page) => {
+      release = retainPdfPage(page);
+      if (disposed) release();
+    }).catch(() => undefined);
+    return () => { disposed = true; release?.(); };
+  }, [active, pdfDocument, pageNumber]);
+
   // Resizing a space only moves pieces, which the detail follows through CSS.
   const geometryRef = useRef(geometry);
   useLayoutEffect(() => {
@@ -194,37 +207,42 @@ export function usePdfDetailCanvas({
         canvas.height = 0;
         return;
       }
-      const scaleX = region.width / rect.width;
-      const scaleY = region.height / rect.height;
-      const task = page.render({
-        canvasContext,
-        viewport,
-        transform: [scaleX, 0, 0, scaleY, -rect.x * scaleX, -rect.y * scaleY],
-        background: background || undefined,
-      });
-      renderTask = task;
-
+      const releasePage = retainPdfPage(page);
       try {
-        await task.promise;
-      } catch {
-        // Cancelled by a newer region or a destroyed document.
-        if (renderTask === task) target = null;
-        canvas.width = 0;
-        canvas.height = 0;
-        return;
-      }
-      if (disposed || renderTask !== task || pageGeometry.structureKey !== geometryRef.current.structureKey) {
-        canvas.width = 0;
-        canvas.height = 0;
-        return;
-      }
-      releaseCanvases(host);
-      if (spaced) {
-        host.append(...pieceDetails(canvas, rect, pageGeometry, viewport.width, viewport.height));
-        canvas.width = 0;
-        canvas.height = 0;
-      } else {
-        host.append(canvas);
+        const scaleX = region.width / rect.width;
+        const scaleY = region.height / rect.height;
+        const task = page.render({
+          canvasContext,
+          viewport,
+          transform: [scaleX, 0, 0, scaleY, -rect.x * scaleX, -rect.y * scaleY],
+          background: background || undefined,
+        });
+        renderTask = task;
+
+        try {
+          await task.promise;
+        } catch {
+          // Cancelled by a newer region or a destroyed document.
+          if (renderTask === task) target = null;
+          canvas.width = 0;
+          canvas.height = 0;
+          return;
+        }
+        if (disposed || renderTask !== task || pageGeometry.structureKey !== geometryRef.current.structureKey) {
+          canvas.width = 0;
+          canvas.height = 0;
+          return;
+        }
+        releaseCanvases(host);
+        if (spaced) {
+          host.append(...pieceDetails(canvas, rect, pageGeometry, viewport.width, viewport.height));
+          canvas.width = 0;
+          canvas.height = 0;
+        } else {
+          host.append(canvas);
+        }
+      } finally {
+        releasePage();
       }
     }
 

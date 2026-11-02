@@ -28,7 +28,7 @@ import { reportError } from "../observability/reporter.js";
 import { createSyncMetrics, type SyncMetrics } from "./metrics.js";
 import { InvalidUpdateError, Room, SERVER_ORIGIN } from "./room.js";
 import { Session, type OpenDoc } from "./session.js";
-import { findPersisted, loadDocument, persistUpdate } from "./store.js";
+import { findPersisted, loadDocument, persistUpdate, UpdateAccessChangedError, type PersistInput } from "./store.js";
 import { SyncTimings } from "./timings.js";
 import { actorForUpdate, annotationViolation, manifestViolation, sanitizeProvenance } from "./validate.js";
 
@@ -234,6 +234,13 @@ export class SyncServer {
     if (!session.isOpen(docId, open) || room.disposed) {
       return session.sendReject(message, "not-open", "The document is not open.");
     }
+    const access = await session.currentAccess(docId);
+    if (!access || !session.isOpen(docId, open) || room.disposed) {
+      session.closeDoc(docId, "access-revoked");
+      return session.sendReject(message, "not-open", "The document is no longer accessible.");
+    }
+    open.role = access.role;
+    const validatedRole = access.role;
     if (!room.hasSubdoc(subdoc)) {
       return session.sendReject(message, "invalid-update", `A ${room.kind} document has no ${subdoc} sub-document.`);
     }
@@ -292,14 +299,21 @@ export class SyncServer {
     }
 
     const provenance = sanitizeProvenance(message.provenance);
-    const serverSeq = await this.persist(room, subdoc, {
-      accountId: session.accountId,
-      clientId: session.clientId,
-      clientSeq,
-      actor: actorForUpdate(session.accountId, session.clientId, provenance),
-      provenance,
-      update,
-    });
+    let serverSeq: number | null;
+    try {
+      serverSeq = await this.persist(room, subdoc, {
+        accountId: session.accountId,
+        clientId: session.clientId,
+        clientSeq,
+        actor: actorForUpdate(session.accountId, session.clientId, provenance),
+        provenance,
+        update,
+        requiredAccess: { projectId: room.projectId, role: validatedRole },
+      });
+    } catch (error) {
+      if (error instanceof UpdateAccessChangedError) return session.sendReject(message, "forbidden", error.message);
+      throw error;
+    }
     if (serverSeq === null) return session.sendReject(message, "not-open", "The document was deleted.");
     this.metrics.updates.inc({ subdoc, source: "client" });
     session.send({ type: MessageType.Ack, docId, subdoc, clientSeq, serverSeq });
@@ -329,14 +343,7 @@ export class SyncServer {
   private async persist(
     room: Room,
     subdoc: Subdoc,
-    input: {
-      accountId: string | null;
-      clientId: string;
-      clientSeq?: number;
-      actor: Actor;
-      provenance: Provenance | undefined;
-      update: Uint8Array;
-    },
+    input: Omit<PersistInput, "docId" | "subdoc" | "removedDocIds">,
   ): Promise<number | null> {
     const stop = this.metrics.persistSeconds.startTimer();
     let serverSeq: number | null;
@@ -484,11 +491,7 @@ export class SyncServer {
 
   private membershipChanged(projectId: string, accountId: string, role: Role | null): void {
     for (const session of this.byAccount.get(accountId) ?? []) {
-      for (const [docId, open] of [...session.docs]) {
-        if (open.projectId !== projectId) continue;
-        if (role === null) session.closeDoc(docId, "access-revoked");
-        else open.role = role;
-      }
+      session.membershipChanged(projectId, role);
     }
     if (role !== null) {
       this.context.events.publish({ scope: "user", id: accountId, kind: EventKind.RoleChanged, payload: { projectId, role } });

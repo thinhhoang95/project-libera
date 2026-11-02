@@ -51,6 +51,7 @@
 .newMenuList button:hover, .newMenuList button:focus-visible { background: #7d9bff1f; }
 .home .newMenuList button:focus-visible { outline: none; }
 .newMenuList svg { color: #5a6a94; }
+.newMenuSeparator { height: 1px; margin: 5px 8px; background: #23304f1a; }
 
 .hero { margin-top: auto; padding-top: clamp(26px, 4vw, 52px); }
 
@@ -182,6 +183,7 @@
 :global(.dark) .newMenuList button { color: #eef1ff; }
 :global(.dark) .newMenuList button:hover, :global(.dark) .newMenuList button:focus-visible { background: #ffffff14; }
 :global(.dark) .newMenuList svg { color: #b4bedb; }
+:global(.dark) .newMenuSeparator { background: #ffffff1f; }
 :global(.dark) .search input { background: #10142499; border-color: #ffffff30; color: #f4f5ff; box-shadow: inset 0 1px 0 #ffffff1f, 0 12px 32px #00000047; }
 :global(.dark) .search input::placeholder { color: #b4bedb; }
 :global(.dark) .search input:hover { background: #101424b8; }

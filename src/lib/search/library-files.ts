@@ -4,6 +4,7 @@ import { getFileType } from "@/lib/storage/file-types";
 import { filePathFromParts, getAdminRoot, getLinkedFolders } from "@/lib/storage/paths";
 import { isVisibleTreeEntry } from "@/lib/storage/tree";
 import type { LiberaFileNode } from "@/lib/types";
+import { latexBuildProductFilter } from "./latex-products";
 
 /** Search needs raw file metadata, without annotation dates or UI cache work. */
 export async function readSearchFile(notebook: string, pathParts: string[]): Promise<LiberaFileNode> {
@@ -20,6 +21,7 @@ export async function readSearchFile(notebook: string, pathParts: string[]): Pro
 
 /** No UI entry limit, link parsing, PDF cache pruning, or metadata migrations. */
 export async function readSearchLibrary(shouldContinue: () => boolean) {
+  const isBuildProduct = latexBuildProductFilter();
   const files: LiberaFileNode[] = [];
   const unavailable = new Set<string>();
   const linked = getLinkedFolders();
@@ -31,7 +33,7 @@ export async function readSearchLibrary(shouldContinue: () => boolean) {
     .map((entry) => ({ name: entry.name, path: path.join(getAdminRoot(), entry.name), linked: false, unresolved: false }));
   const roots = [...notebooks, ...linked.map((folder) => ({ ...folder, linked: true }))];
 
-  async function visit(notebook: string, directory: string, parts: string[], isLinked: boolean) {
+  async function visit(notebook: string, directory: string, parts: string[], isLinked: boolean, rootDirectory: string) {
     if (!shouldContinue()) return;
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); }
@@ -45,9 +47,11 @@ export async function readSearchLibrary(shouldContinue: () => boolean) {
       if (!entry.isDirectory() && !(entry.isFile() && getFileType(entry.name))) continue;
       if (!shouldContinue()) return;
       const nextParts = [...parts, entry.name];
-      if (entry.isDirectory()) await visit(notebook, path.join(directory, entry.name), nextParts, isLinked);
+      if (entry.isDirectory()) await visit(notebook, path.join(directory, entry.name), nextParts, isLinked, rootDirectory);
       else if (entry.isFile() && getFileType(entry.name)) {
-        try { files.push(await readSearchFile(notebook, nextParts)); }
+        try {
+          if (!await isBuildProduct(path.join(directory, entry.name), rootDirectory)) files.push(await readSearchFile(notebook, nextParts));
+        }
         catch { unavailable.add([notebook, ...nextParts].join("/")); }
       }
     }
@@ -56,7 +60,7 @@ export async function readSearchLibrary(shouldContinue: () => boolean) {
   for (const root of roots.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!shouldContinue()) break;
     if (root.unresolved) unavailable.add(root.name);
-    else await visit(root.name, root.path, [], root.linked);
+    else await visit(root.name, root.path, [], root.linked, root.path);
   }
   return { files, unavailable, cancelled: !shouldContinue() };
 }

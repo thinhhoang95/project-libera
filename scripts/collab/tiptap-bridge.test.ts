@@ -12,7 +12,7 @@ import { Editor } from "@tiptap/core";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
 import { relativePositionToSourceOffset } from "../../src/lib/collab/bindings/tiptap-cursors";
 import type { Provenance } from "../../src/lib/collab/protocol/actor";
-import { assertConverged, createEditor, dom, posOf, select, serializedMarkdown, settle, setupTrio, type } from "./tiptap-bridge-harness.test";
+import { assertConverged, createEditor, dom, modKey, posOf, select, serializedMarkdown, settle, setupTrio, type } from "./tiptap-bridge-harness.test";
 
 /** Tiptap's own serialization of `source`, so fixtures start canonical. */
 function canonical(source: string) {
@@ -253,13 +253,13 @@ test("undo reverts only the local user's changes, through the command and Mod-z"
     network.deliver();
     assert.equal(c.ytext.toString(), "Mine own here.\n\nTheirs remote here.");
     // Keyboard: Ctrl+Z (Mod on non-Mac) goes to the UndoManager too.
-    a.editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+    a.editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "z", [modKey]: true, bubbles: true }));
     network.deliver();
     assert.equal(c.ytext.toString(), "Mine here.\n\nTheirs remote here.");
     // The caret returns to where the undone change was.
     const head = a.editor.state.selection.head;
     assert.ok(head <= a.editor.state.doc.child(0).nodeSize && /Mine ?$/.test(a.editor.state.doc.textBetween(1, head)), `caret at ${head}`);
-    a.editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "y", ctrlKey: true, bubbles: true }));
+    a.editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "y", [modKey]: true, bubbles: true }));
     network.deliver();
     assert.equal(c.ytext.toString(), "Mine own here.\n\nTheirs remote here.");
     assertConverged(trio);
@@ -438,7 +438,7 @@ test("without the history extension the bridge registers its own undo keymap and
     type(editor, " old");
     bridge.flush();
     assert.equal(ytext.toString(), "Plain old note.");
-    editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+    editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "z", [modKey]: true, bubbles: true }));
     assert.equal(ytext.toString(), "Plain note.");
     assert.equal(editor.state.doc.textContent, "Plain note.");
     bridge.destroy();

@@ -110,7 +110,7 @@ test("without bookmarks the tab offers to generate an outline, then shows it wit
 
 test("a PDF tab brings the Annotations rail tab without opening it; pages keep theirs", () => {
   assert.deepEqual(contextualPanelTabs(pdfTab).map((tab) => [tab.id, tab.autoOpen ?? false]), [["pdf-annotations", false]]);
-  assert.deepEqual(contextualPanelTabs({ ...pdfTab, gallery: true } as OpenTab), []);
+  assert.deepEqual(contextualPanelTabs({ ...pdfTab, gallery: { photoId: "photo-1" } }), []);
   assert.deepEqual(contextualPanelTabs({ ...pdfTab, file: { ...pdfTab.file, fileType: "markdown", name: "a.md", path: "Notebook/a.md" } }), []);
   assert.deepEqual(contextualPanelTabs(createPageTab("spending")).map((tab) => [tab.id, tab.autoOpen]), [["spending", true]]);
   assert.ok(isContextualPanelTab("pdf-annotations"));

@@ -8,7 +8,7 @@ import { POST as rewriteRoute } from "../../src/app/api/references/rewrite/route
 import { PATCH as filesRoute } from "../../src/app/api/files/route";
 import { SESSION_COOKIE_NAME, createSessionToken } from "../../src/lib/auth";
 import { copyReferencesOnMove, markdownFilesUnder, planReferenceCopy, type ReferenceMoveResult } from "../../src/lib/references/moves";
-import { REWRITE_SKIP_REASONS } from "../../src/lib/references/rewrite";
+import { hashText, REWRITE_SKIP_REASONS } from "../../src/lib/references/rewrite";
 import type { CslItem, ReferenceEntry, ReferenceLibrary } from "../../src/lib/references/types";
 import { moveFile, moveFileToDirectory } from "../../src/lib/storage/files";
 import { createNotebook } from "../../src/lib/storage/notebooks";
@@ -356,6 +356,30 @@ test("the rewrite route previews with drafts, applies with a stale check, return
     // Nothing to change: no undo handle, no backup.
     const none = await rewrite({ notebook: "R", map: { nobody: "newkey" }, dryRun: false, expected: {} });
     assert.deepEqual(none.body, { rewriteId: null, changed: [], skipped: [], draftEdits: {} });
+  });
+});
+
+test("Markdown key rewrites and cross-notebook moves leave LaTeX bytes unchanged", async () => {
+  await withData(async () => {
+    await createNotebook("R");
+    await createNotebook("Dest");
+    await put("R", [entry("r1", "newkey", article("Old", 2000, "Old work"), { aliases: ["oldkey"] })]);
+    const source = "\\cite{oldkey} and literal [@oldkey].\n";
+    await writeNote("R/main.tex", source);
+    await writeNote("R/main.md", "[@oldkey]");
+    const map = { oldkey: "newkey" };
+    const drafts = { "R/main.tex": source };
+    const preview = await rewrite({ notebook: "R", map, dryRun: true, drafts });
+    assert.deepEqual(preview.body.files.map((file: { path: string }) => file.path), ["R/main.md"]);
+    const applied = await rewrite({ notebook: "R", map, dryRun: false, drafts, expected: { ...preview.body.expected, "R/main.tex": hashText(source) } });
+    assert.deepEqual(applied.body.changed, ["R/main.md"]);
+    assert.deepEqual(applied.body.draftEdits, {});
+    assert.equal(await readNote("R/main.tex"), source);
+    await writeNote("Dest/main.tex", source);
+    const moved = await copyReferencesOnMove("R", "Dest", [{ from: "R/main.tex", to: "Dest/main.tex" }]);
+    assert.deepEqual(moved.copied, []);
+    assert.deepEqual(moved.drafts, []);
+    assert.equal(await readNote("Dest/main.tex"), source);
   });
 });
 

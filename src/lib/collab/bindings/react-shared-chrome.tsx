@@ -97,7 +97,7 @@ export function SharedTabStatus({ tabId, session, snapshot, notice, placement = 
         <CollabStatusPill status={status} tooltipPlacement={placement} />
         {revealedAt !== null ? (
           <div
-            className={`libera-collab-popover z-50 w-72 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs shadow-lg ${revealPosition ? "fixed" : "absolute left-0 top-full mt-1"}`}
+            className={`libera-collab-popover z-50 w-72 max-w-[calc(100vw-16px)] whitespace-normal break-words rounded-md border border-border bg-card px-2.5 py-1.5 text-xs leading-relaxed shadow-lg ${revealPosition ? "fixed" : "absolute left-0 top-full mt-1"}`}
             role="status"
             style={revealPosition ?? undefined}
           >

@@ -2,6 +2,8 @@
 
 import {
   memo,
+  useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -360,10 +362,26 @@ export function PdfDrawingLayer({
   const [draft, setDraft] = useState<PdfDrawingDraft | null>(null);
   const [transient, setTransient] = useState<Transient | null>(null);
   const transientRef = useRef<Transient | null>(null);
-  const latestRef = useRef({ annotations, markups, pageSize, zoom, selectedAnnotationId });
+  const latestRef = useRef({ annotations, markups, pageSize, zoom, selectedAnnotationId, onSelect });
+  const paintFrameRef = useRef<number | null>(null);
+  const schedulePaint = () => {
+    if (paintFrameRef.current !== null) return;
+    paintFrameRef.current = window.requestAnimationFrame(() => {
+      paintFrameRef.current = null;
+      setDraft(draftRef.current);
+      setTransient(transientRef.current);
+    });
+  };
+  const cancelPaint = () => {
+    if (paintFrameRef.current !== null) window.cancelAnimationFrame(paintFrameRef.current);
+    paintFrameRef.current = null;
+  };
+  useEffect(() => () => {
+    if (paintFrameRef.current !== null) window.cancelAnimationFrame(paintFrameRef.current);
+  }, []);
 
   useLayoutEffect(() => {
-    latestRef.current = { annotations, markups, pageSize, zoom, selectedAnnotationId };
+    latestRef.current = { annotations, markups, pageSize, zoom, selectedAnnotationId, onSelect };
   });
 
   const interactive = mode === "select";
@@ -377,7 +395,7 @@ export function PdfDrawingLayer({
 
   // ---- Select, move and resize ------------------------------------------
 
-  function beginGesture(event: PointerEvent<SVGElement>, annotation: PdfDrawingAnnotation, handle?: Handle) {
+  const beginGesture = useCallback((event: PointerEvent<SVGElement>, annotation: PdfDrawingAnnotation, handle?: Handle) => {
     if (event.button !== 0) {
       return;
     }
@@ -394,9 +412,9 @@ export function PdfDrawingLayer({
     };
 
     if (latestRef.current.selectedAnnotationId !== annotation.id) {
-      onSelect(annotation);
+      latestRef.current.onSelect(annotation);
     }
-  }
+  }, []);
 
   function moveGesture(event: PointerEvent<SVGSVGElement>) {
     const gesture = gestureRef.current;
@@ -424,7 +442,7 @@ export function PdfDrawingLayer({
     }
 
     transientRef.current = { id: gesture.id, patch };
-    setTransient(transientRef.current);
+    schedulePaint();
   }
 
   function endGesture(event: PointerEvent<SVGSVGElement>) {
@@ -434,6 +452,7 @@ export function PdfDrawingLayer({
       return;
     }
 
+    cancelPaint();
     gestureRef.current = null;
     const moved = transientRef.current;
     transientRef.current = null;
@@ -557,7 +576,7 @@ export function PdfDrawingLayer({
 
       if (points.length !== current.points.length) {
         draftRef.current = { ...current, points };
-        setDraft(draftRef.current);
+        schedulePaint();
       }
 
       return;
@@ -566,7 +585,7 @@ export function PdfDrawingLayer({
     const point = pointInElement(event, surface);
     const to = event.shiftKey ? constrainedEnd(current.shape, current.from, point, latestRef.current.pageSize) : point;
     draftRef.current = { ...current, to };
-    setDraft(draftRef.current);
+    schedulePaint();
   }
 
   function finishSurfaceGesture(event: PointerEvent<HTMLDivElement>) {
@@ -574,6 +593,7 @@ export function PdfDrawingLayer({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
 
+    cancelPaint();
     eraseRef.current = null;
     const finished = draftRef.current;
     draftRef.current = null;

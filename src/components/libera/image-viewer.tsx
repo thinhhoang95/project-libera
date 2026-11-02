@@ -46,7 +46,6 @@ import { TextAnnotationStyleControls } from "@/components/libera/annotation-styl
 import type { ImageTabViewState } from "@/components/libera/types";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
 import { useAnnotationWriter, type AnnotationWriter } from "./use-annotation-writer";
-import { SaveStatusButton } from "./save-status-button";
 import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import { panCenteringRect, rememberFileAnnotations } from "@/lib/annotation-links";
 import {
@@ -182,9 +181,6 @@ export function ImageViewer({
   const [detecting, setDetecting] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
-    "idle",
-  );
   const lastPointerRef = useRef<Point | null>(null);
   // The annotations load before the writer is made; the load reads it through this ref.
   const annotationWriterRef = useRef<AnnotationWriter<PdfTextAnnotation> | null>(null);
@@ -292,9 +288,7 @@ export function ImageViewer({
     localSavePendingRef.current = false;
     latestAnnotationsRef.current = savedAnnotations;
     setAnnotations(savedAnnotations);
-    setSaveStatus("saved");
   }, (saveError) => {
-    setSaveStatus("error");
     setError(saveError instanceof Error ? saveError.message : "Could not save image annotations.");
   });
   useLayoutEffect(() => { annotationWriterRef.current = annotationWriter; });
@@ -303,7 +297,6 @@ export function ImageViewer({
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
       // Written on Save (pending-saves.ts); until then the file shows as unsaved.
-      setSaveStatus("idle");
       localSavePendingRef.current = true;
       annotationWriter.schedule(nextAnnotations);
     },
@@ -937,7 +930,6 @@ export function ImageViewer({
           </> : <span className="text-xs text-muted-foreground">View only</span>}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1">
-          {annotatable ? <SaveStatusButton path={filePath} status={saveStatus} /> : null}
           <button
             aria-label="Zoom out"
             className={iconButton}

@@ -21,7 +21,8 @@ import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { useHorizontalWheelScroll } from "../use-horizontal-wheel-scroll";
 import { latexPdfUrl, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
-import { LatexCompileMenu, type LatexCompileTarget } from "./latex-compile-menu";
+import { latexCompileMenuItems, type LatexCompileTarget } from "./latex-compile-menu";
+import { nativeMenuPointBelow, popupNativeMenu } from "../native-menu";
 import { LatexEditor, type LatexEditorHandle } from "./latex-editor";
 import { registerLatexEditor } from "./latex-editor-registry";
 import { LatexInsertToolbar } from "./latex-insert-toolbar";
@@ -361,6 +362,17 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
     return () => cancelAnimationFrame(frame);
   }, [onSetViewState, revealLine]);
 
+  // Requests to select a range (a citation found from the References panel).
+  const revealRange = viewState?.revealRange;
+  useEffect(() => {
+    if (!revealRange) return;
+    const frame = requestAnimationFrame(() => {
+      editorRef.current?.revealRange(revealRange.start, revealRange.end, revealRange.snippet);
+      onSetViewState({ revealRange: undefined });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [onSetViewState, revealRange]);
+
   /* ---- Split ------------------------------------------------------------------ */
 
   function setSplit(value: number, persist = false) {
@@ -445,6 +457,27 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
     />
   );
 
+  async function openCompileMenu() {
+    const anchor = compileMenuAnchorRef.current;
+    if (!anchor) return;
+    setCompileMenuOpen(true);
+    await popupNativeMenu(latexCompileMenuItems({
+      target: compileTarget,
+      mainName: resolvedRoot ? resolvedRoot.split("/").at(-1)! : needsDiscovery && discoveredRoot === undefined ? "Finding the main file…" : "No main file found",
+      currentName: tab.file.name,
+      currentDisabledReason,
+      onSelect: (target) => onSetViewState({ compileTarget: target }),
+      autoCompile,
+      onAutoCompileChange: (value) => onSetViewState({ autoCompile: value }),
+      engine: engineSetting,
+      resolvedEngine: resolveLatexEngine(draftForAnalysis, "auto"),
+      onEngineChange: (engine) => onSetViewState({ engine }),
+      clearCacheDisabled: !canCompile || build.compiling,
+      onClearCache: () => setCacheDialogOpen(true),
+    }), nativeMenuPointBelow(anchor));
+    setCompileMenuOpen(false);
+  }
+
   const logPanel = logOpen ? (
     <LatexLogPanel
       diagnostics={diagnostics}
@@ -475,29 +508,11 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
                 aria-haspopup="menu"
                 aria-expanded={compileMenuOpen}
                 title={`Compile options · ${LATEX_ENGINE_LABELS[resolvedEngine]}${autoCompile ? " · auto compile on" : ""}`}
-                onClick={() => setCompileMenuOpen((open) => !open)}
+                onClick={() => void openCompileMenu()}
               >
                 <ChevronDown aria-hidden className="h-3.5 w-3.5" />
               </button>
             </div>
-            {compileMenuOpen ? (
-              <LatexCompileMenu
-                anchorRef={compileMenuAnchorRef}
-                target={compileTarget}
-                mainName={resolvedRoot ? resolvedRoot.split("/").at(-1)! : needsDiscovery && discoveredRoot === undefined ? "Finding the main file…" : "No main file found"}
-                currentName={tab.file.name}
-                currentDisabledReason={currentDisabledReason}
-                onSelect={(target) => onSetViewState({ compileTarget: target })}
-                autoCompile={autoCompile}
-                onAutoCompileChange={(value) => onSetViewState({ autoCompile: value })}
-                engine={engineSetting}
-                resolvedEngine={resolveLatexEngine(draftForAnalysis, "auto")}
-                onEngineChange={(engine) => onSetViewState({ engine })}
-                clearCacheDisabled={!canCompile || build.compiling}
-                onClearCache={() => setCacheDialogOpen(true)}
-                onClose={() => setCompileMenuOpen(false)}
-              />
-            ) : null}
             <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
             <LatexInsertToolbar
               editorRef={editorRef}
@@ -505,6 +520,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               onSnippetDialog={setSnippetDialog}
               missingInMainFile={missingInMainFile}
               onNotice={setNotice}
+              fontSizePx={fontSizePx}
             />
           </>
         ) : (

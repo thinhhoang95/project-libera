@@ -388,6 +388,37 @@ export class DocHub implements CompactionTarget {
     this.status.changed();
   }
 
+  /** A membership event must reach already attached editor replicas too. */
+  setRole(role: Role): void {
+    if (this.closed || this.meta.role === role) return;
+    this.outbound.stop();
+    this.store.updateDocMeta(this.docId, { role });
+    this.refreshMeta();
+    this.link?.reopen();
+    this.status.changed(true);
+  }
+
+  /** Only after a fresh, server-authorized join. Old pending work is recovery data. */
+  restoreAccess(role: Role): void {
+    if (this.closed || this.meta.readOnlyReason === "document-deleted") return;
+    if (this.meta.readOnlyReason === "access-revoked") {
+      this.outbound.stop();
+      for (const subdoc of this.subdocs) {
+        if ([...this.pendingLocal.values()].some((entry) => entry.subdoc === subdoc) ||
+            this.outbound.pendingBatches().some((batch) => batch.subdoc === subdoc) ||
+            this.unpersisted.some((entry) => entry.subdoc === subdoc)) {
+          this.rollback(subdoc, "access-restored", "Work saved before you rejoined is kept for recovery; the current shared version will load.");
+        }
+      }
+      this.store.updateDocMeta(this.docId, { role, readOnlyReason: null });
+      this.refreshMeta();
+      this.link?.reopen();
+      this.status.changed(true);
+    } else {
+      this.setRole(role);
+    }
+  }
+
   onClose(listener: () => void): () => void {
     return this.closeListeners.on(listener);
   }
@@ -786,7 +817,8 @@ export class DocHub implements CompactionTarget {
       case "not-found":
         this.stopSyncing();
         if (this.meta.readOnlyReason === "document-deleted") break;
-        if (this.meta.lastSeenServerSeq > 0 || this.hasData) {
+        if (this.meta.lastSeenServerSeq > 0 || this.hasData ||
+            (this.kind === "manifest" && this.meta.projectId !== null && this.store.getProject(this.meta.projectId) !== null)) {
           // The server knew this document before. "Not found" now means the
           // account lost access (for example while offline) or the project
           // went away: keep local work, stop sending, show Access changed.
@@ -814,6 +846,7 @@ export class DocHub implements CompactionTarget {
   }
 
   handleError(message: ErrorMessage): void {
+    if (message.code === "internal") this.outbound.retry();
     this.broadcast({ t: "error", docId: this.docId, message: message.message });
   }
 

@@ -2425,7 +2425,6 @@ button.border[class*="border-white"]:hover {
 .libera-photo-ink-tools { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .libera-photo-ink-actions { align-items: center; border-left: 1px solid rgb(255 255 255 / .2); display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 4px; padding-left: 10px; }
 .libera-photo-ink-action { align-items: center; border: 1px solid rgb(255 255 255 / .2); border-radius: .5rem; color: #fff; display: inline-flex; font-size: .8125rem; gap: .4rem; padding: .3rem .7rem; }
-.libera-photo-ink-action.is-primary:not(:disabled) { background: rgb(255 255 255 / .16); }
 .libera-photo-ink-action:hover:not(:disabled) { background: rgb(255 255 255 / .1); }
 .libera-photo-ink-action:disabled { opacity: .45; }
 .libera-photo-ink-action.is-danger { border-color: #f87171; color: #fecaca; }
@@ -2790,14 +2789,10 @@ html.dark .libera-search-panel-stat { background: #a3bbef08; box-shadow: inset 0
 }
 .libera-reference-row:hover { background: #ffffff44; }
 .libera-reference-row[aria-selected="true"] { background: #ffffff7a; box-shadow: inset 0 0 0 1px #3979e855; }
-.libera-reference-row[data-cited="true"] { background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.libera-reference-row[data-cited="true"]:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.libera-reference-row[data-cited="true"][aria-selected="true"] { box-shadow: inset 0 0 0 1px #3979e855; }
 .libera-reference-missing { background: color-mix(in srgb, var(--destructive) 7%, transparent); }
 .libera-reference-list:focus-visible .libera-reference-row[aria-selected="true"] { box-shadow: inset 0 0 0 2px #457be6; }
 html.dark .libera-reference-row:hover { background: #a3bbef0c; }
 html.dark .libera-reference-row[aria-selected="true"] { background: #a3bbef14; box-shadow: inset 0 0 0 1px #7aa5ef66; }
-html.dark .libera-reference-row[data-cited="true"] { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .libera-reference-badge {
   display: inline-flex; flex-shrink: 0; align-items: center; padding: 1px 6px; border-radius: 999px;
   font-size: 10px; font-weight: 600; line-height: 14px; white-space: nowrap;
@@ -2830,12 +2825,12 @@ html.dark .libera-reference-chip[data-low="true"] { color: #f0c26b; }
 .libera-reference-field[data-conflict="true"] { background: #e0a43a12; }
 .libera-reference-tag {
   display: inline-flex; align-items: center; gap: 3px; padding: 1px 4px 1px 8px; border-radius: 999px;
-  font-size: 11px; line-height: 18px; background: #d8e7ff9e; color: #3979e8;
+  min-width: 0; max-width: 100%; font-size: 11px; line-height: 18px; background: #d8e7ff9e; color: #3979e8;
 }
 .libera-reference-tag button { display: inline-flex; border-radius: 999px; padding: 1px; opacity: 0.7; }
 .libera-reference-tag button:hover { opacity: 1; background: #3979e81a; }
 html.dark .libera-reference-tag { background: #678dcc26; color: #a2c9ff; }
-.libera-reference-tag-link { max-width: 7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #3979e8; border-radius: 4px; }
+.libera-reference-tag-link { min-width: 0; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #3979e8; border-radius: 4px; }
 .libera-reference-tag-link:hover { text-decoration: underline; }
 html.dark .libera-reference-tag-link { color: #a2c9ff; }
 .libera-reference-row[data-in-selection="true"] { background: color-mix(in srgb, var(--accent) 13%, transparent); box-shadow: inset 0 0 0 1px #3979e855; }
@@ -2939,8 +2934,10 @@ html.dark .libera-left-panel .review-textarea:focus { border-color: #7aa5ef80; b
 .review-comment-icon.review-comment-pen:hover:not(:disabled), .libera-left-panel .review-comment-icon.review-comment-pen:hover:not(:disabled) { background: none; opacity: .7; }
 .libera-workspace-actions { background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--card) 85%, transparent) 25%); backdrop-filter: blur(6px); }
 
-/* Gemini-style gradient wash behind the chat header while the model works. */
-.libera-chat-glow { position: absolute; inset: 0 0 auto 0; height: 9rem; pointer-events: none; opacity: 0; transition: opacity 500ms ease; background: linear-gradient(90deg, #4285f4, #9b72cb, #d96570, #f6ad55, #4285f4); background-size: 300% 100%; filter: blur(28px); -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 100%); mask-image: linear-gradient(to bottom, #000 0%, transparent 100%); }
+/* Gemini-style gradient wash behind the chat header while the model works. It
+   overhangs both sides by more than its blur so the edges stay full strength;
+   the panel clips the overhang. */
+.libera-chat-glow { position: absolute; inset: 0 -3rem auto -3rem; height: 9rem; pointer-events: none; opacity: 0; transition: opacity 500ms ease; background: linear-gradient(90deg, #4285f4, #9b72cb, #d96570, #f6ad55, #4285f4); background-size: 300% 100%; filter: blur(28px); -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 100%); mask-image: linear-gradient(to bottom, #000 0%, transparent 100%); }
 .libera-chat-glow[data-active="true"] { opacity: 0.32; }
 html.dark .libera-chat-glow[data-active="true"] { opacity: 0.4; }
 @media (prefers-reduced-motion: no-preference) {
@@ -2948,10 +2945,19 @@ html.dark .libera-chat-glow[data-active="true"] { opacity: 0.4; }
 }
 /* The same wash rises from behind the composer, flowing the other way; the
    composer covers its brightest band, so it runs a little hotter. */
-.libera-chat-glow-bottom { inset: auto 0 0 0; height: 12rem; -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 100%); mask-image: linear-gradient(to top, #000 0%, transparent 100%); animation-direction: reverse !important; }
+.libera-chat-glow-bottom { inset: auto -3rem 0 -3rem; height: 12rem; -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 100%); mask-image: linear-gradient(to top, #000 0%, transparent 100%); animation-direction: reverse !important; }
 .libera-chat-glow-bottom[data-active="true"] { opacity: 0.42; }
 html.dark .libera-chat-glow-bottom[data-active="true"] { opacity: 0.55; }
 @keyframes libera-chat-glow-flow { from { background-position: 0% 0; } to { background-position: 300% 0; } }
+
+/* The floating Stop card for editor AI actions wears the same gradient as a
+   hairline border, and sits above the Read Aloud bar when both show. */
+.libera-ai-activity-card { border: 1px solid transparent; background: linear-gradient(var(--card), var(--card)) padding-box, linear-gradient(90deg, #4285f4, #9b72cb, #d96570, #f6ad55, #4285f4) border-box; background-size: 100% 100%, 300% 100%; }
+@media (prefers-reduced-motion: no-preference) {
+  .libera-ai-activity-card { animation: libera-ai-card-flow 6s linear infinite; }
+}
+@keyframes libera-ai-card-flow { from { background-position: 0 0, 0% 0; } to { background-position: 0 0, 300% 0; } }
+.libera-read-aloud-bar ~ .libera-ai-activity-card { bottom: 6rem; }
 
 /* While an AI action runs, the same Gemini-style wash spans the tab strip and
    editor toolbar, so those bars drop their fills to let it show through. */
@@ -3028,17 +3034,18 @@ html.dark .libera-workspace-region[data-ai-active="true"] .libera-ai-glow { opac
 .libera-latex-editor .cm-latex-math-preview .katex-error { color: var(--destructive) !important; font-family: var(--latex-editor-font, var(--font-mono)); font-size: 12px; }
 .libera-latex-editor .cm-latex-math-preview-error { color: var(--muted-foreground); font-size: 12px; }
 
-/* AI edits under review: green = proposed, red = replaced. */
-.libera-latex-editor { --change-add: #16a34a; --change-del: #dc2626; }
-html.dark .libera-latex-editor { --change-add: #4ade80; --change-del: #f87171; }
-.libera-latex-editor .cm-ai-inserted { background: color-mix(in srgb, var(--change-add) 20%, transparent); border-radius: 2px; }
-.libera-latex-editor .cm-ai-inserted-line { background: color-mix(in srgb, var(--change-add) 12%, transparent); box-shadow: inset 3px 0 0 var(--change-add); }
-.libera-latex-editor .cm-ai-deleted { background: color-mix(in srgb, var(--change-del) 14%, transparent); color: color-mix(in srgb, currentColor 65%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--change-del) 70%, transparent); border-radius: 2px; white-space: pre-wrap; }
-.libera-latex-editor .cm-ai-deleted-block { display: block; padding-inline: 6px 20px; box-shadow: inset 3px 0 0 var(--change-del); border-radius: 0; }
-.libera-latex-editor .cm-ai-actions { margin-inline: .5em .2em; vertical-align: baseline; }
-.libera-latex-editor .cm-ai-actions button { font-family: var(--font-sans); }
-.libera-latex-editor .cm-ai-pending { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), color-mix(in srgb, var(--accent) 26%, transparent), color-mix(in srgb, var(--accent) 10%, transparent)); background-size: 200% 100%; animation: libera-latex-pending 1.6s linear infinite; border-radius: 2px; }
-.libera-latex-editor .cm-ai-pending-caret { color: var(--accent); font-family: var(--font-sans); font-size: .85em; font-style: italic; animation: libera-latex-blink 1.2s ease-in-out infinite; }
+/* AI edits under review: green = proposed, red = replaced. .libera-ai-review
+ * is the agent's manual review in the other CodeMirror editors. */
+.libera-latex-editor, .libera-ai-review { --change-add: #16a34a; --change-del: #dc2626; }
+html.dark .libera-latex-editor, html.dark .libera-ai-review { --change-add: #4ade80; --change-del: #f87171; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-inserted { background: color-mix(in srgb, var(--change-add) 20%, transparent); border-radius: 2px; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-inserted-line { background: color-mix(in srgb, var(--change-add) 12%, transparent); box-shadow: inset 3px 0 0 var(--change-add); }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-deleted { background: color-mix(in srgb, var(--change-del) 14%, transparent); color: color-mix(in srgb, currentColor 65%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--change-del) 70%, transparent); border-radius: 2px; white-space: pre-wrap; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-deleted-block { display: block; padding-inline: 6px 20px; box-shadow: inset 3px 0 0 var(--change-del); border-radius: 0; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-actions { margin-inline: .5em .2em; vertical-align: baseline; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-actions button { font-family: var(--font-sans); }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-pending { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), color-mix(in srgb, var(--accent) 26%, transparent), color-mix(in srgb, var(--accent) 10%, transparent)); background-size: 200% 100%; animation: libera-latex-pending 1.6s linear infinite; border-radius: 2px; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-pending-caret { color: var(--accent); font-family: var(--font-sans); font-size: .85em; font-style: italic; animation: libera-latex-blink 1.2s ease-in-out infinite; }
 @keyframes libera-latex-pending { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes libera-latex-blink { 50% { opacity: .35; } }
 

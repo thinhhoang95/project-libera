@@ -17,7 +17,7 @@ export async function migrate(database: Database, directory = MIGRATIONS_DIR): P
     (await database.db.selectFrom("schema_migrations").select("name").execute()).map((row) => row.name),
   );
   const files = readdirSync(directory)
-    .filter((name) => name.endsWith(".sql"))
+    .filter((name) => !name.startsWith(".") && name.endsWith(".sql"))
     .sort();
   const ran: string[] = [];
   for (const name of files) {

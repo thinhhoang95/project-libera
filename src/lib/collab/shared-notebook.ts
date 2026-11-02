@@ -13,12 +13,13 @@
 // answer is a few seconds old. Folder mtimes can be coarse, so they cannot
 // reliably tell us when a takedown removed the marker.
 
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getAdminRoot, getLinkedFolder } from "@/lib/storage/paths";
+import { MAX_MARKER_BYTES, parseNotebookMarker, readNotebookBinding, readNotebookLifecycle, sameNotebookIdentity } from "./local-notebook-state";
 
 /** Marker the collab host writes in a shared notebook's root (electron/collab/notebooks). */
 export const SHARED_MARKER_FILE = ".libera-shared.json";
@@ -55,6 +56,8 @@ type CacheEntry = { identity: string; checkedAt: number; marker: SharedNotebookM
 
 const CACHE_KEY = Symbol.for("libera.sharedNotebooks");
 const MAX_AGE_MS = 2000;
+// A present unreadable marker is guarded, but cannot supply a routing identity.
+const UNREADABLE: SharedNotebookMarker = { projectId: "", serverUrl: "", accountId: "", manifestDocId: "", sharedAt: "" };
 
 function cache(): Map<string, CacheEntry> {
   const holder = globalThis as { [CACHE_KEY]?: Map<string, CacheEntry> };
@@ -67,13 +70,25 @@ export function invalidateSharedNotebookCache(): void {
   cache().clear();
 }
 
-function readMarker(root: string): SharedNotebookMarker | null {
+function readMarker(root: string): SharedNotebookMarker {
   try {
-    const value = JSON.parse(readFileSync(path.join(root, SHARED_MARKER_FILE), "utf8")) as SharedNotebookMarker;
-    return value && typeof value.projectId === "string" ? value : null;
+    const bytes = readFileSync(path.join(root, SHARED_MARKER_FILE));
+    if (bytes.length > MAX_MARKER_BYTES) return UNREADABLE;
+    return parseNotebookMarker(JSON.parse(bytes.toString("utf8"))) ?? UNREADABLE;
   } catch {
-    return null;
+    return UNREADABLE;
   }
+}
+
+function effectiveMarker(root: string, marker: SharedNotebookMarker | null): SharedNotebookMarker | null {
+  const directory = process.env.LIBERA_COLLAB_LIFECYCLE_DIR;
+  const binding = readNotebookBinding(directory, root);
+  if (binding && readNotebookLifecycle(directory, binding) === null &&
+      (!marker?.projectId || !sameNotebookIdentity(binding, marker))) return UNREADABLE;
+  if (!marker?.projectId) return marker;
+  const outcome = readNotebookLifecycle(directory, marker);
+  if (outcome === "local") return null;
+  return outcome === "revoked" ? { ...marker, revoked: true } : marker;
 }
 
 /** The marker of a top-level notebook, or null when it is not shared. Linked folders are never shared. */
@@ -83,18 +98,20 @@ export function sharedNotebookMarker(notebook: string): SharedNotebookMarker | n
   const root = path.join(getAdminRoot(), notebook);
   let identity: string;
   try {
-    const stats = statSync(path.join(root, SHARED_MARKER_FILE));
+    const stats = lstatSync(path.join(root, SHARED_MARKER_FILE));
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_MARKER_BYTES) return UNREADABLE;
     identity = `${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
-  } catch {
+  } catch (error) {
     cache().delete(root);
-    return null;
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? effectiveMarker(root, null) : UNREADABLE;
   }
   const now = Date.now();
   const cached = cache().get(root);
-  if (cached && cached.identity === identity && now - cached.checkedAt < MAX_AGE_MS) return cached.marker;
+  if (cached && cached.identity === identity && now - cached.checkedAt < MAX_AGE_MS) return effectiveMarker(root, cached.marker);
   const marker = readMarker(root);
   cache().set(root, { identity, checkedAt: now, marker });
-  return marker;
+  return effectiveMarker(root, marker);
 }
 
 function splitLiberaPath(liberaPath: string): string[] {
@@ -128,5 +145,5 @@ export function sharedManifestPath(liberaPath: string): { notebook: string; proj
   const [notebook, ...rest] = splitLiberaPath(liberaPath);
   if (!notebook || rest.length === 0 || rest[0] === ARCHIVE_DIR) return null;
   const marker = sharedNotebookMarker(notebook);
-  return marker ? { notebook, projectId: marker.projectId, path: rest.join("/") } : null;
+  return marker?.projectId ? { notebook, projectId: marker.projectId, path: rest.join("/") } : null;
 }

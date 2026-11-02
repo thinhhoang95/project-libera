@@ -9,12 +9,12 @@ test("PDF.js measurement canvases stay hidden when two document languages share 
   Object.defineProperty(globalThis, "document", { configurable: true, value: dom.window.document });
   // Exercise the real TextLayer and its shared font cache; only canvas metrics
   // are stubbed because JSDOM does not provide a drawing implementation.
-  dom.window.HTMLCanvasElement.prototype.getContext = function () {
+  dom.window.HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
     return {
       canvas: this,
       measureText: () => ({ width: 100, fontBoundingBoxAscent: 8, fontBoundingBoxDescent: 2 }),
     } as unknown as CanvasRenderingContext2D;
-  } as typeof dom.window.HTMLCanvasElement.prototype.getContext;
+  } as unknown as typeof dom.window.HTMLCanvasElement.prototype.getContext;
 
   const { TextLayer } = await import("pdfjs-dist");
   const css = postcss.parse(readFileSync(new URL("../../src/app/globals.css", import.meta.url), "utf8"));
@@ -33,7 +33,7 @@ test("PDF.js measurement canvases stay hidden when two document languages share 
         viewport: {
           scale: 1, rotation: 0,
           rawDims: { pageWidth: 612, pageHeight: 792, pageX: 0, pageY: 0 },
-        } as ConstructorParameters<typeof TextLayer>[0]["viewport"],
+        } as unknown as ConstructorParameters<typeof TextLayer>[0]["viewport"],
         textContentSource: {
           lang,
           items: [{ str: "Shared font", dir: "ltr", width: 100, height: 12,

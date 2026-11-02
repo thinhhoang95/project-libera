@@ -91,6 +91,15 @@ export type AgentRunRecord = {
   outcome?: AgentOutcome;
 };
 
+/**
+ * Manual review: a file with agent changes the user has not reviewed yet.
+ * `baseline` is its text without those changes, `current` its text on disk.
+ */
+export type AgentReviewFile = { path: string; baseline: string; current: string; created: boolean; revision: string };
+
+/** Rejecting all of a file's pending changes; `content` is the restored text, for open tabs. */
+export type AgentReviewRevertResult = { path: string; status: "restored" | "deleted" | "missing" | "conflict"; content?: string; message?: string };
+
 export type UndoResult = {
   path: string;
   status: "restored" | "deleted" | "conflict" | "missing" | "already-reverted";
@@ -118,8 +127,9 @@ export type AgentEvent =
    * collab host. Open tabs get it from their live replica, so the panel must
    * not reload them from disk (the working copy lags the document).
    * `suggested`: the change is a pending suggestion; the text is unchanged.
+   * `review`: manual review is on, so the change waits for the user's review.
    */
-  | { type: "file_changed"; path: string; created: boolean; shared?: boolean; suggested?: boolean }
+  | { type: "file_changed"; path: string; created: boolean; shared?: boolean; suggested?: boolean; review?: boolean }
   | { type: "comments_added"; path: string; count: number }
   | { type: "suggestions_added"; path: string; count: number }
   /** Definitions and notation cards saved to a document's side-car; `count` is its total. */

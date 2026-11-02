@@ -31,7 +31,7 @@ export function MarkdownDisplayZoom({ markdownBaseFontSize, markdownZoom, onMark
         className={compact ? "h-1.5 w-24 accent-foreground" : "h-2 w-32 accent-foreground"}
         type="range"
         min="75"
-        max="150"
+        max="250"
         step="5"
         value={markdownZoom}
         aria-label="Rendered Markdown text zoom"

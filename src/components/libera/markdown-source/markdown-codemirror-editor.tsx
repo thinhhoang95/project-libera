@@ -7,7 +7,6 @@ import {
   startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { beginAiActivity } from "@/lib/ai-activity";
 import {
   textareaEditSpec,
 } from "@/lib/markdown-codemirror/commands";
@@ -32,6 +31,9 @@ import {
 } from "@/lib/markdown-source";
 import { MarkdownFileLinkPopup, MarkdownHeadingLinkPopup, buildMarkdownFileLinkSections, flattenMarkdownFileLinkSections } from "../markdown-file-link-popup";
 import { useCodeMirrorReview } from "../use-editor-review";
+import { LatexChangeBar } from "../latex/latex-change-bar";
+import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
+import { reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
 import { MarkdownSourceContextMenu, sourceContextMenuState, type SourceContextMenuState } from "./markdown-source-context-menu";
 import { MarkdownSourceFindBar } from "./markdown-source-find-bar";
 import { useMarkdownSourceDraft } from "./use-markdown-source-draft";
@@ -139,7 +141,9 @@ export function MarkdownCodeMirrorEditor({
   const changesSinceBaseRef = useRef<ChangeSet | null>(null);
   const pendingValueRef = useRef<string | null>(null);
   const previousFilePathRef = useRef(activeFilePath);
-  const initialRef = useRef({ value, documentSource, mathMarkers, extensions });
+  const initialRef = useRef({ value, documentSource, mathMarkers, extensions, activeFilePath });
+  // The agent's changes under manual review, for the change bar.
+  const [agentHunks, setAgentHunks] = useState<ReviewHunk[]>([]);
   const [extensionsCompartment] = useState(() => new Compartment());
   const [mathCompartment] = useState(() => new Compartment());
 
@@ -320,7 +324,13 @@ export function MarkdownCodeMirrorEditor({
         })),
         markdownSourceSetup(),
         mathCompartment.of(liberaMathMarkers.of(initial.mathMarkers ?? {})),
+        // Shared tabs review the agent's changes as suggestions instead.
+        ...(initial.documentSource !== "external" && initial.activeFilePath
+          ? [agentReviewCodeMirror(initial.activeFilePath, { outside: (transaction) => transaction.annotation(markdownValueSync) === "value" })]
+          : []),
         EditorView.updateListener.of((update) => {
+          const hunks = update.state.field(reviewHunksField, false);
+          if (hunks !== update.startState.field(reviewHunksField, false)) setAgentHunks(hunks ?? []);
           if (update.docChanged) {
             changesSinceBaseRef.current = changesSinceBaseRef.current
               ? changesSinceBaseRef.current.compose(update.changes)
@@ -570,7 +580,6 @@ export function MarkdownCodeMirrorEditor({
   useLayoutEffect(() => { clearReviewSelectionRef.current = () => review?.clearSelection(); }, [review]);
 
   const aiWorking = formatting || imageConverting;
-  useEffect(() => (aiWorking ? beginAiActivity() : undefined), [aiWorking]);
 
   // Find and Replace ---------------------------------------------------------
 
@@ -711,6 +720,7 @@ export function MarkdownCodeMirrorEditor({
       } as CSSProperties}
     >
       <div ref={hostRef} className="absolute inset-0" />
+      {view && agentHunks.length ? <LatexChangeBar view={view} hunks={agentHunks} /> : null}
 
       {find.open ? (
         <MarkdownSourceFindBar

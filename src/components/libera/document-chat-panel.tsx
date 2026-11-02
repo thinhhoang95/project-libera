@@ -5,7 +5,7 @@ import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type SetStateAction } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, CheckCheck, AudioLines, ImagePlus, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2 } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, CheckCheck, AudioLines, ImagePlus, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2, FileDiff } from "lucide-react";
 import { speakMarkdown, toggleSpeech } from "@/lib/tts/player";
 import { useSpeech } from "./read-aloud";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
@@ -19,6 +19,9 @@ import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/l
 import type { OpenTab } from "./types";
 import { readAgentEvents, readChatResponse } from "./chat-stream-client";
 import { AgentRunView } from "./agent-activity";
+import { AgentReviewStrip } from "./agent-review-strip";
+import { agentReviewStore } from "@/lib/agent-review/store";
+import { AiPanelGlow } from "./ai-activity-ui";
 import { combinedMacroScope, macroScopeKey, type MarkdownMacroScope } from "@/lib/markdown-macros";
 import { PythonSetupStatus } from "./python-setup-status";
 import { ChatTokenUsage } from "./chat-token-usage";
@@ -32,7 +35,7 @@ import { filterGalleryChatPhotos, galleryPhotoIdFromSource } from "@/lib/documen
 import { agentWriteOverlap, agentWriteScope, type AgentWriteScope } from "./agent-write-scope";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { CHAT_QUOTE_EVENT, CHAT_REASONING_EFFORTS, chatHasPhotoSource, type ChatQuoteDetail, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
-import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
+import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentReviewRevertResult, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
 import { useIsSharedNotebook } from "@/lib/collab/ui/shared-notebook-hook";
 import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
 import {
@@ -145,6 +148,8 @@ const CHAT_MODE_STORAGE_KEY = "libera.chatMode";
 const AGENT_PERMISSION_STORAGE_KEY = "libera.agentPermission";
 const DEFAULT_AGENT_PERMISSION: AgentPermission = "open-files";
 const AGENT_WEB_SEARCH_STORAGE_KEY = "libera.agentWebSearch";
+/** Manual review: the agent's changes wait for the user to accept or reject them. */
+const AGENT_MANUAL_REVIEW_STORAGE_KEY = "libera.agentManualReview";
 /** Read every reply aloud when it is complete. */
 const AUTO_READ_STORAGE_KEY = "libera.chatAutoRead";
 const isStoredFlag = (value: unknown): value is "true" | "false" => value === "true" || value === "false";
@@ -232,6 +237,8 @@ export type AgentWorkspaceBridge = {
   readTabDraft: (path: string) => string | null;
   syncTabFromDisk: (path: string, baseline?: string) => Promise<{ content: string; keptDraft: boolean } | null>;
   restoreTabAfterUndo: (path: string, result: { status: "restored" | "deleted"; content?: string; draft?: string }) => void;
+  /** Manual review put a file's text back on disk: the open tab shows it, saved. */
+  replaceTabFromDisk: (path: string, content: string, expectedDraft?: string | null) => void;
   refreshAfterChanges: (createdPaths: string[]) => Promise<void>;
   openFile: (path: string) => void;
 };
@@ -288,9 +295,16 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [defaultMode, setDefaultMode] = useState<ChatMode>("chat");
   const [defaultPermission, setDefaultPermission] = useState<AgentPermission>(DEFAULT_AGENT_PERMISSION);
   const [allowWebSearch, setAllowWebSearch] = useState(false);
+  const [manualReview, setManualReview] = useState(false);
   const [autoRead, setAutoRead] = useState(false);
   const autoReadRef = useRef(false);
   useEffect(() => { autoReadRef.current = autoRead; }, [autoRead]);
+  // Files under manual review can change outside this window (another window, a sync).
+  useEffect(() => {
+    const refresh = () => void agentReviewStore.refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
   const speech = useSpeech();
   // Agent runs call back into the workspace after awaits; always use the latest bridge.
   const agentWorkspaceRef = useRef(agentWorkspace);
@@ -409,6 +423,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       setDefaultMode(storedMode);
       setDefaultPermission(storedPermission);
       setAllowWebSearch(readStoredPreference(AGENT_WEB_SEARCH_STORAGE_KEY, isStoredFlag) === "true");
+      setManualReview(readStoredPreference(AGENT_MANUAL_REVIEW_STORAGE_KEY, isStoredFlag) === "true");
       setAutoRead(readStoredPreference(AUTO_READ_STORAGE_KEY, isStoredFlag) === "true");
       const first = createChat(storedMode, storedPermission);
       const restored = history ?? { chats: [first], activeId: first.id };
@@ -946,6 +961,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       });
       committed = true;
       if (run) {
+        await agentReviewStore.flush(agentReviewStore.list().map((file) => file.path));
         const bridge = agentWorkspaceRef.current;
         // The agent sees what the user sees: unsaved drafts of open files go with
         // the request, and each tab follows the agent's edits unless the user types.
@@ -967,7 +983,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             sessionId: id, model, reasoningEffort: chat.reasoningEffort, permission: run.permission,
             messages: requestMessages(messagesWithoutExcludedDocuments(messages, [], chat.excludedCommentPaths), true),
             activeFile: activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file.path : undefined,
-            openFiles: openTabs.map((tab) => tab.file.path), drafts, notebook: bridge?.notebook, webSearch: allowWebSearch,
+            openFiles: openTabs.map((tab) => tab.file.path), drafts, notebook: bridge?.notebook, webSearch: allowWebSearch, review: manualReview,
             ...(options.skill ? { skill: options.skill } : {}),
           }),
           signal: controller.signal,
@@ -994,10 +1010,13 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             // Shared files changed through the collab host: the tab's live replica already has the edit.
             if (event.shared) return;
             const changedPath = event.path;
+            const underReview = event.review;
             syncQueue = syncQueue.then(async () => {
               const synced = await agentWorkspaceRef.current?.syncTabFromDisk(changedPath, baselines.get(changedPath)).catch(() => null);
               if (synced?.keptDraft) { if (!keptDrafts.includes(changedPath)) keptDrafts.push(changedPath); }
               else if (synced) baselines.set(changedPath, synced.content);
+              // Manual review: the file's baseline is on the server now; its editor shows the changes.
+              if (underReview) await agentReviewStore.refresh();
             });
           } else if (event.type === "comments_added") {
             if (event.count) {
@@ -1114,12 +1133,15 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     setError("");
     setNotice("");
     try {
+      await agentReviewStore.flush(paths ?? run.changes.map((change) => change.path));
       const { results } = await apiRequest<{ results: UndoResult[] }>("/api/agent/undo", { method: "POST", body: JSON.stringify({ runId: run.runId, paths }) });
       const bridge = agentWorkspaceRef.current;
       for (const result of results) {
         if ((result.status === "restored" || result.status === "deleted") && !result.shared) bridge?.restoreTabAfterUndo(result.path, { status: result.status, content: result.content, draft: result.draft });
       }
       const undone = new Set(results.filter((result) => result.status === "restored" || result.status === "deleted" || result.status === "already-reverted").map((result) => result.path));
+      // Files back at their review baseline leave manual review.
+      void agentReviewStore.refresh();
       updateChat(chatId, (current) => ({ ...current, messages: current.messages.map((message) => message.id === messageId && message.agent
         ? { ...message, agent: { ...message.agent, changes: message.agent.changes.map((change) => undone.has(change.path) ? { ...change, reverted: true } : change) } }
         : message) }));
@@ -1151,6 +1173,21 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   function changeWebSearch(next: boolean) {
     setAllowWebSearch(next);
     storePreference(AGENT_WEB_SEARCH_STORAGE_KEY, String(next));
+  }
+
+  function changeManualReview(next: boolean) {
+    setManualReview(next);
+    storePreference(AGENT_MANUAL_REVIEW_STORAGE_KEY, String(next));
+  }
+
+  /** Rejected files are back on disk: open tabs show them, and removed files leave the sidebar. */
+  async function applyReviewReverts(results: AgentReviewRevertResult[], drafts: Record<string, string | null>) {
+    const bridge = agentWorkspaceRef.current;
+    for (const result of results) {
+      if (result.status === "restored") bridge?.replaceTabFromDisk(result.path, result.content ?? "", drafts[result.path]);
+      else if (result.status === "deleted") bridge?.restoreTabAfterUndo(result.path, { status: "deleted" });
+    }
+    if (results.some((result) => result.status === "deleted")) await bridge?.refreshAfterChanges([]);
   }
 
   function changePermission(next: AgentPermission) {
@@ -1248,8 +1285,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   if (review?.chatReview) return <ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />;
 
   return <aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card" data-ai-active={pending}>
-    <div aria-hidden className="libera-chat-glow" data-active={pending} />
-    <div aria-hidden className="libera-chat-glow libera-chat-glow-bottom" data-active={pending} />
+    <AiPanelGlow active={pending} />
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="libera-chat-header libera-window-drag-region flex shrink-0 items-center gap-1 px-3">
         <span className="libera-ai-mark" aria-hidden><Sparkles size={22} /></span>
@@ -1312,6 +1348,9 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         </label>}
         {agentMode && <button type="button" className={`${buttonClass} libera-agent-web-search`} aria-pressed={allowWebSearch} aria-label="Web search" disabled={pending} onClick={() => changeWebSearch(!allowWebSearch)}
           title={allowWebSearch ? "Web search on: the agent can search the web (through OpenRouter's web plugin). Click to turn off" : "Web search off: click to let the agent search the web for facts that are not in your library"}><Globe aria-hidden size={14} /></button>}
+        {agentMode && <button type="button" className={`${buttonClass} libera-agent-review-toggle`} aria-pressed={manualReview && !sharedAgent && permission !== "read-only"} aria-label="Manual review" disabled={pending || sharedAgent || permission === "read-only"} onClick={() => changeManualReview(!manualReview)}
+          title={sharedAgent ? "Changes in a shared notebook are always suggestions for review" : permission === "read-only" ? "Manual review: the agent changes nothing in Read Only"
+            : manualReview ? "Manual review on: you accept or reject each change the agent makes, in the editor or in the list above the message box. Click to turn off" : "Manual review off: click to review each change the agent makes, and accept or reject it"}><FileDiff aria-hidden size={14} /></button>}
       </div>}
         <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${showingSearchResults ? "hidden" : !chat?.messages.length ? "flex flex-col" : ""}`}
           onScroll={(event) => {
@@ -1405,11 +1444,13 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           {fontSizeError && <p role="alert" className="text-xs text-destructive">{fontSizeError}</p>}
           {storageError && <p role="alert" className="text-xs text-destructive">{storageError}</p>}{shownError && <p role="alert" className="text-xs text-destructive">{shownError}</p>}
           {shownNotice && <p role="status" className="text-xs text-muted-foreground">{shownNotice}</p>}
+          {agentWorkspace && <AgentReviewStrip readTabDraft={agentWorkspace.readTabDraft} revision={tabs} onOpenFile={agentWorkspace.openFile}
+            onReverted={applyReviewReverts} onError={(message) => setError(message)} />}
           {agentMode && <div className="libera-chat-context flex items-center gap-1"><Bot aria-hidden size={13} className="shrink-0" />
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={viewedFile?.path}>{`${viewedFile ? `Viewing ${viewedFile.name} · ` : ""}${permission === "read-only" ? "Read only"
               : sharedAgent ? (permission === "open-files" ? `Can suggest in ${openTextFileCount} open file${openTextFileCount === 1 ? "" : "s"}` : `Can suggest in ${agentNotebook}`)
               : permission === "open-files" ? `Can modify ${openTextFileCount} open file${openTextFileCount === 1 ? "" : "s"}`
-              : agentNotebook ? `Can modify files in ${agentNotebook}` : "No notebook selected"}${allowWebSearch ? " · Web search on" : ""}`}</p>
+              : agentNotebook ? `Can modify files in ${agentNotebook}` : "No notebook selected"}${manualReview && !sharedAgent && permission !== "read-only" ? " · Manual review on" : ""}${allowWebSearch ? " · Web search on" : ""}`}</p>
           </div>}
           {agentMode && <PythonSetupStatus />}
           <input ref={photoInputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" aria-label="Attach photos" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attachPhotos(files); }} />

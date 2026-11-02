@@ -78,6 +78,8 @@ export type AgentEnvironment = {
   sharedNotebooks?: { notebook: string; role?: string }[];
   /** The user allowed web search for this run (the WebSearch tool). */
   webSearch?: boolean;
+  /** The user reviews each change the agent makes (Manual review). */
+  manualReview?: boolean;
 };
 
 const MAX_LISTED_NOTEBOOKS = 60;
@@ -97,6 +99,7 @@ export function buildAgentEnvironment(environment: AgentEnvironment) {
     `Open in the editor: ${environment.openFiles.slice(0, MAX_LISTED_OPEN_FILES).map(describeOpen).join(", ") || "none"}${environment.openFiles.length > MAX_LISTED_OPEN_FILES ? ` and ${environment.openFiles.length - MAX_LISTED_OPEN_FILES} more` : ""}`,
     `You may modify: ${writable}`,
   ];
+  if (environment.manualReview && environment.permission !== "read-only") lines.push("Manual review: on. Your edits are applied at once, and the user then accepts or rejects each changed passage. Keep edits focused on what was asked, and do not reformat or reorder text you were not asked to change, so each change is easy to review.");
   if (environment.webSearch) lines.push("Web search: allowed. WebSearch looks things up on the web; cite the URLs you use and label them as web sources.");
   const shared = environment.sharedNotebooks ?? [];
   if (shared.length) {

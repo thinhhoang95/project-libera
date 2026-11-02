@@ -351,7 +351,11 @@ function createCollabHost(options = {}) {
   /** Env for the Next server; empty when collaboration is off. */
   function environment() {
     if (!enabled || !url) return {};
-    return { LIBERA_COLLAB_HOST_URL: url, LIBERA_COLLAB_HOST_TOKEN: token };
+    return {
+      LIBERA_COLLAB_HOST_URL: url,
+      LIBERA_COLLAB_HOST_TOKEN: token,
+      LIBERA_COLLAB_LIFECYCLE_DIR: path.join((options.getUserData ?? (() => app.getPath("userData")))(), "collab", "notebook-lifecycle"),
+    };
   }
 
   /** Asks the host to flush and stop; kills it after timeoutMs. */

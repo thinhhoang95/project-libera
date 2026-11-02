@@ -17,6 +17,7 @@ import { adaptMessagePort, parseReplicaMessage, type MessagePortLike } from "../
 import type { HostToMain, MainToHost } from "../../electron/collab/adapters/protocol";
 import { UtilityHost, installationId } from "../../electron/collab/adapters/utility";
 import { CollabHost } from "../../electron/collab/core/host";
+import { databaseKey } from "../../electron/collab/control/runtime";
 import type { HostStatus } from "../../src/lib/collab/local-api";
 import type { HubToReplica, ReplicaToHub } from "../../src/lib/collab/protocol/local";
 import { ContentKeys } from "../../src/lib/collab/protocol/schema";
@@ -157,7 +158,7 @@ test("utility host: start, ready, attach, secrets, shutdown", { timeout: 60_000 
     assert.ok(ready, JSON.stringify(sent));
     assert.match(ready.url, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.ok(secretsAsked.includes("decrypt"), "the session was decrypted by main");
-    assert.ok(existsSync(path.join(collabDir, "acct_test.sqlite")));
+    assert.ok(existsSync(path.join(collabDir, `${databaseKey("acct_test", "http://127.0.0.1:9")}.sqlite`)));
     assert.equal(await installationId(collabDir), await installationId(collabDir), "the installation id is stable");
 
     const status = await fetch(`${ready.url}/status`, { headers: { authorization: "Bearer utility-token" } });
@@ -185,7 +186,7 @@ test("utility host: start, ready, attach, secrets, shutdown", { timeout: 60_000 
     await until(() => sent.some((message) => message.t === "shutdown-done"), "shutdown-done");
     assert.deepEqual(sent.find((message) => message.t === "shutdown-done"), { t: "shutdown-done", id: 7 });
     assert.deepEqual(exits, [0]);
-    assert.ok(!existsSync(path.join(collabDir, "acct_test.sqlite.lock")), "the database lock is released");
+    assert.ok(!existsSync(path.join(collabDir, `${databaseKey("acct_test", "http://127.0.0.1:9")}.sqlite.lock`)), "the database lock is released");
     await assert.rejects(fetch(`${ready.url}/status`, { headers: { authorization: "Bearer utility-token" } }));
     replica.close();
   } finally {

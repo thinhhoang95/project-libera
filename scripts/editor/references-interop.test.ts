@@ -418,7 +418,7 @@ test("the citation index reads only new and changed files and drops deleted ones
     const indexPath = citationIndexPath("Notes");
     assert.equal(indexPath, path.join(root, ".libera", "references", "citations.json"));
     const index = JSON.parse(await readFile(indexPath, "utf8"));
-    assert.equal(index.version, 3, "version 3 verifies saved content as well as narrative citation candidates");
+    assert.equal(index.version, 4, "version 4 adds LaTeX citation scanning");
     assert.deepEqual(Object.keys(index.files), ["Notes/a.md", "Notes/c.md", "Notes/sub/b.md"]);
     assert.deepEqual(Object.keys(index.files["Notes/a.md"]).sort(), ["contentHash", "keys"], "no timestamps or sizes, which differ between computers");
     const indexMtime = (await stat(indexPath)).mtimeMs;
@@ -497,16 +497,49 @@ test("concurrent citation requests share one rebuild", async () => {
   });
 });
 
+test("LaTeX citation indexes migrate old caches, verify bytes, and follow archive visibility", async () => {
+  await withLibrary(async (root) => {
+    await mkdir(path.join(root, "_archive"), { recursive: true });
+    await writeFile(path.join(root, "main.tex"), "😀 \\cite{old} % \\cite{commented}\n\\begin{verbatim}\\cite{example}\\end{verbatim}");
+    await writeFile(path.join(root, "refs.bib"), "\\cite{bib}");
+    await writeFile(path.join(root, "style.sty"), "\\cite{style}");
+    await writeFile(path.join(root, "_archive/old.tex"), "\\citep{archived}");
+    let result = await refreshNotebookCitations("Notes");
+    assert.deepEqual(result.byFile, { "Notes/main.tex": ["old"] });
+    const indexPath = citationIndexPath("Notes");
+    const oldIndex = JSON.parse(await readFile(indexPath, "utf8"));
+    oldIndex.version = 3;
+    oldIndex.files["Notes/main.tex"].keys = ["stale"];
+    await writeFile(indexPath, JSON.stringify(oldIndex));
+    result = await refreshNotebookCitations("Notes");
+    assert.deepEqual(result.byFile, { "Notes/main.tex": ["old"] });
+    assert.equal(result.stats.read, 1, "parser changes invalidate a matching content hash");
+    assert.equal((await refreshNotebookCitations("Notes")).stats.read, 0);
+    const fixed = (await stat(path.join(root, "main.tex"))).mtime;
+    const text = await readFile(path.join(root, "main.tex"), "utf8");
+    await writeFile(path.join(root, "main.tex"), text.replace("{old}", "{new}"));
+    await utimes(path.join(root, "main.tex"), fixed, fixed);
+    result = await refreshNotebookCitations("Notes", { includeArchive: true });
+    assert.deepEqual(result.byFile, { "Notes/_archive/old.tex": ["archived"], "Notes/main.tex": ["new"] });
+    assert.equal(result.stats.read, 2);
+    result = await refreshNotebookCitations("Notes");
+    assert.equal(result.byKey.archived, undefined);
+    assert.equal(result.stats.written, false);
+    assert.equal((await refreshNotebookCitations("Notes", { includeArchive: true })).stats.read, 0);
+  });
+});
+
 test("a linked folder keeps its citation index in the data folder", async () => {
   await withLibrary(async (_root, scratch) => {
     const project = path.join(scratch, "Thesis");
     await mkdir(path.join(project, "chapters"), { recursive: true });
     await mkdir(path.join(project, "node_modules", "pkg"), { recursive: true });
     await writeFile(path.join(project, "chapters/intro.md"), "As [@smith2020] shows.");
+    await writeFile(path.join(project, "chapters/main.tex"), "As \\citep{doe2021} shows.");
     await writeFile(path.join(project, "node_modules/pkg/README.md"), "[@dependency]");
     const linked = await openDirectory(project);
     const result = await refreshNotebookCitations(linked.name);
-    assert.deepEqual(result.byFile, { [`${linked.name}/chapters/intro.md`]: ["smith2020"] });
+    assert.deepEqual(result.byFile, { [`${linked.name}/chapters/intro.md`]: ["smith2020"], [`${linked.name}/chapters/main.tex`]: ["doe2021"] });
     assert.ok(!citationIndexPath(linked.name).startsWith(project), "never written into the user's folder");
     await stat(citationIndexPath(linked.name));
     await assert.rejects(stat(path.join(project, ".libera")));

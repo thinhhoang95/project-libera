@@ -7,6 +7,8 @@ This is the high-level map of real-time collaboration in Libera. It shows what t
 
 Related documents:
 
+- [../features/notebook-sync.md](../features/notebook-sync.md): current sync paths, required behavior matrices, coverage, and links to the 1 November 2026 review.
+- [../audits/2026-11-01-notebook-sync-follow-up.md](../audits/2026-11-01-notebook-sync-follow-up.md): fixes and regressions for nine additional findings involving partitions, corrupt state, stale copies and lifecycle replay.
 - [source-plan.md](source-plan.md): the original product and architecture plan. Section numbers like "§3.2" in these documents refer to it.
 - [implementation-plan.md](implementation-plan.md): the delivery plan for this repo, Phase 0 through Phase 4.
 - [gallery-sharing.md](gallery-sharing.md): shared albums and photos in the image gallery.

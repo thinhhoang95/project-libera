@@ -37,6 +37,8 @@ type AgentRequestBody = {
   drafts?: unknown;
   notebook?: unknown;
   webSearch?: unknown;
+  /** Manual review: the run's changes wait for the user's review (src/lib/agent/review-store.ts). */
+  review?: unknown;
   /** A skill to load before the run starts, e.g. "fact-check-citations" from a Fact-check button. */
   skill?: unknown;
 };
@@ -111,6 +113,9 @@ export async function POST(request: NextRequest) {
   if (!isDraftMap(body.drafts ?? {})) return jsonError("Unsaved drafts are invalid or too large.", 413);
   if (body.webSearch !== undefined && typeof body.webSearch !== "boolean") return jsonError("Invalid web search setting.", 400);
   const allowWebSearch = body.webSearch === true;
+  if (body.review !== undefined && typeof body.review !== "boolean") return jsonError("Invalid review setting.", 400);
+  // Shared notebooks need no review here: changes there are already suggestions.
+  const manualReview = body.review === true && body.permission !== "read-only";
   if (body.skill !== undefined && (typeof body.skill !== "string" || !AGENT_SKILLS.some((skill) => skill.name === body.skill))) return jsonError("Invalid skill.", 400);
   const preloadedSkill = AGENT_SKILLS.find((skill) => skill.name === body.skill);
 
@@ -159,6 +164,7 @@ export async function POST(request: NextRequest) {
     conventions: await readConventions(notebook, notebooks),
     sharedNotebooks: await sharedNotebooks(notebooks),
     webSearch: allowWebSearch,
+    manualReview,
   });
   const system = buildAgentSystemPrompt({
     permission,
@@ -228,6 +234,7 @@ ${preloadedSkill.instructions.trim()}
           emit: send,
           model,
           allowWebSearch,
+          manualReview,
           runConfig: { model, profile, reasoningEffort, promptCaching: options.promptCaching },
           // One budget for the run and every child run it starts.
           budget: { maxInputTokens: DEFAULT_RUN_LIMITS.maxInputTokens, inputTokens: 0 },

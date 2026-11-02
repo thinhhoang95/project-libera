@@ -121,6 +121,11 @@ export type SearchIndexStatus = {
   state: "idle" | "scanning" | "embedding" | "paused" | "error";
   /** Automatic updates are disabled in Preferences; manual actions still work. */
   backgroundIndexing?: boolean;
+  /** Why queued passages are not being embedded now; "interval" includes waiting for the next keyword update. */
+  embeddingDeferred?: "interval" | "battery" | "power-unknown";
+  nextEmbeddingAt?: string;
+  /** Changes are queued until Preferences' minimum wait between automatic keyword updates passes. */
+  nextKeywordUpdateAt?: string;
   /** False until the first index is built or an existing one is chosen. */
   exists: boolean;
   /** Set when the stored vectors were made with another model or size; they are not searched. */

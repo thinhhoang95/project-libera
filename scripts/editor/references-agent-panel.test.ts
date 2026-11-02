@@ -57,7 +57,7 @@ test("Agent mode: the web search toggle persists and is sent; child runs and sug
   const plan = { id: "Research/plan.md", file: { name: "plan.md", path: "Research/plan.md", notebook: "Research", fileType: "markdown" }, draft: "# Plan", saved: "# Plan", status: "clean" } as OpenTab;
   const bridge: AgentWorkspaceBridge = {
     notebook: "Research", readTabDraft: () => "# Plan", syncTabFromDisk: async () => ({ content: "# Plan", keptDraft: false }),
-    restoreTabAfterUndo: () => undefined, refreshAfterChanges: async () => undefined, openFile: () => undefined,
+    restoreTabAfterUndo: () => undefined, replaceTabFromDisk: () => undefined, refreshAfterChanges: async () => undefined, openFile: () => undefined,
   };
   const host = document.getElementById("root")!;
   const root = createRoot(host);
@@ -71,23 +71,24 @@ test("Agent mode: the web search toggle persists and is sent; child runs and sug
     await act(async () => root.render(createElement(MarkdownReviewProvider, { activeTab: plan, getDraft: () => "# Plan", applyDraft: () => true, recoverDraft: () => {}, openChat: () => {}, openComments: () => { commentsShown++; }, children: panel })));
     await settle();
   }
-  const toggle = () => host.querySelector<HTMLInputElement>(".libera-agent-web-search input")!;
+  const toggle = () => host.querySelector<HTMLButtonElement>("button.libera-agent-web-search")!;
+  const pressed = () => toggle().getAttribute("aria-pressed") === "true";
   try {
     await mount();
     assert.equal(host.querySelector(".libera-agent-web-search"), null, "the toggle belongs to Agent mode");
     await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('[aria-label="Assistant mode"] button')].find((button) => button.textContent === "Agent")!.click(); });
     await settle();
-    assert.equal(toggle().checked, false, "web search is off by default");
-    assert.match(host.querySelector(".libera-agent-web-search")!.textContent!, /Allow web search/);
+    assert.equal(pressed(), false, "web search is off by default");
+    assert.equal(toggle().getAttribute("aria-label"), "Web search");
     await act(async () => { toggle().click(); });
-    assert.equal(toggle().checked, true);
+    assert.equal(pressed(), true);
     assert.equal(window.localStorage.getItem("libera.agentWebSearch"), "true");
     assert.ok(host.textContent!.includes("· Web search on"));
 
     // A fresh panel restores the setting.
     await act(async () => root.render(createElement("div")));
     await mount();
-    assert.equal(toggle().checked, true, "the toggle is saved like the mode");
+    assert.equal(pressed(), true, "the toggle is saved like the mode");
 
     const composer = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
     await act(async () => {

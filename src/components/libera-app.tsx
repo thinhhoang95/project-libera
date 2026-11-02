@@ -8,6 +8,8 @@ import { showOutlineView } from "@/components/libera/outline-view";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
 import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
 import { EditorThemesContext, NO_EDITOR_THEMES, useEditorThemes } from "@/components/libera/use-editor-themes";
+import { NotebookIllustrationsContext, useNotebookIllustrations } from "@/components/libera/use-notebook-illustrations";
+import { DEFAULT_NOTEBOOK_ILLUSTRATIONS, type NotebookIllustrationLibrary } from "../../electron/notebook-illustrations.cjs";
 import type { ResolvedEditorThemes } from "../../electron/editor-themes.cjs";
 import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
@@ -57,10 +59,12 @@ import type { QuickPrompt } from "@/lib/quick-prompts";
 import { type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
 import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
 import { ReadAloudBar } from "@/components/libera/read-aloud";
+import { AiActivityCard } from "@/components/libera/ai-activity-ui";
 import { MeetingRecorderProvider } from "@/components/libera/recording/meeting-recorder";
 import { CommandPalette } from "@/components/libera/command-palette/command-palette";
 import { openCommandPalette, usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { contextualPanelTabs, isContextualPanelTab, isPageKind, OPEN_PAGE_EVENT, OPEN_RAIL_TAB_EVENT, type ContextualPanelTab, type PageKind } from "@/components/libera/page-tabs";
+import { isLatexCitingPath } from "@/lib/references/latex-cite-syntax";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -69,6 +73,7 @@ type LiberaAppProps = {
   markdownDisplayPreferences?: Partial<MarkdownDisplayPreferences>;
   quickPrompts?: QuickPrompt[];
   editorThemes?: ResolvedEditorThemes;
+  notebookIllustrations?: NotebookIllustrationLibrary;
 };
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "libera.sidebarWidth";
@@ -111,10 +116,12 @@ export function LiberaApp({
   markdownDisplayPreferences,
   quickPrompts = NO_QUICK_PROMPTS,
   editorThemes = NO_EDITOR_THEMES,
+  notebookIllustrations = DEFAULT_NOTEBOOK_ILLUSTRATIONS,
 }: LiberaAppProps) {
   const aiActive = useAiActivity();
   useMarkdownAccents(markdownPreferences);
   const resolvedEditorThemes = useEditorThemes(editorThemes);
+  const illustrationLibrary = useNotebookIllustrations(notebookIllustrations);
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
@@ -264,6 +271,7 @@ export function LiberaApp({
     readTabDraft: workspace.readOpenTabDraft,
     syncTabFromDisk: workspace.syncTabFromDisk,
     restoreTabAfterUndo: workspace.restoreTabAfterUndo,
+    replaceTabFromDisk: workspace.replaceTabFromDisk,
     refreshAfterChanges: workspace.refreshAfterAgentChanges,
     openFile: (path) => {
       const file = workspace.files.find((item) => item.path === path);
@@ -283,22 +291,30 @@ export function LiberaApp({
   });
   const openReferenceDrafts = useMemo(
     () => workspace.tabs
-      .filter((tab) => tab.file.fileType === "markdown" && !tab.untitled && tab.draft !== tab.saved)
+      .filter((tab) => (tab.file.fileType === "markdown" || isLatexCitingPath(tab.file.path)) && !tab.untitled && tab.draft !== tab.saved)
       .map((tab) => ({ path: tab.file.path, text: tab.draft })),
     [workspace.tabs],
   );
+  const activeLatexSource = workspace.activeTab?.file.fileType === "latex" && isLatexCitingPath(workspace.activeTab.file.name) && !workspace.activeTab.page ? workspace.activeTab : null;
   const references: LeftPanelReferences = {
     activeMarkdownDraft: workspace.activeMarkdownDraft,
     activeDocumentPath: workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null,
     openDrafts: openReferenceDrafts,
-    canCite: workspace.activeTab?.file.fileType === "markdown",
-    onCite: (key) => { workspace.insertCitation(key); },
-    onCiteMany: (keys) => { workspace.insertCitation(keys); },
+    activeLatexDraft: activeLatexSource ? activeLatexSource.draft : null,
+    activeLatexPath: activeLatexSource && !activeLatexSource.untitled ? activeLatexSource.file.path : null,
+    canCite: workspace.activeTab?.file.fileType === "markdown" || Boolean(activeLatexSource),
+    citeSyntax: activeLatexSource ? "latex" : "markdown",
+    onCite: (key, command) => { workspace.insertCitation(key, command); },
+    onCiteMany: (keys, command) => { workspace.insertCitation(keys, command); },
     onInsertBibliography: () => { workspace.insertBibliographyMarker(); },
     onOpenPath: agentWorkspace.openFile,
     // The citation is selected and revealed, as a Global Search hit is.
-    onOpenCitation: (path, { start, end, line }) => {
-      const open = (file: LiberaFileNode) => void workspace.openFile(file, { viewState: { markdown: { line, selectionStart: start, selectionEnd: start, reveal: { start, end, nonce: Date.now() } } } });
+    onOpenCitation: (path, { start, end, line, snippet }) => {
+      const open = (file: LiberaFileNode) => void workspace.openFile(file, {
+        viewState: isLatexCitingPath(file.path)
+          ? { latex: { line, revealRange: { start, end, snippet, nonce: Date.now() } } }
+          : { markdown: { line, selectionStart: start, selectionEnd: start, reveal: { start, end, nonce: Date.now() } } },
+      });
       const file = workspace.files.find((item) => item.path === path);
       if (file) { open(file); return; }
       void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
@@ -544,6 +560,7 @@ export function LiberaApp({
         onAiWriteAt={workspace.writeWithAiAt}
         onCreateMarkdown={workspace.createMarkdownFromPrompt}
         onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
+        onChangeNotebookIllustration={workspace.changeNotebookIllustration}
         onCreateLatex={workspace.createLatexFromPrompt}
         onCreateNotebook={workspace.openCreateNotebookDialog}
         onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
@@ -595,6 +612,7 @@ export function LiberaApp({
     <MarkdownDisplayPreferencesProvider initialPreferences={markdownDisplayPreferences}>
     <QuickPromptsContext.Provider value={quickPrompts}>
     <EditorThemesContext.Provider value={resolvedEditorThemes}>
+    <NotebookIllustrationsContext.Provider value={illustrationLibrary}>
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <ReviewPaletteCommands />
@@ -890,11 +908,13 @@ export function LiberaApp({
       <ReviewPopover />
       <PdfQuoteCiteHost />
       <ReadAloudBar />
+      <AiActivityCard />
     </main>
     </MeetingRecorderProvider>
     </CollabProvider>
     </MarkdownReviewProvider>
     </WorkspaceViewContext.Provider>
+    </NotebookIllustrationsContext.Provider>
     </EditorThemesContext.Provider>
     </QuickPromptsContext.Provider>
     </MarkdownDisplayPreferencesProvider>

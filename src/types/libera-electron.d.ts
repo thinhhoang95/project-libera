@@ -78,6 +78,12 @@ declare global {
       notifyChanged: () => Promise<void>;
       onCommand: (listener: (command: LiberaDirectoryCommand) => void) => () => void;
     };
+    liberaReferences?: {
+      /** An existing .bib file, or (mode "create") the path for a new one. Null when canceled. */
+      chooseBibFile: (mode: "open" | "create") => Promise<string | null>;
+      /** Show a tethered .bib file (absolute path) in Finder or Explorer. */
+      revealBibFile: (filePath: string) => Promise<boolean>;
+    };
     liberaPlatform?: {
       isElectron: boolean;
       platform: string;
@@ -133,6 +139,7 @@ declare global {
       setTheme: (theme: "light" | "dark" | "system") => Promise<void>;
       onThemeChanged: (listener: (theme: "light" | "dark" | "system") => void) => () => void;
       onEditorThemesChanged?: (listener: (themes: import("../../electron/editor-themes.cjs").ResolvedEditorThemes) => void) => () => void;
+      onNotebookIllustrationsChanged?: (listener: (library: import("../../electron/notebook-illustrations.cjs").NotebookIllustrationLibrary) => void) => () => void;
     };
     liberaUpdater?: {
       getState: () => Promise<LiberaUpdaterState>;

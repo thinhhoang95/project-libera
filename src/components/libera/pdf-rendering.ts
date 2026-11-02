@@ -1,5 +1,27 @@
 import type { PDFPageProxy, TextContent } from "pdfjs-dist/types/src/display/api";
 
+// Displayed pages and their base/detail renders share a lease. Evict resources
+// as soon as a page leaves the render window, after its last render settles.
+const pageUsers = new WeakMap<PDFPageProxy, number>();
+
+export function retainPdfPage(page: PDFPageProxy): () => void {
+  pageUsers.set(page, (pageUsers.get(page) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (pageUsers.get(page) ?? 1) - 1;
+    pageUsers.set(page, remaining);
+    if (remaining) return;
+    // A zoom or immediate remount can acquire a new lease in this turn.
+    queueMicrotask(() => {
+      if (pageUsers.get(page) !== 0) return;
+      pageUsers.delete(page);
+      try { page.cleanup(); } catch { /* The document may already be destroyed. */ }
+    });
+  };
+}
+
 // About 32 MiB of RGBA pixels per displayed page, independent of zoom/DPR.
 export const PDF_MAX_CANVAS_PIXELS = 8 * 1024 * 1024;
 export const PDF_MAX_CANVAS_DIMENSION = 8192;

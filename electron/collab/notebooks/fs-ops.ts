@@ -119,6 +119,49 @@ function isBusy(error: unknown): boolean {
   return code === "EPERM" || code === "EBUSY" || code === "EACCES";
 }
 
+export interface WriteGuard {
+  /** Existing notebook root: parent creation must never recreate this directory. */
+  root: string;
+  canCommit(): Promise<boolean>;
+}
+
+export class WriteCancelledError extends Error {
+  constructor() { super("The notebook changed or stopped before the disk operation could finish."); }
+}
+
+export async function checkWriteGuard(guard?: WriteGuard): Promise<void> {
+  if (guard && !(await guard.canCommit())) throw new WriteCancelledError();
+}
+
+/** Fence the exact destination observation across IO and busy-file retries. */
+export function contentGuard(absolute: string, expected: string | null, guard: WriteGuard): WriteGuard {
+  return { root: guard.root, canCommit: async () => {
+    if (!(await guard.canCommit())) return false;
+    await resolveInside(guard.root, toRelative(guard.root, absolute));
+    const bytes = await readIfExists(absolute);
+    return (bytes === null ? null : sha256(bytes)) === expected;
+  } };
+}
+
+/** Create descendants one level at a time, without recursively resurrecting a root. */
+export async function ensureDirectory(directory: string, guard?: WriteGuard): Promise<void> {
+  await checkWriteGuard(guard);
+  if (!guard) { await fs.mkdir(directory, { recursive: true }); return; }
+  const relative = path.relative(guard.root, directory);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new WriteCancelledError();
+  let current = guard.root;
+  const root = await statIfExists(current);
+  if (!root?.isDirectory() || root.isSymbolicLink()) throw new WriteCancelledError();
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    await checkWriteGuard(guard);
+    current = path.join(current, segment);
+    try { await fs.mkdir(current); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    const stats = await fs.lstat(current);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new WriteCancelledError();
+  }
+}
+
 /**
  * Writes bytes atomically: a temp file in the same directory, then rename,
  * so readers (search, latexmk, the PDF viewer) never see a half-written file.
@@ -126,17 +169,19 @@ function isBusy(error: unknown): boolean {
  * target is held open, the bytes are copied over it in place instead: a
  * non-atomic write beats losing the change.
  */
-export async function writeFileAtomic(absolute: string, bytes: Uint8Array): Promise<Stats> {
+export async function writeFileAtomic(absolute: string, bytes: Uint8Array, guard?: WriteGuard): Promise<Stats> {
   const directory = path.dirname(absolute);
-  await fs.mkdir(directory, { recursive: true });
+  await ensureDirectory(directory, guard);
   const previous = await statIfExists(absolute);
   const temporary = path.join(directory, `${TEMP_PREFIX}${randomBytes(6).toString("hex")}`);
   try {
+    await checkWriteGuard(guard);
     await fs.writeFile(temporary, bytes, { flag: "wx", ...(previous ? { mode: previous.mode & 0o7777 } : {}) });
     if (previous) await fs.chmod(temporary, previous.mode & 0o7777).catch(() => undefined);
     let renamed = false;
     for (let attempt = 0; attempt < 8 && !renamed; attempt += 1) {
       try {
+        await checkWriteGuard(guard);
         await fs.rename(temporary, absolute);
         renamed = true;
       } catch (error) {
@@ -144,7 +189,10 @@ export async function writeFileAtomic(absolute: string, bytes: Uint8Array): Prom
         await sleep(25 * 2 ** attempt);
       }
     }
-    if (!renamed) await fs.copyFile(temporary, absolute);
+    if (!renamed) {
+      await checkWriteGuard(guard);
+      await fs.copyFile(temporary, absolute);
+    }
   } finally {
     await fs.rm(temporary, { force: true }).catch(() => undefined);
   }
@@ -152,10 +200,11 @@ export async function writeFileAtomic(absolute: string, bytes: Uint8Array): Prom
 }
 
 /** Moves a file or folder, creating the destination's parent. */
-export async function movePath(from: string, to: string): Promise<void> {
-  await fs.mkdir(path.dirname(to), { recursive: true });
+export async function movePath(from: string, to: string, guard?: WriteGuard): Promise<void> {
+  await ensureDirectory(path.dirname(to), guard);
   for (let attempt = 0; ; attempt += 1) {
     try {
+      await checkWriteGuard(guard);
       await fs.rename(from, to);
       return;
     } catch (error) {
@@ -183,46 +232,56 @@ export interface WalkEntry {
   kind: "file" | "folder";
   size: number;
   mtimeMs: number;
+  ctimeMs?: number;
+}
+
+export interface NotebookWalk {
+  entries: WalkEntry[];
+  skipped: string[];
+  /** False means unvisited paths are unknown, never confirmed deletions. */
+  complete: boolean;
 }
 
 /**
  * Lists what the notebook folder holds that could be shared. Symlinks are
  * skipped (never followed), as are ignored names and the local archive.
  */
-export async function walkNotebook(root: string, limit = 50_000): Promise<{ entries: WalkEntry[]; skipped: string[] }> {
+export async function walkNotebook(root: string, limit = 50_000): Promise<NotebookWalk> {
   const entries: WalkEntry[] = [];
   const skipped: string[] = [];
+  let complete = true;
   const visit = async (directory: string, prefix: string) => {
     let names: string[];
     try {
       names = await fs.readdir(directory);
     } catch (error) {
-      if (isNotFound(error)) return;
+      if (isNotFound(error)) { complete = false; return; }
       throw error;
     }
     names.sort();
     for (const name of names) {
-      if (entries.length >= limit) return;
+      if (entries.length >= limit) { complete = false; return; }
       const relative = prefix ? `${prefix}/${name}` : name;
       if (isIgnoredName(name)) continue;
       if (!prefix && name.toLowerCase() === ARCHIVE_DIRECTORY) continue;
       const absolute = path.join(directory, name);
       const stats = await statIfExists(absolute);
-      if (!stats || stats.isSymbolicLink()) continue;
+      if (!stats) { complete = false; continue; }
+      if (stats.isSymbolicLink()) { skipped.push(relative); continue; }
       if (!isShareablePath(relative)) {
         skipped.push(relative);
         continue;
       }
       if (stats.isDirectory()) {
-        entries.push({ relative, kind: "folder", size: 0, mtimeMs: stats.mtimeMs });
+        entries.push({ relative, kind: "folder", size: 0, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs });
         await visit(absolute, relative);
       } else if (stats.isFile()) {
-        entries.push({ relative, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs });
+        entries.push({ relative, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs });
       }
     }
   };
   await visit(root, "");
-  return { entries, skipped };
+  return { entries, skipped, complete };
 }
 
 /** Removes empty directories from `relative` upwards, stopping at the root or a non-empty one. */

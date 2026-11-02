@@ -1,8 +1,9 @@
 import { citationFrontMatterEnd, resolvedCitationOccurrences, scanCitations } from "./citation-syntax";
+import { isLatexCitingPath, latexCitedKeys, scanLatexCitations } from "./latex-cite-syntax";
 
 // Where a document cites an entry: each citation of one of its keys, with
 // the text around it, for the reference card's "Cited in" list. Offsets are
-// UTF-16 offsets into the Markdown source, like scanCitations'.
+// UTF-16 offsets into the Markdown or LaTeX source, like scanCitations'.
 
 export type CitationSnippet = {
   start: number;
@@ -31,19 +32,30 @@ function context(text: string, length: number, side: "before" | "after") {
   return `${space > length - 20 ? cut.slice(0, space) : cut}…`;
 }
 
-/** Every citation in `markdown` that cites one of `keys` (matched case-insensitively). Narrative `@key`s count. */
-export function citationSnippets(markdown: string, keys: readonly string[], contextLength = SNIPPET_CONTEXT): CitationSnippet[] {
+export type CitationSyntax = "markdown" | "latex";
+
+/** The citation syntax of a library-relative document path. */
+export function citationSyntaxForPath(path: string): CitationSyntax {
+  return isLatexCitingPath(path) ? "latex" : "markdown";
+}
+
+/** Every citation in `markdown` (or LaTeX source) that cites one of `keys` (matched case-insensitively). Narrative `@key`s count. */
+export function citationSnippets(markdown: string, keys: readonly string[], contextLength = SNIPPET_CONTEXT, syntax: CitationSyntax = "markdown"): CitationSnippet[] {
   const wanted = new Set(keys.map((key) => key.toLowerCase()));
   if (!wanted.size) return [];
-  const occurrences = resolvedCitationOccurrences(scanCitations(markdown), (key) => wanted.has(key.toLowerCase()));
+  const occurrences = syntax === "latex"
+    ? scanLatexCitations(markdown).filter((citation) => citation.keys.some((key) => wanted.has(key.toLowerCase())))
+    : resolvedCitationOccurrences(scanCitations(markdown), (key) => wanted.has(key.toLowerCase()))
+      .filter(({ citation }) => citation.items.some((item) => wanted.has(item.key.toLowerCase())));
   // Context never reaches back into the front matter.
-  const bodyStart = citationFrontMatterEnd(markdown);
+  const bodyStart = syntax === "latex" ? 0 : citationFrontMatterEnd(markdown);
   const snippets: CitationSnippet[] = [];
   let line = 1;
   let counted = 0;
-  for (const { citation, start, end } of occurrences) {
-    if (!citation.items.some((item) => wanted.has(item.key.toLowerCase()))) continue;
-    for (let index = counted; index < start; index += 1) if (markdown.charCodeAt(index) === 10) line += 1;
+  for (const { start, end } of occurrences) {
+    for (let index = counted; index < start; index += 1) {
+      if (markdown[index] === "\n" || (markdown[index] === "\r" && markdown[index + 1] !== "\n")) line += 1;
+    }
     counted = start;
     snippets.push({
       start,
@@ -55,4 +67,14 @@ export function citationSnippets(markdown: string, keys: readonly string[], cont
     });
   }
   return snippets;
+}
+
+/** Re-find a snippet in the live editor: its draft may have changed since the card loaded it. */
+export function relocateLatexCitation(source: string, snippet: CitationSnippet): CitationSnippet | null {
+  const candidates = citationSnippets(source, latexCitedKeys(snippet.match), SNIPPET_CONTEXT, "latex");
+  const score = (candidate: CitationSnippet) => Number(candidate.match === snippet.match)
+    + Number(Boolean(snippet.before) && candidate.before === snippet.before) * 2
+    + Number(Boolean(snippet.after) && candidate.after === snippet.after) * 2;
+  candidates.sort((a, b) => score(b) - score(a) || Math.abs(a.start - snippet.start) - Math.abs(b.start - snippet.start));
+  return candidates.length && score(candidates[0]) ? candidates[0] : null;
 }

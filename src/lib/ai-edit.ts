@@ -101,7 +101,8 @@ function userMessage(action: AiEditAction, language: string, prompt: string, tex
     : `${location}${followUp ? "Write with AI instruction" : "Instruction"}:\n${prompt}`;
 }
 
-export async function runAiEdit(action: AiEditAction, body: { prompt?: string; text?: string; before?: string; after?: string; format?: string; thread?: unknown }) {
+/** `signal` is the incoming request's, so a cancelled edit stops the model call too (even while it is still reasoning). */
+export async function runAiEdit(action: AiEditAction, body: { prompt?: string; text?: string; before?: string; after?: string; format?: string; thread?: unknown }, signal?: AbortSignal) {
   const latex = body.format === "latex";
   const language = latex ? "LaTeX" : "Markdown";
   const thread = readThread(body.thread);
@@ -116,7 +117,7 @@ export async function runAiEdit(action: AiEditAction, body: { prompt?: string; t
     { role: "user", content: user },
   ];
   const sessionId = options.promptCaching ? thread?.id : undefined;
-  const result = await createOpenRouterCompletion(messages, { ...options, ...(sessionId ? { sessionId } : {}) });
+  const result = await createOpenRouterCompletion(messages, { ...options, ...(sessionId ? { sessionId } : {}), signal });
   // One line per request, like document chat, so a thread's cache reads are visible.
   const cached = result.usage?.cachedTokens;
   console.info(`[ai-edit] action=${action} model=${options.model} thread=${sessionId?.slice(0, 8) ?? "-"} turn=${turns.length + 1} provider=${result.generation?.provider ?? "unknown"} input=${result.usage?.inputTokens ?? "?"} cached=${cached ?? "unreported"}`);

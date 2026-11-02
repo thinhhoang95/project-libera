@@ -19,9 +19,14 @@ import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state
 import type { TextTabViewState } from "@/components/libera/types";
 import { registerEditorSelectionReader } from "@/components/libera/editor-selection-registry";
 import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
+import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
+import { reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
+import { LatexChangeBar } from "@/components/libera/latex/latex-change-bar";
 
 type CodeEditorProps = {
   fileName: string;
+  /** The file's library path, for the agent's manual review; none for untitled or shared tabs. */
+  documentPath?: string;
   value: string;
   fontFamily: string;
   fontSizePx: number;
@@ -45,7 +50,7 @@ const VIEW_STATE_DELAY_MS = 300;
 
 /** A CodeMirror editor for plain-text and code files, highlighted by file name. */
 export function CodeEditor({
-  fileName, value, fontFamily, fontSizePx, lineHeight, initialViewState, saving,
+  fileName, documentPath, value, fontFamily, fontSizePx, lineHeight, initialViewState, saving,
   onChange, onRegisterDraft, onViewStateChange, onSave, collab,
 }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -57,10 +62,13 @@ export function CodeEditor({
   const lastPublishedRef = useRef(value);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName, collab });
+  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath });
   const shared = !!collab;
   const [cursor, setCursor] = useState({ line: 1, column: 1, selected: 0 });
   const [menu, setMenu] = useState<CodeEditorMenuState | null>(null);
+  const [view, setView] = useState<EditorView | null>(null);
+  // The agent's changes under manual review, for the change bar.
+  const [agentHunks, setAgentHunks] = useState<ReviewHunk[]>([]);
 
   const publishDraft = useCallback(() => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
@@ -135,12 +143,17 @@ export function CodeEditor({
         highlightActiveLine(),
         highlightSelectionMatches(),
         search({ top: true }),
+        ...(!binding && initialRef.current.documentPath
+          ? [agentReviewCodeMirror(initialRef.current.documentPath, { outside: (transaction) => transaction.annotation(Transaction.remote) === true })]
+          : []),
         syntaxHighlighting(codeHighlightStyle),
         language.of([]),
         ...(wrap ? [EditorView.lineWrapping] : []),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, indentWithTab]),
         EditorView.contentAttributes.of({ "aria-label": `${name} source editor`, spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
         EditorView.updateListener.of((update) => {
+          const hunks = update.state.field(reviewHunksField, false);
+          if (hunks !== update.startState.field(reviewHunksField, false)) setAgentHunks(hunks ?? []);
           if (!binding && update.docChanged && !update.transactions.some((transaction) => transaction.annotation(Transaction.remote))) {
             if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
             draftTimerRef.current = setTimeout(() => startTransition(() => { publishDraft(); }), DRAFT_DELAY_MS);
@@ -177,6 +190,7 @@ export function CodeEditor({
     const created = new EditorView({ state, parent: host });
     binding?.attach(created);
     viewRef.current = created;
+    setView(created);
     const head = created.state.selection.main.head;
     const headLine = created.state.doc.lineAt(head);
     setCursor({ line: headLine.number, column: head - headLine.from + 1, selected: 0 });
@@ -218,6 +232,7 @@ export function CodeEditor({
       binding?.destroy();
       created.destroy();
       viewRef.current = null;
+      setView(null);
     };
   }, [publishDraft, reportViewState]);
 
@@ -279,6 +294,7 @@ export function CodeEditor({
         style={{ "--latex-editor-font": fontFamily, "--latex-editor-font-size": `${fontSizePx}px`, "--latex-editor-line-height": String(lineHeight) } as CSSProperties}
       >
         <div ref={hostRef} className="absolute inset-0" />
+        {view && agentHunks.length ? <LatexChangeBar view={view} hunks={agentHunks} /> : null}
       </div>
       {menu ? <CodeEditorMenu view={menu.view} menu={menu} onClose={() => setMenu(null)} /> : null}
       <div className="libera-code-editor-status flex shrink-0 items-center gap-4 border-t border-border bg-card px-3 py-1 text-xs text-muted-foreground">

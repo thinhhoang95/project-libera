@@ -67,6 +67,7 @@ test("Agent mode sends open drafts and scope, shows activity, syncs tabs, and un
     readTabDraft: (path) => path === plan.id ? "# Plan (live draft)" : path === other.id ? other.draft : null,
     syncTabFromDisk: async (path, baseline) => { synced.push([path, baseline]); return { content: "# Plan\n\n50k\n", keptDraft: false }; },
     restoreTabAfterUndo: (path, result) => { restored.push([path, result]); },
+    replaceTabFromDisk: () => undefined,
     refreshAfterChanges: async (created) => { refreshed.push(created); },
     openFile: (path) => { opened.push(path); },
   };

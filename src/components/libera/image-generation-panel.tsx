@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, ImagePlus, Images, Loader2, RotateCcw, Sparkles, Square, X } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { AiPanelGlow } from "./ai-activity-ui";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { applyGallery, refreshGallery, subscribeReusePrompt, subscribeReferenceRequests, useGallery } from "@/components/libera/gallery-store";
 import {
@@ -343,161 +344,165 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
 
   const parameterNames = model ? IMAGE_PARAMETER_ORDER.filter((name) => model.parameters[name]) : [];
 
-  return <div className="flex min-h-0 flex-1 flex-col">
-    <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
-      <h2 className="min-w-0 truncate text-sm font-semibold">Create images</h2>
-      <span className="inline-flex h-[29px] w-[29px] items-center justify-center text-muted-foreground"><Images aria-hidden className="h-4 w-4" /></span>
-    </div>
-    <form className={`min-h-0 flex-1 space-y-5 overflow-auto px-3 pb-4 pt-1 ${dragging ? "outline-2 -outline-offset-4 outline-dashed outline-[#457be6]/60" : ""}`}
-      onSubmit={(event) => { event.preventDefault(); void generate(); }}
-      onBlurCapture={() => { void flushSettings().catch(() => undefined); }}
-      onPointerUp={(event) => {
-        if (event.target instanceof HTMLInputElement && event.target.type === "range") void flushSettings().catch(() => undefined);
-      }}
-      onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes("Files")) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-        setDragging(true);
-      }}
-      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
-      onDrop={(event) => {
-        if (!event.dataTransfer.files.length) return;
-        event.preventDefault();
-        setDragging(false);
-        void addReferences([...event.dataTransfer.files].map((file) => ({ blob: file, name: file.name })));
-      }}>
-      <div>
-        <label className={label} htmlFor="image-generation-prompt">Prompt</label>
-        <textarea id="image-generation-prompt" ref={promptRef} rows={5} placeholder="A quiet reading room at dusk, warm lamps, rain on tall windows…"
-          className="libera-panel-field w-full resize-y px-3 py-2.5 text-[13px] leading-relaxed"
-          value={prompt}
-          onChange={(event) => { setPrompt(event.target.value); }}
-          onPaste={(event) => {
-            const images = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
-            if (!images.length) return;
-            event.preventDefault();
-            void addReferences(images.map((file, index) => ({ blob: file, name: file.name || `Pasted image ${index + 1}` })));
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+  // The glow reaches into the tab panel's right padding so it spans the whole panel.
+  return <div className="relative -mr-1.5 flex min-h-0 flex-1 flex-col overflow-hidden">
+    <AiPanelGlow active={generating} />
+    <div className="relative flex min-h-0 flex-1 flex-col pr-1.5">
+      <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
+        <h2 className="min-w-0 truncate text-sm font-semibold">Create images</h2>
+        <span className="inline-flex h-[29px] w-[29px] items-center justify-center text-muted-foreground"><Images aria-hidden className="h-4 w-4" /></span>
+      </div>
+      <form className={`min-h-0 flex-1 space-y-5 overflow-auto px-3 pb-4 pt-1 ${dragging ? "outline-2 -outline-offset-4 outline-dashed outline-[#457be6]/60" : ""}`}
+        onSubmit={(event) => { event.preventDefault(); void generate(); }}
+        onBlurCapture={() => { void flushSettings().catch(() => undefined); }}
+        onPointerUp={(event) => {
+          if (event.target instanceof HTMLInputElement && event.target.type === "range") void flushSettings().catch(() => undefined);
+        }}
+        onDragOver={(event) => {
+          if (!event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+          setDragging(true);
+        }}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
+        onDrop={(event) => {
+          if (!event.dataTransfer.files.length) return;
+          event.preventDefault();
+          setDragging(false);
+          void addReferences([...event.dataTransfer.files].map((file) => ({ blob: file, name: file.name })));
+        }}>
+        <div>
+          <label className={label} htmlFor="image-generation-prompt">Prompt</label>
+          <textarea id="image-generation-prompt" ref={promptRef} rows={5} placeholder="A quiet reading room at dusk, warm lamps, rain on tall windows…"
+            className="libera-panel-field w-full resize-y px-3 py-2.5 text-[13px] leading-relaxed"
+            value={prompt}
+            onChange={(event) => { setPrompt(event.target.value); }}
+            onPaste={(event) => {
+              const images = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+              if (!images.length) return;
               event.preventDefault();
-              void generate();
-            }
-          }} />
-      </div>
-
-      <div>
-        <div className="mb-1.5 flex items-baseline justify-between gap-2">
-          <span className="px-1 text-xs font-medium text-muted-foreground" id="image-generation-references">Reference photos</span>
-          {model && referenceLimit.max > 0 && <span className={`pr-1 text-[11px] tabular-nums ${referencesFit ? "text-muted-foreground" : "text-destructive"}`}>{references.length}/{referenceLimit.max}{referenceLimit.min > 0 ? ` · needs ${referenceLimit.min}+` : ""}</span>}
+              void addReferences(images.map((file, index) => ({ blob: file, name: file.name || `Pasted image ${index + 1}` })));
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                void generate();
+              }
+            }} />
         </div>
-        <div className="grid grid-cols-4 gap-1.5" role="group" aria-labelledby="image-generation-references">
-          {references.map((reference) => <div key={reference.id} className="libera-panel-tile group/reference relative aspect-square overflow-hidden" title={reference.name}>
-            {/* eslint-disable-next-line @next/next/no-img-element -- local data URL preview */}
-            <img src={reference.dataUrl} alt={reference.name} className="h-full w-full object-cover" />
-            <button type="button" aria-label={`Remove ${reference.name}`} disabled={generating}
-              className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition focus-visible:opacity-100 group-hover/reference:opacity-100"
-              onClick={() => setReferences((current) => current.filter((item) => item.id !== reference.id))}>
-              <X aria-hidden className="h-3 w-3" />
-            </button>
-          </div>)}
-          {(referenceLimit.max === 0 || references.length < referenceLimit.max) && <button type="button" disabled={generating || addingReferences || (Boolean(model) && referenceLimit.max === 0)}
-            title={model && referenceLimit.max === 0 ? `${model.name} does not take reference photos` : "Add photos (or drop or paste them here)"}
-            data-dashed="true" className="libera-panel-tile flex aspect-square flex-col items-center justify-center gap-1 text-[11px]"
-            onClick={() => fileInputRef.current?.click()}>
-            {addingReferences ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <ImagePlus aria-hidden className="h-4 w-4" />}
-            Add
-          </button>}
-        </div>
-        <input ref={fileInputRef} type="file" accept="image/*" multiple hidden
-          onChange={(event) => {
-            const files = [...(event.target.files ?? [])];
-            event.target.value = "";
-            void addReferences(files.map((file) => ({ blob: file, name: file.name })));
-          }} />
-        <p className="mt-1.5 px-1 text-xs leading-relaxed text-muted-foreground">{model && referenceLimit.max === 0
-          ? `${model.name} works from the prompt alone. Pick another model to edit or build on photos.`
-          : references.length > referenceLimit.max
-            ? `This model takes up to ${referenceLimit.max}. Remove ${references.length - referenceLimit.max} to continue.`
-            : "Upload, drop, or paste photos for the model to edit or take after."}</p>
-      </div>
 
-      <div>
-        <label className={label} htmlFor="image-generation-model">Model</label>
-        <select id="image-generation-model" className={field} disabled={!settings || !models?.length || generating} value={settings?.model ?? ""}
-          onChange={(event) => updateSettings((current) => ({ ...current, model: event.target.value }))}>
-          {settings && models && !model && <option value={settings.model}>{models.length ? `${settings.model} (unavailable)` : settings.model}</option>}
-          {models?.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-        </select>
-        {!models && <p className="mt-1.5 px-1 text-xs text-muted-foreground">Loading models…</p>}
-        {modelsError && <p role="alert" className="mt-1.5 px-1 text-xs text-destructive">{modelsError}</p>}
-        {model?.description && <p className="mt-1.5 line-clamp-2 px-1 text-xs leading-relaxed text-muted-foreground" title={model.description}>{model.description}</p>}
-      </div>
-
-      {parameterNames.length > 0 && <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className={section}>Settings</h3>
-          {Object.keys(params).length > 0 && <button type="button" className="libera-sidebar-icon-button inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs" disabled={generating}
-            onClick={() => updateSettings((current) => ({ ...current, paramsByModel: { ...current.paramsByModel, [current.model]: {} } }))}>
-            <RotateCcw aria-hidden className="h-3 w-3" />Reset
-          </button>}
-        </div>
-        {parameterNames.map((name) => <ParameterControl key={`${model?.id}-${name}`} name={name} descriptor={model!.parameters[name]} value={params[name]} disabled={generating} onChange={(value) => setParam(name, value)} />)}
-      </div>}
-
-      <fieldset className="space-y-2">
-        <legend className={label}>Save to</legend>
-        <div className="libera-panel-segmented" role="group" aria-label="Save destination">
-          <button type="button" aria-pressed={destination.kind === "gallery"} disabled={generating}
-            onClick={() => setDestination({ kind: "gallery", album: destination.kind === "gallery" ? destination.album : "" })}>Gallery</button>
-          <button type="button" aria-pressed={destination.kind === "folder"} disabled={generating || !folders.length}
-            onClick={() => setDestination({ kind: "folder", path: destination.kind === "folder" ? destination.path : folders[0]?.path ?? "" })}>Notebook folder</button>
-        </div>
-        {destination.kind === "gallery" ? <>
-          {newAlbum === null ? <select aria-label="Album" className={field} disabled={generating} value={destinationAlbum?.id ?? ""}
+        <div>
+          <div className="mb-1.5 flex items-baseline justify-between gap-2">
+            <span className="px-1 text-xs font-medium text-muted-foreground" id="image-generation-references">Reference photos</span>
+            {model && referenceLimit.max > 0 && <span className={`pr-1 text-[11px] tabular-nums ${referencesFit ? "text-muted-foreground" : "text-destructive"}`}>{references.length}/{referenceLimit.max}{referenceLimit.min > 0 ? ` · needs ${referenceLimit.min}+` : ""}</span>}
+          </div>
+          <div className="grid grid-cols-4 gap-1.5" role="group" aria-labelledby="image-generation-references">
+            {references.map((reference) => <div key={reference.id} className="libera-panel-tile group/reference relative aspect-square overflow-hidden" title={reference.name}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- local data URL preview */}
+              <img src={reference.dataUrl} alt={reference.name} className="h-full w-full object-cover" />
+              <button type="button" aria-label={`Remove ${reference.name}`} disabled={generating}
+                className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition focus-visible:opacity-100 group-hover/reference:opacity-100"
+                onClick={() => setReferences((current) => current.filter((item) => item.id !== reference.id))}>
+                <X aria-hidden className="h-3 w-3" />
+              </button>
+            </div>)}
+            {(referenceLimit.max === 0 || references.length < referenceLimit.max) && <button type="button" disabled={generating || addingReferences || (Boolean(model) && referenceLimit.max === 0)}
+              title={model && referenceLimit.max === 0 ? `${model.name} does not take reference photos` : "Add photos (or drop or paste them here)"}
+              data-dashed="true" className="libera-panel-tile flex aspect-square flex-col items-center justify-center gap-1 text-[11px]"
+              onClick={() => fileInputRef.current?.click()}>
+              {addingReferences ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <ImagePlus aria-hidden className="h-4 w-4" />}
+              Add
+            </button>}
+          </div>
+          <input ref={fileInputRef} type="file" accept="image/*" multiple hidden
             onChange={(event) => {
-              if (event.target.value === NEW_ALBUM) setNewAlbum("");
-              else setDestination({ kind: "gallery", album: event.target.value });
-            }}>
-            <option value="">Photos (no album)</option>
-            {albums.map((album) => <option key={album.id} value={album.id}>{album.name}</option>)}
-            <option value={NEW_ALBUM}>New album…</option>
-          </select> : <div className="flex gap-1.5">
-            <input autoFocus aria-label="New album name" maxLength={120} className={field} placeholder="Album name" value={newAlbum}
-              onChange={(event) => setNewAlbum(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") { event.preventDefault(); if (newAlbum.trim()) void createAlbumForDestination(newAlbum.trim()); }
-                if (event.key === "Escape") { event.preventDefault(); setNewAlbum(null); }
-              }} />
-            <button type="button" className="libera-panel-button shrink-0 px-3" disabled={!newAlbum.trim()} onClick={() => void createAlbumForDestination(newAlbum.trim())}>Create</button>
-          </div>}
-          {albumMissing && <p className="px-1 text-xs text-muted-foreground">That album was deleted, so images go to Photos.</p>}
-        </> : <>
-          <select aria-label="Notebook folder" className={field} disabled={generating} value={folderMissing ? "" : destination.path}
-            onChange={(event) => setDestination({ kind: "folder", path: event.target.value })}>
-            {folderMissing && <option value="">Choose a folder</option>}
-            {folders.map((folder) => <option key={folder.path} value={folder.path}>{folder.label}</option>)}
+              const files = [...(event.target.files ?? [])];
+              event.target.value = "";
+              void addReferences(files.map((file) => ({ blob: file, name: file.name })));
+            }} />
+          <p className="mt-1.5 px-1 text-xs leading-relaxed text-muted-foreground">{model && referenceLimit.max === 0
+            ? `${model.name} works from the prompt alone. Pick another model to edit or build on photos.`
+            : references.length > referenceLimit.max
+              ? `This model takes up to ${referenceLimit.max}. Remove ${references.length - referenceLimit.max} to continue.`
+              : "Upload, drop, or paste photos for the model to edit or take after."}</p>
+        </div>
+
+        <div>
+          <label className={label} htmlFor="image-generation-model">Model</label>
+          <select id="image-generation-model" className={field} disabled={!settings || !models?.length || generating} value={settings?.model ?? ""}
+            onChange={(event) => updateSettings((current) => ({ ...current, model: event.target.value }))}>
+            {settings && models && !model && <option value={settings.model}>{models.length ? `${settings.model} (unavailable)` : settings.model}</option>}
+            {models?.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
           </select>
-          <p className="px-1 text-xs leading-relaxed text-muted-foreground">{folderMissing ? `“${destination.path}” is no longer available. Choose another folder.` : "Images saved here stay with the notebook and are not added to the gallery."}</p>
-        </>}
-      </fieldset>
+          {!models && <p className="mt-1.5 px-1 text-xs text-muted-foreground">Loading models…</p>}
+          {modelsError && <p role="alert" className="mt-1.5 px-1 text-xs text-destructive">{modelsError}</p>}
+          {model?.description && <p className="mt-1.5 line-clamp-2 px-1 text-xs leading-relaxed text-muted-foreground" title={model.description}>{model.description}</p>}
+        </div>
 
-      {error && <div role="alert" className="rounded-lg bg-destructive-muted p-3 text-xs leading-relaxed text-destructive">{error}</div>}
+        {parameterNames.length > 0 && <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className={section}>Settings</h3>
+            {Object.keys(params).length > 0 && <button type="button" className="libera-sidebar-icon-button inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs" disabled={generating}
+              onClick={() => updateSettings((current) => ({ ...current, paramsByModel: { ...current.paramsByModel, [current.model]: {} } }))}>
+              <RotateCcw aria-hidden className="h-3 w-3" />Reset
+            </button>}
+          </div>
+          {parameterNames.map((name) => <ParameterControl key={`${model?.id}-${name}`} name={name} descriptor={model!.parameters[name]} value={params[name]} disabled={generating} onChange={(value) => setParam(name, value)} />)}
+        </div>}
 
-      {generating ? <button type="button" className="libera-panel-button w-full gap-2 px-4 py-2.5 text-[13px]" onClick={() => abortRef.current?.abort()}>
-        <Loader2 aria-hidden className="h-4 w-4 animate-spin" />Generating… <span className="inline-flex items-center gap-1 text-muted-foreground"><Square aria-hidden className="h-3 w-3" />Stop</span>
-      </button> : <button type="submit" disabled={!ready} className="libera-panel-primary w-full px-4 py-2.5" title="Generate (⌘↵)">
-        <Sparkles aria-hidden className="h-4 w-4" />Generate
-      </button>}
+        <fieldset className="space-y-2">
+          <legend className={label}>Save to</legend>
+          <div className="libera-panel-segmented" role="group" aria-label="Save destination">
+            <button type="button" aria-pressed={destination.kind === "gallery"} disabled={generating}
+              onClick={() => setDestination({ kind: "gallery", album: destination.kind === "gallery" ? destination.album : "" })}>Gallery</button>
+            <button type="button" aria-pressed={destination.kind === "folder"} disabled={generating || !folders.length}
+              onClick={() => setDestination({ kind: "folder", path: destination.kind === "folder" ? destination.path : folders[0]?.path ?? "" })}>Notebook folder</button>
+          </div>
+          {destination.kind === "gallery" ? <>
+            {newAlbum === null ? <select aria-label="Album" className={field} disabled={generating} value={destinationAlbum?.id ?? ""}
+              onChange={(event) => {
+                if (event.target.value === NEW_ALBUM) setNewAlbum("");
+                else setDestination({ kind: "gallery", album: event.target.value });
+              }}>
+              <option value="">Photos (no album)</option>
+              {albums.map((album) => <option key={album.id} value={album.id}>{album.name}</option>)}
+              <option value={NEW_ALBUM}>New album…</option>
+            </select> : <div className="flex gap-1.5">
+              <input autoFocus aria-label="New album name" maxLength={120} className={field} placeholder="Album name" value={newAlbum}
+                onChange={(event) => setNewAlbum(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") { event.preventDefault(); if (newAlbum.trim()) void createAlbumForDestination(newAlbum.trim()); }
+                  if (event.key === "Escape") { event.preventDefault(); setNewAlbum(null); }
+                }} />
+              <button type="button" className="libera-panel-button shrink-0 px-3" disabled={!newAlbum.trim()} onClick={() => void createAlbumForDestination(newAlbum.trim())}>Create</button>
+            </div>}
+            {albumMissing && <p className="px-1 text-xs text-muted-foreground">That album was deleted, so images go to Photos.</p>}
+          </> : <>
+            <select aria-label="Notebook folder" className={field} disabled={generating} value={folderMissing ? "" : destination.path}
+              onChange={(event) => setDestination({ kind: "folder", path: event.target.value })}>
+              {folderMissing && <option value="">Choose a folder</option>}
+              {folders.map((folder) => <option key={folder.path} value={folder.path}>{folder.label}</option>)}
+            </select>
+            <p className="px-1 text-xs leading-relaxed text-muted-foreground">{folderMissing ? `“${destination.path}” is no longer available. Choose another folder.` : "Images saved here stay with the notebook and are not added to the gallery."}</p>
+          </>}
+        </fieldset>
 
-      {result && <div role="status" className="libera-panel-card p-3 text-xs leading-relaxed">
-        {result.photos ? <p>{result.photos.length === 1 ? "Saved to your gallery." : `${result.photos.length} images saved to your gallery.`}</p> : null}
-        {result.files?.map((file) => <button key={file.path} type="button" className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:text-[#457be6]" onClick={() => onOpenFile(file)}>
-          <FolderOpen aria-hidden className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 truncate">Open {file.name}</span>
-        </button>)}
-        {typeof result.cost === "number" && <p className="mt-1 text-muted-foreground">Cost: ${result.cost.toFixed(3)}</p>}
-      </div>}
-    </form>
+        {error && <div role="alert" className="rounded-lg bg-destructive-muted p-3 text-xs leading-relaxed text-destructive">{error}</div>}
+
+        {generating ? <button type="button" className="libera-panel-button w-full gap-2 px-4 py-2.5 text-[13px]" onClick={() => abortRef.current?.abort()}>
+          <Loader2 aria-hidden className="h-4 w-4 animate-spin" />Generating… <span className="inline-flex items-center gap-1 text-muted-foreground"><Square aria-hidden className="h-3 w-3" />Stop</span>
+        </button> : <button type="submit" disabled={!ready} className="libera-panel-primary w-full px-4 py-2.5" title="Generate (⌘↵)">
+          <Sparkles aria-hidden className="h-4 w-4" />Generate
+        </button>}
+
+        {result && <div role="status" className="libera-panel-card p-3 text-xs leading-relaxed">
+          {result.photos ? <p>{result.photos.length === 1 ? "Saved to your gallery." : `${result.photos.length} images saved to your gallery.`}</p> : null}
+          {result.files?.map((file) => <button key={file.path} type="button" className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:text-[#457be6]" onClick={() => onOpenFile(file)}>
+            <FolderOpen aria-hidden className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 truncate">Open {file.name}</span>
+          </button>)}
+          {typeof result.cost === "number" && <p className="mt-1 text-muted-foreground">Cost: ${result.cost.toFixed(3)}</p>}
+        </div>}
+      </form>
+    </div>
   </div>;
 }

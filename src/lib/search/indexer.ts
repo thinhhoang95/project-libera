@@ -19,11 +19,13 @@ import { pdfHighlightChunks, pdfHighlightSignature } from "@/lib/search/pdf-high
 import { currentReferenceSignature, parseReferenceRecordKey, readReferenceSource, type ReferenceRecord } from "@/lib/search/references-source";
 import { getSearchPreferences, searchIndexFile, type SearchPreferences } from "@/lib/search/settings";
 import { getSearchWorker } from "@/lib/search/worker-client";
+import { embeddingDeferral } from "@/lib/search/embedding-policy";
+import { latexBuildProductFilter } from "@/lib/search/latex-products";
 import { readFileSignature } from "@/lib/storage/file-signature";
 import { readTranscript, transcriptSignature } from "@/lib/storage/transcripts";
 import { transcriptPassages } from "@/lib/transcription/format";
 import { getGallery, getGalleryRoot } from "@/lib/storage/gallery";
-import { filePathFromParts, getAdminRoot, getLinkedFolder, getLinkedFolders, referenceLibraryPath, splitFilePath } from "@/lib/storage/paths";
+import { filePathFromParts, getAdminRoot, getLinkedFolder, getLinkedFolders, notebookPath, referenceLibraryPath, splitFilePath } from "@/lib/storage/paths";
 import { referenceLibraryNotebooks } from "@/lib/storage/references";
 import { pageTextFromItems, readPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { isVisibleTreeFile } from "@/lib/storage/tree";
@@ -43,6 +45,8 @@ const MIN_SCAN_INTERVAL_MS = 30_000;
 const CHANGE_DEBOUNCE_MS = 1_000;
 const MAX_IMMEDIATE_PASSES = 3;
 const UNSTABLE_RETRY_MS = 30_000;
+/** Scheduled passes recheck power and edited preferences this often. */
+const WAKE_RECHECK_MS = 30_000;
 
 type IndexState = SearchIndexStatus["state"];
 
@@ -138,6 +142,11 @@ export class SearchIndexer {
   private rebuildFile = "";
   private preparedKey = "";
   private embeddingEpoch = 0;
+  private wakeTimer: ReturnType<typeof setTimeout> | null = null;
+  private embeddingAttempt: { db: SearchDatabase; preferences: SearchPreferences } | null = null;
+  /** Passages wait for vectors; refreshed when the index opens and after each pass. */
+  private embeddingsWaiting = false;
+  private keywordPassStarted = false;
   /** Entries that match no file; hidden from searches until the scan removes them. */
   private staleFileIds = new Set<number>();
   private unavailablePaths = new Set<string>();
@@ -174,6 +183,7 @@ export class SearchIndexer {
     this.dbRoot = root;
     this.dbIdentity = indexIdentity(file);
     this.mismatch = db.prepareVectors(getSearchPreferences().dimensions, "", "", false, !create && !this.indexingAllowed());
+    this.refreshEmbeddingsWaiting(db);
     return db;
   }
 
@@ -270,7 +280,85 @@ export class SearchIndexer {
   }
 
   private canEmbed(db: SearchDatabase, preferences: SearchPreferences, epoch: number) {
-    return this.canIndex(db, preferences) && this.embeddingEpoch === epoch && !this.mismatch;
+    return this.canIndex(db, preferences) && this.embeddingEpoch === epoch && !this.mismatch &&
+      !embeddingDeferral(preferences, 0, true);
+  }
+
+  /** A timestamp kept in the index, so restarts cannot skip a wait. A clock set back restarts the wait. */
+  private persistedTime(db: SearchDatabase, key: string) {
+    const value = Number(db.getMeta(key));
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    if (value <= Date.now()) return value;
+    db.setMeta(key, String(Date.now()));
+    return Date.now();
+  }
+
+  private lastEmbeddingAttempt(db: SearchDatabase) {
+    return this.persistedTime(db, "last_embedding_attempt_at");
+  }
+
+  private keywordWorkQueued() {
+    return this.fullScanRequested || this.changedPaths.size > 0 || this.galleryChanged || this.referenceNotebooks.size > 0 || this.allReferencesChanged;
+  }
+
+  private keywordDueAt(db: SearchDatabase, preferences: SearchPreferences) {
+    const last = this.persistedTime(db, "last_keyword_pass_at");
+    return last && last + preferences.keywordIntervalMinutes * 60_000;
+  }
+
+  private excludedFileIds(db: SearchDatabase) {
+    return this.unavailablePaths.size ? db.listFiles().filter((file) => this.isUnavailable(file)).map((file) => file.id) : [];
+  }
+
+  private refreshEmbeddingsWaiting(db: SearchDatabase, preferences = getSearchPreferences()) {
+    const worker = getSearchWorker();
+    try {
+      this.embeddingsWaiting = worker.configured && db.countPending(preferences.indexImages && worker.visionConfigured, this.excludedFileIds(db)) > 0;
+    } catch {
+      this.embeddingsWaiting = false;
+    }
+  }
+
+  /**
+   * When the next automatic pass may start, or undefined when none is needed.
+   * Queued keyword work runs only once its wait has passed, and a pass always
+   * takes the queued work with it, so embeddings due earlier wait for it too.
+   */
+  private nextAutomaticPass(db: SearchDatabase, preferences: SearchPreferences) {
+    // A pending debounce or unstable-file backoff starts that pass itself.
+    if (this.keywordWorkQueued()) return this.changeTimer ? undefined : this.keywordDueAt(db, preferences);
+    if (!this.embeddingsWaiting || this.mismatch || !getSearchWorker().configured) return undefined;
+    const deferral = embeddingDeferral(preferences, this.lastEmbeddingAttempt(db));
+    if (deferral === "interval") return this.lastEmbeddingAttempt(db) + preferences.embeddingIntervalMinutes * 60_000;
+    // Power is polled; nothing announces the adapter to the server.
+    return deferral ? Date.now() + WAKE_RECHECK_MS : 0;
+  }
+
+  /**
+   * One timer starts scheduled passes, even when Search is closed and no file
+   * changes. An armed timer is kept unless `restart`, so frequent requests
+   * cannot keep postponing it; each wake re-evaluates from scratch.
+   */
+  private scheduleWake(restart = false) {
+    if (this.wakeTimer && !restart) return;
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
+    this.wakeTimer = null;
+    const db = this.db;
+    if (!db || !this.automaticUpdatesAllowed()) return;
+    const due = this.nextAutomaticPass(db, getSearchPreferences());
+    if (due === undefined) return;
+    // Capped so a shorter interval chosen in Preferences applies promptly.
+    const delay = Math.min(WAKE_RECHECK_MS, Math.max(1000, due - Date.now()));
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      const current = this.db;
+      if (!current || !this.automaticUpdatesAllowed() || this.running) return;
+      const next = this.nextAutomaticPass(current, getSearchPreferences());
+      if (next === undefined) return;
+      if (next > Date.now()) this.scheduleWake();
+      else void this.requestScan({ force: true, incremental: true });
+    }, delay);
+    this.wakeTimer.unref();
   }
 
   /** Storage mutations coalesce; ordinary saves read only the affected files. */
@@ -303,24 +391,35 @@ export class SearchIndexer {
    * Start a pass, or note that another one is needed after the current pass.
    * `force` bypasses throttling, never Pause or Preferences. Only an explicit
    * `manual` action (or `build`) may do that. Only `build` creates an index.
+   * Automatic keyword work is queued until Preferences' minimum wait passes;
+   * `immediate` (changed model settings) and manual actions skip that wait.
    */
-  requestScan({ force = false, build = false, manual = build, incremental = false }: {
-    force?: boolean; build?: boolean; manual?: boolean; incremental?: boolean;
+  requestScan({ force = false, build = false, manual = build, incremental = false, immediate = false }: {
+    force?: boolean; build?: boolean; manual?: boolean; incremental?: boolean; immediate?: boolean;
   } = {}) {
     if (!manual && !this.automaticUpdatesAllowed()) return;
     if (!build && !existsSync(searchIndexFile())) return;
     if (build) this.buildFile = searchIndexFile();
+    const waits = (db: SearchDatabase | null) => !manual && !immediate && Boolean(db) && Date.now() < this.keywordDueAt(db!, getSearchPreferences());
     if (this.running) {
       if (force || (this.state === "embedding" && Date.now() - this.lastFullScanAt >= MIN_SCAN_INTERVAL_MS)) {
-        this.rescanRequested = true;
         this.fullScanRequested ||= !incremental;
-        this.manualRequested ||= manual;
+        // The work stays queued; the pass's end schedules it.
+        if (!waits(this.db)) {
+          this.rescanRequested = true;
+          this.manualRequested ||= manual;
+        }
       }
       return this.running;
     }
-    if (!this.database({ create: build })) return;
+    const db = this.database({ create: build });
+    if (!db) return;
     if (!force && Date.now() - this.lastFullScanAt < MIN_SCAN_INTERVAL_MS) return;
     this.fullScanRequested ||= !incremental;
+    if (this.keywordWorkQueued() && waits(db)) {
+      this.scheduleWake();
+      return;
+    }
     this.manualRequested ||= manual;
 
     // Report the pass at once; the scan itself starts after the first await.
@@ -346,6 +445,8 @@ export class SearchIndexer {
     this.buildFile = "";
     if (this.changeTimer) clearTimeout(this.changeTimer);
     this.changeTimer = null;
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
+    this.wakeTimer = null;
   }
 
   resume() {
@@ -406,6 +507,11 @@ export class SearchIndexer {
           const paths = [...this.changedPaths];
           const gallery = this.galleryChanged;
           const references = this.allReferencesChanged ? null : [...this.referenceNotebooks];
+          if (this.keywordWorkQueued()) {
+            this.keywordPassStarted = true;
+            // Reserved before reading, so a crash or restart cannot repeat the pass at once.
+            db.setMeta("last_keyword_pass_at", String(Date.now()));
+          }
           this.fullScanRequested = false;
           this.changedPaths.clear();
           this.galleryChanged = false;
@@ -429,9 +535,21 @@ export class SearchIndexer {
       }
       this.state = this.error ? "error" : this.paused ? "paused" : "idle";
     } finally {
+      const attempt = this.embeddingAttempt;
+      this.embeddingAttempt = null;
+      if (attempt && this.canIndex(attempt.db, attempt.preferences)) attempt.db.setMeta("last_embedding_attempt_at", String(Date.now()));
+      // Waits are measured from the end of a pass, as for embeddings.
+      if (this.keywordPassStarted && this.db && this.dbIdentity === indexIdentity(this.db.filePath)) {
+        this.db.setMeta("last_keyword_pass_at", String(Date.now()));
+      }
+      this.keywordPassStarted = false;
       this.manualPass = false;
       this.current = "";
-      if (this.db && this.dbIdentity === indexIdentity(this.db.filePath)) this.db.checkpoint();
+      if (this.db && this.dbIdentity === indexIdentity(this.db.filePath)) {
+        this.db.checkpoint();
+        this.refreshEmbeddingsWaiting(this.db);
+      }
+      this.scheduleWake(true);
     }
   }
 
@@ -577,14 +695,25 @@ export class SearchIndexer {
     this.done = 0;
     this.total = paths.length;
     const known = new Map(db.listFiles().map((file) => [file.key, file]));
+    const isBuildProduct = latexBuildProductFilter();
+    // Adding a source can turn an already indexed PDF/log into a build product.
+    const affected = new Set(paths);
+    for (const changed of paths.filter((file) => /\.(?:tex|fls|aux|fdb_latexmk)$/i.test(file))) {
+      const folder = changed.slice(0, changed.lastIndexOf("/") + 1);
+      for (const file of known.values()) if (file.source === "library" && file.path.startsWith(folder)) affected.add(file.path);
+    }
     const removed = new Set<string>();
 
-    for (const filePath of paths) {
+    for (const filePath of affected) {
       if (!this.canIndex(db, preferences)) return;
       this.current = filePath;
       try {
         const { notebook, pathParts } = splitFilePath(filePath);
         if (!isVisibleTreeFile(notebook, pathParts)) {
+          removed.add(filePath);
+          continue;
+        }
+        if (await isBuildProduct(libraryAbsolutePath(filePath), notebookPath(notebook))) {
           removed.add(filePath);
           continue;
         }
@@ -824,9 +953,15 @@ export class SearchIndexer {
   /** Text can change during inference too; never attach a vector to stale source text. */
   private async sourcesCurrent(db: SearchDatabase, chunks: PendingChunk[], preferences: SearchPreferences) {
     const seen = new Set<string>();
+    const isBuildProduct = latexBuildProductFilter();
     for (const chunk of chunks) {
       if (seen.has(chunk.key)) continue;
       seen.add(chunk.key);
+      if (chunk.source === "library" && await isBuildProduct(libraryAbsolutePath(chunk.path), notebookPath(chunk.notebook)).catch(() => true)) {
+        this.changedPaths.add(chunk.path);
+        this.rescanRequested = true;
+        return false;
+      }
       const signature = await this.currentSignature(chunk).catch(() => "");
       if (!this.canIndex(db, preferences)) return false;
       if (signature !== chunk.signature) {
@@ -846,10 +981,18 @@ export class SearchIndexer {
     const epoch = this.embeddingEpoch;
 
     const includeImages = preferences.indexImages && worker.visionConfigured;
-    const excludedFileIds = db.listFiles().filter((file) => this.isUnavailable(file)).map((file) => file.id);
+    const excludedFileIds = this.excludedFileIds(db);
     this.total = db.countPending(includeImages, excludedFileIds);
     this.done = 0;
     if (!this.total) return;
+    const continuing = this.embeddingAttempt?.db === db;
+    if (embeddingDeferral(preferences, this.lastEmbeddingAttempt(db), this.manualPass || continuing)) return;
+    if (!continuing) {
+      this.embeddingAttempt = { db, preferences };
+      // Reserve before loading/inference too, so crashes or failures cannot
+      // trigger another expensive attempt immediately after a restart.
+      db.setMeta("last_embedding_attempt_at", String(Date.now()));
+    }
 
     this.state = "embedding";
     try {
@@ -922,15 +1065,35 @@ export class SearchIndexer {
     const preferences = getSearchPreferences();
     const worker = getSearchWorker();
     // New weights or settings: check the stored vectors against them again.
-    if (worker.configure(preferences)) this.requestScan({ force: true, manual: false });
+    if (worker.configure(preferences)) this.requestScan({ force: true, manual: false, immediate: true });
     let counts = { files: 0, failedFiles: 0, images: 0, chunks: 0, embeddedChunks: 0 };
     let error = this.error;
     let exists = false;
+    let embeddingDeferred: SearchIndexStatus["embeddingDeferred"];
+    let nextEmbeddingAt: string | undefined;
+    let nextKeywordUpdateAt: string | undefined;
 
     try {
       const db = this.database();
       exists = Boolean(db);
-      if (db) counts = db.counts();
+      if (db) {
+        counts = db.counts();
+        const automatic = this.automaticUpdatesAllowed();
+        const keywordDue = this.keywordDueAt(db, preferences);
+        const keywordWaiting = automatic && this.keywordWorkQueued() && keywordDue > Date.now();
+        if (keywordWaiting) nextKeywordUpdateAt = new Date(keywordDue).toISOString();
+        // Failed passages, unavailable files and photos without the encoder are not waiting.
+        if (this.embeddingsWaiting && worker.configured && !this.mismatch && !this.embeddingAttempt && !this.paused) {
+          embeddingDeferred = embeddingDeferral(preferences, this.lastEmbeddingAttempt(db));
+          // Only automatic passes keep a schedule; otherwise the summary shows the waiting count.
+          if (embeddingDeferred === "interval" && !automatic) embeddingDeferred = undefined;
+          if (!embeddingDeferred && keywordWaiting) embeddingDeferred = "interval";
+          if (embeddingDeferred === "interval") {
+            const due = Math.max(this.lastEmbeddingAttempt(db) + preferences.embeddingIntervalMinutes * 60_000, keywordWaiting ? keywordDue : 0);
+            nextEmbeddingAt = new Date(due).toISOString();
+          }
+        }
+      }
     } catch (databaseError) {
       exists = existsSync(searchIndexFile(preferences));
       error ||= databaseError instanceof Error ? databaseError.message : "The search index could not be opened.";
@@ -939,6 +1102,9 @@ export class SearchIndexer {
     return {
       state: this.paused && !this.running ? "paused" : this.running ? this.state : error ? "error" : "idle",
       backgroundIndexing: preferences.backgroundIndexing,
+      embeddingDeferred,
+      nextEmbeddingAt,
+      nextKeywordUpdateAt,
       exists,
       mismatch: this.mismatch ?? undefined,
       model: {

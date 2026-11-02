@@ -5,7 +5,7 @@ import { Check, ChevronDown, ChevronUp, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 import { decideReviewHunks, type AiChangeSource, type ReviewHunk } from "@/lib/latex/codemirror/review";
 
-const SOURCE_LABELS: Record<AiChangeSource, string> = { rewrite: "AI Rewrite", write: "Write with AI", format: "AI Format" };
+const SOURCE_LABELS: Record<AiChangeSource, string> = { rewrite: "AI Rewrite", write: "Write with AI", format: "AI Format", agent: "Agent changes" };
 const navClass = "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground";
 
 /** Summary of proposed AI changes with navigation and Accept/Reject all. */

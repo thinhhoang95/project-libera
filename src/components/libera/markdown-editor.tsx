@@ -16,8 +16,6 @@ import type { MarkdownSourceEditorProps } from "./markdown-source/types";
 import { useMarkdownSourceDraft } from "./markdown-source/use-markdown-source-draft";
 import { useMarkdownSourceFind } from "./markdown-source/use-markdown-source-find";
 
-import { beginAiActivity } from "@/lib/ai-activity";
-
 import { useSourceReview } from "./use-editor-review";
 import { speakMarkdown } from "@/lib/tts/player";
 import type {
@@ -368,7 +366,6 @@ export function MarkdownEditor({
     ...(reviewSelection ? [reviewSelection.range] : []),
   ] : [], [reviewEnabled, reviewDocument, reviewSelection]);
   const aiWorking = formatting || imageConverting;
-  useEffect(() => (aiWorking ? beginAiActivity() : undefined), [aiWorking]);
   const find = useMarkdownSourceFind({
     text: editorValue, textareaRef, readText: () => editorValueRef.current, updateText: setEditorValue,
     commitText: commitEditorValue, readDraft, closeContextMenu: () => setContextMenu(null), syncScroll: syncHighlightLayerScroll,

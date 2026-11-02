@@ -17,6 +17,7 @@ import {
   Quote,
   RotateCw,
   ScrollText,
+  Search,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -33,6 +34,7 @@ import {
 } from "@/components/libera/references/reference-display";
 import { popupReferenceMenu, type ReferenceMenuItem } from "./native-reference-menu";
 import { RetractionBadge } from "@/components/libera/references/retraction-badge";
+import type { LatexCiteCommand } from "@/lib/references/latex-cite-syntax";
 import type { ReferenceEntry, ReferenceStatus } from "@/lib/references/types";
 
 // One library entry in the References panel list, its actions menu, and the
@@ -41,7 +43,20 @@ import type { ReferenceEntry, ReferenceStatus } from "@/lib/references/types";
 /** Rows have a fixed height so long lists can be windowed. */
 export const REFERENCE_ROW_HEIGHT = 74;
 
-export const CITE_UNAVAILABLE = "Open a Markdown document and place the cursor to cite";
+export const CITE_UNAVAILABLE = "Open a Markdown or LaTeX document and place the cursor to cite";
+export const FIND_IN_FILE_LABEL = "Find citation in current file";
+export const FIND_IN_FILE_UNAVAILABLE = "The open Markdown or LaTeX file does not cite this reference";
+
+/** How Cite at cursor writes a citation: `[@key]` in Markdown, a `\cite` or `\citep` command in LaTeX. */
+export type CiteSyntax = "markdown" | "latex";
+export type { LatexCiteCommand };
+
+/** The Cite at cursor actions of a syntax: one in Markdown, `\cite` and `\citep` in LaTeX. */
+export function citeActions(syntax: CiteSyntax): { command?: LatexCiteCommand; label: string }[] {
+  return syntax === "latex"
+    ? [{ command: "cite", label: "\\cite at cursor" }, { command: "citep", label: "\\citep at cursor" }]
+    : [{ label: "Cite at cursor" }];
+}
 
 const hoverButton = "libera-sidebar-icon-button inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md disabled:opacity-40";
 
@@ -81,13 +96,14 @@ type RowProps = {
   citingCount: number;
   duplicate: boolean;
   canCite: boolean;
+  citeSyntax?: CiteSyntax;
   /** Part of a selection of several entries. */
   inSelection?: boolean;
   top?: number;
   /** A plain click opens the entry; Shift extends the selection and ⌘/Ctrl toggles it. */
   onOpen: (modifiers: { range: boolean; toggle: boolean }) => void;
   onTag?: (tag: string) => void;
-  onCite: () => void;
+  onCite: (command?: LatexCiteCommand) => void;
   onOpenAttachment: (path: string) => void;
   onMenu: (point: { x: number; y: number }) => void;
 };
@@ -105,7 +121,7 @@ export function ReadingBadge({ entry }: { entry: Pick<ReferenceEntry, "reading">
   );
 }
 
-export function ReferenceRow({ entry, words, selected, inSelection, citedByActive, citingCount, duplicate, canCite, top, onOpen, onTag, onCite, onOpenAttachment, onMenu }: RowProps) {
+export function ReferenceRow({ entry, words, selected, inSelection, citedByActive, citingCount, duplicate, canCite, citeSyntax = "markdown", top, onOpen, onTag, onCite, onOpenAttachment, onMenu }: RowProps) {
   const pdf = entry.attachments.find((attachment) => attachment.kind === "pdf");
   const tags = entry.tags ?? [];
   const venue = entryVenue(entry.csl);
@@ -135,7 +151,7 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
           <Highlighted text={authorYearLabel(entry.csl)} words={words} />
         </span>
         {citedByActive ? (
-          <span className="shrink-0 text-accent" title="Cited in the open document" aria-label="Cited in the open document">
+          <span className="shrink-0 text-muted-foreground" title="Cited in the open document" aria-label="Cited in the open document">
             <Link2 aria-hidden className="h-3.5 w-3.5" />
           </span>
         ) : null}
@@ -149,30 +165,44 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
         <Highlighted text={entryTitle(entry)} words={words} />
       </div>
       <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span className="min-w-0 truncate">
+        <span className="min-w-12 shrink-[3] truncate">
           {venue ? <><Highlighted text={venue} words={words} />{" · "}</> : null}
           <span className="font-mono"><Highlighted text={entry.key} words={words} /></span>
         </span>
         {tags.slice(0, ROW_TAGS).map((tag) => onTag ? (
-          <button key={tag} type="button" className="libera-reference-tag-link shrink-0" title={`Show references tagged ${tag}`} onClick={(event) => { event.stopPropagation(); onTag(tag); }}>
+          <button key={tag} type="button" className="libera-reference-tag-link" title={`Show references tagged ${tag}`} onClick={(event) => { event.stopPropagation(); onTag(tag); }}>
             #<Highlighted text={tag} words={words} />
           </button>
-        ) : <span key={tag} className="libera-reference-tag-link shrink-0">#{tag}</span>)}
+        ) : <span key={tag} className="libera-reference-tag-link">#{tag}</span>)}
         {tags.length > ROW_TAGS ? <span className="shrink-0" title={tags.slice(ROW_TAGS).join(", ")}>+{tags.length - ROW_TAGS}</span> : null}
         <span className="ml-auto flex shrink-0 items-center gap-0.5 group-hover:hidden group-focus-within:hidden" data-selected={selected || undefined}>
           <AttachmentIcons entry={entry} />
         </span>
         <span className="libera-reference-row-actions ml-auto hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex">
-          <button
-            type="button"
-            className={hoverButton}
-            aria-label={`Cite ${entry.key} at cursor`}
-            title={canCite ? "Cite at cursor (⌘/Ctrl+Enter)" : CITE_UNAVAILABLE}
-            disabled={!canCite}
-            onClick={(event) => { event.stopPropagation(); onCite(); }}
-          >
-            <Quote aria-hidden className="h-3.5 w-3.5" />
-          </button>
+          {citeSyntax === "latex" ? citeActions("latex").map(({ command, label }) => (
+            <button
+              key={command}
+              type="button"
+              className={`${hoverButton} w-auto px-1 font-mono text-[10.5px]`}
+              aria-label={`${label.replace(" at cursor", "")} ${entry.key} at cursor`}
+              title={canCite ? `${label} (${command === "citep" ? "⌘/Ctrl+Shift+Enter" : "⌘/Ctrl+Enter"})` : CITE_UNAVAILABLE}
+              disabled={!canCite}
+              onClick={(event) => { event.stopPropagation(); onCite(command); }}
+            >
+              {`\\${command}`}
+            </button>
+          )) : (
+            <button
+              type="button"
+              className={hoverButton}
+              aria-label={`Cite ${entry.key} at cursor`}
+              title={canCite ? "Cite at cursor (⌘/Ctrl+Enter)" : CITE_UNAVAILABLE}
+              disabled={!canCite}
+              onClick={(event) => { event.stopPropagation(); onCite(); }}
+            >
+              <Quote aria-hidden className="h-3.5 w-3.5" />
+            </button>
+          )}
           {pdf && pdf.kind === "pdf" ? (
             <button type="button" className={hoverButton} aria-label={`Open PDF of ${entry.key}`} title={`Open ${fileBaseName(pdf.path)}`} onClick={(event) => { event.stopPropagation(); onOpenAttachment(pdf.path); }}>
               <FileType2 aria-hidden className="h-3.5 w-3.5" />
@@ -217,7 +247,7 @@ export function MissingReferenceRow({ citationKey, onAdd }: { citationKey: strin
 }
 
 export type ReferenceMenuAction =
-  | "cite" | "open-pdf" | "open-note" | "copy-key" | "copy-citation" | "copy-latex" | "copy-formatted"
+  | "cite" | "citep" | "find-in-file" | "open-pdf" | "open-note" | "copy-key" | "copy-citation" | "copy-latex" | "copy-formatted"
   | "to-read" | "read" | "reresolve" | "edit" | "delete";
 
 /** Menu labels of the reading actions: they toggle the flag. */
@@ -230,16 +260,20 @@ type MenuProps = {
   entry: ReferenceEntry;
   point: { x: number; y: number };
   canCite: boolean;
+  citeSyntax?: CiteSyntax;
+  /** The open Markdown or LaTeX file cites the entry, so Find citation in current file can go to it. */
+  canFind?: boolean;
   citing: string[];
   onAction: (action: ReferenceMenuAction) => void;
   onOpenPath: (path: string) => void;
   onClose: () => void;
 };
 
-export function openNativeReferenceActionsMenu({ entry, point, canCite, citing, onAction, onOpenPath }: Omit<MenuProps, "onClose">) {
+export function openNativeReferenceActionsMenu({ entry, point, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath }: Omit<MenuProps, "onClose">) {
   const action = (id: ReferenceMenuAction, label: string, enabled = true): ReferenceMenuItem => ({ id, label, enabled, onSelect: () => onAction(id) });
   return popupReferenceMenu([
-    action("cite", "Cite at cursor", canCite),
+    ...citeActions(citeSyntax).map(({ command, label }) => action(command === "citep" ? "citep" : "cite", label, canCite)),
+    action("find-in-file", FIND_IN_FILE_LABEL, canFind),
     ...(entry.attachments.some((attachment) => attachment.kind === "pdf") ? [action("open-pdf", "Open PDF")] : []),
     ...(entry.attachments.some((attachment) => attachment.kind === "markdown") ? [action("open-note", "Open note")] : []),
     action("copy-key", "Copy key"),
@@ -275,7 +309,7 @@ function MenuItem({ icon, label, onClick, disabled, title, tone }: { icon: React
 }
 
 /** The row's actions as a popover menu (hover button or right-click). */
-export function ReferenceActionsMenu({ entry, point, canCite, citing, onAction, onOpenPath, onClose }: MenuProps) {
+export function ReferenceActionsMenu({ entry, point, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath, onClose }: MenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [showCiting, setShowCiting] = useState(false);
   const pdf = entry.attachments.find((attachment) => attachment.kind === "pdf");
@@ -308,7 +342,10 @@ export function ReferenceActionsMenu({ entry, point, canCite, citing, onAction, 
   // Portal to body: the panel clips/contains fixed descendants, which cut the menu off at the panel edge.
   return createPortal(
     <div ref={menuRef} role="menu" aria-label={`Actions for ${entry.key}`} className="fixed z-50 w-56 rounded-lg border border-border bg-card p-1 shadow-lg" style={{ left, top }}>
-      <MenuItem icon={<Quote aria-hidden className="h-4 w-4" />} label="Cite at cursor" disabled={!canCite} title={canCite ? undefined : CITE_UNAVAILABLE} onClick={act("cite")} />
+      {citeActions(citeSyntax).map(({ command, label }) => (
+        <MenuItem key={label} icon={<Quote aria-hidden className="h-4 w-4" />} label={label} disabled={!canCite} title={canCite ? undefined : CITE_UNAVAILABLE} onClick={act(command === "citep" ? "citep" : "cite")} />
+      ))}
+      <MenuItem icon={<Search aria-hidden className="h-4 w-4" />} label={FIND_IN_FILE_LABEL} disabled={!canFind} title={canFind ? undefined : FIND_IN_FILE_UNAVAILABLE} onClick={act("find-in-file")} />
       {pdf ? <MenuItem icon={<FileType2 aria-hidden className="h-4 w-4" />} label="Open PDF" onClick={act("open-pdf")} /> : null}
       {note ? <MenuItem icon={<NotebookPen aria-hidden className="h-4 w-4" />} label="Open note" onClick={act("open-note")} /> : null}
       <MenuItem icon={<Copy aria-hidden className="h-4 w-4" />} label="Copy key" onClick={act("copy-key")} />

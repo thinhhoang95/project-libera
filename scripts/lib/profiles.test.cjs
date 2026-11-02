@@ -69,6 +69,8 @@ function mainHarness() {
     savedConfig: null, nativeTheme: {},
     validateSetupInput: (input, existing) => ({ ...existing, ...input }),
     resolveEditorThemes: require("../../electron/editor-themes.cjs").resolveEditorThemes,
+    ...require("../../electron/notebook-illustrations.cjs"), ...require("../../electron/notebook-illustration-store.cjs"),
+    nativeImage: { createFromBuffer: () => ({ isEmpty: () => false }) }, ADMIN_USER: "admin",
     normalizedImportedPreferences: (input) => input, parsePreferencesBackup: (input) => input,
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     isSameOrigin: (a, b) => new URL(a).origin === new URL(b).origin,
@@ -448,7 +450,7 @@ test("switching uses the real close/flush/quit handlers and never carries a canc
     Object.assign(h.scope, {
       rendererStateReady: true, quitRequested: false, shutdownComplete: false, shutdownPromise: null,
       statefulContents: new Set(), childWindows: new Set(), startupInProgress: false,
-      updaterService: { dispose() {} }, collabHost: { stop: async () => {} },
+      updaterService: { dispose() {} }, disposePowerState: null, collabHost: { stop: async () => {} },
       nextProcess: {}, stopProcessTree: async () => {}, process: new EventEmitter(),
       dialog: { showErrorBox: (_title, message) => errors.push(message) },
     });

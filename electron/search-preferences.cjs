@@ -6,6 +6,9 @@ const path = require("node:path");
 // apply without a restart. A web deployment uses the LIBERA_SEARCH_* variables.
 const SEARCH_DIMENSIONS = [768, 512, 256, 128];
 const SEARCH_VISION_TOKENS = [70, 140, 280, 560, 1120];
+const SEARCH_EMBEDDING_INTERVAL_MINUTES = [180, 720, 1440, 10080];
+// 0 (every change) is for tests and web deployments; Preferences offers 1 hour and up.
+const SEARCH_KEYWORD_INTERVAL_MINUTES = [0, 60, 240, 480, 1440, 4320];
 const DEFAULT_SEARCH_PREFERENCES = Object.freeze({
   textWeights: "",
   visionWeights: "",
@@ -13,6 +16,9 @@ const DEFAULT_SEARCH_PREFERENCES = Object.freeze({
   visionTokens: 140,
   indexImages: true,
   backgroundIndexing: true,
+  embeddingIntervalMinutes: 180,
+  embeddingOnlyOnAC: true,
+  keywordIntervalMinutes: 60,
   indexFile: "",
   readingModelDirectory: "",
 });
@@ -39,6 +45,14 @@ function normalizeChoice(value, choices, fallback) {
   return choices.includes(number) ? number : fallback;
 }
 
+function normalizeInterval(value, choices, fallback) {
+  if ((typeof value !== "number" && typeof value !== "string") || String(value).trim() === "" || !Number.isFinite(Number(value)) || Number(value) < 0) {
+    return fallback;
+  }
+  // Round legacy/custom intervals up so migration never schedules more often.
+  return choices.find((minutes) => minutes >= Number(value)) ?? choices[choices.length - 1];
+}
+
 function normalizeSearchPreferences(input) {
   const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
 
@@ -51,6 +65,9 @@ function normalizeSearchPreferences(input) {
     backgroundIndexing: typeof value.backgroundIndexing === "boolean"
       ? value.backgroundIndexing
       : DEFAULT_SEARCH_PREFERENCES.backgroundIndexing,
+    embeddingIntervalMinutes: normalizeInterval(value.embeddingIntervalMinutes, SEARCH_EMBEDDING_INTERVAL_MINUTES, DEFAULT_SEARCH_PREFERENCES.embeddingIntervalMinutes),
+    embeddingOnlyOnAC: typeof value.embeddingOnlyOnAC === "boolean" ? value.embeddingOnlyOnAC : DEFAULT_SEARCH_PREFERENCES.embeddingOnlyOnAC,
+    keywordIntervalMinutes: normalizeInterval(value.keywordIntervalMinutes, SEARCH_KEYWORD_INTERVAL_MINUTES, DEFAULT_SEARCH_PREFERENCES.keywordIntervalMinutes),
     // Earlier versions named a folder; its index file had a fixed name.
     indexFile: normalizePath(value.indexFile) ||
       (normalizePath(value.indexDirectory) ? path.join(normalizePath(value.indexDirectory), INDEX_FILE_NAME) : ""),
@@ -99,6 +116,12 @@ function searchPreferencesFromEnvironment(env = process.env) {
     backgroundIndexing: env.LIBERA_SEARCH_BACKGROUND_INDEXING === undefined
       ? undefined
       : env.LIBERA_SEARCH_BACKGROUND_INDEXING !== "0",
+    embeddingIntervalMinutes: env.LIBERA_SEARCH_EMBEDDING_INTERVAL_MINUTES,
+    // Without the desktop power bridge, AC-only would defer embeddings forever.
+    embeddingOnlyOnAC: env.LIBERA_SEARCH_EMBEDDING_ONLY_ON_AC === undefined
+      ? Boolean(env.LIBERA_POWER_STATE_PATH)
+      : env.LIBERA_SEARCH_EMBEDDING_ONLY_ON_AC !== "0",
+    keywordIntervalMinutes: env.LIBERA_SEARCH_KEYWORD_INTERVAL_MINUTES,
     indexFile: env.LIBERA_SEARCH_INDEX_FILE,
     indexDirectory: env.LIBERA_SEARCH_INDEX_DIR,
     readingModelDirectory: env.LIBERA_READING_MODEL_DIR,
@@ -111,6 +134,8 @@ module.exports = {
   MODEL_FOLDERS,
   SEARCH_DIMENSIONS,
   SEARCH_VISION_TOKENS,
+  SEARCH_EMBEDDING_INTERVAL_MINUTES,
+  SEARCH_KEYWORD_INTERVAL_MINUTES,
   defaultModelsDirectory,
   defaultSearchIndexFile,
   normalizeSearchPreferences,

@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { citedKeys } from "@/lib/references/citation-syntax";
+import { isLatexCitingPath, latexCitedKeys } from "@/lib/references/latex-cite-syntax";
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
@@ -12,8 +13,8 @@ import { isVisibleTreeEntry } from "@/lib/storage/tree";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 
 // The citation index (the "Citation index" contract in
-// docs/references/lanes.md): the keys each saved Markdown file in a notebook
-// cites, kept at `<notebook system dir>/references/citations.json` and keyed
+// docs/references/lanes.md): the keys each saved Markdown file (or `.tex`
+// source, by its `\cite` commands) in a notebook cites, kept at `<notebook system dir>/references/citations.json` and keyed
 // by content identity. A rebuild checks saved bytes, parses only new or changed
 // files, drops deleted ones, and writes the index only when it changed.
 // Keys are stored as written (aliases and unknown keys included); the client
@@ -24,8 +25,8 @@ import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 // index, and computers sharing a synced notebook write the same index.
 // Metadata cannot replace the byte check (see readTextSnapshot).
 
-// Version 3 verifies content identity; version 2 added narrative `@key` candidates.
-export const CITATION_INDEX_VERSION = 3;
+// Version 4 adds LaTeX sources; version 3 verifies content identity.
+export const CITATION_INDEX_VERSION = 4;
 
 type CitationIndexFile = { contentHash: string; keys: string[] };
 type CitationIndex = { version: typeof CITATION_INDEX_VERSION; files: Record<string, CitationIndexFile> };
@@ -74,8 +75,8 @@ function isArchived(relativePath: string) {
   return relativePath.split("/").slice(1, -1).includes(ARCHIVE_DIR);
 }
 
-/** Library-relative paths of the notebook's Markdown files, with the tree's visibility rules. */
-async function markdownFiles(notebook: string, includeArchive: boolean) {
+/** Library-relative paths of the notebook's Markdown files and LaTeX sources, with the tree's visibility rules. */
+async function citingFiles(notebook: string, includeArchive: boolean) {
   const root = notebookPath(notebook);
   const linked = Boolean(getLinkedFolder(notebook));
   const budget = { remaining: LINKED_FOLDER_ENTRY_LIMIT };
@@ -94,7 +95,7 @@ async function markdownFiles(notebook: string, includeArchive: boolean) {
       if (linked && --budget.remaining < 0) return;
       const entryParts = [...parts, entry.name];
       if (entry.isDirectory()) await walk(path.join(directory, entry.name), entryParts);
-      else if (entry.isFile() && getFileType(entry.name) === "markdown") {
+      else if (entry.isFile() && (getFileType(entry.name) === "markdown" || isLatexCitingPath(entry.name))) {
         files.push({ relativePath: [notebook, ...entryParts].join("/"), absolutePath: path.join(directory, entry.name) });
       }
     }
@@ -114,7 +115,7 @@ async function rebuild(notebook: string, includeArchive: boolean) {
   const root = notebookPath(notebook);
   const identity = await readDirectorySignature(root);
   const previous = await readCitationIndex(indexPath);
-  const files = await markdownFiles(notebook, includeArchive);
+  const files = await citingFiles(notebook, includeArchive);
   const next: CitationIndex = { version: CITATION_INDEX_VERSION, files: {} };
   // Without the archive in the walk, its files are neither checked nor dropped.
   if (!includeArchive) {
@@ -130,7 +131,7 @@ async function rebuild(notebook: string, includeArchive: boolean) {
       return;
     }
     read += 1;
-    next.files[relativePath] = { contentHash: snapshot.contentHash, keys: citedKeys(snapshot.content, { allNarrative: true }) };
+    next.files[relativePath] = { contentHash: snapshot.contentHash, keys: isLatexCitingPath(relativePath) ? latexCitedKeys(snapshot.content) : citedKeys(snapshot.content, { allNarrative: true }) };
   });
   // Stable order keeps the comparison and the file independent of read timing.
   next.files = Object.fromEntries(Object.entries(next.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));

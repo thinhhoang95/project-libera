@@ -44,7 +44,7 @@ test("prompt caching restricts providers, preserves models, handles explicit cac
     const model = "deepseek/deepseek-v4.1-flash";
     await createOpenRouterCompletion(messages, { model, promptCaching: true });
     assert.equal(requests[0].model, model);
-    assert.deepEqual(requests[0].provider, { only: ["deepseek", "regional/eu"] });
+    assert.deepEqual(requests[0].provider, { only: ["deepseek", "regional/eu"], sort: "price" });
     assert.deepEqual(requests[0].messages, messages);
     let answer = "";
     const reportedUsage: unknown[] = [];
@@ -56,12 +56,12 @@ test("prompt caching restricts providers, preserves models, handles explicit cac
     assert.equal(lookups, 1, "reuse provider metadata for follow-up requests");
 
     await createOpenRouterCompletion(messages, { model, promptCaching: false });
-    assert.equal(requests[2].provider, undefined);
+    assert.deepEqual(requests[2].provider, { sort: "price" });
     assert.deepEqual(requests[2].messages, messages);
     assert.equal(lookups, 1, "disabled caching does not discover providers");
     const automaticUsage: unknown[] = [];
     for await (const _ of streamOpenRouterCompletion(messages, { model, promptCaching: false, onUsage: (usage) => automaticUsage.push(usage) })) { /* consume response */ }
-    assert.equal(requests[3].provider, undefined);
+    assert.deepEqual(requests[3].provider, { sort: "price" });
     assert.deepEqual(automaticUsage, [{ inputTokens: 5000, outputTokens: 20, cachedTokens: 4096 }], "automatic cache reads are reported when the preference is disabled");
 
     endpoints = [
@@ -136,7 +136,7 @@ test("each function honors true and false caching preferences without changing i
         assert.equal(getAiFunctionOptions(fn).model, model);
       }
       process.env[key] = "invalid";
-      assert.equal(getAiFunctionOptions(fn).promptCaching, name === "chat");
+      assert.equal(getAiFunctionOptions(fn).promptCaching, name === "chat" || name === "rewrite");
     } finally {
       if (original === undefined) delete process.env[key]; else process.env[key] = original;
     }

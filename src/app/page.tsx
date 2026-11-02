@@ -4,6 +4,7 @@ import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
 import { getConfiguredQuickPrompts } from "@/lib/quick-prompts-config";
 import { getConfiguredEditorThemes } from "@/lib/editor-themes-config";
+import { getConfiguredNotebookIllustrations } from "@/lib/notebook-illustrations-config";
 import { readMarkdownDisplayPreferences } from "@/lib/storage/markdown-display-preferences";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +24,7 @@ export default async function Home() {
       markdownDisplayPreferences={await readMarkdownDisplayPreferences()}
       quickPrompts={getConfiguredQuickPrompts()}
       editorThemes={getConfiguredEditorThemes()}
+      notebookIllustrations={getConfiguredNotebookIllustrations()}
     />
   );
 }

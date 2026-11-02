@@ -27,6 +27,7 @@ import { compiledLocationForPosition, latexSyncExtension, markCompileShown, mark
 import { latexFoldRange, latexLanguage } from "../../src/lib/latex/codemirror/language";
 import type { LatexEditorHandle } from "../../src/components/libera/latex/latex-editor";
 import type { LatexTabViewState } from "../../src/components/libera/types";
+import { citationSnippets } from "../../src/lib/references/occurrences";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -154,7 +155,7 @@ test("AI output loses a wrapping LaTeX code fence", () => {
 
 /* ---- Editor behavior -------------------------------------------------------------- */
 
-test("returning to a scrolled LaTeX tab refreshes its viewport without a scroll event", async (context) => {
+test("a restored LaTeX tab refreshes its viewport and reveals citations in the current draft", async (context) => {
   Object.defineProperty(globalThis, "Window", { value: dom.window.Window, configurable: true });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   Object.assign(dom.window.Range.prototype, {
@@ -202,6 +203,13 @@ test("returning to a scrolled LaTeX tab refreshes its viewport without a scroll 
     assert.equal(restored.state.doc.toString(), source);
     assert.ok(measurements.some(({ view, top, left }) => view === restored && top === 2400.5 && left === 18.25),
       "The virtual viewport must be measured at the restored scroll position without waiting for user input");
+    const original = "Intro\r\nAs shown \\citep[see\r\np.~3]{a}.";
+    const snippet = citationSnippets(original, ["a"], undefined, "latex")[0];
+    const live = "😀 New paragraph.\n\n" + original.replace(/\r\n/g, "\n");
+    await act(async () => restored.dispatch({ changes: { from: 0, to: restored.state.doc.length, insert: live } }));
+    await act(async () => editorRef.current!.revealRange(snippet.start, snippet.end, snippet));
+    assert.equal(restored.state.selection.main.from, live.indexOf("\\citep"));
+    assert.equal(restored.state.sliceDoc(restored.state.selection.main.from, restored.state.selection.main.to), "\\citep[see\np.~3]{a}");
   } finally {
     await act(async () => root.unmount());
     host.remove();

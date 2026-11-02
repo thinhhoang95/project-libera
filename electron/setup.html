@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Set Up Libera for Vy Tran</title>
@@ -459,12 +459,6 @@
       .editor-theme-add .editor-theme-swatch { align-items: center; border: 1.5px dashed var(--input, #d4d4d8); color: var(--muted-foreground, #71717a); justify-content: center; }
       .editor-theme-add:hover .editor-theme-swatch { border-color: var(--accent, #2563eb); color: var(--accent, #2563eb); }
       .editor-theme-add .editor-theme-name { color: var(--muted-foreground, #71717a); }
-      .editor-theme-menu { background: var(--dialog-surface, #fff); border: 1px solid var(--border, #e4e4e7); border-radius: 10px; box-shadow: 0 12px 32px rgb(0 0 0 / 0.18); display: flex; flex-direction: column; min-width: 170px; padding: 4px; position: fixed; z-index: 50; }
-      .editor-theme-menu.hidden { display: none; }
-      .editor-theme-menu button { background: none; border: 0; border-radius: 6px; color: var(--foreground, #18181b); cursor: pointer; font: inherit; font-size: 13px; padding: 7px 10px; text-align: left; }
-      .editor-theme-menu button:is(:hover, :focus-visible) { background: var(--muted, #f4f4f5); outline: none; }
-      .editor-theme-menu button.danger { color: var(--destructive, #dc2626); }
-      .editor-theme-menu hr { border: 0; border-top: 1px solid var(--border, #e4e4e7); margin: 4px 2px; }
       .editor-theme-editor { border: 1px solid var(--border, #e4e4e7); border-radius: 12px; margin-top: 16px; padding: 14px; }
       .editor-theme-editor.hidden { display: none; }
       .editor-theme-editor-header { align-items: flex-end; display: flex; gap: 10px; }
@@ -527,6 +521,70 @@
       .model-suggestion-meta { color: var(--muted-foreground, #71717a); font-size: 11px; grid-column: 2; grid-row: 1 / span 2; align-self: center; white-space: nowrap; }
       .model-suggestion mark { background: none; color: var(--accent, #2563eb); font-weight: 600; }
       .model-suggestions-empty { color: var(--muted-foreground, #71717a); font-size: 12px; padding: 8px 9px; }
+      /* Notebook illustrations (General) */
+      .illustration-set-band { display: grid; gap: 14px 12px; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); }
+      .illustration-set-tile { background: none; border: 0; color: var(--foreground, #18181b); cursor: pointer; display: flex; flex-direction: column; font: inherit; gap: 7px; min-width: 0; padding: 0; position: relative; text-align: left; }
+      .illustration-set-tile:focus-visible { outline: 2px solid var(--ring, #2563eb); outline-offset: 3px; border-radius: 12px; }
+      .illustration-set-preview { background: var(--muted, #f4f4f5); border: 1px solid var(--border, #e4e4e7); border-radius: 11px; display: grid; gap: 3px; overflow: hidden; padding: 3px; transition: box-shadow 0.12s, transform 0.12s; }
+      .illustration-set-tile:hover .illustration-set-preview { box-shadow: 0 4px 12px rgb(0 0 0 / 0.12); transform: translateY(-1px); }
+      .illustration-set-tile[aria-checked="true"] .illustration-set-preview { box-shadow: 0 0 0 2px var(--dialog-surface, #fff), 0 0 0 4px var(--accent, #2563eb); }
+      .illustration-set-preview img, .illustration-set-blank { aspect-ratio: 3 / 1; border-radius: 8px; display: block; object-fit: cover; width: 100%; }
+      .illustration-set-blank { align-items: center; color: var(--muted-foreground, #71717a); display: flex; justify-content: center; }
+      .illustration-set-strip { display: grid; gap: 3px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .illustration-set-strip img, .illustration-set-strip span { aspect-ratio: 3 / 1; border-radius: 4px; display: block; object-fit: cover; width: 100%; }
+      .illustration-set-strip span { align-items: center; background: color-mix(in srgb, var(--foreground, #18181b) 8%, transparent); color: var(--muted-foreground, #71717a); display: flex; font-size: 9.5px; font-weight: 650; justify-content: center; }
+      .illustration-set-meta { align-items: center; display: flex; gap: 6px; min-width: 0; padding: 0 2px; }
+      .illustration-set-meta svg { color: var(--accent, #2563eb); flex: 0 0 auto; }
+      .illustration-set-name { flex: 1; font-size: 12.5px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .illustration-set-count { color: var(--muted-foreground, #71717a); flex: 0 0 auto; font-size: 11px; }
+      .illustration-set-tile .editor-theme-check { right: -6px; top: -7px; }
+      .illustration-set-tile[aria-checked="true"] .editor-theme-check { display: flex; }
+      .illustration-set-add .illustration-set-preview { align-items: center; aspect-ratio: auto; border: 1.5px dashed var(--input, #d4d4d8); color: var(--muted-foreground, #71717a); display: flex; justify-content: center; min-height: 84px; }
+      .illustration-set-add:hover .illustration-set-preview { border-color: var(--accent, #2563eb); color: var(--accent, #2563eb); }
+      .illustration-set-add .illustration-set-meta svg { color: var(--muted-foreground, #71717a); }
+      .illustration-status { margin: 10px 0 0; min-height: 18px; }
+      .illustration-hint { align-items: flex-start; display: flex; gap: 8px; margin-top: 4px; }
+      .illustration-hint svg { color: var(--muted-foreground, #71717a); flex: 0 0 auto; margin-top: 2px; }
+      .illustration-hint .field-help { margin: 0; }
+      .illustration-dialog { margin: auto; padding: 0; width: min(760px, calc(100vw - 32px)); }
+      .illustration-dialog:not([open]) { display: none; }
+      html body.libera-preferences dialog.illustration-dialog.libera-dialog { border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 24px 64px #161c3c2e, 0 2px 8px #161c3c0f; height: fit-content; max-height: min(760px, calc(100dvh - 32px)); min-height: 0; }
+      .illustration-dialog button, .card-settings .illustration-set-tile { font-size: 13px; }
+      .illustration-dialog::backdrop { background: var(--libera-dialog-overlay-color, #202a5061); }
+      .illustration-dialog .libera-dialog-title { align-items: center; display: flex; gap: 9px; }
+      .illustration-dialog .libera-dialog-title svg { color: var(--accent, #2563eb); flex: 0 0 auto; }
+      .illustration-dialog-body { display: grid; gap: 14px; min-height: 0; overflow-y: auto; padding: 0 24px 18px; scrollbar-width: thin; }
+      .illustration-toolbar { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+      .illustration-toolbar .field-help { margin: 0 auto 0 0; }
+      .icon-button { align-items: center; display: inline-flex; gap: 7px; }
+      .icon-button svg { flex: 0 0 auto; }
+      .illustration-dialog .libera-dialog-footer button { align-items: center; display: inline-flex; gap: 7px; }
+      .illustration-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); min-height: 90px; }
+      .illustration-grid.dragging { outline: 2px dashed var(--accent, #2563eb); outline-offset: 4px; border-radius: 10px; }
+      .illustration-item { border-radius: 9px; overflow: hidden; position: relative; }
+      .illustration-item img { aspect-ratio: 3 / 1; background: var(--muted, #f4f4f5); border: 1px solid var(--border, #e4e4e7); border-radius: 9px; cursor: zoom-in; display: block; object-fit: cover; width: 100%; }
+      .illustration-item-actions { background: linear-gradient(transparent, rgb(0 0 0 / 0.55)); bottom: 0; display: flex; gap: 4px; justify-content: flex-end; left: 0; opacity: 0; padding: 14px 6px 6px; position: absolute; right: 0; transition: opacity 0.12s; }
+      .illustration-item:hover .illustration-item-actions, .illustration-item:focus-within .illustration-item-actions { opacity: 1; }
+      .illustration-item-actions button { align-items: center; background: rgb(255 255 255 / 0.92) !important; border: 0 !important; border-radius: 7px !important; color: #18181b !important; display: inline-flex; height: 26px; justify-content: center; padding: 0 !important; width: 26px; }
+      .illustration-item-actions button:hover { background: #fff !important; }
+      .illustration-item-actions button[data-action="remove"]:hover { color: #dc2626 !important; }
+      .illustration-item-actions button:disabled { opacity: 0.4; }
+      .illustration-item-badge { background: rgb(0 0 0 / 0.55); border-radius: 999px; color: #fff; font-size: 10px; font-weight: 650; left: 6px; padding: 1px 7px; position: absolute; top: 6px; }
+      .illustration-drop { align-items: center; border: 1.5px dashed var(--input, #d4d4d8); border-radius: 12px; color: var(--muted-foreground, #71717a); cursor: pointer; display: flex; flex-direction: column; gap: 8px; grid-column: 1 / -1; justify-content: center; padding: 28px 16px; text-align: center; }
+      .illustration-drop:hover { border-color: var(--accent, #2563eb); color: var(--accent, #2563eb); }
+      .illustration-drop strong { color: var(--foreground, #18181b); font-size: 13px; }
+      .illustration-dialog-error { color: #dc2626; font-size: 12.5px; margin: 0; min-height: 18px; }
+      .crop-dialog { width: min(820px, calc(100vw - 32px)); }
+      .crop-stage { background: #0b0d18; border-radius: 12px; cursor: grab; height: 360px; overflow: hidden; position: relative; touch-action: none; user-select: none; }
+      .crop-stage:active { cursor: grabbing; }
+      .crop-stage:focus-visible { outline: 2px solid var(--ring, #2563eb); outline-offset: 2px; }
+      .crop-stage canvas { display: block; height: 100%; width: 100%; }
+      .crop-stage-label { background: rgb(0 0 0 / 0.55); border-radius: 999px; bottom: 10px; color: #fff; font-size: 11px; font-weight: 600; left: 50%; padding: 3px 10px; pointer-events: none; position: absolute; transform: translateX(-50%); }
+      .crop-controls { align-items: center; display: flex; gap: 8px; }
+      .crop-controls input[type="range"] { accent-color: var(--accent, #2563eb); flex: 1; }
+      .crop-controls .icon-only { align-items: center; display: inline-flex; height: 32px; justify-content: center; padding: 0; width: 32px; }
+      .crop-zoom-value { color: var(--muted-foreground, #71717a); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
+      @media (max-width: 600px) { .crop-stage { height: 240px; } }
     </style>
     <link rel="stylesheet" href="modal-dialog.css" />
   </head>
@@ -589,6 +647,22 @@
                   </div>
                   <p id="theme-help" class="field-help">System follows your device’s appearance. Theme changes apply when saved.</p>
                   <p id="your-name-help" class="field-help">Your name is optional. It adds a personal greeting to your notebooks and sign-in screen.</p>
+                </article>
+              </div>
+
+              <h3 class="ai-group-title">Notebooks</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg></span>
+                    <div class="ai-card-title"><h4>Homepage illustrations</h4><p>The picture across the top of each notebook’s homepage. Choose a set; right-click a set of your own to edit or delete it.</p></div>
+                  </header>
+                  <div id="illustration-set-band" class="illustration-set-band" role="radiogroup" aria-label="Illustration set"></div>
+                  <p id="illustration-status" class="field-help illustration-status" role="status" aria-live="polite"></p>
+                  <div class="illustration-hint">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                    <p class="field-help">Each notebook takes an illustration from the chosen set at random. To pick one for a notebook, open its homepage and choose New → Change illustration.</p>
+                  </div>
                 </article>
               </div>
 
@@ -1045,7 +1119,18 @@
                     <label for="search-background-indexing">Keep the index up to date in the background</label>
                     <input id="search-background-indexing" class="switch" type="checkbox" role="switch" />
                   </div>
-                  <p class="field-help">When off, the index is updated when you open Search.</p>
+                  <p class="field-help">When off, use Update index in Search.</p>
+                  <label for="search-keyword-interval">Minimum time between automatic keyword updates</label>
+                  <select id="search-keyword-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="480">8 hours</option><option value="1440">1 day</option><option value="4320">3 days</option></select>
+                  <p class="field-help">Saves and outside edits are collected and indexed together once this time has passed. Longer waits use less CPU; Update index applies changes at once.</p>
+                  <label for="search-embedding-interval">Minimum time between automatic embedding updates</label>
+                  <select id="search-embedding-interval"><option value="180">3 hours</option><option value="720">12 hours</option><option value="1440">1 day</option><option value="10080">7 days</option></select>
+                  <p class="field-help">Measured from the end of the previous attempt. New passages are embedded with the next keyword update after this time. Update index bypasses this interval.</p>
+                  <div class="switch-row">
+                    <label for="search-embedding-only-on-ac">Only update embeddings while connected to power</label>
+                    <input id="search-embedding-only-on-ac" class="switch" type="checkbox" role="switch" />
+                  </div>
+                  <p class="field-help">Also applies to manual updates. On battery, or when power status is unavailable, embeddings wait. Keyword search keeps updating.</p>
                 </article>
                 <article class="ai-card">
                   <header class="ai-card-header">
@@ -1313,7 +1398,6 @@
                     <input id="markdown-bold-lead-ins" class="switch" type="checkbox" role="switch" aria-describedby="markdown-bold-lead-ins-help" />
                   </div>
                   <p id="markdown-bold-lead-ins-help" class="field-help">Bold text at the start of a paragraph or list item (after -, * or 1.) takes the theme’s list color.</p>
-                  <div id="editor-theme-menu" class="editor-theme-menu hidden" role="menu" aria-label="Theme"></div>
                 </article>
               </div>
 
@@ -1475,8 +1559,56 @@
           <button id="routing-apply" class="libera-dialog-primary" type="button">Apply</button>
         </div>
       </dialog>
-    </main>
 
+      <dialog id="illustration-set-dialog" class="libera-dialog illustration-dialog" aria-labelledby="illustration-set-title" aria-describedby="illustration-set-description">
+        <div class="libera-dialog-header">
+          <div>
+            <h2 id="illustration-set-title" class="libera-dialog-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 22H4a2 2 0 0 1-2-2V6"/><path d="m22 13-1.296-1.296a2.41 2.41 0 0 0-3.408 0L11 18"/><circle cx="12" cy="8" r="2"/><rect width="16" height="16" x="6" y="2" rx="2"/></svg><span>Illustration set</span></h2>
+            <p id="illustration-set-description" class="libera-dialog-description">Illustrations are cropped to 3:1, the shape of a notebook cover. Click one to pan, zoom and crop it.</p>
+          </div>
+          <button id="illustration-set-close" class="libera-dialog-close" type="button" aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg></button>
+        </div>
+        <div class="illustration-dialog-body">
+          <div class="ai-field"><label for="illustration-set-name">Name</label><input id="illustration-set-name" type="text" maxlength="60" autocomplete="off" placeholder="My illustrations" /></div>
+          <div class="illustration-toolbar">
+            <p id="illustration-set-count" class="field-help"></p>
+            <button id="illustration-set-add" class="secondary icon-button" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 5h6"/><path d="M19 2v6"/><path d="M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/><circle cx="9" cy="9" r="2"/></svg>Add images…</button>
+            <input id="illustration-set-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple hidden />
+          </div>
+          <div id="illustration-set-grid" class="illustration-grid"></div>
+          <p id="illustration-set-error" class="illustration-dialog-error" role="alert"></p>
+        </div>
+        <div class="libera-dialog-footer">
+          <button id="illustration-set-cancel" type="button">Cancel</button>
+          <button id="illustration-set-done" class="libera-dialog-primary" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Save set</span></button>
+        </div>
+      </dialog>
+
+      <dialog id="illustration-crop-dialog" class="libera-dialog illustration-dialog crop-dialog" aria-labelledby="illustration-crop-title" aria-describedby="illustration-crop-description">
+        <div class="libera-dialog-header">
+          <div>
+            <h2 id="illustration-crop-title" class="libera-dialog-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg><span>Crop illustration</span></h2>
+            <p id="illustration-crop-description" class="libera-dialog-description">Drag to pan, scroll or use the slider to zoom. The bright frame becomes the notebook cover.</p>
+          </div>
+          <button id="illustration-crop-close" class="libera-dialog-close" type="button" aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg></button>
+        </div>
+        <div class="illustration-dialog-body">
+          <div id="illustration-crop-stage" class="crop-stage" tabindex="0" aria-label="Crop area. Arrow keys pan, plus and minus zoom."><canvas></canvas><span class="crop-stage-label">3 : 1 cover</span></div>
+          <div class="crop-controls">
+            <button id="illustration-crop-zoom-out" class="secondary icon-only" type="button" aria-label="Zoom out" title="Zoom out"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/></svg></button>
+            <input id="illustration-crop-zoom" type="range" min="1" max="8" step="0.01" value="1" aria-label="Zoom" />
+            <button id="illustration-crop-zoom-in" class="secondary icon-only" type="button" aria-label="Zoom in" title="Zoom in"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/></svg></button>
+            <span id="illustration-crop-zoom-value" class="crop-zoom-value">100%</span>
+            <button id="illustration-crop-reset" class="secondary icon-button" type="button" title="Fit the whole width or height"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>Reset</button>
+          </div>
+        </div>
+        <div class="libera-dialog-footer">
+          <button id="illustration-crop-cancel" type="button">Cancel</button>
+          <button id="illustration-crop-apply" class="libera-dialog-primary" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Apply crop</span></button>
+        </div>
+      </dialog>
+    </main>
+    <script src="setup-illustrations.js"></script>
     <script>
       const form = document.querySelector("#setup-form");
       const formTitle = document.querySelector("#form-title");
@@ -1512,7 +1644,6 @@
       };
       const editorThemeBand = document.querySelector("#editor-theme-band");
       const editorThemeEditor = document.querySelector("#editor-theme-editor");
-      const editorThemeMenu = document.querySelector("#editor-theme-menu");
       const editorThemeStatus = document.querySelector("#editor-theme-status");
       const editorThemeScopeTabs = Array.from(document.querySelectorAll(".editor-theme-scopes [data-scope]"));
       let editorThemeBuiltIns = [];
@@ -1903,56 +2034,45 @@
           : `Deleted “${theme.name}”.`);
       }
 
-      function closeEditorThemeMenu() {
-        if (editorThemeMenu.classList.contains("hidden")) return;
-        editorThemeMenu.classList.add("hidden");
-        editorThemeMenu.replaceChildren();
-      }
-
-      function openEditorThemeMenu(theme, x, y, returnFocus) {
+      // A native menu, like the workspace's: callbacks stay here, only ids cross IPC.
+      async function openEditorThemeMenu(theme, x, y, returnFocus) {
         const items = [];
-        const item = (label, action, className = "") => {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.setAttribute("role", "menuitem");
-          button.textContent = label;
-          if (className) button.className = className;
-          button.addEventListener("click", () => {
-            closeEditorThemeMenu();
-            action();
-            if (document.activeElement === document.body) returnFocus?.focus();
-          });
-          items.push(button);
+        const actions = new Map();
+        const item = (id, label, action) => {
+          items.push({ id, label });
+          actions.set(id, action);
         };
-        const separator = () => items.push(document.createElement("hr"));
-        item(`Use for ${editorThemeScopeNames[editorThemeScope]}`, () => selectEditorTheme(theme.id));
+        const separator = () => items.push({ type: "separator" });
+        item("use", `Use for ${editorThemeScopeNames[editorThemeScope]}`, () => selectEditorTheme(theme.id));
         if (!theme.fixed) {
           separator();
           if (theme.builtIn) {
-            item("Edit a copy…", () => {
+            item("edit-copy", "Edit a Copy…", () => {
               const copy = addEditorTheme(theme, `${theme.name} copy`);
               renderEditorThemes();
               openEditorThemeEditor(copy.id);
             });
           } else {
-            item("Edit…", () => openEditorThemeEditor(theme.id));
+            item("edit", "Edit…", () => openEditorThemeEditor(theme.id));
           }
-          item("Duplicate", () => {
+          item("duplicate", "Duplicate", () => {
             addEditorTheme(theme, `${theme.name} copy`, { select: false });
             renderEditorThemes();
           });
-          item("Export…", () => void exportEditorThemeList([theme]));
+          item("export", "Export…", () => void exportEditorThemeList([theme]));
           if (!theme.builtIn) {
             separator();
-            item("Delete", () => deleteEditorTheme(theme), "danger");
+            item("delete", "Delete", () => deleteEditorTheme(theme));
           }
         }
-        editorThemeMenu.replaceChildren(...items);
-        editorThemeMenu.classList.remove("hidden");
-        const { width, height } = editorThemeMenu.getBoundingClientRect();
-        editorThemeMenu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - width - 8))}px`;
-        editorThemeMenu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - height - 8))}px`;
-        editorThemeMenu.querySelector("button")?.focus();
+        let picked = null;
+        try {
+          picked = await window.liberaMenu?.popup({ items, x: Math.round(x), y: Math.round(y) }) ?? null;
+        } catch {
+          return;
+        }
+        actions.get(picked)?.();
+        if (document.activeElement === document.body) returnFocus?.focus();
       }
 
       editorThemeBand.addEventListener("click", (event) => {
@@ -1975,7 +2095,7 @@
         const tile = event.target.closest(".editor-theme-tile[data-theme-id]");
         if (!tile) return;
         event.preventDefault();
-        openEditorThemeMenu(findEditorTheme(tile.dataset.themeId), event.clientX, event.clientY, tile);
+        void openEditorThemeMenu(findEditorTheme(tile.dataset.themeId), event.clientX, event.clientY, tile);
       });
       editorThemeBand.addEventListener("keydown", (event) => {
         const tile = event.target.closest(".editor-theme-tile[data-theme-id]");
@@ -1983,7 +2103,7 @@
         if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
           event.preventDefault();
           const rect = tile.getBoundingClientRect();
-          openEditorThemeMenu(findEditorTheme(tile.dataset.themeId), rect.left, rect.bottom + 4, tile);
+          void openEditorThemeMenu(findEditorTheme(tile.dataset.themeId), rect.left, rect.bottom + 4, tile);
           return;
         }
         const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
@@ -1993,24 +2113,6 @@
         const index = (ids.indexOf(tile.dataset.themeId) + step + ids.length) % ids.length;
         selectEditorTheme(ids[index]);
       });
-      editorThemeMenu.addEventListener("keydown", (event) => {
-        const buttons = Array.from(editorThemeMenu.querySelectorAll("button"));
-        const index = buttons.indexOf(document.activeElement);
-        if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          closeEditorThemeMenu();
-          editorThemeBand.querySelector('[tabindex="0"]')?.focus();
-        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-          event.preventDefault();
-          buttons[(index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length]?.focus();
-        }
-      });
-      document.addEventListener("pointerdown", (event) => {
-        if (!editorThemeMenu.contains(event.target)) closeEditorThemeMenu();
-      }, true);
-      window.addEventListener("blur", closeEditorThemeMenu);
-      document.addEventListener("scroll", closeEditorThemeMenu, true);
       for (const tab of editorThemeScopeTabs) {
         tab.addEventListener("click", () => {
           editorThemeScope = tab.dataset.scope;
@@ -2165,6 +2267,9 @@
       const searchVisionTokensInput = document.querySelector("#search-vision-tokens");
       const searchIndexImagesInput = document.querySelector("#search-index-images");
       const searchBackgroundIndexingInput = document.querySelector("#search-background-indexing");
+      const searchKeywordIntervalInput = document.querySelector("#search-keyword-interval");
+      const searchEmbeddingIntervalInput = document.querySelector("#search-embedding-interval");
+      const searchEmbeddingOnlyOnACInput = document.querySelector("#search-embedding-only-on-ac");
       const searchIndexFileInput = document.querySelector("#search-index-file");
       const searchIndexHelp = document.querySelector("#search-index-help");
       let searchDefaultIndexFile = "";
@@ -3007,6 +3112,7 @@
         sourceEditorInput.value = state.sourceEditor === "codemirror" ? "codemirror" : "classic";
         markdownBoldLeadInsInput.checked = state.markdownBoldLeadIns !== false;
         setEditorThemeState(state.editorThemeBuiltIns, state.markdownEditorThemes);
+        window.liberaIllustrationPreferences?.load(state.notebookIllustrationBuiltIns, state.notebookIllustrations);
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "openai/gpt-6-luna";
         for (const name of aiFunctionNames) {
@@ -3071,6 +3177,15 @@
         searchVisionTokensInput.value = String(search.visionTokens || 140);
         searchIndexImagesInput.checked = search.indexImages !== false;
         searchBackgroundIndexingInput.checked = search.backgroundIndexing !== false;
+        // Values between the offered choices round up, as the main process does.
+        const intervalChoice = (input, value, fallback) => {
+          const minutes = Number(value);
+          const options = Array.from(input.options);
+          return options.find((option) => Number(option.value) >= (Number.isFinite(minutes) ? minutes : fallback))?.value || options[options.length - 1].value;
+        };
+        searchKeywordIntervalInput.value = intervalChoice(searchKeywordIntervalInput, search.keywordIntervalMinutes, 60);
+        searchEmbeddingIntervalInput.value = intervalChoice(searchEmbeddingIntervalInput, search.embeddingIntervalMinutes, 180);
+        searchEmbeddingOnlyOnACInput.checked = search.embeddingOnlyOnAC !== false;
         searchIndexFileInput.value = search.indexFile || "";
         searchDefaultIndexFile = state.searchDefaultIndexFile || "";
         if (searchDefaultIndexFile) searchIndexFileInput.placeholder = `Default: ${searchDefaultIndexFile}`;
@@ -3444,7 +3559,7 @@
       window.liberaSetup?.onRequestClose?.(closePreferences);
       document.addEventListener("keydown", (event) => {
         // The routing dialog closes itself on Escape.
-        if (event.key === "Escape" && !routingDialog.open) closePreferences();
+        if (event.key === "Escape" && !routingDialog.open && !document.querySelector("dialog[open]")) closePreferences();
       });
       document.addEventListener("mousedown", (event) => {
         if (document.documentElement.dataset.presentation === "overlay" &&
@@ -3682,6 +3797,7 @@
             markdownPdfBaseLineHeight: markdownPdfBaseLineHeightInput.value,
             markdownBoldLeadIns: markdownBoldLeadInsInput.checked,
             markdownEditorThemes: { version: 2, ...editorThemeChoice, themes: editorThemes },
+            notebookIllustrations: window.liberaIllustrationPreferences?.payload(),
             openaiApiKey: apiKeyInput.value,
             openRouterModel: openRouterModelInput.value,
             aiFunctions: Object.fromEntries(aiFunctionNames.map((name) => [name, {
@@ -3721,6 +3837,9 @@
               visionTokens: searchVisionTokensInput.value,
               indexImages: searchIndexImagesInput.checked,
               backgroundIndexing: searchBackgroundIndexingInput.checked,
+              keywordIntervalMinutes: searchKeywordIntervalInput.value,
+              embeddingIntervalMinutes: searchEmbeddingIntervalInput.value,
+              embeddingOnlyOnAC: searchEmbeddingOnlyOnACInput.checked,
               indexFile: searchIndexFileInput.value,
               readingModelDirectory: readingModelDirectoryInput.value,
             },

@@ -29,7 +29,7 @@ import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { importReferenceFile, isReferenceImportPath, referenceImportSummary } from "@/lib/references/import";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import { TagChip } from "@/components/libera/file-tags";
-import { timeAgo } from "@/lib/collab/ui/wording";
+import { fullDateLabel, relativeTimeLabel } from "@/lib/relative-time";
 import { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
@@ -424,15 +424,9 @@ const NoteLinksContext = createContext<NoteLinks>({
 /** Tags per file path, shown in the file-name tooltip. */
 const FileTagsContext = createContext<Record<string, string[]>>({});
 
-const RELATIVE_EDIT_LIMIT_MS = 30 * 86_400_000;
-
 function lastEditedLabel(updatedAt: string) {
-  const edited = Date.parse(updatedAt);
-  if (!Number.isFinite(edited)) return "";
-  const age = Date.now() - edited;
-  return age < RELATIVE_EDIT_LIMIT_MS
-    ? `Edited ${timeAgo(Math.max(0, age))}`
-    : `Edited ${new Date(edited).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`;
+  const edited = relativeTimeLabel(updatedAt);
+  return edited ? `Edited ${edited}` : "";
 }
 
 function FileTooltipDetails({ file, tags }: { file: LiberaFileNode; tags: string[] }) {
@@ -445,7 +439,7 @@ function FileTooltipDetails({ file, tags }: { file: LiberaFileNode; tags: string
         </div>
       ) : null}
       {edited ? (
-        <div className="mt-1 font-normal text-muted-foreground" title={new Date(file.updatedAt).toLocaleString()}>
+        <div className="mt-1 font-normal text-muted-foreground" title={fullDateLabel(file.updatedAt)}>
           {edited}
         </div>
       ) : null}
@@ -1477,10 +1471,10 @@ function NotebookSection({
               <SharedNotebookBadge notebook={notebook.name} />
               {isExpanded ? null : <NoteLinkCounts path={notebook.path} />}
             </span>
-            <span className="block truncate text-xs font-normal text-muted-foreground">
+            <span className="block truncate text-xs font-normal text-muted-foreground" title={linkedFolder?.missing ? undefined : fullDateLabel(notebook.updatedAt)}>
               {linkedFolder?.missing
                 ? "Folder not found"
-                : `Updated ${new Date(notebook.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`}
+                : `Updated ${relativeTimeLabel(notebook.updatedAt)}`}
             </span>
           </span>
         </button>

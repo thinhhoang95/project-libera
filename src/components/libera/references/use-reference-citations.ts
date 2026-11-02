@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { citedKeys } from "@/lib/references/citation-syntax";
+import { isLatexCitingPath, latexCitedKeys } from "@/lib/references/latex-cite-syntax";
 import { entryForKey, libraryEntriesByKey } from "@/lib/references/format";
 import type { ReferenceLibrary } from "@/lib/references/types";
 
@@ -22,7 +23,7 @@ export type CitingDocuments = Map<string, Set<string>>;
 export const CITATION_SCAN_DELAY_MS = 300;
 /**
  * Returning to the window refetches at most this often. Each fetch reads every
- * saved Markdown file in the notebook (metadata cannot be trusted to show a
+ * saved Markdown/LaTeX file in the notebook (metadata cannot be trusted to show a
  * change); saves and tree changes refetch through `refreshToken` regardless.
  */
 export const CITATION_FOCUS_REFRESH_MS = 5000;
@@ -70,7 +71,7 @@ function scanDraft(draft: OpenReferenceDraft) {
   const cached = draftScans.get(draft.path);
   if (cached && cached.text === draft.text) return cached.keys;
   // Every narrative candidate: the merged index is only ever looked up by library keys.
-  const keys = citedKeys(draft.text, { allNarrative: true });
+  const keys = isLatexCitingPath(draft.path) ? latexCitedKeys(draft.text) : citedKeys(draft.text, { allNarrative: true });
   draftScans.set(draft.path, { text: draft.text, keys });
   if (draftScans.size > 200) draftScans.delete(draftScans.keys().next().value!);
   return keys;
@@ -90,15 +91,17 @@ function useDebounced<T>(value: T, delay: number) {
 /**
  * Keys the active document cites, in document order, rescanned ~300 ms after
  * typing stops. Narrative `@key`s count when `library` knows them (without a
- * library, only bracketed citations count).
+ * library, only bracketed citations count). LaTeX source counts its `\cite` commands.
  */
-export function useDocumentCitedKeys(draft: string | null, delay = CITATION_SCAN_DELAY_MS, library?: ReferenceLibrary | null) {
-  const debounced = useDebounced(draft, delay);
+export function useDocumentCitedKeys(draft: string | null, delay = CITATION_SCAN_DELAY_MS, library?: ReferenceLibrary | null, syntax: "markdown" | "latex" = "markdown") {
+  const snapshot = useMemo(() => ({ draft, syntax }), [draft, syntax]);
+  const debounced = useDebounced(snapshot, delay);
   const known = useMemo(() => library ? libraryEntriesByKey(library) : null, [library]);
   return useMemo(() => {
-    if (!debounced) return [];
-    return citedKeys(debounced, { resolves: known ? (key) => Boolean(entryForKey(known, key)) : null });
-  }, [debounced, known]);
+    if (!debounced.draft || debounced.syntax !== syntax) return [];
+    if (syntax === "latex") return latexCitedKeys(debounced.draft);
+    return citedKeys(debounced.draft, { resolves: known ? (key) => Boolean(entryForKey(known, key)) : null });
+  }, [debounced, known, syntax]);
 }
 
 /**

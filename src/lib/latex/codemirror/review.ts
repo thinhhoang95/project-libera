@@ -8,7 +8,8 @@ import { diffTexts } from "../../text-hunks";
  * shown struck through and restored on Reject. Hunks follow later edits, and
  * undoing the AI edit removes its hunks (redo brings them back). */
 
-export type AiChangeSource = "rewrite" | "write" | "format";
+/** "agent": the AI agent's change to a file under manual review (src/lib/agent-review/codemirror.ts). */
+export type AiChangeSource = "rewrite" | "write" | "format" | "agent";
 export type ReviewHunk = { id: string; from: number; to: number; original: string; source: AiChangeSource };
 type PendingRequest = { id: string; from: number; to: number; kind: AiChangeSource };
 
@@ -32,6 +33,10 @@ export const reviewHunksField = StateField.define<ReviewHunk[]>({
       if (effect.is(addReviewHunks)) next = [...next.filter((hunk) => !effect.value.some((added) => added.id === hunk.id)), ...effect.value].sort((a, b) => a.from - b.from);
       if (effect.is(resolveReviewHunks)) next = next.filter((hunk) => !effect.value.includes(hunk.id));
     }
+    // A separate AI Rewrite touching an agent hunk takes ownership of it;
+    // overlapping applied hunks cannot be rejected together safely.
+    const proposals = tr.effects.flatMap((effect) => effect.is(addReviewHunks) ? effect.value.filter((hunk) => hunk.source !== "agent") : []);
+    if (proposals.length) next = next.filter((hunk) => hunk.source !== "agent" || !proposals.some((proposal) => proposal.from <= hunk.to && proposal.to >= hunk.from));
     // A hunk whose text is back to the original has nothing left to review.
     if (tr.docChanged && next.length) next = next.filter((hunk) => !(hunk.from === hunk.to && !hunk.original) && tr.newDoc.sliceString(hunk.from, hunk.to) !== hunk.original);
     return next.length === hunks.length && next.every((hunk, index) => hunk === hunks[index]) ? hunks : next;
@@ -159,6 +164,14 @@ const reviewHistory = invertedEffects.of((tr) => {
       if (removed.length && tr.docChanged) effects.push(addReviewHunks.of(removed));
     }
   }
+  // User edits can also settle an agent hunk by restoring its original.
+  // Undo must restore that hunk even when no decision effect was dispatched.
+  if (tr.docChanged) {
+    const restored = new Set(effects.flatMap((effect) => effect.is(addReviewHunks) ? effect.value.map((hunk) => hunk.id) : []));
+    const remaining = new Set(tr.state.field(reviewHunksField).map((hunk) => hunk.id));
+    const removed = tr.startState.field(reviewHunksField).filter((hunk) => hunk.source === "agent" && !remaining.has(hunk.id) && !restored.has(hunk.id));
+    if (removed.length) effects.push(addReviewHunks.of(removed));
+  }
   return effects;
 });
 
@@ -174,6 +187,7 @@ export function decideReviewHunks(view: EditorView, ids: string[] | "all", decis
     changes: hunks.map((hunk) => ({ from: hunk.from, to: hunk.to, insert: hunk.original })),
     effects: resolved,
     userEvent: "input.ai.reject",
+    annotations: isolateHistory.of("full"),
   });
   return true;
 }

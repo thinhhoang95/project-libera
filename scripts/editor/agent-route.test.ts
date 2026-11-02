@@ -124,7 +124,7 @@ test("an agent run searches, reads in parallel, edits, streams events, and can b
     const first = bodies[0] as { model: string; tools: { function: { name: string } }[]; provider: Record<string, unknown>; reasoning: unknown; session_id: string; messages: { role: string; content: string }[] };
     assert.equal(first.model, "test/agent-model");
     assert.deepEqual(first.tools.map((tool) => tool.function.name), ["Glob", "Grep", "Read", "ReadComments", "Edit", "Write", "TaskCreate", "TaskUpdate", "Skill", "References"]);
-    assert.deepEqual(first.provider, { only: ["test"], require_parameters: true });
+    assert.deepEqual(first.provider, { only: ["test"], require_parameters: true, sort: "price" });
     assert.deepEqual(first.reasoning, { effort: "high" });
     assert.equal(first.session_id, "chat-1");
     assert.match(first.messages[0].content, /# Permission: Modify all files in Notebook\/Folder/);

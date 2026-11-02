@@ -17,6 +17,7 @@ import { approximateMatch } from "./approximate-match";
 import { globToRegExp } from "./glob";
 import { resolveLibraryPath, statLibraryPath, suggestSimilarPath, walkLibraryFiles, type LibraryEntry, type ResolvedPath } from "./library";
 import { hashContent, type RunSnapshots } from "./snapshots";
+import { withReviewWrite } from "./review-store";
 import type { AgentEvent, AgentPermission, AgentTask, AgentTaskStatus } from "./types";
 import type { ModelProfile, ToolSchema } from "./model";
 import type { TokenUsage } from "@/lib/chat-token-usage";
@@ -69,6 +70,8 @@ export type ToolContext = {
   sharedDocs?: Map<string, ResolvedDoc>;
   /** The user turned on "Allow web search": WebSearch is offered. */
   allowWebSearch?: boolean;
+  /** The user turned on "Manual review": every file the run changes keeps a baseline for review (review-store.ts). */
+  manualReview?: boolean;
   /** The run's model settings, for child runs and web searches. */
   runConfig?: AgentRunConfig;
   /** Shared by the run and its child runs. */
@@ -1009,28 +1012,39 @@ export async function writeAgentFile(context: ToolContext, resolved: ResolvedPat
   // A notebook shared since the check: writing here would bypass the host
   // and lose attribution (SharedDocumentError, 409 shared-document).
   assertNotSharedItem(resolved.notebook, resolved.pathParts);
+  let disk = previous.content;
+  if (previous.fromDraft) {
+    try { disk = await readFile(resolved.absolutePath, "utf8"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; else disk = null; }
+  }
   if (!context.snapshots.has(resolved.path)) {
     // Keep what was on disk (and any unsaved draft the agent built on) for undo.
-    let disk: string | null = previous.fromDraft ? null : previous.content;
-    if (previous.fromDraft) {
-      try { disk = await readFile(resolved.absolutePath, "utf8"); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    }
     await context.snapshots.recordOriginal(resolved.path, disk, previous.fromDraft ? previous.content ?? undefined : undefined);
   }
-  if (verifyUnchanged) {
+  await withReviewWrite(resolved.path, previous.content, context.manualReview ? context.snapshots.runId : null, async () => {
+    // Re-resolve after waiting for review decisions, including moves and sharing.
+    const target = await resolveLibraryPath(resolved.path);
+    assertNotSharedItem(target.notebook, target.pathParts);
+    await mkdir(path.dirname(target.absolutePath), { recursive: true });
+    await writeFile(target.absolutePath, content, "utf8");
+    notifySearchChanges([resolved.path]);
+    await context.snapshots.recordWritten(resolved.path, content);
+    context.drafts.delete(resolved.path);
+    context.fileState.set(resolved.path, { hash: hashContent(content), partial: false });
+    const created = context.changed.get(resolved.path)?.created ?? previous.content === null;
+    context.changed.set(resolved.path, { created });
+    context.emit({ type: "file_changed", path: resolved.path, created, ...(context.manualReview ? { review: true } : {}) });
+  }, async () => {
     const latest = await readCurrentText(context, resolved);
-    if (!latest || latest.content !== previous.content || latest.fromDraft !== previous.fromDraft) throw new ToolError(`${resolved.path} changed while Python was updating its figures. Run it again; your edits were kept.`);
-  }
-  await mkdir(path.dirname(resolved.absolutePath), { recursive: true });
-  await writeFile(resolved.absolutePath, content, "utf8");
-  notifySearchChanges([resolved.path]);
-  await context.snapshots.recordWritten(resolved.path, content);
-  context.drafts.delete(resolved.path);
-  context.fileState.set(resolved.path, { hash: hashContent(content), partial: false });
-  const created = context.changed.get(resolved.path)?.created ?? previous.content === null;
-  context.changed.set(resolved.path, { created });
-  context.emit({ type: "file_changed", path: resolved.path, created });
+    let latestDisk = latest?.content ?? null;
+    if (previous.fromDraft) {
+      try { latestDisk = await readFile(resolved.absolutePath, "utf8"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; else latestDisk = null; }
+    }
+    if (latestDisk !== disk || (latest?.content ?? null) !== previous.content || (latest?.fromDraft ?? false) !== previous.fromDraft) {
+      throw new ToolError(verifyUnchanged ? `${resolved.path} changed while Python was updating its figures. Run it again; your edits were kept.` : `${resolved.path} changed since you read it. Read it again before editing.`);
+    }
+  });
   return null;
 }
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { pruneReviews } from "@/lib/agent/review-store";
 import { isRunId, undoRun } from "@/lib/agent/snapshots";
 
 export const runtime = "nodejs";
@@ -15,7 +16,10 @@ export async function POST(request: NextRequest) {
     return jsonError("Invalid paths.", 400);
   }
   try {
-    return NextResponse.json({ results: await undoRun(body.runId, paths as string[] | undefined) });
+    const results = await undoRun(body.runId, paths as string[] | undefined);
+    // Files the undo put back to their review baseline need no review any more.
+    await pruneReviews(results.filter((result) => result.status === "restored" || result.status === "deleted").map((result) => result.path));
+    return NextResponse.json({ results });
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Could not undo the agent's changes.", 404);
   }

@@ -66,7 +66,7 @@ test("an interrupted share is retried to completion without duplicates", { timeo
     result = await alice.router.call("POST", ControlRoutes.share, { notebook: "Thesis" });
     assert.equal(result.status, 503, JSON.stringify(result.body));
     const plan = JSON.parse(readFileSync(path.join(root, ".libera-share-pending.json"), "utf8")) as { projectId?: string; files: Array<{ path: string; docId?: string; uploaded?: boolean }> };
-    assert.ok(plan.projectId, "the orphaned project was found and recorded");
+    assert.ok(plan.projectId, "the same operation’s project was recovered and recorded");
     assert.equal(plan.files.filter((file) => file.uploaded).length, 2);
 
     // An edit between attempts, to a document the server already has.

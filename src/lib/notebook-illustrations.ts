@@ -32,3 +32,25 @@ export function notebookIllustrationUrl(illustration: unknown, createdAt: string
   return NOTEBOOK_ILLUSTRATIONS[isNotebookIllustration(illustration)
     ? illustration : legacyNotebookIllustration(createdAt)];
 }
+
+type IllustratedNotebook = { name: string; createdAt: string; illustration?: unknown; illustrationPath?: string };
+type IllustrationLibrary = import("../../electron/notebook-illustrations.cjs").NotebookIllustrationLibrary;
+
+/**
+ * A notebook's cover: the one the user picked for it, else one from the
+ * chosen set. AI Seasons keeps each notebook's stored illustration; in any
+ * other set the notebook's creation time picks an image, so it stays put as
+ * long as the set does.
+ */
+export function notebookCoverUrl(notebook: IllustratedNotebook, library: IllustrationLibrary) {
+  if (notebook.illustrationPath) {
+    return `/api/notebooks/illustration?notebook=${encodeURIComponent(notebook.name)}&file=${encodeURIComponent(notebook.illustrationPath)}`;
+  }
+  const set = library.sets.find((candidate) => candidate.id === library.selected);
+  if (!set || set.id === "ai-seasons" || !set.images.length) return notebookIllustrationUrl(notebook.illustration, notebook.createdAt);
+  let hash = 2166136261;
+  for (const character of `${String(notebook.illustration ?? "")}|${notebook.createdAt}`) {
+    hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+  }
+  return set.images[(hash >>> 0) % set.images.length].url;
+}

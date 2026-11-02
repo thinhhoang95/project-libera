@@ -8,7 +8,7 @@ import { Check, ChevronDown, ChevronUp, Sparkles, X } from "lucide-react";
 import { SUGGESTIONS_CHANNEL, decideTiptapChanges, tiptapChangeUnits, tiptapChangesKey, type ChangeSource, type TrackedChange } from "@/lib/tiptap-changes";
 
 const NO_CHANGES: TrackedChange[] = [];
-const SOURCE_LABELS: Record<ChangeSource, string> = { rewrite: "AI Rewrite", write: "Write with AI", format: "AI Format", image: "AI Image to Markdown", review: "Agentic review" };
+const SOURCE_LABELS: Record<ChangeSource, string> = { rewrite: "AI Rewrite", write: "Write with AI", format: "AI Format", image: "AI Image to Markdown", review: "Agentic review", agent: "Agent changes" };
 const navClass = "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground";
 
 /** Summary of proposed changes with navigation and Accept/Reject all. */

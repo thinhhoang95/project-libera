@@ -4,7 +4,7 @@ import { GlobalWorkerOptions, TextLayer, getDocument } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/display/api";
 import { Download, Loader2, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rendering";
+import { PdfTextContentCache, pdfCanvasSize, retainPdfPage } from "@/components/libera/pdf-rendering";
 import { useCanvasViewStateCapture } from "../canvas-view-state";
 import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
 import type { SynctexPdfLocation } from "@/lib/latex/synctex";
@@ -334,10 +334,12 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
     let cancelled = false;
     let renderTask: RenderTask | null = null;
     let textLayer: TextLayer | null = null;
+    let releasePageResources: (() => void) | null = null;
 
     void (async () => {
       try {
         const page = await pdf.getPage(pageNumber);
+        releasePageResources = retainPdfPage(page);
         if (cancelled) return;
         const viewport = page.getViewport({ scale });
         // Render into a fresh canvas and swap it in when done, so a rebuild or
@@ -367,6 +369,9 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
         if (!(error instanceof Error && error.name === "RenderingCancelledException")) {
           // A destroyed document cancels pending renders; nothing to show.
         }
+      } finally {
+        await renderTask?.promise.catch(() => undefined);
+        releasePageResources?.();
       }
     })();
 

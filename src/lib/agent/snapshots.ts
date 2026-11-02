@@ -8,6 +8,7 @@ import { getStateRoot } from "@/lib/storage/paths";
 import { LIBERA_SYSTEM_DIR } from "@/lib/storage/constants";
 import { writeJsonState } from "@/lib/storage/json-state";
 import { resolveLibraryPath } from "./library";
+import { withReviewFiles } from "./review-store";
 import type { UndoResult } from "./types";
 
 // Before an agent run first writes a file, its original content is kept here
@@ -198,6 +199,10 @@ export async function undoRun(runId: string, paths?: string[]): Promise<UndoResu
   const manifest = await readManifest(runId);
   if (!manifest) throw new Error("This run's undo history is no longer available.");
   const targets = Object.keys(manifest.files).filter((filePath) => !paths || paths.includes(filePath));
+  return withReviewFiles(targets, () => undoFiles(runId, manifest, targets));
+}
+
+async function undoFiles(runId: string, manifest: Manifest, targets: string[]): Promise<UndoResult[]> {
   const results: UndoResult[] = [];
   for (const filePath of targets) {
     const file = manifest.files[filePath];

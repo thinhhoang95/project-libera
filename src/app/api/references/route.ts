@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { ensureTetherStarted } from "@/lib/references/bib-tether";
 import { getReferenceJobRunner } from "@/lib/references/jobs";
 import { LibraryOpError } from "@/lib/references/library-ops";
 import type { ReferenceLibraryOp } from "@/lib/references/types";
@@ -32,6 +33,8 @@ export async function GET(request: NextRequest) {
     const library = await readReferenceLibrary(notebook);
     // Opening a library starts its weekly retraction check when one is due; never waited for.
     void getReferenceJobRunner().requestRetractionCheck(notebook);
+    // A tethered .bib file is watched from the first read, and catches up with edits made while Libera was closed.
+    ensureTetherStarted(notebook);
     return NextResponse.json({ library });
   } catch (error) {
     return handleError(error, "Could not read the reference library.");

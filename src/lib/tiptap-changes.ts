@@ -6,7 +6,8 @@ import { closeHistory } from "@tiptap/pm/history";
 import katex from "katex";
 import { markdownAssetSource } from "./tiptap-markdown";
 
-export type ChangeSource = "rewrite" | "write" | "format" | "image" | "review";
+/** "agent": the AI agent's changes to a file under manual review (src/components/libera/use-tiptap-agent-review.ts). */
+export type ChangeSource = "rewrite" | "write" | "format" | "image" | "review" | "agent";
 export type ChangeDecision = "accept" | "reject";
 type Range = { from: number; to: number };
 /** One aligned difference between two node lists. Block hunks cover whole
@@ -42,6 +43,8 @@ export type TiptapChangesState = { changes: TrackedChange[]; decide?: ChangeDeci
 export type TiptapChangesMeta =
   | { type: "track"; source: ChangeSource }
   | { type: "resolve"; ids: string[] }
+  /** Replace the applied changes of `source` with the difference from `before` to the document. */
+  | { type: "retrack"; source: ChangeSource; before: ProseMirrorNode }
   | { type: "preview"; changes: TrackedChange[]; decide?: ChangeDecider; channel?: string };
 
 export const tiptapChangesKey = new PluginKey<TiptapChangesState>("liberaChanges");
@@ -419,6 +422,7 @@ export const TiptapChanges = Extension.create<{ documentPath: string }>({
           if (tr.docChanged) changes = mapChanges(changes, tr);
           if (meta?.type === "track") changes = [...changes, ...trackChanges(oldState.doc, newState.doc, meta.source)];
           else if (meta?.type === "resolve") changes = changes.filter((change) => !meta.ids.includes(change.id));
+          else if (meta?.type === "retrack") changes = [...changes.filter((change) => change.mode !== "applied" || change.source !== meta.source), ...trackChanges(meta.before, newState.doc, meta.source)];
           else if (meta?.type === "preview") {
             const size = newState.doc.content.size;
             const channel = meta.channel;

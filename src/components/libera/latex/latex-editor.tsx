@@ -29,8 +29,10 @@ import type { LatexTabViewState } from "@/components/libera/types";
 import { registerEditorSelectionReader } from "@/components/libera/editor-selection-registry";
 import { useCodeMirrorReview } from "@/components/libera/use-editor-review";
 import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
+import { relocateLatexCitation, type CitationSnippet } from "@/lib/references/occurrences";
 import { LatexAiMenu, type LatexAiMenuState } from "./latex-ai-menu";
 import { LatexChangeBar } from "./latex-change-bar";
+import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
 import { getLatexSnippets } from "./latex-snippets-store";
 
 export type LatexEditorHandle = {
@@ -39,6 +41,8 @@ export type LatexEditorHandle = {
   revealCompiledLine: (line: number, column?: number, hint?: SynctexTextHint) => void;
   /** Reveal a line in the current text (outline), refined to the hinted word if given. */
   revealLine: (line: number, hint?: SynctexTextHint) => void;
+  /** Select and reveal a range of the current text. */
+  revealRange: (from: number, to: number, snippet?: CitationSnippet) => void;
   markCompileStarted: () => void;
   markCompileShown: () => void;
   text: () => string;
@@ -120,7 +124,7 @@ export function LatexEditor({
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName, collab });
+  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath });
   const shared = !!collab;
 
   const publishDraft = useCallback(() => {
@@ -203,6 +207,8 @@ export function LatexEditor({
         syncEnvironmentNames,
         latexProjectField,
         latexReviewExtension(),
+        // The agent's changes under manual review; shared tabs get suggestions instead.
+        ...(binding ? [] : [agentReviewCodeMirror(initialRef.current.documentPath, { outside: (transaction) => transaction.annotation(Transaction.remote) === true })]),
         latexSyncExtension(),
         ...(isTex ? [latexMathPreview()] : []),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
@@ -306,6 +312,17 @@ export function LatexEditor({
         const target = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, line)));
         const word = hint ? locateTextHint(view.state.doc.toString(), target.number, hint) : null;
         revealPosition(view, word?.from ?? target.from, { selectTo: word?.to });
+        view.focus();
+      },
+      revealRange: (from, to, snippet) => {
+        if (snippet) {
+          const current = relocateLatexCitation(view.state.doc.toString(), snippet);
+          if (!current) return;
+          from = current.start;
+          to = current.end;
+        }
+        const length = view.state.doc.length;
+        revealPosition(view, Math.max(0, Math.min(from, length)), { selectTo: Math.max(0, Math.min(to, length)) });
         view.focus();
       },
       markCompileStarted: () => view.dispatch({ effects: markCompileStarted.of(null) }),
