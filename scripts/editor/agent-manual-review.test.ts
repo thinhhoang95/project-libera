@@ -205,10 +205,11 @@ test("a CodeMirror editor shows the pending changes and reports decisions as bas
     undo(view);
     assert.equal(agentReviewHunks(view.state).length, 1);
 
-    // The agent's next edit comes in from outside: it is diffed against the baseline.
+    // The agent's next edit comes in from outside: it is diffed against the baseline
+    // (adjacent changed lines form one hunk).
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "# alpha\nBETA\ngamma\nDELTA\nepsilon\n" }, annotations: Transaction.remote.of(true) });
     await settle();
-    assert.deepEqual(agentReviewHunks(view.state).map((hunk) => hunk.original), ["delta\n", ""]);
+    assert.deepEqual(agentReviewHunks(view.state).map((hunk) => [view.state.sliceDoc(hunk.from, hunk.to), hunk.original]), [["DELTA\nepsilon\n", "delta\n"]]);
 
     await agentReviewStore.flush(["Research/plan.md"]);
     assert.equal(posted.at(-1)?.action, "baseline");

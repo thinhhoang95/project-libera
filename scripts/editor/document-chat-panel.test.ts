@@ -26,14 +26,14 @@ test("chat captures both editors, sends the draft, and restores saved conversati
       ]);
       return menuAction;
     }
-    assert.equal(menu.items[0].type !== "separator" && menu.items[0].label, "Manage Chats");
-    const exportItem = menu.items[1];
+    assert.deepEqual(menu.items.slice(0, 2).map((item) => item.type !== "separator" && item.label), ["Search", "Manage Chats"]);
+    const exportItem = menu.items[2];
     assert.ok(exportItem.type !== "separator" && exportItem.submenu?.length === 3);
     return menuAction;
   } };
   window.liberaExport = { saveMarkdownFile: async (input) => { exported = input; return { canceled: false }; }, exportMarkdownPdf: async () => ({ canceled: true }) };
   let savedFontSize: number | null = null;
-  let savedModel: { model: string; defaultModel: string } | null = null;
+  let savedModel = null as { model: string; defaultModel: string } | null;
   let savedHistory: ChatStore | null = null;
   let fileReads = 0;
   let historyWrites = 0;
@@ -351,7 +351,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();
-    assert.ok(host.textContent?.includes("File: curated.md"));
+    assert.ok(host.querySelector('[aria-label="Remove file: curated.md"]'), "Attached files are restored with the chat");
     await click("Remove file: Draft.md");
     await mentionFile("Compare @curated.md with @dr");
     await click("Send message");
