@@ -8,7 +8,7 @@ import { useTiptapReview } from "./use-editor-review";
 import { useTiptapAgentReview } from "./use-tiptap-agent-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { MarkdownSelectionLinkOption, MarkdownTabViewState, PendingVisualInsertion } from "@/components/libera/types";
-import { convertClipboardHtmlToMarkdown, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
+import { convertClipboardHtmlToMarkdown, isSourceWrapperHtml, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { changeTiptapHeadingLevels, getTiptapBlockInsertionRange, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
@@ -107,7 +107,7 @@ function smartPasteClipboard(editor: Editor, range: { from: number; to: number }
   if (!text) {
     const html = clipboard?.getData("text/html");
     try {
-      text = html ? convertClipboardHtmlToMarkdown(html, mathMarkers) : clipboard?.getData("text/plain");
+      text = html && !isSourceWrapperHtml(html) ? convertClipboardHtmlToMarkdown(html, mathMarkers) : clipboard?.getData("text/plain");
     } catch {
       return false;
     }
@@ -325,8 +325,10 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           return true;
         }
         // Keep native rich-text paste, while plain source (including Libera's
-        // Copy as Markdown) is parsed into editable document content.
-        if (!markdown && event.clipboardData?.getData("text/html")) return false;
+        // Copy as Markdown, and code editors' styled source) is parsed into
+        // editable document content.
+        const html = event.clipboardData?.getData("text/html");
+        if (!markdown && html && !isSourceWrapperHtml(html)) return false;
         const text = markdown || event.clipboardData?.getData("text/plain");
         if (!text?.trim()) return false;
         if (pasteMarkdownTableIntoCells(editor, text)) { event.preventDefault(); return true; }
@@ -486,7 +488,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       return;
     }
     let text = clipboard.markdown;
-    if (!text && clipboard.html) {
+    if (!text && clipboard.html && !isSourceWrapperHtml(clipboard.html)) {
       try {
         text = convertClipboardHtmlToMarkdown(clipboard.html, mathMarkers);
       } catch {

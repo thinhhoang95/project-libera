@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownRenderer } from "../../src/components/markdown-renderer";
-import { convertClipboardHtmlToMarkdown, copyRenderedMarkdownSelection, getRenderedSelectionMarkdown } from "../../src/lib/markdown-clipboard";
+import { convertClipboardHtmlToMarkdown, copyRenderedMarkdownSelection, getRenderedSelectionMarkdown, isSourceWrapperHtml } from "../../src/lib/markdown-clipboard";
 
 const dom = new JSDOM("<!doctype html><body></body>");
 for (const key of ["window", "document", "Node", "Element", "HTMLElement", "DOMParser"] as const) {
@@ -110,4 +110,12 @@ test("native copy writes only Markdown, spans messages and leaves outside select
   range.selectNodeContents(document.body);
   selection.removeAllRanges(); selection.addRange(range);
   assert.equal(copyRenderedMarkdownSelection(host, event), false);
+});
+
+test("code editors' styled source counts as plain text, rich HTML does not", () => {
+  // VS Code's clipboard HTML for "# Title\n\n- one".
+  const vscode = `<meta charset='utf-8'><div style="color: #cccccc;white-space: pre;"><div><span style="color: #569cd6;"># Title</span></div><br><div><span>- one</span></div></div>`;
+  assert.equal(isSourceWrapperHtml(vscode), true);
+  assert.equal(isSourceWrapperHtml("<meta charset='utf-8'><h1>Title</h1><ul><li>one</li></ul>"), false);
+  assert.equal(isSourceWrapperHtml("<span>plain <b>bold</b></span>"), false);
 });

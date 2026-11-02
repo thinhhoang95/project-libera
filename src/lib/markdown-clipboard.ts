@@ -35,6 +35,17 @@ export function convertClipboardHtmlToMarkdown(
   return serializerFor(mathMarkers).serialize(generateJSON(html, configured));
 }
 
+// Code editors (VS Code, Cursor) put styled lines on the clipboard beside the
+// plain text: divs and spans for colour only, which carry no document structure.
+const SOURCE_WRAPPER_TAGS = new Set(["HTML", "HEAD", "BODY", "META", "STYLE", "DIV", "SPAN", "BR"]);
+
+/** Clipboard HTML that only wraps plain source text, so its text/plain is the
+ * thing to read as Markdown. */
+export function isSourceWrapperHtml(html: string): boolean {
+  const body = new DOMParser().parseFromString(html, "text/html").documentElement;
+  return Array.from(body.querySelectorAll("*")).every((element) => SOURCE_WRAPPER_TAGS.has(element.tagName));
+}
+
 /** Rendered citations, copied back as their source tokens. The Markdown
  * serializer would escape a token's brackets, so the clone carries a
  * placeholder of letters and digits that `restoreCitations` swaps back. */
