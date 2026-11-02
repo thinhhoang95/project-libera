@@ -26,13 +26,14 @@ export function createWorkspaceView(tree: LiberaTree): WorkspaceView {
     sidebarSort: "updatedAt:desc", fileSort: "updated", fileView: "list",
     notebookGroups: tree.notebookGroups.map((group) => ({ ...group })),
     notebookGroupIds: Object.fromEntries(tree.notebooks.map((notebook) => [notebook.name, notebook.groupId])),
-    notebookViewOptions: { hiddenGroupIds: [], hiddenNotebookNames: [], showArchive: tree.notebookViewOptions.showArchive },
+    notebookViewOptions: { hiddenGroupIds: [], hiddenNotebookNames: [], showArchive: tree.notebookViewOptions.showArchive, showFileDetails: tree.notebookViewOptions.showFileDetails },
     starredFilePaths: [],
   };
 }
 
 export function applyWorkspaceView(tree: LiberaTree, view?: WorkspaceView): LiberaTree {
-  const notebookViewOptions = view?.notebookViewOptions ?? tree.notebookViewOptions;
+  // Views saved before showFileDetails existed keep the details line on.
+  const notebookViewOptions = view ? { ...view.notebookViewOptions, showFileDetails: view.notebookViewOptions.showFileDetails !== false } : tree.notebookViewOptions;
   function visibleChildren(nodes: LiberaTreeNode[]): LiberaTreeNode[] {
     if (notebookViewOptions.showArchive) return nodes;
     return nodes.filter((node) => node.kind !== "folder" || node.name !== ARCHIVE_DIR)
@@ -186,7 +187,7 @@ export function parseWorkspaceLibrary(value: unknown): WorkspaceLibrary {
       Array.isArray(view.notebookGroups) && view.notebookGroups.every((group) => group && typeof group.id === "string" && group.id.length > 0 && typeof group.title === "string" && group.title.trim().length > 0 && typeof group.description === "string" && typeof group.createdAt === "string" && typeof group.updatedAt === "string") &&
       new Set(view.notebookGroups.map((group) => group.id)).size === view.notebookGroups.length &&
       view.notebookGroupIds && typeof view.notebookGroupIds === "object" && !Array.isArray(view.notebookGroupIds) && Object.values(view.notebookGroupIds).every((id) => id === null || view.notebookGroups.some((group) => group.id === id)) &&
-      view.notebookViewOptions && strings(view.notebookViewOptions.hiddenGroupIds) && strings(view.notebookViewOptions.hiddenNotebookNames) && typeof view.notebookViewOptions.showArchive === "boolean" &&
+      view.notebookViewOptions && strings(view.notebookViewOptions.hiddenGroupIds) && strings(view.notebookViewOptions.hiddenNotebookNames) && typeof view.notebookViewOptions.showArchive === "boolean" && (view.notebookViewOptions.showFileDetails === undefined || typeof view.notebookViewOptions.showFileDetails === "boolean") &&
       (view.starredFilePaths === undefined || strings(view.starredFilePaths));
   }
   function validSession(session: WorkspaceSession) {

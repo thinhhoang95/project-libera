@@ -231,6 +231,7 @@ export async function deleteNotebookGroup(id: string) {
       ),
       hiddenNotebookNames: metadata.notebookViewOptions.hiddenNotebookNames,
       showArchive: metadata.notebookViewOptions.showArchive,
+      showFileDetails: metadata.notebookViewOptions.showFileDetails,
     },
   });
   await unassignDeletedGroup(id);

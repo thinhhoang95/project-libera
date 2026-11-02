@@ -2671,6 +2671,10 @@ html.libera-glass .libera-left-panel .libera-sidebar-search-input,
 .libera-notebook-children .text-sm { font-size: 12px; }
 .libera-folder-icon { color: #29a9ce; fill: #7fdaef55; }
 .libera-tree-file-icon { display: inline-flex; flex-shrink: 0; color: #778bb2; }
+/* One row of tag chips under the file name, aligned with it; extra chips are clipped, never wrapped. */
+.libera-tree-file-tags { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; margin-top: 3px; padding-left: 24px; overflow: hidden; }
+.libera-tree-file-tags .libera-tag-chip { flex-shrink: 0; padding: 0 6px; font-size: 10px; }
+.libera-tree-file-edited { flex-shrink: 0; font-size: 11px; color: var(--muted-foreground); white-space: nowrap; }
 .libera-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; margin: 0 !important; background: color-mix(in srgb, var(--foreground) 14%, transparent); pointer-events: none; }
 .libera-tree-file-icon[data-type="image"] { color: #4caa85; }
 .libera-tree-file-icon[data-type="latex"] { color: #8b7fd1; }
