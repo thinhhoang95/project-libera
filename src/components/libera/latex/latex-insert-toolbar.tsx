@@ -22,6 +22,7 @@ import { useMarkdownDisplayPreferences } from "../markdown-display-preferences";
 import { nativeMenuPointBelow, popupNativeMenu, type NativeMenuEntry } from "../native-menu";
 import { TABLE_GRID_MENU_WIDTH, TableGridPicker } from "../table-grid-picker";
 import { ToolbarMenu } from "../toolbar-menu";
+import { tableSizeMenu, useAppMenuEditor } from "../app-menu";
 
 type MenuId = "heading" | "list" | "math" | "figure" | "subfigures" | "table" | "code" | "bibliography" | "snippets";
 
@@ -50,6 +51,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
   const { preferences: { textScale }, updatePreferences } = useMarkdownDisplayPreferences();
   const [open, setOpen] = useState<MenuId | null>(null);
   const anchors = useRef(new Map<MenuId, HTMLButtonElement>());
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const anchorRef = useMemo(() => ({ get current() { return open ? anchors.current.get(open) ?? null : null; } }), [open]);
   const snippets = useLatexSnippets();
   const images = projectFiles.filter((file) => file.kind === "image" || file.kind === "pdf");
@@ -122,8 +124,12 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
     }
   }
 
-  /** A native menu's items, read from the editor as it is when the menu opens. */
-  function menuItems(id: Exclude<MenuId, "table">): NativeMenuEntry[] {
+  /**
+   * A native menu's items, read from the editor as it is when the menu opens.
+   * The menu bar's copy (`menuBar`) is built ahead of time, so it does not
+   * depend on the selection.
+   */
+  function menuItems(id: Exclude<MenuId, "table">, menuBar = false): NativeMenuEntry[] {
     switch (id) {
       case "heading":
         return (["chapter", "section", "subsection", "subsubsection", "paragraph"] as const).map((command) => ({
@@ -190,7 +196,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
             ? each("insert", (snippet) => edit((view) => { insertSnippetText(view, snippet.body); }))
             : [heading("none", "No Snippets Yet")]),
           { type: "separator" },
-          { id: "add", label: "Add Selection as Snippet…", enabled: !!selection && !selection.empty, onSelect: addSelectionAsSnippet },
+          { id: "add", label: "Add Selection as Snippet…", enabled: menuBar || (!!selection && !selection.empty), onSelect: addSelectionAsSnippet },
           ...(sorted.length ? [
             { id: "rename", label: "Rename", submenu: each("rename", (snippet) => onSnippetDialog({ mode: "rename", snippet })) },
             { id: "delete", label: "Delete", submenu: each("delete", (snippet) => void removeSnippet(snippet.name, snippet.id)) },
@@ -199,6 +205,38 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       }
     }
   }
+
+  const cite = () => commandWithCompletion("cite");
+  const crossReference = () => commandWithCompletion("ref");
+  const footnote = () => edit((view) => { wrapSelection("footnote")(view); });
+  const hyperlink = () => template((selection) => `\\href{\${https://}}{\${${field(selection, "text")}}}\${}`, ["hyperref"]);
+
+  // The macOS menu bar's Format and Insert menus, with the toolbar's tools.
+  useAppMenuEditor(toolbarRef, () => ({
+    format: [
+      { id: "bold", label: "Bold", onSelect: () => edit((view) => { wrapSelection("textbf")(view); }) },
+      { id: "italic", label: "Italic", onSelect: () => edit((view) => { wrapSelection("textit")(view); }) },
+      { type: "separator" },
+      { id: "heading", label: "Heading", submenu: menuItems("heading", true) },
+      { id: "list", label: "List", submenu: menuItems("list", true) },
+      { type: "separator" },
+      { id: "bibliography", label: "Bibliography Style", submenu: menuItems("bibliography", true) },
+    ],
+    insert: [
+      { id: "math", label: "Math", submenu: menuItems("math", true) },
+      { id: "figure", label: "Figure", submenu: menuItems("figure", true) },
+      { id: "subfigures", label: "Side-by-Side Graphics", submenu: menuItems("subfigures", true) },
+      tableSizeMenu((rows, columns) => template(() => tableTemplate(rows, columns), ["booktabs"])),
+      { id: "code", label: "Code Block", submenu: menuItems("code", true) },
+      { type: "separator" },
+      { id: "cite", label: "Citation", onSelect: cite },
+      { id: "ref", label: "Cross-Reference", onSelect: crossReference },
+      { id: "footnote", label: "Footnote", onSelect: footnote },
+      { id: "hyperlink", label: "Hyperlink", onSelect: hyperlink },
+      { type: "separator" },
+      { id: "snippets", label: "Snippets", submenu: menuItems("snippets", true) },
+    ],
+  }));
 
   async function toggleMenu(id: MenuId, element: HTMLElement) {
     if (id === "table") {
@@ -236,7 +274,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
   const mod = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl+";
 
   return (
-    <div role="toolbar" aria-label="Insert LaTeX" className="libera-latex-insertbar flex shrink-0 items-center gap-0.5">
+    <div ref={toolbarRef} role="toolbar" aria-label="Insert LaTeX" className="libera-latex-insertbar flex shrink-0 items-center gap-0.5">
       {button(null, "Bold", <Bold aria-hidden className={iconClass} />, () => edit((view) => { wrapSelection("textbf")(view); }), `${mod}B`)}
       {button(null, "Italic", <Italic aria-hidden className={iconClass} />, () => edit((view) => { wrapSelection("textit")(view); }), `${mod}I`)}
       {separator}
@@ -249,10 +287,10 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       {button("table", "Insert table", <Table aria-hidden className={iconClass} />)}
       {button("code", "Code block", <Code aria-hidden className={iconClass} />)}
       {separator}
-      {button(null, "Cite", <Quote aria-hidden className={iconClass} />, () => commandWithCompletion("cite"))}
-      {button(null, "Cross-reference", <Hash aria-hidden className={iconClass} />, () => commandWithCompletion("ref"))}
-      {button(null, "Footnote", <Superscript aria-hidden className={iconClass} />, () => edit((view) => { wrapSelection("footnote")(view); }))}
-      {button(null, "Hyperlink", <Link aria-hidden className={iconClass} />, () => template((selection) => `\\href{\${https://}}{\${${field(selection, "text")}}}\${}`, ["hyperref"]))}
+      {button(null, "Cite", <Quote aria-hidden className={iconClass} />, cite)}
+      {button(null, "Cross-reference", <Hash aria-hidden className={iconClass} />, crossReference)}
+      {button(null, "Footnote", <Superscript aria-hidden className={iconClass} />, footnote)}
+      {button(null, "Hyperlink", <Link aria-hidden className={iconClass} />, hyperlink)}
       {button("bibliography", "Bibliography", <BookMarked aria-hidden className={iconClass} />)}
       {separator}
       <button
