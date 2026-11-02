@@ -1885,6 +1885,9 @@ function TreeNodeRow({
   // "3h ago" → "3h": the rail only has room for the bare age.
   const edited = relativeTimeLabel(node.updatedAt).replace(/ ago$/, "").replace(/^just now$/, "now");
 
+  // Untagged files have no second line: the age sits beside the name instead.
+  const inlineEdited = showFileDetails && tags.length === 0 && Boolean(edited);
+
   return (
     <SidebarNameTooltipButton
       className={`block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
@@ -1925,7 +1928,15 @@ function TreeNodeRow({
         <span className="libera-tree-file-icon" data-type={node.fileType} title={fileTypeLabel(node.fileType, node.name)}>
           <FileTypeIcon fileType={node.fileType} name={node.name} />
         </span>
-        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+        <span className={inlineEdited ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}>{node.name}</span>
+        {inlineEdited ? (
+          <>
+            <span className="libera-tree-file-edited" title={`Edited ${fullDateLabel(node.updatedAt)}`}>
+              · {edited}
+            </span>
+            <span className="flex-1" />
+          </>
+        ) : null}
         {showNotebookName ? (
           <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">
             {node.notebook}
@@ -1948,11 +1959,11 @@ function TreeNodeRow({
           />
         ) : null}
       </span>
-      {showFileDetails && (edited || tags.length > 0) ? (
+      {showFileDetails && tags.length > 0 ? (
         <span className="libera-tree-file-tags">
           {edited ? (
             <span className="libera-tree-file-edited" title={`Edited ${fullDateLabel(node.updatedAt)}`}>
-              {tags.length > 0 ? `${edited} ·` : edited}
+              {`${edited} ·`}
             </span>
           ) : null}
           {tags.map((tag) => <TagChip key={tag} tag={tag} />)}
