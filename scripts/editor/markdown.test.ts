@@ -581,6 +581,18 @@ test("image-to-Markdown replacement is undoable without losing the original asse
   editor.destroy();
 });
 
+test("pasted Markdown keeps inline code inside bold, italics, links and strikethrough", () => {
+  // A chat reply's "*Source: `report.md`, §3.5.*" once failed the schema
+  // check, and the browser pasted the source as plain text instead.
+  for (const markdown of ['*Source: `report.md`, §3.5.*', '**Run `npm test`** now', 'See [`foo()`](https://example.com) here', '~~`old`~~ gone']) {
+    const editor = create('');
+    assert.equal(replaceTiptapRangeWithMarkdown(editor, editor.state.selection, markdown), true, markdown);
+    assert.equal(editor.getMarkdown(), markdown);
+    assert.equal(create(markdown).getMarkdown(), markdown);
+    editor.destroy();
+  }
+});
+
 test("visual toolbar and right-click menus expose and execute heading actions", async () => {
   const editor = create('# Title\n\n## Child');
   document.body.append(editor.view.dom);

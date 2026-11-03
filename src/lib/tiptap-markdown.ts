@@ -1,6 +1,7 @@
 import { Extension, mergeAttributes, textblockTypeInputRule, type JSONContent, type NodeViewRenderer } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
+import Code from "@tiptap/extension-code";
 import CodeBlock from "@tiptap/extension-code-block";
 import Highlight from "@tiptap/extension-highlight";
 import Underline from "@tiptap/extension-underline";
@@ -195,7 +196,11 @@ export type MarkdownExtensionOptions = {
 
 export function createMarkdownExtensions(documentPath: string, options: MarkdownExtensionOptions = {}) {
   return [
-    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false, codeBlock: false, listItem: false }),
+    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false, code: false, codeBlock: false, listItem: false }),
+    // Markdown nests inline code in bold, italics, links and strikethrough, and loading a
+    // note keeps those marks; Tiptap's code mark excludes all others, so pasting the same
+    // Markdown failed the schema check and fell back to the browser's plain-text paste.
+    Code.extend({ excludes: "" }),
     LiberaListItem,
     // The language attribute keeps the whole info string (`html live`), so it round-trips.
     LiberaCodeBlock.extend(options.codeBlockNodeView ? { addNodeView: () => options.codeBlockNodeView! } : {}),

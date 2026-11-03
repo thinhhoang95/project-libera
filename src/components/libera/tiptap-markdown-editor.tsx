@@ -322,21 +322,28 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         // them so the shared history records a paste.
         markPaste();
         const markdown = event.clipboardData?.getData("text/markdown");
-        if (smartPaste && smartPasteClipboard(editor, view.state.selection, event.clipboardData, markdown, mathMarkers)) {
-          event.preventDefault();
-          return true;
+        // A throw here would skip preventDefault and leave the paste to the
+        // browser, which drops the source (or its colour spans) in unparsed;
+        // returning false hands it to ProseMirror's own paste instead.
+        try {
+          if (smartPaste && smartPasteClipboard(editor, view.state.selection, event.clipboardData, markdown, mathMarkers)) {
+            event.preventDefault();
+            return true;
+          }
+          // Keep native rich-text paste, while plain source (including Libera's
+          // Copy as Markdown, and code editors' styled source) is parsed into
+          // editable document content.
+          const html = event.clipboardData?.getData("text/html");
+          if (!markdown && html && !isSourceWrapperHtml(html)) return false;
+          const text = markdown || event.clipboardData?.getData("text/plain");
+          if (!text?.trim()) return false;
+          if (pasteMarkdownTableIntoCells(editor, text)) { event.preventDefault(); return true; }
+          const inserted = replaceTiptapRangeWithMarkdown(editor, view.state.selection, text);
+          if (inserted) event.preventDefault();
+          return inserted;
+        } catch {
+          return false;
         }
-        // Keep native rich-text paste, while plain source (including Libera's
-        // Copy as Markdown, and code editors' styled source) is parsed into
-        // editable document content.
-        const html = event.clipboardData?.getData("text/html");
-        if (!markdown && html && !isSourceWrapperHtml(html)) return false;
-        const text = markdown || event.clipboardData?.getData("text/plain");
-        if (!text?.trim()) return false;
-        if (pasteMarkdownTableIntoCells(editor, text)) { event.preventDefault(); return true; }
-        const inserted = replaceTiptapRangeWithMarkdown(editor, view.state.selection, text);
-        if (inserted) event.preventDefault();
-        return inserted;
       },
       handleKeyDown(view, event): boolean {
         if (
