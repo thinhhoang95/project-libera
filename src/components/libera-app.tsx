@@ -298,8 +298,16 @@ export function LiberaApp({
     [workspace.tabs],
   );
   const activeLatexSource = workspace.activeTab?.file.fileType === "latex" && isLatexCitingPath(workspace.activeTab.file.name) && !workspace.activeTab.page ? workspace.activeTab : null;
+  const activeTabFile = workspace.activeTab && !workspace.activeTab.untitled ? workspace.activeTab.file : null;
+  const activePdfPath = activeTabFile?.fileType === "pdf" ? activeTabFile.path : null;
+  const activePdfNotebook = activeTabFile?.notebook ?? "";
+  const activeReferencePdf = useMemo(
+    () => activePdfPath ? { notebook: activePdfNotebook, path: activePdfPath } : null,
+    [activePdfNotebook, activePdfPath],
+  );
   const references: LeftPanelReferences = {
     activeMarkdownDraft: workspace.activeMarkdownDraft,
+    activePdf: activeReferencePdf,
     activeDocumentPath: workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null,
     openDrafts: openReferenceDrafts,
     activeLatexDraft: activeLatexSource ? activeLatexSource.draft : null,
@@ -332,13 +340,14 @@ export function LiberaApp({
   useReferencePaletteCommands({
     notebook: referenceNotebook,
     canCite: references.canCite,
+    activePdf: activeReferencePdf,
     onInsertBibliography: () => { workspace.insertBibliographyMarker(); },
   });
   // macOS References menu while the panel is closed; the open panel offers its own.
   useAppMenuReferences("fallback", () => closedReferencesMenuItems(referenceNotebook, () => {
     changeLeftPanel("references");
     setNotebooksCollapsed(false);
-  }));
+  }, activeReferencePdf));
 
   const canvas = workspace.canvas;
   // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.

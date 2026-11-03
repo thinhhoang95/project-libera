@@ -271,9 +271,13 @@ export type ReferenceLibraryOp =
 export const REFERENCES_UPDATED_EVENT = "libera:references-updated";
 export type ReferencesUpdatedDetail = { notebook: string; revision: number };
 
-/** Window event asking the References panel to open its Add box for `query` (e.g. an unresolved key or a pasted DOI). */
+/**
+ * Window event asking the References panel to open its Add box for `query`
+ * (e.g. an unresolved key or a pasted DOI), or to look up the PDF or Markdown
+ * file at `path` as a dropped file is.
+ */
 export const REFERENCES_ADD_REQUEST_EVENT = "libera:references-add-request";
-export type ReferencesAddRequestDetail = { notebook: string; query: string };
+export type ReferencesAddRequestDetail = { notebook: string; query: string; path?: string };
 
 /** Window event asking the References panel to run one of its actions, such as from the command palette (see ReferencesCommandDetail in references-panel.tsx). */
 export const REFERENCES_COMMAND_EVENT = "libera:references-command";

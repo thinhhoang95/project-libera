@@ -27,6 +27,7 @@ import {
 } from "@/components/libera/collab/collab-shell";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { importReferenceFile, isReferenceImportPath, referenceImportSummary } from "@/lib/references/import";
+import { requestReferenceForFile } from "@/components/libera/references/add-reference-box";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import { TagChip } from "@/components/libera/file-tags";
 import { fullDateLabel, relativeTimeLabel } from "@/lib/relative-time";
@@ -768,6 +769,7 @@ export function NotebookPanel({
             { id: "copy", label: "Copy" },
             { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
             ...(isReferenceImportPath(target.file.path) ? [{ id: "import-references", label: "Import into References" }] : []),
+            ...(/\.pdf$/i.test(target.file.path) ? [{ id: "create-reference", label: "Create entry in References" }] : []),
             { type: "separator" },
             {
               id: "copy-relative-path",
@@ -826,6 +828,8 @@ export function NotebookPanel({
         await onCopyFile(target.file);
       } else if (selectedItemId === "import-references") {
         await importIntoReferences(target.file);
+      } else if (selectedItemId === "create-reference") {
+        requestReferenceForFile(target.file.notebook, target.file.path);
       } else if (selectedItemId === "copy-relative-path") {
         await copyItemPath(target.file.path, "relative");
       } else if (selectedItemId === "copy-absolute-path") {

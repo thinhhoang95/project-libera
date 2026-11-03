@@ -11,7 +11,6 @@ export type MarkdownLinkQuote = {
 const QUOTE_CONTEXT_LENGTH = 32;
 const MAX_QUOTE_TEXT_LENGTH = 1000;
 const MAX_LABEL_LENGTH = 60;
-const MAX_LOCATE_TEXT_LENGTH = 4000;
 
 export function isMarkdownSourceRange(
   range: MarkdownSourceRange | undefined,
@@ -95,40 +94,4 @@ export function markdownLinkQuoteLabel(text: string) {
   const plain = plainTextOfMarkdown(text);
 
   return plain.length > MAX_LABEL_LENGTH ? `${plain.slice(0, MAX_LABEL_LENGTH - 1).trimEnd()}…` : plain;
-}
-
-const MARKUP_BETWEEN_CHARACTERS = String.raw`(?:[*_~=\x60\\\[\]]|\$)*`;
-const BLOCK_BREAK = `${MARKUP_BETWEEN_CHARACTERS}\\s+(?:(?:#{1,6}|>|[-*+]|\\d+[.)]|\\|)\\s*)*${MARKUP_BETWEEN_CHARACTERS}`;
-
-function escapeRegExp(character: string) {
-  return character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Locates rendered text (what a visual-editor selection contains) within its
- * Markdown source, tolerating inline markup and block markers in between.
- */
-export function locateRenderedTextInMarkdown(source: string, text: string): MarkdownSourceRange | null {
-  const trimmed = text.trim();
-
-  if (!trimmed || trimmed.length > MAX_LOCATE_TEXT_LENGTH) {
-    return null;
-  }
-
-  const pattern = trimmed
-    .split(/(\s+)/)
-    .filter(Boolean)
-    .map((part) =>
-      /^\s+$/.test(part)
-        ? BLOCK_BREAK
-        : Array.from(part, escapeRegExp).join(MARKUP_BETWEEN_CHARACTERS),
-    )
-    .join("");
-
-  try {
-    const match = new RegExp(pattern, "u").exec(source);
-    return match ? { start: match.index, end: match.index + match[0].length } : null;
-  } catch {
-    return null;
-  }
 }

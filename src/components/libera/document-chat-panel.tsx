@@ -297,7 +297,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [defaultMode, setDefaultMode] = useState<ChatMode>("chat");
   const [defaultPermission, setDefaultPermission] = useState<AgentPermission>(DEFAULT_AGENT_PERMISSION);
   const [allowWebSearch, setAllowWebSearch] = useState(false);
-  const [manualReview, setManualReview] = useState(false);
+  const [manualReview, setManualReview] = useState(true);
   const [autoRead, setAutoRead] = useState(false);
   const autoReadRef = useRef(false);
   useEffect(() => { autoReadRef.current = autoRead; }, [autoRead]);
@@ -425,7 +425,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       setDefaultMode(storedMode);
       setDefaultPermission(storedPermission);
       setAllowWebSearch(readStoredPreference(AGENT_WEB_SEARCH_STORAGE_KEY, isStoredFlag) === "true");
-      setManualReview(readStoredPreference(AGENT_MANUAL_REVIEW_STORAGE_KEY, isStoredFlag) === "true");
+      setManualReview(readStoredPreference(AGENT_MANUAL_REVIEW_STORAGE_KEY, isStoredFlag) !== "false");
       setAutoRead(readStoredPreference(AUTO_READ_STORAGE_KEY, isStoredFlag) === "true");
       const first = createChat(storedMode, storedPermission);
       const restored = history ?? { chats: [first], activeId: first.id };

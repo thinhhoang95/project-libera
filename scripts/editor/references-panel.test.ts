@@ -858,6 +858,16 @@ test("reveal and add events switch to the panel, select the notebook and open th
   await settle();
   assert.equal((byLabel(host, "Reference to add") as HTMLTextAreaElement).value, "10.1000/xyz");
   assert.match(host.textContent ?? "", /Detected: DOI/);
+
+  // Create entry in References on a PDF in the tree: one already attached reveals its entry, and nothing is added.
+  await act(async () => { window.dispatchEvent(new dom.window.CustomEvent(REFERENCES_ADD_REQUEST_EVENT, { detail: { notebook: "Notes", query: "", path: "Notes/papers/godel.pdf" } })); });
+  await settle();
+  assert.ok(host.querySelector('[aria-label="Reference godel1931"]'));
+  assert.match(host.textContent ?? "", /already attached/);
+
+  await act(async () => { window.dispatchEvent(new dom.window.CustomEvent(REFERENCES_ADD_REQUEST_EVENT, { detail: { notebook: "Notes", query: "", path: "Other/paper.pdf" } })); });
+  await settle();
+  assert.match(host.textContent ?? "", /Only files in Notes can be added/);
 });
 
 test("palette commands show the panel and run its actions: search to cite, style, filter, export and Manage", async () => {
@@ -1309,4 +1319,22 @@ test("Insert bibliography here is offered for a Markdown document without a mark
   const again = buttonByText(document.querySelector('[role="menu"][aria-label="References menu"]')!, /Insert bibliography here/) as HTMLButtonElement;
   assert.equal(again.disabled, true);
   assert.match(again.title, /already places its bibliography/);
+});
+
+test("the macOS References menu offers the open PDF first, and choosing it asks the panel to add that file", () => {
+  assert.deepEqual(m.closedReferencesMenuItems("Notes", () => undefined).map((item) => "id" in item ? item.id : item.type).slice(0, 1), ["show-panel"]);
+  const items = m.closedReferencesMenuItems("Notes", () => undefined, { notebook: "Papers", path: "Papers/godel.pdf" });
+  const first = items[0];
+  assert.ok(first && "label" in first);
+  assert.equal(first.label, "Add “godel.pdf” to References");
+  assert.equal(items[1]?.type, "separator");
+  const requests: unknown[] = [];
+  const listener = (event: Event) => requests.push((event as CustomEvent).detail);
+  window.addEventListener(REFERENCES_ADD_REQUEST_EVENT, listener);
+  try {
+    first.onSelect?.();
+  } finally {
+    window.removeEventListener(REFERENCES_ADD_REQUEST_EVENT, listener);
+  }
+  assert.deepEqual(requests, [{ notebook: "Papers", query: "", path: "Papers/godel.pdf" }]);
 });

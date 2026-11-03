@@ -215,8 +215,8 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, citeS
         <div className="libera-panel-card space-y-2 p-3">
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-[12px] font-semibold">{authorYearLabel(entry.csl)}</p>
-              <p className="text-[13px] leading-snug">{entryTitle(entry)}</p>
+              <p className="text-[12px] font-semibold [overflow-wrap:anywhere]">{authorYearLabel(entry.csl)}</p>
+              <p className="text-[13px] leading-snug [overflow-wrap:anywhere]">{entryTitle(entry)}</p>
             </div>
             <StatusBadge status={entry.status} />
           </div>

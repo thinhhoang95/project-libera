@@ -225,7 +225,8 @@ export function useFormattedReference(notebook: string, setting: string, entry: 
 export function FormattedReference({ notebook, setting, entry, className }: { notebook: string; setting: string; entry: FormattableEntry; className?: string }) {
   const { html, text, pending } = useFormattedReference(notebook, setting, entry);
   return (
-    <div className={className} aria-label="Formatted reference" data-formatted={html ? "citeproc" : "plain"} aria-busy={pending || undefined}>
+    // Long DOIs and URLs have no break points: let them wrap anywhere rather than overflow.
+    <div className={`[overflow-wrap:anywhere] ${className ?? ""}`} aria-label="Formatted reference" data-formatted={html ? "citeproc" : "plain"} aria-busy={pending || undefined}>
       {html ? <FormattedCitationHtml html={html} /> : text}
     </div>
   );

@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import { Editor } from "@tiptap/core";
 import { Mathematics } from "@tiptap/extension-mathematics";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
-import { TiptapReview, sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewKey } from "../../src/lib/tiptap-review";
+import { TiptapReview, sourceRangeForTiptapSelection, sourceRangeForTiptapTextSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewKey, tiptapSelectionForSourceRange } from "../../src/lib/tiptap-review";
 import { reviewBlocks } from "../../src/lib/markdown-review";
 import { markdownLineForTiptapPosition } from "../../src/lib/markdown-outline-navigation";
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
@@ -135,5 +135,55 @@ test("comments reuse block mappings and invalidate them on content/source change
     const updated = tiptapReviewBlocks(editor, editor.getMarkdown());
     assert.equal(updated.length, 3);
     assert.notEqual(updated, mapping);
+  } finally { editor.destroy(); }
+});
+
+test("a highlighted passage maps to exactly its text, never its whole table, list or paragraph", () => {
+  // The rendered text with each character's position; inline nodes without text are "\uFFFC".
+  const live = (editor: Editor) => {
+    let text = "";
+    const positions: number[] = [];
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isBlock && text && !text.endsWith(" ")) { text += " "; positions.push(-1); }
+      if (node.isText) for (let index = 0; index < node.text!.length; index++) { text += node.text![index]; positions.push(pos + index); }
+      else if (node.isInline && node.isLeaf) { text += "\uFFFC"; positions.push(pos); }
+    });
+    return { text, positions };
+  };
+  const cases: [string, string, string][] = [
+    ["| A | B |\n|---|---|\n| one | two |\n| three | four |", "two three", "two |\n| three"],
+    ["| A | B |\n|---|---|\n| x = 1 | two |", "x = 1", "x = 1"],
+    ["| A | B |\n|---|---|\n| [x](y) z | two |", "x z", "x](y) z"],
+    ["- [ ] one item\n- [x] two item\n", "one item two", "one item\n- [x] two"],
+    ["- top\n  - inner one\n  - inner two\n", "inner two", "inner two"],
+    ["Call my_function with x = 5 * 3 or ~5.\n", "my_function with x = 5 * 3 or ~5", "my_function with x = 5 * 3 or ~5"],
+    ["See [the docs](https://example.com/a/long/path) for more.\n", "docs for more", "docs](https://example.com/a/long/path) for more"],
+    ["Tom &amp; Jerry are here.\n", "Tom & Jerry", "Tom &amp; Jerry"],
+    ["Some **bold _and_ italic** text.\n", "bold and italic", "bold _and_ italic"],
+    ["Energy $E=mc^2$ is famous.\n", "\uFFFC", "$E=mc^2$"],
+  ];
+  for (const [source, selected, quote] of cases) {
+    const editor = new Editor({ extensions: [...createMarkdownExtensions("Notes/a.md"), Mathematics, TiptapReview], content: source, contentType: "markdown" });
+    try {
+      const { text, positions } = live(editor);
+      const index = text.indexOf(selected);
+      assert.ok(index >= 0, `${selected} in ${text}`);
+      const from = positions[index], to = positions[index + selected.length - 1] + 1;
+      const range = sourceRangeForTiptapTextSelection(editor, source, from, to);
+      assert.equal(source.slice(range!.start, range!.end), quote, source);
+      assert.deepEqual(tiptapSelectionForSourceRange(editor, source, range!), { from, to }, source);
+    } finally { editor.destroy(); }
+  }
+});
+
+test("a comment anchored on one list item or table row highlights only that item or row", () => {
+  const source = "- one\n- two\n- three\n\n| A | B |\n|---|---|\n| x | y |\n| z | w |";
+  const editor = new Editor({ extensions: [...createMarkdownExtensions("Notes/a.md"), TiptapReview], content: source, contentType: "markdown" });
+  try {
+    const item = source.indexOf("- two"), row = source.indexOf("| z");
+    const itemRange = tiptapSelectionForSourceRange(editor, source, { start: item, end: item + "- two".length })!;
+    assert.equal(editor.state.doc.textBetween(itemRange.from, itemRange.to, " "), "two");
+    const rowRange = tiptapSelectionForSourceRange(editor, source, { start: row, end: row + "| z | w |".length })!;
+    assert.equal(editor.state.doc.textBetween(rowRange.from, rowRange.to, " "), "z w");
   } finally { editor.destroy(); }
 });

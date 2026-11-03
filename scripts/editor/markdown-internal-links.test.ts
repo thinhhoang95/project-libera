@@ -7,7 +7,7 @@ import { Editor } from "@tiptap/core";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
 import { sourceRangeForTiptapTextSelection, tiptapSelectionForSourceRange } from "../../src/lib/tiptap-review";
 import { findMarkdownHeadingAnchor, markdownHeadingAnchors, markdownHeadingHref, slugifyMarkdownHeading } from "../../src/lib/markdown-heading-anchors";
-import { createMarkdownLinkQuote, locateRenderedTextInMarkdown, markdownLinkQuoteLabel, resolveMarkdownLinkQuote } from "../../src/lib/markdown-selection-links";
+import { createMarkdownLinkQuote, markdownLinkQuoteLabel, resolveMarkdownLinkQuote } from "../../src/lib/markdown-selection-links";
 import { createMarkdownFileLinkDestination, resolveMarkdownFileLink } from "../../src/lib/markdown-file-links";
 import { MarkdownLinkInput } from "../../src/components/libera/markdown-link-input";
 import type { LiberaFileNode } from "../../src/lib/types";
@@ -67,13 +67,6 @@ test("selection quotes survive edits and prefer the original occurrence", () => 
   assert.deepEqual(resolveMarkdownLinkQuote(after, quote, 27), { start: 49, end: 61 });
   assert.equal(resolveMarkdownLinkQuote("Gone.", quote), null);
   assert.equal(markdownLinkQuoteLabel("## A **bold** [link](x.md) and `code`"), "A bold link and code");
-});
-
-test("rendered selections locate their Markdown source through inline markup", () => {
-  const source = "Some **bold _and_ italic** text with [a link](x.md).";
-  const range = locateRenderedTextInMarkdown(source, "bold and italic text with a link");
-  assert.equal(source.slice(range!.start, range!.end), "bold _and_ italic** text with [a link");
-  assert.equal(locateRenderedTextInMarkdown(source, "absent words"), null);
 });
 
 test("visual selections map to exact source ranges and back", () => {

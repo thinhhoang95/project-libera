@@ -35,8 +35,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import {
+  activePdfMenuItems,
   AddReferenceBox,
   announceLibraryChange,
+  type ActiveReferencePdf,
   droppedFileEntry,
   entryWithAttachment,
   importReferences,
@@ -192,7 +194,7 @@ export function runReferencesCommand(notebook: string, command: ReferencesPanelC
 
 export type ReferencesPanelRequest =
   | { id: number; kind: "reveal"; notebook: string; entryId?: string; key?: string }
-  | { id: number; kind: "add"; notebook: string; query: string }
+  | { id: number; kind: "add"; notebook: string; query: string; path?: string }
   | { id: number; kind: "command"; notebook: string; command: ReferencesPanelCommand };
 
 type PanelViewState = { query: string; filter: ReferenceFilter; sort: ReferenceSort; tag: string | null };
@@ -286,7 +288,7 @@ export function useReferencesPanelRequests(onShow: (notebook: string) => void) {
     function add(event: Event) {
       const detail = (event as CustomEvent<ReferencesAddRequestDetail>).detail;
       if (!detail?.notebook) return;
-      setRequest({ id: nextRequestId++, kind: "add", notebook: detail.notebook, query: detail.query ?? "" });
+      setRequest({ id: nextRequestId++, kind: "add", notebook: detail.notebook, query: detail.query ?? "", ...(detail.path ? { path: detail.path } : {}) });
       showRef.current(detail.notebook);
     }
     function command(event: Event) {
@@ -316,6 +318,8 @@ export type ReferencesPanelProps = {
   activeMarkdownDraft: string | null;
   /** Library path of the active document, when it is a saved file. */
   activeDocumentPath?: string | null;
+  /** The PDF open in the active tab, offered as "Add … to References" in the macOS References menu. */
+  activePdf?: ActiveReferencePdf | null;
   /** Unsaved text of open Markdown and LaTeX tabs, for citation counts. */
   openDrafts: OpenReferenceDraft[];
   /** LaTeX source of the active document, or null when no `.tex` document is active. */
@@ -445,6 +449,7 @@ function ReferencesPanelBody({
   tree,
   activeMarkdownDraft,
   activeDocumentPath,
+  activePdf = null,
   activeLatexDraft = null,
   activeLatexPath = null,
   openDrafts,
@@ -685,7 +690,7 @@ function ReferencesPanelBody({
   // Requests from REFERENCES_REVEAL_EVENT / REFERENCES_ADD_REQUEST_EVENT, once the library is here.
   useEffect(() => {
     if (!request || request.notebook !== notebook || request.kind === "command") return;
-    if (request.kind === "add") {
+    if (request.kind === "add" && !request.path) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setOpenId(null);
       setAddBox({ id: request.id, query: request.query });
@@ -693,10 +698,22 @@ function ReferencesPanelBody({
       return;
     }
     if (!library) return;
+    if (request.kind === "add") {
+      // A file from the notebook tree, looked up as a dropped one. Waiting for
+      // the library means a file already attached to an entry reveals it instead
+      // of adding a duplicate.
+      const path = request.path ?? "";
+      onRequestHandled?.(request.id);
+      if (!path.startsWith(`${notebook}/`)) setNotice({ tone: "error", text: `Only files in ${notebook} can be added to its references.` });
+      else void resolveFiles([path]).catch((error: unknown) => setNotice({ tone: "error", text: error instanceof Error ? error.message : "The file could not be added." }));
+      return;
+    }
     const entry = (request.entryId ? library.entries[request.entryId] : undefined) ?? (request.key ? lookup.get(request.key.toLowerCase()) : undefined);
     if (entry) reveal(entry.id);
     else setNotice({ tone: "error", text: `“${request.key ?? request.entryId}” is not in this notebook's library.` });
     onRequestHandled?.(request.id);
+    // resolveFiles is redefined every render; the request id keeps this from running twice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request, notebook, library, lookup, reveal, onRequestHandled]);
 
   // Keep the selected row in view.
@@ -1337,6 +1354,7 @@ function ReferencesPanelBody({
   // The macOS References menu: the "More" menu, then the selected reference's actions.
   const menuReference = entries.find((entry) => entry.id === (selectedId ?? openId));
   useAppMenuReferences("panel", () => [
+    ...activePdfMenuItems(activePdf),
     ...panelMenuItems(panelMenuProps),
     ...(menuReference ? [
       { type: "separator" as const },
@@ -1973,7 +1991,7 @@ function findPanelMenuItem(items: ReferenceMenuItem[], id: string, parentEnabled
  * the panel's live state (checkmarks, what is available). Each item shows the
  * panel for `notebook` and runs there, where unavailable ones say why.
  */
-export function closedReferencesMenuItems(notebook: string, onShowPanel: () => void): ReferenceMenuItem[] {
+export function closedReferencesMenuItems(notebook: string, onShowPanel: () => void, activePdf?: ActiveReferencePdf | null): ReferenceMenuItem[] {
   if (!notebook) return [];
   const none = () => undefined;
   const items = panelMenuItems({
@@ -1989,6 +2007,7 @@ export function closedReferencesMenuItems(notebook: string, onShowPanel: () => v
     return { id: item.id, label: item.label, onSelect: () => runReferencesCommand(notebook, { action: "menu", id: item.id }) };
   });
   return [
+    ...activePdfMenuItems(activePdf),
     { id: "show-panel", label: "Show References Panel", onSelect: onShowPanel },
     { type: "separator" },
     ...relay(items),

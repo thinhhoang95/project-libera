@@ -4,7 +4,6 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { reviewBlocks, type ReviewEdit, type ReviewRange } from "./markdown-review";
 import { diffNodes, type ChangeHunk, type TrackedChange } from "./tiptap-changes";
-import { locateRenderedTextInMarkdown, plainTextOfMarkdown } from "./markdown-selection-links";
 
 export const tiptapReviewKey = new PluginKey<DecorationSet>("liberaReview");
 export const TiptapReview = Extension.create({
@@ -85,47 +84,84 @@ export function tiptapRangeForSource(editor: Editor, source: string, range: Revi
   const blocks = tiptapReviewBlocks(editor, source).filter((b) => b.start < range.end && b.end > range.start);
   return blocks.length ? { from: blocks[0].from, to: blocks.at(-1)!.to } : null;
 }
-export function sourceRangeForTiptapSelection(editor: Editor, source: string, from: number, to: number): ReviewRange | null {
+function selectedBlocks(editor: Editor, source: string, from: number, to: number) {
   // DOM selections may start at the previous paragraph's closing boundary.
   // Include only blocks whose editable content actually intersects selection.
-  const blocks = tiptapReviewBlocks(editor, source).filter((b) => from === to ? b.from <= from && b.to > from : b.from + 1 < to && b.to - 1 > from);
+  return tiptapReviewBlocks(editor, source).filter((b) => from === to ? b.from <= from && b.to > from : b.from + 1 < to && b.to - 1 > from);
+}
+export function sourceRangeForTiptapSelection(editor: Editor, source: string, from: number, to: number): ReviewRange | null {
+  const blocks = selectedBlocks(editor, source, from, to);
   return blocks.length ? { start: blocks[0].start, end: blocks.at(-1)!.end } : null;
 }
 
-/** The exact source range of a visual selection, or its whole blocks when the
- * selected text cannot be found in their Markdown unambiguously. */
-export function sourceRangeForTiptapTextSelection(editor: Editor, source: string, from: number, to: number): ReviewRange | null {
-  const blocks = sourceRangeForTiptapSelection(editor, source, from, to);
-  if (!blocks || from === to) return blocks;
-  const located = locateRenderedTextInMarkdown(source.slice(blocks.start, blocks.end), editor.state.doc.textBetween(from, to, "\n"));
-  return located ? { start: blocks.start + located.start, end: blocks.start + located.end } : blocks;
+// A mapped block's inline content aligned to its Markdown source. Rendered
+// text is the source without its markup, in order, so a forward scan finds
+// each character where the source has it, past emphasis, links, code, list
+// markers and table pipes alike. A character the source spells another way
+// (an entity) stays unaligned. Inline nodes without text (math, images) take
+// the source between their aligned neighbours.
+type AlignedUnit = { pos: number; size: number; start: number; end: number; space: boolean };
+const blockAlignments = new WeakMap<ReviewBlockMapping, AlignedUnit[]>();
+
+function alignedUnits(editor: Editor, source: string, block: ReviewBlockMapping) {
+  const cached = blockAlignments.get(block);
+  if (cached) return cached;
+  const text = source.slice(block.start, block.end);
+  const units: AlignedUnit[] = [];
+  const atoms: number[] = [];
+  let cursor = 0;
+  editor.state.doc.nodesBetween(block.from, block.to, (node, pos) => {
+    if (node.isInline && node.isLeaf && !node.isText) { atoms.push(units.length); units.push({ pos, size: node.nodeSize, start: -1, end: -1, space: false }); }
+    if (!node.isText) return;
+    for (let index = 0; index < node.text!.length; index++) {
+      const character = node.text![index];
+      const space = /\s/.test(character);
+      let at = space ? cursor : text.indexOf(character, cursor);
+      if (space) while (at < text.length && !/\s/.test(text[at])) at++;
+      if (at < 0 || at >= text.length) at = -1;
+      else cursor = at + 1;
+      units.push({ pos: pos + index, size: 1, start: at < 0 ? -1 : block.start + at, end: at < 0 ? -1 : block.start + at + 1, space });
+    }
+  });
+  for (const index of atoms) {
+    let start = block.start, end = block.end;
+    for (let other = index - 1; other >= 0; other--) if (units[other].start >= 0) { start = units[other].end; break; }
+    for (let other = index + 1; other < units.length; other++) if (units[other].start >= 0) { end = units[other].start; break; }
+    while (start < end && /[\s|]/.test(source[start])) start++;
+    while (end > start && /[\s|]/.test(source[end - 1])) end--;
+    if (end > start) Object.assign(units[index], { start, end });
+  }
+  blockAlignments.set(block, units);
+  return units;
 }
 
-/** The visual-editor positions showing a source range: its exact text when it
- * can be found in the mapped blocks, otherwise the blocks themselves. */
+/** The exact source range of a visual selection, or its whole blocks when none
+ * of the selected text can be aligned with their Markdown. */
+export function sourceRangeForTiptapTextSelection(editor: Editor, source: string, from: number, to: number): ReviewRange | null {
+  const blocks = selectedBlocks(editor, source, from, to);
+  if (!blocks.length) return null;
+  const whole = { start: blocks[0].start, end: blocks.at(-1)!.end };
+  if (from === to) return whole;
+  let start = Infinity, end = -Infinity;
+  for (const block of blocks) for (const unit of alignedUnits(editor, source, block)) {
+    if (unit.start < 0 || unit.space || unit.pos >= to || unit.pos + unit.size <= from) continue;
+    start = Math.min(start, unit.start); end = Math.max(end, unit.end);
+  }
+  return end > start ? { start, end } : whole;
+}
+
+/** The visual-editor positions showing a source range: exactly its text where
+ * that aligns with the mapped blocks, otherwise the blocks themselves. */
 export function tiptapSelectionForSourceRange(editor: Editor, source: string, range: ReviewRange) {
   const blocks = tiptapReviewBlocks(editor, source).filter((b) => b.start < Math.max(range.end, range.start + 1) && b.end > range.start);
   if (!blocks.length) return null;
-  const from = blocks[0].from, to = blocks.at(-1)!.to;
-  const target = plainTextOfMarkdown(source.slice(range.start, range.end)).toLocaleLowerCase();
-  if (target) {
-    // Collapse whitespace in the live text while remembering each character's position.
-    let text = "";
-    const positions: number[] = [];
-    editor.state.doc.nodesBetween(from, to, (node, pos) => {
-      if (node.isBlock && text && !text.endsWith(" ")) { text += " "; positions.push(pos); }
-      if (!node.isText) return;
-      for (let index = 0; index < node.text!.length; index++) {
-        const character = /\s/.test(node.text![index]) ? " " : node.text![index].toLocaleLowerCase();
-        if (character === " " && text.endsWith(" ")) continue;
-        text += character;
-        positions.push(pos + index);
-      }
-    });
-    const index = text.indexOf(target);
-    if (index >= 0) return { from: positions[index], to: positions[index + target.length - 1] + 1 };
+  let from = Infinity, to = -Infinity;
+  for (const block of blocks) for (const unit of alignedUnits(editor, source, block)) {
+    if (unit.start < 0 || unit.space || unit.start >= range.end || unit.end <= range.start) continue;
+    from = Math.min(from, unit.pos); to = Math.max(to, unit.pos + unit.size);
   }
-  return { from: from + 1, to: Math.max(from + 1, to - 1) };
+  if (to > from) return { from, to };
+  return { from: blocks[0].from + 1, to: Math.max(blocks[0].from + 1, blocks.at(-1)!.to - 1) };
 }
 
 function hashText(text: string) {

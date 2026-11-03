@@ -21,11 +21,13 @@ import { parseCslJson } from "@/lib/references/csl-json";
 import { classifyReferenceInput, splitBibliography } from "@/lib/references/identifiers";
 import { parseRis } from "@/lib/references/ris";
 import {
+  REFERENCES_ADD_REQUEST_EVENT,
   REFERENCES_UPDATED_EVENT,
   type ReferenceEntry,
   type ReferenceEntryInput,
   type ReferenceLibrary,
   type ReferenceLibraryOp,
+  type ReferencesAddRequestDetail,
   type ReferencesUpdatedDetail,
 } from "@/lib/references/types";
 
@@ -136,6 +138,26 @@ export function droppedFileEntry(path: string): ReferenceEntryInput | null {
     status: "unresolved",
     attachments: [{ kind, path }],
   };
+}
+
+/** A PDF the user is reading: the open PDF viewer tab's. */
+export type ActiveReferencePdf = { notebook: string; path: string };
+
+/**
+ * Ask the References panel to look up a notebook file as a dropped one; a
+ * file already attached to an entry reveals that entry instead.
+ */
+export function requestReferenceForFile(notebook: string, path: string) {
+  window.dispatchEvent(new CustomEvent<ReferencesAddRequestDetail>(REFERENCES_ADD_REQUEST_EVENT, { detail: { notebook, query: "", path } }));
+}
+
+/** "Add … to References" for the open PDF, as the first items of the macOS References menu. */
+export function activePdfMenuItems(pdf: ActiveReferencePdf | null | undefined) {
+  if (!pdf) return [];
+  return [
+    { id: "add-active-pdf", label: `Add “${fileBaseName(pdf.path)}” to References`, onSelect: () => requestReferenceForFile(pdf.notebook, pdf.path) },
+    { type: "separator" as const },
+  ];
 }
 
 /** The entry a file is already attached to. */

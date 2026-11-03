@@ -236,6 +236,7 @@ export function LeftPanel({
                 tree={notebookPanelProps.tree}
                 activeMarkdownDraft={references?.activeMarkdownDraft ?? null}
                 activeDocumentPath={references?.activeDocumentPath ?? null}
+                activePdf={references?.activePdf ?? null}
                 openDrafts={references?.openDrafts ?? NO_DRAFTS}
                 activeLatexDraft={references?.activeLatexDraft ?? null}
                 activeLatexPath={references?.activeLatexPath ?? null}
