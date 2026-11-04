@@ -351,6 +351,8 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
           scroller.scrollLeft = 180.25;
           scroller.dispatchEvent(new dom.window.Event("scroll"));
         });
+        // The page in view is reported on its own, between scroll saves.
+        const lastScroll = () => changes.filter((change) => "scrollTop" in change).at(-1);
         changes.length = 0;
         for (const [button, zoom] of [["Zoom in", 1.25], ["Zoom out", 1], ["Zoom in", 1.25], ["Reset zoom", 1]] as const) {
           await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="${button}"]`)!.click());
@@ -359,15 +361,15 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
           const bounds = sheets[2].getBoundingClientRect();
           near(bounds.top + bounds.height * (127.5 / 792), 380, "The same PDF point stays at the viewport centre");
           near(bounds.left + bounds.width * (364.25 / 612), 240, "The same PDF point stays at the viewport centre");
-          near(changes.at(-1)?.scrollTop, expectedTop(zoom), "Persist zoom-adjusted coordinates without waiting for a scroll event");
-          near(changes.at(-1)?.scrollLeft, expectedLeft(zoom), "Persist zoom-adjusted coordinates without waiting for a scroll event");
+          near(lastScroll()?.scrollTop, expectedTop(zoom), "Persist zoom-adjusted coordinates without waiting for a scroll event");
+          near(lastScroll()?.scrollLeft, expectedLeft(zoom), "Persist zoom-adjusted coordinates without waiting for a scroll event");
         }
         await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
-        near(changes.at(-1)?.scrollTop, expectedTop(1), "The pre-zoom debounce must not save stale coordinates");
+        near(lastScroll()?.scrollTop, expectedTop(1), "The pre-zoom debounce must not save stale coordinates");
         await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
         await act(async () => captureCanvasViewState());
-        near(changes.at(-1)?.scrollTop, expectedTop(1.25));
-        near(changes.at(-1)?.scrollLeft, expectedLeft(1.25));
+        near(lastScroll()?.scrollTop, expectedTop(1.25));
+        near(lastScroll()?.scrollLeft, expectedLeft(1.25));
         await unmount(); // No scroll event or debounce wait after zoom.
         const saved = Object.assign({}, ...changes) as PdfTabViewState;
         assert.equal(saved.zoom, 1.25);

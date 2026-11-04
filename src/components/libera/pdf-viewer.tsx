@@ -958,6 +958,10 @@ export function PdfViewer({
     }
   }, []);
 
+  useEffect(() => {
+    if (pageLayouts.length) updateViewState({ page: Math.min(currentPage, pageLayouts.length), pageCount: pageLayouts.length });
+  }, [currentPage, pageLayouts.length, updateViewState]);
+
   const flushPendingScrollViewState = useCallback(() => {
     if (scrollViewStateTimeoutRef.current !== null) {
       window.clearTimeout(scrollViewStateTimeoutRef.current);

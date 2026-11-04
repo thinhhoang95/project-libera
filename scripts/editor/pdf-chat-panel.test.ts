@@ -136,7 +136,7 @@ test("PDF selections retain their source and files attach once across turns, tab
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     await act(flushPendingState);
     assert.equal(chat().excludedDocumentPaths?.includes(pdf.file.path), false);
-    assert.match(chat().selections.find((context) => context.path === pdf.file.path)?.text ?? "", /Complete PDF text/);
+    assert.equal(chat().selections.find((context) => context.path === pdf.file.path)?.text, "", "An attached PDF's text is read when the message is sent");
     await prompt("Ask @paper");
     assert.ok(host.querySelector('[role="listbox"] [role="option"]'), "The @ picker offers PDF files");
     await act(async () => { (host.querySelector('[role="listbox"] [role="option"]') as HTMLButtonElement).click(); });

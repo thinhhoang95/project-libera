@@ -178,6 +178,11 @@ html.dark .libera-agent-review-removed { color: #f87171; }
 .libera-context-chip-sent { flex-shrink: 0; color: var(--chip-tone); }
 .libera-context-chip-remove { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; color: var(--muted-foreground); transition: background-color 150ms, color 150ms; }
 .libera-context-chip-remove:hover, .libera-context-chip-remove:focus-visible { background: color-mix(in srgb, var(--chip-tone) 18%, transparent); color: var(--foreground); }
+.libera-context-chip[data-adjustable] { cursor: ew-resize; touch-action: none; user-select: none; }
+.libera-context-chip[data-dragging] { position: relative; overflow: hidden; border-color: var(--chip-tone); font-variant-numeric: tabular-nums; }
+.libera-context-chip[data-dragging] > :not(.libera-context-chip-fill) { position: relative; }
+.libera-context-chip-fill { position: absolute; inset: 0; background: color-mix(in srgb, var(--chip-tone) 24%, transparent); pointer-events: none; transform-origin: left; transition: transform 90ms ease-out; }
+.libera-context-chip-title:focus-visible { border-radius: 4px; outline: 2px solid var(--chip-tone); outline-offset: 1px; }
 .libera-context-chip-add { --chip-tone: var(--muted-foreground); padding-right: 7px; border-style: dashed; background: transparent; color: var(--muted-foreground); cursor: pointer; }
 .libera-context-chip-add .libera-context-chip-icon { background: var(--muted); }
 .libera-context-chip-add:hover { background: var(--muted); color: var(--foreground); }
@@ -266,7 +271,7 @@ summary.libera-agent-tool-line:hover { background: color-mix(in srgb, var(--card
   .libera-viewer-toolbar > div { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .libera-chat-composer, .libera-chat-composer textarea, .libera-editor-toolbar button, .libera-context-chip, .libera-context-chip-remove { transition: none; animation: none; }
+  .libera-chat-composer, .libera-chat-composer textarea, .libera-editor-toolbar button, .libera-context-chip, .libera-context-chip-remove, .libera-context-chip-fill { transition: none; animation: none; }
 }
 
 html.dark.libera-glass .libera-glass-panel.libera-chat-panel { text-shadow: none; }

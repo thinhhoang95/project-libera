@@ -7,6 +7,21 @@ The AI panel has two modes, switched at the top of the panel:
 
 The mode is saved with each chat; new chats start in the mode you used last.
 
+## Long documents in Chat
+
+Chat sends the whole open document unless you choose otherwise. To send part of a long Markdown, LaTeX, text or PDF file, drag its card in the message box: right for more pages, left for fewer. The card shows the number of pages while you drag and the file name again when you let go, with a small badge such as **5p** so you can see a budget is set. Esc cancels the drag. With the card's name focused, the arrow keys, Home and End do the same. The budget is kept per file in each conversation.
+
+A page is counted in words: 500 in a text file, the document's average page in a PDF.
+
+- **With quotes.** Passages added with ⌘/Ctrl+Shift+L share the budget evenly, each with a window centered on it. Windows that meet merge, and they grow outward in both directions until the budget is used. A quote that cannot be found in the file does not count.
+- **Without quotes.** The budget is centered on what you are viewing.
+
+Follow-ups send only text the model has not seen. A quote inside what already went adds no document text, a quote outside it adds the text around it minus anything already sent, and a larger budget adds the new edges. Scrolling past what was sent makes the card new again; until then it shows as already included. Dragging to all pages after sending part sends the rest.
+
+A document already sent whole cannot be reduced, because it stays in the conversation, so its card does not drag. A file over 500,000 characters cannot go whole: Chat asks you to drag its card. The model is told that it has an excerpt, with `[…]` where text was left out, and to say so if the answer may lie elsewhere. Sent ranges are word positions in the document as it was then, so edits made since shift them slightly. An excerpt from a shared notebook comes from your copy of the text, not the collab host's. The code is in `src/lib/document-excerpt.ts`.
+
+Agent mode needs none of this: **Read** already takes a window (2,000 lines by default, or up to 20 PDF pages per call), and the agent reads the parts it needs.
+
 ## Saving conversations
 
 Chat and Agent save history when a message is sent (including an edit or regeneration), and when the response completes, is stopped, or fails. Creating, switching, branching, renaming, or deleting conversations, changing their settings or attachments, and undoing agent changes also save history. Unchanged snapshots are skipped.

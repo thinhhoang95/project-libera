@@ -4,7 +4,7 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type SetStateAction } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SetStateAction } from "react";
 import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, CheckCheck, AudioLines, ImagePlus, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2, FileDiff } from "lucide-react";
 import { speakMarkdown, toggleSpeech } from "@/lib/tts/player";
 import { useSpeech } from "./read-aloud";
@@ -34,7 +34,8 @@ import { popupReferenceMenu, type ReferenceMenuItem } from "./references/native-
 import { filterGalleryChatPhotos, galleryPhotoIdFromSource } from "@/lib/document-chat";
 import { agentWriteOverlap, agentWriteScope, type AgentWriteScope } from "./agent-write-scope";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
-import { CHAT_QUOTE_EVENT, CHAT_REASONING_EFFORTS, chatHasPhotoSource, type ChatQuoteDetail, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
+import { CHAT_QUOTE_EVENT, CHAT_REASONING_EFFORTS, chatHasPhotoSource, type ChatQuoteDetail, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, normalizeChatResponseMarkdown, sentDocumentExcerpts, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
+import { documentExcerpt, documentPageCount, documentWindowSent, pagesForDrag, pagesPosition, wordAt, wordStarts, type ReaderPosition } from "@/lib/document-excerpt";
 import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentReviewRevertResult, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
 import { useIsSharedNotebook } from "@/lib/collab/ui/shared-notebook-hook";
 import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
@@ -68,8 +69,29 @@ function selectionExcerpt(text: string) {
   return `${lines.slice(0, 2).join(" ")}${lines.length > 2 ? "…" : ""}`;
 }
 
+const pageLabel = (pages: number) => `${pages.toLocaleString("en")} ${pages === 1 ? "page" : "pages"}`;
+
+/** Where the reader is in a tab: the chat's page budget sits there when nothing is quoted. */
+function readerPosition(tab: OpenTab | undefined): ReaderPosition {
+  const view = tab?.viewState;
+  if (!tab || !view) return {};
+  if (tab.file.fileType === "pdf") return { page: view.pdf?.page };
+  const state = tab.file.fileType === "markdown" ? view.markdown : tab.file.fileType === "latex" ? view.latex : view.text;
+  if (!state) return {};
+  // Markdown's line follows the viewport in Visual, Source and Preview alike.
+  if (tab.file.fileType !== "markdown" && state.editorScrollPos !== undefined) return { offset: state.editorScrollPos };
+  if (state.line === undefined) return { offset: state.selectionStart };
+  let offset = 0;
+  for (let line = 1; line < state.line; line++) {
+    const next = tab.draft.indexOf("\n", offset);
+    if (next < 0) break;
+    offset = next + 1;
+  }
+  return { offset };
+}
+
 /** One pill in the composer's context tray: an icon, a short name and a remove button; details live in the tooltip. */
-function ContextChip({ kind, icon: Icon, thumbnail, title, badge, tooltip, sent, removeLabel, onRemove }: {
+function ContextChip({ kind, icon: Icon, thumbnail, title, badge, tooltip, sent, removeLabel, onRemove, pageBudget }: {
   kind: "document" | "comments" | "selection" | "photo";
   icon?: typeof FileText;
   thumbnail?: string;
@@ -81,16 +103,97 @@ function ContextChip({ kind, icon: Icon, thumbnail, title, badge, tooltip, sent,
   sent?: boolean;
   removeLabel: string;
   onRemove: () => void;
+  /** Lets the chip be dragged to choose how many pages go. Unset `pages` means all of them. */
+  pageBudget?: { pages?: number; total: number; onChange: (pages: number | undefined) => void };
 }) {
-  const label = sent ? `${tooltip} (already included)` : tooltip;
-  return <div className="libera-context-chip" data-kind={kind} data-sent={sent || undefined} title={label} aria-label={label}>
+  const [drag, setDrag] = useState<{ pages: number; width: number } | null>(null);
+  const dragStart = useRef<{ x: number; pages: number } | null>(null);
+  const dragging = !!drag;
+  useEffect(() => {
+    if (!dragging) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragStart.current = null;
+      setDrag(null);
+    };
+    window.addEventListener("keydown", cancel, true);
+    return () => window.removeEventListener("keydown", cancel, true);
+  }, [dragging]);
+  const total = pageBudget?.total ?? 1;
+  const commit = (pages: number) => pageBudget?.onChange(pages >= total ? undefined : pages);
+  const stepPages = (event: ReactKeyboardEvent) => {
+    const current = pageBudget?.pages ?? total;
+    const next = { ArrowLeft: current - 1, ArrowDown: current - 1, ArrowRight: current + 1, ArrowUp: current + 1, Home: 1, End: total }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    commit(Math.min(total, Math.max(1, next)));
+  };
+  const hint = pageBudget ? ". Drag to choose how many pages go" : "";
+  const label = `${tooltip}${sent ? " (already included)" : ""}${hint}`;
+  const shownTitle = drag ? (drag.pages >= total ? `All ${pageLabel(total)}` : pageLabel(drag.pages)) : title;
+  return <div className="libera-context-chip libera-window-no-drag" data-kind={kind} data-sent={sent || undefined} data-adjustable={pageBudget ? "" : undefined} data-dragging={drag ? "" : undefined} title={drag ? undefined : label} aria-label={label} style={drag ? { minWidth: drag.width } : undefined}
+    onMouseDown={(event) => { if (pageBudget && !(event.target as Element).closest("button")) event.preventDefault(); }}
+    onPointerDown={(event) => {
+      if (!pageBudget || event.button !== 0 || (event.target as Element).closest("button")) return;
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      dragStart.current = { x: event.clientX, pages: pageBudget.pages ?? total };
+    }}
+    onPointerMove={(event) => {
+      const start = dragStart.current;
+      if (!start) return;
+      const deltaX = event.clientX - start.x;
+      if (!drag && Math.abs(deltaX) < 3) return;
+      setDrag({ pages: pagesForDrag(start.pages, total, deltaX), width: drag?.width ?? event.currentTarget.offsetWidth });
+    }}
+    onPointerUp={() => { dragStart.current = null; if (drag) commit(drag.pages); setDrag(null); }}
+    onPointerCancel={() => { dragStart.current = null; setDrag(null); }}>
+    {drag && <span aria-hidden className="libera-context-chip-fill" style={{ transform: `scaleX(${pagesPosition(drag.pages, total)})` }} />}
     {/* eslint-disable-next-line @next/next/no-img-element -- Local photo thumbnail. */}
     {thumbnail ? <img src={thumbnail} alt="" className="libera-context-chip-icon object-cover" /> : Icon && <span aria-hidden className="libera-context-chip-icon"><Icon size={12} /></span>}
-    <span aria-hidden className="libera-context-chip-title">{title}</span>
-    {badge && <span aria-hidden className="libera-context-chip-badge">{badge}</span>}
+    {pageBudget
+      ? <span role="slider" tabIndex={0} className="libera-context-chip-title" aria-label="Pages to send" aria-valuemin={1} aria-valuemax={total} aria-valuenow={drag?.pages ?? pageBudget.pages ?? total} aria-valuetext={pageLabel(drag?.pages ?? pageBudget.pages ?? total)} onKeyDown={stepPages}>{shownTitle}</span>
+      : <span aria-hidden className="libera-context-chip-title">{title}</span>}
+    {badge && !drag && <span aria-hidden className="libera-context-chip-badge">{badge}</span>}
     {sent && <CheckCheck aria-hidden size={12} className="libera-context-chip-sent" />}
     <button type="button" className="libera-window-no-drag libera-context-chip-remove" aria-label={removeLabel} title={removeLabel} onClick={onRemove}><X aria-hidden size={11} /></button>
   </div>;
+}
+
+/** A file in the context tray. Dragging it sets how many pages go (document-excerpt.ts). */
+function DocumentContextChip({ context, icon, tooltip, tab, messages, pages, quoted, adjustable, trackSent, removeLabel, onRemove, onPagesChange }: {
+  context: ChatContext;
+  icon: typeof FileText;
+  tooltip: string;
+  /** The file's open tab, which says where the reader is. */
+  tab?: OpenTab;
+  messages: ChatMessage[];
+  pages?: number;
+  /** A passage of this file is waiting to be sent. */
+  quoted: boolean;
+  /** False in Agent mode, where the agent reads what it needs. */
+  adjustable: boolean;
+  /** Show when the next message would add nothing of this file. */
+  trackSent?: boolean;
+  removeLabel: string;
+  onRemove: () => void;
+  onPagesChange: (pages: number | undefined) => void;
+}) {
+  const starts = useMemo(() => wordStarts(context.text), [context.text]);
+  const total = context.pageCount ?? documentPageCount(starts.length);
+  const sentWhole = messages.some((message) => message.contexts?.some((item) => item.kind === "document" && item.path === context.path && !item.excerpt));
+  // A copy sent whole stays in the conversation, so a smaller window would save nothing.
+  const canAdjust = adjustable && !context.excerpt && !sentWhole && total > 1 && !AUDIO_FILE.test(context.path);
+  const budget = context.excerpt?.pages ?? (canAdjust && pages && pages < total ? pages : undefined);
+  const reader = readerPosition(tab);
+  const sent = trackSent && (sentWhole || documentWindowSent(sentDocumentExcerpts(messages, context.path), {
+    pages: budget, quoted, pdfPage: reader.page, word: reader.offset === undefined ? undefined : wordAt(starts, reader.offset),
+  }));
+  const where = quoted ? "around the quoted passages" : "around where you are reading";
+  return <ContextChip kind="document" icon={icon} title={context.name} badge={budget ? `${budget}p` : undefined} sent={sent}
+    tooltip={budget ? `${pageLabel(budget)} ${where}, of ${tooltip}` : tooltip} removeLabel={removeLabel} onRemove={onRemove}
+    pageBudget={canAdjust ? { pages: budget, total, onChange: onPagesChange } : undefined} />;
 }
 
 /** A photo on screen outside the chat, such as in the gallery viewer. `source` names its version. */
@@ -364,7 +467,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const openTextFileCount = tabs.filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType)).length;
   // A photo being viewed covers the editors, so it replaces the document as context.
   // PDFs and recordings go as their text and transcript, read when the message is sent.
-  const document = useMemo<ChatContext | null>(() => !viewedPhoto && !activeTab?.recording && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf" || activeTab?.file.fileType === "audio") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" || activeTab.file.fileType === "audio" ? "" : activeTab.draft } : null, [activeTab, viewedPhoto]);
+  const document = useMemo<ChatContext | null>(() => !viewedPhoto && !activeTab?.recording && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf" || activeTab?.file.fileType === "audio") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" || activeTab.file.fileType === "audio" ? "" : activeTab.draft, ...(activeTab.viewState?.pdf?.pageCount ? { pageCount: activeTab.viewState.pdf.pageCount } : {}) } : null, [activeTab, viewedPhoto]);
   const viewingRecording = activeTab?.file.fileType === "audio" && !activeTab.recording;
   const viewedPath = document?.path;
   // Replies use the Markdown macros of the documents in the conversation and of
@@ -677,12 +780,15 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       } else {
         const path = tab?.untitled ? tab.id : file.path;
         const existing = [...chat.selections, ...chat.messages.flatMap((message) => message.contexts ?? [])]
-          .find((context) => context.kind === "document" && context.path === path);
+          .find((context) => context.kind === "document" && context.path === path && !context.excerpt);
         let text: string;
+        let pageCount = existing?.pageCount;
         if (existing && (file.fileType === "markdown" || existing.text)) {
           text = existing.text;
         } else if (file.fileType === "pdf") {
-          ({ text } = await apiRequest<{ text: string }>(`/api/document-chat/pdf?path=${encodeURIComponent(file.path)}`));
+          // Its text is read when the message is sent, which may need only part of it.
+          ({ pageCount } = await apiRequest<{ pageCount?: number }>(`/api/document-chat/pdf?path=${encodeURIComponent(file.path)}`));
+          text = "";
         } else if (file.fileType === "audio") {
           // A recording joins the conversation as its transcript.
           const { transcript } = await apiRequest<TranscriptPayload>(`/api/transcripts?path=${encodeURIComponent(file.path)}`);
@@ -695,8 +801,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           if (!isTextFileType(payload.file.fileType) || typeof payload.content !== "string") throw new Error(`Could not read ${file.name}.`);
           text = payload.content;
         }
-        if (text.length > 500_000) throw new Error(`${file.name} is too large to attach (maximum 500,000 characters).`);
-        const context: ChatContext = { kind: "document", path, name: file.name, text };
+        if (file.fileType === "audio" && text.length > 500_000) throw new Error(`${file.name} is too large to attach (maximum 500,000 characters).`);
+        const context: ChatContext = { kind: "document", path, name: file.name, text, ...(pageCount ? { pageCount } : {}) };
         updateChat(chatId, (current) => ({ ...current,
           selections: newChatContexts(current.messages, [...current.selections.filter((item) => item.kind !== "document" || item.path !== path), context]),
           excludedDocumentPaths: current.excludedDocumentPaths?.filter((excludedPath) => excludedPath !== path),
@@ -710,6 +816,15 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       setLoadingFiles(false);
     }
   }, [chat, loadingFiles, tabs, updateChat]);
+
+  const setDocumentPages = (path: string, pages: number | undefined) => {
+    if (!chat) return;
+    updateChat(chat.id, (current) => {
+      const documentPages = { ...current.documentPages };
+      if (pages) documentPages[path] = pages; else delete documentPages[path];
+      return { ...current, documentPages };
+    });
+  };
 
   // @Comments: the document in view and the other open Markdown, LaTeX and PDF files.
   const commentTargets = useMemo<ChatCommentTarget[]>(() => {
@@ -933,20 +1048,30 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     }
     try {
       if (!replay) {
-        message.contexts = await Promise.all(message.contexts
+        const quotesOf = (path: string) => message.contexts.flatMap((context) => context.kind === "selection" && context.path === path ? [context.text] : []);
+        const resolved = await Promise.all(message.contexts
           .filter((context) => context.kind === "document" ? !chat.excludedDocumentPaths?.includes(context.path) : context.kind !== "comments" || !chat.excludedCommentPaths?.includes(context.path))
           .map(async (context) => {
-            if (agent || context.kind !== "document" || context.text) return context;
-            if (AUDIO_FILE.test(context.path)) {
+            if (agent || context.kind !== "document" || context.excerpt) return context;
+            let { text, pageCount } = context;
+            if (!text && AUDIO_FILE.test(context.path)) {
               const { transcript, stale } = await apiRequest<TranscriptPayload>(`/api/transcripts?path=${encodeURIComponent(context.path)}`, { signal: controller.signal });
               if (!transcript) throw new Error(`${context.name} has no transcript yet. Transcribe it first, or remove it from the context.`);
               if (stale) throw new Error(`${context.name} changed after it was transcribed. Transcribe it again, or remove it from the context.`);
               return { ...context, text: transcriptContextText(transcript, context.name, context.path) };
             }
-            if (!/\.pdf$/i.test(context.path)) return context;
-            const { text } = await apiRequest<{ text: string }>(`/api/document-chat/pdf?path=${encodeURIComponent(context.path)}`, { signal: controller.signal });
-            return { ...context, text };
+            const pdf = /\.pdf$/i.test(context.path);
+            if (!text && pdf) ({ text, pageCount } = await apiRequest<{ text: string; pageCount?: number }>(`/api/document-chat/pdf?path=${encodeURIComponent(context.path)}`, { signal: controller.signal }));
+            const pages = chat.documentPages?.[context.path];
+            const sent = sentDocumentExcerpts(chat.messages, context.path);
+            if (AUDIO_FILE.test(context.path) || (!pages && !sent.length)) return { ...context, text, ...(pageCount ? { pageCount } : {}) };
+            const tab = tabs.find((item) => (item.untitled ? item.id : item.file.path) === context.path);
+            const part = documentExcerpt({ text, pages, pdf, sent, quotes: quotesOf(context.path), reader: readerPosition(tab) });
+            return part && { ...context, ...part, pageCount: pageCount ?? documentPageCount(part.excerpt.wordCount) };
           }));
+        message.contexts = resolved.filter((context) => context !== null);
+        const tooLong = message.contexts.find((context) => context.kind === "document" && context.text.length > 500_000);
+        if (tooLong) throw new Error(`${tooLong.name} is too long to send whole. Drag its card in the message box to send fewer pages.`);
         if (pendingPhoto) message.photos = [...photos, { id: crypto.randomUUID(), name: pendingPhoto.name, dataUrl: await viewedPhotoDataUrl(pendingPhoto, controller.signal), source: pendingPhoto.source }];
       }
       controller.signal.throwIfAborted();
@@ -1456,7 +1581,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             {!viewedPhoto && <p className="libera-chat-context-hint">{viewingRecording ? <>Quote lines from the transcript with <kbd>⌘/Ctrl + Shift + L</kbd> or its quote button.</> : <>Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</>}</p>}
           </div>}
           {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} data-message-id={message.id} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && (message.agent ? <Bot aria-hidden size={13} /> : <Sparkles aria-hidden size={13} />)}{message.role === "user" ? "You" : message.agent ? "Libera Agent" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's changes below before editing this message" : "Edit message (regenerates from here)"} disabled={pending || loadingPhotos || loadingFiles || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
-            const label = context.kind === "document" ? context.name : context.kind === "comments" ? `Comments on ${context.name} (${commentsContextSummary(context)})` : selectionExcerpt(context.text);
+            const label = context.kind === "document" ? (context.excerpt ? `${context.name} (part, ${pageLabel(context.excerpt.pages)})` : context.name) : context.kind === "comments" ? `Comments on ${context.name} (${commentsContextSummary(context)})` : selectionExcerpt(context.text);
             const ContextIcon = context.kind === "document" ? FileText : context.kind === "comments" ? MessageSquareText : TextSelect;
             return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : context.kind === "comments" ? "Review comments" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
           })}{message.photos?.map((photo) => <div key={photo.id}>
@@ -1499,11 +1624,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           <input ref={photoInputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" aria-label="Attach photos" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attachPhotos(files); }} />
           <div className="libera-chat-composer flex flex-col gap-0.5">
           {hasContextTray && <div className="libera-context-tray" role="group" aria-label="Context for the next message">
-            {!agentMode && includedDocument && (() => {
-              const sent = !newDocumentContext(chat?.messages ?? [], includedDocument).length;
+            {!agentMode && includedDocument && chat && (() => {
               const what = activeTab?.file.fileType === "pdf" ? "PDF text" : viewingRecording ? "Transcript" : "Current draft";
-              return <ContextChip kind="document" icon={viewingRecording ? AudioLines : Eye} title={includedDocument.name} sent={sent} tooltip={`${what} of ${includedDocument.path}`}
-                removeLabel="Remove document context" onRemove={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))} />;
+              return <DocumentContextChip context={includedDocument} icon={viewingRecording ? AudioLines : Eye} tooltip={`${what} of ${includedDocument.path}`} tab={activeTab ?? undefined} messages={chat.messages}
+                pages={chat.documentPages?.[includedDocument.path]} quoted={chat.selections.some((item) => item.kind === "selection" && item.path === includedDocument.path)} adjustable trackSent
+                onPagesChange={(pages) => setDocumentPages(includedDocument.path, pages)}
+                removeLabel="Remove document context" onRemove={() => updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))} />;
             })()}
             {includedComments && !chat?.selections.some((item) => item.kind === "comments" && item.path === includedComments.path) && <ContextChip kind="comments" icon={MessageSquareText}
               title={includedComments.name} badge={commentsContextCount(includedComments)} sent={commentsAlreadySent} tooltip={`Review comments on ${includedComments.path}: ${commentsContextSummary(includedComments)}`}
@@ -1514,12 +1640,16 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedPhotoSources: current.excludedPhotoSources?.filter((source) => source !== viewedPhoto.source) }))}>
               <span aria-hidden className="libera-context-chip-icon"><ImagePlus size={12} /></span><span aria-hidden className="libera-context-chip-title">Include</span>
             </button>}
-            {chat?.selections.map((context, index) => <ContextChip key={index} kind={context.kind}
-              icon={context.kind === "document" ? FileText : context.kind === "comments" ? MessageSquareText : TextSelect}
+            {chat?.selections.map((context, index) => context.kind === "document" ? <DocumentContextChip key={index} context={context} icon={FileText} tooltip={context.path} messages={chat.messages}
+              tab={tabs.find((item) => (item.untitled ? item.id : item.file.path) === context.path)} pages={chat.documentPages?.[context.path]}
+              quoted={chat.selections.some((item) => item.kind === "selection" && item.path === context.path)} adjustable={!agentMode}
+              onPagesChange={(pages) => setDocumentPages(context.path, pages)} removeLabel={`Remove file: ${context.name}`}
+              onRemove={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))} /> : <ContextChip key={index} kind={context.kind}
+              icon={context.kind === "comments" ? MessageSquareText : TextSelect}
               title={context.kind === "selection" ? selectionExcerpt(context.text) : context.name}
               badge={context.kind === "comments" ? commentsContextCount(context) : undefined}
-              tooltip={context.kind === "document" ? context.path : context.kind === "comments" ? `Review comments on ${context.path}: ${commentsContextSummary(context)}` : `${context.name}: ${context.text}`}
-              removeLabel={context.kind === "document" ? `Remove file: ${context.name}` : context.kind === "comments" ? `Remove comments: ${context.name}` : `Remove selection ${index + 1}`}
+              tooltip={context.kind === "comments" ? `Review comments on ${context.path}: ${commentsContextSummary(context)}` : `${context.name}: ${context.text}`}
+              removeLabel={context.kind === "comments" ? `Remove comments: ${context.name}` : `Remove selection ${index + 1}`}
               onRemove={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))} />)}
             {chat?.photos?.map((photo) => <ContextChip key={photo.id} kind="photo" thumbnail={photo.dataUrl} title={photo.name} tooltip={`Photo: ${photo.name}`}
               removeLabel={`Remove photo: ${photo.name}`} onRemove={() => updateChat(chat.id, (current) => ({ ...current, photos: current.photos?.filter((item) => item.id !== photo.id) }))} />)}
