@@ -173,7 +173,7 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, citeS
   const identifiers = identifierLinks(entry);
 
   return (
-    <div className="libera-reference-card flex min-h-0 flex-1 flex-col overflow-hidden outline-none" aria-label={`Reference ${entry.key}`} role="region" tabIndex={-1}>
+    <div className="libera-reference-card outline-none" aria-label={`Reference ${entry.key}`} role="region" tabIndex={-1}>
       <div className="flex items-center gap-1 px-2 pb-1 pt-1">
         <button type="button" className="libera-sidebar-icon-button inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs" aria-label="Back to references" title="Back to references (Esc)" onClick={onBack}>
           {/* With the previous/next buttons there is room for the arrow only. */}
@@ -211,7 +211,7 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, citeS
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto px-3 pb-4">
+      <div className="space-y-4 px-3 pb-4">
         <div className="libera-panel-card space-y-2 p-3">
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">

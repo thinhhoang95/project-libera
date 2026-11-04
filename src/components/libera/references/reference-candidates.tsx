@@ -602,7 +602,7 @@ export function CandidateList({ notebook, library, result, busy, onCommit, onEdi
           <button type="button" className="font-medium text-accent hover:underline" onClick={() => setSelected(drafts.map(() => !selected.every(Boolean)))}>{selected.every(Boolean) ? "Select none" : "Select all"}</button>
         </div>
       ) : null}
-      <div className={multiple ? "max-h-[28rem] space-y-2 overflow-auto" : "space-y-2"}>
+      <div className="space-y-2">
         {drafts.map((draft, index) => (
           <CandidateCard
             key={index}

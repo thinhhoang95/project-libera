@@ -509,6 +509,10 @@ function ReferencesPanelBody({
   const [reviewFilter, setReviewFilter] = useState<{ jobId: string; ids: Set<string> } | null>(null);
   const [factCheckOpen, setFactCheckOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  // The panel scrolls as one: the list, a card and the add box have no scrolling of their own.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const keptInView = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -517,6 +521,8 @@ function ReferencesPanelBody({
   // elsewhere, such as an editor, is left alone.
   useEffect(() => {
     if (!openId) return;
+    // Each card starts at its top, also when stepping from one card to the next.
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
     const frame = window.requestAnimationFrame?.(() => {
       const active = document.activeElement;
       if (active && active !== document.body && !panelRef.current?.contains(active)) return;
@@ -719,17 +725,45 @@ function ReferencesPanelBody({
   // Keep the selected row in view.
   const windowed = listed.length > REFERENCE_WINDOW_THRESHOLD;
   const offset = listedMissing.length * REFERENCE_ROW_HEIGHT;
+  const addBoxOpen = Boolean(addBox);
   useEffect(() => {
     if (!selectedId || openId) return;
-    const container = listRef.current;
-    if (!container) return;
+    const container = scrollRef.current;
+    const list = listRef.current;
+    if (!container || !list) return;
+    // A library update must not pull the panel away from a candidate being read in the add box.
+    if (addBoxOpen && selectedId === keptInView.current) return;
+    keptInView.current = selectedId;
     const index = listed.findIndex((entry) => entry.id === selectedId);
     if (index < 0) return;
-    const top = offset + index * REFERENCE_ROW_HEIGHT;
+    const top = list.offsetTop + offset + index * REFERENCE_ROW_HEIGHT;
     const height = container.clientHeight || 600;
     if (top < container.scrollTop) container.scrollTop = top;
     else if (top + REFERENCE_ROW_HEIGHT > container.scrollTop + height) container.scrollTop = top + REFERENCE_ROW_HEIGHT - height;
-  }, [selectedId, openId, listed, offset]);
+  }, [selectedId, openId, listed, offset, addBoxOpen]);
+
+  /** Where the panel's view falls on the list, which starts below whatever sits above it. */
+  const measureList = useCallback(() => {
+    const container = scrollRef.current;
+    const list = listRef.current;
+    if (!container || !list) return;
+    const top = container.scrollTop - list.offsetTop;
+    const height = container.clientHeight || 600;
+    setScroll((current) => (current.top === top && current.height === height ? current : { top, height }));
+  }, []);
+
+  // Content above the list can grow or shrink without a scroll, moving the rows in view.
+  useEffect(() => {
+    if (!windowed || openId) return;
+    measureList();
+    const container = scrollRef.current;
+    const content = contentRef.current;
+    if (!container || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measureList);
+    observer.observe(container);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [windowed, openId, measureList]);
 
   function cite(entry: ReferenceEntry, command?: LatexCiteCommand) {
     if (!canCite) {
@@ -1004,7 +1038,7 @@ function ReferencesPanelBody({
 
   function closeCard() {
     setOpenId(null);
-    window.requestAnimationFrame?.(() => listRef.current?.focus());
+    window.requestAnimationFrame?.(() => listRef.current?.focus({ preventScroll: true }));
   }
 
   function stepCard(step: number) {
@@ -1420,7 +1454,7 @@ function ReferencesPanelBody({
     }
     if (view.filter === "duplicates" && !reviewFilter) {
       return (
-        <div className="min-h-0 flex-1 overflow-auto px-3 pb-4">
+        <div className="px-3 pb-4">
           <DuplicateGroupsList groups={listedGroups} onMerge={setMergeGroup} onOpen={(entry) => { setSelectedId(entry.id); setOpenId(entry.id); }} />
         </div>
       );
@@ -1461,12 +1495,8 @@ function ReferencesPanelBody({
         aria-label="References"
         aria-activedescendant={selectedId ? `reference-row-${selectedId}` : undefined}
         tabIndex={0}
-        className="libera-reference-list min-h-0 flex-1 overflow-auto px-1.5 pb-4 outline-none"
+        className="libera-reference-list grow px-1.5 pb-4 outline-none"
         onKeyDown={listKeyDown}
-        onScroll={(event) => {
-          const target = event.currentTarget;
-          if (windowed) setScroll({ top: target.scrollTop, height: target.clientHeight || 600 });
-        }}
       >
         {listedMissing.map((key) => (
           <MissingReferenceRow key={`missing:${key}`} citationKey={key} onAdd={() => { setOpenId(null); setAddBox({ id: Date.now(), query: key }); }} />
@@ -1494,214 +1524,218 @@ function ReferencesPanelBody({
       }}
       onDrop={(event) => void handleDrop(event)}
     >
-      <PanelHeading title="References" subtitle={library ? `${notebook}${styleLabel ? ` · ${styleLabel}` : ""}` : notebook}>
-        <button type="button" className={iconButton} aria-label="Add references" title="Add references" aria-pressed={Boolean(addBox)} onClick={() => setAddBox((current) => current ? null : { id: Date.now(), query: "" })}>
-          <Plus aria-hidden className="h-4 w-4" />
-        </button>
-        <button type="button" className={iconButton} aria-label="Generate entries for PDFs without one" title={jobs.active ? "Reading PDFs…" : "Generate entries for PDFs without one"} disabled={!library || jobs.active} onClick={() => void generateForPdfs()}>
-          <FileSearch aria-hidden className="h-4 w-4" />
-        </button>
-        <button type="button" className={iconButton} aria-label="Manage references" title="Manage references" disabled={!library} onClick={() => setManageOpen(true)}>
-          <Table2 aria-hidden className="h-4 w-4" />
-        </button>
-        <div className="relative">
-          <button type="button" className={iconButton} aria-label="References menu" title="Style, export and undo" aria-haspopup="menu" aria-expanded={panelMenuOpen} disabled={!library} onClick={(event) => void openPanelMenu(event.currentTarget)}>
-            <MoreVertical aria-hidden className="h-4 w-4" />
-          </button>
-          {panelMenuOpen && library ? (
-            <PanelMenu {...panelMenuProps} />
-          ) : null}
-        </div>
-      </PanelHeading>
-      <DocumentStylePicker notebook={notebook} documentPath={activeDocumentPath ?? null} draft={activeMarkdownDraft} styleFiles={styleFiles} />
-      {bibTether.status ? <TetherStatusLine status={bibTether.status} onOpen={() => setTetherOpen(true)} /> : null}
-      {bibTether.error ? <p role="alert" className="mx-3 mb-2 text-xs text-destructive">{bibTether.error}</p> : null}
+      <div ref={scrollRef} className="libera-references-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden" onScroll={windowed ? measureList : undefined}>
+        <div ref={contentRef} className="relative flex min-h-full flex-col">
+          <PanelHeading title="References" subtitle={library ? `${notebook}${styleLabel ? ` · ${styleLabel}` : ""}` : notebook}>
+            <button type="button" className={iconButton} aria-label="Add references" title="Add references" aria-pressed={Boolean(addBox)} onClick={() => setAddBox((current) => current ? null : { id: Date.now(), query: "" })}>
+              <Plus aria-hidden className="h-4 w-4" />
+            </button>
+            <button type="button" className={iconButton} aria-label="Generate entries for PDFs without one" title={jobs.active ? "Reading PDFs…" : "Generate entries for PDFs without one"} disabled={!library || jobs.active} onClick={() => void generateForPdfs()}>
+              <FileSearch aria-hidden className="h-4 w-4" />
+            </button>
+            <button type="button" className={iconButton} aria-label="Manage references" title="Manage references" disabled={!library} onClick={() => setManageOpen(true)}>
+              <Table2 aria-hidden className="h-4 w-4" />
+            </button>
+            <div className="relative">
+              <button type="button" className={iconButton} aria-label="References menu" title="Style, export and undo" aria-haspopup="menu" aria-expanded={panelMenuOpen} disabled={!library} onClick={(event) => void openPanelMenu(event.currentTarget)}>
+                <MoreVertical aria-hidden className="h-4 w-4" />
+              </button>
+              {panelMenuOpen && library ? (
+                <PanelMenu {...panelMenuProps} />
+              ) : null}
+            </div>
+          </PanelHeading>
+          <DocumentStylePicker notebook={notebook} documentPath={activeDocumentPath ?? null} draft={activeMarkdownDraft} styleFiles={styleFiles} />
+          {bibTether.status ? <TetherStatusLine status={bibTether.status} onOpen={() => setTetherOpen(true)} /> : null}
+          {bibTether.error ? <p role="alert" className="mx-3 mb-2 text-xs text-destructive">{bibTether.error}</p> : null}
 
-      {notice ? (
-        <div role={notice.tone === "error" ? "alert" : "status"} className={`mx-3 mb-2 flex items-start gap-2 rounded-lg p-2 text-[11px] leading-relaxed ${notice.tone === "error" ? "bg-destructive-muted text-destructive" : "libera-panel-card"}`}>
-          <span className="min-w-0 flex-1">{notice.text}</span>
-          {notice.undo && undo.canUndo ? <button type="button" className="shrink-0 font-semibold text-accent hover:underline" onClick={() => { setNotice(null); void runUndo(); }}>Undo</button> : null}
-          <button type="button" className="shrink-0" aria-label="Dismiss" onClick={() => setNotice(null)}><X aria-hidden className="h-3 w-3" /></button>
-        </div>
-      ) : null}
-
-      {factCheckOpen ? (
-        <FactCheckPopover
-          path={activeDocumentPath ?? ""}
-          defaultWebSearch={webSearch}
-          blocker={factCheckBlocker}
-          onCancel={() => setFactCheckOpen(false)}
-          onStart={requestFactCheck}
-        />
-      ) : null}
-
-      {jobs.job ? (
-        <JobStatusLine
-          job={jobs.job}
-          library={library}
-          error={jobs.error}
-          reviewing={reviewFilter?.jobId === jobs.job.id}
-          onCancel={(jobId) => void jobs.cancel(jobId)}
-          onDismiss={(jobId) => {
-            jobs.dismiss(jobId);
-            if (reviewFilter?.jobId === jobId) setReviewFilter(null);
-          }}
-          onReview={(job) => {
-            setOpenId(null);
-            setReviewFilter({ jobId: job.id, ids: new Set([...job.createdEntryIds, ...job.updatedEntryIds]) });
-          }}
-        />
-      ) : null}
-
-      {addBox && library ? (
-        <AddReferenceBox
-          key={addBox.id}
-          notebook={notebook}
-          library={library}
-          initialQuery={addBox.query}
-          initialPath={addBox.path}
-          webSearch={webSearch}
-          webSearchChosen={webSearchChosen}
-          webSearchDefault={preferences ? preferences.webSearch : null}
-          onWebSearchChange={setWebSearch}
-          apply={(ops, label) => run(ops, label)}
-          record={undo.record}
-          onClose={() => setAddBox(null)}
-          onReveal={(entryId) => { setAddBox(null); reveal(entryId); }}
-          onEditNew={(initial, extraOps) => setEditing({ initial, extraOps })}
-          onMerge={(ids) => setMergeGroup(ids.map((id) => library.entries[id]).filter(Boolean))}
-          onLookup={noteLookup}
-          onNotice={setNotice}
-        />
-      ) : null}
-
-      {privacyNotice ? <PrivacyNotice onDismiss={() => setPrivacyNotice(false)} /> : null}
-
-      {openEntry && library ? (
-        <ReferenceCard
-          key={openEntry.id}
-          notebook={notebook}
-          entry={openEntry}
-          library={library}
-          citing={citingOf(openEntry)}
-          canCite={canCite}
-          citeSyntax={citeSyntax}
-          apply={run}
-          onBack={closeCard}
-          position={openIndex >= 0 ? { index: openIndex, total: listed.length } : undefined}
-          onPrevious={() => stepCard(-1)}
-          onNext={() => stepCard(1)}
-          reviewLeft={reviewLeft}
-          onConfirmNext={() => void confirmAndNext()}
-          attachableFiles={attachableFiles}
-          knownTags={knownTags}
-          onTag={showTag}
-          loadDocument={(path) => documentText(path, openDrafts)}
-          onOpenCitation={openCitation}
-          onCite={(command) => cite(openEntry, command)}
-          onCopy={(text, what) => void copy(text, what)}
-          onCopyFormatted={() => void copyFormatted(openEntry)}
-          onReresolve={() => setReresolving(openEntry)}
-          onOpenPath={onOpenPath}
-          onEditAll={() => setEditing({ entry: openEntry })}
-          onDelete={() => requestDelete(openEntry)}
-          onUpdateCitations={(from, to) => offerRewrite({ [from]: to }, { kind: "rename" })}
-        />
-      ) : (
-        <>
-          {reviewFilter ? (
-            <div className="flex items-center gap-1.5 px-3 pb-2" aria-label="Temporary filter">
-              <span className="libera-reference-tag">
-                <ListChecks aria-hidden className="h-3 w-3" /> New from the PDF lookup ({reviewFilter.ids.size})
-                <button type="button" aria-label="Clear the new-entries filter" onClick={() => setReviewFilter(null)}><X aria-hidden className="h-3 w-3" /></button>
-              </span>
+          {notice ? (
+            <div role={notice.tone === "error" ? "alert" : "status"} className={`mx-3 mb-2 flex items-start gap-2 rounded-lg p-2 text-[11px] leading-relaxed ${notice.tone === "error" ? "bg-destructive-muted text-destructive" : "libera-panel-card"}`}>
+              <span className="min-w-0 flex-1">{notice.text}</span>
+              {notice.undo && undo.canUndo ? <button type="button" className="shrink-0 font-semibold text-accent hover:underline" onClick={() => { setNotice(null); void runUndo(); }}>Undo</button> : null}
+              <button type="button" className="shrink-0" aria-label="Dismiss" onClick={() => setNotice(null)}><X aria-hidden className="h-3 w-3" /></button>
             </div>
           ) : null}
-          {library && entries.length ? (
-            <div className="space-y-2 px-3 pb-2">
-              <div className="relative">
-                <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  ref={searchRef}
-                  aria-label="Search references"
-                  className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
-                  placeholder="Search references"
-                  value={view.query}
-                  onChange={(event) => setView({ query: event.target.value })}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape" && view.query) {
-                      event.stopPropagation();
-                      setView({ query: "" });
-                    } else listKeyDown(event);
-                  }}
-                />
-                {view.query ? (
-                  <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground" aria-label="Clear reference search" onClick={() => setView({ query: "" })}>
-                    <X aria-hidden className="h-3.5 w-3.5" />
-                  </button>
-                ) : null}
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                <select
-                  aria-label="Filter references"
-                  className="libera-sidebar-search-input h-8 min-w-32 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
-                  value={view.filter}
-                  onChange={(event) => setView({ filter: event.target.value as ReferenceFilter })}
-                >
-                  {REFERENCE_FILTERS.map((filter) => <option key={filter.id} value={filter.id}>{filter.label} ({counts[filter.id]})</option>)}
-                </select>
-                {tags.length ? (
-                  <select
-                    aria-label="Filter by tag"
-                    className="libera-sidebar-search-input h-8 min-w-24 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
-                    value={activeTag ?? ""}
-                    onChange={(event) => setView({ tag: event.target.value || null })}
-                  >
-                    <option value="">All tags</option>
-                    {tags.map((item) => <option key={item.tag} value={item.tag}>#{item.tag} ({item.count})</option>)}
-                  </select>
-                ) : null}
-                <select
-                  aria-label="Sort references"
-                  className="libera-sidebar-search-input h-8 min-w-24 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
-                  value={view.sort}
-                  onChange={(event) => setView({ sort: event.target.value as ReferenceSort })}
-                >
-                  {REFERENCE_SORTS.map((sort) => <option key={sort.id} value={sort.id}>{sort.label}</option>)}
-                </select>
-              </div>
-              {activeTag ? (
-                <div className="flex items-center gap-1.5" aria-label="Tag filter">
+
+          {factCheckOpen ? (
+            <FactCheckPopover
+              path={activeDocumentPath ?? ""}
+              defaultWebSearch={webSearch}
+              blocker={factCheckBlocker}
+              onCancel={() => setFactCheckOpen(false)}
+              onStart={requestFactCheck}
+            />
+          ) : null}
+
+          {jobs.job ? (
+            <JobStatusLine
+              job={jobs.job}
+              library={library}
+              error={jobs.error}
+              reviewing={reviewFilter?.jobId === jobs.job.id}
+              onCancel={(jobId) => void jobs.cancel(jobId)}
+              onDismiss={(jobId) => {
+                jobs.dismiss(jobId);
+                if (reviewFilter?.jobId === jobId) setReviewFilter(null);
+              }}
+              onReview={(job) => {
+                setOpenId(null);
+                setReviewFilter({ jobId: job.id, ids: new Set([...job.createdEntryIds, ...job.updatedEntryIds]) });
+              }}
+            />
+          ) : null}
+
+          {addBox && library ? (
+            <AddReferenceBox
+              key={addBox.id}
+              notebook={notebook}
+              library={library}
+              initialQuery={addBox.query}
+              initialPath={addBox.path}
+              webSearch={webSearch}
+              webSearchChosen={webSearchChosen}
+              webSearchDefault={preferences ? preferences.webSearch : null}
+              onWebSearchChange={setWebSearch}
+              apply={(ops, label) => run(ops, label)}
+              record={undo.record}
+              onClose={() => setAddBox(null)}
+              onReveal={(entryId) => { setAddBox(null); reveal(entryId); }}
+              onEditNew={(initial, extraOps) => setEditing({ initial, extraOps })}
+              onMerge={(ids) => setMergeGroup(ids.map((id) => library.entries[id]).filter(Boolean))}
+              onLookup={noteLookup}
+              onNotice={setNotice}
+            />
+          ) : null}
+
+          {privacyNotice ? <PrivacyNotice onDismiss={() => setPrivacyNotice(false)} /> : null}
+
+          {openEntry && library ? (
+            <ReferenceCard
+              key={openEntry.id}
+              notebook={notebook}
+              entry={openEntry}
+              library={library}
+              citing={citingOf(openEntry)}
+              canCite={canCite}
+              citeSyntax={citeSyntax}
+              apply={run}
+              onBack={closeCard}
+              position={openIndex >= 0 ? { index: openIndex, total: listed.length } : undefined}
+              onPrevious={() => stepCard(-1)}
+              onNext={() => stepCard(1)}
+              reviewLeft={reviewLeft}
+              onConfirmNext={() => void confirmAndNext()}
+              attachableFiles={attachableFiles}
+              knownTags={knownTags}
+              onTag={showTag}
+              loadDocument={(path) => documentText(path, openDrafts)}
+              onOpenCitation={openCitation}
+              onCite={(command) => cite(openEntry, command)}
+              onCopy={(text, what) => void copy(text, what)}
+              onCopyFormatted={() => void copyFormatted(openEntry)}
+              onReresolve={() => setReresolving(openEntry)}
+              onOpenPath={onOpenPath}
+              onEditAll={() => setEditing({ entry: openEntry })}
+              onDelete={() => requestDelete(openEntry)}
+              onUpdateCitations={(from, to) => offerRewrite({ [from]: to }, { kind: "rename" })}
+            />
+          ) : (
+            <>
+              {reviewFilter ? (
+                <div className="flex items-center gap-1.5 px-3 pb-2" aria-label="Temporary filter">
                   <span className="libera-reference-tag">
-                    <Tag aria-hidden className="h-3 w-3" /> {activeTag}
-                    <button type="button" aria-label="Clear the tag filter" onClick={() => setView({ tag: null })}><X aria-hidden className="h-3 w-3" /></button>
+                    <ListChecks aria-hidden className="h-3 w-3" /> New from the PDF lookup ({reviewFilter.ids.size})
+                    <button type="button" aria-label="Clear the new-entries filter" onClick={() => setReviewFilter(null)}><X aria-hidden className="h-3 w-3" /></button>
                   </span>
                 </div>
               ) : null}
-            </div>
-          ) : null}
-          {multiSelection.length ? (
-            <BulkActionsBar
-              count={multiSelection.length}
-              canCite={canCite}
-              citeSyntax={citeSyntax}
-              entries={multiSelection}
-              knownTags={knownTags}
-              tagsOpen={bulkTags}
-              onTagsOpen={setBulkTags}
-              onCite={(command) => citeMany(multiSelection, command)}
-              onCopyCitation={(format) => copyCitation(multiSelection, format)}
-              onCopyFormatted={() => void copyFormattedMany(multiSelection)}
-              onTags={(add, remove) => changeTags(multiSelection, add, remove)}
-              onReading={(reading) => setReading(multiSelection, reading)}
-              onConfirm={() => confirmMany(multiSelection)}
-              onDelete={() => deleteMany(multiSelection)}
-              onClear={clearMulti}
-            />
-          ) : null}
-          {renderList()}
-        </>
-      )}
+              {library && entries.length ? (
+                <div className="space-y-2 px-3 pb-2">
+                  <div className="relative">
+                    <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      ref={searchRef}
+                      aria-label="Search references"
+                      className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
+                      placeholder="Search references"
+                      value={view.query}
+                      onChange={(event) => setView({ query: event.target.value })}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape" && view.query) {
+                          event.stopPropagation();
+                          setView({ query: "" });
+                        } else listKeyDown(event);
+                      }}
+                    />
+                    {view.query ? (
+                      <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground" aria-label="Clear reference search" onClick={() => setView({ query: "" })}>
+                        <X aria-hidden className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <select
+                      aria-label="Filter references"
+                      className="libera-sidebar-search-input h-8 min-w-32 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                      value={view.filter}
+                      onChange={(event) => setView({ filter: event.target.value as ReferenceFilter })}
+                    >
+                      {REFERENCE_FILTERS.map((filter) => <option key={filter.id} value={filter.id}>{filter.label} ({counts[filter.id]})</option>)}
+                    </select>
+                    {tags.length ? (
+                      <select
+                        aria-label="Filter by tag"
+                        className="libera-sidebar-search-input h-8 min-w-24 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                        value={activeTag ?? ""}
+                        onChange={(event) => setView({ tag: event.target.value || null })}
+                      >
+                        <option value="">All tags</option>
+                        {tags.map((item) => <option key={item.tag} value={item.tag}>#{item.tag} ({item.count})</option>)}
+                      </select>
+                    ) : null}
+                    <select
+                      aria-label="Sort references"
+                      className="libera-sidebar-search-input h-8 min-w-24 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                      value={view.sort}
+                      onChange={(event) => setView({ sort: event.target.value as ReferenceSort })}
+                    >
+                      {REFERENCE_SORTS.map((sort) => <option key={sort.id} value={sort.id}>{sort.label}</option>)}
+                    </select>
+                  </div>
+                  {activeTag ? (
+                    <div className="flex items-center gap-1.5" aria-label="Tag filter">
+                      <span className="libera-reference-tag">
+                        <Tag aria-hidden className="h-3 w-3" /> {activeTag}
+                        <button type="button" aria-label="Clear the tag filter" onClick={() => setView({ tag: null })}><X aria-hidden className="h-3 w-3" /></button>
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {multiSelection.length ? (
+                <BulkActionsBar
+                  count={multiSelection.length}
+                  canCite={canCite}
+                  citeSyntax={citeSyntax}
+                  entries={multiSelection}
+                  knownTags={knownTags}
+                  tagsOpen={bulkTags}
+                  onTagsOpen={setBulkTags}
+                  onCite={(command) => citeMany(multiSelection, command)}
+                  onCopyCitation={(format) => copyCitation(multiSelection, format)}
+                  onCopyFormatted={() => void copyFormattedMany(multiSelection)}
+                  onTags={(add, remove) => changeTags(multiSelection, add, remove)}
+                  onReading={(reading) => setReading(multiSelection, reading)}
+                  onConfirm={() => confirmMany(multiSelection)}
+                  onDelete={() => deleteMany(multiSelection)}
+                  onClear={clearMulti}
+                />
+              ) : null}
+              {renderList()}
+            </>
+          )}
+        </div>
+      </div>
 
       {dragActive ? (
         <div className="libera-reference-dropzone pointer-events-none absolute inset-2 flex items-center justify-center rounded-xl text-sm font-medium">

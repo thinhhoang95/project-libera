@@ -956,9 +956,32 @@ test("long libraries render only the rows in view", async () => {
   assert.ok(rendered > 0 && rendered < 60, `rendered ${rendered} rows`);
   const list = byLabel(host, "References") as HTMLElement;
   for (let index = 0; index < 120; index += 1) await act(async () => { list.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
-  await act(async () => list.dispatchEvent(new dom.window.Event("scroll")));
+  const scroller = host.querySelector(".libera-references-scroll") as HTMLElement;
+  await act(async () => scroller.dispatchEvent(new dom.window.Event("scroll")));
   await settle();
   assert.equal(host.querySelector('[aria-selected="true"][data-entry-id]')?.getAttribute("data-entry-id"), "ref_119");
+});
+
+test("the panel scrolls as one, with no scrolling of the list or a card inside it", async () => {
+  fakeServer(libraryOf([
+    makeEntry("a", "alpha", { type: "article-journal", title: "Alpha", author: [{ family: "Alpha" }] }),
+    makeEntry("b", "beta", { type: "article-journal", title: "Beta", author: [{ family: "Beta" }] }),
+  ]));
+  const { host } = await renderPanel();
+  const scroller = host.querySelector(".libera-references-scroll") as HTMLElement;
+  assert.match(scroller.className, /overflow-y-auto/);
+  const list = byLabel(host, "References") as HTMLElement;
+  assert.ok(scroller.contains(list));
+  assert.doesNotMatch(list.className, /overflow/);
+
+  scroller.scrollTop = 500;
+  await act(async () => { list.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+  await act(async () => { list.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  await settle();
+  const card = host.querySelector(".libera-reference-card") as HTMLElement;
+  assert.ok(scroller.contains(card));
+  assert.equal(scroller.scrollTop, 0, "a card opens at its top");
+  assert.equal(card.querySelector('[class*="overflow-auto"]:has(.libera-panel-card)'), null);
 });
 
 test("insertCitation uses Markdown source/visual editors and the mounted LaTeX view, including shared edits", async (context) => {
