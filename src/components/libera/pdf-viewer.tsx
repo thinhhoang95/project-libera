@@ -1284,7 +1284,9 @@ export function PdfViewer({
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
 
-    if (!scrollContainer || !pageLayouts.length) {
+    // Pages mount when loading ends, which can be a commit after their layouts
+    // arrive; an observer built before then would have nothing to watch.
+    if (!scrollContainer || loading || !pageLayouts.length) {
       return;
     }
 
@@ -1324,7 +1326,7 @@ export function PdfViewer({
     pageElementRefs.current.forEach((element) => observer.observe(element));
 
     return () => observer.disconnect();
-  }, [filePath, pageLayouts.length, zoom]);
+  }, [filePath, loading, pageLayouts.length, zoom]);
 
   // Another window showing this PDF saved annotations: adopt them unless this
   // window has its own edit in flight, which will be saved over them anyway.

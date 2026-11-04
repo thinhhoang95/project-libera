@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { pendingSaves, resetPendingSavesForTests } from "../../src/components/libera/pending-saves";
+import { pendingSaves, resetPendingSavesForTests, unsavedJournal } from "../../src/components/libera/pending-saves";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { act, createElement, useRef } from "react";
@@ -36,9 +36,10 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
   dom.window.HTMLCanvasElement.prototype.getContext = (() => context) as unknown as typeof dom.window.HTMLCanvasElement.prototype.getContext;
   const observers: FakeObserver[] = [];
   class FakeObserver {
+    readonly observed = new Set<Element>();
     constructor(readonly callback: IntersectionObserverCallback) { observers.push(this); }
-    observe() {}
-    disconnect() {}
+    observe(target: Element) { this.observed.add(target); }
+    disconnect() { this.observed.clear(); }
     show(pageNumber: number) {
       this.callback(Array.from(document.querySelectorAll("[data-pdf-page-number]")).map((target) => ({
         target, isIntersecting: Number(target.getAttribute("data-pdf-page-number")) === pageNumber,
@@ -435,6 +436,27 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
         Reflect.deleteProperty(proto, "scrollWidth");
         Reflect.deleteProperty(proto, "scrollHeight");
       }
+    });
+    await t.test("pages mounted after a slow recovery read are watched, so a restored tab renders where it was left", async () => {
+      normalLoad();
+      const recovery = deferred<null>();
+      const realGet = unsavedJournal.get;
+      unsavedJournal.get = (() => recovery.promise) as typeof unsavedJournal.get;
+      try {
+        // The document and layouts commit first; the pages wait for the journal.
+        await mount({ scrollTop: 3000 });
+        assert.equal(host.querySelectorAll("[data-pdf-page-number]").length, 0);
+        await act(async () => recovery.resolve(null));
+      } finally {
+        unsavedJournal.get = realGet;
+      }
+      const sheets = [...host.querySelectorAll("[data-pdf-page-number]")];
+      assert.equal(sheets.length, 5);
+      const observer = observers.at(-1)!;
+      assert.deepEqual(sheets.filter((sheet) => !observer.observed.has(sheet)).map((sheet) => sheet.getAttribute("data-pdf-page-number")), []);
+      await act(async () => observer.show(4));
+      assert.ok(host.querySelector('[data-pdf-page-number="4"] canvas'), "The page scrolled to should render");
+      await unmount();
     });
     await t.test("LaTeX preview restores scroll and flushes switches before its debounce", async () => {
       normalLoad();
