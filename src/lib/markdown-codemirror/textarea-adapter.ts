@@ -1,4 +1,5 @@
 import type { EditorView } from "@codemirror/view";
+import { codeMirrorTopAnchor, type ReflowScrollAnchor } from "@/lib/reflow-scroll-anchor";
 
 /* The workspace drives the Markdown Source editor through a textarea ref:
  * toolbar insertions, the outline, slides, snipping, Global Search reveals,
@@ -69,6 +70,7 @@ export class CodeMirrorTextareaAdapter {
   private fallbackValue: string;
   private pendingSelection: SourceOffsetRange | null = null;
   private pendingScroll: { left?: number; top?: number } = {};
+  private pendingScrollAnchor: ReflowScrollAnchor | null = null;
   private listeners: ListenerEntry[] = [];
   private valueCache: { doc: unknown; text: string } | null = null;
   /** Lets `instanceof`-free callers and debuggers tell the adapter apart. */
@@ -100,6 +102,9 @@ export class CodeMirrorTextareaAdapter {
     this.pendingScroll = {};
     if (scroll.top !== undefined) view.scrollDOM.scrollTop = scroll.top;
     if (scroll.left !== undefined) view.scrollDOM.scrollLeft = scroll.left;
+    const anchor = this.pendingScrollAnchor;
+    this.pendingScrollAnchor = null;
+    if (anchor) this.scrollToAnchor(view, driver, anchor);
   }
 
   /** Keeps the last text and selection readable after the view is destroyed,
@@ -230,6 +235,28 @@ export class CodeMirrorTextareaAdapter {
   }
 
   // Scrolling and geometry ----------------------------------------------------
+
+  /** The text at the top edge. Heights are estimates in a new view, so this,
+   * not `scrollTop`, is what keeps the reader's place across a remount. */
+  readScrollAnchor(): ReflowScrollAnchor | null {
+    if (!this.view) return this.pendingScrollAnchor;
+    return this.view.scrollDOM.clientHeight ? codeMirrorTopAnchor(this.view) : null;
+  }
+
+  restoreScrollAnchor(anchor: ReflowScrollAnchor) {
+    if (!this.view || !this.driver) {
+      this.pendingScrollAnchor = anchor;
+      return;
+    }
+    this.scrollToAnchor(this.view, this.driver, anchor);
+    // Reading layout runs the pending measure, so the text lands in this frame
+    // rather than after a frame at the top of the document.
+    this.view.coordsAtPos(0);
+  }
+
+  private scrollToAnchor(view: EditorView, driver: CodeMirrorAdapterDriver, anchor: ReflowScrollAnchor) {
+    driver.scrollIntoView(Math.min(anchor.pos, view.state.doc.length), "start", anchor.offset);
+  }
 
   get scrollTop() {
     return this.view?.scrollDOM.scrollTop ?? this.pendingScroll.top ?? 0;

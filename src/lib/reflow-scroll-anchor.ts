@@ -7,6 +7,21 @@ import { applyVisualScrollAnchor, captureVisualScrollAnchor } from "./tiptap-scr
  * the reader scrolls and means nothing once the layout settles again. */
 export type ReflowScrollAnchor = { pos: number; offset: number };
 
+/**
+ * A tab's scroll position in a text editor. Pixels only mean the same text at
+ * the same width and with every line measured, so the text at the top edge is
+ * what gets restored. Pixels remain for horizontal scroll, for tabs saved before
+ * the text position existed, and for when there is no layout.
+ */
+export type EditorScrollState = {
+  editorScrollLeft?: number;
+  /** How far the line at the top edge sits from that edge, in pixels. */
+  editorScrollOffset?: number;
+  /** The text position at the top edge of the editor. */
+  editorScrollPos?: number;
+  editorScrollTop?: number;
+};
+
 export type ReflowScrollAnchorAdapter<Anchor> = {
   /** The position to hold: the caret line when it is on screen, otherwise the
    * text at the top of the viewport. Null without layout. */
@@ -158,6 +173,22 @@ export function proseMirrorReflowAdapter(
   };
 }
 
+/** The text at the top edge of a CodeMirror scroller and how far its line sits
+ * from that edge. Null when that text is not rendered: inside a line gap, or
+ * after a measure gave up ("Viewport failed to stabilize"), when CodeMirror's
+ * position lookups throw. This runs during tab switches, which must not fail. */
+export function codeMirrorTopAnchor(view: CodeMirrorView): ReflowScrollAnchor | null {
+  try {
+    const band = viewportBand(view.scrollDOM);
+    const left = Math.max(band.left + 1, view.contentDOM.getBoundingClientRect().left + 1);
+    const pos = view.posAtCoords({ x: left, y: band.top + 1 }, false);
+    const coords = view.coordsAtPos(pos);
+    return coords ? { pos, offset: coords.top - band.top } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** CodeMirror editors (source, LaTeX, code). Applied in CodeMirror's measure
  * cycle, after its own height bookkeeping for the new line wrapping. */
 export function codeMirrorReflowAdapter(view: CodeMirrorView, paused?: () => boolean): ReflowScrollAnchorAdapter<ReflowScrollAnchor> {
@@ -169,10 +200,7 @@ export function codeMirrorReflowAdapter(view: CodeMirrorView, paused?: () => boo
       const head = view.state.selection.main.head;
       const caret = view.coordsAtPos(head);
       if (caret && view.hasFocus && isOnScreen(band, caret)) return { pos: head, offset: caret.top - band.top };
-      const left = Math.max(band.left + 1, view.contentDOM.getBoundingClientRect().left + 1);
-      const pos = view.posAtCoords({ x: left, y: band.top + 1 }, false);
-      const coords = view.coordsAtPos(pos);
-      return coords ? { pos, offset: coords.top - band.top } : null;
+      return codeMirrorTopAnchor(view);
     },
     apply(anchor) {
       view.requestMeasure({
@@ -244,6 +272,24 @@ export function textareaReflowAdapter(
       highlight.scrollTop = textarea.scrollTop;
     },
   };
+}
+
+/** The text a textarea editor shows at its top edge, as an offset that any
+ * source editor can place. */
+export function readTextareaScrollAnchor(textarea: HTMLTextAreaElement, layer: () => HTMLElement | null): ReflowScrollAnchor | null {
+  const anchor = textareaReflowAdapter(textarea, layer).capture();
+  if (!anchor) return null;
+  let start = 0;
+  for (let line = 0; line < anchor.line; line++) start = textarea.value.indexOf("\n", start) + 1;
+  return { pos: start + anchor.column, offset: anchor.offset };
+}
+
+/** False while the highlight layer has no such line. */
+export function applyTextareaScrollAnchor(textarea: HTMLTextAreaElement, layer: () => HTMLElement | null, anchor: ReflowScrollAnchor) {
+  const { line, column } = textareaLineColumn(textarea.value, Math.min(anchor.pos, textarea.value.length));
+  if (!layer()?.children[line]) return false;
+  textareaReflowAdapter(textarea, layer).apply({ line, column, offset: anchor.offset });
+  return true;
 }
 
 function textareaLineColumn(text: string, offset: number) {

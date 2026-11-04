@@ -81,6 +81,7 @@ import {
 import { referenceKeyResolver, useReferenceRender } from "@/components/libera/references/reference-render-context";
 import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "@/components/libera/references/pdf-quote-cite";
 import { quoteBlockInsertion, type PdfQuoteSource } from "@/lib/references/pdf-quote";
+import { registerTextareaHighlightLayer } from "@/lib/markdown-source-scroll";
 import { keepScrollOnReflow, textareaReflowAdapter } from "@/lib/reflow-scroll-anchor";
 
 type MarkdownEditorProps = Omit<MarkdownSourceEditorProps, "extensions" | "documentSource" | "onViewChange">;
@@ -342,7 +343,10 @@ export function MarkdownEditor({
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    return keepScrollOnReflow(textarea, textareaReflowAdapter(textarea, () => highlightLayerRef.current));
+    const layer = () => highlightLayerRef.current;
+    const unregisterLayer = registerTextareaHighlightLayer(textarea, layer);
+    const releaseReflow = keepScrollOnReflow(textarea, textareaReflowAdapter(textarea, layer));
+    return () => { releaseReflow(); unregisterLayer(); };
   }, [textareaRef]);
 
   const { readDraft, schedulePublish, lastPublishedRef, publishedDraftsRef, draftTimerRef } = useMarkdownSourceDraft(value, {

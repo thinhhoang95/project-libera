@@ -1,4 +1,5 @@
 import type { FormEvent, RefObject } from "react";
+import type { EditorScrollState } from "@/lib/reflow-scroll-anchor";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type { CitationSnippet } from "@/lib/references/occurrences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -37,10 +38,8 @@ export type OpenTab = {
   viewState?: OpenTabViewState;
 };
 
-export type MarkdownTabViewState = {
+export type MarkdownTabViewState = EditorScrollState & {
   editorMode?: MarkdownEditorMode;
-  editorScrollLeft?: number;
-  editorScrollTop?: number;
   line?: number;
   /** The highlighted passage in either editor, as source offsets, for "link to selection". */
   linkSelection?: { end: number; start: number };
@@ -90,17 +89,19 @@ export type PdfTabViewState = {
   reveal?: { page: number; text?: string; top?: number; nonce: number };
 };
 
-export type LatexTabViewState = {
+export type LatexTabViewState = EditorScrollState & {
   autoCompile?: boolean;
   /** "current" typesets the open file itself instead of its main file. */
   compileTarget?: "main" | "current";
   /** "auto" honors `% !TEX program` and the packages in the preamble. */
   engine?: "auto" | "pdflatex" | "xelatex" | "lualatex";
-  editorScrollTop?: number;
-  editorScrollLeft?: number;
   line?: number;
   logOpen?: boolean;
   pdfScrollLeft?: number;
+  /** The page at the top of the preview, counted from zero. */
+  pdfScrollPage?: number;
+  /** How far down that page the top edge is, as a fraction of its height. */
+  pdfScrollPageOffset?: number;
   pdfScrollTop?: number;
   /** A number, or "width" to fit the page width to the pane. */
   pdfZoom?: number | "width";
@@ -125,9 +126,7 @@ export type ImageTabViewState = {
   zoom?: number;
 };
 
-export type TextTabViewState = {
-  editorScrollTop?: number;
-  editorScrollLeft?: number;
+export type TextTabViewState = EditorScrollState & {
   line?: number;
   selectionEnd?: number;
   selectionStart?: number;

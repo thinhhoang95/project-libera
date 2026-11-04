@@ -64,6 +64,7 @@ import { useSavedWorkspaces } from "./use-saved-workspaces";
 import { createDeferredSave, flushPendingState, registerStateFlusher } from "./deferred-save";
 import { useCanvasLayout } from "./use-canvas-layout";
 import { captureCanvasViewState } from "./canvas-view-state";
+import { mergeSourceScrollState } from "@/lib/markdown-source-scroll";
 import { useGallery } from "./gallery-store";
 import { createGalleryTab, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
 import { createRecordingTab, isRecordingTab, recordingTabId } from "./recording/recording-tabs";
@@ -252,7 +253,7 @@ function mergeOpenTabViewState(
       ? { ...currentViewState?.latex, ...patchViewState.latex }
       : currentViewState?.latex,
     markdown: patchViewState.markdown
-      ? { ...currentViewState?.markdown, ...patchViewState.markdown }
+      ? mergeSourceScrollState(currentViewState?.markdown, patchViewState.markdown)
       : currentViewState?.markdown,
     pdf: patchViewState.pdf
       ? { ...currentViewState?.pdf, ...patchViewState.pdf }
