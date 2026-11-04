@@ -413,7 +413,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     method: "PATCH", body, keepalive: !window.liberaPersistence,
   }), (error) => setWorkspaceError(error instanceof Error ? error.message : "Could not save notebook panel expansion state.")), []);
   useEffect(() => {
-    const unregister = registerStateFlusher(() => Promise.all([notebookSelectionWriter.flush(), expansionWriter.flush()]));
+    // The session restores the selection; this fallback must not hold up closing.
+    const unregister = registerStateFlusher(() => Promise.all([notebookSelectionWriter.flush().catch(() => undefined), expansionWriter.flush()]));
     return () => {
       unregister();
       void Promise.all([notebookSelectionWriter.flush(), expansionWriter.flush()]).catch(() => undefined);
@@ -625,7 +626,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   useEffect(() => {
     if (!authenticated || !selectedNotebookName) return;
     // Covers notebook homes, file opens, tab switches, and notebook renames.
-    notebookSelectionWriter.schedule({ notebook: selectedNotebookName }, 5000);
+    // The maximum wait matches, so later selections join this write.
+    notebookSelectionWriter.schedule({ notebook: selectedNotebookName }, 60_000, 60_000);
   }, [authenticated, selectedNotebookName, notebookSelectionWriter]);
 
   type DirectoryActionResult = { changed?: boolean; filePath?: string; name?: string };

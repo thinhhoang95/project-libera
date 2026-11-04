@@ -20,6 +20,9 @@ import { readSidebarSortToken } from "./sidebar-sort-preference";
 import { readNotebookFileSort, readNotebookFileView } from "./notebook-home-preferences";
 import { registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 
+/** Tab and layout changes reach the synced workspace file at most this often; closing saves sooner. */
+const STRUCTURE_SAVE_DELAY_MS = 60_000;
+
 type Options = {
   authenticated: boolean;
   tree: LiberaTree;
@@ -46,6 +49,7 @@ export function useSavedWorkspaces(options: Options) {
   const lastSaved = useRef("");
   const lastJournal = useRef("");
   const lastStructure = useRef<string | null>(null);
+  const structureSaveTimer = useRef<number | undefined>(undefined);
   const pendingSnapshot = useRef<WorkspaceLibrary | null>(null);
   const epoch = useRef(0);
   const fileChanges = useRef(new Set<Promise<unknown>>());
@@ -86,16 +90,25 @@ export function useSavedWorkspaces(options: Options) {
     try { window.localStorage.setItem(journalKey, JSON.stringify(next)); lastJournal.current = token; }
     catch { current.current.onError("Local recovery storage is full. Keep Libera open until your workspace is saved."); }
   }
+  function cancelStructureSave() {
+    window.clearTimeout(structureSaveTimer.current);
+    structureSaveTimer.current = undefined;
+  }
   function persist(next: WorkspaceLibrary) {
+    // Every save carries the whole session, including any change still waiting.
+    cancelStructureSave();
+    const structure = workspaceStructureToken(current.current.session);
     pendingSnapshot.current = next;
     journal(next);
     const body = JSON.stringify(next);
     const url = workspacesUrl;
     const token = `${url}:${JSON.stringify({ ...next, updatedAt: 0 })}`;
     const task = queue.current.catch(() => undefined).then(async () => {
-      if (token === lastSaved.current) return;
-      await apiRequest(url, { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
-      lastSaved.current = token;
+      if (token !== lastSaved.current) {
+        await apiRequest(url, { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
+        lastSaved.current = token;
+      }
+      lastStructure.current = structure;
     });
     queue.current = task;
     return task;
@@ -198,14 +211,17 @@ export function useSavedWorkspaces(options: Options) {
       if (!next) return;
       try { journal(next, true); }
       catch (error) { current.current.onError(error instanceof Error ? error.message : "Could not save workspace."); throw error; }
-      // Electron's recovery file is sufficient even after the server stops.
       if (!window.liberaWorkspaces) return persist(next);
+      // Electron's recovery file is sufficient even after the server stops, so
+      // a waiting save may fail here. Without one, leave the synced file alone.
+      if (structureSaveTimer.current !== undefined) return persist(next).catch(() => undefined);
       return queue.current.catch(() => undefined);
     }
     const unregister = registerStateFlusher(onLeave, true);
     return () => {
       window.clearInterval(interval);
       unregister();
+      cancelStructureSave();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, options.authenticated, journalKey]);
@@ -214,17 +230,18 @@ export function useSavedWorkspaces(options: Options) {
   useEffect(() => {
     if (!ready || !options.authenticated) return;
     if (lastStructure.current === null) { lastStructure.current = structure; return; }
-    if (lastStructure.current === structure) return;
-    const timer = window.setTimeout(() => {
+    if (lastStructure.current === structure || structureSaveTimer.current !== undefined) return;
+    structureSaveTimer.current = window.setTimeout(() => {
+      structureSaveTimer.current = undefined;
       if (locked.current || !readyRef.current) return;
       const next = snapshot();
       libraryRef.current = next;
-      void persist(next).then(() => { lastStructure.current = structure; }).catch((error: Error) => {
+      void persist(next).catch((error: Error) => {
         current.current.onError(`Could not save workspace: ${error.message}`);
       });
-    }, 1000);
-    return () => window.clearTimeout(timer);
-    // Scroll updates do not reschedule this timer; capture the latest state when it fires.
+    }, STRUCTURE_SAVE_DELAY_MS);
+    // Later changes join this wait rather than restart it, so steady tab
+    // switching cannot postpone the save; it captures the latest state when it fires.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, options.authenticated, structure, journalKey]);
 

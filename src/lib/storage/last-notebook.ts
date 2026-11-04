@@ -1,7 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { getAdminRoot, getLinkedFolder, notebookPath } from "./paths";
-import { StorageError } from "./errors";
 import { writeJsonState } from "./json-state";
 
 function preferencePath() {
@@ -39,9 +38,10 @@ export async function writeLastNotebookName(notebook: string) {
   const target = preferencePath();
   const root = notebookPath(notebook);
   await withPreference(target, async () => {
-    // Validate at commit time, after earlier saves and lifecycle updates.
-    if (!(await stat(root)).isDirectory()) throw new StorageError("Notebook not found.", 404);
-    await writeJsonState(target, { notebook });
+    // Validate at commit time, after earlier saves and lifecycle updates. This
+    // write trails the selection, so the notebook may have gone by now.
+    const exists = await stat(root).then((item) => item.isDirectory(), () => false);
+    if (exists) await writeJsonState(target, { notebook });
   });
 }
 

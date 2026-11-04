@@ -58,7 +58,7 @@ test("renaming and deleting the remembered notebook updates the stored preferenc
   await writeLastNotebookName("Alpha");
   await renameNotebook("Alpha", "Renamed");
   assert.equal(await readLastNotebookName(), "Renamed");
-  await assert.rejects(writeLastNotebookName("Alpha"));
+  await writeLastNotebookName("Alpha");
   assert.equal(await readLastNotebookName(), "Renamed", "a stale window cannot save the old notebook name again");
   assert.equal((await getTree()).lastNotebookName, "Renamed");
   await deleteNotebook("Renamed");

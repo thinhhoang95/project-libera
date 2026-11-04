@@ -44,7 +44,9 @@ test("scrolling, selecting, typing and hiding do not write workspace files; majo
     await act(async () => root.render(createElement(Harness)));
     const tab = { id: "tab", file: { name: "a.md", path: "Notes/a.md", notebook: "Notes", fileType: "markdown" }, draft: "draft", saved: "saved", status: "dirty" } as OpenTab;
     await act(async () => setSession({ ...emptyWorkspaceSession(), tabs: [tab], activeTabId: tab.id }));
-    await act(async () => context.mock.timers.tick(1000));
+    await act(async () => context.mock.timers.tick(59_999));
+    assert.equal(writes.length, 0, "tab changes wait a minute before writing");
+    await act(async () => context.mock.timers.tick(1));
     assert.equal(writes.length, 1, "opening a tab saves its session");
     for (let i = 0; i < 60; i++) {
       await act(async () => setSession((value) => ({ ...value, tabs: [{ ...value.tabs[0], draft: `typing ${i}`, viewState: { markdown: { editorScrollTop: i, selectionStart: i } } }], expandedPaths: [String(i)] })));
@@ -63,6 +65,67 @@ test("scrolling, selecting, typing and hiding do not write workspace files; majo
     assert.equal(recovery.librarySession?.tabs[0].viewState?.markdown?.selectionStart, 7);
     assert.deepEqual(recovery.librarySession?.expandedPaths, ["59"]);
     assert.equal(writes.length, 1);
+  } finally {
+    context.mock.timers.reset();
+    await act(async () => root.unmount());
+    globalThis.fetch = originalFetch;
+    dom.window.close();
+  }
+});
+
+test("tab changes share one write a minute, and closing writes a waiting save at once", async (context) => {
+  const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
+  for (const key of ["window", "document", "navigator", "HTMLElement"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const originalFetch = globalThis.fetch;
+  const writes: WorkspaceLibrary[] = [];
+  let failWrites = false;
+  let nativeFlush!: () => Promise<void>;
+  window.liberaWorkspaces = { checkpoint: () => ({ saved: true }) };
+  window.liberaPersistence = { onFlush: (flush) => { nativeFlush = flush; return () => {}; } };
+  globalThis.fetch = async (_url, init) => {
+    if (init?.method !== "PUT") return Response.json(emptyWorkspaceLibrary());
+    if (failWrites) return Response.json({ error: "Server stopped" }, { status: 500 });
+    writes.push(JSON.parse(String(init.body)));
+    return Response.json({ saved: true });
+  };
+  const tabs = ["a", "b", "c"].map((id) => ({ id, file: { name: `${id}.md`, path: `Notes/${id}.md`, notebook: "Notes", fileType: "markdown" }, draft: "", saved: "", status: "clean" }) as OpenTab);
+  // A canvas pane names the tab it shows, which is how a tab switch reaches the structure token.
+  const showing = (tab: OpenTab) => ({ ...emptyWorkspaceSession(), tabs, activeTabId: tab.id, canvasLayout: { root: { type: "pane", id: "pane", tabId: tab.id }, focusedPaneId: "pane" } }) as WorkspaceSession;
+  let setSession!: React.Dispatch<React.SetStateAction<WorkspaceSession>>;
+  function Harness() {
+    const [session, update] = useState(emptyWorkspaceSession);
+    setSession = update;
+    useSavedWorkspaces({ authenticated: true, tree: { ...emptyTree(), root: "/test-library" }, refreshTree: async () => emptyTree(), session,
+      readDraft: (tab) => tab.draft, applySession: update, onError: (error) => { throw new Error(error); } });
+    return null;
+  }
+  const root = createRoot(document.getElementById("root")!);
+  try {
+    context.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    await act(async () => root.render(createElement(Harness)));
+    // Switching every 10 seconds must neither write each time nor postpone the save forever.
+    for (let i = 0; i < 6; i++) {
+      await act(async () => setSession(showing(tabs[i % 3])));
+      await act(async () => context.mock.timers.tick(10_000));
+    }
+    assert.equal(writes.length, 1, "six switches in a minute write once");
+    assert.equal(writes[0].librarySession?.activeTabId, "c", "the write captures the latest tab");
+
+    await act(async () => setSession(showing(tabs[0])));
+    await act(async () => context.mock.timers.tick(5_000));
+    await act(nativeFlush);
+    assert.equal(writes.length, 2, "closing writes the waiting save");
+    assert.equal(writes[1].librarySession?.activeTabId, "a");
+    await act(async () => context.mock.timers.tick(120_000));
+    assert.equal(writes.length, 2, "the cancelled timer does not write again");
+
+    await act(nativeFlush);
+    assert.equal(writes.length, 2, "closing with nothing waiting leaves the synced file alone");
+
+    failWrites = true;
+    await act(async () => setSession(showing(tabs[1])));
+    await act(nativeFlush); // Rejecting would keep the app open; the recovery file already holds this state.
   } finally {
     context.mock.timers.reset();
     await act(async () => root.unmount());

@@ -66,6 +66,56 @@ test("startup restores the last notebook and tracks home selections and tab acti
   }
 });
 
+test("notebook selection waits a minute, shares one write, and cannot block closing", async (context) => {
+  const dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { url: "http://localhost", pretendToBeVisual: true });
+  for (const key of ["window", "document", "navigator", "HTMLElement"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const previousFetch = globalThis.fetch;
+  const writes: string[] = [];
+  let failWrites = false;
+  globalThis.fetch = async (url, init) => {
+    if (url === "/api/preferences/last-notebook") {
+      if (failWrites) return Response.json({ error: "Session expired" }, { status: 401 });
+      writes.push(JSON.parse(String(init?.body)).notebook);
+      return Response.json({ saved: true });
+    }
+    return Response.json({ ...emptyTree(), lastNotebookName: "Alpha", notebooks: [notebook("Alpha"), notebook("Beta"), notebook("Gamma")] });
+  };
+  let workspace: ReturnType<typeof useLiberaWorkspace>["workspace"];
+  function Harness() { workspace = useLiberaWorkspace(true).workspace; return null; }
+  const root = createRoot(document.getElementById("root")!);
+  try {
+    await act(async () => { root.render(createElement(Harness)); });
+    await act(flushPendingState);
+    writes.length = 0;
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    // Switching every 10 seconds neither writes each time nor postpones the write forever.
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { workspace.selectNotebook(["Beta", "Gamma"][i % 2]); });
+      if (i < 5) await act(async () => context.mock.timers.tick(10_000));
+    }
+    assert.deepEqual(writes, [], "nothing is written during the wait");
+    await act(async () => context.mock.timers.tick(10_000));
+    assert.deepEqual(writes, ["Gamma"], "six selections in a minute write the latest once");
+
+    await act(async () => { workspace.selectNotebook("Beta"); });
+    await act(async () => context.mock.timers.tick(5_000));
+    await act(flushPendingState);
+    assert.deepEqual(writes, ["Gamma", "Beta"], "closing writes the waiting selection");
+    await act(async () => context.mock.timers.tick(120_000));
+    assert.equal(writes.length, 2, "the flushed selection does not write again");
+
+    failWrites = true;
+    await act(async () => { workspace.selectNotebook("Alpha"); });
+    await act(flushPendingState); // Rejecting would keep the app open.
+  } finally {
+    context.mock.timers.reset();
+    await act(async () => { root.unmount(); });
+    globalThis.fetch = previousFetch;
+    dom.window.close();
+  }
+});
+
 test("last notebook is stored with workspace data and returned on a fresh tree read", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-last-notebook-"));
   const previous = process.env.LIBERA_DATA_DIR;
@@ -79,6 +129,8 @@ test("last notebook is stored with workspace data and returned on a fresh tree r
     assert.equal(tree.lastNotebookName, "Beta");
     assert.deepEqual(tree.notebooks.map((item) => item.name), ["Beta"]);
     await assert.rejects(writeLastNotebookName("../outside"));
+    await writeLastNotebookName("Deleted while the write waited");
+    assert.equal(await readLastNotebookName(), "Beta", "a notebook that has gone is not remembered");
   } finally {
     if (previous === undefined) delete process.env.LIBERA_DATA_DIR;
     else process.env.LIBERA_DATA_DIR = previous;
