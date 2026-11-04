@@ -87,6 +87,10 @@ function stagedDraft(other: OpenTab): string | null {
 export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab }: LatexWorkspaceProps) {
   const filePath = tab.file.path;
   const viewState = tab.viewState?.latex;
+  // Read once: the preview restores from this when it first has a layout.
+  const [initialPdfScrollAnchor] = useState(() => viewState?.pdfScrollPage === undefined
+    ? undefined
+    : { page: viewState.pdfScrollPage, offset: viewState.pdfScrollPageOffset ?? 0 });
   const isTex = isCompilableLatexPath(filePath);
   const editorRef = useRef<LatexEditorHandle | null>(null);
   const [draftForAnalysis, setDraftForAnalysis] = useState(() => (collab ? getSharedDocRegistry().readTabText(tab.id) : null) ?? tab.draft);
@@ -628,6 +632,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               zoom={(viewState?.pdfZoom ?? "width") as PdfZoom}
               initialScrollTop={viewState?.pdfScrollTop}
               initialScrollLeft={viewState?.pdfScrollLeft}
+              initialScrollAnchor={initialPdfScrollAnchor}
               highlight={highlight}
               busy={build.compiling}
               downloadUrl={build.buildId ? latexPdfUrl(rootPath, build.buildId, true) : null}
@@ -637,7 +642,9 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
                   : <span className="max-w-sm">This file has no <code>\documentclass</code>, and no main file includes it. Add <code>% !TEX root = main.tex</code> as its first line to typeset it with its main file.</span>
               ) : build.compiling ? <span className="inline-flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />Compiling your document…</span> : result?.status === "failure" ? "The document did not compile. Open the log to see why." : "Press Recompile to typeset the document."}
               onZoomChange={(zoom) => onSetViewState({ pdfZoom: zoom })}
-              onScrollChange={(scrollTop, scrollLeft) => onSetViewState({ pdfScrollTop: scrollTop, pdfScrollLeft: scrollLeft })}
+              onScrollChange={(scrollTop, scrollLeft, anchor) => onSetViewState({
+                pdfScrollTop: scrollTop, pdfScrollLeft: scrollLeft, pdfScrollPage: anchor?.page, pdfScrollPageOffset: anchor?.offset,
+              })}
               onInverseSync={(location) => void inverseSync(location)}
             />
             {logPanel}

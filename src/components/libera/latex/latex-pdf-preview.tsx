@@ -1,5 +1,6 @@
 "use client";
 
+import { pdfAnchorScrollTop, pdfPageAnchorAt, type PdfPageAnchor } from "@/lib/latex/pdf-scroll-anchor";
 import { GlobalWorkerOptions, TextLayer, getDocument } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/display/api";
 import { Download, Loader2, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
@@ -42,16 +43,18 @@ type LatexPdfPreviewProps = {
   zoom: PdfZoom;
   initialScrollTop?: number;
   initialScrollLeft?: number;
+  /** Where the preview was, in pages; restored in preference to the pixels. */
+  initialScrollAnchor?: PdfPageAnchor;
   highlight: PdfHighlightRequest | null;
   busy: boolean;
   downloadUrl: string | null;
   emptyState: ReactNode;
   onZoomChange: (zoom: PdfZoom) => void;
-  onScrollChange: (scrollTop: number, scrollLeft: number) => void;
+  onScrollChange: (scrollTop: number, scrollLeft: number, anchor: PdfPageAnchor | null) => void;
   onInverseSync: (location: { page: number; x: number; y: number; hint?: SynctexTextHint }) => void;
 };
 
-export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft, highlight, busy, downloadUrl, emptyState, onZoomChange, onScrollChange, onInverseSync }: LatexPdfPreviewProps) {
+export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft, initialScrollAnchor, highlight, busy, downloadUrl, emptyState, onZoomChange, onScrollChange, onInverseSync }: LatexPdfPreviewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [loaded, setLoaded] = useState<{ url: string; pdf: PDFDocumentProxy; sizes: PageSize[]; textCache: PdfTextContentCache } | null>(null);
   const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
@@ -64,9 +67,11 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
   const [currentPage, setCurrentPage] = useState(1);
   const [flash, setFlash] = useState<{ page: number; rects: SynctexPdfLocation[]; nonce: number } | null>(null);
   const restoredScrollRef = useRef(false);
+  // Kept as the reader scrolls, so a change of scale knows what they were reading.
+  const scrollAnchorRef = useRef<PdfPageAnchor | null>(null);
   const pageElementsRef = useRef(new Map<number, HTMLDivElement>());
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingScrollRef = useRef<{ top: number; left: number } | null>(null);
+  const pendingScrollRef = useRef<{ top: number; left: number; anchor: PdfPageAnchor | null } | null>(null);
   const onScrollChangeRef = useRef(onScrollChange);
   useLayoutEffect(() => { onScrollChangeRef.current = onScrollChange; }, [onScrollChange]);
 
@@ -137,16 +142,25 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
     }
     return tops;
   }, [scale, sizes]);
+  const pageHeights = useMemo(() => sizes.map((size) => size.height * scale), [scale, sizes]);
 
   // Restore the saved scroll position once, when the first PDF has a layout.
   useLayoutEffect(() => {
     if (restoredScrollRef.current || !sizes.length || !containerWidth) return;
     const element = scrollRef.current;
     if (!element) return;
-    element.scrollTop = initialScrollTop ?? 0;
+    element.scrollTop = initialScrollAnchor ? pdfAnchorScrollTop(initialScrollAnchor, offsets, pageHeights) : initialScrollTop ?? 0;
     element.scrollLeft = initialScrollLeft ?? 0;
+    scrollAnchorRef.current = initialScrollAnchor ?? pdfPageAnchorAt(element.scrollTop, offsets, pageHeights);
     restoredScrollRef.current = true;
-  }, [containerWidth, initialScrollLeft, initialScrollTop, sizes.length]);
+  }, [containerWidth, initialScrollAnchor, initialScrollLeft, initialScrollTop, offsets, pageHeights, sizes.length]);
+
+  // Zooming, a pane changing width while fitting the page, or a new build with
+  // other pages: stay on the same spot of the same page.
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (element && scrollAnchorRef.current) element.scrollTop = pdfAnchorScrollTop(scrollAnchorRef.current, offsets, pageHeights);
+  }, [offsets, pageHeights]);
 
   // Track which pages are near the viewport; only those keep a canvas.
   useEffect(() => {
@@ -203,19 +217,19 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
     const pending = pendingScrollRef.current;
     if (!pending) return;
     pendingScrollRef.current = null;
-    onScrollChangeRef.current(pending.top, pending.left);
+    onScrollChangeRef.current(pending.top, pending.left, pending.anchor);
   }, []);
 
   useCanvasViewStateCapture(() => {
     const element = scrollRef.current;
-    if (element && restoredScrollRef.current) onScrollChangeRef.current(element.scrollTop, element.scrollLeft);
+    if (element && restoredScrollRef.current) onScrollChangeRef.current(element.scrollTop, element.scrollLeft, scrollAnchorRef.current);
   });
 
   // Switching tabs unmounts the preview; save the last position before it goes.
   useLayoutEffect(() => () => {
     const element = scrollRef.current;
     if (element && restoredScrollRef.current) {
-      pendingScrollRef.current = { top: element.scrollTop, left: element.scrollLeft };
+      pendingScrollRef.current = { top: element.scrollTop, left: element.scrollLeft, anchor: scrollAnchorRef.current };
     }
     flushScroll();
   }, [flushScroll]);
@@ -225,20 +239,14 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
     updateCurrentPage();
     const element = scrollRef.current;
     if (!element) return;
-    pendingScrollRef.current = { top: element.scrollTop, left: element.scrollLeft };
+    scrollAnchorRef.current = pdfPageAnchorAt(element.scrollTop, offsets, pageHeights);
+    pendingScrollRef.current = { top: element.scrollTop, left: element.scrollLeft, anchor: scrollAnchorRef.current };
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(flushScroll, 200);
   }
 
   function zoomBy(factor: number) {
-    const element = scrollRef.current;
-    const next = clampScale(Math.round(scale * factor * 20) / 20);
-    if (element) {
-      // Keep the point at the top of the viewport in place.
-      const ratio = next / scale;
-      requestAnimationFrame(() => { element.scrollTop *= ratio; });
-    }
-    onZoomChange(next);
+    onZoomChange(clampScale(Math.round(scale * factor * 20) / 20));
   }
 
   function handleWheel(event: React.WheelEvent<HTMLDivElement>) {

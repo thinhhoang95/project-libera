@@ -50,6 +50,7 @@ import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
 import { MarkdownSourceEditor } from "@/components/libera/markdown-source/markdown-source-editor";
+import { readSourceScrollAnchor, restoreSourceScrollAnchor } from "@/lib/markdown-source-scroll";
 import type { RegisterEditorDraft } from "./use-tiptap-draft";
 import { TiptapMarkdownEditor } from "@/components/libera/tiptap-markdown-editor";
 import { sharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
@@ -933,10 +934,12 @@ function WorkspacePanelContent({
     if (markdownEditorMode !== "source" || !sourceRestoredRef.current) return;
     const textarea = textareaRef.current;
     const preview = markdownPreviewRef.current;
+    const anchor = textarea?.isConnected ? readSourceScrollAnchor(textarea) : null;
     updateMarkdownViewState({
       ...pendingMarkdownViewportRef.current,
       ...(textarea?.isConnected ? {
         editorScrollLeft: textarea.scrollLeft, editorScrollTop: textarea.scrollTop,
+        editorScrollOffset: anchor?.offset, editorScrollPos: anchor?.pos,
         selectionStart: textarea.selectionStart, selectionEnd: textarea.selectionEnd,
         linkSelection: textarea.selectionEnd > textarea.selectionStart
           ? { start: textarea.selectionStart, end: textarea.selectionEnd }
@@ -1340,7 +1343,10 @@ function WorkspacePanelContent({
       if (textarea && !previewFullscreen && !markdownSlidesPresenting) {
         markProgrammaticEditorScroll();
         textarea.scrollLeft = viewState?.editorScrollLeft ?? 0;
-        textarea.scrollTop = viewState?.editorScrollTop ?? 0;
+        const anchor = viewState?.editorScrollPos === undefined
+          ? null
+          : { pos: viewState.editorScrollPos, offset: viewState.editorScrollOffset ?? 0 };
+        if (!anchor || !restoreSourceScrollAnchor(textarea, anchor)) textarea.scrollTop = viewState?.editorScrollTop ?? 0;
 
         const selectionStart = viewState?.selectionStart;
         const selectionEnd = viewState?.selectionEnd;

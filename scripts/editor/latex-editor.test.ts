@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { act, createElement, StrictMode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import { snippet } from "@codemirror/autocomplete";
@@ -154,6 +155,39 @@ test("AI output loses a wrapping LaTeX code fence", () => {
 });
 
 /* ---- Editor behavior -------------------------------------------------------------- */
+
+test("a view capture during a tab's restore keeps the position saved for it", async () => {
+  Object.defineProperty(globalThis, "Window", { value: dom.window.Window, configurable: true });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(dom.window.Range.prototype, {
+    getClientRects: () => [], getBoundingClientRect: () => new dom.window.DOMRect(),
+  });
+  const { LatexEditor } = await import("../../src/components/libera/latex/latex-editor");
+  const { captureCanvasViewState } = await import("../../src/components/libera/canvas-view-state");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const editorRef = { current: null as LatexEditorHandle | null };
+  const patches: LatexTabViewState[] = [];
+  try {
+    await act(async () => {
+      flushSync(() => root.render(createElement(LatexEditor, {
+        documentPath: "Thesis/main.tex", fileName: "main.tex", value: "A line of LaTeX source.\n".repeat(300),
+        fontFamily: "monospace", fontSizePx: 14, lineHeight: 1.6,
+        initialViewState: { editorScrollTop: 2400.5 }, diagnostics: [], project: { labels: [], bibEntries: [], files: [] }, editorRef,
+        onChange: () => {}, onEdit: () => {}, onCompile: () => {}, onForwardSync: () => {},
+        onAiError: () => {}, onAddSnippet: () => {},
+        onViewStateChange: (patch) => { patches.push(patch); },
+      })));
+      // Another pane taking focus, or a tab switch, before the restore's first frame.
+      captureCanvasViewState();
+      assert.deepEqual(patches, [], "The view is still at the top; reporting that would lose the tab's place");
+    });
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
 
 test("a restored LaTeX tab refreshes its viewport and reveals citations in the current draft", async (context) => {
   Object.defineProperty(globalThis, "Window", { value: dom.window.Window, configurable: true });

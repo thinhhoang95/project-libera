@@ -20,6 +20,7 @@ import { latexMathPreview } from "@/lib/latex/codemirror/preview";
 import { latexSnippetCompletionSource } from "@/lib/latex/codemirror/snippets";
 import { snippetBodyFromSelection } from "@/lib/latex/snippets";
 import { decideReviewHunks, latexReviewExtension, reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
+import { readCodeMirrorScroll, restoreCodeMirrorScroll } from "@/lib/codemirror-scroll";
 import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll-anchor";
 import {
   compiledLocationForPosition, latexSyncExtension, markCompileShown, markCompileStarted, positionForCompiledLine, revealPosition,
@@ -121,6 +122,7 @@ export function LatexEditor({
   const lastPublishedRef = useRef(value);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelRestoreRef = useRef<(() => void) | null>(null);
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
@@ -148,13 +150,13 @@ export function LatexEditor({
         selectionStart: selection.anchor,
         selectionEnd: selection.head,
         line: target.state.doc.lineAt(selection.head).number,
-        editorScrollTop: target.scrollDOM.scrollTop,
-        editorScrollLeft: target.scrollDOM.scrollLeft,
+        ...readCodeMirrorScroll(target),
       });
   }, []);
   useCanvasViewStateCapture(() => {
     publishDraft();
-    if (viewRef.current) reportViewState(viewRef.current);
+    // Until the restore lands the view is at the top, not where the tab was left.
+    if (viewRef.current && !cancelRestoreRef.current) reportViewState(viewRef.current);
   });
 
   useLayoutEffect(() => {
@@ -259,23 +261,14 @@ export function LatexEditor({
     binding?.attach(created);
     viewRef.current = created;
     setView(created);
-    let restoreFrame: number | undefined;
-    if (restore?.editorScrollTop !== undefined || restore?.editorScrollLeft !== undefined) {
-      restoreFrame = requestAnimationFrame(() => {
-        created.scrollDOM.scrollTop = restore.editorScrollTop ?? 0;
-        created.scrollDOM.scrollLeft = restore.editorScrollLeft ?? 0;
-        // The initial measurement runs before this frame restores the scroll.
-        // Refresh the virtual viewport even if no scroll event is delivered.
-        created.requestMeasure();
-        restoreFrame = undefined;
-      });
-    } else if (restore?.selectionStart !== undefined) {
+    cancelRestoreRef.current = restore ? restoreCodeMirrorScroll(created, restore, () => { cancelRestoreRef.current = null; }) : null;
+    if (!cancelRestoreRef.current && restore?.selectionStart !== undefined) {
       created.dispatch({ effects: EditorView.scrollIntoView(created.state.selection.main.head, { y: "center" }) });
     }
 
     // Side panels and window resizes rewrap long lines; hold the reader's place
     // once the tab-switch restore above has run.
-    const releaseReflow = keepScrollOnReflow(created.scrollDOM, codeMirrorReflowAdapter(created, () => restoreFrame !== undefined));
+    const releaseReflow = keepScrollOnReflow(created.scrollDOM, codeMirrorReflowAdapter(created, () => cancelRestoreRef.current !== null));
 
     const unregisterSelection = registerEditorSelectionReader(wrapperRef.current ?? host, () => {
       const selection = created.state.selection.main;
@@ -284,10 +277,10 @@ export function LatexEditor({
 
     return () => {
       unregisterSelection();
-      if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame);
       // Layout cleanup runs while the editor is still attached. A switch must
       // flush both selection and scroll, even inside the debounce interval.
-      if (restoreFrame === undefined) reportViewState(created);
+      if (cancelRestoreRef.current) cancelRestoreRef.current();
+      else reportViewState(created);
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
       publishDraft();
       releaseReflow();
