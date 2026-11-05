@@ -17,6 +17,7 @@ import { createNotebook } from "../../src/lib/storage/notebooks";
 import { filePathFromParts, transcriptPath } from "../../src/lib/storage/paths";
 import { readTranscript, renameTranscriptSpeakers, transcriptSignature, writeTranscript } from "../../src/lib/storage/transcripts";
 import { formatClock, segmentIndexAt, transcriptPassages, transcriptToMarkdown, transcriptToSrt } from "../../src/lib/transcription/format";
+import { TRANSCRIPTION_LANGUAGES, transcriptionLanguageChoices } from "../../src/lib/transcription/languages";
 import { wordsFromResponse } from "../../src/lib/transcription/openrouter-stt";
 import {
   assignSpeakers,
@@ -436,4 +437,11 @@ test("links to a moment in a recording read and resolve as #t=", async () => {
   assert.equal(resolveMarkdownFileLink(destination, "Notes/today.md", [file])?.metadata?.viewState?.audio?.currentTime, 73);
   // A library path, as the transcript panel copies and the AI writes.
   assert.equal(resolveMarkdownFileLink("Memos/Lab%20meeting.m4a#t=1:05", "Notes/today.md", [file])?.metadata?.viewState?.audio?.currentTime, 65);
+});
+
+test("the language list keeps a code from Preferences that it does not name", () => {
+  assert.equal(transcriptionLanguageChoices(""), TRANSCRIPTION_LANGUAGES);
+  assert.equal(transcriptionLanguageChoices("vi"), TRANSCRIPTION_LANGUAGES);
+  assert.deepEqual(transcriptionLanguageChoices("cy")[0], { code: "cy", name: "CY" });
+  assert.ok(TRANSCRIPTION_LANGUAGES.every(({ code }) => /^[a-z]{2,3}$/.test(code)), "the API accepts every code");
 });

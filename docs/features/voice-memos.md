@@ -28,7 +28,9 @@ The transcript fills the page under the waveform, as a document.
 
 ## Transcribing
 
-The Voice Memo tab offers **Transcribe** for a recording without a transcript (the page's **Transcribe…** button opens it). Choose where it runs and, if you know it, how many people speak (it is otherwise detected). Transcription continues in the background: switch tabs or open other recordings meanwhile. One recording is transcribed at a time; others wait in line.
+The Voice Memo tab offers **Transcribe** for a recording without a transcript (the page's **Transcribe…** button opens it). Choose where it runs, the language when using OpenRouter (it starts on the language from Preferences → Speech; **Detect automatically** leaves it to the model), and, if you know it, how many people speak (it is otherwise detected).
+
+To regenerate a transcript, press **Transcribe again…** in the tab's **Transcript** section, or in the ⋯ menu, and make the same choices, for example another engine or language. The new transcript replaces the old one and its corrections and speaker names only once it is complete: if it fails or is cancelled, the old one stays and the section says why. Transcription continues in the background: switch tabs or open other recordings meanwhile. One recording is transcribed at a time; others wait in line.
 
 - **On this computer** — NVIDIA [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (CC-BY-4.0), 25 European languages with punctuation and capitalization, in sherpa-onnx's 8-bit export. Nothing leaves the computer.
 - **OpenRouter** — any OpenRouter speech-to-text model, `openai/whisper-large-v3` by default (Preferences → Speech lists them). The audio is sent in pieces of up to four minutes as 16 kHz WAV. Word or segment timestamps are used when the provider returns them; otherwise the text is spread over its piece.

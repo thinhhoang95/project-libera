@@ -49,19 +49,19 @@ test("PDF chat context authenticates and extracts page-labelled text with size a
     assert.equal((await GET(request("Notes/missing.pdf"))).status, 404);
     const response = await GET(request());
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { text: "## Page 1\n\nComplete PDF text" });
+    assert.deepEqual(await response.json(), { text: "## Page 1\n\nComplete PDF text", pageCount: 1 });
     const storedCache = JSON.parse(await readFile(cachePath, "utf8"));
     async function cachedPages(pages: { pageNumber: number; text: string }[]) {
       await writeFile(cachePath, JSON.stringify({ ...storedCache, pageCount: pages.length, pages }));
     }
     await cachedPages([{ pageNumber: 1, text: "First page" }, { pageNumber: 2, text: "Second page" }]);
-    assert.deepEqual(await (await GET(request())).json(), { text: "## Page 1\n\nFirst page\n\n## Page 2\n\nSecond page" });
+    assert.deepEqual(await (await GET(request())).json(), { text: "## Page 1\n\nFirst page\n\n## Page 2\n\nSecond page", pageCount: 2 });
     await cachedPages([{ pageNumber: 1, text: "" }]);
     const empty = await GET(request());
     assert.equal(empty.status, 400);
     assert.match((await empty.json()).error, /no extractable text/);
     await cachedPages([{ pageNumber: 1, text: "x".repeat(500_001) }]);
-    assert.equal((await GET(request())).status, 413);
+    assert.equal(((await (await GET(request())).json()) as { text: string }).text.length, 500_001 + "## Page 1\n\n".length);
   } finally {
     if (previousRoot === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previousRoot;
     await rm(directory, { recursive: true, force: true });

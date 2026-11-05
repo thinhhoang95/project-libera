@@ -72,6 +72,8 @@ export type TranscriptionJob = {
 export type TranscriptionSetupStatus = {
   engine: "local" | "openrouter";
   openRouterModel: string;
+  /** The language from Preferences → Speech; empty detects it. */
+  language: string;
   diarization: boolean;
   models: SpeechModelsStatus;
   decoder: { available: boolean; kind: "ffmpeg" | "afconvert" | "wav-only"; path: string };

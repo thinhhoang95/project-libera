@@ -66,6 +66,9 @@ export type PdfTabViewState = {
   fontFamily?: PdfTextAnnotationFont;
   fontSize?: number;
   highlightColor?: string;
+  /** The page in view and how many there are, for the chat's page budget. */
+  page?: number;
+  pageCount?: number;
   /** Ink for pen strokes and shapes. */
   inkColor?: string;
   /** Ink for underline, strikethrough and squiggly markup. */

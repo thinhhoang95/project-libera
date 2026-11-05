@@ -3,6 +3,7 @@ import type { MathMarkerSettings } from "./math-markers";
 import { expandMarkdownMacros, type MarkdownMacroScope } from "./markdown-macros";
 import { validateUsageRequests, type ChatUsageRequest } from "./chat-token-usage";
 import { isAgentPermission, validateAgentRunRecord, type AgentPermission, type AgentRunRecord } from "./agent/types";
+import { validateDocumentExcerpt, type DocumentExcerpt } from "./document-excerpt";
 
 export const CHAT_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type ChatReasoningEffort = typeof CHAT_REASONING_EFFORTS[number];
@@ -10,7 +11,8 @@ export function isChatReasoningEffort(value: unknown): value is ChatReasoningEff
   return CHAT_REASONING_EFFORTS.some((effort) => effort === value);
 }
 /** `comments` holds a document's review comments and replies, as text (src/lib/chat-comments.ts). */
-export type ChatContext = { kind: "document" | "selection" | "comments"; path: string; name: string; text: string };
+/** `excerpt` marks a document sent in part (document-excerpt.ts); `pageCount` is a PDF's, or a text file's in 500-word pages. */
+export type ChatContext = { kind: "document" | "selection" | "comments"; path: string; name: string; text: string; pageCount?: number; excerpt?: DocumentExcerpt };
 export const MAX_CHAT_PHOTOS = 4;
 export const MAX_CHAT_PHOTO_BYTES = 5 * 1024 * 1024;
 /** `source` identifies a photo attached from elsewhere in the app, such as the gallery viewer. */
@@ -24,7 +26,7 @@ export type ChatMode = "chat" | "agent";
 export function isChatMode(value: unknown): value is ChatMode {
   return value === "chat" || value === "agent";
 }
-export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; mode?: ChatMode; agentPermission?: AgentPermission; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; excludedCommentPaths?: string[]; excludedPhotoSources?: string[]; usageRequests?: ChatUsageRequest[] };
+export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; mode?: ChatMode; agentPermission?: AgentPermission; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; excludedCommentPaths?: string[]; excludedPhotoSources?: string[]; usageRequests?: ChatUsageRequest[]; documentPages?: Record<string, number> };
 export type ChatStore = { chats: DocumentChat[]; activeId: string };
 
 /** Versions share a gallery id; uploaded chat attachments have no gallery source. */
@@ -84,7 +86,8 @@ export function chatHasPhotoSource(messages: ChatMessage[], source: string) {
 // Review comments change as people reply, so a file's comments go again when
 // they differ from the last copy sent, once per message.
 export function newChatContexts(messages: ChatMessage[], contexts: ChatContext[]): ChatContext[] {
-  const paths = new Set(messages.flatMap((message) => (message.contexts ?? []).filter((context) => context.kind === "document").map((context) => context.path)));
+  // A file sent in part may still have more to send; the excerpt decides what is new.
+  const paths = new Set(messages.flatMap((message) => (message.contexts ?? []).filter((context) => context.kind === "document" && !context.excerpt).map((context) => context.path)));
   const sentComments = new Map<string, string>();
   for (const message of messages) for (const context of message.contexts ?? []) if (context.kind === "comments") sentComments.set(context.path, context.text);
   const commentPaths = new Set<string>();
@@ -101,6 +104,11 @@ export function newChatContexts(messages: ChatMessage[], contexts: ChatContext[]
   });
 }
 
+/** What earlier messages sent of a file that went in part. */
+export function sentDocumentExcerpts(messages: ChatMessage[], path: string) {
+  return messages.flatMap((message) => (message.contexts ?? []).flatMap((context) => context.kind === "document" && context.path === path && context.excerpt ? [context.excerpt] : []));
+}
+
 export function validateChatMessages(value: unknown, enforceLimits = true): value is ChatMessage[] {
   return Array.isArray(value) && value.length > 0 && (!enforceLimits || value.length <= 200) && value.every((message) =>
     message && typeof message.id === "string" && (message.role === "user" || message.role === "assistant") &&
@@ -109,7 +117,8 @@ export function validateChatMessages(value: unknown, enforceLimits = true): valu
     (message.agent === undefined || (message.role === "assistant" && validateAgentRunRecord(message.agent))) &&
     (message.contexts === undefined || (Array.isArray(message.contexts) && (!enforceLimits || message.contexts.length <= 30) && message.contexts.every((context: ChatContext) =>
       context && (context.kind === "document" || context.kind === "selection" || context.kind === "comments") &&
-      typeof context.path === "string" && typeof context.name === "string" && typeof context.text === "string" && (!enforceLimits || context.text.length <= 500_000)))));
+      typeof context.path === "string" && typeof context.name === "string" && typeof context.text === "string" && (!enforceLimits || context.text.length <= 500_000) &&
+      (context.pageCount === undefined || Number.isInteger(context.pageCount)) && (context.excerpt === undefined || validateDocumentExcerpt(context.excerpt))))));
 }
 
 export function chatMessageContent(message: ChatMessage) {
@@ -122,6 +131,7 @@ export function validateChatStore(value: unknown): value is ChatStore {
   return Array.isArray(store.chats) && store.chats.length > 0 && store.chats.some((item) => item.id === store.activeId) && store.chats.every((item) =>
     item && (item.reasoningEffort === undefined || isChatReasoningEffort(item.reasoningEffort)) && (item.mode === undefined || isChatMode(item.mode)) && (item.agentPermission === undefined || isAgentPermission(item.agentPermission)) && (item.photos === undefined || validateChatPhotos(item.photos)) && (item.excludedDocumentPaths === undefined || (Array.isArray(item.excludedDocumentPaths) && item.excludedDocumentPaths.every((path) => typeof path === "string"))) && (item.excludedCommentPaths === undefined || (Array.isArray(item.excludedCommentPaths) && item.excludedCommentPaths.every((path) => typeof path === "string"))) && (item.excludedPhotoSources === undefined || (Array.isArray(item.excludedPhotoSources) && item.excludedPhotoSources.every((source) => typeof source === "string"))) && typeof item.id === "string" && typeof item.title === "string" && typeof item.prompt === "string" && Array.isArray(item.selections) && Array.isArray(item.messages) &&
     (item.usageRequests === undefined || validateUsageRequests(item.usageRequests)) &&
+    (item.documentPages === undefined || (!!item.documentPages && typeof item.documentPages === "object" && Object.values(item.documentPages).every((pages) => Number.isInteger(pages) && pages > 0))) &&
     (!item.messages.length || validateChatMessages(item.messages, false)) && validateChatMessages([{ id: "draft", role: "user", text: "", contexts: item.selections }], false));
 }
 

@@ -12,7 +12,8 @@ export function isJobActive(job: TranscriptionJob | null | undefined) {
   return Boolean(job && ACTIVE_STATES.has(job.state));
 }
 
-export type StartTranscriptionOptions = { engine?: "local" | "openrouter"; speakers?: number };
+/** `language`: an ISO code, or empty to detect it; left out, Preferences → Speech decides. */
+export type StartTranscriptionOptions = { engine?: "local" | "openrouter"; speakers?: number; language?: string };
 
 /** A recording's transcript and transcription, polled while one runs. */
 export function useTranscript(path: string) {

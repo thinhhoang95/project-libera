@@ -134,8 +134,8 @@ export function ReviewComments() {
       <button type="button" className="libera-panel-button h-9 w-full" aria-pressed={r.chatReview} title={r.chatReview ? "Return to regular chat" : "Plan how to address comments"} onClick={() => r.setChatReview(!r.chatReview)}><Sparkles size={14} /> Agentic review</button>
       {r.doc && <>
         {(threads.length > 0 || openSuggestions.length > 0) && <div className="review-comment-search relative">
-          <Search aria-hidden size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input type="search" aria-label="Search comments" placeholder="Search comments…" className="libera-panel-field h-9 w-full pl-8 pr-7 text-xs" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
+          <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input type="search" aria-label="Search comments" placeholder="Search comments…" className="libera-rail-field libera-rail-field--search w-full" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
           {query && <button type="button" className="libera-sidebar-icon-button absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md" aria-label="Clear comment search" title="Clear search" onClick={() => setQuery("")}><X aria-hidden size={12} /></button>}
         </div>}
         <p className="px-1 text-xs leading-relaxed text-muted-foreground">{r.enabled ? "Select a passage in either editor to comment. ⌘/Ctrl+Alt+M" : "Enable Review Mode to highlight passages and add comments."}</p>

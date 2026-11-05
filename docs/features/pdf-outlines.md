@@ -1,6 +1,6 @@
 # PDF outlines and annotations
 
-For a PDF, the **Outline** view of the Outlines panel shows the PDF's table of contents. Its highlights, notes and drawings are in the **Annotations** tab, which appears in the left rail only while a PDF tab is active.
+For a PDF, the **Outline** view of the Outlines panel shows the PDF's table of contents. Its highlights and notes are in the **Annotations** tab, which appears in the left rail only while a PDF tab is active.
 
 ## The outline
 
@@ -36,7 +36,7 @@ The side-car follows its PDF in every case:
 
 ## Annotations
 
-The Annotations tab lists the PDF's highlights, notes, shapes and drawings in page order. The tab shows how many there are, and **Search annotations** filters them by text or by page ("p. 4"). Press Enter to go to the first match, or Escape to clear the search. Click an annotation to show it. Right-click a highlight to **Quote and cite** it. The tab appears in the rail only while a PDF is the active tab, with the contextual-tab mark used by app pages such as Spending. Unlike a page's tab, it does not open by itself. When another kind of tab becomes active, the panel goes back to the one you used before.
+The Annotations tab lists the PDF's highlights and notes in page order, as cards with the annotation's kind, page and a short excerpt of its text. Shapes and pen drawings stay on the page and are not listed. The tab shows how many there are, and **Search annotations** filters them by text or by page ("p. 4"). Press Enter to go to the first match, or Escape to clear the search. Click an annotation to show it. Right-click a highlight to **Quote and cite** it. The tab appears in the rail only while a PDF is the active tab, with the contextual-tab mark used by app pages such as Spending. Unlike a page's tab, it does not open by itself. When another kind of tab becomes active, the panel goes back to the one you used before.
 
 ## PDFs changed outside Libera
 

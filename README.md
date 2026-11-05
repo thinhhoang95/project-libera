@@ -558,12 +558,12 @@ See [docs/features/read-aloud.md](docs/features/read-aloud.md) for the user guid
 
 ## PDF outlines and annotations
 
-For a PDF, **Outlines → Outline** shows its table of contents, and its highlights, notes and drawings move to their own **Annotations** tab in the left rail.
+For a PDF, **Outlines → Outline** shows its table of contents, and its highlights and notes move to their own **Annotations** tab in the left rail.
 
 - **Bookmarks.** A PDF's own bookmarks show as a tree. Choose how many levels are open, search closed branches too, and click an entry to go to its page and spot.
 - **AI outlines.** When a PDF has no bookmarks, **Generate outline** (also in the command palette) has the AI Agent outline it. The PDF is split into chunks of 12 pages that are outlined in parallel, each with the PDF's printed table of contents if it has one and with larger-type lines marked as likely headings. Every heading is checked against the page text, the chunks are stitched together with consistent levels, and the whole outline is verified: page order, level jumps, numbering under the right parent, repeats, gaps. The agent fixes what verification finds with an amend tool until no errors are left. Scanned PDFs without a text layer are refused.
 - **A side-car that follows the PDF.** The outline is saved beside the notebook's other Libera data, with the PDF's size and hash. Renaming, moving, copying or deleting the PDF in Libera does the same to it, and a rename during generation saves the outline under the new name. The tab says when the PDF has changed since, and the outline can be regenerated or deleted.
-- **Annotations tab.** It appears in the rail only while a PDF tab is active, lists the annotations in page order with their count, and filters them by text or page (`p. 4`). Click one to show it, or right-click a highlight to **Quote and cite** it.
+- **Annotations tab.** It appears in the rail only while a PDF tab is active, lists the highlights and notes in page order with their count, and filters them by text or page (`p. 4`). Click one to show it, or right-click a highlight to **Quote and cite** it.
 - **Renamed or deleted outside Libera.** A PDF's annotations, outline and definitions are re-attached to the PDF with the same bytes after a rename in Finder, Explorer or a sync client. When the PDF is gone they are set aside, not deleted, so a new PDF under the old name does not inherit them, and they come back if the original returns within 90 days. In shared notebooks they follow the collab host's moves and removals.
 
 See [docs/features/pdf-outlines.md](docs/features/pdf-outlines.md) for the full guide.

@@ -48,7 +48,7 @@ test("the PDF Annotations panel searches annotations and opens the first match",
       openedIds.push(options?.viewState?.pdf?.selectedAnnotationId);
     },
   };
-  const labels = () => Array.from(host.querySelectorAll("button .whitespace-normal"), (label) => label.textContent);
+  const labels = () => Array.from(host.querySelectorAll("button .pdf-annotation-excerpt"), (label) => label.textContent);
 
   try {
     await act(async () => root.render(createElement(PdfAnnotationsPanel, props)));
@@ -80,6 +80,44 @@ test("the PDF Annotations panel searches annotations and opens the first match",
     await act(async () => root.unmount());
     globalThis.fetch = previousFetch;
     Object.defineProperty(globalThis, "CSS", { value: previousCss, configurable: true });
+    host.remove();
+  }
+});
+
+test("annotation cards list highlights and notes with a plain-text excerpt, and mark the selected one", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const previousFetch = globalThis.fetch;
+  const activeTab: OpenTab = {
+    id: "Notebook/notes.pdf", draft: "", saved: "", status: "clean",
+    file: { kind: "file", name: "notes.pdf", path: "Notebook/notes.pdf", notebook: "Notebook", fileType: "pdf", createdAt: "", updatedAt: "", size: 0 },
+    viewState: { pdf: { selectedAnnotationId: "mark" } },
+  };
+  const annotations = [
+    { id: "note", type: "text", pageNumber: 1, text: "# Heading\n\n**Bold** words", fontSize: 12, rect: { x: 0, y: 0, width: 1, height: 1 }, createdAt: "2026-09-28", updatedAt: "2026-09-28" },
+    { id: "mark", type: "highlight", pageNumber: 2, color: "#ef4444", rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }], createdAt: "2026-09-28", updatedAt: "2026-09-28" },
+    { id: "box", type: "shape", pageNumber: 3, shape: "rectangle", color: "#ef4444", strokeWidth: 2, from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, createdAt: "2026-09-28", updatedAt: "2026-09-28" },
+    { id: "stroke", type: "ink", pageNumber: 3, color: "#22c55e", strokeWidth: 2, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }], createdAt: "2026-09-28", updatedAt: "2026-09-28" },
+  ];
+  globalThis.fetch = async () => Response.json({ annotations });
+
+  try {
+    await act(async () => root.render(createElement(PdfAnnotationsPanel, { activeTab, onOpenFile: async () => {} })));
+    const cards = Array.from(host.querySelectorAll<HTMLButtonElement>("button.review-comment-card"));
+    assert.equal(cards.length, 2);
+    const [note, mark] = cards;
+    assert.equal(note.querySelector("strong")?.textContent, "Note");
+    assert.equal(note.querySelector(".pdf-annotation-excerpt")?.textContent, "Heading Bold words");
+    assert.equal(note.dataset.selected, "false");
+    assert.equal(mark.querySelector("strong")?.textContent, "Highlight");
+    assert.match(mark.textContent ?? "", /p\. 2/);
+    assert.equal(mark.querySelector(".pdf-annotation-excerpt"), null);
+    assert.equal(mark.dataset.selected, "true");
+    assert.equal(mark.style.getPropertyValue("--annotation-color"), "#ef4444");
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.fetch = previousFetch;
     host.remove();
   }
 });
