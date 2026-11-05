@@ -19,6 +19,7 @@ import {
   MessageSquareQuote,
   MoreVertical,
   Pencil,
+  Languages,
   RefreshCw,
   Search,
   Settings2,
@@ -30,6 +31,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { EditableLine, useFlushWhenEditingEnds, type LineFocus, type SegmentDraft } from "@/components/libera/audio/editable-lines";
 import { RailSection, RailSwitch, railIconButton, railStyles } from "@/components/libera/audio/rail-ui";
 import { speakerColor, speakerInitials } from "@/components/libera/audio/speaker-colors";
+import { transcriptionLanguageChoices } from "@/lib/transcription/languages";
 import { isJobActive, useTranscriptionSetup, type StartTranscriptionOptions, type useTranscript } from "@/components/libera/audio/use-voice-memo";
 import { encodeFilePath } from "@/components/libera/api-client";
 import { CHAT_QUOTE_EVENT, type ChatQuoteDetail } from "@/lib/document-chat";
@@ -683,7 +685,7 @@ function SpeakerChip({ index, transcript, filtered, onToggle, onRename }: {
   );
 }
 
-/** Starting a transcription: the engine, how many speakers, and anything still to set up. */
+/** Starting a transcription: the engine, its language, how many speakers, and anything still to set up. */
 function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelDownload, again }: {
   fileName: string;
   setup: ReturnType<typeof useTranscriptionSetup>;
@@ -696,10 +698,12 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
   const status: TranscriptionSetupStatus | null = setup.status;
   const [engine, setEngine] = useState<"local" | "openrouter" | null>(null);
   const [speakers, setSpeakers] = useState(0);
+  const [language, setLanguage] = useState<string | null>(null);
   const chosen = engine ?? status?.engine ?? "local";
   const models = status?.models;
   const downloading = models?.state === "downloading";
   const isWav = /\.wav$/i.test(fileName);
+  const chosenLanguage = language ?? status?.language ?? "";
 
   if (!status) {
     return <div className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> Checking the speech models…</div>;
@@ -734,10 +738,24 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
         ))}
       </div>
 
+      {chosen === "openrouter" ? (
+        <label className="mb-2.5 flex items-center justify-between gap-3 text-xs">
+          <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Languages aria-hidden className="h-3.5 w-3.5" /> Language</span>
+          <select
+            className="libera-rail-field libera-rail-field--compact min-w-0 pl-2.5 pr-2"
+            value={chosenLanguage}
+            onChange={(event) => setLanguage(event.target.value)}
+          >
+            <option value="">Detect automatically</option>
+            {transcriptionLanguageChoices(status.language).map(({ code, name }) => <option key={code} value={code}>{name}</option>)}
+          </select>
+        </label>
+      ) : null}
+
       <label className="mb-2.5 flex items-center justify-between gap-3 text-xs">
         <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Users aria-hidden className="h-3.5 w-3.5" /> Speakers</span>
         <select
-          className="libera-sidebar-search-input h-8 min-w-0 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring disabled:opacity-50"
+          className="libera-rail-field libera-rail-field--compact min-w-0 pl-2.5 pr-2"
           value={speakers}
           disabled={!status.diarization}
           onChange={(event) => setSpeakers(Number(event.target.value))}
@@ -780,7 +798,7 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
         type="button"
         className="mt-3 inline-flex h-8 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         disabled={blocked}
-        onClick={() => onStart({ engine: chosen, speakers: speakers || undefined })}
+        onClick={() => onStart({ engine: chosen, speakers: speakers || undefined, language: chosen === "openrouter" ? chosenLanguage : undefined })}
       >
         <AudioLines aria-hidden className="h-4 w-4" /> Transcribe
       </button>
@@ -890,6 +908,7 @@ export function TranscriptControls({
           {transcript.diarization?.overlapSeconds && transcript.diarization.overlapSeconds >= 1 ? <><dt>Overlap</dt><dd>{formatDuration(transcript.diarization.overlapSeconds)}</dd></> : null}
           {payload.shared ? <><dt>Shared</dt><dd title="Everyone in this shared notebook sees this transcript, its corrections and its speaker names.">With the notebook</dd></> : null}
         </dl>
+        {job?.state === "error" ? <div className="mt-2"><Notice tone="error">Transcribing again failed, so this transcript was kept. {job.error}</Notice></div> : null}
         {payload.stale ? (
           <div className="mt-2">
             <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onAgainChange(true)}>Transcribe again</button>}>The recording changed after it was transcribed.</Notice>
@@ -898,6 +917,13 @@ export function TranscriptControls({
         <div className="mt-2">
           <RailSwitch checked={follow} label="Follow playback" hint="Keep the passage being played in view" onChange={onFollowChange} />
         </div>
+        <button
+          type="button"
+          className="mt-2 inline-flex h-8 w-full items-center justify-center gap-2 rounded-lg border border-input bg-card text-xs font-medium text-foreground transition hover:bg-muted"
+          onClick={() => onAgainChange(true)}
+        >
+          <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Transcribe again…
+        </button>
       </RailSection>
 
       {transcript.speakers.length ? (

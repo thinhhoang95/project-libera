@@ -2570,6 +2570,17 @@ button.border[class*="border-white"]:hover {
 .review-comment-card { overflow-wrap: anywhere; }
 .review-comment-card[data-selected="false"]:hover { background: #ffffff66; }
 html.dark .review-comment-card[data-selected="false"]:hover { background: #a3bbef12; }
+/* PDF annotation cards share the comment card; --annotation-color is the annotation's own. */
+.pdf-annotation-icon {
+  display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center;
+  width: 1.5rem; height: 1.5rem; border-radius: 6px;
+  color: color-mix(in srgb, var(--annotation-color, var(--muted-foreground)) 45%, var(--foreground));
+  background: color-mix(in srgb, var(--annotation-color, var(--muted-foreground)) 22%, transparent);
+}
+.pdf-annotation-excerpt[data-kind="highlight"] {
+  padding-left: .5rem; font-style: italic; color: var(--muted-foreground);
+  border-left: 2px solid var(--annotation-color, var(--border));
+}
 /* Comment bodies render Markdown (CommentBody): tight spacing for a narrow card. */
 .review-comment-body > :first-child { margin-top: 0; }
 .review-comment-body > :last-child { margin-bottom: 0; }
@@ -2655,8 +2666,24 @@ html.libera-glass .libera-left-panel {
   --input: #91a4c52e;
   --muted: #7392d111;
 }
-html.libera-glass .libera-left-panel .libera-sidebar-search-input,
-.libera-left-panel .libera-sidebar-search-input { background: #ffffff85; font-size: 12px; box-shadow: 0 2px 5px #4e699a03; }
+/* The one text-field style for every left-rail panel (search boxes, filters,
+   selects). --search is the full-width box with a leading icon; --compact is
+   the short control used for filters and selects. */
+.libera-rail-field {
+  border: 1px solid var(--input);
+  background-color: #ffffff85;
+  box-shadow: 0 2px 5px #4e699a03;
+  color: var(--foreground);
+  font-size: 12px;
+  outline: none;
+  transition: background-color 150ms, border-color 150ms, box-shadow 150ms;
+}
+.libera-rail-field::placeholder { color: color-mix(in srgb, var(--muted-foreground) 75%, transparent); }
+.libera-rail-field:hover:not(:disabled):not(:focus) { background-color: #ffffffa8; }
+.libera-rail-field:focus { border-color: #457be666; background-color: #ffffffc2; box-shadow: 0 0 0 3px #457be61a; }
+.libera-rail-field:disabled { opacity: 0.5; }
+.libera-rail-field--search { height: 2.5rem; border-radius: 12px; padding-left: 2.25rem; padding-right: 2.25rem; }
+.libera-rail-field--compact { height: 2rem; border-radius: 8px; appearance: none; }
 .libera-left-panel .libera-sidebar-icon-button { color: #75839e; }
 .libera-left-panel .libera-sidebar-icon-button:hover { background: #728fce12; color: #457be6; }
 .libera-left-panel .libera-sidebar-icon-button[aria-selected="true"] { background: #d8e7ff9e; color: #3979e8; box-shadow: inset 0 1px 0 #ffffff6b; }
@@ -2682,7 +2709,9 @@ html.libera-glass .libera-left-panel .libera-sidebar-search-input,
 html.dark .libera-left-panel { --muted-foreground: #adb9d1; --border: #8298cb22; --input: #8298cb33; background: linear-gradient(155deg, #222c3ee0, #29273be0); color: #e1e8f7; }
 html.dark.libera-glass .libera-left-panel { background: transparent; }
 html.dark.libera-glass .libera-left-panel::before { background: linear-gradient(155deg, #31415b55, #342b4940); }
-html.dark .libera-left-panel .libera-sidebar-search-input { background: #b3c8ef0d; }
+html.dark .libera-rail-field { background-color: #b3c8ef0d; }
+html.dark .libera-rail-field:hover:not(:disabled):not(:focus) { background-color: #b3c8ef14; }
+html.dark .libera-rail-field:focus { border-color: #7aa5ef80; background-color: #b3c8ef17; box-shadow: 0 0 0 3px #7aa5ef1f; }
 html.dark .libera-left-panel .libera-sidebar-icon-button { color: #a7b7d2; }
 html.dark .libera-left-panel .libera-sidebar-icon-button[aria-selected="true"] { color: #a2c9ff; background: #678dcc26; box-shadow: none; }
 html.dark .libera-notebook-row:hover { background: #a3bbef0c; }

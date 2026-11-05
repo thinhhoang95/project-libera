@@ -1656,7 +1656,7 @@ function ReferencesPanelBody({
                     <input
                       ref={searchRef}
                       aria-label="Search references"
-                      className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
+                      className="libera-rail-field libera-rail-field--search w-full"
                       placeholder="Search references"
                       value={view.query}
                       onChange={(event) => setView({ query: event.target.value })}
@@ -1676,7 +1676,7 @@ function ReferencesPanelBody({
                   <div className="flex flex-wrap gap-1.5">
                     <select
                       aria-label="Filter references"
-                      className="libera-sidebar-search-input h-8 min-w-32 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                      className="libera-rail-field libera-rail-field--compact min-w-32 flex-1 pl-2.5 pr-2"
                       value={view.filter}
                       onChange={(event) => setView({ filter: event.target.value as ReferenceFilter })}
                     >
@@ -1685,7 +1685,7 @@ function ReferencesPanelBody({
                     {tags.length ? (
                       <select
                         aria-label="Filter by tag"
-                        className="libera-sidebar-search-input h-8 min-w-24 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                        className="libera-rail-field libera-rail-field--compact min-w-24 flex-1 pl-2.5 pr-2"
                         value={activeTag ?? ""}
                         onChange={(event) => setView({ tag: event.target.value || null })}
                       >
@@ -1695,7 +1695,7 @@ function ReferencesPanelBody({
                     ) : null}
                     <select
                       aria-label="Sort references"
-                      className="libera-sidebar-search-input h-8 min-w-24 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                      className="libera-rail-field libera-rail-field--compact min-w-24 flex-1 pl-2.5 pr-2"
                       value={view.sort}
                       onChange={(event) => setView({ sort: event.target.value as ReferenceSort })}
                     >

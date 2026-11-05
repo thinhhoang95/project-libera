@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getAiFunctionOptions } from "@/lib/ai-preferences";
@@ -41,17 +42,19 @@ import { getTranscriptionWorker } from "@/lib/transcription/worker-client";
 
 /**
  * A recording in progress lives in Libera's data folder, not in the notebook,
- * as numbered WAV chunks of a few seconds each. The recorder sends a chunk
- * whenever the speaker pauses, so a crash of the window or the app loses at
- * most the last few seconds; the chunks found on the next start can be saved
- * or recorded on. The chunks are also what live transcription reads: Parakeet
- * is an offline model, so it hears the recording piece by piece, the way
- * sherpa-onnx's "simulated streaming" does.
+ * as one growing WAV. The recorder sends a chunk of a few seconds whenever the
+ * speaker pauses, and each chunk is written into recording.wav at its position
+ * and noted in chunks.jsonl, so a crash of the window or the app loses at most
+ * the last few seconds; what is found on the next start can be saved or
+ * recorded on. session.json holds only the settings, so it is written when they
+ * change and not as the audio comes in. The chunks are also what live
+ * transcription reads: Parakeet is an offline model, so it hears the recording
+ * piece by piece, the way sherpa-onnx's "simulated streaming" does.
  *
- * Finishing joins the chunks into one recording in the notebook (AAC when
+ * Finishing completes the WAV's header and saves it into the notebook (AAC when
  * ffmpeg or afconvert is there, WAV otherwise), with the live transcript as its
  * transcript and the live recap as a note beside it. The reader may correct
- * both while recording; their transcript edits are kept beside the chunks
+ * both while recording; their transcript edits are kept beside the audio
  * (edits.json) and the finished transcript is the live one as they left it.
  */
 
@@ -66,7 +69,6 @@ type SessionMeta = {
   state: RecordingState;
   liveTranscribe: boolean;
   liveRecap: boolean;
-  chunks: ChunkRecord[];
 };
 
 type StoredRecap = Pick<RecordingRecap, "version" | "bullets" | "wordsRead" | "lastChanged">;
@@ -74,6 +76,8 @@ type StoredRecap = Pick<RecordingRecap, "version" | "bullets" | "wordsRead" | "l
 type Runtime = {
   meta: SessionMeta;
   directory: string;
+  /** The saved chunks, in recording order. */
+  chunks: ChunkRecord[];
   /** Recognized words by chunk index. */
   words: Map<number, TimedWord[]>;
   recap: RecordingRecap;
@@ -91,9 +95,13 @@ const MAX_CHUNK_BYTES = 8 * 1024 * 1024;
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const recordingsRoot = () => joinPath(getDataRoot(), "recordings");
-const chunkFile = (directory: string, index: number) => path.join(directory, `chunk-${String(index).padStart(6, "0")}.wav`);
+const audioFile = (directory: string) => path.join(directory, "recording.wav");
+const chunkLog = (directory: string) => path.join(directory, "chunks.jsonl");
+const chunkLine = ({ index, start, samples }: ChunkRecord) => `${JSON.stringify({ index, start, samples })}\n`;
+/** Where a sample sits in recording.wav. */
+const audioOffset = (sample: number) => WAV_HEADER_BYTES + sample * 2;
 const seconds = (samples: number) => samples / RECORDING_SAMPLE_RATE;
-const savedSamples = (meta: SessionMeta) => meta.chunks.reduce((end, chunk) => Math.max(end, chunk.start + chunk.samples), 0);
+const savedSamples = (chunks: ChunkRecord[]) => chunks.reduce((end, chunk) => Math.max(end, chunk.start + chunk.samples), 0);
 
 const RUNTIMES_KEY = Symbol.for("libera.recordings");
 function runtimes() {
@@ -125,19 +133,87 @@ function persist(runtime: Runtime, what: "meta" | "recap" | "edits" = "meta") {
   return runtime.saving;
 }
 
+/**
+ * Recordings used to be kept as one chunk-000123.wav per chunk, listed in
+ * session.json. Rewriting session.json without its list is what commits the
+ * move, so one cut short simply starts over.
+ */
+async function moveChunkFilesIntoAudio(directory: string) {
+  const session = path.join(directory, "session.json");
+  const { chunks, ...meta } = JSON.parse(await readFile(session, "utf8")) as SessionMeta & { chunks?: ChunkRecord[] };
+  if (!Array.isArray(chunks)) return;
+  const oldFile = (index: number) => path.join(directory, `chunk-${String(index).padStart(6, "0")}.wav`);
+  const file = await open(audioFile(directory), "w");
+  try {
+    for (const chunk of chunks) {
+      // A missing chunk stays a gap, which is silence.
+      const data = (await readFile(oldFile(chunk.index)).catch(() => null))?.subarray(WAV_HEADER_BYTES);
+      if (data) await file.write(data, 0, data.length, audioOffset(chunk.start));
+    }
+  } finally {
+    await file.close();
+  }
+  await writeFile(chunkLog(directory), chunks.map(chunkLine).join(""));
+  await writeJson(session, meta);
+  await Promise.all(chunks.map((chunk) => rm(oldFile(chunk.index), { force: true })));
+}
+
+/** The start screen and an open tab can load the same recording at once; only one may move its files. */
+const UPGRADES_KEY = Symbol.for("libera.recordings.upgrades");
+function upgradeOnce(directory: string) {
+  const store = globalThis as { [UPGRADES_KEY]?: Map<string, Promise<void>> };
+  const upgrades = store[UPGRADES_KEY] ??= new Map();
+  const running = upgrades.get(directory);
+  if (running) return running;
+  const upgrade = moveChunkFilesIntoAudio(directory).finally(() => upgrades.delete(directory));
+  upgrades.set(directory, upgrade);
+  return upgrade;
+}
+
+async function readChunks(directory: string) {
+  let text = "";
+  try {
+    text = await readFile(chunkLog(directory), "utf8");
+  } catch {
+    return [];
+  }
+  // A line cut off by a crash must not swallow the next chunk's line.
+  if (text && !text.endsWith("\n")) await appendFile(chunkLog(directory), "\n");
+  const chunks = new Map<number, ChunkRecord>();
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const { index, start, samples } = JSON.parse(line) as ChunkRecord;
+      if (Number.isInteger(index) && Number.isInteger(start) && Number.isInteger(samples)) chunks.set(index, { index, start, samples, transcribed: false });
+    } catch {
+      // That chunk's audio was not acknowledged either; the recorder's next chunk takes its place.
+    }
+  }
+  return [...chunks.values()].sort((a, b) => a.start - b.start);
+}
+
 function emptyRecap(): RecordingRecap {
   return { version: 0, bullets: [], wordsRead: 0, lastChanged: [], error: "", updating: false };
 }
 
 async function loadRuntime(id: string): Promise<Runtime | null> {
   const directory = path.join(recordingsRoot(), id);
-  let meta: SessionMeta;
+  let meta: SessionMeta & { chunks?: unknown };
   try {
     meta = JSON.parse(await readFile(path.join(directory, "session.json"), "utf8")) as SessionMeta;
   } catch {
     return null;
   }
-  if (meta.id !== id || !Array.isArray(meta.chunks)) return null;
+  if (meta.id !== id) return null;
+  if (meta.chunks !== undefined) {
+    try {
+      await upgradeOnce(directory);
+    } catch (error) {
+      console.warn(`Could not read recording ${id}: ${error instanceof Error ? error.message : error}`);
+      return null;
+    }
+    delete meta.chunks;
+  }
   // A finish that was cut short is picked up again as an unfinished recording.
   if (meta.state === "finishing") meta.state = "recording";
 
@@ -155,7 +231,8 @@ async function loadRuntime(id: string): Promise<Runtime | null> {
   } catch {
     // No transcript yet.
   }
-  for (const chunk of meta.chunks) chunk.transcribed = words.has(chunk.index);
+  const chunks = await readChunks(directory);
+  for (const chunk of chunks) chunk.transcribed = words.has(chunk.index);
 
   const recap = emptyRecap();
   try {
@@ -172,7 +249,7 @@ async function loadRuntime(id: string): Promise<Runtime | null> {
     // The transcript was not edited.
   }
 
-  return { meta, directory, words, recap, edits, transcribeError: "", transcribing: null, recapping: null, lastRecapAt: 0, saving: Promise.resolve() };
+  return { meta, directory, chunks, words, recap, edits, transcribeError: "", transcribing: null, recapping: null, lastRecapAt: 0, saving: Promise.resolve() };
 }
 
 async function getRuntime(id: string) {
@@ -212,9 +289,9 @@ export async function createRecording(input: { notebook?: string; parentPath?: s
       state: "recording",
       liveTranscribe: Boolean(input.liveTranscribe),
       liveRecap: Boolean(input.liveRecap),
-      chunks: [],
     },
     directory: folder,
+    chunks: [],
     words: new Map(),
     recap: emptyRecap(),
     edits: null,
@@ -242,29 +319,29 @@ export async function listUnfinishedRecordings(): Promise<UnfinishedRecording[]>
     if (!ID_PATTERN.test(name)) continue;
     const runtime = runtimes().get(name) ?? await loadRuntime(name);
     if (!runtime || runtime.meta.state === "finished") continue;
-    if (!runtime.meta.chunks.length) {
+    if (!runtime.chunks.length) {
       if (!runtimes().has(name)) await rm(runtime.directory, { recursive: true, force: true });
       continue;
     }
-    const { id, name: title, directory, createdAt, chunks } = runtime.meta;
+    const { id, name: title, directory, createdAt } = runtime.meta;
     const { notebook } = splitDirectoryPath(directory);
-    result.push({ id, name: title, notebook, parentPath: directory, createdAt, savedSeconds: seconds(savedSamples(runtime.meta)), chunks: chunks.length });
+    result.push({ id, name: title, notebook, parentPath: directory, createdAt, savedSeconds: seconds(savedSamples(runtime.chunks)), chunks: runtime.chunks.length });
   }
   return result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 function liveSegments(runtime: Runtime): TranscriptSegment[] {
-  return [...runtime.meta.chunks]
-    .sort((a, b) => a.start - b.start)
+  return runtime.chunks
     .flatMap((chunk) => groupSegments(runtime.words.get(chunk.index) ?? [], { pauseSeconds: 1.2, softMaxSeconds: 20, hardMaxSeconds: 30 }));
 }
 
 function allWords(runtime: Runtime) {
-  return [...runtime.meta.chunks].sort((a, b) => a.start - b.start).flatMap((chunk) => runtime.words.get(chunk.index) ?? []);
+  return runtime.chunks.flatMap((chunk) => runtime.words.get(chunk.index) ?? []);
 }
 
 function status(runtime: Runtime, after: number, recapVersion: number): RecordingStatus {
-  const { id, name, directory, createdAt, state, liveTranscribe, liveRecap, chunks } = runtime.meta;
+  const { id, name, directory, createdAt, state, liveTranscribe, liveRecap } = runtime.meta;
+  const { chunks } = runtime;
   const segments = liveSegments(runtime);
   const from = Math.max(0, Math.min(segments.length, Math.floor(after) || 0));
   // The last segment may still grow when the next chunk continues a sentence, so it is sent again.
@@ -276,8 +353,8 @@ function status(runtime: Runtime, after: number, recapVersion: number): Recordin
     parentPath: directory,
     createdAt,
     state,
-    savedSeconds: seconds(savedSamples(runtime.meta)),
-    savedSamples: savedSamples(runtime.meta),
+    savedSeconds: seconds(savedSamples(chunks)),
+    savedSamples: savedSamples(chunks),
     chunks: chunks.length,
     nextIndex: chunks.reduce((next, chunk) => Math.max(next, chunk.index + 1), 0),
     liveTranscribe,
@@ -335,8 +412,31 @@ export async function updateRecording(id: string, changes: { name?: unknown; liv
     runtime.recap.error = "";
     void updateRecap(runtime);
   }
-  await persist(runtime);
+  if (name || typeof changes.liveTranscribe === "boolean" || typeof changes.liveRecap === "boolean") await persist(runtime);
   return status(runtime, 0, -1);
+}
+
+/**
+ * Writes a chunk's samples at its place in the audio, then notes it. Audio
+ * written without its note (a crash in between) is written over by the next
+ * chunk or cut off on finishing. In turn with the other writes, so a chunk sent
+ * again while the first try is still being written is kept once.
+ */
+function storeChunk(runtime: Runtime, chunk: ChunkRecord, wav: Uint8Array) {
+  const stored = runtime.saving.then(async () => {
+    if (runtime.chunks.some((saved) => saved.index === chunk.index)) return;
+    const file = await open(audioFile(runtime.directory), fsConstants.O_WRONLY | fsConstants.O_CREAT);
+    try {
+      await file.write(wav, WAV_HEADER_BYTES, chunk.samples * 2, audioOffset(chunk.start));
+    } finally {
+      await file.close();
+    }
+    await appendFile(chunkLog(runtime.directory), chunkLine(chunk));
+    runtime.chunks.push(chunk);
+    runtime.chunks.sort((a, b) => a.start - b.start);
+  });
+  runtime.saving = stored.catch(() => undefined);
+  return stored;
 }
 
 /**
@@ -356,16 +456,40 @@ export async function saveRecordingChunk(id: string, index: number, start: numbe
   }
 
   const samples = Math.floor((wav.byteLength - WAV_HEADER_BYTES) / 2);
-  if (!runtime.meta.chunks.some((chunk) => chunk.index === index)) {
-    const file = chunkFile(runtime.directory, index);
-    await writeFile(`${file}.tmp`, wav);
-    await rename(`${file}.tmp`, file);
-    runtime.meta.chunks.push({ index, start, samples, transcribed: false });
-    runtime.meta.chunks.sort((a, b) => a.start - b.start);
-    await persist(runtime);
-  }
+  await storeChunk(runtime, { index, start, samples, transcribed: false }, wav);
   if (runtime.meta.liveTranscribe) void transcribePending(runtime);
-  return { savedSeconds: seconds(savedSamples(runtime.meta)), chunks: runtime.meta.chunks.length };
+  return { savedSeconds: seconds(savedSamples(runtime.chunks)), chunks: runtime.chunks.length };
+}
+
+function wavHeader(samples: number) {
+  const header = Buffer.alloc(WAV_HEADER_BYTES);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + samples * 2, 4);
+  header.write("WAVEfmt ", 8, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(RECORDING_SAMPLE_RATE, 24);
+  header.writeUInt32LE(RECORDING_SAMPLE_RATE * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(samples * 2, 40);
+  return header;
+}
+
+/** One chunk as a WAV of its own, for Parakeet. The next chunk reuses the file. */
+export async function writeChunkForHearing(directory: string, chunk: Pick<ChunkRecord, "start" | "samples">) {
+  const data = Buffer.alloc(chunk.samples * 2);
+  const file = await open(audioFile(directory), "r");
+  try {
+    await file.read(data, 0, data.length, audioOffset(chunk.start));
+  } finally {
+    await file.close();
+  }
+  const target = path.join(directory, "hearing.wav");
+  await writeFile(target, Buffer.concat([wavHeader(chunk.samples), data]));
+  return target;
 }
 
 /** Recognizes the chunks Parakeet has not heard yet, oldest first; one run per recording at a time. */
@@ -380,11 +504,11 @@ function transcribePending(runtime: Runtime): Promise<void> {
     const worker = getTranscriptionWorker();
     worker.configure(await findAudioDecoder(getTranscriptionPreferences()));
     for (;;) {
-      const chunk = runtime.meta.chunks.find((candidate) => !candidate.transcribed);
+      const chunk = runtime.chunks.find((candidate) => !candidate.transcribed);
       if (!chunk || !runtime.meta.liveTranscribe) break;
       const offset = seconds(chunk.start);
       let words: TimedWord[] = [];
-      const opened = await worker.open(chunkFile(runtime.directory, chunk.index));
+      const opened = await worker.open(await writeChunkForHearing(runtime.directory, chunk));
       try {
         const result = await worker.recognize(opened.handle, 0, opened.duration, model);
         words = wordsFromTokens(result.tokens, result.timestamps, offset, offset + opened.duration, result.durations);
@@ -396,7 +520,6 @@ function transcribePending(runtime: Runtime): Promise<void> {
       chunk.transcribed = true;
       runtime.transcribeError = "";
       await appendFile(path.join(runtime.directory, "words.jsonl"), `${JSON.stringify({ index: chunk.index, words })}\n`);
-      await persist(runtime);
       void updateRecap(runtime);
     }
   })().catch((error) => {
@@ -480,35 +603,13 @@ function run(command: string, args: string[]) {
   });
 }
 
-/** The chunks as one WAV, in recording order; a gap left by a lost chunk becomes silence. */
-async function joinChunks(runtime: Runtime, target: string) {
-  const chunks = [...runtime.meta.chunks].sort((a, b) => a.start - b.start);
-  const total = savedSamples(runtime.meta);
-  const header = Buffer.alloc(WAV_HEADER_BYTES);
-  header.write("RIFF", 0, "ascii");
-  header.writeUInt32LE(36 + total * 2, 4);
-  header.write("WAVEfmt ", 8, "ascii");
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(1, 22);
-  header.writeUInt32LE(RECORDING_SAMPLE_RATE, 24);
-  header.writeUInt32LE(RECORDING_SAMPLE_RATE * 2, 28);
-  header.writeUInt16LE(2, 32);
-  header.writeUInt16LE(16, 34);
-  header.write("data", 36, "ascii");
-  header.writeUInt32LE(total * 2, 40);
-  const file = await open(target, "w");
+/** Makes recording.wav a complete WAV of what was saved: a gap left by a lost chunk is already silence. */
+async function completeAudio(runtime: Runtime) {
+  const total = savedSamples(runtime.chunks);
+  const file = await open(audioFile(runtime.directory), fsConstants.O_WRONLY | fsConstants.O_CREAT);
   try {
-    await file.write(header);
-    let position = 0;
-    for (const chunk of chunks) {
-      if (chunk.start > position) await file.write(Buffer.alloc((chunk.start - position) * 2));
-      const data = (await readFile(chunkFile(runtime.directory, chunk.index))).subarray(WAV_HEADER_BYTES);
-      // Overlap from a chunk sent twice under two numbers is skipped.
-      const skip = Math.max(0, position - chunk.start) * 2;
-      if (skip < data.length) await file.write(data.subarray(skip));
-      position = Math.max(position, chunk.start + chunk.samples);
-    }
+    await file.truncate(audioOffset(total));
+    await file.write(wavHeader(total), 0, WAV_HEADER_BYTES, 0);
   } finally {
     await file.close();
   }
@@ -535,12 +636,12 @@ async function compress(wav: string, decoder: AudioDecoder) {
 /**
  * Saves the recording into its notebook: waits for Parakeet to hear the last
  * chunks and the recap to read them, then writes the audio, its transcript
- * and the recap note, and removes the chunks.
+ * and the recap note, and removes the working folder.
  */
 export async function finishRecording(id: string): Promise<FinishedRecording> {
   const runtime = await getRuntime(id);
   if (runtime.meta.state === "finishing") throw new StorageError("The recording is already being saved.", 409);
-  if (!runtime.meta.chunks.length) {
+  if (!runtime.chunks.length) {
     await discardRecording(id);
     throw new StorageError("Nothing was recorded.", 400);
   }
@@ -558,9 +659,8 @@ export async function finishRecording(id: string): Promise<FinishedRecording> {
     await assertDirectoryExists(folderPath, "The notebook for the recording was not found.");
     const shared = isSharedNotebookPath(runtime.meta.directory);
 
-    const wav = path.join(runtime.directory, "recording.wav");
-    await joinChunks(runtime, wav);
-    const audio = await compress(wav, await findAudioDecoder(getTranscriptionPreferences()));
+    await completeAudio(runtime);
+    const audio = await compress(audioFile(runtime.directory), await findAudioDecoder(getTranscriptionPreferences()));
     const audioName = (await findAvailableFilePath(folderPath, `${runtime.meta.name}${audio.extension}`)).name;
     const upload = new File([await readFile(audio.file)], audioName);
     const node = shared
@@ -581,13 +681,13 @@ export async function finishRecording(id: string): Promise<FinishedRecording> {
       const transcript: Transcript = {
         version: TRANSCRIPT_VERSION,
         createdAt: new Date().toISOString(),
-        audio: { ...audioStats, duration: Math.round(seconds(savedSamples(runtime.meta)) * 100) / 100 },
+        audio: { ...audioStats, duration: Math.round(seconds(savedSamples(runtime.chunks)) * 100) / 100 },
         engine: { kind: "local", model: SPEECH_MODELS.asr.name },
         language: "",
         diarization: null,
         speakers: [],
         segments,
-        stats: { words: runtime.edits ? countWords(segments) : words.length, chunks: runtime.meta.chunks.length, elapsedMs: 0 },
+        stats: { words: runtime.edits ? countWords(segments) : words.length, chunks: runtime.chunks.length, elapsedMs: 0 },
       };
       await writeTranscript(node.path, transcript);
     }

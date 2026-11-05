@@ -110,7 +110,7 @@ export function WorkspacesPanel({ manager, tree }: { manager: WorkspaceManager; 
     <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">A little room for each project. Pick up right where you left off.</p>
     <div className="relative px-3 pb-3 pt-1">
       <Search aria-hidden className="pointer-events-none absolute left-6 top-1/2 h-4 w-4 -translate-y-[calc(50%+0.125rem)] text-muted-foreground" />
-      <input aria-label="Search workspaces" className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring" placeholder="Search workspaces" value={query} onChange={(event) => setQuery(event.target.value)} />
+      <input aria-label="Search workspaces" className="libera-rail-field libera-rail-field--search w-full" placeholder="Search workspaces" value={query} onChange={(event) => setQuery(event.target.value)} />
       {query && <button type="button" aria-label="Clear search" className="absolute right-5 top-1/2 inline-flex h-7 w-7 -translate-y-[calc(50%+0.125rem)] items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring" onClick={() => setQuery("")} onMouseDown={(event) => event.preventDefault()}><X aria-hidden className="h-4 w-4" /></button>}
     </div>
     {(error || manager.loadError) && <div role="alert" className="mx-3 mb-3 rounded-lg bg-destructive-muted p-3 text-xs text-destructive">{error || manager.loadError}{manager.loadError && <button className="ml-2 underline" onClick={manager.retry}>Try again</button>}</div>}

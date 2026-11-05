@@ -253,7 +253,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
             <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               aria-label="Search definitions and notation"
-              className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
+              className="libera-rail-field libera-rail-field--search w-full"
               placeholder="Search definitions"
               value={query}
               onChange={(event) => { setQuery(event.target.value); setLimit(PAGE_SIZE); }}
@@ -283,7 +283,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
             <span className="relative">
               <select
                 aria-label="Definition kind"
-                className="libera-sidebar-search-input h-8 appearance-none rounded-lg border border-input bg-card pl-3 pr-8 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/20"
+                className="libera-rail-field libera-rail-field--compact pl-3 pr-8"
                 value={kind}
                 onChange={(event) => { setKind(event.target.value as DefinitionKind | "all"); setLimit(PAGE_SIZE); }}
               >

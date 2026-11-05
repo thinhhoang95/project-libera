@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -78,6 +78,10 @@ test("chunks on disk survive a crash and are saved as one recording", async () =
     await sessions.saveRecordingChunk(created.id, 1, 16_000, wav(8_000));
     await assert.rejects(() => sessions.saveRecordingChunk(created.id, 2, 24_000, new Uint8Array(10)));
 
+    const folder = path.join(dataRoot, "recordings", created.id);
+    assert.deepEqual((await readdir(folder)).sort(), ["chunks.jsonl", "recording.wav", "session.json"], "chunks add no files");
+    assert.ok(!(await readFile(path.join(folder, "session.json"), "utf8")).includes("chunks"), "chunks are not listed in session.json");
+
     // A crash: the server forgets everything it kept in memory.
     (globalThis as Record<symbol, unknown>)[Symbol.for("libera.recordings")] = undefined;
     const unfinished = await sessions.listUnfinishedRecordings();
@@ -103,3 +107,86 @@ test("chunks on disk survive a crash and are saved as one recording", async () =
     await rm(dataRoot, { recursive: true, force: true });
   }
 });
+
+async function inRecordingData(run: (dataRoot: string, sessions: typeof import("../../src/lib/recording/sessions")) => Promise<void>) {
+  const dataRoot = await mkdtemp(path.join(os.tmpdir(), "libera-recording-test-"));
+  const previous = process.env.LIBERA_DATA_DIR;
+  process.env.LIBERA_DATA_DIR = dataRoot;
+  try {
+    await mkdir(path.join(dataRoot, "users", "admin", "Meetings"), { recursive: true });
+    await run(dataRoot, await import("../../src/lib/recording/sessions"));
+  } finally {
+    (globalThis as Record<symbol, unknown>)[Symbol.for("libera.recordings")] = undefined;
+    if (previous === undefined) delete process.env.LIBERA_DATA_DIR;
+    else process.env.LIBERA_DATA_DIR = previous;
+    await rm(dataRoot, { recursive: true, force: true });
+  }
+}
+
+const firstSample = (bytes: Uint8Array, at = 0) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt16(44 + at * 2, true);
+
+test("each chunk can be heard alone, and a lost chunk leaves silence", () => inRecordingData(async (dataRoot, sessions) => {
+  const { id } = await sessions.createRecording({ notebook: "Meetings" });
+  await sessions.saveRecordingChunk(id, 0, 0, wav(1_000, 0.25));
+  await sessions.saveRecordingChunk(id, 2, 2_000, wav(500, 0.5)); // Chunk 1 was refused.
+  const folder = path.join(dataRoot, "recordings", id);
+
+  const heard = await readFile(await sessions.writeChunkForHearing(folder, { start: 2_000, samples: 500 }));
+  assert.equal(heard.byteLength, 44 + 500 * 2);
+  assert.equal(heard.toString("ascii", 0, 4), "RIFF");
+  assert.equal(firstSample(heard), Math.round(0.5 * 32767));
+
+  const audio = await readFile(path.join(folder, "recording.wav"));
+  assert.equal(firstSample(audio), Math.round(0.25 * 32767));
+  assert.equal(firstSample(audio, 1_500), 0);
+  assert.equal(firstSample(audio, 2_000), Math.round(0.5 * 32767));
+}));
+
+test("a line cut off by a crash loses only its chunk", () => inRecordingData(async (dataRoot, sessions) => {
+  const { id } = await sessions.createRecording({ notebook: "Meetings" });
+  await sessions.saveRecordingChunk(id, 0, 0, wav(1_000));
+  const log = path.join(dataRoot, "recordings", id, "chunks.jsonl");
+  await writeFile(log, `${await readFile(log, "utf8")}{"index":1,"sta`);
+
+  (globalThis as Record<symbol, unknown>)[Symbol.for("libera.recordings")] = undefined;
+  const status = await sessions.getRecordingStatus(id);
+  assert.equal(status.nextIndex, 1);
+  assert.equal(status.savedSamples, 1_000);
+  await sessions.saveRecordingChunk(id, 1, 1_000, wav(1_000));
+
+  (globalThis as Record<symbol, unknown>)[Symbol.for("libera.recordings")] = undefined;
+  assert.equal((await sessions.getRecordingStatus(id)).savedSamples, 2_000);
+}));
+
+test("a recording left as chunk files is moved into one file", () => inRecordingData(async (dataRoot, sessions) => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  const folder = path.join(dataRoot, "recordings", id);
+  await mkdir(folder, { recursive: true });
+  await writeFile(path.join(folder, "chunk-000000.wav"), wav(1_000, 0.25));
+  await writeFile(path.join(folder, "chunk-000001.wav"), wav(500, 0.5));
+  await writeFile(path.join(folder, "session.json"), JSON.stringify({
+    id,
+    name: "Old",
+    directory: "Meetings",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    state: "recording",
+    liveTranscribe: false,
+    liveRecap: false,
+    chunks: [
+      { index: 0, start: 0, samples: 1_000, transcribed: false },
+      { index: 1, start: 1_000, samples: 500, transcribed: false },
+    ],
+  }));
+
+  // The start screen and an open tab both load it at once.
+  const [listed, status] = await Promise.all([sessions.listUnfinishedRecordings(), sessions.getRecordingStatus(id)]);
+  assert.equal(listed[0].chunks, 2);
+  assert.equal(status.savedSamples, 1_500);
+  assert.deepEqual((await readdir(folder)).sort(), ["chunks.jsonl", "recording.wav", "session.json"]);
+  const audio = await readFile(path.join(folder, "recording.wav"));
+  assert.equal(firstSample(audio, 999), Math.round(0.25 * 32767));
+  assert.equal(firstSample(audio, 1_000), Math.round(0.5 * 32767));
+
+  const finished = await sessions.finishRecording(id);
+  assert.match(finished.path, /^Meetings\/Old\.(m4a|wav)$/);
+}));

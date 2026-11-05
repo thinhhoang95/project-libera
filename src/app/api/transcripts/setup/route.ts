@@ -13,6 +13,7 @@ async function status() {
   const payload: TranscriptionSetupStatus = {
     engine: preferences.engine,
     openRouterModel: preferences.openRouterModel,
+    language: preferences.language,
     diarization: preferences.diarization,
     models: await getSpeechModelsStatus(),
     decoder: { available: decoder.kind !== "wav-only", kind: decoder.kind, path: decoder.path },
