@@ -13,7 +13,9 @@ import { serializeNativeMenu, type NativeMenuEntry } from "./native-menu";
  * - Format and Insert: the active editor's tools, registered with
  *   `useAppMenuEditor`. The editor is the one in the focused canvas panel.
  * - References: the reference manager's menu (its panel's "More" button),
- *   registered with `useAppMenuReferences`.
+ *   registered with `useAppMenuReferences`. Hidden while the gallery is open.
+ * - Gallery and Photo: the Photo gallery's toolbars, in place of References,
+ *   registered with `useAppMenuGallery` and `useAppMenuPhoto`.
  * - View (above its standard items), Tab and AI: app commands, registered
  *   with `useAppMenuItems`. Several components can add to one of these menus;
  *   their groups are shown in priority order, between separators.
@@ -25,12 +27,12 @@ export type AppEditorMenus = { format?: NativeMenuEntry[]; insert?: NativeMenuEn
 
 type EditorProvider = { element: () => Element | null; read: () => AppEditorMenus };
 type SectionProvider = { priority: number; read: () => NativeMenuEntry[] | Promise<NativeMenuEntry[]> };
-type Section = "file" | "references" | "view" | "tab" | "ai";
+type Section = "file" | "references" | "gallery" | "photo" | "view" | "tab" | "ai";
 /** Menus built from every provider's items; the others show one provider's. */
 const MERGED_SECTIONS = new Set<Section>(["view", "tab", "ai"]);
 
 const editorProviders = new Set<EditorProvider>();
-const sectionProviders: Record<Section, Set<SectionProvider>> = { file: new Set(), references: new Set(), view: new Set(), tab: new Set(), ai: new Set() };
+const sectionProviders: Record<Section, Set<SectionProvider>> = { file: new Set(), references: new Set(), gallery: new Set(), photo: new Set(), view: new Set(), tab: new Set(), ai: new Set() };
 let actions = new Map<string, () => void>();
 let lastSent = "";
 let generation = 0;
@@ -94,13 +96,15 @@ async function sync() {
   };
   let fileItems: NativeMenuEntry[] = [];
   let referenceItems: NativeMenuEntry[] = [];
+  let galleryItems: NativeMenuEntry[] = [];
+  let photoItems: NativeMenuEntry[] = [];
   let viewItems: NativeMenuEntry[] = [];
   let tabItems: NativeMenuEntry[] = [];
   let aiItems: NativeMenuEntry[] = [];
   let editorMenus: AppEditorMenus = {};
   try {
-    [fileItems, referenceItems, viewItems, tabItems, aiItems, editorMenus] = await Promise.all([
-      section("file"), section("references"), section("view"), section("tab"), section("ai"), editor ? editor.read() : {},
+    [fileItems, referenceItems, galleryItems, photoItems, viewItems, tabItems, aiItems, editorMenus] = await Promise.all([
+      section("file"), section("references"), section("gallery"), section("photo"), section("view"), section("tab"), section("ai"), editor ? editor.read() : {},
     ]);
   } catch {
     // Keep the menus already shown.
@@ -112,7 +116,10 @@ async function sync() {
     file: serializeNativeMenu(fileItems, next, "file:"),
     format: serializeNativeMenu(editorMenus.format ?? [], next, "format:"),
     insert: serializeNativeMenu(editorMenus.insert ?? [], next, "insert:"),
-    references: serializeNativeMenu(referenceItems, next, "references:"),
+    // The gallery is mounted only while it is the active view.
+    references: serializeNativeMenu(sectionProviders.gallery.size ? [] : referenceItems, next, "references:"),
+    gallery: serializeNativeMenu(galleryItems, next, "gallery:"),
+    photo: serializeNativeMenu(photoItems, next, "photo:"),
     view: serializeNativeMenu(viewItems, next, "view:"),
     tab: serializeNativeMenu(tabItems, next, "tab:"),
     ai: serializeNativeMenu(aiItems, next, "ai:"),
@@ -189,6 +196,19 @@ export function useAppMenuFileActions(read: () => NativeMenuEntry[] | Promise<Na
  */
 export function useAppMenuReferences(source: "panel" | "fallback", read: () => NativeMenuEntry[]) {
   useSection("references", source === "panel" ? 1 : 0, read);
+}
+
+/** Offers the Gallery menu while mounted, and takes the References menu off the menu bar. */
+export function useAppMenuGallery(read: () => NativeMenuEntry[]) {
+  useSection("gallery", 0, read);
+}
+
+/**
+ * Offers the Photo menu while mounted: the grid's selection actions
+ * ("selection"), or the open photo's ("viewer"), which take their place.
+ */
+export function useAppMenuPhoto(source: "selection" | "viewer", read: () => NativeMenuEntry[]) {
+  useSection("photo", source === "viewer" ? 1 : 0, read);
 }
 
 /**

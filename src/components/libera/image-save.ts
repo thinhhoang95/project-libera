@@ -74,14 +74,17 @@ export function subscribeSaveToNewAlbum(listener: (source: ImageSaveSource) => v
   return () => { newAlbumListeners.delete(listener); };
 }
 
+/** A gallery photo's Save menu items. */
+export function notebookSaveMenuItems() {
+  return [
+    { id: COMPUTER_ID, label: "Save to Computer…" },
+    { id: NOTEBOOK_ID, label: "Save to Notebook Folder…" },
+  ];
+}
+
 /** The Save menu's items. Albums come from the gallery, loaded if need be. */
 export async function imageSaveMenuItems(destination: ImageSaveDestination): Promise<NativeMenuItems> {
-  if (destination === "notebook") {
-    return [
-      { id: COMPUTER_ID, label: "Save to Computer…" },
-      { id: NOTEBOOK_ID, label: "Save to Notebook Folder…" },
-    ];
-  }
+  if (destination === "notebook") return notebookSaveMenuItems();
   const albums = (await loadedGallery())?.albums ?? [];
   return [
     { id: COMPUTER_ID, label: "Save to Computer…" },

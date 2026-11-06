@@ -37,7 +37,8 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
-import { usePaletteCommands } from "@/components/libera/command-palette/commands";
+import { useAppMenuGallery, useAppMenuPhoto } from "@/components/libera/app-menu";
+import { usePaletteCommands, type PaletteCommand } from "@/components/libera/command-palette/commands";
 import { ArchiveUnlock, moveToArchive, useProtectedArchive } from "@/components/libera/gallery-archive";
 import {
   applyGallery, refreshGallery, reusePrompt, sendToReferences, settleSharedAlbumRequest, subscribeSharedAlbumRequests, useGallery,
@@ -51,6 +52,7 @@ import { collabClient } from "@/lib/collab/ui/client";
 import { useCollabStatus, useHostEvents } from "@/lib/collab/ui/hooks";
 import { ALBUM_ROLE_LABEL } from "@/lib/collab/ui/wording";
 import { ModalDialog } from "@/components/libera/modal-dialog";
+import { commandMenuItems, disabledMenu, menuCommands, type NativeMenuEntry } from "@/components/libera/native-menu";
 import { VirtualPhotoGrid } from "@/components/libera/virtual-photo-grid";
 import { PhotoViewer, type PhotoViewerChat, type PhotoViewerViewState } from "@/components/libera/photo-viewer";
 import type { GalleryTabPlacement } from "@/components/libera/gallery-tabs";
@@ -287,9 +289,8 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
     setLandedId(photo.id);
   }
 
-  // The choices inside Group by, Jump to and Filter, for the command palette; the toolbar's buttons are read from the page.
-  usePaletteCommands(rootRef, () => {
-    if (!showGrid || !contents || viewingId) return [];
+  // The choices inside Group by, Jump to and Filter, for the command palette and the Gallery menu.
+  function timelineCommands(): PaletteCommand[] {
     const group = "Gallery";
     const byTime = [...photos].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
     const years = [...new Set(viewPhotos.map((photo) => new Date(photo.createdAt).getFullYear()))].sort((first, second) => second - first);
@@ -329,6 +330,21 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
       })),
       { id: "gallery:filter-clear", title: "Clear filter", group, icon: X, keywords: "show all photos reset", disabled: !filtering, run: () => setFilter(NO_FILTER) },
     ];
+  }
+
+  // The toolbar's buttons are read from the page; these are the choices behind them.
+  usePaletteCommands(rootRef, () => {
+    if (!showGrid || !contents || viewingId) return [];
+    const group = "Gallery";
+    const ids = [...selected];
+    return [
+      ...timelineCommands(),
+      { id: "gallery:select-all", title: "Select all photos", group, icon: Images, shortcut: "⌘A", disabled: !photos.length, run: selectAll },
+      ...(selecting && !inArchive ? [
+        ...menuCommands(addToAlbumChoices(ids), { group, icon: FolderInput, keywords: "album" }, (label) => `Add to album: ${label}`),
+        ...(canOpenSelection ? menuCommands(openChoices(selectedPhotos[0]), { group, icon: AppWindow, keywords: "canvas split pane" }) : []),
+      ] : []),
+    ];
   });
 
   useEffect(() => {
@@ -348,6 +364,8 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   const allSelectedStarred = selectedPhotos.length > 0 && selectedPhotos.every((photo) => photo.starred);
   const selectionLocked = selectedPhotos.some((photo) => photo.shared && !canChangeSharedPhotos(photo.shared));
   const selectionShared = selectedPhotos.some((photo) => photo.shared);
+  const canShareSelection = canShare && selectedPhotos.length === 1 && !selectedPhotos[0].shared && !selectedPhotos[0].name.toLowerCase().endsWith(".svg");
+  const canOpenSelection = Boolean(onOpenInCanvas) && selectedPhotos.length === 1;
 
   const viewingIndex = viewingId ? photos.findIndex((photo) => photo.id === viewingId) : -1;
   const showGrid = view.kind !== "albums" && view.kind !== "shared" && (!inArchive || archive.unlocked);
@@ -435,6 +453,10 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
       return next;
     });
     setAnchor(photo.id);
+  }
+
+  function selectAll() {
+    setSelected(new Set(photos.map((photo) => photo.id)));
   }
 
   function toggleGroup(group: GalleryPhoto[]) {
@@ -647,6 +669,40 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
     setAlbumMenu({ photoIds, ...menuPosition(element), excludeAlbumId: currentAlbum?.id });
   }
 
+  function sendSelectionToReferences() {
+    sendToReferences(selectedPhotos.map((photo) => ({ name: photo.name, url: galleryRawUrl(photo) })));
+    setSelected(new Set());
+  }
+
+  function changeSort(next: SortOrder) {
+    setSort(next);
+    store(SORT_STORAGE_KEY, next);
+  }
+
+  /** The albums photos can be added to; the one being shown already holds them. */
+  function albumTargets(excludeAlbumId?: string) {
+    return (contents?.albums ?? []).filter((album) => album.id !== excludeAlbumId && !album.shared?.direct && canChangeSharedPhotos(album.shared));
+  }
+
+  /** The Add to album popup's choices, for the menu bar and the palette. */
+  function addToAlbumChoices(photoIds: string[]): NativeMenuEntry[] {
+    const albums = albumTargets(currentAlbum?.id);
+    return [
+      { id: "add-to-album:new", label: "New Album…", onSelect: () => setDialog({ kind: "create-album", photoIds }) },
+      ...(albums.length ? [{ type: "separator" as const }] : []),
+      ...albums.map((album) => ({ id: `add-to-album:${album.id}`, label: album.name, onSelect: () => void addToAlbum(album.id, photoIds) })),
+    ];
+  }
+
+  /** The Open in tab popup's choices, for the menu bar and the palette. */
+  function openChoices(photo: GalleryPhoto): NativeMenuEntry[] {
+    return [
+      { id: "open:tab", label: "Open in Tab", onSelect: () => openInCanvas(photo, "tab") },
+      { id: "open:right", label: "Open to the Right", onSelect: () => openInCanvas(photo, "right") },
+      { id: "open:bottom", label: "Open Below", onSelect: () => openInCanvas(photo, "bottom") },
+    ];
+  }
+
   function openInCanvas(photo: GalleryPhoto, placement: GalleryTabPlacement) {
     setOpenMenu(null);
     setPhotoMenu(null);
@@ -662,7 +718,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable=true]")) return;
       const plain = !event.metaKey && !event.ctrlKey && !event.altKey;
       if (event.key === "Escape" && selecting) setSelected(new Set());
-      else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && photos.length) setSelected(new Set(photos.map((photo) => photo.id)));
+      else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && photos.length) selectAll();
       else if (plain && (event.key === "+" || event.key === "=")) changeLayout((current) => ({ zoom: current.zoom + 1 }));
       else if (plain && event.key === "-") changeLayout((current) => ({ zoom: current.zoom - 1 }));
       else return;
@@ -670,6 +726,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectAll reads `photos`, listed here
   }, [albumMenu, changeLayout, dialog, openMenu, photoMenu, photos, selecting, showGrid, viewingId]);
 
   const title = view.kind === "album" ? currentAlbum?.name ?? "" : view.kind === "albums" ? "Albums" : view.kind === "shared" ? "Shared" : view.kind === "starred" ? "Starred" : inArchive ? "Protected Archive" : "Photos";
@@ -681,6 +738,82 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   const contextPhoto = useStableCallback(openPhotoMenu);
   // The seeker takes the place of the scroll bar beside the photos.
   const seeking = Boolean(contents) && showGrid && photos.length > 0;
+  const sections = ["photos", "starred", "albums", ...(canShare || contents?.albums.some((album) => album.shared) ? ["shared" as const] : []), "archive"] as const;
+  const canUpload = view.kind !== "shared" && !albumLocked && !inArchive;
+
+  // The header's actions while nothing is selected. Over an open photo the viewer's Photo menu is all that applies.
+  useAppMenuGallery(() => {
+    if (viewingIndex >= 0) return [];
+    const browsing = !selecting;
+    const timeline = showGrid && contents ? timelineCommands() : [];
+    const timelineMenu = (id: string, label: string, prefix: string, strip: RegExp): NativeMenuEntry => ({
+      id, label, enabled: browsing, submenu: commandMenuItems(timeline.filter((command) => command.id.startsWith(prefix)), (title) => {
+        const text = title.replace(strip, "");
+        return text.charAt(0).toUpperCase() + text.slice(1);
+      }),
+    });
+    const sectionLabel = { photos: "Photos", starred: "Starred", albums: "Albums", shared: "Shared", archive: "Protected Archive" };
+    const items: NativeMenuEntry[] = [
+      ...(currentAlbum ? [{ id: "back", label: "Back to Albums", enabled: browsing, onSelect: () => openView({ kind: "albums" }) }]
+        : sections.map((kind) => ({ id: `section:${kind}`, label: sectionLabel[kind], type: "radio" as const, checked: view.kind === kind, enabled: browsing, onSelect: () => openView({ kind }) }))),
+      { type: "separator" },
+      ...(canUpload ? [{ id: "upload", label: "Upload Photos…", enabled: browsing && !upload, onSelect: () => uploadInputRef.current?.click() }] : []),
+      ...(view.kind === "starred" && starredCount > 0 ? [{ id: "album-from-starred", label: "Create Album from Starred…", enabled: browsing && !busy, onSelect: () => setDialog({ kind: "create-album", photoIds: photos.map((photo) => photo.id) }) }] : []),
+      ...(!currentAlbum && view.kind !== "starred" && view.kind !== "shared" && !inArchive ? [{ id: "new-album", label: "New Album…", enabled: browsing && !busy, onSelect: () => setDialog({ kind: "create-album", photoIds: [] }) }] : []),
+      ...(currentAlbum && (canShare || currentAlbum.shared) ? [{ id: "share-album", label: currentAlbum.shared ? "Sharing…" : "Share Album…", enabled: browsing && !busy, onSelect: () => setDialog({ kind: "share", album: currentAlbum }) }] : []),
+      ...(currentAlbum && (!currentAlbum.shared || currentAlbum.shared.role === "owner") ? [{ id: "rename-album", label: "Rename Album…", enabled: browsing && !busy, onSelect: () => setDialog({ kind: "rename-album", album: currentAlbum }) }] : []),
+      ...(currentAlbum && !currentAlbum.shared ? [{ id: "delete-album", label: "Delete Album…", enabled: browsing && !busy, onSelect: () => setDialog({ kind: "delete-album", album: currentAlbum }) }] : []),
+      ...(inArchive && archive.unlocked ? [{ id: "lock-archive", label: "Lock Archive", enabled: browsing, onSelect: archive.lock }] : []),
+      ...(showGrid ? [
+        { type: "separator" as const },
+        timelineMenu("group-by", "Group By", "gallery:group-by:", /^Group by /),
+        timelineMenu("jump", "Jump To", "gallery:jump", /^Jump to /),
+        timelineMenu("filter", "Filter", "gallery:filter", /^Filter: /),
+        { id: "sort", label: "Sort", enabled: browsing, submenu: [
+          { id: "sort:newest", label: "Newest First", type: "radio" as const, checked: sort === "newest", onSelect: () => changeSort("newest") },
+          { id: "sort:oldest", label: "Oldest First", type: "radio" as const, checked: sort === "oldest", onSelect: () => changeSort("oldest") },
+        ] },
+        { id: "layout", label: "Layout", enabled: browsing, submenu: [
+          { id: "layout:grid", label: "Square Grid", type: "radio" as const, checked: layout.mode === "grid", onSelect: () => changeLayout(() => ({ mode: "grid" })) },
+          { id: "layout:justified", label: "Original Shapes", type: "radio" as const, checked: layout.mode === "justified", onSelect: () => changeLayout(() => ({ mode: "justified" })) },
+        ] },
+        { id: "zoom-in", label: "Larger Thumbnails", enabled: browsing && layout.zoom < GALLERY_ZOOM_LEVELS.length - 1, onSelect: () => changeLayout((current) => ({ zoom: current.zoom + 1 })) },
+        { id: "zoom-out", label: "Smaller Thumbnails", enabled: browsing && layout.zoom > 0, onSelect: () => changeLayout((current) => ({ zoom: current.zoom - 1 })) },
+        { type: "separator" as const },
+        { id: "select-all", label: "Select All Photos", enabled: photos.length > 0, onSelect: selectAll },
+      ] : []),
+    ];
+    return dialog ? disabledMenu(items) : items;
+  });
+
+  // The selection toolbar's actions. Those it does not offer right now stay in the menu, disabled.
+  useAppMenuPhoto("selection", () => {
+    if (!showGrid) return [];
+    const ids = [...selected];
+    const ready = selecting && !busy;
+    const remove: NativeMenuEntry = { id: "delete", label: "Delete…", enabled: ready && !selectionLocked, onSelect: () => setDialog({ kind: "delete-photos", ids, archived: inArchive }) };
+    const clear: NativeMenuEntry = { id: "clear", label: "Clear Selection", enabled: selecting, onSelect: () => setSelected(new Set()) };
+    const items: NativeMenuEntry[] = inArchive ? [
+      { id: "restore", label: "Restore to Gallery", enabled: ready, onSelect: () => void restoreFromArchive(ids) },
+      remove,
+      { type: "separator" },
+      clear,
+    ] : [
+      { id: "star", label: allSelectedStarred ? "Unstar" : "Star", enabled: ready, onSelect: () => void setStarred(ids, !allSelectedStarred) },
+      { id: "add-to-album", label: "Add to Album", enabled: ready, submenu: addToAlbumChoices(ids) },
+      ...(currentAlbum && !albumLocked ? [{ id: "remove-from-album", label: "Remove from Album", enabled: ready, onSelect: () => void removeFromAlbum(currentAlbum.id, ids) }] : []),
+      { id: "save-to-gallery", label: "Save to My Gallery", enabled: ready && selectionShared, onSelect: () => void saveToGallery(ids) },
+      ...(canShare ? [{ id: "share", label: "Share…", enabled: ready && canShareSelection, onSelect: () => setDialog({ kind: "share", photo: selectedPhotos[0] }) }] : []),
+      ...(onOpenInCanvas ? [{ id: "open", label: "Open In", enabled: ready && canOpenSelection, submenu: selectedPhotos[0] ? openChoices(selectedPhotos[0]) : [{ id: "open:none", label: "Open in Tab" }] }] : []),
+      { id: "use-as-reference", label: "Use as Reference", enabled: ready, onSelect: sendSelectionToReferences },
+      { id: "archive", label: "Archive", enabled: ready && !selectionShared, onSelect: () => void sendToArchive(ids) },
+      { type: "separator" },
+      remove,
+      { type: "separator" },
+      clear,
+    ];
+    return dialog ? disabledMenu(items) : items;
+  });
 
   return <div ref={rootRef} className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background" {...(inArchive ? {} : dropHandlers)}>
     <input ref={uploadInputRef} type="file" multiple accept={UPLOAD_ACCEPT} className="hidden" aria-hidden tabIndex={-1}
@@ -700,13 +833,10 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
         <button className={toolbarButton} disabled={busy} aria-haspopup="menu" onClick={(event) => openAlbumMenu([...selected], event.currentTarget)}><FolderInput className="h-4 w-4" />Add to album</button>
         {currentAlbum && !albumLocked && <button className={toolbarButton} disabled={busy} title={currentAlbum.shared ? "Remove from the shared album for everyone; the photos stay in your gallery" : undefined} onClick={() => void removeFromAlbum(currentAlbum.id, [...selected])}><FolderMinus className="h-4 w-4" />Remove from album</button>}
         {selectionShared && <button className={toolbarButton} disabled={busy} title="Save copies in your gallery, which stay whatever happens to the album" onClick={() => void saveToGallery([...selected])}><FolderDown className="h-4 w-4" />Save to my gallery</button>}
-        {canShare && selectedPhotos.length === 1 && !selectedPhotos[0].shared && !selectedPhotos[0].name.toLowerCase().endsWith(".svg") && <button className={toolbarButton} disabled={busy} onClick={() => setDialog({ kind: "share", photo: selectedPhotos[0] })}><UserPlus className="h-4 w-4" />Share</button>}
-        {onOpenInCanvas && selectedPhotos.length === 1 && <button className={toolbarButton} disabled={busy} aria-haspopup="menu" title="Open in an editor tab, or beside the current one"
+        {canShareSelection && <button className={toolbarButton} disabled={busy} onClick={() => setDialog({ kind: "share", photo: selectedPhotos[0] })}><UserPlus className="h-4 w-4" />Share</button>}
+        {canOpenSelection && <button className={toolbarButton} disabled={busy} aria-haspopup="menu" title="Open in an editor tab, or beside the current one"
           onClick={(event) => setOpenMenu({ photo: selectedPhotos[0], ...menuPosition(event.currentTarget) })}><AppWindow className="h-4 w-4" />Open in tab</button>}
-        <button className={toolbarButton} disabled={busy} title="Send to the panel as reference photos" onClick={() => {
-          sendToReferences(selectedPhotos.map((photo) => ({ name: photo.name, url: galleryRawUrl(photo) })));
-          setSelected(new Set());
-        }}><ImagePlus className="h-4 w-4" />Use as reference</button>
+        <button className={toolbarButton} disabled={busy} title="Send to the panel as reference photos" onClick={sendSelectionToReferences}><ImagePlus className="h-4 w-4" />Use as reference</button>
         {!selectionShared && <button className={toolbarButton} disabled={busy} title="Hide in the Protected Archive, which needs your password to open" onClick={() => void sendToArchive([...selected])}><Lock className="h-4 w-4" />Archive</button>}
         </>}
         {!selectionLocked && <button className={`${toolbarButton} text-destructive`} disabled={busy} onClick={() => setDialog({ kind: "delete-photos", ids: [...selected], archived: inArchive })}><Trash2 className="h-4 w-4" />Delete</button>}
@@ -717,7 +847,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
           {showGrid && contents && <p className="truncate text-xs text-muted-foreground">{filtering ? `${photos.length} of ${viewPhotos.length}` : photos.length} {viewPhotos.length === 1 ? "photo" : "photos"}{currentAlbum?.shared ? ` · Shared · ${ALBUM_ROLE_LABEL[currentAlbum.shared.role]}${currentAlbum.shared.unavailable ? " · not syncing right now" : ""}` : currentAlbum ? ` · gallery/${currentAlbum.folder}` : inArchive ? " · Hidden from the gallery" : ""}</p>}
         </div>
         {view.kind !== "album" && <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label="Gallery sections">
-          {(["photos", "starred", "albums", ...(canShare || contents?.albums.some((album) => album.shared) ? ["shared" as const] : []), "archive"] as const).map((kind) => <button key={kind} role="tab" aria-selected={view.kind === kind}
+          {sections.map((kind) => <button key={kind} role="tab" aria-selected={view.kind === kind}
             className={`inline-flex items-center gap-1 rounded-md px-3 py-1 text-xs font-medium transition ${view.kind === kind ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
             onClick={() => openView({ kind })}>{kind === "photos" ? "Photos" : kind === "starred" ? <><Star className="h-3 w-3" />Starred</> : kind === "albums" ? "Albums" : kind === "shared" ? <><Users className="h-3 w-3" />Shared</> : <><Lock className="h-3 w-3" />Archive</>}</button>)}
         </div>}
@@ -734,7 +864,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
           <button className={iconButton} aria-label={layout.mode === "grid" ? "Square grid. Switch to original shapes" : "Original shapes. Switch to square grid"} title={layout.mode === "grid" ? "Square grid (click for original shapes)" : "Original shapes (click for square grid)"}
             onClick={() => changeLayout((current) => ({ mode: current.mode === "grid" ? "justified" : "grid" }))}>{layout.mode === "grid" ? <LayoutGrid className="h-4 w-4" /> : <Rows3 className="h-4 w-4" />}</button>
           <button className={iconButton} aria-label={sort === "newest" ? "Newest first. Show oldest first" : "Oldest first. Show newest first"} title={sort === "newest" ? "Newest first" : "Oldest first"}
-            onClick={() => { const next = sort === "newest" ? "oldest" : "newest"; setSort(next); store(SORT_STORAGE_KEY, next); }}>
+            onClick={() => changeSort(sort === "newest" ? "oldest" : "newest")}>
             {sort === "newest" ? <ArrowDownWideNarrow className="h-4 w-4" /> : <ArrowUpWideNarrow className="h-4 w-4" />}
           </button>
         </>}
@@ -787,7 +917,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
 
     {viewingIndex >= 0 && contents && <PhotoViewer initialViewState={inArchive ? undefined : session.photoViews.get(photos[viewingIndex].id)}
       onViewStateChange={inArchive ? undefined : (state) => { rememberPhotoView(photos[viewingIndex].id, state); }}
-      rawUrl={inArchive ? archiveRawUrl : galleryRawUrl} photos={photos} index={viewingIndex} albums={contents.albums}
+      rawUrl={inArchive ? archiveRawUrl : galleryRawUrl} photos={photos} index={viewingIndex} albums={contents.albums} menusBlocked={Boolean(dialog)}
       onNavigate={(photo) => setViewingId(photo.id)} onClose={() => setViewingId(null)} chat={inArchive ? undefined : chat}
       actions={inArchive ? {
         onDelete: (photo) => setDialog({ kind: "delete-photos", ids: [photo.id], archived: true }),
@@ -796,7 +926,9 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
         onToggleStar: (photo) => void setStarred([photo.id], !photo.starred),
         onDelete: (photo) => setDialog({ kind: "delete-photos", ids: [photo.id] }),
         onAddToAlbum: (photo, element) => openAlbumMenu([photo.id], element),
+        albumChoices: (photo) => addToAlbumChoices([photo.id]),
         onOpenInCanvas: onOpenInCanvas ? (photo, element) => setOpenMenu({ photo, ...menuPosition(element) }) : undefined,
+        openChoices: onOpenInCanvas ? openChoices : undefined,
         onRevert: async (photo) => { await galleryRequest("/api/gallery/photos/edit", "POST", { id: photo.id, action: "revert" }); },
         onReusePrompt: (photo) => { reusePrompt(photo.prompt ?? ""); setViewingId(null); },
         onUseAsReference: (photo) => { sendToReferences([{ name: photo.name, url: galleryRawUrl(photo) }]); setViewingId(null); },
@@ -808,7 +940,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
       sharedDetails={(photo, setOverlay) => <SharedPhotoDetails photo={photo} album={photo.shared ? albumById.get(photo.shared.albumId) : undefined} setOverlay={setOverlay}
         focusThreadId={photo.id === viewingId ? focusThreadId : undefined} />} />}
 
-    {albumMenu && contents && <AlbumMenu state={albumMenu} albums={contents.albums.filter((album) => album.id !== albumMenu.excludeAlbumId && !album.shared?.direct && canChangeSharedPhotos(album.shared))}
+    {albumMenu && contents && <AlbumMenu state={albumMenu} albums={albumTargets(albumMenu.excludeAlbumId)}
       onClose={() => setAlbumMenu(null)}
       onPick={(albumId) => void addToAlbum(albumId, albumMenu.photoIds)}
       onCreate={() => { setDialog({ kind: "create-album", photoIds: albumMenu.photoIds }); setAlbumMenu(null); }} />}

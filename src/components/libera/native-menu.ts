@@ -1,3 +1,5 @@
+import type { PaletteCommand } from "./command-palette/commands";
+
 type NativeMenuItem = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0]["items"][number];
 export type NativeMenuEntry =
   | { type: "separator" }
@@ -15,6 +17,32 @@ export function serializeNativeMenu(items: NativeMenuEntry[], actions: Map<strin
     const enabled = parentEnabled && item.enabled !== false;
     if (onSelect && enabled) actions.set(id, onSelect);
     return { ...data, id, ...(submenu ? { submenu: serializeNativeMenu(submenu, actions, prefix, enabled) } : {}) };
+  });
+}
+
+/** The same items, none of which can be chosen (a dialog is open over the toolbar they stand for). */
+export function disabledMenu(items: NativeMenuEntry[]): NativeMenuEntry[] {
+  return items.map((item) => (item.type === "separator" ? item : { ...item, enabled: false }));
+}
+
+/** Palette commands as menu items, for commands written once for the palette. */
+export function commandMenuItems(commands: PaletteCommand[], label: (title: string) => string = (title) => title): NativeMenuEntry[] {
+  return commands.map((command) => ({
+    id: command.id,
+    label: label(command.title),
+    enabled: !command.disabled,
+    ...(command.checked === undefined ? {} : { type: "checkbox" as const, checked: command.checked }),
+    onSelect: command.run,
+  }));
+}
+
+/** A menu's items as palette commands, for a submenu's choices, which have no toolbar button to read. */
+export function menuCommands(items: NativeMenuEntry[], base: Pick<PaletteCommand, "group" | "icon" | "keywords">, title: (label: string) => string = (label) => label): PaletteCommand[] {
+  return items.flatMap((item) => {
+    if (item.type === "separator") return [];
+    if (item.submenu) return menuCommands(item.submenu, base, title);
+    const run = item.onSelect;
+    return run ? [{ ...base, id: item.id, title: title(item.label), disabled: item.enabled === false, run }] : [];
   });
 }
 

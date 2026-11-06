@@ -2103,8 +2103,8 @@ function scheduleApplicationMenu() {
 }
 
 /**
- * The focused window's menus: File actions, Format, Insert and References
- * (after Edit), View items (above its standard ones), then Tab and AI.
+ * The focused window's menus: File actions, Format, Insert, References, Gallery
+ * and Photo (after Edit), View items (above its standard ones), then Tab and AI.
  */
 function buildRendererAppMenus() {
   const webContents = appMenuWebContents();
@@ -2115,7 +2115,11 @@ function buildRendererAppMenus() {
   }
 
   const select = (id) => {
-    if (!webContents.isDestroyed()) webContents.send("app-menu:select", id);
+    if (webContents.isDestroyed()) return;
+    // IPC carries no user gesture, and full screen and file pickers need one.
+    void webContents.executeJavaScript("0", true).catch(() => undefined).finally(() => {
+      if (!webContents.isDestroyed()) webContents.send("app-menu:select", id);
+    });
   };
   const topLevel = (entries) => entries
     .map(([label, items]) => ({ label, submenu: buildNativeMenuTemplate(items, select) }))
@@ -2124,7 +2128,7 @@ function buildRendererAppMenus() {
 
   return {
     file: withSeparator(buildNativeMenuTemplate(menus.file, select)),
-    editor: topLevel([["Format", menus.format], ["Insert", menus.insert], ["References", menus.references]]),
+    editor: topLevel([["Format", menus.format], ["Insert", menus.insert], ["References", menus.references], ["Gallery", menus.gallery], ["Photo", menus.photo]]),
     view: withSeparator(buildNativeMenuTemplate(menus.view, select)),
     app: topLevel([["Tab", menus.tab], ["AI", menus.ai]]),
   };
@@ -2150,6 +2154,8 @@ function installRendererAppMenuHandlers() {
       format: input?.format,
       insert: input?.insert,
       references: input?.references,
+      gallery: input?.gallery,
+      photo: input?.photo,
       view: input?.view,
       tab: input?.tab,
       ai: input?.ai,

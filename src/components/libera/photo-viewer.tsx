@@ -37,10 +37,12 @@ import {
   UserPlus,
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { useAppMenuPhoto, withMenuActions } from "@/components/libera/app-menu";
 import { useGalleryPhotoDetails } from "@/components/libera/gallery-store";
-import { usePaletteCommands } from "@/components/libera/command-palette/commands";
+import { toolbarCommands, usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
-import { openImageSaveMenu, subscribeImageSaved } from "@/components/libera/image-save";
+import { notebookSaveMenuItems, openImageSaveMenu, runImageSaveMenuAction, subscribeImageSaved } from "@/components/libera/image-save";
+import { commandMenuItems, disabledMenu, menuCommands, type NativeMenuEntry } from "@/components/libera/native-menu";
 import { PhotoEditor } from "@/components/libera/photo-editor";
 import { PhotoInkLayer } from "@/components/libera/ink/photo-ink-layer";
 import { pendingSaves } from "@/components/libera/pending-saves";
@@ -253,8 +255,12 @@ export type PhotoViewerActions = {
   onToggleStar?: (photo: GalleryPhoto) => void;
   onDelete: (photo: GalleryPhoto) => void;
   onAddToAlbum?: (photo: GalleryPhoto, anchor: HTMLElement) => void;
+  /** What `onAddToAlbum`'s popup offers, for the menu bar and the palette. */
+  albumChoices?: (photo: GalleryPhoto) => NativeMenuEntry[];
   /** Offers to open the photo as an editor tab, alone or beside the focused panel. */
   onOpenInCanvas?: (photo: GalleryPhoto, anchor: HTMLElement) => void;
+  /** What `onOpenInCanvas`'s popup offers, for the menu bar and the palette. */
+  openChoices?: (photo: GalleryPhoto) => NativeMenuEntry[];
   onRevert?: (photo: GalleryPhoto) => Promise<void>;
   onReusePrompt?: (photo: GalleryPhoto) => void;
   onUseAsReference?: (photo: GalleryPhoto) => void;
@@ -294,7 +300,7 @@ function useChatPanelInset(rootRef: RefObject<HTMLDivElement | null>, open: bool
   }, [rootRef, open]);
 }
 
-export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onClose: close, actions, chat, initialViewState, onViewStateChange, rawUrl = galleryRawUrl, sharedDetails }: {
+export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onClose: close, actions, chat, initialViewState, onViewStateChange, rawUrl = galleryRawUrl, sharedDetails, menusBlocked = false }: {
   photos: GalleryPhoto[];
   index: number;
   albums: GalleryAlbum[];
@@ -306,6 +312,8 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
   initialViewState?: PhotoViewerViewState;
   onViewStateChange?: (state: PhotoViewerViewState) => void;
   sharedDetails?: PhotoViewerShared;
+  /** A dialog is open over the viewer, so its Photo menu waits. */
+  menusBlocked?: boolean;
 }) {
   const photo = useGalleryPhotoDetails(photos[index], rawUrl === archiveRawUrl);
   const [overlay, setOverlay] = useState<PhotoOverlay | null>(null);
@@ -416,6 +424,44 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
     setTransform((current) => (current.scale * factor <= 1 ? FIT : { ...current, scale: Math.min(MAX_ZOOM, current.scale * factor) }));
   }
 
+  function actualSize() {
+    setTransform({ scale: Math.min(MAX_ZOOM, Math.max(1, 1 / fitScale)), x: 0, y: 0 });
+  }
+
+  function startEditing() {
+    setPlaying(false);
+    setDrawing(false);
+    setEditing(true);
+  }
+
+  function toggleDrawing() {
+    setPlaying(false);
+    setDrawing((value) => !value);
+  }
+
+  function startDetecting() {
+    setPlaying(false);
+    if (document.fullscreenElement) void document.exitFullscreen();
+    setDetecting(true);
+  }
+
+  function copyPhoto() {
+    void copyImage(rawUrl(photo)).then(() => setNotice("Copied to the clipboard"), () => setNotice("Could not copy this photo"));
+  }
+
+  function revertPhoto() {
+    void actions.onRevert?.(photo).then(() => { setTransform(FIT); setNotice("Reverted to the original"); }, () => setNotice("Could not revert this photo"));
+  }
+
+  /** The Save photo menu's choices, for the menu bar and the palette. */
+  function saveChoices() {
+    const source = { name: photo.name, src: rawUrl(photo) };
+    return withMenuActions(notebookSaveMenuItems(), (id) => {
+      setPlaying(false);
+      void runImageSaveMenuAction(id, source).then((message) => { if (message) setNotice(message); });
+    });
+  }
+
   useEffect(() => {
     if (editing) return;
     function handleKey(event: KeyboardEvent) {
@@ -451,14 +497,79 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
       { id: "photo:first", title: "First photo", group, icon: ChevronFirst, disabled: !hasPrevious, run: () => onNavigate(photos[0]) },
       { id: "photo:last", title: "Last photo", group, icon: ChevronLast, disabled: !hasNext, run: () => onNavigate(photos[photos.length - 1]) },
       { id: "photo:fit", title: "Fit to screen", group, icon: Minimize2, shortcut: "0", checked: transform.scale <= 1, run: () => setTransform(FIT) },
-      { id: "photo:actual-size", title: "Actual size", group, icon: Maximize2, keywords: "100% zoom pixels", run: () => setTransform({ scale: Math.min(MAX_ZOOM, Math.max(1, 1 / fitScale)), x: 0, y: 0 }) },
+      { id: "photo:actual-size", title: "Actual size", group, icon: Maximize2, keywords: "100% zoom pixels", run: actualSize },
       ...(photo.prompt && actions.onReusePrompt ? [{ id: "photo:reuse-prompt", title: "Reuse prompt", group, icon: Sparkles, keywords: "generate again", run: () => actions.onReusePrompt?.(photo) }] : []),
       ...(actions.onUseAsReference ? [{ id: "photo:use-as-reference", title: "Use as reference", group, icon: ImagePlus, run: () => actions.onUseAsReference?.(photo) }] : []),
       ...(photo.edited && actions.onRevert && !locked ? [{
-        id: "photo:revert", title: "Revert to original", group, icon: RotateCcw, keywords: "undo edits",
-        run: () => void actions.onRevert?.(photo).then(() => { setTransform(FIT); setNotice("Reverted to the original"); }, () => setNotice("Could not revert this photo")),
+        id: "photo:revert", title: "Revert to original", group, icon: RotateCcw, keywords: "undo edits", run: revertPhoto,
       }] : []),
+      ...menuCommands(actions.albumChoices?.(photo) ?? [], { group, icon: FolderInput, keywords: "album" }, (label) => `Add to album: ${label}`),
+      ...menuCommands(actions.openChoices?.(photo) ?? [], { group, icon: AppWindow, keywords: "canvas split pane" }),
+      ...menuCommands(saveChoices(), { group, icon: Download, keywords: "download export" }),
     ];
+  });
+
+  // The tools' own toolbars change without the viewer rendering; render so the menu bar follows them.
+  const [, setToolState] = useState(0);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const observer = new MutationObserver(() => setToolState((state) => state + 1));
+    observer.observe(root, { subtree: true, attributes: true, attributeFilter: ["disabled", "aria-disabled", "aria-pressed", "aria-checked"] });
+    return () => observer.disconnect();
+  }, []);
+
+  // Every button of the viewer's toolbar, and the Ink and Detection toolbars while those are open.
+  useAppMenuPhoto("viewer", () => {
+    if (!photo) return [];
+    const root = rootRef.current;
+    const tools = root ? toolbarCommands(root).filter((command) => command.group !== "Photo") : [];
+    const toolMenus = [...new Set(tools.map((command) => command.group!))].map((group): NativeMenuEntry => ({
+      id: `tools:${group}`, label: group, submenu: commandMenuItems(tools.filter((command) => command.group === group)),
+    }));
+    if (editing || detecting) return toolMenus;
+    const editable = !photo.name.toLowerCase().endsWith(".svg");
+    const albumChoices = actions.albumChoices?.(photo);
+    const openChoices = actions.openChoices?.(photo);
+    const items: NativeMenuEntry[] = [
+      { id: "back", label: "Back to Gallery", onSelect: onClose },
+      { type: "separator" },
+      { id: "previous", label: "Previous Photo", enabled: hasPrevious, onSelect: () => go(-1) },
+      { id: "next", label: "Next Photo", enabled: hasNext, onSelect: () => go(1) },
+      { id: "first", label: "First Photo", enabled: hasPrevious, onSelect: () => onNavigate(photos[0]) },
+      { id: "last", label: "Last Photo", enabled: hasNext, onSelect: () => onNavigate(photos[photos.length - 1]) },
+      { type: "separator" },
+      { id: "zoom-in", label: "Zoom In", enabled: transform.scale < MAX_ZOOM, onSelect: () => zoomBy(1.5) },
+      { id: "zoom-out", label: "Zoom Out", enabled: transform.scale > 1, onSelect: () => zoomBy(1 / 1.5) },
+      { id: "fit", label: "Fit to Screen", type: "checkbox", checked: transform.scale <= 1, onSelect: () => setTransform(FIT) },
+      { id: "actual-size", label: "Actual Size", onSelect: actualSize },
+      { type: "separator" },
+      ...(actions.onToggleStar ? [{ id: "star", label: photo.starred ? "Unstar" : "Star", onSelect: () => actions.onToggleStar?.(photo) }] : []),
+      ...(editable && actions.onEdited ? [{ id: "edit", label: "Edit…", onSelect: startEditing }] : []),
+      ...(editable && actions.onEdited && !locked ? [{ id: "draw", label: "Draw", type: "checkbox" as const, checked: drawing, onSelect: toggleDrawing }] : []),
+      ...toolMenus,
+      { id: "detection", label: "Detection and Segmentation…", onSelect: startDetecting },
+      { type: "separator" },
+      ...(albumChoices ? [{ id: "add-to-album", label: "Add to Album", submenu: albumChoices }] : []),
+      ...(actions.onShare && !photo.shared && editable ? [{ id: "share", label: "Share Photo…", onSelect: () => { setPlaying(false); actions.onShare?.(photo); } }] : []),
+      ...(actions.onSaveToGallery && photo.shared ? [{ id: "save-to-gallery", label: "Save to My Gallery", onSelect: () => actions.onSaveToGallery?.(photo) }] : []),
+      ...(actions.onArchive && !photo.shared ? [{ id: "archive", label: "Move to Protected Archive", onSelect: () => { setPlaying(false); actions.onArchive?.(photo); } }] : []),
+      ...(actions.onRestore ? [{ id: "restore", label: "Restore to Gallery", onSelect: () => { setPlaying(false); actions.onRestore?.(photo); } }] : []),
+      ...(openChoices ? [{ id: "open", label: "Open In", submenu: openChoices }] : []),
+      { type: "separator" },
+      { id: "slideshow", label: playing ? "Pause Slideshow" : "Play Slideshow", onSelect: () => setPlaying((value) => !value) },
+      { id: "save", label: "Save Photo", submenu: saveChoices() },
+      { id: "copy", label: "Copy Image", onSelect: copyPhoto },
+      { id: "full-screen", label: fullscreen ? "Exit Full Screen" : "Full Screen", onSelect: toggleFullscreen },
+      ...(chat ? [{ id: "ask-ai", label: "Ask AI About This Photo", type: "checkbox" as const, checked: chat.open, onSelect: toggleChat }] : []),
+      { id: "info", label: "Info", type: "checkbox", checked: infoOpen, onSelect: () => setInfoOpen((open) => !open) },
+      { type: "separator" },
+      ...(photo.prompt && actions.onReusePrompt ? [{ id: "reuse-prompt", label: "Reuse Prompt", onSelect: () => actions.onReusePrompt?.(photo) }] : []),
+      ...(actions.onUseAsReference ? [{ id: "use-as-reference", label: "Use as Reference", onSelect: () => actions.onUseAsReference?.(photo) }] : []),
+      ...(photo.edited && actions.onRevert && !locked ? [{ id: "revert", label: "Revert to Original", onSelect: revertPhoto }] : []),
+      ...(!locked ? [{ type: "separator" as const }, { id: "delete", label: "Delete…", onSelect: () => actions.onDelete(photo) }] : []),
+    ];
+    return menusBlocked ? disabledMenu(items) : items;
   });
 
   if (!photo) return null;
@@ -484,18 +595,18 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
           <button className={toolButton} aria-label="Zoom out" title="Zoom out (−)" disabled={transform.scale <= 1} onClick={() => zoomBy(1 / 1.5)}><Minus className="h-4 w-4" /></button>
           {/* The palette lists Fit to screen and Actual size on their own. */}
           <button className="min-w-14 rounded-lg px-1 text-xs tabular-nums text-white/80 hover:bg-white/10" title={transform.scale > 1 ? "Fit to screen (0)" : "Actual size"} data-command-skip=""
-            onClick={() => setTransform(transform.scale > 1 ? FIT : { scale: Math.min(MAX_ZOOM, Math.max(1, 1 / fitScale)), x: 0, y: 0 })}>{transform.scale > 1 ? `${percent}%` : "Fit"}</button>
+            onClick={() => { if (transform.scale > 1) setTransform(FIT); else actualSize(); }}>{transform.scale > 1 ? `${percent}%` : "Fit"}</button>
           <button className={toolButton} aria-label="Zoom in" title="Zoom in (+)" disabled={transform.scale >= MAX_ZOOM} onClick={() => zoomBy(1.5)}><Plus className="h-4 w-4" /></button>
         </div>
         <span className="mx-1 h-6 w-px bg-white/10" />
         {actions.onToggleStar && <button className={toolButton} aria-label={photo.starred ? "Unstar" : "Star"} aria-pressed={photo.starred} title={photo.starred ? "Unstar (S)" : "Star (S)"} onClick={() => actions.onToggleStar?.(photo)}>
           <Star className={`h-5 w-5 ${photo.starred ? "fill-amber-400 text-amber-400" : ""}`} />
         </button>}
-        {editable && actions.onEdited && <button className={toolButton} aria-label="Edit" title="Edit: crop, rotate, adjust (E)" onClick={() => { setPlaying(false); setDrawing(false); setEditing(true); }}><Pencil className="h-4 w-4" /></button>}
+        {editable && actions.onEdited && <button className={toolButton} aria-label="Edit" title="Edit: crop, rotate, adjust (E)" onClick={startEditing}><Pencil className="h-4 w-4" /></button>}
         {editable && actions.onEdited && !locked && <button className={toolButton} aria-label="Draw" aria-pressed={drawing} title={drawing ? "Stop drawing" : "Draw on the photo with a pen, mouse or finger; the photo itself is not changed"}
-          onClick={() => { setPlaying(false); setDrawing((value) => !value); }}><PenLine className={`h-4 w-4 ${drawing ? "text-white" : ""}`} /></button>}
+          onClick={toggleDrawing}><PenLine className={`h-4 w-4 ${drawing ? "text-white" : ""}`} /></button>}
         <button className={toolButton} aria-label="Detection and Segmentation" title="Detection and Segmentation: find, outline and count objects"
-          onClick={() => { setPlaying(false); if (document.fullscreenElement) void document.exitFullscreen(); setDetecting(true); }}><ScanSearch className="h-4 w-4" /></button>
+          onClick={startDetecting}><ScanSearch className="h-4 w-4" /></button>
         {actions.onAddToAlbum && <button className={toolButton} aria-label="Add to album" title="Add to album" onClick={(event) => actions.onAddToAlbum?.(photo, event.currentTarget)}><FolderInput className="h-4 w-4" /></button>}
         {actions.onShare && !photo.shared && editable && <button className={toolButton} aria-label="Share photo" title="Share this photo with other people" onClick={() => { setPlaying(false); actions.onShare?.(photo); }}><UserPlus className="h-4 w-4" /></button>}
         {actions.onSaveToGallery && photo.shared && <button className={toolButton} aria-label="Save to my gallery" title="Save a copy in your gallery, which stays whatever happens to the album" onClick={() => actions.onSaveToGallery?.(photo)}><FolderDown className="h-4 w-4" /></button>}
@@ -506,7 +617,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
         <button className={toolButton} aria-label={playing ? "Pause slideshow" : "Play slideshow"} title={playing ? "Pause slideshow (Space)" : "Slideshow (Space)"} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button>
         <button className={toolButton} aria-label="Save photo" aria-haspopup="menu" title="Save to computer or a notebook folder"
           onClick={(event) => { setPlaying(false); void openImageSaveMenu(event.currentTarget, "notebook", { name: photo.name, src: rawUrl(photo) }); }}><Download className="h-4 w-4" /></button>
-        <button className={toolButton} aria-label="Copy image" title="Copy image" onClick={() => copyImage(rawUrl(photo)).then(() => setNotice("Copied to the clipboard"), () => setNotice("Could not copy this photo"))}><Copy className="h-4 w-4" /></button>
+        <button className={toolButton} aria-label="Copy image" title="Copy image" onClick={copyPhoto}><Copy className="h-4 w-4" /></button>
         <button className={toolButton} aria-label={fullscreen ? "Exit full screen" : "Full screen"} title="Full screen (F)" onClick={toggleFullscreen}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</button>
         {chat && <button className={toolButton} aria-label="Ask AI about this photo" aria-pressed={chat.open} title="Ask AI about this photo (⌘/Ctrl+Shift+B)" onClick={toggleChat}><Sparkles className={`h-4 w-4 ${chat.open ? "text-white" : ""}`} /></button>}
         <button className={toolButton} aria-label="Info" aria-pressed={infoOpen} title="Info (I)" onClick={() => setInfoOpen((open) => !open)}><Info className={`h-4 w-4 ${infoOpen ? "text-white" : ""}`} /></button>
@@ -551,7 +662,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
             {photo.prompt && actions.onReusePrompt && <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10" onClick={() => actions.onReusePrompt?.(photo)}><Sparkles className="h-4 w-4" />Reuse prompt</button>}
             {actions.onUseAsReference && <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10" onClick={() => actions.onUseAsReference?.(photo)}><ImagePlus className="h-4 w-4" />Use as reference</button>}
             {photo.edited && actions.onRevert && !locked && <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10"
-              onClick={() => actions.onRevert?.(photo).then(() => { setTransform(FIT); setNotice("Reverted to the original"); }, () => setNotice("Could not revert this photo"))}><RotateCcw className="h-4 w-4" />Revert to original</button>}
+              onClick={revertPhoto}><RotateCcw className="h-4 w-4" />Revert to original</button>}
           </div>
         </aside>}
       </div>

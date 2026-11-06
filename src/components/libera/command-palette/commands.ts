@@ -131,7 +131,7 @@ async function clickRevealed(scope: HTMLElement, label: string) {
   control?.click();
 }
 
-function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
+export function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
   const commands: PaletteCommand[] = [];
   const seen = new Set<string>();
 

@@ -102,7 +102,7 @@ declare global {
     };
     /** macOS only: the menu bar's document and app menus (app-menu.ts). */
     liberaAppMenu?: {
-      update: (menus: Record<"file" | "format" | "insert" | "references" | "view" | "tab" | "ai", LiberaNativeMenuItem[]>) => void;
+      update: (menus: Record<"file" | "format" | "insert" | "references" | "gallery" | "photo" | "view" | "tab" | "ai", LiberaNativeMenuItem[]>) => void;
       onSelect: (listener: (id: string) => void) => () => void;
     };
     liberaFileExplorer?: {
