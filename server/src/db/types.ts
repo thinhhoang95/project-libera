@@ -74,7 +74,7 @@ export interface InvitationsTable {
 export interface DocumentsTable {
   id: string;
   project_id: string;
-  kind: "markdown" | "latex" | "text" | "manifest";
+  kind: "markdown" | "latex" | "text" | "manifest" | "pdf";
   file_id: string | null;
   schema_version: ColumnType<number, number | undefined, number>;
   last_server_seq: ColumnType<number, number | undefined, number>;

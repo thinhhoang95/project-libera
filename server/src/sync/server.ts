@@ -1,22 +1,29 @@
 // The sync service: WebSocket admission, the room registry, the
 // persist-before-ack update pipeline, event forwarding, and RoomService.
 
+import { createHash } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 
 import { WebSocketServer, type WebSocket } from "ws";
 import * as Y from "yjs";
 
+import { projectRole } from "../auth/access.js";
 import type { PersistedUpdate, RoomBatch, RoomService, ServerContext } from "../context.js";
 import type { BusEvent } from "../events.js";
+import { isClientId } from "../ids.js";
 import {
   actorAccountId,
   canWriteSubdoc,
   CloseCode,
   encodeMessage,
   EventKind,
+  isPdfPath,
   MessageType,
   ManifestKeys,
+  pdfDocIdFromDigest,
+  pdfDocIdSeed,
+  PdfLimits,
   SyncLimits,
   type Actor,
   type Provenance,
@@ -35,12 +42,26 @@ import { actorForUpdate, annotationViolation, manifestViolation, sanitizeProvena
 const SYNC_PATH = "/sync";
 const CLOSE_WAIT_MS = 1000;
 
+/** File ids of the PDFs in a manifest: a shared PDF's document goes with its file. */
+function manifestPdfFileIds(doc: Y.Doc): Set<string> {
+  const ids = new Set<string>();
+  for (const [fileId, value] of doc.getMap<unknown>(ManifestKeys.files).entries()) {
+    if (value && typeof value === "object" && "kind" in value && value.kind === "blob" && "path" in value && typeof value.path === "string" && isPdfPath(value.path)) ids.add(fileId);
+  }
+  return ids;
+}
+
 function manifestDocIds(doc: Y.Doc): Set<string> {
   const ids = new Set<string>();
   for (const value of doc.getMap<unknown>(ManifestKeys.files).values()) {
     if (value && typeof value === "object" && "kind" in value && value.kind === "doc" && "docId" in value && typeof value.docId === "string") ids.add(value.docId);
   }
   return ids;
+}
+
+/** Every file id in a manifest, whatever became of its name. */
+function manifestFileIdsAfter(doc: Y.Doc): Set<string> {
+  return new Set(doc.getMap<unknown>(ManifestKeys.files).keys());
 }
 
 export class SyncServer {
@@ -180,6 +201,36 @@ export class SyncServer {
     }
   }
 
+  // Shared PDFs ---------------------------------------------------------------
+
+  /**
+   * Makes a shared PDF's document the first time anyone opens it. The id is
+   * a hash of the project and file, so every client names the same document,
+   * offline too. Empty documents are harmless, and reading is enough to make
+   * one, so viewers and offline clients need no separate create step. The
+   * file is not looked up in the manifest: a client may open a PDF whose
+   * manifest update is still in its queue.
+   */
+  async ensurePdfDocument(accountId: string, docId: string, target: { projectId: string; fileId: string }): Promise<void> {
+    const { db } = this.context;
+    const expected = pdfDocIdFromDigest(createHash("sha256").update(pdfDocIdSeed(target.projectId, target.fileId)).digest("base64url"));
+    if (docId !== expected || !isClientId(target.fileId)) return;
+    const role = await projectRole(db, target.projectId, accountId);
+    if (!role) return;
+    const existing = await db.selectFrom("documents").select("id").where("id", "=", docId).executeTakeFirst();
+    if (existing) return;
+    const project = await db.selectFrom("projects").select("kind").where("id", "=", target.projectId).executeTakeFirst();
+    if (project?.kind !== "notebook") return;
+    const count = await db.selectFrom("documents").select((eb) => eb.fn.countAll<string>().as("count"))
+      .where("project_id", "=", target.projectId).where("kind", "=", "pdf").executeTakeFirstOrThrow();
+    if (Number(count.count) >= PdfLimits.maxDocuments) return;
+    const created = await db.insertInto("documents")
+      .values({ id: docId, project_id: target.projectId, kind: "pdf", file_id: target.fileId, created_by: accountId, last_server_seq: 0 })
+      .onConflict((conflict) => conflict.column("id").doNothing())
+      .returning("id").executeTakeFirst();
+    if (created) this.context.events.publish({ scope: "project", id: target.projectId, kind: EventKind.PdfDocumentCreated, payload: { docId, fileId: target.fileId } });
+  }
+
   // Rooms -------------------------------------------------------------------
 
   /** Returns the document's room, loading it if needed. Pair with releaseRoom. */
@@ -270,7 +321,7 @@ export class SyncServer {
       throw error;
     }
     if (subdoc === "annotations") {
-      const violation = annotationViolation(room.live(subdoc), room.shadow(subdoc), changed, open.role, session.accountId);
+      const violation = annotationViolation(room.live(subdoc), room.shadow(subdoc), changed, open.role, session.accountId, room.kind);
       if (violation) {
         room.discardShadow(subdoc);
         return session.sendReject(message, "annotation-ownership", violation);
@@ -355,6 +406,16 @@ export class SyncServer {
       removedDocIds = removed.length ? (await this.context.db.selectFrom("documents").select("id")
         .where("project_id", "=", room.projectId).where("kind", "!=", "manifest")
         .where("id", "in", removed).execute()).map((row) => row.id) : [];
+      if (remaining) {
+        const stillThere = manifestFileIdsAfter(room.shadow(subdoc));
+        const gone = [...manifestPdfFileIds(room.live(subdoc))].filter((id) => !stillThere.has(id));
+        if (gone.length) {
+          const pdfDocs = await this.context.db.selectFrom("documents").select("id")
+            .where("project_id", "=", room.projectId).where("kind", "=", "pdf")
+            .where("file_id", "in", gone).execute();
+          removedDocIds.push(...pdfDocs.map((row) => row.id));
+        }
+      }
       serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input, removedDocIds });
     } catch (error) {
       room.discardShadow(subdoc);

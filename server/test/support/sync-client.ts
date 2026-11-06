@@ -179,7 +179,7 @@ export class SyncTestClient {
   }
 
   /** Opens a document with the local state vectors and applies the diffs. */
-  async open(docId: string): Promise<OpenedMessage> {
+  async open(docId: string, pdf?: { projectId: string; fileId: string }): Promise<OpenedMessage> {
     const local = this.docs.get(docId);
     this.send({
       type: MessageType.Open,
@@ -188,6 +188,7 @@ export class SyncTestClient {
         subdoc,
         stateVector: Y.encodeStateVector(doc),
       })),
+      ...(pdf ? { pdf } : {}),
     });
     const opened = await this.waitFor<SyncMessage>(
       (m) => (m.type === MessageType.Opened || m.type === MessageType.Closed) && m.docId === docId,

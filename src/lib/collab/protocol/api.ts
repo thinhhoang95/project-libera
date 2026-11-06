@@ -246,7 +246,7 @@ export interface CreateDocumentRequest {
 export interface DocumentInfo {
   id: string;
   projectId: string;
-  kind: DocKind | "manifest";
+  kind: DocKind | "manifest" | "pdf";
   fileId: string | null;
   schemaVersion: number;
   lastServerSeq: number;
@@ -608,7 +608,7 @@ export interface CommandResult {
  */
 export interface DocumentDigest {
   docId: string;
-  kind: DocKind | "manifest";
+  kind: DocKind | "manifest" | "pdf";
   serverSeq: number;
   contentSha256: string;
   stateVectors: Partial<Record<Subdoc, string>>;

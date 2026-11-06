@@ -11,9 +11,16 @@ import {
   albumPathError,
   AnnotationKeys,
   bindActor,
+  isPlainJsonRecord,
   ManifestKeys,
   manifestPathError,
   MAX_ALBUM_CAPTION_LENGTH,
+  PDF_IMMUTABLE_FIELDS,
+  PDF_REQUIRED_FIELDS,
+  PdfKeys,
+  PdfLimits,
+  PdfMarkFields,
+  pdfMarkFieldViolation,
   type Actor,
   type AiFeature,
   type ProjectKind,
@@ -32,7 +39,7 @@ const ANNOTATION_MAPS: readonly string[] = [AnnotationKeys.anchors, AnnotationKe
 
 /** Root types that must exist before an update is applied, so `changed` refers to them. */
 export const PREDEFINED_MAPS: Record<string, readonly string[]> = {
-  annotations: ANNOTATION_MAPS,
+  annotations: [...ANNOTATION_MAPS, PdfKeys.marks, PdfKeys.imports],
   manifest: [ManifestKeys.files, ManifestKeys.settings, ManifestKeys.photos],
 };
 
@@ -74,10 +81,23 @@ export function annotationViolation(
   changed: ChangedTypes,
   role: Role,
   accountId: string,
+  kind?: string,
 ): string | null {
   const commenter = role === "commenter";
   for (const [type, keys] of changed) {
     const root = rootName(after, type);
+    // A shared PDF's marks belong to everyone who can annotate, unlike
+    // comments and suggestions, so the ownership rules below do not apply.
+    if (kind === "pdf" && root === PdfKeys.marks) {
+      const problem = pdfMarkViolation(before, after, type, keys, accountId);
+      if (problem) return problem;
+      continue;
+    }
+    if (kind === "pdf" && root === PdfKeys.imports) {
+      const problem = pdfImportViolation(type, keys, accountId);
+      if (problem) return problem;
+      continue;
+    }
     const tracked = root !== null && ANNOTATION_MAPS.includes(root);
     if (!tracked) {
       // Editors may keep other data in annotations; commenters only touch
@@ -121,6 +141,91 @@ export function annotationViolation(
     }
   }
   return null;
+}
+
+function pdfImportViolation(type: Y.AbstractType<any>, keys: Set<string | null>, accountId: string): string | null {
+  if (type._item !== null) return `${PdfKeys.imports} records must be plain JSON values.`;
+  for (const key of keys) {
+    if (key === null) return `${PdfKeys.imports} must be a map.`;
+    const record = (type as Y.Map<unknown>).get(key);
+    if (record === undefined) return "Import records are never removed.";
+    if (!isPlainJsonRecord(record) || record.by !== accountId || typeof record.at !== "string") return `${PdfKeys.imports}/${key} must say that you imported it.`;
+  }
+  return null;
+}
+
+/** The mark a nested type belongs to, as [the mark's Y.Map, the field holding this type], or null. */
+function markOwner(type: Y.AbstractType<any>): Y.Map<unknown> | null {
+  const parent = type._item?.parent;
+  return parent instanceof Y.Map && parent._item !== null ? parent : null;
+}
+
+/**
+ * Rules for a change to a PDF's marks. Anyone who can write annotations may
+ * change any mark, so this checks shape only: a mark is deleted by setting
+ * its `deleted` field and never removed, nobody rewrites who made it, and
+ * every value fits its field. Two devices importing one sidecar can both
+ * create a mark, so a key may be replaced by a mark with the same identity.
+ */
+function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: Y.AbstractType<any>, keys: Set<string | null>, accountId: string): string | null {
+  const beforeMarks = before.getMap<unknown>(PdfKeys.marks);
+  const afterMarks = after.getMap<unknown>(PdfKeys.marks);
+
+  // The map of marks itself: marks added or replaced.
+  if (type._item === null) {
+    for (const key of keys) {
+      if (key === null) return `${PdfKeys.marks} must be a map.`;
+      const mark = afterMarks.get(key);
+      if (mark === undefined) return "Marks are deleted by marking them deleted, not removed.";
+      if (!(mark instanceof Y.Map)) return `${PdfKeys.marks}/${key} must be a Y.Map.`;
+      if (mark.get(PdfMarkFields.id) !== key) return `${PdfKeys.marks}/${key} must carry its own id.`;
+      for (const field of PDF_REQUIRED_FIELDS) if (mark.get(field) === undefined) return `${PdfKeys.marks}/${key} has no ${field}.`;
+      if (mark.get(PdfMarkFields.createdBy) !== accountId) return `${PdfKeys.marks}/${key} must be created by you.`;
+      // Yjs reports only types that existed before the transaction, so a new
+      // mark's fields never reach the per-field branch below.
+      const markType = String(mark.get(PdfMarkFields.type) ?? "");
+      for (const [field, value] of mark.entries()) {
+        const problem = pdfFieldValueViolation(key, markType, field, value);
+        if (problem) return problem;
+      }
+      const previous = beforeMarks.get(key);
+      if (previous instanceof Y.Map && previous.get(PdfMarkFields.type) !== mark.get(PdfMarkFields.type)) return `${PdfKeys.marks}/${key} cannot change type.`;
+    }
+    if (afterMarks.size > PdfLimits.maxMarks) return "This PDF holds too many marks.";
+    return null;
+  }
+
+  // A note's text.
+  if (type instanceof Y.Text) {
+    const mark = markOwner(type);
+    if (!mark || type._item?.parentSub !== PdfMarkFields.text) return "Only a note's text field may hold text.";
+    if (type.length > PdfLimits.maxTextLength) return "This note is too long.";
+    return null;
+  }
+
+  // One mark's fields.
+  if (!(type instanceof Y.Map) || type._item?.parent !== afterMarks) return "Marks hold plain values and a note's text.";
+  const id = type._item?.parentSub ?? "";
+  const previous = beforeMarks.get(id);
+  const markType = String(type.get(PdfMarkFields.type) ?? "");
+  for (const field of keys) {
+    if (field === null) return `${PdfKeys.marks}/${id} must be a map.`;
+    const value = type.get(field);
+    if (previous instanceof Y.Map && PDF_IMMUTABLE_FIELDS.includes(field) && !sameJson(previous.get(field), value)) return `${field} cannot change.`;
+    const problem = pdfFieldValueViolation(id, markType, field, value);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+function pdfFieldValueViolation(id: string, markType: string, field: string, value: unknown): string | null {
+  if (field === PdfMarkFields.text) {
+    if (!(value instanceof Y.Text)) return `${PdfKeys.marks}/${id}/text must be a Y.Text.`;
+    return value.length > PdfLimits.maxTextLength ? "This note is too long." : null;
+  }
+  if (value instanceof Y.AbstractType) return `${PdfKeys.marks}/${id}/${field} must be a plain value.`;
+  const problem = pdfMarkFieldViolation(markType, field, value);
+  return problem ? `${PdfKeys.marks}/${id}: ${problem}` : null;
 }
 
 function authorshipViolation(

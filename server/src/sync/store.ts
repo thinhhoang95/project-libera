@@ -10,7 +10,7 @@ import * as Y from "yjs";
 import type { DB } from "../db/types.js";
 import type { Actor, DocKind, ProjectKind, Provenance, Role, Subdoc } from "../protocol.js";
 
-export type DocumentKind = DocKind | "manifest";
+export type DocumentKind = DocKind | "manifest" | "pdf";
 
 /** The sub-documents a document of `kind` is made of. */
 export function subdocsForKind(kind: DocumentKind): Subdoc[] {
