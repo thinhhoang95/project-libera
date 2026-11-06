@@ -114,6 +114,9 @@ export interface DocumentHistoryPanelProps {
 
 type Compare = { kind: "none" } | { kind: "now" } | { kind: "revision"; id: string };
 
+/** Automatic versions add up: the list shows this many at a time, newest first. */
+const REVISION_PAGE = 20;
+
 export function DocumentHistoryPanel({ target, onClose, api = historyApi }: DocumentHistoryPanelProps) {
   const { docId, role } = target;
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
@@ -128,6 +131,7 @@ export function DocumentHistoryPanel({ target, onClose, api = historyApi }: Docu
   const [busy, setBusy] = useState("");
   const [result, setResult] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const [revisionsShown, setRevisionsShown] = useState(REVISION_PAGE);
   const canName = can(role, "name-revision");
   const canRestore = can(role, "restore");
 
@@ -230,7 +234,7 @@ export function DocumentHistoryPanel({ target, onClose, api = historyApi }: Docu
             <button type="submit" className="review-button" disabled={!naming.trim() || busy === "name"}>Save</button>
           </form>)}
         <ol className="min-h-0 flex-1 space-y-1 overflow-auto">
-          {revisions === null ? <li className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Loading…</li> : !revisions.length ? <li className="text-xs text-muted-foreground">No versions yet. Libera saves one after five idle minutes and when you close the document.</li> : revisions.map((revision) => (
+          {revisions === null ? <li className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Loading…</li> : !revisions.length ? <li className="text-xs text-muted-foreground">No versions yet. Libera saves one after five idle minutes and when you close the document.</li> : revisions.slice(0, revisionsShown).map((revision) => (
             <li key={revision.id}>
               <button type="button" aria-pressed={revision.id === selectedId} data-revision-kind={revision.kind} className="w-full rounded-lg px-2 py-1.5 text-left text-xs hover:bg-muted aria-pressed:bg-muted" onClick={() => { setSelectedId(revision.id); setCompare({ kind: "none" }); setResult(""); }}>
                 <span className="block font-medium">{revisionTitle(revision)}</span>
@@ -238,6 +242,13 @@ export function DocumentHistoryPanel({ target, onClose, api = historyApi }: Docu
               </button>
             </li>
           ))}
+          {revisions && revisions.length > revisionsShown ? (
+            <li>
+              <button type="button" className="review-button" onClick={() => setRevisionsShown((shown) => shown + REVISION_PAGE)}>
+                Show older ({revisions.length - revisionsShown} more)
+              </button>
+            </li>
+          ) : null}
         </ol>
       </aside>
       <section className="flex min-h-0 min-w-0 flex-col gap-2" aria-label="Revision">
