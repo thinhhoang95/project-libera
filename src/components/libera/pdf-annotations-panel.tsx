@@ -277,7 +277,7 @@ export function PdfAnnotationsPanel({
             />
             <input
               aria-label="Search PDF annotations"
-              className="libera-rail-field libera-rail-field--search w-full"
+              className="libera-panel-field libera-panel-field--search w-full"
               placeholder="Search annotations"
               type="search"
               value={query}

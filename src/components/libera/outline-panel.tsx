@@ -782,7 +782,7 @@ function MarkdownOutline({
         />
         <input
           aria-label="Search Markdown headings"
-          className="libera-rail-field libera-rail-field--search w-full"
+          className="libera-panel-field libera-panel-field--search w-full"
           placeholder="Search headings"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -813,7 +813,7 @@ function MarkdownOutline({
         <span className="relative">
           <select
             aria-label="Outline expansion level"
-            className="libera-rail-field libera-rail-field--compact pl-3 pr-8"
+            className="libera-panel-field libera-panel-field--compact pl-3 pr-8"
             value={expansionLevel}
             onChange={(event) => {
               onExpansionLevelChange(Number(event.target.value));

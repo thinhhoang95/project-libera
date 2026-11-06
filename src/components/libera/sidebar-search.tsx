@@ -31,7 +31,7 @@ export function SidebarSearch({
       />
       <input
         aria-label={placeholder}
-        className="libera-rail-field libera-rail-field--search w-full"
+        className="libera-panel-field libera-panel-field--search w-full"
         placeholder={placeholder}
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}

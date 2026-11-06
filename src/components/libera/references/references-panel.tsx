@@ -1656,7 +1656,7 @@ function ReferencesPanelBody({
                     <input
                       ref={searchRef}
                       aria-label="Search references"
-                      className="libera-rail-field libera-rail-field--search w-full"
+                      className="libera-panel-field libera-panel-field--search w-full"
                       placeholder="Search references"
                       value={view.query}
                       onChange={(event) => setView({ query: event.target.value })}
@@ -1676,7 +1676,7 @@ function ReferencesPanelBody({
                   <div className="flex flex-wrap gap-1.5">
                     <select
                       aria-label="Filter references"
-                      className="libera-rail-field libera-rail-field--compact min-w-32 flex-1 pl-2.5 pr-2"
+                      className="libera-panel-field libera-panel-field--compact min-w-32 flex-1 pl-2.5 pr-2"
                       value={view.filter}
                       onChange={(event) => setView({ filter: event.target.value as ReferenceFilter })}
                     >
@@ -1685,7 +1685,7 @@ function ReferencesPanelBody({
                     {tags.length ? (
                       <select
                         aria-label="Filter by tag"
-                        className="libera-rail-field libera-rail-field--compact min-w-24 flex-1 pl-2.5 pr-2"
+                        className="libera-panel-field libera-panel-field--compact min-w-24 flex-1 pl-2.5 pr-2"
                         value={activeTag ?? ""}
                         onChange={(event) => setView({ tag: event.target.value || null })}
                       >
@@ -1695,7 +1695,7 @@ function ReferencesPanelBody({
                     ) : null}
                     <select
                       aria-label="Sort references"
-                      className="libera-rail-field libera-rail-field--compact min-w-24 flex-1 pl-2.5 pr-2"
+                      className="libera-panel-field libera-panel-field--compact min-w-24 flex-1 pl-2.5 pr-2"
                       value={view.sort}
                       onChange={(event) => setView({ sort: event.target.value as ReferenceSort })}
                     >

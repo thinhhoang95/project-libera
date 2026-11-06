@@ -265,8 +265,9 @@ html.libera-platform-win32.libera-glass .libera-login-screen {
 
 /* Text inputs inside the panel (notebook search, inline rename) carry an
    explicit `bg-card`; swap it for a translucent frost so it doesn't read as a
-   solid black box on the glass. */
-html.libera-glass .libera-glass-panel input {
+   solid black box on the glass. `.libera-panel-field` brings its own surface;
+   :where keeps this rule's specificity unchanged for everything else. */
+html.libera-glass .libera-glass-panel input:where(:not(.libera-panel-field)) {
   background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 
@@ -2666,24 +2667,6 @@ html.libera-glass .libera-left-panel {
   --input: #91a4c52e;
   --muted: #7392d111;
 }
-/* The one text-field style for every left-rail panel (search boxes, filters,
-   selects). --search is the full-width box with a leading icon; --compact is
-   the short control used for filters and selects. */
-.libera-rail-field {
-  border: 1px solid var(--input);
-  background-color: #ffffff85;
-  box-shadow: 0 2px 5px #4e699a03;
-  color: var(--foreground);
-  font-size: 12px;
-  outline: none;
-  transition: background-color 150ms, border-color 150ms, box-shadow 150ms;
-}
-.libera-rail-field::placeholder { color: color-mix(in srgb, var(--muted-foreground) 75%, transparent); }
-.libera-rail-field:hover:not(:disabled):not(:focus) { background-color: #ffffffa8; }
-.libera-rail-field:focus { border-color: #457be666; background-color: #ffffffc2; box-shadow: 0 0 0 3px #457be61a; }
-.libera-rail-field:disabled { opacity: 0.5; }
-.libera-rail-field--search { height: 2.5rem; border-radius: 12px; padding-left: 2.25rem; padding-right: 2.25rem; }
-.libera-rail-field--compact { height: 2rem; border-radius: 8px; appearance: none; }
 .libera-left-panel .libera-sidebar-icon-button { color: #75839e; }
 .libera-left-panel .libera-sidebar-icon-button:hover { background: #728fce12; color: #457be6; }
 .libera-left-panel .libera-sidebar-icon-button[aria-selected="true"] { background: #d8e7ff9e; color: #3979e8; box-shadow: inset 0 1px 0 #ffffff6b; }
@@ -2709,9 +2692,6 @@ html.libera-glass .libera-left-panel {
 html.dark .libera-left-panel { --muted-foreground: #adb9d1; --border: #8298cb22; --input: #8298cb33; background: linear-gradient(155deg, #222c3ee0, #29273be0); color: #e1e8f7; }
 html.dark.libera-glass .libera-left-panel { background: transparent; }
 html.dark.libera-glass .libera-left-panel::before { background: linear-gradient(155deg, #31415b55, #342b4940); }
-html.dark .libera-rail-field { background-color: #b3c8ef0d; }
-html.dark .libera-rail-field:hover:not(:disabled):not(:focus) { background-color: #b3c8ef14; }
-html.dark .libera-rail-field:focus { border-color: #7aa5ef80; background-color: #b3c8ef17; box-shadow: 0 0 0 3px #7aa5ef1f; }
 html.dark .libera-left-panel .libera-sidebar-icon-button { color: #a7b7d2; }
 html.dark .libera-left-panel .libera-sidebar-icon-button[aria-selected="true"] { color: #a2c9ff; background: #678dcc26; box-shadow: none; }
 html.dark .libera-notebook-row:hover { background: #a3bbef0c; }
@@ -2903,6 +2883,10 @@ html.dark .libera-reference-reading[data-reading="read"] { color: #5fd3a0; }
 .libera-panel-field:hover:not(:disabled):not(:focus) { background-color: #ffffffa8; }
 .libera-panel-field:focus { border-color: #457be666; background-color: #ffffffc2; box-shadow: 0 0 0 3px #457be61a; }
 .libera-panel-field:disabled { opacity: 0.6; }
+/* Sizes shared by every left-rail field: --search is the full-width box with a
+   leading icon, --compact the short filter input or select. */
+.libera-panel-field--search { height: 2.25rem; padding-left: 2.25rem; padding-right: 2.25rem; font-size: 13px; }
+.libera-panel-field--compact { height: 2rem; font-size: 12px; }
 select.libera-panel-field {
   appearance: none;
   padding-right: 2rem;

@@ -59,7 +59,7 @@ export function DocumentStylePicker({ notebook, documentPath, draft, styleFiles 
         <span className="shrink-0">Document style</span>
         <select
           id={id}
-          className="libera-rail-field libera-rail-field--compact min-w-0 flex-1 pl-2.5 pr-2"
+          className="libera-panel-field libera-panel-field--compact min-w-0 flex-1 pl-2.5 pr-2"
           value={written ?? ""}
           disabled={!documentPath}
           title={documentPath ? "This document's citation style (its front matter)" : "Save the document to give it its own style"}

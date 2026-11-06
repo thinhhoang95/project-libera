@@ -36,7 +36,7 @@ export function LatexOutline({ activeTab, onOpenFile }: {
         <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <input
           aria-label="Search LaTeX sections"
-          className="libera-rail-field libera-rail-field--search w-full"
+          className="libera-panel-field libera-panel-field--search w-full"
           placeholder="Search sections"
           value={query}
           onChange={(event) => setQuery(event.target.value)}

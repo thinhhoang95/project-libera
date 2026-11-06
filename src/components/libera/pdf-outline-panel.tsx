@@ -205,7 +205,7 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
             <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               aria-label="Search the PDF outline"
-              className="libera-rail-field libera-rail-field--search w-full"
+              className="libera-panel-field libera-panel-field--search w-full"
               placeholder="Search outline"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -235,7 +235,7 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
             <span className="relative">
               <select
                 aria-label="Outline expansion level"
-                className="libera-rail-field libera-rail-field--compact pl-3 pr-8"
+                className="libera-panel-field libera-panel-field--compact pl-3 pr-8"
                 value={expansionLevel}
                 onChange={(event) => {
                   onExpansionLevelChange(Number(event.target.value));

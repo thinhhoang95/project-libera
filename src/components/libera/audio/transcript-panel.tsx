@@ -742,7 +742,7 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
         <label className="mb-2.5 flex items-center justify-between gap-3 text-xs">
           <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Languages aria-hidden className="h-3.5 w-3.5" /> Language</span>
           <select
-            className="libera-rail-field libera-rail-field--compact min-w-0 pl-2.5 pr-2"
+            className="libera-panel-field libera-panel-field--compact min-w-0 pl-2.5 pr-2"
             value={chosenLanguage}
             onChange={(event) => setLanguage(event.target.value)}
           >
@@ -755,7 +755,7 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
       <label className="mb-2.5 flex items-center justify-between gap-3 text-xs">
         <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Users aria-hidden className="h-3.5 w-3.5" /> Speakers</span>
         <select
-          className="libera-rail-field libera-rail-field--compact min-w-0 pl-2.5 pr-2"
+          className="libera-panel-field libera-panel-field--compact min-w-0 pl-2.5 pr-2"
           value={speakers}
           disabled={!status.diarization}
           onChange={(event) => setSpeakers(Number(event.target.value))}
