@@ -105,6 +105,8 @@ export interface SyncTarget {
   readonly docId: string;
   canSync(): boolean;
   stateVectors(): SubdocStateVector[];
+  /** A shared PDF's project and file, so the server can make its document. */
+  pdfTarget?(): { projectId: string; fileId: string } | undefined;
   connectionChanged(transport: HubTransport | null, detail?: string): void;
   setConnectionDetail(detail: string | undefined): void;
   handleOpened(message: OpenedMessage): void;
@@ -633,7 +635,8 @@ export class SyncClient {
   }
 
   private sendOpen(target: SyncTarget): void {
-    this.sendFrame({ type: MessageType.Open, docId: target.docId, subdocs: target.stateVectors() });
+    const pdf = target.pdfTarget?.();
+    this.sendFrame({ type: MessageType.Open, docId: target.docId, subdocs: target.stateVectors(), ...(pdf ? { pdf } : {}) });
   }
 
   private handleFrame(socket: WebSocketLike, data: unknown): void {

@@ -16,6 +16,7 @@ import {
   manifestPathError,
   MAX_ALBUM_CAPTION_LENGTH,
   PDF_IMMUTABLE_FIELDS,
+  PDF_LIVE_SETTING,
   PDF_REQUIRED_FIELDS,
   PdfKeys,
   PdfLimits,
@@ -294,6 +295,16 @@ export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKi
         if (role !== "owner") return "Only the album's owner can change what it shares.";
         const value = (type as Y.Map<unknown>).get(key);
         if (value !== undefined && typeof value !== "boolean") return `settings/${key} must be a boolean.`;
+      }
+      continue;
+    }
+    if (!album && root === ManifestKeys.settings) {
+      // Marks go to everyone, so the owner decides; and it is one way, because
+      // turning it off would strand marks in their documents.
+      for (const key of keys) {
+        if (key !== PDF_LIVE_SETTING) continue;
+        if (role !== "owner") return "Only the notebook's owner can turn on live PDFs.";
+        if ((type as Y.Map<unknown>).get(key) !== true) return "Live PDFs cannot be turned off.";
       }
       continue;
     }

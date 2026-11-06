@@ -12,8 +12,8 @@
 import * as Y from "yjs";
 import { diffText } from "../../../../electron/collab/notebooks/text-diff";
 import { PDF_MARK_TYPES, PDF_STYLE_KEYS, PdfKeys, PdfMarkFields, pdfMarkFieldViolation, type PdfDeletion } from "../protocol/pdf";
-import { reconcilePdfSpaces } from "@/lib/pdf-space";
-import type { PdfAnnotation, PdfAnnotationPoint, PdfAnnotationRect, PdfSpaceAnnotation } from "@/lib/types";
+import { reconcilePdfSpaces } from "../../pdf-space";
+import type { PdfAnnotation, PdfAnnotationPoint, PdfAnnotationRect, PdfSpaceAnnotation } from "../../types";
 
 type JsonRecord = Record<string, unknown>;
 type MarkMap = Y.Map<unknown>;
@@ -309,25 +309,46 @@ export function writeDeletedText(doc: Y.Doc, id: string, value: string, origin: 
 }
 
 /**
- * Adds marks from a local sidecar, in chunks small enough for the server's
- * update limit. A mark that exists, deleted or not, is left alone, so an
- * import never brings a deletion back and repeating one changes nothing.
+ * The marks of a local sidecar still to add, in batches small enough for the
+ * server's update limit. A mark that exists, deleted or not, is left alone,
+ * so an import never brings a deletion back and repeating one changes nothing.
  */
-export function importMarks(doc: Y.Doc, annotations: readonly PdfAnnotation[], context: MarkContext, origin: unknown, chunkBytes = 1024 * 1024): number {
+export function importBatches(doc: Y.Doc, annotations: readonly PdfAnnotation[], batchBytes = 1024 * 1024): PdfAnnotation[][] {
   const marks = marksOf(doc);
-  const fresh = annotations.filter((annotation) => !marks.has(annotation.id));
-  let index = 0;
-  while (index < fresh.length) {
-    let bytes = 0;
-    doc.transact(() => {
-      while (index < fresh.length && (bytes === 0 || bytes < chunkBytes)) {
-        bytes += JSON.stringify(fresh[index]).length + 1;
-        createMark(marks, fresh[index], context);
-        index += 1;
-      }
-    }, origin);
+  const seen = new Set<string>();
+  const batches: PdfAnnotation[][] = [];
+  let batch: PdfAnnotation[] = [];
+  let bytes = 0;
+  for (const annotation of annotations) {
+    if (marks.has(annotation.id) || seen.has(annotation.id)) continue;
+    seen.add(annotation.id);
+    const size = JSON.stringify(annotation).length;
+    if (batch.length && bytes + size > batchBytes) {
+      batches.push(batch);
+      batch = [];
+      bytes = 0;
+    }
+    batch.push(annotation);
+    bytes += size;
   }
-  return fresh.length;
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+/** Adds marks to a document inside the caller's transaction. */
+export function createMarks(doc: Y.Doc, annotations: readonly PdfAnnotation[], context: MarkContext): void {
+  const marks = marksOf(doc);
+  for (const annotation of annotations) createMark(marks, annotation, context);
+}
+
+/** {@link importBatches} applied directly: one transaction per batch. Returns how many were added. */
+export function importMarks(doc: Y.Doc, annotations: readonly PdfAnnotation[], context: MarkContext, origin: unknown, batchBytes?: number): number {
+  let added = 0;
+  for (const batch of importBatches(doc, annotations, batchBytes)) {
+    doc.transact(() => createMarks(doc, batch, context), origin);
+    added += batch.length;
+  }
+  return added;
 }
 
 /** Every mark, deleted ones included, for the sidecar copy and for tests. */

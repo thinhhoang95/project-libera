@@ -20,6 +20,7 @@ import type {
   ResolvedDoc,
   ShareAlbumRequest,
   ShareAlbumResult,
+  ResolvedPdf,
   ShareNotebookRequest,
   ShareProgress,
   UpdateAlbumRequest,
@@ -824,6 +825,25 @@ export class NotebookServiceImpl implements NotebookService {
     };
   }
 
+  /** A PDF's live document, when the notebook has live PDFs on. Null means use its sidecar. */
+  resolvePdf(liberaPath: string): ResolvedPdf | null {
+    if (typeof liberaPath !== "string") return null;
+    const segments = liberaPath.replace(/\\/g, "/").split("/").filter(Boolean);
+    if (segments.length < 2) return null;
+    const handle = this.handleForNotebook(segments[0]);
+    const resolved = handle?.runtime?.pdfs.resolve(segments.slice(1).join("/"));
+    if (!handle || !resolved) return null;
+    return {
+      ...resolved,
+      projectId: handle.projectId,
+      path: `${handle.notebook}/${resolved.path}`,
+      role: handle.role,
+      readOnly: handle.revoked || handle.revoking === true || !roleAtLeast(handle.role, "commenter"),
+      accountId: this.cachedAccountId ?? "",
+      ...(handle.revoked ? { revoked: true } : {}),
+    };
+  }
+
   /** The reverse of resolvePath, over the same index (GET /docs/:docId). */
   resolveDoc(docId: string): ResolvedDoc | null {
     if (typeof docId !== "string" || !docId) return null;
@@ -867,6 +887,7 @@ export class NotebookServiceImpl implements NotebookService {
       revoked: handle.revoked,
       reconcilePending: handle.runtime?.reconcilePending ?? handle.reconcilePending,
       ...(handle.kind === "album" ? { kind: "album" as const } : {}),
+      ...(handle.runtime?.pdfs.enabled ? { pdfLive: true } : {}),
     }));
   }
 
@@ -878,6 +899,7 @@ export class NotebookServiceImpl implements NotebookService {
   // ------------------------------------------------------------ revocation and roles
 
   private hostEvent(event: CollabHostEvent): void {
+    this.pdfDocumentCreated(event);
     if (event.source !== "sync" || event.event.type !== "server-event") return;
     const { scope, kind, payload } = event.event.event;
     const data = (payload ?? {}) as { projectId?: unknown; accountId?: unknown; role?: unknown };
@@ -892,6 +914,12 @@ export class NotebookServiceImpl implements NotebookService {
     } else if (kind === EventKind.RoleChanged && aboutMe && isRole(data.role)) {
       this.setRole(projectId, data.role);
     }
+  }
+
+  /** Someone opened a PDF for the first time, so it may gain marks this host should follow. */
+  private pdfDocumentCreated(event: CollabHostEvent): void {
+    if (event.source !== "sync" || event.event.type !== "server-event" || event.event.event.kind !== EventKind.PdfDocumentCreated) return;
+    void this.projects.get(event.event.event.id)?.runtime?.pdfs.refreshServerDocuments();
   }
 
   /**
@@ -1645,6 +1673,13 @@ export class NotebookServiceImpl implements NotebookService {
         }
       };
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
+    router.add("GET", ControlRoutes.pdfResolve, wrap(async (request) => ({ body: this.resolvePdf(request.query.get("path") ?? "") })));
+    router.add("POST", decodeURIComponent(ControlRoutes.pdfLive(":projectId")), wrap(async (request) => {
+      const runtime = this.project(request.params.projectId);
+      if (!runtime) throw new ControlError(404, "not-found", "This notebook is not running here.");
+      await runtime.enablePdfLive();
+      return { status: 204 };
+    }));
     router.add("POST", ControlRoutes.join, wrap(async (request) => ({ body: await this.join(request.body as JoinProjectRequest) })));
     router.add("GET", ControlRoutes.albums, wrap(async () => ({ body: this.albums() })));
     router.add("POST", ControlRoutes.albumShare, wrap(async (request) => ({ body: await this.shareAlbum(request.body as ShareAlbumRequest) })));

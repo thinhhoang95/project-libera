@@ -74,6 +74,8 @@ export interface LocalProject {
   reconcilePending: number;
   /** "album" for a shared album; missing for notebooks. */
   kind?: ProjectKind;
+  /** The notebook's PDFs have live marks (docs/collaboration/pdf-realtime-plan.md). */
+  pdfLive?: boolean;
 }
 
 // ---------------------------------------------------------------- shared albums
@@ -259,6 +261,22 @@ export interface ResolvedDoc {
   readOnly: boolean;
   /** Access was revoked (the folder is kept read-only); nothing can be written, suggestions and comments included. */
   revoked?: boolean;
+}
+
+/** A shared PDF's live document. */
+export interface ResolvedPdf {
+  docId: string;
+  projectId: string;
+  fileId: string;
+  path: string;
+  /** The PDF version this device knows; marks record the one they were placed on. */
+  blobHash?: string;
+  role: Role;
+  /** Marks cannot be changed here: a viewer, or access was revoked. */
+  readOnly: boolean;
+  revoked?: boolean;
+  /** Who is signed in, the author of new marks. */
+  accountId: string;
 }
 
 export interface DocText {
@@ -607,6 +625,10 @@ export const ControlRoutes = {
     `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
   leave: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/leave`,
   resolve: "/docs/resolve",
+  /** GET ?path= → ResolvedPdf | null. */
+  pdfResolve: "/pdf-docs/resolve",
+  /** POST → 204: the owner turns on live PDFs for a notebook. */
+  pdfLive: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/pdf-live`,
   docText: (docId: string) => `/docs/${encodeURIComponent(docId)}/text`,
   docEdits: (docId: string) => `/docs/${encodeURIComponent(docId)}/edits`,
   docSuggestions: (docId: string) => `/docs/${encodeURIComponent(docId)}/suggestions`,

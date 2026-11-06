@@ -61,6 +61,8 @@ import {
   type WriteGuard,
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
+import { PdfMarksRuntime } from "./pdf-marks";
+import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
 
@@ -85,6 +87,8 @@ export interface Timings {
   retryMs: number;
   /** Maximum age of a content verification even if every stat is unchanged. */
   verifyMs: number;
+  /** Delay before a shared PDF's sidecar copy is rewritten. */
+  pdfWriteMs: number;
 }
 
 export const DEFAULT_TIMINGS: Timings = {
@@ -95,6 +99,7 @@ export const DEFAULT_TIMINGS: Timings = {
   pollMs: 5000,
   retryMs: 5000,
   verifyMs: 60_000,
+  pdfWriteMs: 60_000,
 };
 
 export interface ProjectInfo {
@@ -199,12 +204,27 @@ export class SharedProject {
   /** Retired path keys, each with the content hashes known for it. */
   private readonly retired: Map<string, Set<string>>;
   private observedEntries = new Map<string, ManifestEntry>();
+  readonly pdfs: PdfMarksRuntime;
 
   private constructor(ctx: ProjectContext, info: ProjectInfo, state: ProjectState) {
     this.ctx = ctx;
     this.info = info;
     this.state = state;
     this.retired = ctx.host.store.retiredPaths(info.projectId);
+    this.pdfs = new PdfMarksRuntime({
+      host: ctx.host,
+      logger: ctx.logger,
+      projectId: info.projectId,
+      notebook: info.notebook,
+      root: info.root,
+      writeMs: ctx.timings.pdfWriteMs,
+      role: () => this.info.role,
+      canWriteDisk: () => !this.follower,
+      guard: () => this.diskGuard(true),
+      accountId: () => ctx.accountId(),
+      filesChanged: (paths) => this.filesChanged(paths),
+      manifest: () => (this.manifestHub && !this.manifestHub.isClosed ? this.manifestHub.getDoc("manifest") : null),
+    });
   }
 
   static async open(ctx: ProjectContext, info: ProjectInfo): Promise<SharedProject> {
@@ -325,6 +345,7 @@ export class SharedProject {
       this.saveTimer = null;
     }
     if (options.preserveContent) await this.preserveLatestText();
+    await this.pdfs.stop({ local: options.preserveContent === true }).catch((error) => this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not stop its PDFs`, error));
     if ((options.preserveContent || !this.follower) && options.persist !== false && await this.rootAvailable()) await writeState(this.info.root, this.state, this.diskGuard(true)).catch(() => undefined);
     for (const unsubscribe of this.unsubscribe) unsubscribe();
     this.unsubscribe.length = 0;
@@ -588,6 +609,7 @@ export class SharedProject {
       this.treeChanged(previous, next);
     }
     if (touched.size > 0) this.filesChanged([...touched]);
+    this.pdfs.sync(this.entries.values(), layout.paths);
     // Documents whose file is missing or new get written now that their place exists.
     for (const [fileId, record] of Object.entries(next)) {
       if (record.kind === "doc" && record.docId && (!record.hash || this.rootUnavailable || this.baselineMissing.has(fileId))) {
@@ -621,6 +643,7 @@ export class SharedProject {
       }
     }
     for (const [fileId, record] of Object.entries(next)) if (record.docId) this.ensureDoc(record.docId, fileId);
+    this.pdfs.sync(this.entries.values(), layout.paths);
     if (JSON.stringify(previous) === JSON.stringify(next)) return;
     this.state.layout = next;
     this.ctx.layoutChanged(this.info.projectId);
@@ -850,6 +873,19 @@ export class SharedProject {
       delete next.edits;
     }
     photos.set(fileId, JSON.parse(JSON.stringify(next)));
+  }
+
+  // ------------------------------------------------------------ live PDFs
+
+  /** Turns live PDFs on for everyone. One way: marks would otherwise be stranded in the document. */
+  enablePdfLive(): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.info.album) throw new ControlError(400, "bad-request", "Albums have no PDFs.");
+      if (this.info.role !== "owner") throw new ControlError(403, "forbidden", "Only the notebook's owner can turn on live PDFs.");
+      if (!this.manifestReady()) throw new ControlError(503, "offline", "The notebook's file list has not loaded yet.");
+      await this.writeManifest((_files, doc) => doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true), { source: "typing" });
+      this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
+    });
   }
 
   /** Tells the album's other members about new photos; nothing is retried. */

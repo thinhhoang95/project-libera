@@ -29,6 +29,7 @@ import {
   type RegisterLocalRequest,
   type ResolveReconciliationRequest,
   type ResolvedDoc,
+  type ResolvedPdf,
   type ShareNotebookRequest,
   type SharedSignInOffer,
   type ContinueSharedSignInRequest,
@@ -218,6 +219,8 @@ export function createCollabClient(options: CollabClientOptions = {}) {
 
     // ---------------------------------------------------------------- documents
     resolve: (path: string) => request<ResolvedDoc | null>("GET", `${ControlRoutes.resolve}${queryString({ path })}`),
+    resolvePdf: (path: string) => request<ResolvedPdf | null>("GET", `${ControlRoutes.pdfResolve}${queryString({ path })}`),
+    enablePdfLive: (projectId: string) => request<void>("POST", ControlRoutes.pdfLive(projectId)),
     doc: (docId: string) => request<ResolvedDoc>("GET", ControlRoutes.doc(docId)),
     docText: (docId: string) => request<DocText>("GET", ControlRoutes.docText(docId)),
     applyEdits: (docId: string, body: ApplyEditsRequest) => request<ApplyEditsResponse>("POST", ControlRoutes.docEdits(docId), body),

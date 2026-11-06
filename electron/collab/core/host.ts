@@ -522,6 +522,7 @@ export class CollabHost {
           sentEmpty = true;
           return hub.subdocs.map((subdoc) => ({ subdoc, stateVector: EMPTY_STATE_VECTOR }));
         },
+        pdfTarget: () => hub.pdfTarget(),
         connectionChanged: (transport, detail) => {
           hub.connectionChanged(transport, detail);
           if (!transport) finish(false);
