@@ -216,8 +216,9 @@ export class CdpPage {
   /**
    * Clicks the element `finder` (a JS expression evaluating to an Element or
    * null) once it exists, is enabled and hydrated, and is the topmost element
-   * at its centre. Scrolls only when it is off screen (scrolling can move
-   * floating UI such as popovers after it was measured), and clicks once two
+   * at its centre. Scrolls only when it is off screen or cut off by a scrolling
+   * parent, such as a long form in a dialog (scrolling can move floating UI
+   * such as popovers after it was measured), and clicks once two
    * measurements 100 ms apart agree. Waits run in Node: page timers are
    * throttled to about 1 s while the window is hidden or occluded.
    */
@@ -230,7 +231,15 @@ export class CdpPage {
           const el = (${finder});
           if (!el) return null;
           const r = el.getBoundingClientRect();
-          if (r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth) return false;
+          const onScreen = r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth;
+          let clipped = false;
+          for (let parent = el.parentElement; parent && !clipped; parent = parent.parentElement) {
+            const style = getComputedStyle(parent);
+            const box = parent.getBoundingClientRect();
+            clipped = (/auto|scroll/.test(style.overflowY) && parent.scrollHeight > parent.clientHeight && (r.top < box.top || r.bottom > box.bottom))
+              || (/auto|scroll/.test(style.overflowX) && parent.scrollWidth > parent.clientWidth && (r.left < box.left || r.right > box.right));
+          }
+          if (onScreen && !clipped) return false;
           el.scrollIntoView({ block: "center", inline: "center" });
           return true;
         })()`);
@@ -317,6 +326,8 @@ export const DOM = {
       const r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0 && ${typeof text === "string" ? `t === ${JSON.stringify(text)}` : `${text.toString()}.test(t)`};
     }) || null`,
+  /** A file's row in the notebook tree, which can show when it changed after the name (text "notes.md· now"). */
+  treeFile: (name: string): string => DOM.byText("button", new RegExp(`^${name.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&")}(\\s*·.*)?$`)),
   /** The input a <label> whose text starts with `text` points at, inside `root`. */
   byLabel: (text: string, root = "document") =>
     `(() => {

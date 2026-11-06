@@ -302,9 +302,13 @@ describe("shared PDF documents", () => {
     const started = Date.now();
     const { encodeAwarenessUpdate, Awareness } = await import("y-protocols/awareness");
     const awareness = new Awareness(new Y.Doc());
-    for (let index = 0; index < 400; index += 1) {
-      awareness.setLocalStateField("n", index);
-      client.send({ type: MessageType.Awareness, docId, update: encodeAwarenessUpdate(awareness, [awareness.clientID]) });
+    try {
+      for (let index = 0; index < 400; index += 1) {
+        awareness.setLocalStateField("n", index);
+        client.send({ type: MessageType.Awareness, docId, update: encodeAwarenessUpdate(awareness, [awareness.clientID]) });
+      }
+    } finally {
+      awareness.destroy();
     }
     await client.acked(client.edit(docId, annotations, mark("still-open", env.owner.id)));
     await new Promise((resolve) => setTimeout(resolve, 100));

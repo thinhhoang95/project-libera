@@ -121,8 +121,8 @@ const js = {
   cmText: `(() => { const c = document.querySelector(".cm-content"); const v = c && c.cmTile && c.cmTile.view; return v ? v.state.doc.toString() : null; })()`,
   /** Visible text of the Visual (Tiptap/ProseMirror) editor. */
   pmText: `(() => { const p = document.querySelector(".ProseMirror"); return p ? p.innerText : null; })()`,
-  pill: `(() => { const p = document.querySelector(".libera-shared-tab-chrome [data-state]"); return p ? { state: p.dataset.state, label: (p.textContent || "").trim(), detail: p.getAttribute("aria-label") } : null; })()`,
-  sharedDoc: `(document.querySelector(".libera-shared-tab-chrome")?.dataset.sharedDoc ?? null)`,
+  pill: `(() => { const p = document.querySelector("[data-shared-doc] [data-state]"); return p ? { state: p.dataset.state, label: (p.textContent || "").trim(), detail: p.getAttribute("aria-label") } : null; })()`,
+  sharedDoc: `(document.querySelector("[data-shared-doc]")?.dataset.sharedDoc ?? null)`,
   presence: `[...document.querySelectorAll('[aria-label="People in this document"] button')].map((b) => b.getAttribute("aria-label"))`,
   rail: `(document.querySelector("button[aria-label^='Collaboration']")?.getAttribute("aria-label") ?? null)`,
   /** Which editor has the keyboard focus: "cm", "pm" or a description of the focused element. */
@@ -141,7 +141,7 @@ async function cmText(page: CdpPage): Promise<string | null> {
 async function focusEditor(page: CdpPage, kind: "cm" | "pm", where: "end" | "start") {
   const selector = kind === "cm" ? ".cm-content" : ".ProseMirror";
   await page.click(`document.querySelector(${JSON.stringify(selector)})`, `${kind === "cm" ? "CodeMirror" : "Visual"} editor`, 20_000, false);
-  await page.key(where === "end" ? "End" : "Home", { code: where === "end" ? "End" : "Home", keyCode: where === "end" ? 35 : 36, modifiers: 2 });
+  await page.key(where === "end" ? "End" : "Home", { code: where === "end" ? "End" : "Home", keyCode: where === "end" ? 35 : 36, modifiers: process.platform === "darwin" ? 4 : 2 });
 }
 
 async function waitText(page: CdpPage, read: string, includes: string[], what: string, timeoutMs = 15_000): Promise<string> {
@@ -246,10 +246,10 @@ async function registerCollab(instance: LiberaInstance, account: { email: string
 async function openFile(instance: LiberaInstance, name: string, folder?: string) {
   const page = instance.page!;
   if (folder) {
-    const visible = await page.evaluate<boolean>(`!!(${DOM.byText("button", name)})`);
+    const visible = await page.evaluate<boolean>(`!!(${DOM.treeFile(name)})`);
     if (!visible) await page.click(DOM.byText("button", folder), `${folder} folder in the tree`);
   }
-  await page.click(DOM.byText("button", name), `${name} in the tree`);
+  await page.click(DOM.treeFile(name), `${name} in the tree`);
   await waitFor(() => page.evaluate<string | null>(js.sharedDoc), {
     timeoutMs: 30_000,
     message: `${instance.name}: ${name} did not open as a shared document (no shared-tab chrome)`,
@@ -420,7 +420,7 @@ async function main() {
 
   await step("5", "The notebook is in Bob's tree with the same files on disk", async () => {
     const page = bob.page!;
-    await waitFor(() => page.evaluate<boolean>(`!!(${DOM.byText("button", "notes.md")})`), { timeoutMs: 20_000, message: "notes.md is not in Bob's tree" });
+    await waitFor(() => page.evaluate<boolean>(`!!(${DOM.treeFile("notes.md")})`), { timeoutMs: 20_000, message: "notes.md is not in Bob's tree" });
     for (const relative of ["notes.md", "paper/main.tex"]) {
       const bobFile = bob.file(`${bobNotebook}/${relative}`);
       await waitFor(() => existsSync(bobFile), { timeoutMs: 30_000, message: `${relative} did not appear on Bob's disk` });
@@ -730,19 +730,19 @@ async function main() {
     );
     assert(created === 200, `create-file answered ${created}`);
     const started = Date.now();
-    await waitFor(() => bob.page!.evaluate<boolean>(`!!(${DOM.byText("button", name)})`), { timeoutMs: 20_000, message: `${name} did not appear in Bob's Notebooks tree` });
+    await waitFor(() => bob.page!.evaluate<boolean>(`!!(${DOM.treeFile(name)})`), { timeoutMs: 20_000, message: `${name} did not appear in Bob's Notebooks tree` });
     timings["collaborator's new file → in Bob's tree"] = Date.now() - started;
     await waitFor(() => { try { return readFileSync(bob.file(`${bobNotebook}/${name}`), "utf8") === "# From Alice"; } catch { return false; } }, { timeoutMs: 10_000, message: `${name} is not on Bob's disk` });
     note(`${name} showed up in Bob's tree after ${timings["collaborator's new file → in Bob's tree"]} ms`);
     await shot(bob.page, "new-file-in-bob-tree");
   });
 
-  await step("10c", "Live PDF: Alice writes a note, Bob sees it and her pointer, and it reaches his sidecar copy", async () => {
+  await step("10c", "Live PDF: Alice writes a note, Bob sees it and her pointer", async () => {
     const strip = `document.querySelector(".libera-pdf-collab")`;
     const page = alice.page!;
     const other = bob.page!;
     for (const [instance, who] of [[page, "Alice"], [other, "Bob"]] as const) {
-      await instance.click(DOM.byText("button", "paper.pdf"), `paper.pdf in ${who}'s tree`);
+      await instance.click(DOM.treeFile("paper.pdf"), `paper.pdf in ${who}'s tree`);
       await waitFor(() => instance.evaluate<boolean>(`!!${strip}`), { timeoutMs: 30_000, message: `${who}: the live PDF strip did not appear` });
       await waitFor(() => instance.evaluate<boolean>(`!!document.querySelector("[data-pdf-page-content]")`), { timeoutMs: 30_000, message: `${who}: the PDF did not render` });
     }
@@ -759,13 +759,6 @@ async function main() {
     await waitFor(() => other.evaluate<boolean>(`!!document.querySelector(".pdf-presence-pointer, .pdf-presence-rail-mark")`), { timeoutMs: 10_000, message: "Bob sees no presence from Alice" });
     await shot(other, "pdf-note-on-bob");
     await waitFor(() => other.evaluate<boolean>(`(${strip}).textContent.includes("Saved")`), { timeoutMs: 20_000, message: "Bob's strip never settled" });
-    await waitFor(() => {
-      const copies = (readdirSync(bob.root, { recursive: true }) as string[]).filter((file) => file.endsWith(path.join("by-path", "paper.pdf.json")));
-      return copies.some((file) => {
-        const copy = JSON.parse(readFileSync(path.join(bob.root, file), "utf8")) as { sharedCopy?: string; annotations?: Array<{ text?: string }> };
-        return copy.sharedCopy && copy.annotations?.some((mark) => mark.text?.includes("Note from Alice"));
-      });
-    }, { timeoutMs: 20_000, message: "the note never reached Bob's sidecar copy" });
   }, { soft: true });
 
   await step("11", "Server down: Alice keeps typing, the pill shows offline with a pending count", async () => {
@@ -834,7 +827,7 @@ async function main() {
     await shot(bob.page, "reconnected-bob");
   });
 
-  await step("13", "Quit both apps; the host flushes; reopening shows the same text", async () => {
+  await step("13", "Quit both apps; the host flushes, the PDF copy included; reopening shows the same text", async () => {
     const finalText = await cmText(alice.page!);
     assert(finalText !== null, "no final text");
     const quits = await Promise.all([alice.quit(), bob.quit()]);
@@ -843,6 +836,13 @@ async function main() {
       assert(instance.currentLog.includes("[collab-host] Flushed and stopped."), `${instance.name}: no "[collab-host] Flushed and stopped." in the log`);
     }
     note('both logs say "[collab-host] Flushed and stopped."');
+    // Sooner than the copy's one-minute delay: quitting has to write it.
+    const copies = (readdirSync(bob.root, { recursive: true }) as string[]).filter((file) => file.endsWith(path.join("by-path", "paper.pdf.json")));
+    assert(copies.some((file) => {
+      const copy = JSON.parse(readFileSync(path.join(bob.root, file), "utf8")) as { sharedCopy?: string; annotations?: Array<{ text?: string }> };
+      return copy.sharedCopy && copy.annotations?.some((mark) => mark.text?.includes("Note from Alice"));
+    }), "Alice's PDF note is not in Bob's sidecar copy after quitting");
+    note("Bob's sidecar copy holds Alice's PDF note");
     assert(readFileSync(aliceNotes, "utf8") === finalText, "Alice's file on disk differs from her last editor text");
     assert(readFileSync(bobNotes(), "utf8") === finalText, "Bob's file on disk differs from Alice's last editor text");
 
@@ -862,7 +862,7 @@ async function main() {
     });
     timings["relaunch: login → rail recovers from the login-screen status"] = Date.now() - railStarted;
     note(`after relaunch the rail said ${JSON.stringify(firstRail)} right after login, then ${JSON.stringify(rail)} after ${Date.now() - railStarted} ms`);
-    await alice.page!.click(DOM.byText("button", "notes.md"), "notes.md in the tree");
+    await alice.page!.click(DOM.treeFile("notes.md"), "notes.md in the tree");
     await waitFor(() => alice.page!.evaluate<string | null>(js.sharedDoc), { timeoutMs: 15_000, message: "after relaunch notes.md opened as a plain local file (no shared-tab chrome)" });
     const reopened = await waitFor(async () => (await cmText(alice.page!)) ?? (await alice.page!.evaluate<string | null>(js.pmText)), { timeoutMs: 15_000, message: "no editor text after reopening" });
     const sameAsSource = reopened === finalText;

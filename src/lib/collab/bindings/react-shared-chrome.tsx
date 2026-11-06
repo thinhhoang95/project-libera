@@ -93,7 +93,7 @@ export function SharedTabStatus({ tabId, session, snapshot, notice, placement = 
 
   return (
     <>
-      <div ref={pillRef} className="relative shrink-0">
+      <div ref={pillRef} className="relative shrink-0" data-shared-doc={session.docId}>
         <CollabStatusPill status={status} tooltipPlacement={placement} />
         {revealedAt !== null ? (
           <div

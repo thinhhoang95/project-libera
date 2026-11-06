@@ -74,11 +74,17 @@ test("the PDF viewer on a live document", async (t) => {
   };
   setCollabStatusStore({ subscribe: (listener: () => void) => { statusListeners.add(listener); return () => statusListeners.delete(listener); }, getSnapshot: () => status, refresh: async () => {}, refreshProjects: async () => {}, setStatus: () => {} } as never);
 
+  const awarenesses: Awareness[] = [];
+  const newAwareness = () => {
+    const awareness = new Awareness(new Y.Doc());
+    awarenesses.push(awareness);
+    return awareness;
+  };
   let documents = 0;
   const revealListeners = new Set<(target: string) => void>();
   function liveDocument(role: "commenter" | "viewer" = "commenter") {
     const annotations = new Y.Doc();
-    const awareness = new Awareness(new Y.Doc());
+    const awareness = newAwareness();
     const snapshot = { attached: true, meta: { role, readOnly: role === "viewer" }, status: { state: "saved-remote", pending: 0, oldestPendingAgeMs: 0, lastAckAt: null, connected: true }, rejection: null, closed: null, error: null, generation: 0 };
     const replica = { annotations, awareness, whenAttached: async () => {}, onRebuild: () => () => {}, subscribe: () => () => {}, getSnapshot: () => snapshot, dismissRejection() {} };
     documents += 1;
@@ -409,7 +415,7 @@ test("the PDF viewer on a live document", async (t) => {
       await mount();
       const page = host.querySelector<HTMLElement>("[data-pdf-page-number]");
       const height = parseFloat((page?.firstElementChild as HTMLElement).style.height);
-      const other = new Awareness(new Y.Doc());
+      const other = newAwareness();
       other.setLocalStateField("user", { name: "Them", color: "#112233" });
       other.setLocalStateField("pdf", { page: 1, top: 0, bottom: 1, pointer: { page: 1, x: 0.5, y: 0.5 } });
       await act(async () => { applyAwarenessUpdate(live.awareness, encodeAwarenessUpdate(other, [other.clientID]), "remote"); });
@@ -423,7 +429,7 @@ test("the PDF viewer on a live document", async (t) => {
       const live = liveDocument();
       serve("commenter");
       await mount();
-      const other = new Awareness(new Y.Doc());
+      const other = newAwareness();
       other.setLocalStateField("user", { name: "Them", color: "#112233" });
       other.setLocalStateField("pdf", { page: 1, top: 0, bottom: 1 });
       await act(async () => { applyAwarenessUpdate(live.awareness, encodeAwarenessUpdate(other, [other.clientID]), "remote"); });
@@ -471,7 +477,9 @@ test("the PDF viewer on a live document", async (t) => {
     setCollabStatusStore(null);
     setSharedDocRegistry(null);
     globalThis.fetch = originalFetch;
-    // JSDOM's animation-frame timer would keep this test's process alive for good.
+    // JSDOM's animation-frame timer and each Awareness's check timer would keep
+    // this test's process alive for good.
+    for (const awareness of awarenesses) awareness.destroy();
     dom.window.close();
   }
 });
