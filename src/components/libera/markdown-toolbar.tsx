@@ -3,8 +3,6 @@ import {
   Braces,
   ChartColumn,
   Bold,
-  ChevronDown,
-  ChevronUp,
   Code2,
   Heading1,
   Heading2,
@@ -92,7 +90,6 @@ type MarkdownToolbarProps = {
 const HIGHLIGHT_MENU_WIDTH = 160;
 const TEXT_COLOR_MENU_WIDTH = 160;
 const FLOATING_MENU_GAP = 6;
-const FULL_TOOLBAR_BUTTON_COUNT = 26;
 
 /**
  * Whether Markdown may contain a citation ([@key], [-@key], @key): a cheap
@@ -196,17 +193,7 @@ export function MarkdownToolbar({
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const toolbarRootRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const toolbarMeasureRef = useRef<HTMLDivElement>(null);
-  const toolbarRowRef = useRef<HTMLDivElement>(null);
   const scrollToolbarRef = useHorizontalToolbarScroll();
-  const setToolbarRowRef = useCallback((element: HTMLDivElement | null) => {
-    toolbarRowRef.current = element;
-    const cleanup = scrollToolbarRef(element);
-    return () => {
-      cleanup?.();
-      toolbarRowRef.current = null;
-    };
-  }, [scrollToolbarRef]);
   const highlightButtonRef = useRef<HTMLButtonElement>(null);
   const highlightMenuRef = useRef<HTMLDivElement>(null);
   const textColorButtonRef = useRef<HTMLButtonElement>(null);
@@ -222,8 +209,6 @@ export function MarkdownToolbar({
     top: 0,
   });
   const headingNumbering = useHeadingNumbering(documentPath, () => detectMarkdownHeadingNumbering(markdownContent));
-  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
-  const [toolbarExpanded, setToolbarExpanded] = useState(false);
 
   const getHighlightMenuPosition = useCallback(() => {
     return getFloatingMenuPosition(highlightButtonRef.current, HIGHLIGHT_MENU_WIDTH);
@@ -234,51 +219,6 @@ export function MarkdownToolbar({
       textColorButtonRef.current,
       TEXT_COLOR_MENU_WIDTH,
     );
-  }, []);
-
-  useEffect(() => {
-    const measure = toolbarMeasureRef.current;
-    const row = toolbarRowRef.current;
-
-    if (!measure || !row) {
-      return;
-    }
-
-    function updateToolbarCollapse() {
-      const measureElement = toolbarMeasureRef.current;
-      const rowElement = toolbarRowRef.current;
-
-      if (!measureElement || !rowElement) {
-        return;
-      }
-
-      const nextCollapsed = measureElement.scrollWidth > rowElement.clientWidth + 1;
-
-      setToolbarCollapsed(nextCollapsed);
-
-      if (!nextCollapsed) {
-        setToolbarExpanded(false);
-      }
-    }
-
-    updateToolbarCollapse();
-
-    if (typeof ResizeObserver === "undefined") {
-      window.addEventListener("resize", updateToolbarCollapse);
-
-      return () => window.removeEventListener("resize", updateToolbarCollapse);
-    }
-
-    const observer = new ResizeObserver(updateToolbarCollapse);
-
-    observer.observe(measure);
-    observer.observe(row);
-    window.addEventListener("resize", updateToolbarCollapse);
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", updateToolbarCollapse);
-    };
   }, []);
 
   useEffect(() => {
@@ -503,12 +443,6 @@ export function MarkdownToolbar({
     setTextColorMenuOpen(true);
   }
 
-  function toggleToolbarExpanded() {
-    setHighlightMenuOpen(false);
-    setTextColorMenuOpen(false);
-    setToolbarExpanded((current) => !current);
-  }
-
   function insertHighlight(color: MarkdownHighlightColor) {
     setHighlightMenuOpen(false);
     onInsert(`${color.shortcut}>>> `, " <<<", `${color.label.toLowerCase()} highlight`);
@@ -707,21 +641,11 @@ export function MarkdownToolbar({
         onChange={() => void handleImageChange()}
       />
       <div
-        ref={toolbarMeasureRef}
-        aria-hidden
-        className="pointer-events-none invisible absolute left-4 top-2 flex max-w-none items-center gap-2 whitespace-nowrap"
-      >
-        {Array.from({ length: FULL_TOOLBAR_BUTTON_COUNT }, (_, index) => (
-          <span className="toolbar-button" key={index} />
-        ))}
-        <span className="inline-flex h-9 w-36 shrink-0" />
-      </div>
-      <div
-        ref={setToolbarRowRef}
+        ref={scrollToolbarRef}
         role="toolbar"
         aria-label="Markdown formatting"
         tabIndex={0}
-        className="libera-horizontal-toolbar flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap"
+        className="libera-horizontal-toolbar flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap [&>*]:shrink-0"
       >
         <button
           aria-label="Bold"
@@ -886,40 +810,12 @@ export function MarkdownToolbar({
           getContent={() => markdownContent}
           onOpenLink={onOpenFileLink}
         />
-        {toolbarCollapsed ? (
-          <button
-            aria-expanded={toolbarExpanded}
-            aria-label={toolbarExpanded ? "Collapse toolbar" : "Expand toolbar"}
-            className="toolbar-button"
-            data-command-reveal-button=""
-            title={toolbarExpanded ? "Collapse toolbar" : "Expand toolbar"}
-            type="button"
-            onClick={toggleToolbarExpanded}
-          >
-            {toolbarExpanded ? (
-              <ChevronUp aria-hidden className="h-4 w-4" />
-            ) : (
-              <ChevronDown aria-hidden className="h-4 w-4" />
-            )}
-          </button>
-        ) : (
-          renderSecondaryControls()
-        )}
+        {renderSecondaryControls()}
         {renderFullscreenButton()}
         <FactCheckButton documentPath={documentPath} markdown={markdownContent} disabled={untitled} />
         <ExpandMacrosButton className="toolbar-button" markdown={markdownContent} getMarkdown={() => markdownContent} onExpand={onExpandMacros} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => markdownContent} />
       </div>
-      {toolbarCollapsed && toolbarExpanded ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
-          {renderSecondaryControls()}
-        </div>
-      ) : toolbarCollapsed ? (
-        // Offstage, so the command palette still lists the tools that did not fit.
-        <div hidden data-command-toolbar="Markdown formatting" data-command-reveal="">
-          {renderSecondaryControls()}
-        </div>
-      ) : null}
     </div>
   );
 }
