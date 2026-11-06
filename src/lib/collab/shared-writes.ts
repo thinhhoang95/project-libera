@@ -26,7 +26,7 @@ import { copyTranscript, followSharedAudioChanges, transcriptCompanionPath } fro
 import { deletePdfSidecars, followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
 import { INK_DIR } from "@/lib/storage/constants";
 import { copyInkThroughEdit, inkFolderPath, inkLibraryPath, supportsInk } from "@/lib/storage/ink";
-import { assertDirectoryExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
+import { assertDirectoryExists, copyFileIfExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
 import {
   assertSafeSegment,
   ensureAdminRoot,
@@ -35,6 +35,7 @@ import {
   markdownAssetsDirectoryPathFromParts,
   markdownAssetsPathPrefix,
   notebookPath,
+  pdfAnnotationsPath,
   relativeFilePath,
   splitDirectoryPath,
   splitFilePath,
@@ -622,6 +623,10 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
   } else {
     await writeSharedBlob(liberaPath, new Uint8Array(await readFile(filePathFromParts(current.notebook, current.pathParts))), { ...options, createOnly: true });
     if (node.fileType === "audio") await copyTranscript(relativePath, liberaPath);
+    // A copy's marks are its own. On a notebook with live PDFs, the host merges them into the copy's document.
+    if (node.fileType === "pdf") {
+      await copyFileIfExists(pdfAnnotationsPath(current.notebook, current.pathParts), pdfAnnotationsPath(destination.notebook, parts));
+    }
   }
   notifySearchChanges([liberaPath]);
   return readLiberaFile(liberaPath);

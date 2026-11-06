@@ -12,6 +12,7 @@ import type { ReplicaSnapshot } from "@/lib/collab/client/replica";
 import type { PdfPresenceSnapshot, PdfPresenceStore } from "@/lib/collab/pdf/presence";
 import type { SharedPdfState } from "@/lib/collab/pdf/react";
 import type { SyncStatus } from "@/lib/collab/protocol/local";
+import { PdfCollabTools } from "./pdf-collab-tools";
 
 const LOADING_STATUS: SyncStatus = { state: "loading", pending: 0, oldestPendingAgeMs: 0, lastAckAt: null, connected: false };
 
@@ -31,16 +32,22 @@ export interface PdfCollabChromeProps {
   deletedMark?: { id: string; by: string } | null;
   onRestoreDeleted?: () => void;
   onDismissDeleted?: () => void;
-  /** Controls for the chrome's right side (the Deleted marks list). */
+  /** Marks can be changed here. */
+  canAnnotate?: boolean;
+  /** Marks placed on an earlier version of this PDF. */
+  staleMarks?: number;
+  onAcceptVersion?: () => void;
   children?: ReactNode;
 }
 
-export function PdfCollabChrome({ shared, snapshot, fileName, presence, followingClientId, onFollow, deletedMark, onRestoreDeleted, onDismissDeleted, children }: PdfCollabChromeProps) {
+export function PdfCollabChrome({ shared, snapshot, fileName, presence, followingClientId, onFollow, deletedMark, onRestoreDeleted, onDismissDeleted, canAnnotate = false, staleMarks = 0, onAcceptVersion, children }: PdfCollabChromeProps) {
   const { users } = useSyncExternalStore(presence?.subscribe ?? noSubscribe, presence?.getSnapshot ?? noPresence, noPresence);
   if (shared.kind !== "shared") return null;
   const banner = sharedBannerKind(snapshot);
   const rejection = snapshot?.rejection;
   const viewOnly = shared.resolved.readOnly && banner === null;
+  const myVersion = shared.resolved.blobHash?.slice(0, 12);
+  const otherVersion = users.find((user) => user.presence?.version && myVersion && user.presence.version !== myVersion);
   const exportMarks = () => downloadText(`${fileName}.annotations.json`, JSON.stringify(shared.store.getSnapshot(), null, 2));
 
   return (
@@ -53,6 +60,8 @@ export function PdfCollabChrome({ shared, snapshot, fileName, presence, followin
             View only
           </span>
         ) : null}
+        <PdfCollabTools canAnnotate={canAnnotate} shared={shared} />
+        {otherVersion ? <span className="truncate text-xs text-muted-foreground">{otherVersion.name} has a different version of this PDF.</span> : null}
         {children}
         <PresenceAvatars
           className="ml-auto"
@@ -71,6 +80,12 @@ export function PdfCollabChrome({ shared, snapshot, fileName, presence, followin
       {banner === "access-changed" ? <AccessChangedBanner onExport={exportMarks} /> : null}
       {banner === "deleted" ? <AccessChangedBanner detail="This PDF was deleted from the notebook." onExport={exportMarks} /> : null}
       {banner === "update-required" ? <AccessChangedBanner detail="Update Libera to change these annotations." onExport={exportMarks} /> : null}
+      {staleMarks > 0 ? (
+        <div className="flex items-center gap-2 border-b border-input bg-card px-4 py-1.5 text-xs" role="status">
+          <span className="min-w-0 flex-1">This PDF changed. {staleMarks === 1 ? "1 mark was" : `${staleMarks} marks were`} placed on an earlier version and may not line up.</span>
+          {canAnnotate ? <button type="button" className="shrink-0 rounded-md border border-input px-2 py-0.5 font-medium hover:bg-muted" onClick={onAcceptVersion}>Keep them here</button> : null}
+        </div>
+      ) : null}
       {deletedMark ? (
         <div className="flex items-center gap-2 border-b border-input bg-card px-4 py-1.5 text-xs" role="status">
           <span className="min-w-0 flex-1">Someone deleted the annotation you had open. What you wrote is kept with it.</span>

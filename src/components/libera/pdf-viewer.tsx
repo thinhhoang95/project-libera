@@ -91,6 +91,7 @@ import { useCanAnnotate, useSharedPdf, useSharedPdfSnapshot } from "@/lib/collab
 import { PdfCollabChrome } from "./collab/pdf-collab-chrome";
 import { PdfPresenceLayer, PdfPresenceRail } from "./collab/pdf-presence";
 import { pdfPresenceFor, type PdfPresenceStore } from "@/lib/collab/pdf/presence";
+import { relocateQuote, type QuotePage, type QuoteTextItem } from "@/lib/pdf-quote-rects";
 import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
@@ -697,6 +698,9 @@ export function PdfViewer({
   useEffect(() => () => presence?.leave(), [presence]);
   const [followingClientId, setFollowingClientId] = useState<number | null>(null);
   const drawingPresenceIdRef = useRef("");
+  const blobHash = shared.kind === "shared" ? shared.resolved.blobHash : undefined;
+  const blobHashRef = useRef(blobHash);
+  useLayoutEffect(() => { blobHashRef.current = blobHash; });
   const viewerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pendingScrollRestoreRef = useRef<PdfScrollPosition | null>({
@@ -1019,7 +1023,12 @@ export function PdfViewer({
     const bounds = page.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
     if (bounds.height <= 0) return;
-    store.setView({ page: anchor.pageNumber, top: (view.top - bounds.top) / bounds.height, bottom: (view.bottom - bounds.top) / bounds.height });
+    store.setView({
+      page: anchor.pageNumber,
+      top: (view.top - bounds.top) / bounds.height,
+      bottom: (view.bottom - bounds.top) / bounds.height,
+      ...(blobHashRef.current ? { version: blobHashRef.current.slice(0, 12) } : {}),
+    });
   }, []);
 
   const publishPointer = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1053,6 +1062,39 @@ export function PdfViewer({
 
   useEffect(() => { publishView(); }, [pageLayouts, presence, publishView, zoom]);
   useEffect(() => { presence?.setSelection(activeSelectedAnnotationId ? [activeSelectedAnnotationId] : []); }, [activeSelectedAnnotationId, presence]);
+
+  // The PDF was replaced: highlights find their passage again when it is
+  // there exactly once, nearby. Anything else stays where it was, flagged.
+  useEffect(() => {
+    const store = sharedStore;
+    if (!store || !blobHash || !pdfDocument || !textContentCache || !canAnnotate) return;
+    const candidates = store.stale(blobHash).filter((record) => record.annotation.type === "highlight" && record.annotation.quote);
+    if (!candidates.length) return;
+    let active = true;
+    void (async () => {
+      const pages = new Map<number, QuotePage>();
+      const page = async (pageNumber: number) => {
+        const known = pages.get(pageNumber);
+        if (known) return known;
+        const proxy = await pdfDocument.getPage(pageNumber);
+        const content = await textContentCache.get(proxy);
+        const [, , width, height] = proxy.view;
+        const read: QuotePage = { pageNumber, items: content.items.filter((item) => "str" in item) as QuoteTextItem[], width, height };
+        pages.set(pageNumber, read);
+        return read;
+      };
+      const moves: Array<{ id: string; geometry: Record<string, unknown> }> = [];
+      for (const { annotation } of candidates) {
+        if (annotation.type !== "highlight" || !annotation.quote) continue;
+        const near: QuotePage[] = [];
+        for (let number = Math.max(1, annotation.pageNumber - 2); number <= Math.min(pdfDocument.numPages, annotation.pageNumber + 2); number += 1) near.push(await page(number));
+        const found = relocateQuote(annotation.quote, near);
+        if (found) moves.push({ id: annotation.id, geometry: { pageNumber: found.pageNumber, rects: found.rects } });
+      }
+      if (active) store.acceptVersion(moves, blobHash);
+    })().catch(() => undefined);
+    return () => { active = false; };
+  }, [blobHash, canAnnotate, pdfDocument, sharedStore, textContentCache]);
 
   // Moving by hand ends following; only a scroll this viewer made keeps it.
   const stopFollowing = useCallback(() => setFollowingClientId(null), []);
@@ -2447,10 +2489,15 @@ export function PdfViewer({
       <PdfCollabChrome
         deletedMark={deletedNote}
         fileName={filePath.split("/").pop() ?? filePath}
+        canAnnotate={canAnnotate}
         followingClientId={followingClientId}
         presence={presence}
         shared={shared}
         snapshot={sharedSnapshot}
+        staleMarks={sharedStore ? sharedStore.stale(blobHash).length : 0}
+        onAcceptVersion={() => {
+          if (sharedStore && blobHash) sharedStore.acceptVersion(sharedStore.stale(blobHash).map((record) => ({ id: record.annotation.id })), blobHash);
+        }}
         onFollow={(clientId) => setFollowingClientId((current) => (current === clientId ? null : clientId))}
         onDismissDeleted={() => setDeletedNote(null)}
         onRestoreDeleted={() => {

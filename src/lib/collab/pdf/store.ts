@@ -4,7 +4,7 @@
 // work. It is plain TypeScript; pdf-viewer.tsx adapts it to React.
 
 import type * as Y from "yjs";
-import { applyMarkValues, applyMarksDiff, marksOf, readMark, restoreMark, visibleMarks, writeDeletedText, type MarkChange, type MarkContext, type MarkRecord } from "./model";
+import { applyMarkValues, applyMarksDiff, markVersion, marksOf, readMark, restoreMark, visibleMarks, writeDeletedText, type MarkChange, type MarkContext, type MarkRecord } from "./model";
 import type { PdfAnnotation } from "@/lib/types";
 
 /** Origin of this window's changes to the marks. */
@@ -137,6 +137,17 @@ export class SharedPdfStore {
 
   record(id: string): MarkRecord | undefined {
     return this.records.get(id);
+  }
+
+  /** Live marks placed on another version of the PDF than `sourceHash`. */
+  stale(sourceHash: string | undefined): MarkRecord[] {
+    if (!sourceHash) return [];
+    return [...this.records.values()].filter((record) => !record.deleted && record.sourceHash && record.sourceHash !== sourceHash);
+  }
+
+  /** Records that marks fit the PDF at `sourceHash`, moving those that say where to. */
+  acceptVersion(moves: ReadonlyArray<{ id: string; geometry?: Record<string, unknown> }>, sourceHash: string) {
+    if (moves.length) markVersion(this.doc, moves, sourceHash, this.context, this.origin);
   }
 
   /** Deleted marks, newest deletion first, for Restore. */

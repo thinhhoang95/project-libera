@@ -5,6 +5,7 @@ import { after, before, describe, test } from "node:test";
 import * as Y from "yjs";
 
 import { ManifestKeys, MessageType, PdfKeys, pdfDocIdFromDigest, pdfDocIdSeed, type Subdoc } from "../src/protocol.js";
+import { json } from "./helpers.js";
 import type { SyncTestClient } from "./support/sync-client.js";
 import { startSyncEnv, type AccountFixture, type SyncEnv } from "./support/sync-fixtures.js";
 
@@ -187,6 +188,47 @@ describe("shared PDF documents", () => {
     assert.notEqual((await env.db.selectFrom("documents").select("deleted_at").where("id", "=", docId).executeTakeFirstOrThrow()).deleted_at, null);
     const late = await env.connect();
     await assert.rejects(late.open(docId, { projectId: env.project.id, fileId }), /document-deleted/);
+  });
+
+  test("a version of the marks can be named and restored as a forward change", async () => {
+    const { client, docId, fileId } = await openPdf();
+    await client.acked(client.edit(docId, annotations, mark("kept", env.owner.id)));
+    await client.acked(client.edit(docId, annotations, (doc) => {
+      mark("note", env.owner.id, { type: "text", geometry: { pageNumber: 1, rect: { x: 0, y: 0, width: 0.2, height: 0.1 } }, style: { fontSize: 10 } })(doc);
+      (doc.getMap(PdfKeys.marks).get("note") as Y.Map<unknown>).set("text", new Y.Text("first"));
+    }));
+    const named = await json<{ id: string }>(env.server.url, `/v1/documents/${docId}/revisions`, { body: { kind: "named", label: "Before edits" }, token: env.owner.token });
+    assert.equal(named.status, 201, JSON.stringify(named.body));
+
+    await client.acked(client.edit(docId, annotations, field("kept", "style", { color: "#22c55e" })));
+    await client.acked(client.edit(docId, annotations, field("kept", "deleted", { by: env.owner.id, at: "2026-11-06T11:00:00.000Z" })));
+    await client.acked(client.edit(docId, annotations, (doc) => ((doc.getMap(PdfKeys.marks).get("note") as Y.Map<unknown>).get("text") as Y.Text).insert(5, " and more")));
+    await client.acked(client.edit(docId, annotations, mark("later", env.owner.id)));
+
+    const commenter = await env.member("commenter");
+    const refused = await json(env.server.url, `/v1/documents/${docId}/restore`, { body: { revisionId: named.body.id }, token: commenter.token });
+    assert.equal(refused.status, 403);
+    const restored = await json(env.server.url, `/v1/documents/${docId}/restore`, { body: { revisionId: named.body.id }, token: env.owner.token });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+
+    const reader = await env.connect();
+    await reader.open(docId, { projectId: env.project.id, fileId });
+    const marks = reader.doc(docId, annotations).getMap<Y.Map<unknown>>(PdfKeys.marks);
+    assert.deepEqual(marks.get("kept")?.get("style"), { color: "#fde047" });
+    assert.equal(marks.get("kept")?.has("deleted"), false);
+    assert.equal((marks.get("note")?.get("text") as Y.Text).toString(), "first");
+    assert.ok(marks.get("later")?.has("deleted"), "a mark added since is deleted, not removed");
+  });
+
+  test("a PDF can be sent for review and decided", async () => {
+    const reviewer = await env.member("commenter");
+    const { client, docId } = await openPdf();
+    await client.acked(client.edit(docId, annotations, mark("m", env.owner.id)));
+    const created = await json<{ id: string; status: string }>(env.server.url, `/v1/documents/${docId}/reviews`, { body: { scope: { kind: "document" }, assignees: [reviewer.id] }, token: env.owner.token });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const decided = await json<{ status: string }>(env.server.url, `/v1/reviews/${created.body.id}/decision`, { body: { decision: "approved" }, token: reviewer.token });
+    assert.equal(decided.status, 200, JSON.stringify(decided.body));
+    assert.equal(decided.body.status, "approved");
   });
 
   test("awareness is rate limited without closing the socket", async () => {

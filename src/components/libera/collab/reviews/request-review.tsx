@@ -40,7 +40,13 @@ export function RequestReviewButton({ tabId }: { tabId?: string }) {
   </>;
 }
 
-function RequestReviewDialog({ session, selection, onClose }: { session: NonNullable<ReturnType<typeof useSharedTab>["session"]>; selection: ReviewRange | null; onClose: () => void }) {
+export function RequestReviewDialog({ session, selection, onClose, documentOnly = false }: {
+  session: NonNullable<ReturnType<typeof useSharedTab>["session"]>;
+  selection: ReviewRange | null;
+  onClose: () => void;
+  /** A PDF: there is no passage to pick, and agentic review is for text. */
+  documentOnly?: boolean;
+}) {
   const { controller, snapshot } = useReviews(session);
   const review = useMarkdownReview();
   const members = useProjectMembers(session.resolved.projectId);
@@ -78,13 +84,13 @@ function RequestReviewDialog({ session, selection, onClose }: { session: NonNull
     <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={busy || !assignees.length || (scope === "selection" && !selection)} onClick={() => void submit()}>Request review</button>
   </>}>
     <form className="space-y-3 text-sm" aria-label="Review request" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-      <fieldset className="space-y-1">
+      {documentOnly ? null : <fieldset className="space-y-1">
         <legend className="text-xs font-semibold">What to review</legend>
         <label className="flex items-center gap-2"><input type="radio" name="review-scope" checked={scope === "document"} onChange={() => setScope("document")} />The whole document</label>
         <label className="flex items-start gap-2"><input type="radio" name="review-scope" disabled={!selection} checked={scope === "selection"} onChange={() => setScope("selection")} />
           <span>The selected passage{selection ? <q className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{quote}</q> : <span className="block text-xs text-muted-foreground">Select text in the editor first.</span>}</span>
         </label>
-      </fieldset>
+      </fieldset>}
       <fieldset className="space-y-1">
         <legend className="text-xs font-semibold">Reviewers</legend>
         {others.length ? others.map((member) => <label key={member.id} className="flex items-center gap-2">
@@ -95,7 +101,7 @@ function RequestReviewDialog({ session, selection, onClose }: { session: NonNull
       <label className="block space-y-1"><span className="text-xs font-semibold">Note (optional)</span>
         <textarea aria-label="Note for the reviewers" className="review-textarea" rows={3} maxLength={5000} value={note} onChange={(event) => setNote(event.target.value)} placeholder="What should they look at?" />
       </label>
-      <label className="flex items-center gap-2"><input type="checkbox" checked={aiFirst} onChange={(event) => setAiFirst(event.target.checked)} />Run AI review first (agentic review, as you)</label>
+      {documentOnly ? null : <label className="flex items-center gap-2"><input type="checkbox" checked={aiFirst} onChange={(event) => setAiFirst(event.target.checked)} />Run AI review first (agentic review, as you)</label>}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </form>
   </ModalDialog>;

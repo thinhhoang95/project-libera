@@ -56,8 +56,11 @@ interface Sidecar {
   annotations?: unknown;
   comments?: unknown;
   source?: unknown;
-  /** Written by this runtime: a copy of the shared state, not local work. */
-  sharedCopy?: boolean;
+  /**
+   * Written by this runtime: the document this is a copy of. A copy of another
+   * PDF's document (the file was copied or moved here) is local work again.
+   */
+  sharedCopy?: string;
 }
 
 interface PdfDoc {
@@ -115,8 +118,11 @@ export class PdfMarksRuntime {
       const relative = paths.get(entry.fileId);
       if (entry.kind === "blob" && relative && isPdfPath(relative)) next.set(entry.fileId, { path: relative, ...(entry.blobHash ? { blobHash: entry.blobHash } : {}) });
     }
+    const added = [...next.keys()].filter((fileId) => !this.entries.has(fileId));
     this.entries = next;
     if (!this.enabled) return;
+    // A PDF copied or moved in brings its sidecar along, moments after the file.
+    if (this.discovered && added.length) void this.openWithSidecars(added);
     for (const doc of [...this.docs.values()]) {
       const entry = next.get(doc.fileId);
       if (!entry) {
@@ -137,12 +143,22 @@ export class PdfMarksRuntime {
   /** Opens the PDFs with work to merge and those others have marked. */
   private async discover(): Promise<void> {
     await this.refreshServerDocuments();
+    await this.openWithSidecars([...this.entries.keys()]);
+  }
+
+  private async openWithSidecars(fileIds: string[], retries = 2): Promise<void> {
     if (!this.ctx.canWriteDisk() || !this.canAnnotate()) return;
-    for (const [fileId, entry] of this.entries) {
+    const waiting: string[] = [];
+    for (const fileId of fileIds) {
       if (this.stopped) return;
-      if (this.docs.has(fileId)) continue;
+      const entry = this.entries.get(fileId);
+      if (!entry || this.docs.has(fileId)) continue;
       if (await readIfExists(this.sidecarPath(entry.path)).catch(() => null)) this.open(fileId);
+      else waiting.push(fileId);
     }
+    if (!waiting.length || retries === 0) return;
+    const timer = setTimeout(() => void this.openWithSidecars(waiting, retries - 1), this.ctx.writeMs);
+    timer.unref?.();
   }
 
   /** PDFs someone has opened have a document; only those are worth a hub. */
@@ -223,7 +239,7 @@ export class PdfMarksRuntime {
       const sidecar = await this.readSidecar(doc);
       const annotations = Array.isArray(sidecar?.annotations) ? sidecar.annotations.filter(validAnnotation) : [];
       const comments = Array.isArray(sidecar?.comments) ? sidecar.comments : [];
-      if (sidecar && !sidecar.sharedCopy && (annotations.length || comments.length)) {
+      if (sidecar && sidecar.sharedCopy !== doc.docId && (annotations.length || comments.length)) {
         const hash = sha256(Buffer.from(JSON.stringify([sidecar.annotations ?? [], comments])));
         const done = doc.hub.getDoc("annotations").getMap<unknown>(PdfKeys.imports).has(hash);
         if (!done) {
@@ -261,12 +277,12 @@ export class PdfMarksRuntime {
   private async writeCopy(doc: PdfDoc, options: { local?: boolean } = {}): Promise<void> {
     if (!this.ctx.canWriteDisk() || doc.hub.isClosed) return;
     const existing = await this.readSidecar(doc);
-    if (!doc.imported && existing && !existing.sharedCopy) return;
+    if (!doc.imported && existing && existing.sharedCopy !== doc.docId) return;
     const annotations = visibleMarks(readAllMarks(doc.hub.getDoc("annotations")));
     const threads = await this.ctx.listComments?.(doc.docId).catch(() => null);
     const comments = threads ?? (Array.isArray(existing?.comments) ? existing.comments : []);
     if (!annotations.length && !comments.length && !existing) return;
-    const copy: Sidecar = { annotations, ...(comments.length ? { comments } : {}), ...(existing?.source ? { source: existing.source } : {}), ...(options.local ? {} : { sharedCopy: true }) };
+    const copy: Sidecar = { annotations, ...(comments.length ? { comments } : {}), ...(existing?.source ? { source: existing.source } : {}), ...(options.local ? {} : { sharedCopy: doc.docId }) };
     const bytes = Buffer.from(`${JSON.stringify(copy, null, 2)}\n`, "utf8");
     const hash = sha256(bytes);
     if (hash === doc.writtenHash) return;

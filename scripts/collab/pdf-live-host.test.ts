@@ -31,7 +31,7 @@ function writeSidecar(root: string, file: string, annotations: PdfAnnotation[], 
   writeFileSync(target, JSON.stringify({ annotations, ...extra }));
 }
 
-const readSidecar = (root: string, file: string) => JSON.parse(readFileSync(sidecarPath(root, file), "utf8")) as { annotations: PdfAnnotation[]; sharedCopy?: boolean };
+const readSidecar = (root: string, file: string) => JSON.parse(readFileSync(sidecarPath(root, file), "utf8")) as { annotations: PdfAnnotation[]; sharedCopy?: string };
 
 async function resolvePdf(peer: Peer, liberaPath: string): Promise<ResolvedPdf | null> {
   return peer.service.resolvePdf(liberaPath);
@@ -122,7 +122,7 @@ test("marks reach the other person, in both directions, and the sidecar becomes 
     change(memberHub, setup.member.auth.account.id, (marks) => marks.map((mark) => ({ ...mark, color: "#22c55e" }) as PdfAnnotation));
     await until(() => (marksIn(ownerHub)[0] as PdfHighlightAnnotation).color === "#22c55e", "the owner sees the commenter's change");
     await until(() => existsSync(sidecarPath(setup.memberRoot, "paper.pdf")) && readSidecar(setup.memberRoot, "paper.pdf").annotations.length === 1, "the copy is written");
-    assert.equal(readSidecar(setup.memberRoot, "paper.pdf").sharedCopy, true);
+    assert.equal(readSidecar(setup.memberRoot, "paper.pdf").sharedCopy, theirs.docId);
     setup.owner.host.release(mine.docId);
     setup.member.host.release(theirs.docId);
   } finally {
@@ -161,7 +161,7 @@ test("existing sidecars merge once, from every person who has one, without bring
     change(ownerHub, setup.owner.auth.account.id, (marks) => marks.filter((mark) => mark.id !== "from-owner"));
     await until(() => readAllMarks(ownerHub.getDoc("annotations")).filter((record) => record.deleted).length === 1, "deleted");
     await until(() => ownerHub.getStatus().state === "saved-remote", "acked");
-    await until(() => readSidecar(setup.ownerRoot, "paper.pdf").sharedCopy === true && readSidecar(setup.ownerRoot, "paper.pdf").annotations.length === 2, "copy written");
+    await until(() => readSidecar(setup.ownerRoot, "paper.pdf").sharedCopy === mine.docId && readSidecar(setup.ownerRoot, "paper.pdf").annotations.length === 2, "copy written");
     setup.owner.host.release(mine.docId);
 
     // An old build on a synced device rewrites the sidecar with the mark back in it, and a new mark.
@@ -377,6 +377,45 @@ test("local comments become threads once, even from two devices", { timeout: 60_
     assert.equal(list[0].messages.length, 2);
     assert.ok(ownerHub);
     setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("marks made offline survive a restart of the host, and land afterwards", { timeout: 90_000 }, async () => {
+  const setup = await pair("libera-pdf-restart-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.member, `${setup.memberNotebook}/paper.pdf`)) as ResolvedPdf;
+    const memberHub = setup.member.host.acquire(mine.docId);
+    await until(() => memberHub.getStatus().state === "saved-remote", "opened");
+    const saved = (setup.member.host as unknown as { account: unknown }).account;
+    setup.member.host.setAccount(null);
+    change(memberHub, setup.member.auth.account.id, (marks) => [...marks, highlight("while-offline"), note("n", "typed offline")]);
+    setup.member.host.release(mine.docId);
+    await closePeer(setup.member);
+    void saved;
+    const restarted = await makePeer(path.dirname(path.dirname(path.dirname(setup.member.library))), "member", setup.server, setup.member.auth, { ...FAST, library: setup.member.library });
+    setup.member = restarted;
+    const ownerHub = setup.owner.host.acquire(((await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf).docId);
+    await until(() => marksIn(ownerHub).length === 2, "the queued marks reach the owner");
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a new PDF arriving with a sidecar merges it, even one copied from another PDF's document", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-arrival-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    writeSidecar(setup.ownerRoot, "copy.pdf", [highlight("came-with-the-copy")], { sharedCopy: "pdf_some_other_document" });
+    writeFileSync(path.join(setup.ownerRoot, "copy.pdf"), Buffer.from("%PDF-1.4 a copy\n"));
+    await until(() => resolvePdf(setup.owner, "Papers/copy.pdf").then((value) => value !== null), "the copy is in the manifest");
+    const copy = (await resolvePdf(setup.owner, "Papers/copy.pdf")) as ResolvedPdf;
+    const hub = setup.owner.host.acquire(copy.docId);
+    await until(() => marksIn(hub).some((mark) => mark.id === "came-with-the-copy"), "the copy's marks are its own");
+    setup.owner.host.release(copy.docId);
   } finally {
     await setup.cleanup();
   }

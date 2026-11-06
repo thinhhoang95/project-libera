@@ -286,6 +286,24 @@ export function applyMarkValues(doc: Y.Doc, id: string, values: MarkFieldValues,
   return applied;
 }
 
+/**
+ * Moves marks onto the current PDF. Relocated highlights take their new
+ * place; the rest stay put, and only stop being flagged as out of date.
+ */
+export function markVersion(doc: Y.Doc, moves: ReadonlyArray<{ id: string; geometry?: Record<string, unknown> }>, sourceHash: string, context: MarkContext, origin: unknown): void {
+  doc.transact(() => {
+    const marks = marksOf(doc);
+    for (const { id, geometry } of moves) {
+      const mark = marks.get(id);
+      if (!mark) continue;
+      if (geometry) mark.set(PdfMarkFields.geometry, { ...(mark.get(PdfMarkFields.geometry) as JsonRecord), ...geometry });
+      mark.set(PdfMarkFields.sourceHash, sourceHash);
+      mark.set(PdfMarkFields.updatedAt, new Date().toISOString());
+      mark.set(PdfMarkFields.updatedBy, context.accountId);
+    }
+  }, origin);
+}
+
 /** Brings a deleted mark back. */
 export function restoreMark(doc: Y.Doc, id: string, context: MarkContext, origin: unknown): boolean {
   let restored = false;

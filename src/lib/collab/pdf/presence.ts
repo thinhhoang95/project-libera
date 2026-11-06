@@ -38,6 +38,8 @@ export interface PdfPresence {
   pointer?: { page: number } & PdfPoint;
   selection?: string[];
   draft?: PdfDraftFrame;
+  /** The start of the PDF's hash, so two people can tell they see different versions. */
+  version?: string;
 }
 
 export interface PdfGhost {
@@ -115,6 +117,7 @@ export function readPdfPresence(value: unknown): PdfPresence | null {
   if (Array.isArray(state.selection)) presence.selection = state.selection.filter((id): id is string => typeof id === "string" && id.length <= 200).slice(0, MAX_SELECTION);
   const draft = readDraft(state.draft);
   if (draft) presence.draft = draft;
+  if (typeof state.version === "string" && /^[0-9a-f]{1,64}$/.test(state.version)) presence.version = state.version;
   return presence;
 }
 
@@ -235,7 +238,7 @@ export class PdfPresenceStore {
   }
 
   /** This window's reading position. */
-  setView(view: Pick<PdfPresence, "page" | "top" | "bottom">) {
+  setView(view: Pick<PdfPresence, "page" | "top" | "bottom" | "version">) {
     this.local = { ...this.local, ...view };
     this.requestFlush();
   }

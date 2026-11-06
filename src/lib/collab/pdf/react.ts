@@ -95,6 +95,10 @@ export function useSharedPdf(filePath: string): SharedPdfState {
   useHostEvents("tree-changed", (event) => {
     if (wanted && event.notebook === notebook && state.value.kind !== "shared") setAttempt((value) => value + 1);
   });
+  // Someone replaced the PDF: marks need comparing with the new version.
+  useHostEvents("files-changed", (event) => {
+    if (wanted && event.paths.includes(filePath)) setAttempt((value) => value + 1);
+  });
 
   useEffect(() => {
     if (!wanted) return;
