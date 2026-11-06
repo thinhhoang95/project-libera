@@ -231,5 +231,7 @@ test("the PDF viewer on a live document", async (t) => {
     setCollabStatusStore(null);
     setSharedDocRegistry(null);
     globalThis.fetch = originalFetch;
+    // JSDOM's animation-frame timer would keep this test's process alive for good.
+    dom.window.close();
   }
 });

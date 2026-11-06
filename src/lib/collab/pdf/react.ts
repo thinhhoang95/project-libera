@@ -57,11 +57,13 @@ function acquire(resolved: ResolvedPdf): Promise<OpenPdf> {
 function letGo(docId: string, pdf: OpenPdf) {
   pdf.holders -= 1;
   if (pdf.holders > 0) return;
-  pdf.release = setTimeout(() => {
+  const release = setTimeout(() => {
     open.delete(docId);
     pdf.store.destroy();
     pdf.lease.release();
   }, RETAIN_MS);
+  (release as { unref?: () => void }).unref?.();
+  pdf.release = release;
 }
 
 export type SharedPdfState =
