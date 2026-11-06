@@ -11,7 +11,7 @@
 // server.
 
 import type { Command, CreateMessageRequest, ThreadMessage } from "./protocol/api";
-import type { AlbumOriginalResponse, InviteRequest, LocalAlbum, ShareAlbumRequest, ShareAlbumResult, UpdateAlbumRequest, LocalProject, AnchoredThreadsResponse, EnqueueCommandResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
+import type { AlbumOriginalResponse, InviteRequest, LocalAlbum, ShareAlbumRequest, ShareAlbumResult, UpdateAlbumRequest, LocalProject, AnchoredThreadsResponse, EnqueueCommandResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, ResolvedPdf, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
 import { ControlRoutes } from "./local-api";
 
 export interface HostClientConfig {
@@ -128,6 +128,12 @@ export function getHostStatus(config?: HostClientConfig | null): Promise<HostSta
 }
 
 /** The shared document for a Libera path ("Notebook/sub/file.md"), or null when the file is not shared. */
+/** A PDF's live document; null when its notebook keeps marks in the sidecar. */
+export async function resolveSharedPdf(liberaPath: string, config?: HostClientConfig | null): Promise<ResolvedPdf | null> {
+  const query = new URLSearchParams({ path: liberaPath }).toString();
+  return hostJson<ResolvedPdf | null>(`${ControlRoutes.pdfResolve}?${query}`, { config });
+}
+
 export async function resolveSharedPath(liberaPath: string, config?: HostClientConfig | null): Promise<ResolvedDoc | null> {
   if (!(config ?? collabHostConfig())) return null;
   const query = new URLSearchParams({ path: liberaPath });

@@ -18,6 +18,8 @@ export type NoteCaret = { x: number; y: number };
 
 export type PdfNoteEditorHandle = {
   getMarkdown: () => string;
+  /** Takes in text that changed outside this editor (a collaborator's). */
+  adoptMarkdown: (markdown: string) => void;
 };
 
 type PdfNoteEditorProps = {
@@ -75,6 +77,34 @@ function noteMarkdown(editor: Editor, pairs: MathMarkerPair[]) {
   const typeset = doc.copy(convertLiteralMath(doc.content, editor.schema, pairs));
 
   return editor.markdown ? editor.markdown.serialize(typeset.toJSON()) : editor.getMarkdown();
+}
+
+/** Marks a change that came from collaborators, so it is not sent back as an edit. */
+const REMOTE_TEXT_META = "liberaRemoteNoteText";
+
+/**
+ * Takes a collaborator's text into the open editor. Only the part that
+ * differs is replaced, so the caret and selection map through it and the
+ * person typing here keeps their place.
+ */
+function adoptMarkdown(editor: Editor, markdown: string) {
+  if (!editor.markdown) return;
+  const next = editor.schema.nodeFromJSON(editor.markdown.parse(markdown));
+  const { doc } = editor.state;
+  const start = doc.content.findDiffStart(next.content);
+  if (start === null) return;
+  const end = doc.content.findDiffEnd(next.content);
+  if (!end) return;
+  let { a: endOld, b: endNew } = end;
+  const overlap = start - Math.min(endOld, endNew);
+  if (overlap > 0) {
+    endOld += overlap;
+    endNew += overlap;
+  }
+  const transaction = editor.state.tr.replace(start, endOld, next.slice(start, endNew));
+  transaction.setMeta("addToHistory", false);
+  transaction.setMeta(REMOTE_TEXT_META, true);
+  editor.view.dispatch(transaction);
 }
 
 /**
@@ -164,7 +194,8 @@ export function PdfNoteEditor({
         return false;
       },
     },
-    onUpdate({ editor: updatedEditor }) {
+    onUpdate({ editor: updatedEditor, transaction }) {
+      if (transaction.getMeta(REMOTE_TEXT_META)) return;
       if (pendingRef.current !== null) {
         window.clearTimeout(pendingRef.current);
       }
@@ -204,7 +235,24 @@ export function PdfNoteEditor({
       }
     };
 
-    handleRef.current = { getMarkdown: readMarkdown };
+    const adopt = (markdown: string) => {
+      // Local keystrokes first: they merge with the collaborator's text, and
+      // the merged text comes back through here.
+      if (pendingRef.current !== null) {
+        window.clearTimeout(pendingRef.current);
+        pendingRef.current = null;
+        callbacksRef.current.onChange(readMarkdown());
+        return;
+      }
+      if (readMarkdown() === markdown) return;
+      try {
+        adoptMarkdown(editor, markdown);
+      } catch {
+        // A note mid-way through an edit may not parse; the next change will.
+      }
+    };
+
+    handleRef.current = { getMarkdown: readMarkdown, adoptMarkdown: adopt };
     editorRef.current = editor;
 
     return () => {

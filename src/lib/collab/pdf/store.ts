@@ -25,6 +25,11 @@ export interface PdfStoreChange {
   removed: MarkRecord[];
 }
 
+export interface PdfHistoryState {
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
 interface HistoryEntry {
   key?: string;
   time: number;
@@ -55,6 +60,7 @@ export class SharedPdfStore {
   private undoStack: HistoryEntry[] = [];
   private redoStack: HistoryEntry[] = [];
   private version = 0;
+  private historyState: PdfHistoryState = { canUndo: false, canRedo: false };
   private stopObserving: () => void = () => {};
   private readonly stopRebuild: () => void;
   readonly origin: PdfEditOrigin;
@@ -162,6 +168,13 @@ export class SharedPdfStore {
 
   get canUndo() { return this.undoStack.length > 0; }
   get canRedo() { return this.redoStack.length > 0; }
+
+  /** A stable value for useSyncExternalStore: the same object until it changes. */
+  getHistoryState = (): PdfHistoryState => {
+    const { canUndo, canRedo } = this;
+    if (this.historyState.canUndo !== canUndo || this.historyState.canRedo !== canRedo) this.historyState = { canUndo, canRedo };
+    return this.historyState;
+  };
 
   /**
    * One press is one step. A step someone else has since overwritten applies

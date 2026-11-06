@@ -310,6 +310,11 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
     [annotation.id, handlers],
   );
 
+  // A collaborator typed in this note while it is open here.
+  useEffect(() => {
+    if (editing) editorHandleRef.current?.adoptMarkdown(annotation.text);
+  }, [annotation.text, editing, editorHandleRef]);
+
   function handleResizePointerDown(event: PointerEvent<HTMLElement>, handle: ResizeHandle) {
     event.stopPropagation();
     handlers.beginGesture(event, annotation, "resize", handle);
@@ -638,7 +643,9 @@ export function TextAnnotationLayer({
       updateText(id, markdown) {
         const annotation = findAnnotation(id);
 
-        if (annotation && annotation.text !== markdown) {
+        // No annotation: someone deleted it while it was open here. The text
+        // still goes through, and a shared PDF keeps it with the deleted note.
+        if (!annotation || annotation.text !== markdown) {
           latestRef.current.onUpdateAnnotation(id, { text: markdown });
         }
       },

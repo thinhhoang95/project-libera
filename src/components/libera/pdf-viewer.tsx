@@ -44,6 +44,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { GlobalWorkerOptions, TextLayer, getDocument } from "pdfjs-dist";
 import type {
@@ -85,6 +86,8 @@ import { sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { dispatchPdfAnnotationsUpdated, forgetPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import { annotationAnchorRect, rememberFileAnnotations, scrollTopCenteringRect } from "@/lib/annotation-links";
 import { useAnnotationWriter } from "./use-annotation-writer";
+import { useCanAnnotate, useSharedPdf, useSharedPdfSnapshot } from "@/lib/collab/pdf/react";
+import { PdfCollabChrome } from "./collab/pdf-collab-chrome";
 import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
@@ -653,6 +656,10 @@ function usePdfRenderQueue(maxConcurrentRenders: number): RequestRenderSlot {
   );
 }
 
+const NO_SHARED_HISTORY = { canUndo: false, canRedo: false };
+const noHistorySubscribe = () => () => {};
+const noHistoryState = () => NO_SHARED_HISTORY;
+
 export function PdfViewer({
   filePath,
   initialViewState,
@@ -666,6 +673,21 @@ export function PdfViewer({
   markdownConversion,
 }: PdfViewerProps) {
   const paneFocused = useCanvasPaneFocused();
+  // In a notebook with live PDFs the marks come from the shared document and
+  // there is no Save; everything else in this file works on the same lists.
+  const shared = useSharedPdf(filePath);
+  const sharedSnapshot = useSharedPdfSnapshot(shared);
+  const canAnnotate = useCanAnnotate(shared, sharedSnapshot);
+  const sharedStore = shared.kind === "shared" ? shared.store : null;
+  const sharedKind = shared.kind;
+  const sharedStoreRef = useRef(sharedStore);
+  const canAnnotateRef = useRef(canAnnotate);
+  useLayoutEffect(() => {
+    sharedStoreRef.current = sharedStore;
+    canAnnotateRef.current = canAnnotate;
+  });
+  const sharedHistory = useSyncExternalStore(sharedStore?.subscribe ?? noHistorySubscribe, sharedStore?.getHistoryState ?? noHistoryState, noHistoryState);
+  const [deletedNote, setDeletedNote] = useState<{ id: string; by: string } | null>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pendingScrollRestoreRef = useRef<PdfScrollPosition | null>({
@@ -1012,6 +1034,8 @@ export function PdfViewer({
     }
 
     async function loadPdf() {
+      // Which store holds the marks decides what is loaded.
+      if (sharedKind === "checking") return;
       setPdfDocument(null);
       setBasePageLayouts([]);
       setCurrentPage(1);
@@ -1041,10 +1065,12 @@ export function PdfViewer({
 
             return response.arrayBuffer();
           }),
-          apiRequest<PdfAnnotationsPayload>(
-            `/api/pdf-annotations?path=${encodeURIComponent(filePath)}`,
-            { signal: controller.signal },
-          ),
+          sharedStoreRef.current
+            ? Promise.resolve<PdfAnnotationsPayload>({ path: filePath, annotations: sharedStoreRef.current.getSnapshot() })
+            : apiRequest<PdfAnnotationsPayload>(
+              `/api/pdf-annotations?path=${encodeURIComponent(filePath)}`,
+              { signal: controller.signal },
+            ),
         ]);
         controller.signal.throwIfAborted();
         loadingTask = getDocument({ data: new Uint8Array(pdfResponse) });
@@ -1059,7 +1085,7 @@ export function PdfViewer({
         setPdfDocument(loadedDocument);
         setBasePageLayouts(loadedPageLayouts);
         // Unsaved notes kept from before a crash or restart come back unsaved.
-        const kept = await annotationWriterRef.current.recover();
+        const kept = sharedStoreRef.current ? null : await annotationWriterRef.current.recover();
         if (!active) return;
         const loadedAnnotations = kept ?? annotationsPayload.annotations;
         latestAnnotationsRef.current = loadedAnnotations;
@@ -1091,7 +1117,7 @@ export function PdfViewer({
       destroyLoadingTask();
       forgetPdfAnnotations(filePath);
     };
-  }, [filePath, src]);
+  }, [filePath, src, sharedKind]);
 
   // Quotes cite printed pages: keep the PDF's own page labels, when it has any.
   const pageLabelsRef = useRef<readonly string[] | null>(null);
@@ -1361,6 +1387,13 @@ export function PdfViewer({
   });
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfAnnotation[]) => {
+      if (!canAnnotateRef.current) return;
+      const store = sharedStoreRef.current;
+      if (store) {
+        // No history here: the callers that come this way have dealt with it.
+        store.commit(nextAnnotations, undefined, { history: false });
+        return;
+      }
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
       dispatchPdfAnnotationsUpdated({ path: filePath, annotations: nextAnnotations });
@@ -1373,6 +1406,28 @@ export function PdfViewer({
   // The PDF loads before this writer is made; it reads the writer through a ref.
   const annotationWriterRef = useRef(annotationWriter);
   useLayoutEffect(() => { annotationWriterRef.current = annotationWriter; });
+
+  // The shared document changed: this window's commit or someone else's.
+  useEffect(() => {
+    if (!sharedStore) return;
+    const adopt = (local: boolean) => {
+      const next = sharedStore.getSnapshot();
+      if (next === latestAnnotationsRef.current) return;
+      if (!local) captureReadingAnchor();
+      latestAnnotationsRef.current = next;
+      setAnnotations(next);
+      dispatchPdfAnnotationsUpdated({ path: filePath, annotations: next });
+    };
+    adopt(false);
+    return sharedStore.subscribe(({ local, removed }) => {
+      adopt(local);
+      const lost = removed.find((record) => record.annotation.id === activeSelectedAnnotationIdRef.current);
+      if (lost) {
+        setDeletedNote({ id: lost.annotation.id, by: lost.deleted?.by ?? "" });
+        selectAnnotationIdRef.current("");
+      }
+    });
+  }, [captureReadingAnchor, filePath, sharedStore]);
 
   function applyZoom(nextValue: number) {
     const nextZoom = clamp(nextValue, MIN_ZOOM, MAX_ZOOM);
@@ -1487,10 +1542,17 @@ export function PdfViewer({
   }, []);
 
   const commitAnnotations = useCallback((updater: AnnotationUpdater, historyKey?: string) => {
+    if (!canAnnotateRef.current) return;
     const current = latestAnnotationsRef.current;
     const next = updater(current);
 
     if (next === current) {
+      return;
+    }
+
+    const store = sharedStoreRef.current;
+    if (store) {
+      store.commit(next, historyKey);
       return;
     }
 
@@ -1508,6 +1570,7 @@ export function PdfViewer({
     saveAnnotations(next);
   }, [replaceHistory, saveAnnotations]);
 
+  const selectAnnotationIdRef = useRef<(id: string) => void>(() => undefined);
   const selectAnnotationId = useCallback((id: string) => {
     // Selections made on the page are already in view; only selections from
     // elsewhere (the outline panel) should scroll the document to them.
@@ -1516,6 +1579,8 @@ export function PdfViewer({
     setSelectedAnnotationId(id);
     updateViewState({ selectedAnnotationId: id });
   }, [updateViewState]);
+
+  useLayoutEffect(() => { selectAnnotationIdRef.current = selectAnnotationId; });
 
   const selectAnnotation = useCallback((annotation: PdfAnnotation) => {
     selectAnnotationId(annotation.id);
@@ -1535,6 +1600,11 @@ export function PdfViewer({
   }, [selectAnnotationId]);
 
   const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>) => {
+    const store = sharedStoreRef.current;
+    if (store?.record(id)?.deleted) {
+      if ("text" in patch && typeof patch.text === "string") store.keepDeletedText(id, patch.text);
+      return;
+    }
     if ("text" in patch && patch.text?.trim()) automaticSpaceNotesRef.current.delete(id);
     const keys = Object.keys(patch).sort();
     // Typing coalesces with the note's creation; restyling with itself. Each
@@ -1581,10 +1651,12 @@ export function PdfViewer({
         const withoutNote = (entry: HistoryEntry) => ({ ...entry, annotations: entry.annotations.filter((annotation) => annotation.id !== only) });
         replaceHistory({ undo: undo.map(withoutNote), redo: redo.map(withoutNote) });
         saveAnnotations(next);
-      } else if (abandoned?.type === "text" && !abandoned.text.trim() && last?.key === `note:${only}`) {
+        sharedStoreRef.current?.forget(only);
+      } else if (abandoned?.type === "text" && !abandoned.text.trim() && (sharedStoreRef.current || last?.key === `note:${only}`)) {
         // A note abandoned empty leaves no step behind to undo into.
-        replaceHistory({ undo: undo.slice(0, -1), redo });
+        if (!sharedStoreRef.current) replaceHistory({ undo: undo.slice(0, -1), redo });
         saveAnnotations(next);
+        sharedStoreRef.current?.forget(only);
       } else {
         commitAnnotations(() => next, historyKey);
       }
@@ -1599,6 +1671,16 @@ export function PdfViewer({
   const deleteAnnotation = useCallback((id: string) => deleteAnnotations([id]), [deleteAnnotations]);
 
   const stepHistory = useCallback((direction: "undo" | "redo") => {
+    const store = sharedStoreRef.current;
+    if (store) {
+      if (!canAnnotateRef.current) return;
+      captureReadingAnchor();
+      if (direction === "undo") store.undo();
+      else store.redo();
+      const selected = activeSelectedAnnotationIdRef.current;
+      if (selected && !store.getSnapshot().some((annotation) => annotation.id === selected)) selectAnnotationId("");
+      return;
+    }
     const { undo, redo } = historyRef.current;
     const entry = (direction === "undo" ? undo : redo).at(-1);
 
@@ -1763,6 +1845,7 @@ export function PdfViewer({
   });
 
   function selectTool(nextTool: PdfTool) {
+    if (!canAnnotate && nextTool !== "select") return;
     setTool(nextTool);
     updateViewState({ tool: nextTool });
     setSelectionMenu(null);
@@ -2285,10 +2368,21 @@ export function PdfViewer({
           event.currentTarget.focus({ preventScroll: true });
         }
       }}>
+      <PdfCollabChrome
+        deletedMark={deletedNote}
+        fileName={filePath.split("/").pop() ?? filePath}
+        shared={shared}
+        snapshot={sharedSnapshot}
+        onDismissDeleted={() => setDeletedNote(null)}
+        onRestoreDeleted={() => {
+          if (deletedNote) sharedStore?.restore(deletedNote.id);
+          setDeletedNote(null);
+        }}
+      />
       <div className="libera-viewer-toolbar sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-input bg-card px-4 py-2" data-command-toolbar="PDF">
         {/* Contextual style controls scroll sideways instead of wrapping, so
             selecting an annotation never shifts the page under the pointer. */}
-        <div className="libera-annotation-toolbar flex min-w-0 flex-1 items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
+        <div className="libera-annotation-toolbar flex min-w-0 flex-1 items-center gap-1" data-pdf-annotation-ui data-pdf-read-only={canAnnotate ? undefined : ""} onMouseDown={keepEditorFocus}>
           <PdfToolButton
             active={tool === "select"}
             icon={MousePointer2}
@@ -2406,7 +2500,7 @@ export function PdfViewer({
               type="button"
               aria-label="Undo"
               title="Undo (Ctrl/Cmd+Z)"
-              disabled={!history.undo.length}
+              disabled={sharedStore ? !sharedHistory.canUndo : !history.undo.length}
               onClick={() => stepHistory("undo")}
             >
               <Undo2 aria-hidden className="h-4 w-4" />
@@ -2416,7 +2510,7 @@ export function PdfViewer({
               type="button"
               aria-label="Redo"
               title="Redo (Ctrl/Cmd+Shift+Z)"
-              disabled={!history.redo.length}
+              disabled={sharedStore ? !sharedHistory.canRedo : !history.redo.length}
               onClick={() => stepHistory("redo")}
             >
               <Redo2 aria-hidden className="h-4 w-4" />
@@ -2656,6 +2750,7 @@ export function PdfViewer({
                   selectedAnnotation?.pageNumber === layout.pageNumber ? activeSelectedAnnotationId : ""
                 }
                 screenshotSnipping={screenshotSnipping}
+                readOnly={!canAnnotate}
                 tool={tool}
                 zoom={zoom}
                 onAddDrawing={addDrawing}
@@ -2704,6 +2799,7 @@ type PdfPageContentProps = {
   requestRenderSlot: RequestRenderSlot;
   selectedAnnotationId: string;
   screenshotSnipping: boolean;
+  readOnly: boolean;
   tool: PdfTool;
   zoom: number;
   onAddDrawing: (pageNumber: number, draft: PdfDrawingDraft) => void;
@@ -2779,6 +2875,7 @@ function PdfPageContent({
   requestRenderSlot,
   selectedAnnotationId,
   screenshotSnipping,
+  readOnly,
   tool,
   zoom,
   onAddDrawing,
@@ -3188,13 +3285,13 @@ function PdfPageContent({
           <PdfHighlightControl
             key={annotation.id}
             annotation={annotation}
-            interactive={tool === "select"}
+            interactive={tool === "select" && !readOnly}
             pageSize={pageLayout}
             selected={selectedAnnotationId === annotation.id}
             onSelect={onSelectAnnotation}
           />
         ))}
-        {selectedHighlight && tool === "select" ? (
+        {selectedHighlight && tool === "select" && !readOnly ? (
           <PdfHighlightChip
             annotation={selectedHighlight}
             documentPath={documentPath}
@@ -3208,7 +3305,7 @@ function PdfPageContent({
       <PdfDrawingLayer
         annotations={drawings}
         markups={highlights}
-        mode={drawingMode}
+        mode={readOnly ? "idle" : drawingMode}
         pageSize={pageLayout}
         selectedAnnotationId={selectedAnnotationId}
         style={drawingStyle}
@@ -3225,7 +3322,7 @@ function PdfPageContent({
         drawing={tool === "text"}
         editRequestId={noteToEdit}
         onEditRequestHandled={onEditRequestHandled}
-        interactive={(tool === "select" || tool === "text" || tool === "space") && !screenshotSnipping}
+        interactive={(tool === "select" || tool === "text" || tool === "space") && !screenshotSnipping && !readOnly}
         newAnnotationFontSize={newAnnotationFontSize}
         pageSize={pageLayout}
         selectedAnnotationId={selectedAnnotationId}

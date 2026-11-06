@@ -64,3 +64,6 @@
 @media (prefers-reduced-motion: reduce) {
   .libera-collab-spin { animation: none; }
 }
+
+/* A viewer of a live PDF has no annotation tools to reach for. */
+.libera-annotation-toolbar[data-pdf-read-only] > * { display: none; }
