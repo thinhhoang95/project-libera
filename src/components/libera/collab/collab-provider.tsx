@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import type { LocalProject, NotificationInfo } from "@/lib/collab/local-api";
 import { collabClient } from "@/lib/collab/ui/client";
 import { useCollabProjects, useCollabStatus } from "@/lib/collab/ui/hooks";
+import { ArchivedFilesNotice } from "./archived-files-notice";
 import { CollabAccountDialog } from "./collab-account-dialog";
 import { useDesktopNotifications } from "./desktop-notifications";
 import { useForwardSharedFileChanges } from "./forward-search-changes";
@@ -118,6 +119,7 @@ export function CollabProvider({ children, onNotebookJoined, onOpenPath, onOpenA
       {children}
       {visible ? (
         <>
+          <ArchivedFilesNotice />
           <CollabAccountDialog
             open={accountOpen}
             onClose={() => setAccountOpen(false)}

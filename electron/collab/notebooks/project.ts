@@ -43,8 +43,10 @@ import {
   decodeText,
   encodeText,
   ensureDirectory,
+  isFinderCopy,
   isNotFound,
   isShareablePath,
+  mayStillBeCopying,
   movePath,
   pruneEmptyDirectories,
   randomId,
@@ -194,7 +196,8 @@ export class SharedProject {
   private dirtyPaths = new Set<string>();
   private verifyAll = false;
   private readonly verified = new Map<string, { ctimeMs: number | undefined; at: number }>();
-  private readonly retired: Set<string>;
+  /** Retired path keys, each with the content hashes known for it. */
+  private readonly retired: Map<string, Set<string>>;
   private observedEntries = new Map<string, ManifestEntry>();
 
   private constructor(ctx: ProjectContext, info: ProjectInfo, state: ProjectState) {
@@ -275,7 +278,7 @@ export class SharedProject {
         if (change.origin === "server") this.manifestRebuilt = false;
         const current = this.readEntries();
         for (const entry of this.observedEntries.values()) {
-          if (current.get(entry.fileId)?.path !== entry.path) this.retirePath(entry.path);
+          if (current.get(entry.fileId)?.path !== entry.path) this.retirePath(entry.path, knownHashes(this.state.layout[entry.fileId], entry));
         }
         this.observedEntries = current;
         this.scheduleManifest(30);
@@ -485,7 +488,7 @@ export class SharedProject {
     // Removed entries: archive files (never delete user data outright).
     for (const [fileId, record] of Object.entries(previous)) {
       if (layout.paths.has(fileId)) continue;
-      this.retirePath(record.path);
+      this.retirePath(record.path, knownHashes(record));
       touched.add(record.path);
       vacated.add(record.kind === "folder" ? record.path : path.posix.dirname(record.path));
       if (record.docId) this.docs.get(record.docId)?.hub.markDeleted();
@@ -503,7 +506,7 @@ export class SharedProject {
     for (const [fileId, record] of Object.entries(previous)) {
       const desired = layout.paths.get(fileId);
       if (!desired || desired === record.path) continue;
-      this.retirePath(record.path);
+      this.retirePath(record.path, knownHashes(record));
       if (record.kind === "folder") {
         vacated.add(record.path);
         continue;
@@ -611,7 +614,7 @@ export class SharedProject {
       next[fileId] = entry.kind === "doc" ? { path: desired, kind: "doc", docId: entry.docId, docKind: entry.docKind } : { path: desired, kind: entry.kind };
     }
     for (const [fileId, record] of Object.entries(previous)) {
-      if (!next[fileId] || next[fileId].path !== record.path) this.retirePath(record.path);
+      if (!next[fileId] || next[fileId].path !== record.path) this.retirePath(record.path, knownHashes(record));
       if (record.docId && next[fileId]?.docId !== record.docId) {
         this.docs.get(record.docId)?.hub.markDeleted();
         this.releaseDoc(record.docId);
@@ -742,6 +745,7 @@ export class SharedProject {
       return;
     }
     const text = runtime.hub.getText("content");
+    this.retirePath(record.path, [sha256(encodeText(text))]);
     let target: string;
     try { target = await resolveInside(this.info.root, record.path); }
     catch (error) { this.refuse(record.path, error); return; }
@@ -1255,6 +1259,8 @@ export class SharedProject {
         continue;
       }
       this.missingSince.delete(fileId);
+      // Finder is replacing this file: its bytes are not the new version yet.
+      if (isFinderCopy(seen)) continue;
       // Stat equality is an optimization, never permanent proof of equality.
       const settled = now - seen.mtimeMs > 3000;
       const verification = this.verified.get(fileId);
@@ -1286,7 +1292,9 @@ export class SharedProject {
         continue;
       }
       const entry = this.entries.get(fileId);
-      if (entry?.blobHash === record.hash && (isStaleCopy(record, hash, seen.mtimeMs) || isUncertainCopy(record, hash, seen.mtimeMs))) {
+      // An empty record has no older version to protect: copies keep their
+      // source's old mtime, so the bytes filling it are not an old copy.
+      if (entry?.blobHash === record.hash && record.size !== 0 && (isStaleCopy(record, hash, seen.mtimeMs) || isUncertainCopy(record, hash, seen.mtimeMs))) {
         // An older version we wrote came back; put the current one back.
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} was replaced by an older copy; the current file was written again.`);
         if (await this.placeBlob(entry, record)) touched.add(record.path);
@@ -1323,17 +1331,22 @@ export class SharedProject {
     const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array; hash: string }> = [];
     for (const [relative, entry] of files) {
       if (known.has(relative)) continue;
-      if (this.pathRetired(relative)) {
+      // Judge a file only once it has arrived; the poll comes back to it.
+      if (mayStillBeCopying(entry, now)) continue;
+      const absolute = await resolveInside(this.info.root, relative).catch(() => null);
+      const bytes = absolute ? await readIfExists(absolute) : null;
+      if (!bytes) continue;
+      const hash = sha256(bytes);
+      if (this.isLateCopy(relative, hash)) {
         const guard = this.diskGuard();
         const canCommit = guard.canCommit;
         guard.canCommit = async () => await canCommit() && this.pathFree(this.manifestDoc(), relative);
         await this.archive(relative, guard);
+        this.reportArchived(relative);
         touched.add(relative);
         continue;
       }
-      const absolute = await resolveInside(this.info.root, relative).catch(() => null);
-      const bytes = absolute ? await readIfExists(absolute) : null;
-      if (bytes) fresh.push({ entry, bytes, hash: sha256(bytes) });
+      fresh.push({ entry, bytes, hash });
     }
 
     // Delete + create of the same bytes is a rename (or a move).
@@ -1353,12 +1366,12 @@ export class SharedProject {
         if (!current || current.kind !== entry.kind || current.docId !== entry.docId || current.path !== entry.path) {
           // Keep an uncommitted local alias from becoming a fresh file on
           // the next scan after the authoritative deletion/move is applied.
-          this.retirePath(match.entry.relative);
+          this.retirePath(match.entry.relative, [match.hash]);
           return;
         }
         if (!this.pathFree(doc, match.entry.relative, fileId)) return;
         map.set(fileId, entryRecord({ ...current, path: match.entry.relative, updatedAt: now }));
-        this.retirePath(record.path);
+        this.retirePath(record.path, knownHashes(record));
         Object.assign(record, { path: match.entry.relative, size: match.entry.size, mtimeMs: match.entry.mtimeMs });
         if (record.docId) this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: record.hash ?? null });
       });
@@ -1379,7 +1392,7 @@ export class SharedProject {
         const current = readManifest(doc).get(fileId);
         if (!current || !entry || current.path !== entry.path || current.kind !== entry.kind ||
             current.docId !== entry.docId || current.blobHash !== entry.blobHash) return;
-        this.retirePath(record.path);
+        this.retirePath(record.path, knownHashes(record));
         map.delete(fileId);
         touched.add(record.path);
         if (record.docId) removedRecords.push(record);
@@ -1396,7 +1409,7 @@ export class SharedProject {
           continue;
         }
         operations.push((map, doc) => {
-          if (this.pathRetired(created.path) || !this.pathFree(doc, created.path)) {
+          if (this.isLateCopy(created.path, candidate.hash) || !this.pathFree(doc, created.path)) {
             delete this.state.layout[created.fileId];
             return;
           }
@@ -1451,11 +1464,28 @@ export class SharedProject {
     if (needsRetry) this.scheduleRetry();
   }
 
-  private retirePath(relative: string): void {
+  private retirePath(relative: string, hashes: string[] = []): void {
     const key = manifestPathKey(relative);
-    if (this.retired.has(key)) return;
-    this.ctx.host.store.retirePath(this.info.projectId, key);
-    this.retired.add(key);
+    const known = this.retired.get(key);
+    const added = hashes.filter((hash) => !known?.has(hash));
+    if (known && added.length === 0) return;
+    this.ctx.host.store.retirePath(this.info.projectId, key, added);
+    this.retired.set(key, new Set([...(known ?? []), ...added]));
+  }
+
+  /**
+   * Whether a new file at a retired path is the removed file coming back (a
+   * late delivery from a sync client), not a file someone just put there.
+   * Only the bytes can tell, so a path whose old bytes are unknown stays safe.
+   */
+  private isLateCopy(relative: string, hash: string): boolean {
+    const hashes = this.retired.get(manifestPathKey(relative));
+    return hashes !== undefined && (hashes.size === 0 || hashes.has(hash));
+  }
+
+  private reportArchived(relative: string): void {
+    this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${relative} matches a file removed from this notebook, so it was not shared again.`);
+    if (!this.info.album) this.ctx.emit({ t: "file-archived", projectId: this.info.projectId, notebook: this.info.notebook, path: this.liberaPath(relative) });
   }
 
   private pathRetired(relative: string): boolean {
@@ -1905,6 +1935,12 @@ function normalizeRelative(input: string): string {
   const relative = input.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
   if (!relative) throw new ControlError(400, "bad-request", "A path is required.");
   return relative;
+}
+
+/** Every version of a removed or moved file this host knows, for recognizing it if it returns. */
+function knownHashes(record?: LayoutRecord, entry?: ManifestEntry): string[] {
+  const hashes = [record?.hash, entry?.blobHash, ...(record?.previous ?? []).map((item) => item.hash)];
+  return [...new Set(hashes.filter((hash): hash is string => Boolean(hash)))];
 }
 
 /** The bytes of write-blob's `contentBase64`; Buffer.from would silently skip invalid characters. */

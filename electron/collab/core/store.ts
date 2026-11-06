@@ -294,6 +294,17 @@ const MIGRATIONS: string[] = [
     server_url TEXT
   );
   `,
+  `
+  -- The bytes last known at a retired path. A file that returns with one of
+  -- these is a late copy; other bytes are a new file. A retired path with no
+  -- rows here predates this table, so what it held is unknown.
+  CREATE TABLE retired_hashes (
+    project_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    PRIMARY KEY (project_id, path, hash)
+  );
+  `,
 ];
 
 export const STORE_SCHEMA_VERSION = MIGRATIONS.length;
@@ -1068,12 +1079,17 @@ export class HostStore {
     this.run(`INSERT INTO database_authority (id, account_id, server_url) VALUES (1, ?, ?)`, authority?.accountId ?? null, authority?.serverUrl ?? null);
   }
 
-  retirePath(projectId: string, path: string): void {
+  retirePath(projectId: string, path: string, hashes: Iterable<string> = []): void {
     this.run(`INSERT OR IGNORE INTO retired_paths (project_id, path) VALUES (?, ?)`, projectId, path);
+    for (const hash of hashes) this.run(`INSERT OR IGNORE INTO retired_hashes (project_id, path, hash) VALUES (?, ?, ?)`, projectId, path, hash);
   }
 
-  retiredPaths(projectId: string): Set<string> {
-    return new Set(this.all(`SELECT path FROM retired_paths WHERE project_id = ?`, projectId).map((row) => String(row.path)));
+  /** Retired paths, each with the content hashes known for it (empty when unknown). */
+  retiredPaths(projectId: string): Map<string, Set<string>> {
+    const retired = new Map<string, Set<string>>();
+    for (const row of this.all(`SELECT path FROM retired_paths WHERE project_id = ?`, projectId)) retired.set(String(row.path), new Set());
+    for (const row of this.all(`SELECT path, hash FROM retired_hashes WHERE project_id = ?`, projectId)) retired.get(String(row.path))?.add(String(row.hash));
+    return retired;
   }
 
   upsertProject(project: ProjectRow): void {

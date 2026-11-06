@@ -233,6 +233,26 @@ export interface WalkEntry {
   size: number;
   mtimeMs: number;
   ctimeMs?: number;
+  birthtimeMs?: number;
+}
+
+/**
+ * The creation date Finder gives a file while it copies into it (its "busy"
+ * date, 24 January 1984). The file keeps its name, starts empty, and gets its
+ * real creation and modified dates when the copy ends.
+ */
+const FINDER_BUSY_BIRTH_MS = Date.UTC(1984, 0, 24, 8);
+/** How long a new empty file may still be the start of a copy by another program. */
+const EMPTY_FILE_SETTLE_MS = 3000;
+
+/** Whether Finder is still copying into this file. */
+export function isFinderCopy(entry: Pick<WalkEntry, "birthtimeMs">): boolean {
+  return entry.birthtimeMs !== undefined && Math.abs(entry.birthtimeMs - FINDER_BUSY_BIRTH_MS) < 1000;
+}
+
+/** Whether a file not yet shared may still be arriving, so its bytes mean nothing yet. */
+export function mayStillBeCopying(entry: Pick<WalkEntry, "size" | "mtimeMs" | "birthtimeMs">, now: number): boolean {
+  return isFinderCopy(entry) || (entry.size === 0 && now - entry.mtimeMs < EMPTY_FILE_SETTLE_MS);
 }
 
 export interface NotebookWalk {
@@ -276,7 +296,7 @@ export async function walkNotebook(root: string, limit = 50_000): Promise<Notebo
         entries.push({ relative, kind: "folder", size: 0, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs });
         await visit(absolute, relative);
       } else if (stats.isFile()) {
-        entries.push({ relative, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs });
+        entries.push({ relative, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs, birthtimeMs: stats.birthtimeMs });
       }
     }
   };

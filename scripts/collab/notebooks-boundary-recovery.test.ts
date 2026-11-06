@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, promises as fs, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, promises as fs, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -11,7 +11,7 @@ import { ApiClient, ApiClientError } from "../../electron/collab/core/api-client
 import { syncClientId } from "../../electron/collab/core/host";
 import { HostStore } from "../../electron/collab/core/store";
 import { openDatabase } from "../../electron/collab/core/sqlite";
-import { sha256 } from "../../electron/collab/notebooks/fs-ops";
+import { isFinderCopy, mayStillBeCopying, sha256 } from "../../electron/collab/notebooks/fs-ops";
 import { ContentKeys, ManifestKeys, type ManifestEntry } from "../../src/lib/collab/protocol/schema";
 import { api, closePeer, intermittent, makePeer, register, sleep, tempRoot, until, writeTree, type Peer } from "./support/notebooks-harness";
 import { removeDataDir, startServerProcess } from "./support/server-process";
@@ -73,7 +73,7 @@ test("legacy database ownership preserves pending bytes and cannot be reassigned
     initial.close();
     // Exercise the actual shipped schema upgrade, including durable work.
     const old = openDatabase(legacy);
-    old.exec("DROP TABLE retired_paths; DROP TABLE database_authority; PRAGMA user_version = 1");
+    old.exec("DROP TABLE retired_hashes; DROP TABLE retired_paths; DROP TABLE database_authority; PRAGMA user_version = 1");
     old.close();
     assert.equal(await databasePath(temp.dir, a, a, quiet), legacy);
     const scopedB = await databasePath(temp.dir, b, b, quiet);
@@ -185,6 +185,94 @@ test("retired paths survive host restart while explicit recreation and ordinary 
     if (peer) await closePeer(peer);
     await server.stop(); removeDataDir(server.dataDir); temp.cleanup();
   }
+});
+
+test("a retired path takes new bytes, archives the old ones with a notice, and stays safe when its bytes are unknown", { timeout: 40_000 }, async () => {
+  const temp = tempRoot("libera-retired-path-bytes-");
+  const server = await startServerProcess();
+  let peer: Peer | undefined;
+  try {
+    const auth = await register(server, "RetiredBytes");
+    peer = await makePeer(temp.dir, "owner", server, auth, { timings: { pollMs: 50 } });
+    const root = path.join(peer.library, "Papers");
+    writeTree(root, { "paper.pdf": "%PDF-1.4 first\n", "note.md": "first note\n", "Folder/old.md": "old\n" });
+    const shared = await peer.service.share({ notebook: "Papers" });
+    const project = peer.service.project(shared.projectId)!;
+    await project.whenIdle();
+    await peer.service.fileOp(shared.projectId, { op: "delete", path: "paper.pdf" });
+    await peer.service.fileOp(shared.projectId, { op: "delete", path: "note.md" });
+    await peer.service.fileOp(shared.projectId, { op: "delete", path: "Folder" });
+    await until(() => !existsSync(path.join(root, "Folder/old.md")), "folder removed");
+
+    writeFileSync(path.join(root, "paper.pdf"), "%PDF-1.4 first\n");
+    await until(() => !existsSync(path.join(root, "paper.pdf")), "the same bytes are archived");
+    assert.ok(peer.events.some((event) => event.t === "file-archived" && event.path === "Papers/paper.pdf"));
+
+    writeFileSync(path.join(root, "paper.pdf"), "%PDF-1.4 a different paper\n");
+    writeFileSync(path.join(root, "note.md"), "a different note\n");
+    await until(() => peer!.service.resolvePath("Papers/note.md") !== null, "new text imported");
+    await sleep(300);
+    assert.equal(readFileSync(path.join(root, "paper.pdf"), "utf8"), "%PDF-1.4 a different paper\n");
+    const manifest = peer.host.acquire(project.info.manifestDocId);
+    try {
+      const paths = [...manifest.getDoc("manifest").getMap<ManifestEntry>(ManifestKeys.files).values()].map((entry) => entry.path);
+      assert.ok(paths.includes("paper.pdf"));
+    } finally { peer.host.release(project.info.manifestDocId); }
+
+    mkdirSync(path.join(root, "Folder"), { recursive: true });
+    writeFileSync(path.join(root, "Folder/new.md"), "new in a recreated folder\n");
+    await until(() => peer!.service.resolvePath("Papers/Folder/new.md") !== null, "a new file in a retired folder is imported");
+
+    peer.host.store.retirePath(shared.projectId, "unknown.pdf");
+    await closePeer(peer);
+    peer = await makePeer(temp.dir, "owner", server, auth, { timings: { pollMs: 50 } });
+    writeFileSync(path.join(root, "unknown.pdf"), "%PDF-1.4 unknown history\n");
+    await until(() => !existsSync(path.join(root, "unknown.pdf")), "a path with unknown bytes stays protected");
+  } finally {
+    if (peer) await closePeer(peer);
+    await server.stop(); removeDataDir(server.dataDir); temp.cleanup();
+  }
+});
+
+test("a copy that starts empty is shared whole, even when it ends with its source's old mtime", { timeout: 40_000 }, async () => {
+  const temp = tempRoot("libera-copy-in-progress-");
+  const server = await startServerProcess();
+  let peer: Peer | undefined;
+  try {
+    const auth = await register(server, "CopyInProgress");
+    peer = await makePeer(temp.dir, "owner", server, auth, { timings: { pollMs: 50 } });
+    const root = path.join(peer.library, "Copies");
+    writeTree(root, { "note.md": "note\n" });
+    const shared = await peer.service.share({ notebook: "Copies" });
+    const project = peer.service.project(shared.projectId)!;
+    await project.whenIdle();
+    const file = path.join(root, "slow.pdf");
+    writeFileSync(file, "");
+    await sleep(400);
+    const old = new Date("2026-01-02T03:04:05Z");
+    writeFileSync(file, "%PDF-1.4 whole paper\n");
+    await fs.utimes(file, old, old);
+    const expected = sha256(Buffer.from("%PDF-1.4 whole paper\n"));
+    const manifest = peer.host.acquire(project.info.manifestDocId);
+    try {
+      await until(() => [...manifest.getDoc("manifest").getMap<ManifestEntry>(ManifestKeys.files).values()].some((entry) => entry.path === "slow.pdf" && entry.blobHash === expected), "whole copy shared");
+    } finally { peer.host.release(project.info.manifestDocId); }
+    assert.equal(readFileSync(file, "utf8"), "%PDF-1.4 whole paper\n");
+    assert.equal(existsSync(path.join(root, "_archive")), false);
+  } finally {
+    if (peer) await closePeer(peer);
+    await server.stop(); removeDataDir(server.dataDir); temp.cleanup();
+  }
+});
+
+test("Finder's copy placeholder and recent empty files are not judged yet", () => {
+  const busy = Date.parse("1984-01-24T15:00:00+07:00");
+  const now = Date.now();
+  assert.equal(isFinderCopy({ birthtimeMs: busy }), true);
+  assert.equal(mayStillBeCopying({ size: 4096, mtimeMs: 0, birthtimeMs: busy }, now), true);
+  assert.equal(mayStillBeCopying({ size: 0, mtimeMs: now - 1000, birthtimeMs: now }, now), true);
+  assert.equal(mayStillBeCopying({ size: 0, mtimeMs: now - 10_000, birthtimeMs: now - 10_000 }, now), false);
+  assert.equal(mayStillBeCopying({ size: 10, mtimeMs: now, birthtimeMs: now }, now), false);
 });
 
 test("a legacy host's offline edits resume with its original client sequence identity", { timeout: 40_000, skip: intermittent }, async () => {

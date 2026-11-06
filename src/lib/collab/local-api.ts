@@ -548,6 +548,12 @@ export type HostEvent =
       moves: { from: string; to: string }[];
       removed: string[];
     }
+  /**
+   * A file put in a shared notebook's folder matched one removed from the
+   * notebook (or its old contents are unknown), so it went to the notebook's
+   * `_archive` instead of being shared. `path` is a Libera path.
+   */
+  | { t: "file-archived"; projectId: string; notebook: string; path: string }
   | { t: "server-event"; scope: string; id: string; kind: string; payload: unknown }
   /**
    * The hourly divergence check found this document differing from the

@@ -48,7 +48,9 @@ Both installations can edit through their hosts if the account has permission. A
 
 REST requests have a 60-second application deadline, including token acquisition and response bodies. Lease acquisition is bounded by five seconds (or one-third of the lease TTL when shorter); release is best effort with a one-second deadline. Account changes and shutdown cancel outstanding host requests before waiting for background work.
 
-A deleted or renamed path remains retired in local SQLite. Unexplained disk files returning at that path are archived instead of automatically shared again. An explicit collaborative create can reuse the name; unrelated new disk files still import normally.
+A deleted or renamed path remains retired in local SQLite, with the content hashes this host knew for it. A disk file returning there with one of those hashes is a late copy: it is archived instead of shared again, and the app says so. Different bytes at that path are a new file and import normally, so an older version this host never recorded can also come back as a new file. A path retired before hashes were kept has no known bytes, so anything arriving there is still archived. An explicit collaborative create can reuse any retired name.
+
+A file is not judged while it may still be arriving: Finder's copy placeholder (creation date 24 January 1984) and new empty files under 3 seconds old wait for a later scan.
 
 ## Distinguish identities and lifecycle actions
 
