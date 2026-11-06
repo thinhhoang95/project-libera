@@ -10,6 +10,7 @@
 // profiles and server data are removed after a passing run unless E2E_KEEP=1.
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
+import { PDFDocument } from "pdf-lib";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { freePort, startServerProcess, type ServerProcess } from "../support/server-process";
@@ -342,6 +343,10 @@ async function main() {
     mkdirSync(alice.file(`${NOTEBOOK}/paper`), { recursive: true });
     writeFileSync(alice.file(`${NOTEBOOK}/notes.md`), SEED_NOTES);
     writeFileSync(alice.file(`${NOTEBOOK}/paper/main.tex`), SEED_TEX);
+    // A real PDF, for the live-PDF step: pdf.js has to be able to open it.
+    const seedPdf = await PDFDocument.create();
+    seedPdf.addPage([612, 792]).drawText("A passage to mark up together", { x: 72, y: 700, size: 14 });
+    writeFileSync(alice.file(`${NOTEBOOK}/paper.pdf`), await seedPdf.save());
   });
 
   await step("1", "Launch both apps and log in through the login form", async () => {
@@ -731,6 +736,30 @@ async function main() {
     note(`${name} showed up in Bob's tree after ${timings["collaborator's new file → in Bob's tree"]} ms`);
     await shot(bob.page, "new-file-in-bob-tree");
   });
+
+  await step("10c", "Live PDF: Alice writes a note, Bob sees it and her pointer, and it reaches his sidecar copy", async () => {
+    const strip = `document.querySelector(".libera-pdf-collab")`;
+    const page = alice.page!;
+    const other = bob.page!;
+    for (const [instance, who] of [[page, "Alice"], [other, "Bob"]] as const) {
+      await instance.click(DOM.byText("button", "paper.pdf"), `paper.pdf in ${who}'s tree`);
+      await waitFor(() => instance.evaluate<boolean>(`!!${strip}`), { timeoutMs: 30_000, message: `${who}: the live PDF strip did not appear` });
+      await waitFor(() => instance.evaluate<boolean>(`!!document.querySelector("[data-pdf-page-content]")`), { timeoutMs: 30_000, message: `${who}: the PDF did not render` });
+    }
+    await shot(page, "pdf-open-alice");
+    await page.click(DOM.byText(`[data-command-toolbar="PDF"] button`, "Text"), "the Text tool");
+    const rect = await page.evaluate<{ x: number; y: number; width: number; height: number }>(`(() => { const r = document.querySelector("[data-pdf-page-content]").getBoundingClientRect(); return { x: r.x + 80, y: r.y + 140, width: 200, height: 40 }; })()`);
+    const started = Date.now();
+    await page.clickRect(rect);
+    await waitFor(() => page.evaluate<boolean>(`!!document.querySelector(".pdf-note-editor")`), { timeoutMs: 10_000, message: "no note editor opened" });
+    await page.insertText("Note from Alice");
+    await waitFor(() => other.evaluate<boolean>(`[...document.querySelectorAll(".pdf-note")].some((note) => note.textContent.includes("Note from Alice"))`), { timeoutMs: 15_000, message: "Bob did not see Alice's note" });
+    timings["PDF note → on Bob's page"] = Date.now() - started;
+    note(`note reached Bob in ${timings["PDF note → on Bob's page"]} ms`);
+    await waitFor(() => other.evaluate<boolean>(`!!document.querySelector(".pdf-presence-pointer, .pdf-presence-rail-mark")`), { timeoutMs: 10_000, message: "Bob sees no presence from Alice" });
+    await shot(other, "pdf-note-on-bob");
+    await waitFor(() => other.evaluate<boolean>(`(${strip}).textContent.includes("Saved")`), { timeoutMs: 20_000, message: "Bob's strip never settled" });
+  }, { soft: true });
 
   await step("11", "Server down: Alice keeps typing, the pill shows offline with a pending count", async () => {
     await Promise.all([openFile(alice, "notes.md"), openFile(bob, "notes.md")]);

@@ -1,6 +1,6 @@
 # Real-time PDF collaboration plan
 
-**Status:** planned, decisions settled, 6 Nov 2026. Nothing here is built. Written against commit `d9f8e9d`.
+**Status:** built on `feat/pdf-realtime-collab`, 6 Nov 2026. [Changes from this plan](#what-changed-while-building) are at the end. The user guide is [Live PDFs](../features/live-pdfs.md).
 
 Shared PDFs should behave like shared Markdown: everyone with access sees markup appear live, works offline without losing anything, and converges on the same result. Today a shared PDF's bytes sync as a blob, and all its markup and comments stay on one computer.
 
@@ -246,3 +246,32 @@ All settled on 6 Nov 2026.
 3. **Does migration make private marks visible? Yes,** with a warning when sharing. Per-person opt-in was rejected because it would leave old marks behind.
 4. **Which ink format? Today's `PdfInkAnnotation` shape, in the CRDT.** Shared PDFs do not go through `_ink` blobs, which cannot be live. Ink phase 1 will need a matching CRDT path.
 5. **How do compiled LaTeX PDFs behave? Like any PDF,** using the replacement rules, so marks on them will be flagged often. Disabling marks on compile outputs was rejected.
+
+## What changed while building
+
+**Spike results**
+
+| Spike | Result |
+|---|---|
+| S1 | The diff adapter covered every viewer gesture, so no tool needed converting. |
+| S2 | The fallback was used: notes bind through their source text. The editor applies the smallest change to its document, so the caret holds, and merges three ways when a collaborator's text arrives during its debounce. |
+| S3 | 500 hubs with 20 marks each took 340 ms and 51 MB, so every PDF with a document gets a hub. |
+| S4 | Deterministic under 40 shuffled arrival orders. Nothing needed fixing. |
+| S5 | About 12 KB per 500-point stroke. Points stay as JSON. |
+
+**Design changes**
+
+- **Documents are made by `open`, not by a separate request.** `open` for a `pdf_` document carries the project and file. A separate create step left a window where an offline hub with local marks read a missing document as lost access. Because it happens at `open`, the file cannot be checked against the manifest, whose update may still be queued.
+- **Undo is not `Y.UndoManager`.** Undoing a create would hard-delete the mark, which breaks soft deletes and is refused by the server. `SharedPdfStore` keeps field-level history instead. A press applies one step, and a step someone has overwritten is used up without reaching further back.
+- **Rollout is an owner setting, not a per-project flag plus a hold.** `pdfLive` in the manifest's settings is off until the owner turns it on. It cannot be turned off.
+- **Comment anchors are in `pdfAnchors`,** not `anchors`, which holds Yjs positions.
+- **The sidecar copy is marked with its document id.** A sidecar naming another document, such as one that arrived with a copied PDF, counts as local work.
+
+**Not done as planned**
+
+- Imported comments are dated when they reach the server. Their original dates are not kept.
+- When a PDF is replaced, comments do not search for their quote. Highlights do.
+- A review decision does not go out of date when marks change.
+- Follow tracks scroll position only.
+- The relocation search reads pages either side of the mark, so a passage moved further is flagged, not found.
+
