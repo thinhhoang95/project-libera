@@ -7,6 +7,7 @@ import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Placeholder } from "@tiptap/extensions";
 import { type RefObject, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { mergeText } from "@/lib/collab/pdf/merge-text";
 import { mathMarkerPairs, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from "@/lib/math-markers";
 import { createAnnotationMarkdownExtensions } from "@/lib/pdf-annotation-markdown";
 import { convertLiteralMath } from "@/lib/tiptap-math";
@@ -124,6 +125,15 @@ export function PdfNoteEditor({
   const callbacksRef = useRef({ mathMarkers, onChange, onEscape });
   const pendingRef = useRef<number | null>(null);
   const editorRef = useRef<Editor | null>(null);
+  /**
+   * The last moment this editor and the note agreed: what the editor then
+   * serialized to, and the note's text. A collaborator's change arriving after
+   * that merges three ways, so what they typed is not diffed away.
+   */
+  const syncRef = useRef<{ serialized: string | null; note: string }>({ serialized: null, note: initialMarkdown });
+  /** The note's text as last reported from outside. */
+  const noteRef = useRef(initialMarkdown);
+  const sendRef = useRef<(editor: Editor) => void>(() => undefined);
   // Mount-time values: later prop changes must not reset the document.
   const [initial] = useState(() => ({ caret, markdown: initialMarkdown }));
   const pairs = useMemo(() => mathMarkerPairs(mathMarkers), [mathMarkers]);
@@ -181,7 +191,7 @@ export function PdfNoteEditor({
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && pendingRef.current !== null && editorRef.current) {
           window.clearTimeout(pendingRef.current);
           pendingRef.current = null;
-          callbacksRef.current.onChange(noteMarkdown(editorRef.current, pairsRef.current));
+          sendRef.current(editorRef.current);
           return false;
         }
 
@@ -202,7 +212,7 @@ export function PdfNoteEditor({
 
       pendingRef.current = window.setTimeout(() => {
         pendingRef.current = null;
-        callbacksRef.current.onChange(noteMarkdown(updatedEditor, pairsRef.current));
+        sendRef.current(updatedEditor);
       }, CHANGE_DEBOUNCE_MS);
     },
   });
@@ -235,28 +245,49 @@ export function PdfNoteEditor({
       }
     };
 
-    const adopt = (markdown: string) => {
-      // Local keystrokes first: they merge with the collaborator's text, and
-      // the merged text comes back through here.
-      if (pendingRef.current !== null) {
-        window.clearTimeout(pendingRef.current);
-        pendingRef.current = null;
-        callbacksRef.current.onChange(readMarkdown());
-        return;
-      }
-      if (readMarkdown() === markdown) return;
+    syncRef.current.serialized ??= readMarkdown();
+
+    /** The text to send: this editor's work, on top of anything that arrived since. */
+    const outgoing = () => {
+      const local = readMarkdown();
+      const { serialized, note } = syncRef.current;
+      return noteRef.current === note ? local : mergeText(serialized ?? local, local, noteRef.current);
+    };
+    const show = (markdown: string) => {
       try {
         adoptMarkdown(editor, markdown);
       } catch {
         // A note mid-way through an edit may not parse; the next change will.
       }
+      syncRef.current = { serialized: readMarkdown(), note: markdown };
+      noteRef.current = markdown;
+    };
+    sendRef.current = () => {
+      const local = readMarkdown();
+      const text = outgoing();
+      callbacksRef.current.onChange(text);
+      if (text === local) {
+        syncRef.current = { serialized: local, note: text };
+        noteRef.current = text;
+      } else show(text);
+    };
+    const adopt = (markdown: string) => {
+      noteRef.current = markdown;
+      // Keystrokes waiting for the debounce go now, merged with this.
+      if (pendingRef.current !== null) {
+        window.clearTimeout(pendingRef.current);
+        pendingRef.current = null;
+        sendRef.current(editor);
+        return;
+      }
+      if (markdown !== syncRef.current.note) show(markdown);
     };
 
-    handleRef.current = { getMarkdown: readMarkdown, adoptMarkdown: adopt };
+    handleRef.current = { getMarkdown: outgoing, adoptMarkdown: adopt };
     editorRef.current = editor;
 
     return () => {
-      if (handleRef.current?.getMarkdown === readMarkdown) {
+      if (handleRef.current?.getMarkdown === outgoing) {
         handleRef.current = null;
       }
 
@@ -265,7 +296,7 @@ export function PdfNoteEditor({
       if (pendingRef.current !== null) {
         window.clearTimeout(pendingRef.current);
         pendingRef.current = null;
-        callbacksRef.current.onChange(readMarkdown());
+        callbacksRef.current.onChange(outgoing());
       }
     };
   }, [editor, handleRef, initial, pairs]);
