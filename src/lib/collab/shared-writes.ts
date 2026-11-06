@@ -17,6 +17,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { diffText } from "../../../electron/collab/notebooks/text-diff";
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
@@ -36,6 +37,7 @@ import {
   markdownAssetsPathPrefix,
   notebookPath,
   pdfAnnotationsPath,
+  rawFileUrl,
   relativeFilePath,
   splitDirectoryPath,
   splitFilePath,
@@ -45,12 +47,16 @@ import { getFileNode, getTree } from "@/lib/storage/tree";
 import { readLiberaFile } from "@/lib/storage/files";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
-import { isTextFileType, type LiberaFileNode, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
+import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
 import { CollabHostError, resolveSharedPdf, livePdfSnapshot, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
 import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
 import { isSharedNotebookPath, sharedManifestPath, sharedNotebookMarker } from "./shared-notebook";
+
+/** How long a save waits for the folder's writer before answering from what it knows. */
+const ARRIVAL_WAIT_MS = 1_000;
+const ARRIVAL_CHECK_MS = 50;
 
 /** A refused or failed shared write. `code` is the host's error code (or one of ours). */
 export class SharedWriteError extends StorageError {
@@ -456,6 +462,43 @@ async function moveCompanionTranscript(fromPath: string, toPath: string, config:
 // working copy before answering, so the result can be read back from disk.
 
 /** The user-facing new note/LaTeX/text action, with the same validation as the local writer. */
+/**
+ * Whether a file the host has accepted is on this disk. A host that follows
+ * a folder leaves the disk to the folder's writer, in another Libera on this
+ * computer or another, so the file can arrive a moment later, or much later
+ * through a sync client. The save has succeeded either way.
+ */
+async function fileArrived(liberaPath: string): Promise<boolean> {
+  const { notebook, pathParts } = splitFilePath(liberaPath);
+  const target = filePathFromParts(notebook, pathParts);
+  const deadline = Date.now() + ARRIVAL_WAIT_MS;
+  while (!(await pathExists(target))) {
+    if (Date.now() >= deadline) return false;
+    await sleep(ARRIVAL_CHECK_MS);
+  }
+  return true;
+}
+
+function fileOnItsWay(liberaPath: string, size: number): LiberaFileNode {
+  const { notebook, name, pathParts } = splitFilePath(liberaPath);
+  const now = new Date().toISOString();
+  return { kind: "file", name, path: relativeFilePath(notebook, pathParts), notebook, fileType: assertSupportedFileName(name), createdAt: now, changedAt: now, updatedAt: now, size };
+}
+
+/** The node of a file the host has accepted, from the disk once it is there. */
+export async function savedNode(liberaPath: string, size: number): Promise<LiberaFileNode> {
+  if (!(await fileArrived(liberaPath))) return fileOnItsWay(liberaPath, size);
+  const { notebook, pathParts } = splitFilePath(liberaPath);
+  return getFileNode(notebook, pathParts);
+}
+
+/** The payload of a file the host has accepted, from the disk once it is there. */
+async function savedFile(liberaPath: string, size: number, content: () => Promise<string | undefined>): Promise<LiberaFilePayload> {
+  if (await fileArrived(liberaPath)) return readLiberaFile(liberaPath);
+  const file = fileOnItsWay(liberaPath, size);
+  return isTextFileType(file.fileType) ? { file, content: await content() } : { file, rawUrl: rawFileUrl(file.path) };
+}
+
 export async function createSharedMarkdownFile(notebook: string, name: string, content = "", parentPath?: string, options: SharedWriteOptions = {}) {
   await ensureAdminRoot();
   const parent = parentPath
@@ -470,7 +513,7 @@ export async function createSharedMarkdownFile(notebook: string, name: string, c
   const liberaPath = relativeFilePath(parent.notebook, targetParts);
   await createSharedFile(liberaPath, content, options);
   notifySearchChanges([liberaPath]);
-  return readLiberaFile(liberaPath);
+  return savedFile(liberaPath, Buffer.byteLength(content), async () => content);
 }
 
 /** Creates a folder through the manifest so collaborators receive it too. */
@@ -502,7 +545,7 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   if (destination.notebook !== current.notebook || !sharedManifestPath(nextPath)) {
     throw new StorageError("Files in a shared notebook can only be moved within that notebook.");
   }
-  await getFileNode(current.notebook, current.pathParts);
+  const moving = await getFileNode(current.notebook, current.pathParts);
   await assertDirectoryExists(itemPath(destination.notebook, destination.pathParts), "Destination folder was not found.");
   if (sourcePath !== nextPath && await pathExists(filePathFromParts(destination.notebook, nextParts))) {
     throw new StorageError("Destination file already exists.", 409);
@@ -522,7 +565,7 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   }
   await renameFileMetadataPath(sourcePath, nextPath);
   notifySearchChanges([sourcePath, nextPath]);
-  return readLiberaFile(nextPath);
+  return savedFile(nextPath, moving.size, () => readSharedText(nextPath, options).then((result) => result.text, () => undefined));
 }
 
 /** Delete via the manifest; the host removes the working copy and syncs the deletion. */
@@ -603,6 +646,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
   // Validate the destination and service before creating any copied attachments.
   manifestTarget(liberaPath);
   hostConfig(liberaPath, options);
+  let copiedText: string | undefined;
   if (isTextFileType(node.fileType)) {
     let content = isSharedNotebookPath(relativePath)
       ? (await readSharedText(relativePath, options)).text
@@ -620,6 +664,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
       }
     }
     await createSharedFile(liberaPath, content, options);
+    copiedText = content;
   } else {
     let pdfSeed: import("./protocol/pdf").PdfImportRequest | undefined;
     if (node.fileType === "pdf") {
@@ -645,7 +690,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
     }
   }
   notifySearchChanges([liberaPath]);
-  return readLiberaFile(liberaPath);
+  return savedFile(liberaPath, copiedText === undefined ? node.size : Buffer.byteLength(copiedText), async () => copiedText);
 }
 
 /** writeUploadedFile for a shared notebook: the upload becomes a manifest blob (or a document, for text files). */
@@ -662,7 +707,7 @@ export async function writeSharedUpload(notebook: string, upload: File, destinat
   const liberaPath = relativeFilePath(destination.notebook, targetParts);
   await writeSharedBlob(liberaPath, new Uint8Array(await upload.arrayBuffer()), options);
   notifySearchChanges([liberaPath]);
-  return getFileNode(destination.notebook, targetParts);
+  return savedNode(liberaPath, upload.size);
 }
 
 /** writeMarkdownImageAsset for a document in a shared notebook: the image becomes a blob under the notebook's _assets. */
@@ -699,5 +744,5 @@ export async function saveSharedEditedImageCopy(relativePath: string, edits: Pho
   await writeSharedBlob(liberaPath, new Uint8Array(body), options);
   await copyInkThroughEdit(relativeFilePath(notebook, pathParts), liberaPath, edits);
   notifySearchChanges([liberaPath]);
-  return { file: await getFileNode(notebook, targetParts), tree: await getTree() };
+  return { file: await savedNode(liberaPath, body.byteLength), tree: await getTree() };
 }
