@@ -22,16 +22,18 @@ export type PdfCommentsState = {
   selectedId: string | null;
   /** On a live PDF: this person can read comments, not write them. */
   readOnly: boolean;
+  /** On a live PDF: who is reading, and the notebook whose members can be mentioned. */
+  live: PdfCommentsPayload["live"] | null;
 };
 
 export type PdfCommentChange =
-  | { action: "comment"; anchor: PdfCommentAnchor; text: string }
-  | { action: "reply"; threadId: string; text: string }
-  | { action: "edit"; threadId: string; messageId: string; text: string }
+  | { action: "comment"; anchor: PdfCommentAnchor; text: string; mentions?: string[] }
+  | { action: "reply"; threadId: string; text: string; mentions?: string[] }
+  | { action: "edit"; threadId: string; messageId: string; text: string; mentions?: string[] }
   | { action: "resolve"; threadId: string; resolved: boolean }
   | { action: "delete"; threadId: string };
 
-const EMPTY: PdfCommentsState = { threads: [], loaded: false, busy: "", error: "", selectedId: null, readOnly: false };
+const EMPTY: PdfCommentsState = { threads: [], loaded: false, busy: "", error: "", selectedId: null, readOnly: false, live: null };
 const ROUTE = "/api/pdf-comments";
 const CHANNEL = "libera-pdf-comments";
 const FOCUS_EVENT = "libera:pdf-comment-focus";
@@ -46,10 +48,10 @@ function set(path: string, patch: Partial<PdfCommentsState>) {
   for (const listener of [...(listeners.get(path) ?? [])]) listener();
 }
 
-function adopt(path: string, received: unknown, readOnly = pdfCommentsState(path).readOnly) {
+function adopt(path: string, received: unknown, readOnly = pdfCommentsState(path).readOnly, live = pdfCommentsState(path).live) {
   const threads = Array.isArray(received) ? received as PdfCommentThread[] : [];
   const selectedId = states.get(path)?.selectedId ?? null;
-  set(path, { threads, loaded: true, error: "", readOnly, selectedId: selectedId && threads.some((thread) => thread.id === selectedId) ? selectedId : null });
+  set(path, { threads, loaded: true, error: "", readOnly, live, selectedId: selectedId && threads.some((thread) => thread.id === selectedId) ? selectedId : null });
 }
 
 export function pdfCommentsState(path: string): PdfCommentsState {
@@ -71,7 +73,7 @@ export function loadPdfComments(path: string): Promise<void> {
   const pending = loads.get(path);
   if (pending) return pending;
   const work = apiRequest<PdfCommentsPayload>(`${ROUTE}?path=${encodeURIComponent(path)}`)
-    .then((payload) => adopt(path, payload.threads, payload.readOnly === true))
+    .then((payload) => adopt(path, payload.threads, payload.readOnly === true, payload.live ?? null))
     .catch((error) => set(path, { loaded: true, error: error instanceof Error ? error.message : "Could not load comments." }))
     .finally(() => loads.delete(path));
   loads.set(path, work);
@@ -88,7 +90,7 @@ export async function changePdfComments(path: string, change: PdfCommentChange):
   set(path, { busy: change.action, error: "" });
   try {
     const payload = await apiRequest<PdfCommentsPayload>(ROUTE, { method: "POST", body: JSON.stringify({ ...change, path }) });
-    adopt(path, payload.threads, payload.readOnly === true);
+    adopt(path, payload.threads, payload.readOnly === true, payload.live ?? null);
     const threads = pdfCommentsState(path).threads;
     broadcast(path, threads);
     return threads;

@@ -221,7 +221,7 @@ test("a rename keeps the marks, and deleting the PDF closes its document", { tim
     await until(() => marksIn(memberHub).length === 1, "the member reads the same marks at the new name");
 
     await setup.owner.service.fileOp(setup.projectId, { op: "delete", path: "renamed.pdf" });
-    await until(() => ownerHub.getMeta().readOnlyReason === "document-deleted" || setup.owner.service.project(setup.projectId)?.pdfs.openCount === 0, "the document closes");
+    await until(() => ownerHub.getMeta().readOnlyReason === "document-deleted", "the document closes");
     await until(async () => (await resolvePdf(setup.member, `${setup.memberNotebook}/renamed.pdf`)) === null, "gone for the member");
     setup.owner.host.release(mine.docId);
     setup.member.host.release(mine.docId);
@@ -376,12 +376,27 @@ test("local comments become threads once, even from two devices", { timeout: 60_
       const list = await comments(setup.owner).list(mine.docId);
       return list.length === 1 && list[0].messages.length === 2 && list[0].status === "resolved";
     }, "the comment arrives as a thread");
-    await Promise.all([comments(setup.owner).importLocal(mine.docId, local as never), comments(setup.member).importLocal(mine.docId, local as never)]);
+    await Promise.all([setup.owner, setup.member].map((peer) => peer.host.api!.importPdf(mine.docId, { marks: [], comments: local as never })));
     await sleep(600);
     const list = await comments(setup.owner).list(mine.docId);
     assert.equal(list.length, 1);
     assert.equal(list[0].messages.length, 2);
     assert.ok(ownerHub);
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a mention in a PDF comment notifies the member", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-mention-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    const hub = setup.owner.host.acquire(mine.docId);
+    await until(() => hub.hasOpened, "opened");
+    await comments(setup.owner).change(mine.docId, { action: "comment", anchor, text: "Have a look", mentions: [setup.member.auth.account.id] });
+    await until(async () => JSON.stringify(await setup.member.host.api!.listNotifications()).includes('"mention"'), "the member is notified");
     setup.owner.host.release(mine.docId);
   } finally {
     await setup.cleanup();

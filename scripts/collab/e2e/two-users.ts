@@ -9,7 +9,7 @@
 // dir); screenshots, logs and results.json stay there, the throwaway
 // profiles and server data are removed after a passing run unless E2E_KEEP=1.
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
 import { PDFDocument } from "pdf-lib";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -759,6 +759,13 @@ async function main() {
     await waitFor(() => other.evaluate<boolean>(`!!document.querySelector(".pdf-presence-pointer, .pdf-presence-rail-mark")`), { timeoutMs: 10_000, message: "Bob sees no presence from Alice" });
     await shot(other, "pdf-note-on-bob");
     await waitFor(() => other.evaluate<boolean>(`(${strip}).textContent.includes("Saved")`), { timeoutMs: 20_000, message: "Bob's strip never settled" });
+    await waitFor(() => {
+      const copies = (readdirSync(bob.root, { recursive: true }) as string[]).filter((file) => file.endsWith(path.join("by-path", "paper.pdf.json")));
+      return copies.some((file) => {
+        const copy = JSON.parse(readFileSync(path.join(bob.root, file), "utf8")) as { sharedCopy?: string; annotations?: Array<{ text?: string }> };
+        return copy.sharedCopy && copy.annotations?.some((mark) => mark.text?.includes("Note from Alice"));
+      });
+    }, { timeoutMs: 20_000, message: "the note never reached Bob's sidecar copy" });
   }, { soft: true });
 
   await step("11", "Server down: Alice keeps typing, the pill shows offline with a pending count", async () => {

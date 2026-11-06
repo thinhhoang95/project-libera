@@ -19,7 +19,7 @@ import { editorControllerFor } from "./react-codemirror";
 import { useSharedPresence } from "./react-shared-tabs";
 
 const LOADING_STATUS: SyncStatus = { state: "loading", pending: 0, oldestPendingAgeMs: 0, lastAckAt: null, connected: false };
-const REVEAL_MS = 4000;
+export const REVEAL_MS = 4000;
 
 /** Saves `text` as a file outside the shared notebook (the Export of the access-changed banner). */
 export function downloadText(fileName: string, text: string) {

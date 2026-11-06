@@ -269,6 +269,8 @@ All settled on 6 Nov 2026.
 - **Deleted PDFs leave document tombstones even if never opened.** Removing a blob PDF inserts its derived, deleted document row in the manifest update's persistence transaction. Late opens get `document-deleted`, and stale blob re-adds are rejected.
 - **Unsaved local work at activation has private recovery.** Pending writer and journal work, including buffered note text, is kept in the local journal and offered through **Download recovery**. It is not silently discarded or sent through a sidecar Save after activation.
 - **The sidecar copy is marked with its document id.** A sidecar naming another document, such as one that arrived with a copied PDF, counts as local work.
+- **The notebook marker records `pdfLive`.** The manifest decides, but Next code must also decide when the host is down. Without this a shared notebook with live PDFs off would have lost its sidecar writes and comments whenever the host restarted. A marker that lags the manifest is safe: a sidecar written in that window changes its hash and is imported when the host returns.
+- **The server judges a concurrent mark edit by what the update wrote, not by the merged value.** Yjs picks the winner of two writes by client id, so the value showing after a merge can be the other person's. Reading it refused honest edits about half the time, and the rollback dropped the writer's queue.
 
 **Not done as planned**
 
@@ -276,5 +278,8 @@ All settled on 6 Nov 2026.
 - When a PDF is replaced, comments do not search for their quote. Highlights do.
 - A review decision does not go out of date when marks change.
 - Follow tracks scroll position only.
+- Notes show no remote carets. Their text is bound through its source, not to the editor, so a caret would need a position mapped through the Markdown. Selection outlines show who is in a note.
+- Moving or resizing a note, drawing or highlight shows only when it is dropped. Only a space being dragged sends an outline.
+- Mark changes are not in the activity log. It is written by server routes, and marks arrive as document updates. A selected mark shows its author and last editor, and **History** lists deletions and versions.
 - The relocation search reads pages either side of the mark, so a passage moved further is flagged, not found.
 

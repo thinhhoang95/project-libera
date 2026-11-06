@@ -75,6 +75,7 @@ test("the PDF viewer on a live document", async (t) => {
   setCollabStatusStore({ subscribe: (listener: () => void) => { statusListeners.add(listener); return () => statusListeners.delete(listener); }, getSnapshot: () => status, refresh: async () => {}, refreshProjects: async () => {}, setStatus: () => {} } as never);
 
   let documents = 0;
+  const revealListeners = new Set<(target: string) => void>();
   function liveDocument(role: "commenter" | "viewer" = "commenter") {
     const annotations = new Y.Doc();
     const awareness = new Awareness(new Y.Doc());
@@ -82,7 +83,7 @@ test("the PDF viewer on a live document", async (t) => {
     const replica = { annotations, awareness, whenAttached: async () => {}, onRebuild: () => () => {}, subscribe: () => () => {}, getSnapshot: () => snapshot, dismissRejection() {} };
     documents += 1;
     const session = { docId: `pdf_live_doc_${documents}`, resolved: { projectId, path: "Papers/paper.pdf" }, replica };
-    setSharedDocRegistry({ available: true, destroy() {}, session: () => session, acquire: () => ({ docId: session.docId, ready: Promise.resolve(session), session: () => session, release() {} }) } as never);
+    setSharedDocRegistry({ available: true, destroy() {}, session: () => session, onRevealStatus: (listener: (target: string) => void) => { revealListeners.add(listener); return () => revealListeners.delete(listener); }, acquire: () => ({ docId: session.docId, ready: Promise.resolve(session), session: () => session, release() {} }) } as never);
     return { annotations, awareness, role, remote: (update: (marks: PdfAnnotation[]) => PdfAnnotation[], before: PdfAnnotation[]) => applyMarksDiff(annotations, before, update(before), { accountId: "acc_them" }, "remote") };
   }
 
@@ -98,6 +99,7 @@ test("the PDF viewer on a live document", async (t) => {
       requests.push(`${init?.method ?? "GET"} ${url}`);
       if (url.includes("/pdf-docs/resolve")) return Response.json({ docId: `pdf_live_doc_${documents}`, projectId, fileId: "fil_paper_doc", path: "Papers/paper.pdf", role, readOnly: role === "viewer", accountId: "acc_me", blobHash: manifestHash });
       if (url.startsWith("/api/pdf-comments")) return Response.json({ threads: [] });
+      if (url.includes("/members")) return Response.json([{ id: "acc_me", displayName: "Me" }, { id: "acc_them", displayName: "Them" }]);
       if (url.startsWith("/api/pdf-annotations")) return Response.json({ annotations: [highlight("from-the-sidecar")] });
       return new Response(rawBytes);
     };
@@ -373,7 +375,6 @@ test("the PDF viewer on a live document", async (t) => {
       assert.equal(updates, 0);
       assert.match(host.textContent ?? "", /10,000 characters/);
     });
-    assert.deepEqual(browserErrors, [], "unexpected browser errors fail the harness");
     await t.test("a viewer can open a note to read it, and cannot change it", async () => {
       const live = liveDocument("viewer");
       applyMarksDiff(live.annotations, [], [note("n7", "read me")], { accountId: "acc_them" }, "remote");
@@ -418,6 +419,45 @@ test("the PDF viewer on a live document", async (t) => {
       await unmount();
     });
 
+    await t.test("a key that moves the page stops following, and other keys do not", async () => {
+      const live = liveDocument();
+      serve("commenter");
+      await mount();
+      const other = new Awareness(new Y.Doc());
+      other.setLocalStateField("user", { name: "Them", color: "#112233" });
+      other.setLocalStateField("pdf", { page: 1, top: 0, bottom: 1 });
+      await act(async () => { applyAwarenessUpdate(live.awareness, encodeAwarenessUpdate(other, [other.clientID]), "remote"); });
+      const follow = () => host.querySelector<HTMLElement>('[aria-pressed][aria-label*="Them"]')!;
+      await act(async () => { follow().click(); });
+      assert.equal(follow().getAttribute("aria-pressed"), "true");
+      const press = async (key: string) => { await act(async () => { host.querySelector(".libera-pdf-viewer")!.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true })); }); };
+      await press("a");
+      assert.equal(follow().getAttribute("aria-pressed"), "true");
+      await press("PageDown");
+      assert.equal(follow().getAttribute("aria-pressed"), "false");
+    });
+
+    await t.test("Cmd/Ctrl+S says where the marks are", async () => {
+      liveDocument();
+      serve("commenter");
+      await mount();
+      assert.doesNotMatch(host.textContent ?? "", /save as you make them/);
+      await act(async () => { for (const listener of revealListeners) listener("Papers/other.pdf"); });
+      assert.doesNotMatch(host.textContent ?? "", /save as you make them/, "another PDF's Save says nothing here");
+      await act(async () => { for (const listener of revealListeners) listener("Papers/paper.pdf"); });
+      assert.match(host.textContent ?? "", /save as you make them/);
+    });
+
+    await t.test("a selected mark says who made and changed it", async () => {
+      const live = liveDocument();
+      applyMarksDiff(live.annotations, [], [note("whose", "their note")], { accountId: "acc_them" }, "remote");
+      serve("commenter");
+      await mount();
+      await openNote(notes()[0]);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+      assert.match(host.querySelector(".libera-pdf-collab")!.textContent ?? "", /Added by Them/);
+    });
+
     await t.test("a note from a collaborator does not load what shared Markdown would not", async () => {
       const { renderAnnotationMarkdown } = await import("../../src/lib/pdf-annotation-markdown");
       const image = "![x](http://tracker.example/pixel.png)";
@@ -425,6 +465,7 @@ test("the PDF viewer on a live document", async (t) => {
       assert.doesNotMatch(renderAnnotationMarkdown(image, undefined, "shared"), /src="http:/);
       assert.match(renderAnnotationMarkdown("![x](https://example.com/a.png)", undefined, "shared"), /https:\/\/example\.com\/a\.png/);
     });
+    assert.deepEqual(browserErrors, [], "unexpected browser errors fail the harness");
   } finally {
     await act(async () => root.unmount());
     setCollabStatusStore(null);

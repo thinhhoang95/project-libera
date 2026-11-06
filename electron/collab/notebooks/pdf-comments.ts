@@ -14,9 +14,9 @@ import type { PdfCommentAnchor, PdfCommentMessage, PdfCommentThread } from "../.
 import { ControlError } from "../control/types";
 
 export type LivePdfCommentChange =
-  | { action: "comment"; anchor: PdfCommentAnchor; text: string }
-  | { action: "reply"; threadId: string; text: string; ai?: AiActorHint }
-  | { action: "edit"; threadId: string; messageId: string; text: string }
+  | { action: "comment"; anchor: PdfCommentAnchor; text: string; mentions?: string[] }
+  | { action: "reply"; threadId: string; text: string; mentions?: string[]; ai?: AiActorHint }
+  | { action: "edit"; threadId: string; messageId: string; text: string; mentions?: string[] }
   | { action: "resolve"; threadId: string; resolved: boolean }
   | { action: "delete"; threadId: string }
   | { action: "delete-message"; threadId: string; messageId: string };
@@ -175,17 +175,17 @@ export class PdfCommentService {
       case "comment": {
         const anchorId = newId("anc");
         this.writeAnchor(docId, change.anchor, anchorId);
-        const body = { id: newId("thr"), anchorId, quote: change.anchor.quote.slice(0, 10_000), body: change.text };
+        const body = { id: newId("thr"), anchorId, quote: change.anchor.quote.slice(0, 10_000), body: change.text, ...(change.mentions ? { mentions: change.mentions } : {}) };
         await this.send({ id, kind: "thread.create", docId, body });
         break;
       }
       case "reply": {
-        const body = { id: newId("msg"), body: change.text, ...(change.ai ? { ai: change.ai } : {}) };
+        const body = { id: newId("msg"), body: change.text, ...(change.mentions ? { mentions: change.mentions } : {}), ...(change.ai ? { ai: change.ai } : {}) };
         await this.send({ id, kind: "message.create", threadId: change.threadId, body });
         break;
       }
       case "edit": {
-        await this.send({ id, kind: "message.edit", messageId: change.messageId, body: { body: change.text } });
+        await this.send({ id, kind: "message.edit", messageId: change.messageId, body: { body: change.text, ...(change.mentions ? { mentions: change.mentions } : {}) } });
         break;
       }
       case "resolve": {
@@ -202,17 +202,5 @@ export class PdfCommentService {
         throw new ControlError(400, "bad-request", "Unknown comment action.");
     }
     return this.list(docId);
-  }
-
-  /**
-   * Local comments become server threads, by whoever merges them. Ids come
-   * from the old ones, so a second device merging the same sidecar replays
-   * instead of duplicating. Everything goes through the queue, which survives
-   * a restart and retries; the server dates them when they arrive.
-   */
-  async importLocal(docId: string, comments: readonly PdfCommentThread[]): Promise<void> {
-    const api = this.host.api;
-    if (!api) throw new ControlError(503, "unavailable", "The collaboration server is unavailable.");
-    await api.importPdf(docId, { marks: [], comments: [...comments] });
   }
 }

@@ -27,10 +27,12 @@ A reviewer assigned to a PDF needs at least the commenter role to annotate it.
 
 ## Working together
 
-- **There is no Save.** Marks are saved on this device as they are made and sent when there is a connection. The pill above the PDF says where they are.
-- **Who is here:** avatars above the PDF, pointers and strokes on the pages, outlines around what others have selected, and a rail beside the pages showing where each person is reading.
-- **Follow:** click someone's avatar or their mark on the rail. Scrolling yourself stops following.
-- **Typing together:** two people can type in one note at once. Their text merges by character.
+- **There is no Save.** Marks are saved on this device as they are made and sent when there is a connection. The pill above the PDF says where they are, and Cmd/Ctrl+S opens its detail.
+- **Who is here:** avatars above the PDF, pointers and strokes on the pages, outlines around what others have selected or the space they are dragging, and a rail beside the pages showing where each person is reading.
+- **Who made a mark:** select it, and the strip above the PDF says who added it and who last changed it.
+- **Follow:** click someone's avatar or their mark on the rail. Scrolling yourself, with the mouse or the keyboard, stops following.
+- **Mentions:** type **@** in a comment or reply to mention a member; they are notified.
+- **Typing together:** two people can type in one note at once. Their text merges by character. You see their text arrive, but not their caret. A note moved or resized by someone else moves when they let go.
 - **Changing the same thing:** different properties of one mark both apply. If two people change the same property, such as moving the same note, the last change wins everywhere.
 - **Undo** takes back only your own work, one step per press. If someone has since changed the same property, that press leaves it alone.
 
@@ -64,3 +66,5 @@ Comments stay where they were placed, and do not move with their text. PDFs comp
 The shared document is the source of truth. The sidecar in `.libera/annotations` becomes a read-only copy, rewritten about once a minute so search, deep search and export keep working. A sidecar never replaces shared state. Changed sidecars, such as ones written by an older Libera, add only records the shared document has never seen. The host checks for those records before replacing a changed sidecar.
 
 Leaving the notebook, or losing access, writes the last state as an ordinary sidecar, so you keep your copy.
+
+The notebook's `.libera-shared.json` records that live PDFs are on. When the collaboration host cannot be reached, annotation writes in such a notebook are refused rather than written to the sidecar. A shared notebook with live PDFs off keeps working from its sidecars as before.

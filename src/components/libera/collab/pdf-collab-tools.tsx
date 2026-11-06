@@ -47,6 +47,8 @@ async function settled({ session }: Shared): Promise<void> {
   });
 }
 
+const DELETED_PAGE = 50;
+
 function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared; role: Role; canAnnotate: boolean; onClose: () => void }) {
   const { docId } = shared.session;
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
@@ -54,6 +56,7 @@ function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [deleted, setDeleted] = useState(() => shared.store.deleted());
+  const [deletedShown, setDeletedShown] = useState(DELETED_PAGE);
   useEffect(() => shared.store.subscribe(() => setDeleted(shared.store.deleted())), [shared.store]);
   useEffect(() => {
     let active = true;
@@ -80,7 +83,7 @@ function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared;
         {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
         <section className="space-y-2">
           <h3 className="text-xs font-semibold">Deleted marks</h3>
-          {deleted.length ? deleted.slice(0, 50).map((record) => (
+          {deleted.length ? deleted.slice(0, deletedShown).map((record) => (
             <div key={record.annotation.id} className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate">{markLabel(record.annotation.type)}, page {record.annotation.pageNumber}{record.annotation.type === "text" && record.annotation.text ? `: ${record.annotation.text}` : ""}</span>
               <button type="button" className={BUTTON} disabled={!canAnnotate} onClick={() => shared.store.restore(record.annotation.id)}>
@@ -89,6 +92,11 @@ function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared;
               </button>
             </div>
           )) : <p className="text-xs text-muted-foreground">Nothing has been deleted.</p>}
+          {deleted.length > deletedShown ? (
+            <button type="button" className={BUTTON} onClick={() => setDeletedShown((shown) => shown + DELETED_PAGE)}>
+              Show older ({deleted.length - deletedShown} more)
+            </button>
+          ) : null}
         </section>
         <section className="space-y-2">
           <h3 className="text-xs font-semibold">Versions</h3>

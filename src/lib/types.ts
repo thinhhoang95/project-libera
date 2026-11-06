@@ -304,6 +304,8 @@ export type PdfCommentsPayload = {
   threads: PdfCommentThread[];
   /** On a live PDF: this person can read comments, not write them. */
   readOnly?: boolean;
+  /** On a live PDF: who is reading, and the notebook whose members can be mentioned. */
+  live?: { projectId: string; accountId: string };
 };
 
 export type ImageAnnotationsPayload = {

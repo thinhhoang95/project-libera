@@ -5,13 +5,16 @@
 // changed access and a note someone deleted while it was open here.
 
 import { Lock, RotateCcw, X } from "lucide-react";
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { AccessChangedBanner, CollabStatusPill, PresenceAvatars, RejectedEditBanner } from "@/components/libera/collab";
-import { downloadText, sharedBannerKind } from "@/lib/collab/bindings/react-shared-chrome";
+import { downloadText, REVEAL_MS, sharedBannerKind } from "@/lib/collab/bindings/react-shared-chrome";
+import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import type { ReplicaSnapshot } from "@/lib/collab/client/replica";
 import type { PdfPresenceSnapshot, PdfPresenceStore } from "@/lib/collab/pdf/presence";
 import type { SharedPdfState } from "@/lib/collab/pdf/react";
 import type { SyncStatus } from "@/lib/collab/protocol/local";
+import { syncWording } from "@/lib/collab/ui/wording";
+import { useProjectMembers } from "./mentions/mention-textarea";
 import { PdfCollabTools } from "./pdf-collab-tools";
 
 const LOADING_STATUS: SyncStatus = { state: "loading", pending: 0, oldestPendingAgeMs: 0, lastAckAt: null, connected: false };
@@ -20,10 +23,28 @@ const NO_PRESENCE: PdfPresenceSnapshot = { users: [], ghosts: [] };
 const noSubscribe = () => () => {};
 const noPresence = () => NO_PRESENCE;
 
+/** Anyone can change anyone's marks, so a selected mark says whose it is. */
+function MarkAuthors({ shared, id }: { shared: Extract<SharedPdfState, { kind: "shared" }>; id: string }) {
+  const members = useProjectMembers(shared.resolved.projectId);
+  const record = shared.store.record(id);
+  if (!record || !members.length) return null;
+  const name = (accountId: string) => accountId === shared.resolved.accountId ? "you" : members.find((member) => member.id === accountId)?.displayName ?? "a former member";
+  const added = name(record.createdBy);
+  return (
+    <span className="min-w-0 truncate text-xs text-muted-foreground">
+      Added by {added}{record.updatedBy && record.updatedBy !== record.createdBy ? `, last changed by ${name(record.updatedBy)}` : ""}
+    </span>
+  );
+}
+
 export interface PdfCollabChromeProps {
   shared: SharedPdfState;
   snapshot: ReplicaSnapshot | null;
   fileName: string;
+  /** The PDF's path in the workspace, which Cmd/Ctrl+S names. */
+  filePath: string;
+  /** The mark selected here, to say who made it. */
+  selectedMarkId?: string | null;
   /** Read here, not passed in, so a moving pointer never re-renders the viewer. */
   presence?: PdfPresenceStore | null;
   followingClientId?: number | null;
@@ -40,8 +61,18 @@ export interface PdfCollabChromeProps {
   children?: ReactNode;
 }
 
-export function PdfCollabChrome({ shared, snapshot, fileName, presence, followingClientId, onFollow, deletedMark, onRestoreDeleted, onDismissDeleted, canAnnotate = false, staleMarks = 0, onAcceptVersion, children }: PdfCollabChromeProps) {
+export function PdfCollabChrome({ shared, snapshot, fileName, filePath, selectedMarkId, presence, followingClientId, onFollow, deletedMark, onRestoreDeleted, onDismissDeleted, canAnnotate = false, staleMarks = 0, onAcceptVersion, children }: PdfCollabChromeProps) {
   const { users } = useSyncExternalStore(presence?.subscribe ?? noSubscribe, presence?.getSnapshot ?? noPresence, noPresence);
+  // Cmd/Ctrl+S: there is nothing to save, so say where the marks are.
+  const [revealedAt, setRevealedAt] = useState<number | null>(null);
+  useEffect(() => getSharedDocRegistry().onRevealStatus((target) => {
+    if (target === filePath) setRevealedAt(Date.now());
+  }), [filePath]);
+  useEffect(() => {
+    if (revealedAt === null) return;
+    const timer = setTimeout(() => setRevealedAt(null), REVEAL_MS);
+    return () => clearTimeout(timer);
+  }, [revealedAt]);
   if (shared.kind !== "shared") return null;
   const banner = sharedBannerKind(snapshot);
   const rejection = snapshot?.rejection;
@@ -53,7 +84,16 @@ export function PdfCollabChrome({ shared, snapshot, fileName, presence, followin
   return (
     <div className="libera-pdf-collab" data-pdf-annotation-ui>
       <div className="flex min-w-0 items-center gap-2 border-b border-input bg-card px-4 py-1">
-        <CollabStatusPill status={snapshot?.status ?? LOADING_STATUS} />
+        <div className="relative shrink-0">
+          <CollabStatusPill status={snapshot?.status ?? LOADING_STATUS} />
+          {revealedAt !== null ? (
+            <div className="libera-collab-popover absolute left-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-16px)] whitespace-normal break-words rounded-md border border-border bg-card px-2.5 py-1.5 text-xs leading-relaxed shadow-lg" role="status">
+              <span className="block font-semibold">{syncWording(snapshot?.status ?? LOADING_STATUS).label}</span>
+              <span className="block text-muted-foreground">Marks on a live PDF save as you make them. {syncWording(snapshot?.status ?? LOADING_STATUS).detail}</span>
+            </div>
+          ) : null}
+        </div>
+        {selectedMarkId ? <MarkAuthors shared={shared} id={selectedMarkId} /> : null}
         {viewOnly ? (
           <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
             <Lock aria-hidden className="h-3.5 w-3.5" />

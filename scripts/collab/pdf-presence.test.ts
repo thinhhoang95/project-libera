@@ -4,7 +4,8 @@ import test from "node:test";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protocols/awareness";
 import * as Y from "yjs";
 
-import { PdfGhosts, PdfPresenceStore, readPdfPresence, type PdfDraftFrame } from "../../src/lib/collab/pdf/presence";
+import { movingSpaceOutline, PdfGhosts, PdfPresenceStore, readPdfPresence, type PdfDraftFrame } from "../../src/lib/collab/pdf/presence";
+import type { PdfSpaceAnnotation } from "../../src/lib/types";
 
 /** Runs scheduled work when asked, so tests decide when a frame goes out. */
 function manualSchedule() {
@@ -33,6 +34,14 @@ function pair() {
 }
 
 const frame = (start: number, points: Array<[number, number]>, id = "s1"): PdfDraftFrame => ({ id, start, page: 2, kind: "ink", color: "#112233", strokeWidth: 2, points: points.map(([x, y]) => ({ x, y })) });
+
+test("a space being dragged shows as an outline, and one left alone shows nothing", () => {
+  const space = (id: string, y: number, height: number) => ({ id, type: "space", pageNumber: 1, y, height, band: { top: y, bottom: y, splits: [] }, column: 0, createdAt: "", updatedAt: "" }) as PdfSpaceAnnotation;
+  const saved = [space("a", 0.2, 0.1), space("b", 0.6, 0.1)];
+  assert.equal(movingSpaceOutline(saved, saved), null);
+  assert.deepEqual(movingSpaceOutline([saved[0], space("b", 0.6, 0.3)], saved), { from: { x: 0, y: 0.6 }, to: { x: 1, y: 0.6 + 0.3 } });
+  assert.deepEqual(movingSpaceOutline([...saved, space("new", 0.1, 0.05)], saved), { from: { x: 0, y: 0.1 }, to: { x: 1, y: 0.1 + 0.05 } });
+});
 
 test("presence fields from others are checked", () => {
   assert.equal(readPdfPresence(null), null);

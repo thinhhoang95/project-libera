@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Check, PencilLine, RotateCcw, Save, Search, Send, Sparkles, Trash2, X } from "lucide-react";
 import { pdfCommentPages, sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { timeAgo } from "@/lib/collab/ui/wording";
+import { MentionTextarea } from "./collab/mentions/mention-textarea";
 import { CommentBody, useNow } from "./markdown-review-ui";
 import { changePdfComments, clearPdfCommentsError, focusPdfComment, loadPdfComments, selectPdfComment, usePdfComments } from "./pdf-comments-store";
 import type { PdfCommentMessage, PdfCommentThread } from "@/lib/types";
@@ -44,6 +45,7 @@ export function PdfReviewComments({ path }: { path: string }) {
   }, [state.selectedId]);
 
   // A different thread starts with an empty box.
+  const [mentions, setMentions] = useState<string[]>([]);
   const [draftFor, setDraftFor] = useState(state.selectedId);
   if (draftFor !== state.selectedId) {
     setDraftFor(state.selectedId);
@@ -62,9 +64,9 @@ export function PdfReviewComments({ path }: { path: string }) {
     const text = draft.trim();
     if (!text) return;
     const done = editing
-      ? await changePdfComments(path, { action: "edit", threadId: thread.id, messageId: editing, text })
-      : await changePdfComments(path, { action: "reply", threadId: thread.id, text });
-    if (done) { setDraft(""); setEditing(null); }
+      ? await changePdfComments(path, { action: "edit", threadId: thread.id, messageId: editing, text, mentions })
+      : await changePdfComments(path, { action: "reply", threadId: thread.id, text, mentions });
+    if (done) { setDraft(""); setMentions([]); setEditing(null); }
   }
 
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
@@ -112,10 +114,15 @@ export function PdfReviewComments({ path }: { path: string }) {
               <CommentBody text={message.text} />
             </div>)}
             {state.readOnly ? null : <>
-            <textarea aria-label={editing ? "Edit comment" : "Reply to comment"} className="review-textarea" placeholder={editing ? "Edit your comment…" : "Write a reply…"} rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(thread); }
-              if (e.key === "Escape" && editing) { e.stopPropagation(); setEditing(null); setDraft(""); }
-            }} />
+            {(() => {
+              const box = { "aria-label": editing ? "Edit comment" : "Reply to comment", className: "review-textarea", placeholder: editing ? "Edit your comment…" : "Write a reply…", rows: 2, onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(thread); }
+                if (e.key === "Escape" && editing) { e.stopPropagation(); setEditing(null); setDraft(""); }
+              } };
+              return state.live
+                ? <MentionTextarea {...box} projectId={state.live.projectId} selfId={state.live.accountId} value={draft} onChange={setDraft} onMentionsChange={setMentions} />
+                : <textarea {...box} value={draft} onChange={(e) => setDraft(e.target.value)} />;
+            })()}
             <div className="review-comment-actions">
               <button type="button" className="review-comment-icon" data-tone="blue" aria-label={editing ? "Save comment" : "Reply"} title={editing ? "Save comment" : "Reply"} disabled={!draft.trim() || busy} onClick={() => void send(thread)}>{editing ? <Save aria-hidden size={16} /> : <Send aria-hidden size={16} />}</button>
               <button type="button" className="review-comment-icon" data-tone="green" aria-label={thread.status === "open" ? "Resolve" : "Reopen"} title={thread.status === "open" ? "Resolve" : "Reopen"} disabled={busy} onClick={() => void changePdfComments(path, { action: "resolve", threadId: thread.id, resolved: thread.status === "open" })}>{thread.status === "open" ? <Check aria-hidden size={16} /> : <RotateCcw aria-hidden size={16} />}</button>

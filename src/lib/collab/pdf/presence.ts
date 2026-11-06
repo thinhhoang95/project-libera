@@ -6,6 +6,7 @@
 // assemble the ghost; the real mark replaces it when the pen lifts.
 
 import type { Awareness } from "y-protocols/awareness";
+import type { PdfSpaceAnnotation } from "@/lib/types";
 
 /** Presence goes out at most this often, inside the server's per-socket allowance. */
 export const PDF_PRESENCE_INTERVAL_MS = 50;
@@ -30,6 +31,19 @@ export interface PdfDraftFrame {
   color: string;
   strokeWidth: number;
   points: PdfPoint[];
+}
+
+/**
+ * The space being dragged, as the two corners of its outline: others see this
+ * rather than a page reflowing on every frame. Null when nothing has moved.
+ */
+export function movingSpaceOutline(spaces: readonly PdfSpaceAnnotation[], saved: readonly PdfSpaceAnnotation[]): { from: PdfPoint; to: PdfPoint } | null {
+  const before = new Map(saved.map((space) => [space.id, space]));
+  const moving = spaces.find((space) => {
+    const known = before.get(space.id);
+    return !known || known.y !== space.y || known.height !== space.height;
+  });
+  return moving ? { from: { x: 0, y: moving.y }, to: { x: 1, y: moving.y + moving.height } } : null;
 }
 
 export interface PdfPresence {

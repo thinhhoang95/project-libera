@@ -4,7 +4,7 @@ import { after, before, describe, test } from "node:test";
 
 import * as Y from "yjs";
 
-import { ManifestKeys, MessageType, PdfKeys, pdfDocIdFromDigest, pdfDocIdSeed, type Subdoc } from "../src/protocol.js";
+import { ManifestKeys, MessageType, PdfKeys, pdfDocIdFromDigest, pdfDocIdSeed, SyncLimits, type Subdoc } from "../src/protocol.js";
 import { json } from "./helpers.js";
 import type { SyncTestClient } from "./support/sync-client.js";
 import { startSyncEnv, type AccountFixture, type SyncEnv } from "./support/sync-fixtures.js";
@@ -296,7 +296,10 @@ describe("shared PDF documents", () => {
   });
 
   test("awareness is rate limited without closing the socket", async () => {
-    const { client, docId } = await openPdf();
+    const { client, docId, fileId } = await openPdf();
+    const watcher = await env.connect();
+    await watcher.open(docId, { projectId: env.project.id, fileId });
+    const started = Date.now();
     const { encodeAwarenessUpdate, Awareness } = await import("y-protocols/awareness");
     const awareness = new Awareness(new Y.Doc());
     for (let index = 0; index < 400; index += 1) {
@@ -304,6 +307,11 @@ describe("shared PDF documents", () => {
       client.send({ type: MessageType.Awareness, docId, update: encodeAwarenessUpdate(awareness, [awareness.clientID]) });
     }
     await client.acked(client.edit(docId, annotations, mark("still-open", env.owner.id)));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const delivered = watcher.received.filter((message) => message.type === MessageType.Awareness && message.docId === docId).length;
+    const allowed = SyncLimits.awarenessBurst + Math.ceil(((Date.now() - started) / 1000) * SyncLimits.awarenessPerSecond);
+    assert.ok(delivered > 0, "updates within the allowance reach the others");
+    assert.ok(delivered <= allowed, `${delivered} updates delivered, ${allowed} allowed`);
   });
 
   test("F7: replacing containers and forging editor/deleter identities are refused", async () => {

@@ -70,6 +70,18 @@ test("PDF authority routing and copy", async (t) => {
       assert.equal((await PATCH(request())).status, 409);
     });
 
+    await t.test("a comment on a live PDF takes its mentions to the host, and says who can be mentioned", async () => {
+      const sent: Array<{ mentions?: unknown }> = [];
+      globalThis.fetch = async (input, init) => {
+        if (String(input).includes("/pdf-docs/resolve")) return Response.json({ docId: "pdf_live", projectId: "prj_test", fileId: "fil_source", accountId: "acc_me", path: "Shared/source.pdf", readOnly: false });
+        sent.push(JSON.parse(String(init?.body)));
+        return Response.json([]);
+      };
+      const payload = await changePdfComments("Shared/source.pdf", { action: "reply", threadId: "thr_1", text: "have a look", mentions: ["acc_them", 7] });
+      assert.deepEqual(sent[0].mentions, ["acc_them"]);
+      assert.deepEqual(payload.live, { projectId: "prj_test", accountId: "acc_me" });
+    });
+
     await t.test("F12: copy sends current host marks with fresh ids as part of publishing the blob", async () => {
       await writeFile(sidecar, original);
       const seen: FileOpRequest[] = [];

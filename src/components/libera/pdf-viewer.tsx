@@ -46,6 +46,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { GlobalWorkerOptions, TextLayer, getDocument } from "pdfjs-dist";
 import type {
@@ -90,7 +91,8 @@ import { useAnnotationWriter } from "./use-annotation-writer";
 import { useCanAnnotate, useSharedPdf, useSharedPdfSnapshot } from "@/lib/collab/pdf/react";
 import { PdfCollabChrome } from "./collab/pdf-collab-chrome";
 import { PdfPresenceLayer, PdfPresenceRail } from "./collab/pdf-presence";
-import { pdfPresenceFor, type PdfPresenceStore } from "@/lib/collab/pdf/presence";
+import { movingSpaceOutline, pdfPresenceFor, type PdfPresenceStore } from "@/lib/collab/pdf/presence";
+import { MentionTextarea } from "@/components/libera/collab/mentions/mention-textarea";
 import { relocateQuote, type QuotePage, type QuoteTextItem } from "@/lib/pdf-quote-rects";
 import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
@@ -662,6 +664,9 @@ function usePdfRenderQueue(maxConcurrentRenders: number): RequestRenderSlot {
 }
 
 const NO_SHARED_HISTORY = { canUndo: false, canRedo: false };
+const SPACE_OUTLINE_COLOR = "#64748b";
+/** Keys that move the page: moving by hand ends following someone. */
+const SCROLL_KEYS: ReadonlySet<string> = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
 const noHistorySubscribe = () => () => {};
 const noHistoryState = () => NO_SHARED_HISTORY;
 
@@ -844,6 +849,7 @@ export function PdfViewer({
   const comments = usePdfComments(filePath);
   const [commentDraft, setCommentDraft] = useState<PdfCommentDraft | null>(null);
   const [commentText, setCommentText] = useState("");
+  const [commentMentions, setCommentMentions] = useState<string[]>([]);
   const commentMarksByPage = useCommentMarksByPage(comments.threads, comments.selectedId, commentDraft);
   const openCommentCount = comments.threads.filter((thread) => thread.status === "open").length;
   const showCommentsRef = useRef(review?.showComments);
@@ -1557,7 +1563,11 @@ export function PdfViewer({
       const store = sharedStoreRef.current;
       if (store) {
         // No history here: the callers that come this way have dealt with it.
-        store.commit(nextAnnotations, undefined, { history: false, sourceHash: blobHashRef.current });
+        try {
+          store.commit(nextAnnotations, undefined, { history: false, sourceHash: blobHashRef.current });
+        } catch (commitError) {
+          setError(commitError instanceof Error ? commitError.message : "Could not change this annotation.");
+        }
         return;
       }
       latestAnnotationsRef.current = nextAnnotations;
@@ -1956,7 +1966,10 @@ export function PdfViewer({
   // changes made elsewhere (undo, another window) restore the reading position.
   const previewSpaces = useCallback((pageNumber: number, spaces: PdfSpaceAnnotation[] | null) => {
     setSpaceDraft(spaces ? { pageNumber, spaces } : null);
-  }, []);
+    const saved = latestAnnotationsRef.current.filter((annotation): annotation is PdfSpaceAnnotation => annotation.type === "space" && annotation.pageNumber === pageNumber);
+    const outline = spaces && movingSpaceOutline(spaces, saved);
+    publishDrawing(pageNumber, outline ? { type: "shape", shape: "rectangle", color: SPACE_OUTLINE_COLOR, strokeWidth: 1, ...outline } : null);
+  }, [publishDrawing]);
   const commitSpace = useCallback((space: PdfSpaceAnnotation, created: boolean) => {
     const currentSpaces = latestAnnotationsRef.current.filter((annotation): annotation is PdfSpaceAnnotation =>
       annotation.type === "space" && annotation.pageNumber === space.pageNumber);
@@ -2443,7 +2456,7 @@ export function PdfViewer({
     }
 
     const before = new Set(pdfCommentsState(filePath).threads.map((thread) => thread.id));
-    const threads = await changePdfComments(filePath, { action: "comment", anchor: draft.anchor, text });
+    const threads = await changePdfComments(filePath, { action: "comment", anchor: draft.anchor, text, mentions: commentMentions });
 
     if (!threads) {
       return;
@@ -2542,13 +2555,17 @@ export function PdfViewer({
       data-pdf-paper={paperColor ? "" : undefined}
       style={{ "--pdf-highlight-color": highlightColor, "--pdf-markup-color": markupColor, ...(paperColor ? { "--libera-pdf-paper": paperColor } : {}) } as React.CSSProperties}
       onCopy={handleCopy}
+      onKeyDown={presence ? (event) => {
+        if (SCROLL_KEYS.has(event.key) && !(event.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) stopFollowing();
+      } : undefined}
       onPointerDown={(event) => {
         if (!(event.target as HTMLElement).closest("button, input, textarea, select, a, [contenteditable]")) {
           event.currentTarget.focus({ preventScroll: true });
         }
       }}>
-      {privateRecovery?.path === filePath && sharedKind === "shared" ? <div role="status" className="px-3 py-2 text-sm">
-        Unsaved local annotations are kept in a private recovery copy. <button type="button" onClick={() => {
+      {privateRecovery?.path === filePath && sharedKind === "shared" ? <div role="status" className="flex items-center gap-2 border-b border-input bg-card px-4 py-1 text-xs">
+        <span className="min-w-0 flex-1">Unsaved local annotations are kept in a private recovery copy.</span>
+        <button type="button" className="shrink-0 rounded-md border border-input px-2 py-0.5 font-medium hover:bg-muted" onClick={() => {
           const url = URL.createObjectURL(new Blob([JSON.stringify({ annotations: privateRecovery.annotations }, null, 2)], { type: "application/json" }));
           const link = document.createElement("a");
           link.href = url;
@@ -2560,6 +2577,8 @@ export function PdfViewer({
       <PdfCollabChrome
         deletedMark={deletedNote}
         fileName={filePath.split("/").pop() ?? filePath}
+        filePath={filePath}
+        selectedMarkId={activeSelectedAnnotationId || null}
         canAnnotate={canAnnotate}
         followingClientId={followingClientId}
         presence={presence}
@@ -2892,25 +2911,28 @@ export function PdfViewer({
             {commentDraft.anchor.quote ? (
               <blockquote className="pdf-comment-composer-quote">{commentDraft.anchor.quote}</blockquote>
             ) : null}
-            <textarea
-              autoFocus
-              aria-label="New review comment"
-              className="review-textarea"
-              placeholder="Comment on this passage…"
-              rows={3}
-              value={commentText}
-              onChange={(event) => setCommentText(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  cancelComment();
-                } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  void submitComment();
-                }
-              }}
-            />
+            {(() => {
+              const box = {
+                autoFocus: true,
+                "aria-label": "New review comment",
+                className: "review-textarea",
+                placeholder: "Comment on this passage…",
+                rows: 3,
+                onKeyDown: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    cancelComment();
+                  } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    void submitComment();
+                  }
+                },
+              };
+              return comments.live
+                ? <MentionTextarea {...box} projectId={comments.live.projectId} selfId={comments.live.accountId} value={commentText} onChange={setCommentText} onMentionsChange={setCommentMentions} />
+                : <textarea {...box} value={commentText} onChange={(event) => setCommentText(event.target.value)} />;
+            })()}
             {comments.error && comments.busy === "" ? <p role="alert" className="text-xs text-destructive">{comments.error}</p> : null}
             <div className="flex justify-end gap-1">
               <button type="button" className="review-button" onClick={cancelComment}>Cancel</button>

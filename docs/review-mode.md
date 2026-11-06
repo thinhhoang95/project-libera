@@ -28,7 +28,7 @@ Open a PDF, select text on a page and choose **Add comment** (the speech-bubble 
 - Comments are outside the PDF viewer's undo, like comments on Markdown documents, and are never written into the PDF itself or into annotated exports.
 - They are stored in the PDF's annotation sidecar (`.libera/annotations/pdf/by-path/<path>.json`, under `comments`) beside its highlights and notes, so renaming, moving, copying, archiving and deleting the PDF or its folders carry them exactly as they carry its markup, and a synced notebook carries them to other computers. A copy's comments are its own. Each change rewrites one thread under a lock on the sidecar, so saving markup in the viewer and the agent replying never overwrite each other. In a shared notebook with [live PDFs](features/live-pdfs.md) on, PDF comments are collaboration-server threads, with authors, mentions and an offline queue, and the sidecar keeps a copy. Without live PDFs they stay on this computer with the PDF's other annotations.
 
-Agentic review, suggested edits and **Request review…** are for Markdown and LaTeX documents only.
+Agentic review and suggested edits are for Markdown and LaTeX documents only. **Request review…** also works on a live PDF in a shared notebook, for the whole PDF: see [Live PDFs](features/live-pdfs.md).
 
 ## Shared documents
 
