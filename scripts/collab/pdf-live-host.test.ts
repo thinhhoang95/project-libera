@@ -755,6 +755,61 @@ test("the divergence check compares a PDF's marks", () => {
   assert.equal(digestOf("annotations", a), digestOf("annotations", b));
 });
 
+test("quitting writes the copy that was still waiting for its delay", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-quit-", { "paper.pdf": PDF }, "commenter", undefined, 60_000);
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    const hub = setup.owner.host.acquire(mine.docId);
+    await until(() => hub.getStatus().state === "saved-remote", "the document opened");
+    change(hub, setup.owner.auth.account.id, (marks) => [...marks, highlight("before-quitting")]);
+    await until(() => hub.getStatus().state === "saved-remote", "the mark reached the server");
+    assert.equal(existsSync(sidecarPath(setup.ownerRoot, "paper.pdf")), false, "the copy is still waiting for its delay");
+    await setup.owner.service.project(setup.projectId)?.stop();
+    const sidecar = readSidecar(setup.ownerRoot, "paper.pdf");
+    assert.equal(sidecar.sharedCopy, mine.docId);
+    assert.deepEqual(sidecar.annotations.map((mark) => mark.id), ["before-quitting"]);
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a server that never answers cannot hold up quitting", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-quit-hung-", { "paper.pdf": PDF }, "commenter", undefined, 60_000);
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    const hub = setup.owner.host.acquire(mine.docId);
+    await until(() => hub.getStatus().state === "saved-remote", "the document opened");
+    change(hub, setup.owner.auth.account.id, (marks) => [...marks, highlight("before-quitting")]);
+    await until(() => hub.getStatus().state === "saved-remote", "the mark reached the server");
+    const api = setup.owner.host.api;
+    assert.ok(api);
+    api.listThreads = () => new Promise(() => {});
+    const started = Date.now();
+    await setup.owner.service.project(setup.projectId)?.stop();
+    assert.ok(Date.now() - started < 4_000, "the host is killed 5 s after it is asked to stop");
+    assert.deepEqual(readSidecar(setup.ownerRoot, "paper.pdf").annotations.map((mark) => mark.id), ["before-quitting"]);
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("the notebook's marker records that live PDFs are on, for when the host cannot say", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-marker-", { "paper.pdf": PDF });
+  try {
+    const marker = (root: string) => JSON.parse(readFileSync(path.join(root, ".libera-shared.json"), "utf8")) as { pdfLive?: boolean };
+    assert.equal(marker(setup.ownerRoot).pdfLive, undefined);
+    await enable(setup);
+    await until(() => marker(setup.ownerRoot).pdfLive === true, "the owner's marker");
+    await until(() => marker(setup.memberRoot).pdfLive === true, "the member's marker");
+  } finally {
+    await setup.cleanup();
+  }
+});
+
 test("a notification about a live PDF resolves to its file", { timeout: 60_000 }, async () => {
   const setup = await pair("libera-pdf-notify-", { "paper.pdf": PDF });
   try {

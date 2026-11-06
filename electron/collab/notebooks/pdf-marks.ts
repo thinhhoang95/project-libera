@@ -23,6 +23,15 @@ import type { CollabHost } from "../core/host";
 import { ensureDirectory, readIfExists, sha256, WriteCancelledError, writeFileAtomic, type WriteGuard } from "./fs-ops";
 
 const SIDECAR_DIRECTORY = [".libera", "annotations", "pdf", "by-path"] as const;
+/** How long the last copy waits for the server's comments: the host has about 5 s to stop. */
+const FINAL_COMMENTS_MS = 1_500;
+
+interface CopyOptions {
+  /** Access ended or the notebook left collaboration: the copy becomes the person's own. */
+  local?: boolean;
+  /** The app is stopping: the copy waiting for its delay is written now. */
+  final?: boolean;
+}
 
 /** The document of a shared PDF; every client derives the same one. */
 export function pdfDocId(projectId: string, fileId: string): string {
@@ -321,14 +330,15 @@ export class PdfMarksRuntime {
    * Writes the sidecar copy. Local work not merged yet is never overwritten,
    * which also keeps a viewer's private notes, since a viewer cannot merge.
    */
-  private writeCopy(doc: PdfDoc, options: { local?: boolean } = {}): Promise<void> {
+  private writeCopy(doc: PdfDoc, options: CopyOptions = {}): Promise<void> {
     const write = doc.writes.catch(() => undefined).then(() => this.writeCurrentCopy(doc, options));
     doc.writes = write;
     return write;
   }
 
-  private async writeCurrentCopy(doc: PdfDoc, options: { local?: boolean }): Promise<void> {
-    if ((!options.local && (this.stopped || !this.ctx.canWriteDisk())) || doc.hub.isClosed) return;
+  private async writeCurrentCopy(doc: PdfDoc, options: CopyOptions): Promise<void> {
+    const stopped = () => this.stopped && !options.final;
+    if ((!options.local && (stopped() || !this.ctx.canWriteDisk())) || doc.hub.isClosed) return;
     const relative = doc.path;
     const target = this.sidecarPath(relative);
     if (!options.local) await this.importSidecar(doc);
@@ -345,17 +355,17 @@ export class PdfMarksRuntime {
       const ids = new Set(readAllMarks(doc.hub.getDoc("annotations")).map((record) => record.annotation.id));
       annotations.push(...existing.annotations.filter(validAnnotation).filter((mark) => !ids.has(mark.id)));
     }
-    const threads = await this.ctx.listComments?.(doc.docId).catch(() => null);
+    const threads = await this.commentsForCopy(doc, options);
     const comments = threads ?? (Array.isArray(existing?.comments) ? existing.comments : []);
     if (!annotations.length && !comments.length && !existing) return;
     const copy: Sidecar = { annotations, ...(comments.length ? { comments } : {}), ...(existing?.source ? { source: existing.source } : {}), ...(options.local ? {} : { sharedCopy: doc.docId }) };
     const bytes = Buffer.from(`${JSON.stringify(copy, null, 2)}\n`, "utf8");
     const hash = sha256(bytes);
     if (hash === expected) return;
-    const base = this.ctx.guard(options.local === true);
+    const base = this.ctx.guard(options.local === true || options.final === true);
     const guard: WriteGuard = { root: base.root, canCommit: async () => {
       if (doc.path !== relative || !(await base.canCommit())) return false;
-      if (!options.local && (this.stopped || !this.ctx.canWriteDisk() || this.docs.get(doc.fileId) !== doc)) return false;
+      if (!options.local && (stopped() || !this.ctx.canWriteDisk() || this.docs.get(doc.fileId) !== doc)) return false;
       if ((await fs.lstat(target).catch(() => null))?.isSymbolicLink()) return false;
       const current = await readIfExists(target);
       return (current ? sha256(current) : null) === expected;
@@ -364,6 +374,15 @@ export class PdfMarksRuntime {
     await writeFileAtomic(target, bytes, guard);
     doc.observedHash = hash;
     this.ctx.filesChanged([doc.path]);
+  }
+
+  /** The threads for the copy; null keeps the ones it has, as when the server cannot answer. */
+  private async commentsForCopy(doc: PdfDoc, options: CopyOptions): Promise<unknown[] | null> {
+    const threads = this.ctx.listComments?.(doc.docId).catch(() => null) ?? Promise.resolve(null);
+    if (!options.final) return threads;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), FINAL_COMMENTS_MS); });
+    return Promise.race([threads, late]).finally(() => clearTimeout(timer));
   }
 
   /** Work the server refused stays in the notebook's state folder, for recovery. */
@@ -380,7 +399,7 @@ export class PdfMarksRuntime {
     }
   }
 
-  private async close(doc: PdfDoc, finalWrite: boolean, options: { local?: boolean } = {}): Promise<void> {
+  private async close(doc: PdfDoc, finalWrite: boolean, options: CopyOptions = {}): Promise<void> {
     if (doc.timer) clearTimeout(doc.timer);
     doc.timer = null;
     if (finalWrite) await this.writeCopy(doc, options).catch(() => undefined);
@@ -398,7 +417,8 @@ export class PdfMarksRuntime {
     this.stopped = true;
     if (this.sidecarTimer) clearInterval(this.sidecarTimer);
     this.sidecarTimer = null;
-    await Promise.all([...this.docs.values()].map((doc) => this.close(doc, true, options)));
+    // Only a copy still waiting for its delay has anything new to write.
+    await Promise.all([...this.docs.values()].map((doc) => this.close(doc, doc.timer !== null || options.local === true, { ...options, final: true })));
   }
 
   async seed(fileId: string, relative: string, input: PdfImportRequest): Promise<void> {
