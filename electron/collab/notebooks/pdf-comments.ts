@@ -27,6 +27,9 @@ interface AnchorRecord extends PdfCommentAnchor {
   createdAt: number;
 }
 
+/** How long a change waits for the server before it shows as pending instead. */
+const SEND_WAIT_MS = 4_000;
+
 const newId = (prefix: string) => `${prefix}_${randomBytes(15).toString("hex")}`;
 const stableId = (prefix: string, seed: string) => `${prefix}_${createHash("sha256").update(seed).digest("hex").slice(0, 40)}`;
 
@@ -43,11 +46,13 @@ function messageOf(message: Thread["messages"][number], accountId: string): PdfC
   };
 }
 
-/** A server thread as the panel shows it; null while its anchor has not arrived. */
-export function pdfThreadOf(thread: Thread, anchor: PdfCommentAnchor | undefined, accountId: string): PdfCommentThread | null {
-  if (!anchor) return null;
+/**
+ * A server thread as the panel shows it. Its anchor travels separately and can
+ * arrive after it, so until then it shows with its quote and no place on a page.
+ */
+export function pdfThreadOf(thread: Thread, anchor: PdfCommentAnchor | undefined, accountId: string): PdfCommentThread {
   const messages = thread.messages.filter((message) => !message.deletedAt).map((message) => messageOf(message, accountId));
-  return { id: thread.id, anchor, status: thread.status === "resolved" ? "resolved" : "open", messages, createdAt: thread.createdAt, updatedAt: thread.updatedAt };
+  return { id: thread.id, anchor: anchor ?? { segments: [], quote: thread.quote }, status: thread.status === "resolved" ? "resolved" : "open", messages, createdAt: thread.createdAt, updatedAt: thread.updatedAt };
 }
 
 /** Commands still waiting for the network, applied so offline work shows as it will land. */
@@ -60,7 +65,8 @@ export function withPendingCommands(threads: PdfCommentThread[], commands: reado
       case "thread.create": {
         const anchor = anchorOf(command.body.anchorId);
         if (command.docId !== docId || !anchor || next.some((thread) => thread.id === command.body.id)) break;
-        next = [...next, { id: command.body.id, anchor, status: "open", messages: [pendingMessage(`${command.id}-first`, command.body.body)], createdAt: now, updatedAt: now, pending: true }];
+        // The server gives a thread's first message the thread's id.
+        next = [...next, { id: command.body.id, anchor, status: "open", messages: [pendingMessage(command.body.id, command.body.body)], createdAt: now, updatedAt: now, pending: true }];
         break;
       }
       case "message.create":
@@ -125,6 +131,8 @@ export class PdfCommentService {
       const api = this.host.api;
       if (!api) throw new ApiClientError("network", 0, "Not signed in.");
       threads = await api.listThreads(docId);
+      const current = new Set(threads.map((thread) => thread.id));
+      for (const row of this.host.store.listThreads(docId)) if (!current.has(row.threadId)) this.host.store.deleteThread(row.threadId);
       for (const thread of threads) this.host.store.putThread(thread.id, docId, thread);
     } catch (error) {
       if (error instanceof ApiClientError && !error.transient && error.code !== "network" && error.code !== "needs-sign-in" && error.status !== 404) throw error;
@@ -132,55 +140,62 @@ export class PdfCommentService {
     }
     const anchors = this.anchors(docId);
     const anchorOf = (anchorId: string) => anchors.get(anchorId);
-    const shown = threads.flatMap((thread) => pdfThreadOf(thread, anchorOf(thread.anchorId), this.accountId()) ?? []);
+    const shown = threads.map((thread) => pdfThreadOf(thread, anchorOf(thread.anchorId), this.accountId()));
     return withPendingCommands(shown, this.pending(), docId, anchorOf);
   }
 
-  /** Sends now when the connection is up, and queues otherwise; `direct` and the command do the same thing. */
-  private async send(command: Command, direct: () => Promise<unknown> | undefined): Promise<void> {
-    if (!this.host.api || this.host.connectionState !== "connected") {
-      this.host.commands.enqueue(command);
-      return;
-    }
-    try {
-      await direct();
-    } catch (error) {
-      if (!(error instanceof ApiClientError) || !(error.transient || error.code === "network" || error.code === "needs-sign-in")) throw error;
-      this.host.commands.enqueue(command);
-    }
+  /**
+   * Every change goes through the durable queue first, online too, so a crash
+   * after the person pressed Send loses nothing. Online, this waits for the
+   * outcome so a refusal reaches the panel; a slow or absent network leaves
+   * the command queued, and the comment shows as pending.
+   */
+  private async send(command: Command): Promise<void> {
+    const commands = this.host.commands;
+    const online = this.host.api !== null && this.host.connectionState === "connected";
+    let stop: () => void = () => {};
+    const settled = online ? new Promise<{ ok: boolean; status: number; error?: { message: string } } | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), SEND_WAIT_MS);
+      stop = commands.on((event) => {
+        if (event.type !== "settled" || event.id !== command.id) return;
+        clearTimeout(timer);
+        resolve(event);
+      });
+    }) : null;
+    commands.enqueue(command);
+    const outcome = await settled;
+    stop();
+    if (outcome && !outcome.ok) throw new ControlError(outcome.status, "refused", outcome.error?.message ?? "The server refused this change.");
   }
 
   async change(docId: string, change: LivePdfCommentChange): Promise<PdfCommentThread[]> {
-    const api = this.host.api;
-    const command = newId("cmd");
+    const id = newId("cmd");
     switch (change.action) {
       case "comment": {
         const anchorId = newId("anc");
         this.writeAnchor(docId, change.anchor, anchorId);
         const body = { id: newId("thr"), anchorId, quote: change.anchor.quote.slice(0, 10_000), body: change.text };
-        await this.send({ id: command, kind: "thread.create", docId, body }, () => api?.createThread(docId, body));
+        await this.send({ id, kind: "thread.create", docId, body });
         break;
       }
       case "reply": {
         const body = { id: newId("msg"), body: change.text, ...(change.ai ? { ai: change.ai } : {}) };
-        await this.send({ id: command, kind: "message.create", threadId: change.threadId, body }, () => api?.createMessage(change.threadId, body));
+        await this.send({ id, kind: "message.create", threadId: change.threadId, body });
         break;
       }
       case "edit": {
-        const body = { body: change.text };
-        await this.send({ id: command, kind: "message.edit", messageId: change.messageId, body }, () => api?.editMessage(change.messageId, body));
+        await this.send({ id, kind: "message.edit", messageId: change.messageId, body: { body: change.text } });
         break;
       }
       case "resolve": {
-        const body = { status: change.resolved ? "resolved" as const : "open" as const };
-        await this.send({ id: command, kind: "thread.status", threadId: change.threadId, body }, () => api?.setThreadStatus(change.threadId, body));
+        await this.send({ id, kind: "thread.status", threadId: change.threadId, body: { status: change.resolved ? "resolved" : "open" } });
         break;
       }
       case "delete":
-        await this.send({ id: command, kind: "thread.delete", threadId: change.threadId }, () => api?.deleteThread(change.threadId));
+        await this.send({ id, kind: "thread.delete", threadId: change.threadId });
         break;
       case "delete-message":
-        await this.send({ id: command, kind: "message.delete", messageId: change.messageId }, () => api?.deleteMessage(change.messageId));
+        await this.send({ id, kind: "message.delete", messageId: change.messageId });
         break;
       default:
         throw new ControlError(400, "bad-request", "Unknown comment action.");

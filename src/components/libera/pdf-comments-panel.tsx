@@ -34,6 +34,8 @@ export function PdfReviewComments({ path }: { path: string }) {
   const [query, setQuery] = useState("");
   const selectedCard = useRef<HTMLElement | null>(null);
   const busy = !!state.busy;
+  // Only your own words, and only if you can write here at all.
+  const canEdit = (message: PdfCommentMessage) => !state.readOnly && message.author !== "agent" && message.own !== false;
   const threads = sortPdfCommentThreads(state.threads);
   const active = threads.find((thread) => thread.id === state.selectedId) ?? null;
 
@@ -99,16 +101,17 @@ export function PdfReviewComments({ path }: { path: string }) {
           {selected && <div className="mt-2 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <MessageMeta message={thread.messages[0]} now={now} />
-              <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit comment" title="Edit comment" disabled={busy} onClick={() => { setEditing(thread.messages[0].id); setDraft(thread.messages[0].text); }}><PencilLine aria-hidden size={16} /></button>
+              {canEdit(thread.messages[0]) && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit comment" title="Edit comment" disabled={busy} onClick={() => { setEditing(thread.messages[0].id); setDraft(thread.messages[0].text); }}><PencilLine aria-hidden size={16} /></button>}
             </div>
             <CommentBody text={thread.messages[0].text} />
             {replies.map((message) => <div key={message.id} className="space-y-1 border-l-2 border-border pl-2" data-author={message.author ?? "user"}>
               <div className="flex items-center justify-between gap-2">
                 <MessageMeta message={message} now={now} />
-                {message.author !== "agent" && message.own !== false && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit reply" title="Edit reply" disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
+                {canEdit(message) && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit reply" title="Edit reply" disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
               </div>
               <CommentBody text={message.text} />
             </div>)}
+            {state.readOnly ? null : <>
             <textarea aria-label={editing ? "Edit comment" : "Reply to comment"} className="review-textarea" placeholder={editing ? "Edit your comment…" : "Write a reply…"} rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(thread); }
               if (e.key === "Escape" && editing) { e.stopPropagation(); setEditing(null); setDraft(""); }
@@ -118,6 +121,7 @@ export function PdfReviewComments({ path }: { path: string }) {
               <button type="button" className="review-comment-icon" data-tone="green" aria-label={thread.status === "open" ? "Resolve" : "Reopen"} title={thread.status === "open" ? "Resolve" : "Reopen"} disabled={busy} onClick={() => void changePdfComments(path, { action: "resolve", threadId: thread.id, resolved: thread.status === "open" })}>{thread.status === "open" ? <Check aria-hidden size={16} /> : <RotateCcw aria-hidden size={16} />}</button>
               <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label="Delete comment" title="Delete comment" disabled={busy} onClick={() => void changePdfComments(path, { action: "delete", threadId: thread.id })}><Trash2 aria-hidden size={16} /></button>
             </div>
+            </>}
           </div>}
         </article>;
       })}

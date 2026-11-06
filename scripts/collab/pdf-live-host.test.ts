@@ -3,12 +3,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import type { DocHub } from "../../electron/collab/core/doc-hub";
-import { PdfCommentService } from "../../electron/collab/notebooks/pdf-comments";
+import * as Y from "yjs";
+
+import { digestOf } from "../../electron/collab/core/divergence";
+import { subdocText, type DocHub } from "../../electron/collab/core/doc-hub";
+import { PdfCommentService, withPendingCommands } from "../../electron/collab/notebooks/pdf-comments";
 import { pdfDocId } from "../../electron/collab/notebooks/pdf-marks";
 import { ControlRoutes, type ResolvedPdf } from "../../src/lib/collab/local-api";
 import { applyMarksDiff, marksOf, readAllMarks, visibleMarks } from "../../src/lib/collab/pdf/model";
-import { closePeer, invite, makePeer, register, sleep, tempRoot, until, writeTree, type Peer } from "./support/notebooks-harness";
+import { api, closePeer, invite, makePeer, register, sleep, tempRoot, until, writeTree, type Peer } from "./support/notebooks-harness";
 import { removeDataDir, startServerProcess, type ServerProcess } from "./support/server-process";
 import type { PdfAnnotation, PdfHighlightAnnotation, PdfTextAnnotation } from "../../src/lib/types";
 
@@ -87,7 +90,7 @@ async function pair(prefix: string, files: Record<string, string | Buffer>, role
 async function enable(setup: Pair) {
   const enabled = await setup.owner.router.call("POST", ControlRoutes.pdfLive(setup.projectId));
   assert.equal(enabled.status, 204, JSON.stringify(enabled.body));
-  await until(async () => (await resolvePdf(setup.member, `${setup.memberNotebook}/paper.pdf`)) !== null, "the member sees live PDFs");
+  await until(() => setup.member.service.project(setup.projectId)?.pdfs.enabled === true, "the member sees live PDFs");
 }
 
 test("live PDFs stay off until the owner turns them on, and only the owner can", { timeout: 60_000 }, async () => {
@@ -416,6 +419,230 @@ test("a new PDF arriving with a sidecar merges it, even one copied from another 
     const hub = setup.owner.host.acquire(copy.docId);
     await until(() => marksIn(hub).some((mark) => mark.id === "came-with-the-copy"), "the copy's marks are its own");
     setup.owner.host.release(copy.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a comment is durable before it is sent, and refusals still reach the person", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-comment-queue-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    const ownerHub = setup.owner.host.acquire(mine.docId);
+    await until(() => ownerHub.getStatus().state === "saved-remote", "opened");
+    const seen: string[] = [];
+    const stop = setup.owner.host.commands.on((event) => { if (event.type === "pending") seen.push(event.command.kind); });
+    const [thread] = await comments(setup.owner).change(mine.docId, { action: "comment", anchor, text: "Durable" });
+    stop();
+    assert.deepEqual(seen, ["thread.create"], "online comments go through the queue too");
+    assert.equal(thread.pending, undefined, "and wait for the outcome while online");
+    await assert.rejects(comments(setup.owner).change(mine.docId, { action: "reply", threadId: "thr_does_not_exist_at_all", text: "Nowhere" }));
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a thread without its anchor still shows, and arrives on the page when the anchor does", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-comment-order-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    await resolvePdf(setup.member, `${setup.memberNotebook}/paper.pdf`);
+    const memberHub = setup.member.host.acquire(mine.docId);
+    const ownerHub = setup.owner.host.acquire(mine.docId);
+    await until(() => ownerHub.getStatus().state === "saved-remote" && memberHub.getStatus().state === "saved-remote", "opened");
+    const api = setup.owner.host.api!;
+    await api.createThread(mine.docId, { id: "thr_anchor_comes_later", anchorId: "anc_anchor_comes_later", quote: "a passage", body: "Early" });
+    const before = await comments(setup.member).list(mine.docId);
+    assert.equal(before.length, 1, "shown, not dropped");
+    assert.deepEqual(before[0].anchor.segments, []);
+    const events = setup.member.events.length;
+    ownerHub.applyLocalChange("annotations", (doc) => doc.getMap("pdfAnchors").set("anc_anchor_comes_later", { ...anchor, id: "anc_anchor_comes_later", createdBy: setup.owner.auth.account.id, createdAt: 1 }));
+    await until(() => setup.member.events.slice(events).some((event) => event.t === "pdf-comments-changed" && event.docId === mine.docId), "the panel is told");
+    assert.equal((await comments(setup.member).list(mine.docId))[0].anchor.segments.length, 1);
+    setup.owner.host.release(mine.docId);
+    setup.member.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a thread deleted elsewhere stays gone offline", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-comment-cache-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    const ownerHub = setup.owner.host.acquire(mine.docId);
+    await until(() => ownerHub.getStatus().state === "saved-remote", "opened");
+    const service = comments(setup.owner);
+    const [thread] = await service.change(mine.docId, { action: "comment", anchor, text: "Short-lived" });
+    await setup.owner.host.api!.deleteThread(thread.id);
+    assert.equal((await service.list(mine.docId)).length, 0);
+    const saved = (setup.owner.host as unknown as { account: unknown }).account;
+    setup.owner.host.setAccount(null);
+    assert.equal((await service.list(mine.docId)).length, 0, "the cache no longer holds it");
+    setup.owner.host.setAccount(saved as Parameters<typeof setup.owner.host.setAccount>[0]);
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("an offline comment's opening message can be edited before it is sent", () => {
+  const threadId = "thr_offline_comment";
+  const create = { id: "cmd_create_offline", kind: "thread.create" as const, docId: "pdf_doc", body: { id: threadId, anchorId: "anc_offline", quote: "q", body: "First" } };
+  const [thread] = withPendingCommands([], [create], "pdf_doc", () => anchor);
+  assert.equal(thread.messages[0].id, threadId, "the id the server will give it");
+  const edit = { id: "cmd_edit_offline", kind: "message.edit" as const, messageId: thread.messages[0].id, body: { body: "Edited" } };
+  assert.equal(withPendingCommands([], [create, edit], "pdf_doc", () => anchor)[0].messages[0].text, "Edited");
+});
+
+test("comment changes refresh the sidecar copy", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-comment-copy-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    await resolvePdf(setup.member, `${setup.memberNotebook}/paper.pdf`);
+    const ownerHub = setup.owner.host.acquire(mine.docId);
+    await until(() => ownerHub.getStatus().state === "saved-remote", "opened");
+    const [thread] = await comments(setup.owner).change(mine.docId, { action: "comment", anchor, text: "First" });
+    const copied = (root: string) => { try { return (JSON.parse(readFileSync(sidecarPath(root, "paper.pdf"), "utf8")) as { comments?: Array<{ status: string }> }).comments ?? []; } catch { return []; } };
+    await until(() => copied(setup.memberRoot).length === 1, "the comment reaches the member's copy with no mark changing");
+    await comments(setup.owner).change(mine.docId, { action: "resolve", threadId: thread.id, resolved: true });
+    await until(() => copied(setup.memberRoot)[0]?.status === "resolved", "so does resolving it");
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("copies are written in order, and records this version cannot read stay", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-copy-order-", { "paper.pdf": PDF }, "commenter", (root) => writeSidecar(root, "paper.pdf", [highlight("h"), { id: "future", type: "sticker", pageNumber: 1 } as unknown as PdfAnnotation]));
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    const hub = setup.owner.host.acquire(mine.docId);
+    await until(() => marksIn(hub).length === 1, "imported");
+    await until(() => readSidecar(setup.ownerRoot, "paper.pdf").sharedCopy === mine.docId, "the copy is written");
+    assert.ok(readSidecar(setup.ownerRoot, "paper.pdf").annotations.some((mark) => (mark as { id: string }).id === "future"), "the unknown record stays");
+    for (let index = 0; index < 8; index += 1) {
+      change(hub, setup.owner.auth.account.id, (marks) => [...marks, highlight(`h${index}`)]);
+      await sleep(15);
+    }
+    await until(() => readSidecar(setup.ownerRoot, "paper.pdf").annotations.filter((mark) => mark.type === "highlight").length === 9, "the last write is the newest");
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a legacy flat sidecar merges when its name is unique, and is left alone when it is not", { timeout: 60_000 }, async () => {
+  const flat = (root: string, name: string, id: string) => {
+    const target = path.join(root, ".libera", "annotations", "pdf", `${name}.json`);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, JSON.stringify({ annotations: [highlight(id)] }));
+  };
+  const setup = await pair("libera-pdf-legacy-", { "unique.pdf": PDF, "a/twin.pdf": Buffer.from("%PDF-1.4 a\n"), "b/twin.pdf": Buffer.from("%PDF-1.4 b\n") }, "commenter", (root) => {
+    flat(root, "unique.pdf", "from-legacy");
+    flat(root, "twin.pdf", "ambiguous");
+  });
+  try {
+    await enable(setup);
+    const unique = (await resolvePdf(setup.owner, "Papers/unique.pdf")) as ResolvedPdf;
+    const hub = setup.owner.host.acquire(unique.docId);
+    await until(() => marksIn(hub).some((mark) => mark.id === "from-legacy"), "the legacy sidecar merged");
+    const twin = (await resolvePdf(setup.owner, "Papers/a/twin.pdf")) as ResolvedPdf;
+    const twinHub = setup.owner.host.acquire(twin.docId);
+    await until(() => twinHub.getStatus().state === "saved-remote", "opened");
+    await sleep(300);
+    assert.equal(marksIn(twinHub).length, 0, "no guessing between two PDFs of one name");
+    setup.owner.host.release(unique.docId);
+    setup.owner.host.release(twin.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a PDF first opened elsewhere while this host was away is followed after it reconnects", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-rediscover-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const project = setup.member.service.project(setup.projectId)!;
+    assert.equal(project.pdfs.openCount, 0);
+    const saved = (setup.member.host as unknown as { account: unknown }).account;
+    setup.member.host.setAccount(null);
+    await sleep(300);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    const ownerHub = setup.owner.host.acquire(mine.docId);
+    await until(() => ownerHub.getStatus().state === "saved-remote", "opened");
+    change(ownerHub, setup.owner.auth.account.id, (marks) => [...marks, highlight("while-away")]);
+    await until(() => ownerHub.getStatus().state === "saved-remote", "acked");
+    setup.member.host.setAccount(saved as Parameters<typeof setup.member.host.setAccount>[0]);
+    await until(() => project.pdfs.openCount === 1, "followed without opening it");
+    await until(() => existsSync(sidecarPath(setup.memberRoot, "paper.pdf")), "its copy is written, so search can see it");
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a viewer promoted to commenter gets their private sidecar merged", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-promote-", { "paper.pdf": PDF }, "viewer");
+  try {
+    writeSidecar(setup.memberRoot, "paper.pdf", [highlight("was-private")]);
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    await resolvePdf(setup.member, `${setup.memberNotebook}/paper.pdf`);
+    const hub = setup.owner.host.acquire(mine.docId);
+    await until(() => hub.getStatus().state === "saved-remote", "opened");
+    assert.equal(marksIn(hub).length, 0);
+    const change = await api(setup.server, `/v1/projects/${setup.projectId}/members/${setup.member.auth.account.id}`, { role: "commenter" }, setup.owner.auth.accessToken, "PATCH");
+    assert.ok(change.status < 300, JSON.stringify(change.body));
+    await until(() => marksIn(hub).some((mark) => mark.id === "was-private"), "merged after the promotion");
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("a refused change to a PDF with only comments keeps its anchors in the recovery text", () => {
+  const doc = new Y.Doc();
+  doc.getMap("pdfAnchors").set("a", { id: "a", quote: "kept" });
+  assert.match(subdocText("annotations", doc), /kept/);
+});
+
+test("the divergence check compares a PDF's marks", () => {
+  const a = new Y.Doc();
+  const b = new Y.Doc();
+  applyMarksDiff(a, [], [highlight("h")], { accountId: "acc" }, null);
+  assert.notEqual(digestOf("annotations", a), digestOf("annotations", b));
+  Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+  assert.equal(digestOf("annotations", a), digestOf("annotations", b));
+});
+
+test("a notification about a live PDF resolves to its file", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-notify-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    assert.equal(setup.owner.service.resolveDoc(mine.docId)?.path, "Papers/paper.pdf");
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("live PDFs cannot be turned on against a server that would refuse their opens", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-old-server-", { "paper.pdf": PDF });
+  try {
+    const api = setup.owner.host.api!;
+    const real = api.version.bind(api);
+    api.version = async () => ({ ...(await real()), livePdfs: undefined });
+    const refused = await setup.owner.router.call("POST", ControlRoutes.pdfLive(setup.projectId));
+    assert.equal(refused.status, 409);
+    assert.equal(setup.owner.service.project(setup.projectId)?.pdfs.enabled, false);
+    api.version = real;
   } finally {
     await setup.cleanup();
   }

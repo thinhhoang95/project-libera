@@ -106,6 +106,7 @@ import {
   DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   MAX_TEXT_ANNOTATION_FONT_SIZE,
   MIN_TEXT_ANNOTATION_FONT_SIZE,
+  NoteContentTrust,
   TextAnnotationLayer,
   clamp,
   createAnnotationId,
@@ -1078,8 +1079,14 @@ export function PdfViewer({
         if (known) return known;
         const proxy = await pdfDocument.getPage(pageNumber);
         const content = await textContentCache.get(proxy);
-        const [, , width, height] = proxy.view;
-        const read: QuotePage = { pageNumber, items: content.items.filter((item) => "str" in item) as QuoteTextItem[], width, height };
+        const viewport = proxy.getViewport({ scale: 1 });
+        const read: QuotePage = {
+          pageNumber,
+          items: content.items.filter((item) => "str" in item) as QuoteTextItem[],
+          width: viewport.width,
+          height: viewport.height,
+          toViewport: (x, y) => viewport.convertToViewportPoint(x, y) as [number, number],
+        };
         pages.set(pageNumber, read);
         return read;
       };
@@ -1137,7 +1144,7 @@ export function PdfViewer({
         PDF_SCROLL_STATE_INTERVAL_MS,
       );
     },
-    [flushPendingScrollViewState],
+    [flushPendingScrollViewState, publishView],
   );
 
   useEffect(() => {
@@ -2343,6 +2350,7 @@ export function PdfViewer({
 
   /** Opens the comment box for the current text selection, whose passage stays marked while you write. */
   function startComment() {
+    if (!canAnnotate) return false;
     const selection = window.getSelection();
     const pages = selectionPageRects(selection, viewerRef.current, geometryOf);
     const scrollContainer = scrollContainerRef.current;
@@ -2496,7 +2504,7 @@ export function PdfViewer({
         snapshot={sharedSnapshot}
         staleMarks={sharedStore ? sharedStore.stale(blobHash).length : 0}
         onAcceptVersion={() => {
-          if (sharedStore && blobHash) sharedStore.acceptVersion(sharedStore.stale(blobHash).map((record) => ({ id: record.annotation.id })), blobHash);
+          if (sharedStore && blobHash) sharedStore.acceptVersion(sharedStore.stale(blobHash).map((record) => ({ id: record.annotation.id })), blobHash, { history: true });
         }}
         onFollow={(clientId) => setFollowingClientId((current) => (current === clientId ? null : clientId))}
         onDismissDeleted={() => setDeletedNote(null)}
@@ -2791,7 +2799,7 @@ export function PdfViewer({
               </button>
             ))}
             <span aria-hidden className="pdf-selection-menu-divider" />
-            <button type="button" className="pdf-selection-menu-action" aria-label="Add comment" title="Add comment (Ctrl/Cmd+Alt+M)" onClick={() => startComment()}>
+            <button type="button" className="pdf-selection-menu-action" aria-label="Add comment" title="Add comment (Ctrl/Cmd+Alt+M)" disabled={!canAnnotate} onClick={() => startComment()}>
               <MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />
             </button>
             <button type="button" className="pdf-selection-menu-action" aria-label="Copy selection" title="Copy" onClick={copySelection}>
@@ -2858,6 +2866,7 @@ export function PdfViewer({
         ) : null}
 
         {!loading && pdfDocument && textContentCache && layoutStore ? (
+          <NoteContentTrust.Provider value={sharedStore ? "shared" : "local"}>
           <div className="mx-auto flex w-max flex-col gap-5">
             {pageLayouts.map((layout) => (
               <PdfPageView
@@ -2913,6 +2922,7 @@ export function PdfViewer({
               />
             ))}
           </div>
+          </NoteContentTrust.Provider>
         ) : null}
       </div>
       </div>
@@ -3393,8 +3403,8 @@ function PdfPageContent({
       />
 
       {spaced || tool === "space" ? <PdfSpaceLayer
-        active={tool === "space" && !screenshotSnipping}
-        editable={(tool === "space" || tool === "select") && !screenshotSnipping}
+        active={tool === "space" && !screenshotSnipping && !readOnly}
+        editable={(tool === "space" || tool === "select") && !screenshotSnipping && !readOnly}
         geometry={geometry}
         pageNumber={pageNumber}
         pageSize={pageLayout}
@@ -3474,7 +3484,8 @@ function PdfPageContent({
         drawing={tool === "text"}
         editRequestId={noteToEdit}
         onEditRequestHandled={onEditRequestHandled}
-        interactive={(tool === "select" || tool === "text" || tool === "space") && !screenshotSnipping && !readOnly}
+        interactive={(tool === "select" || tool === "text" || tool === "space") && !screenshotSnipping}
+        readOnly={readOnly}
         newAnnotationFontSize={newAnnotationFontSize}
         pageSize={pageLayout}
         selectedAnnotationId={selectedAnnotationId}
@@ -3488,7 +3499,7 @@ function PdfPageContent({
 
       {presence ? (
         <PdfPresenceLayer
-          height={sheetHeight}
+          height={pageLayout.height}
           marks={presenceMarks}
           pageNumber={pageNumber}
           store={presence}

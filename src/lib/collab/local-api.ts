@@ -594,6 +594,8 @@ export type HostEvent =
       body: unknown;
       error?: { code: string; message: string };
     }
+  /** A live PDF's comments may read differently now: a comment's place arrived after its thread. */
+  | { t: "pdf-comments-changed"; docId: string }
   /** A queued suggestion decision was replayed (or refused) after reconnecting. */
   | { t: "suggestions-settled"; docId: string; commandId: string; status: Extract<SuggestionCommandStatus, { state: "settled" }> };
 

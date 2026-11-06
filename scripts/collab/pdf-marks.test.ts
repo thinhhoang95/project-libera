@@ -324,3 +324,66 @@ test("the keys stay in the annotations sub-document's named roots", () => {
   add(a.store, highlight("h"));
   assert.deepEqual([...a.doc.share.keys()], [PdfKeys.marks]);
 });
+
+test("redo leaves a field undo could not take back", () => {
+  const [a, b] = [client("a"), client("b")];
+  add(a.store, highlight("h"));
+  sync(a, b);
+  patch(a.store, "h", { color: "#bbbbbb" });
+  sync(a, b);
+  patch(b.store, "h", { color: "#fde047" });
+  sync(a, b);
+  a.store.undo();
+  a.store.redo();
+  sync(a, b);
+  assert.equal((byId(b.store, "h") as PdfHighlightAnnotation).color, "#fde047");
+});
+
+test("restoring a mark and keeping marks on a new version are steps of their own", () => {
+  const a = client("a");
+  add(a.store, note("n", "text"));
+  add(a.store, highlight("h", 1));
+  remove(a.store, "n");
+  a.store.restore("n");
+  a.store.undo();
+  assert.equal(byId(a.store, "n"), undefined, "undo takes back the restore, not an older step");
+  assert.ok(byId(a.store, "h"));
+  a.store.redo();
+  assert.ok(byId(a.store, "n"));
+
+  const hash = "b".repeat(64);
+  a.store.acceptVersion([{ id: "h" }], hash, { history: true });
+  assert.equal(a.store.record("h")?.sourceHash, hash);
+  a.store.undo();
+  assert.equal(a.store.record("h")?.sourceHash, undefined);
+  a.store.acceptVersion([{ id: "h" }], hash);
+  a.store.undo();
+  assert.equal(a.store.record("h")?.sourceHash, hash, "automatic relocation is not a step to undo");
+});
+
+test("a space covers what is in it, even after someone shrinks it", () => {
+  const [a, b] = [client("a"), client("b")];
+  add(a.store, space("s", 0.5, 0, 0.3));
+  sync(a, b);
+  patch(a.store, "s", { height: 0.05 });
+  add(b.store, { ...ink("low", "s", 2), points: [{ x: 0.1, y: 0.2 }, { x: 0.2, y: 0.25 }] });
+  sync(a, b);
+  assert.equal((byId(a.store, "s") as PdfSpaceAnnotation).height, 0.25);
+  assert.deepEqual(a.store.getSnapshot(), b.store.getSnapshot());
+});
+
+test("marks in a space past the page's limits stay at its cut", () => {
+  const clients = Array.from({ length: 3 }, (_, index) => client(`c${index}`));
+  // Each fits alone; together they pass the page's growth limit.
+  clients.forEach((item, index) => add(item.store, space(`s${index}`, 0.2 + index * 0.2, index, 0.9)));
+  add(clients[2].store, ink("in-last", "s2", 5));
+  for (const item of clients) for (const other of clients) if (item !== other) sync(item, other);
+  const shown = clients[0].store.getSnapshot();
+  const hidden = shown.find((mark) => mark.id === "s2");
+  if (!hidden) {
+    const stroke = shown.find((mark) => mark.id === "in-last") as PdfInkAnnotation;
+    assert.equal(stroke.space, undefined);
+    assert.equal(stroke.points[0].y, 0.61, "at the cut, not at the top of the page");
+  }
+  assert.deepEqual(clients[0].store.getSnapshot(), clients[2].store.getSnapshot());
+});

@@ -179,6 +179,7 @@ export class SharedProject {
   private entries = new Map<string, ManifestEntry>();
   private manifestHub: DocHub | null = null;
   private manifestRebuilt = false;
+  private manifestConnected = false;
   private manifestWasReady = false;
   private readonly docs = new Map<string, DocRuntime>();
   private readonly unsubscribe: Array<() => void> = [];
@@ -222,7 +223,8 @@ export class SharedProject {
       writeMs: ctx.timings.pdfWriteMs,
       role: () => this.info.role,
       canWriteDisk: () => !this.follower,
-      guard: () => this.diskGuard(true),
+      guard: (finalizing) => this.diskGuard(finalizing),
+      commentsChanged: (docId) => ctx.emit({ t: "pdf-comments-changed", docId }),
       accountId: () => ctx.accountId(),
       filesChanged: (paths) => this.filesChanged(paths),
       manifest: () => (this.manifestHub && !this.manifestHub.isClosed ? this.manifestHub.getDoc("manifest") : null),
@@ -258,6 +260,7 @@ export class SharedProject {
 
   set role(role: Role) {
     this.info.role = role;
+    this.pdfs.roleChanged();
   }
 
   private get canEdit(): boolean {
@@ -309,6 +312,10 @@ export class SharedProject {
       }),
       hub.onStatus(() => {
         if (!this.manifestWasReady && this.manifestReady()) this.scheduleManifest(30);
+        // PDFs first opened elsewhere while this host was away announced it to nobody here.
+        const { connected } = hub.getStatus();
+        if (connected && !this.manifestConnected) void this.pdfs.refreshServerDocuments();
+        this.manifestConnected = connected;
       }),
       hub.onMeta((meta) => this.metaChanged(meta.role, meta.readOnlyReason)),
     );
@@ -891,6 +898,8 @@ export class SharedProject {
       if (this.info.album) throw new ControlError(400, "bad-request", "Albums have no PDFs.");
       if (this.info.role !== "owner") throw new ControlError(403, "forbidden", "Only the notebook's owner can turn on live PDFs.");
       if (!this.manifestReady()) throw new ControlError(503, "offline", "The notebook's file list has not loaded yet.");
+      const version = await this.ctx.host.api?.version();
+      if (!version?.livePdfs) throw new ControlError(409, "update-required", "Update the collaboration server before turning on live PDFs.");
       await this.writeManifest((_files, doc) => doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true), { source: "typing" });
       this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
     });

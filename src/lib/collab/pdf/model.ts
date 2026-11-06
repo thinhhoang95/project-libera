@@ -12,7 +12,7 @@
 import * as Y from "yjs";
 import { diffText } from "../../../../electron/collab/notebooks/text-diff";
 import { PDF_MARK_TYPES, PDF_STYLE_KEYS, PdfKeys, PdfMarkFields, pdfMarkFieldViolation, type PdfDeletion } from "../protocol/pdf";
-import { reconcilePdfSpaces } from "../../pdf-space";
+import { PDF_SPACE_MAX_HEIGHT, reconcilePdfSpaces } from "../../pdf-space";
 import type { PdfAnnotation, PdfAnnotationPoint, PdfAnnotationRect, PdfSpaceAnnotation } from "../../types";
 
 type JsonRecord = Record<string, unknown>;
@@ -122,20 +122,41 @@ export function compareMarks(a: PdfAnnotation, b: PdfAnnotation): number {
  * is never written back, which would have clients correcting each other.
  */
 export function visibleMarks(records: Iterable<MarkRecord>): PdfAnnotation[] {
-  const live: PdfAnnotation[] = [];
-  const deletedSpaces = new Map<string, PdfSpaceAnnotation>();
   const all = [...records];
+  const liveSpaces = all.flatMap((record) => !record.deleted && record.annotation.type === "space" ? [record.annotation] : []).sort(compareMarks);
+  // Spaces beyond a page's limits are not shown, and neither may their marks
+  // drop to the top of the page: they sit at the cut, like a deleted space's.
+  const shown = new Set(reconcilePdfSpaces(liveSpaces).map((space) => space.id));
+  const gone = new Map<string, PdfSpaceAnnotation>();
   for (const record of all) {
-    if (record.deleted && record.annotation.type === "space") deletedSpaces.set(record.annotation.id, record.annotation);
+    const { annotation } = record;
+    if (annotation.type === "space" && (record.deleted || !shown.has(annotation.id))) gone.set(annotation.id, annotation);
   }
+  const live: PdfAnnotation[] = [];
+  const contentBottom = new Map<string, number>();
   for (const record of all) {
     if (record.deleted) continue;
     const { annotation } = record;
     const spaceId = "space" in annotation ? annotation.space : undefined;
-    const orphanedFrom = spaceId ? deletedSpaces.get(spaceId) : undefined;
+    const orphanedFrom = spaceId ? gone.get(spaceId) : undefined;
+    if (annotation.type === "space" && gone.has(annotation.id)) continue;
     live.push(orphanedFrom ? withoutDeletedSpace(annotation, orphanedFrom) : annotation);
+    if (spaceId && !orphanedFrom) contentBottom.set(spaceId, Math.max(contentBottom.get(spaceId) ?? 0, markBottom(annotation)));
   }
-  return reconcilePdfSpaces(live.sort(compareMarks));
+  // A space shrunk while someone drew lower in it still covers what is in it.
+  const fitted = live.map((annotation) => {
+    const bottom = annotation.type === "space" ? contentBottom.get(annotation.id) : undefined;
+    return annotation.type === "space" && bottom !== undefined && bottom > annotation.height ? { ...annotation, height: Math.min(bottom, PDF_SPACE_MAX_HEIGHT) } : annotation;
+  });
+  return reconcilePdfSpaces(fitted.sort(compareMarks));
+}
+
+/** How far down a mark in a space reaches, from the top of the space. */
+function markBottom(annotation: PdfAnnotation): number {
+  if (annotation.type === "ink") return Math.max(...annotation.points.map((point) => point.y));
+  if (annotation.type === "shape") return Math.max(annotation.from.y, annotation.to.y);
+  if (annotation.type === "text") return annotation.rect.y + annotation.rect.height;
+  return 0;
 }
 
 function setIfChanged(mark: MarkMap, key: string, value: unknown) {
@@ -179,7 +200,7 @@ export interface MarkChange {
 }
 
 /** The fields a change touched. A field that is present and undefined was unset. */
-export type MarkFieldValues = Partial<Record<"geometry" | "style" | "space" | "text" | "deleted", unknown>>;
+export type MarkFieldValues = Partial<Record<"geometry" | "style" | "space" | "text" | "deleted" | "sourceHash", unknown>>;
 
 function patchMark(mark: MarkMap, next: PdfAnnotation, previous: PdfAnnotation, context: MarkContext): MarkChange | null {
   const before: MarkFieldValues = {};
@@ -261,8 +282,8 @@ export function applyMarksDiff(doc: Y.Doc, previous: readonly PdfAnnotation[], n
  * your own work, and a mark never disappears because of undo: creating is
  * undone by deleting, which stays recoverable.
  */
-export function applyMarkValues(doc: Y.Doc, id: string, values: MarkFieldValues, expected: MarkFieldValues, context: MarkContext, origin: unknown): boolean {
-  let applied = false;
+export function applyMarkValues(doc: Y.Doc, id: string, values: MarkFieldValues, expected: MarkFieldValues, context: MarkContext, origin: unknown): Array<keyof MarkFieldValues> {
+  const applied: Array<keyof MarkFieldValues> = [];
   doc.transact(() => {
     const mark = marksOf(doc).get(id);
     if (!mark) return;
@@ -271,14 +292,14 @@ export function applyMarkValues(doc: Y.Doc, id: string, values: MarkFieldValues,
         const text = textOf(mark);
         if (!text || text.toString() !== expected.text) continue;
         applyText(text, String(value ?? ""));
-        applied = true;
+        applied.push(field);
         continue;
       }
       if (!same(mark.get(field), expected[field])) continue;
       setIfChanged(mark, field, value);
-      applied = true;
+      applied.push(field);
     }
-    if (applied) {
+    if (applied.length) {
       mark.set(PdfMarkFields.updatedAt, new Date().toISOString());
       mark.set(PdfMarkFields.updatedBy, context.accountId);
     }

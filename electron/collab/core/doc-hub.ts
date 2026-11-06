@@ -975,7 +975,8 @@ export function subdocText(subdoc: Subdoc, doc: Y.Doc): string {
     case "content":
       return doc.getText(ContentKeys.source).toString();
     case "annotations":
-      return doc.getMap(PdfKeys.marks).size > 0 ? maps(Object.values(PdfKeys)) : maps(Object.values(AnnotationKeys));
+      // A PDF with comments and no marks is still a PDF: choose by what is populated.
+      return Object.values(PdfKeys).some((key) => doc.getMap(key).size > 0) ? maps(Object.values(PdfKeys)) : maps(Object.values(AnnotationKeys));
     case "meta":
       return maps(Object.values(MetaKeys));
     case "manifest":

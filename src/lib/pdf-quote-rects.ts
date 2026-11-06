@@ -25,18 +25,26 @@ function occurrences(text: string, quote: string): Array<{ start: number; end: n
   return Array.from(text.matchAll(pattern), (match) => ({ start: match.index, end: match.index + match[0].length }));
 }
 
-function rectsOf(spans: ReturnType<typeof flatten>["spans"], start: number, end: number, pageWidth: number, pageHeight: number): PdfAnnotationRect[] {
+function rectsOf(spans: ReturnType<typeof flatten>["spans"], start: number, end: number, page: QuotePage): PdfAnnotationRect[] {
   const rects: PdfAnnotationRect[] = [];
   for (const span of spans) {
     const from = Math.max(start, span.start);
     const to = Math.min(end, span.end);
     if (from >= to || span.end === span.start) continue;
     const { item } = span;
+    const [a, b, c, d, e, f] = item.transform;
+    // Text can run in any direction, so the box is built along the item's own axes.
+    const along = Math.hypot(a, b) || 1;
+    const up = Math.hypot(c, d) || 1;
     const perChar = item.width / (span.end - span.start);
-    const x = item.transform[4] + (from - span.start) * perChar;
-    const baseline = item.transform[5];
-    const height = item.height || Math.abs(item.transform[3]);
-    rects.push({ x: x / pageWidth, y: (pageHeight - baseline - height) / pageHeight, width: ((to - from) * perChar) / pageWidth, height: height / pageHeight });
+    const height = item.height || up;
+    const point = (distance: number, rise: number): [number, number] => page.toViewport(e + (a / along) * distance + (c / up) * rise, f + (b / along) * distance + (d / up) * rise);
+    const corners = [point((from - span.start) * perChar, 0), point((to - span.start) * perChar, 0), point((from - span.start) * perChar, height), point((to - span.start) * perChar, height)];
+    const xs = corners.map(([x]) => x);
+    const ys = corners.map(([, y]) => y);
+    const left = Math.min(...xs);
+    const top = Math.min(...ys);
+    rects.push({ x: left / page.width, y: top / page.height, width: (Math.max(...xs) - left) / page.width, height: (Math.max(...ys) - top) / page.height });
   }
   return rects;
 }
@@ -44,8 +52,11 @@ function rectsOf(spans: ReturnType<typeof flatten>["spans"], start: number, end:
 export interface QuotePage {
   pageNumber: number;
   items: readonly QuoteTextItem[];
+  /** Size of the page as displayed, which rotation and the crop box decide. */
   width: number;
   height: number;
+  /** From PDF user space to the displayed page. */
+  toViewport(x: number, y: number): [number, number];
 }
 
 /**
@@ -61,6 +72,6 @@ export function relocateQuote(quote: string, pages: readonly QuotePage[]): { pag
   }
   if (found.length !== 1) return null;
   const [{ page, spans, start, end }] = found;
-  const rects = rectsOf(spans, start, end, page.width, page.height);
+  const rects = rectsOf(spans, start, end, page);
   return rects.length ? { pageNumber: page.pageNumber, rects } : null;
 }

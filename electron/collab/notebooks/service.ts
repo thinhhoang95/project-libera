@@ -47,7 +47,7 @@ import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
 import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord } from "./layout";
-import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
+import { isPdfDocId, PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
   deleteMarker,
@@ -850,6 +850,20 @@ export class NotebookServiceImpl implements NotebookService {
   resolveDoc(docId: string): ResolvedDoc | null {
     if (typeof docId !== "string" || !docId) return null;
     for (const handle of this.projects.values()) {
+      // A notification about a live PDF opens the PDF.
+      const pdf = handle.runtime?.pdfs.fileOf(docId);
+      if (pdf) {
+        return {
+          docId,
+          projectId: handle.projectId,
+          fileId: pdf.fileId,
+          path: `${handle.notebook}/${pdf.path}`,
+          kind: "text",
+          role: handle.role,
+          readOnly: handle.revoked || handle.revoking === true || !roleAtLeast(handle.role, "commenter"),
+          ...(handle.revoked ? { revoked: true } : {}),
+        };
+      }
       for (const doc of handle.index.values()) {
         if (doc.docId !== docId) continue;
         return {
@@ -920,8 +934,13 @@ export class NotebookServiceImpl implements NotebookService {
 
   /** Someone opened a PDF for the first time, so it may gain marks this host should follow. */
   private pdfDocumentCreated(event: CollabHostEvent): void {
-    if (event.source !== "sync" || event.event.type !== "server-event" || event.event.event.kind !== EventKind.PdfDocumentCreated) return;
-    void this.projects.get(event.event.event.id)?.runtime?.pdfs.refreshServerDocuments();
+    if (event.source !== "sync" || event.event.type !== "server-event") return;
+    const { id, kind } = event.event.event;
+    if (kind === EventKind.PdfDocumentCreated) void this.projects.get(id)?.runtime?.pdfs.refreshServerDocuments();
+    // Comments live on the server, so nothing in the document says they changed.
+    if ((kind === EventKind.ThreadChanged || kind === EventKind.ThreadDeleted) && isPdfDocId(id)) {
+      for (const handle of this.projects.values()) handle.runtime?.pdfs.commentsChanged(id);
+    }
   }
 
   /**
@@ -1334,6 +1353,8 @@ export class NotebookServiceImpl implements NotebookService {
       if (!plan.projectId) {
         const version = await api.version();
         if (!version.projectCreationKeys) throw new ControlError(409, "update-required", "Update the collaboration server before starting a new share; durable project creation keys are required.");
+        // An older server refuses the opens live PDFs need, so it stays off until the server is updated.
+        if (!version.livePdfs) target.pdfLive = false;
         await checkWriteGuard(guard);
         const project = await api.createProject({ name, kind: target.kind, creationId: operationId });
         if (project.creationId !== operationId) throw new ControlError(409, "update-required", "The server did not confirm the saved project creation key.");

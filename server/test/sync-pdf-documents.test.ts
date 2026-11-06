@@ -231,6 +231,27 @@ describe("shared PDF documents", () => {
     assert.equal(decided.body.status, "approved");
   });
 
+  test("the server says it supports live PDFs, and its digest covers their marks", async () => {
+    const version = await json<{ livePdfs?: boolean }>(env.server.url, "/v1/version");
+    assert.equal(version.body.livePdfs, true);
+    const { client, docId } = await openPdf();
+    const before = await json<{ contentSha256: string }>(env.server.url, `/v1/documents/${docId}/digest`, { token: env.owner.token });
+    await client.acked(client.edit(docId, annotations, mark("digested", env.owner.id)));
+    const after = await json<{ contentSha256: string }>(env.server.url, `/v1/documents/${docId}/digest`, { token: env.owner.token });
+    assert.notEqual(after.body.contentSha256, before.body.contentSha256);
+  });
+
+  test("only the owner turns on live PDFs, and it stays on", async () => {
+    const editor = await env.member("editor");
+    const owner = await env.connect();
+    await owner.open(env.project.manifestDocId);
+    const member = await env.connect(editor);
+    await member.open(env.project.manifestDocId);
+    assert.equal((await member.rejected(member.edit(env.project.manifestDocId, "manifest", (doc) => doc.getMap(ManifestKeys.settings).set("pdfLive", true)))).reason, "invalid-update");
+    await owner.acked(owner.edit(env.project.manifestDocId, "manifest", (doc) => doc.getMap(ManifestKeys.settings).set("pdfLive", true)));
+    assert.equal((await owner.rejected(owner.edit(env.project.manifestDocId, "manifest", (doc) => doc.getMap(ManifestKeys.settings).set("pdfLive", false)))).reason, "invalid-update");
+  });
+
   test("awareness is rate limited without closing the socket", async () => {
     const { client, docId } = await openPdf();
     const { encodeAwarenessUpdate, Awareness } = await import("y-protocols/awareness");

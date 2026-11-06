@@ -4,7 +4,7 @@
 // work. It is plain TypeScript; pdf-viewer.tsx adapts it to React.
 
 import type * as Y from "yjs";
-import { applyMarkValues, applyMarksDiff, markVersion, marksOf, readMark, restoreMark, visibleMarks, writeDeletedText, type MarkChange, type MarkContext, type MarkRecord } from "./model";
+import { applyMarkValues, applyMarksDiff, markVersion, marksOf, readMark, restoreMark, visibleMarks, writeDeletedText, type MarkChange, type MarkContext, type MarkFieldValues, type MarkRecord } from "./model";
 import type { PdfAnnotation } from "@/lib/types";
 
 /** Origin of this window's changes to the marks. */
@@ -145,9 +145,23 @@ export class SharedPdfStore {
     return [...this.records.values()].filter((record) => !record.deleted && record.sourceHash && record.sourceHash !== sourceHash);
   }
 
-  /** Records that marks fit the PDF at `sourceHash`, moving those that say where to. */
-  acceptVersion(moves: ReadonlyArray<{ id: string; geometry?: Record<string, unknown> }>, sourceHash: string) {
-    if (moves.length) markVersion(this.doc, moves, sourceHash, this.context, this.origin);
+  /**
+   * Records that marks fit the PDF at `sourceHash`, moving those that say
+   * where to. `history` is for the person's own "Keep them here"; automatic
+   * relocation is not a step of theirs to undo.
+   */
+  acceptVersion(moves: ReadonlyArray<{ id: string; geometry?: Record<string, unknown> }>, sourceHash: string, options: { history?: boolean } = {}) {
+    if (!moves.length) return;
+    const changes: MarkChange[] = moves.map(({ id }) => ({ id, before: { sourceHash: this.records.get(id)?.sourceHash }, after: { sourceHash } }));
+    markVersion(this.doc, moves, sourceHash, this.context, this.origin);
+    if (options.history) this.addStep(changes);
+  }
+
+  /** A step of its own, for changes that do not come through commit. */
+  private addStep(changes: MarkChange[]) {
+    this.undoStack = [...this.undoStack, { time: Date.now(), changes }].slice(-MAX_UNDO_STEPS);
+    this.redoStack = [];
+    this.publish({ local: true, removed: [] });
   }
 
   /** Deleted marks, newest deletion first, for Restore. */
@@ -195,13 +209,18 @@ export class SharedPdfStore {
   private step(from: HistoryEntry[], to: HistoryEntry[], side: "before" | "after", expected: "before" | "after"): boolean {
     const entry = from.pop();
     if (!entry) return false;
-    to.push(entry);
-    let applied = false;
+    // Only what this press changed can be pressed back, so a field it left
+    // alone because someone else had changed it stays theirs on redo.
+    const done: MarkChange[] = [];
     for (const change of [...entry.changes].reverse()) {
-      if (applyMarkValues(this.doc, change.id, change[side], change[expected], this.context, this.origin)) applied = true;
+      const fields = applyMarkValues(this.doc, change.id, change[side], change[expected], this.context, this.origin);
+      if (!fields.length) continue;
+      const pick = (values: MarkFieldValues) => Object.fromEntries(fields.map((field) => [field, values[field]])) as MarkFieldValues;
+      done.unshift({ id: change.id, before: pick(change.before), after: pick(change.after) });
     }
+    if (done.length) to.push({ ...entry, changes: done });
     this.publish({ local: true, removed: [] });
-    return applied;
+    return done.length > 0;
   }
 
   undo(): boolean { return this.step(this.undoStack, this.redoStack, "before", "after"); }
@@ -216,7 +235,10 @@ export class SharedPdfStore {
   }
 
   restore(id: string): boolean {
-    return restoreMark(this.doc, id, this.context, this.origin);
+    const deleted = this.records.get(id)?.deleted;
+    if (!restoreMark(this.doc, id, this.context, this.origin)) return false;
+    this.addStep([{ id, before: { deleted }, after: { deleted: undefined } }]);
+    return true;
   }
 
   /** Keeps what was typed into a note someone deleted meanwhile. */
