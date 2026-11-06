@@ -3,6 +3,9 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import type { PdfCommentAnchor, PdfCommentsPayload, PdfCommentThread } from "@/lib/types";
+import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
+import { EventKind } from "@/lib/collab/protocol/messages";
+import { isPdfDocId } from "@/lib/collab/protocol/pdf";
 
 // The review comments of open PDFs, shared by the viewer (marks on the page,
 // Add comment) and the Comments panel (cards, replies). One entry per path;
@@ -136,12 +139,21 @@ export function usePdfComments(path: string | null | undefined): PdfCommentsStat
   useEffect(() => {
     if (!key) return;
     if (!pdfCommentsState(key).loaded) void loadPdfComments(key);
-    if (typeof BroadcastChannel === "undefined") return;
+    // Comments on a live PDF change on the server: someone's reply, or a queued one landing.
+    const stopEvents = subscribeHostEvents((event) => {
+      const thread = event.t === "server-event" && (event.kind === EventKind.ThreadChanged || event.kind === EventKind.ThreadDeleted) && isPdfDocId(event.id);
+      const settled = event.t === "command-settled" && /^(thread|message)\./.test(event.kind);
+      if (thread || settled) void refreshPdfComments(key);
+    });
+    if (typeof BroadcastChannel === "undefined") return stopEvents;
     const channel = new BroadcastChannel(`${CHANNEL}:${key}`);
     channel.addEventListener("message", (event: MessageEvent<{ sender?: string; path?: string; threads?: unknown }>) => {
       if (event.data?.sender !== windowId && event.data?.path === key && Array.isArray(event.data.threads)) adopt(key, event.data.threads);
     });
-    return () => channel.close();
+    return () => {
+      stopEvents();
+      channel.close();
+    };
   }, [key]);
   return state;
 }

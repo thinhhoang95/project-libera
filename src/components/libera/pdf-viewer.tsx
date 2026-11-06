@@ -36,6 +36,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import {
+  type PointerEvent as ReactPointerEvent,
   type UIEvent as ReactUIEvent,
   memo,
   useCallback,
@@ -88,6 +89,8 @@ import { annotationAnchorRect, rememberFileAnnotations, scrollTopCenteringRect }
 import { useAnnotationWriter } from "./use-annotation-writer";
 import { useCanAnnotate, useSharedPdf, useSharedPdfSnapshot } from "@/lib/collab/pdf/react";
 import { PdfCollabChrome } from "./collab/pdf-collab-chrome";
+import { PdfPresenceLayer, PdfPresenceRail } from "./collab/pdf-presence";
+import { pdfPresenceFor, type PdfPresenceStore } from "@/lib/collab/pdf/presence";
 import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
@@ -688,6 +691,12 @@ export function PdfViewer({
   });
   const sharedHistory = useSyncExternalStore(sharedStore?.subscribe ?? noHistorySubscribe, sharedStore?.getHistoryState ?? noHistoryState, noHistoryState);
   const [deletedNote, setDeletedNote] = useState<{ id: string; by: string } | null>(null);
+  const presence = shared.kind === "shared" ? pdfPresenceFor(shared.session.replica.awareness) : null;
+  const presenceRef = useRef(presence);
+  useLayoutEffect(() => { presenceRef.current = presence; });
+  useEffect(() => () => presence?.leave(), [presence]);
+  const [followingClientId, setFollowingClientId] = useState<number | null>(null);
+  const drawingPresenceIdRef = useRef("");
   const viewerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pendingScrollRestoreRef = useRef<PdfScrollPosition | null>({
@@ -1000,11 +1009,78 @@ export function PdfViewer({
     pendingScrollViewStateRef.current = null;
   }, [updateCurrentPage, updateViewState]);
 
+  const publishView = useCallback(() => {
+    const scroller = scrollContainerRef.current;
+    const store = presenceRef.current;
+    if (!scroller || !store) return;
+    const anchor = readPdfZoomAnchor(scroller, pageElementRefs.current);
+    const page = anchor && pageElementRefs.current.get(anchor.pageNumber);
+    if (!anchor || !page) return;
+    const bounds = page.getBoundingClientRect();
+    const view = scroller.getBoundingClientRect();
+    if (bounds.height <= 0) return;
+    store.setView({ page: anchor.pageNumber, top: (view.top - bounds.top) / bounds.height, bottom: (view.bottom - bounds.top) / bounds.height });
+  }, []);
+
+  const publishPointer = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const store = presenceRef.current;
+    if (!store) return;
+    const page = (event.target as Element).closest?.<HTMLElement>("[data-pdf-page-content]");
+    const pageNumber = Number(page?.dataset.pdfPageContent);
+    if (!page || !pageNumber) {
+      store.setPointer(null);
+      return;
+    }
+    const bounds = page.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    store.setPointer({ page: pageNumber, x: (event.clientX - bounds.left) / bounds.width, y: (event.clientY - bounds.top) / bounds.height });
+  }, []);
+
+  const publishDrawing = useCallback((pageNumber: number, draft: PdfDrawingDraft | null) => {
+    const store = presenceRef.current;
+    if (!store) return;
+    if (!draft) {
+      if (drawingPresenceIdRef.current) store.setDraft(null);
+      drawingPresenceIdRef.current = "";
+      return;
+    }
+    drawingPresenceIdRef.current ||= createAnnotationId();
+    const common = { id: drawingPresenceIdRef.current, page: pageNumber, color: draft.color, strokeWidth: draft.strokeWidth };
+    store.setDraft(draft.type === "ink"
+      ? { ...common, kind: "ink", points: draft.points }
+      : { ...common, kind: "shape", shape: draft.shape, points: [draft.from, draft.to] });
+  }, []);
+
+  useEffect(() => { publishView(); }, [pageLayouts, presence, publishView, zoom]);
+  useEffect(() => { presence?.setSelection(activeSelectedAnnotationId ? [activeSelectedAnnotationId] : []); }, [activeSelectedAnnotationId, presence]);
+
+  // Moving by hand ends following; only a scroll this viewer made keeps it.
+  const stopFollowing = useCallback(() => setFollowingClientId(null), []);
+  useEffect(() => {
+    if (!presence || followingClientId === null) return;
+    const follow = () => {
+      const scroller = scrollContainerRef.current;
+      const target = presence.getSnapshot().users.find((user) => user.clientId === followingClientId);
+      if (!target) {
+        setFollowingClientId(null);
+        return;
+      }
+      const page = target.presence && pageElementRefs.current.get(target.presence.page);
+      if (!scroller || !target.presence || !page) return;
+      const bounds = page.getBoundingClientRect();
+      const view = scroller.getBoundingClientRect();
+      scroller.scrollTop += bounds.top + target.presence.top * bounds.height - view.top;
+    };
+    follow();
+    return presence.subscribe(follow);
+  }, [followingClientId, presence]);
+
   const handleScroll = useCallback(
     (event: ReactUIEvent<HTMLDivElement>) => {
       // Loading temporarily collapses the scroll area. Do not save that zero
       // over the position we are about to restore.
       if (pendingScrollRestoreRef.current) return;
+      publishView();
       pendingScrollViewStateRef.current = {
         scrollLeft: event.currentTarget.scrollLeft,
         scrollTop: event.currentTarget.scrollTop,
@@ -2371,8 +2447,11 @@ export function PdfViewer({
       <PdfCollabChrome
         deletedMark={deletedNote}
         fileName={filePath.split("/").pop() ?? filePath}
+        followingClientId={followingClientId}
+        presence={presence}
         shared={shared}
         snapshot={sharedSnapshot}
+        onFollow={(clientId) => setFollowingClientId((current) => (current === clientId ? null : clientId))}
         onDismissDeleted={() => setDeletedNote(null)}
         onRestoreDeleted={() => {
           if (deletedNote) sharedStore?.restore(deletedNote.id);
@@ -2600,13 +2679,28 @@ export function PdfViewer({
         </div>
       ) : null}
 
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      {presence ? (
+        <PdfPresenceRail
+          followingClientId={followingClientId}
+          pageCount={pageLayouts.length}
+          store={presence}
+          onFollow={(clientId) => setFollowingClientId((current) => (current === clientId ? null : clientId))}
+        />
+      ) : null}
       <div
         ref={scrollContainerRef}
         className="relative min-h-0 flex-1 overflow-auto px-4 py-6"
         // Zoom anchoring is handled above; native anchoring would adjust twice.
         style={{ overflowAnchor: "none" }}
         onScroll={handleScroll}
-        onPointerDown={handleScrollPointerDown}
+        onWheel={presence ? stopFollowing : undefined}
+        onPointerMove={presence ? publishPointer : undefined}
+        onPointerLeave={presence ? () => presence.setPointer(null) : undefined}
+        onPointerDown={(event) => {
+          if (presence) stopFollowing();
+          handleScrollPointerDown(event);
+        }}
         onPointerUp={handleScrollPointerUp}
         onDragStart={handleDragStart}
       >
@@ -2767,16 +2861,22 @@ export function PdfViewer({
                 onSelectAnnotation={selectAnnotation}
                 onSelectComment={selectComment}
                 onUpdateAnnotation={updateAnnotation}
+                presence={presence}
+                onDrawingDraft={presence ? publishDrawing : undefined}
               />
             ))}
           </div>
         ) : null}
+      </div>
       </div>
     </div>
   );
 }
 
 type PdfPageContentProps = {
+  /** Collaborators on this PDF, when it is live. */
+  presence?: PdfPresenceStore | null;
+  onDrawingDraft?: (pageNumber: number, draft: PdfDrawingDraft | null) => void;
   annotations: PdfAnnotation[];
   /** Where things are on this page with its spaces. */
   geometry: PdfPageGeometry;
@@ -2876,6 +2976,8 @@ function PdfPageContent({
   selectedAnnotationId,
   screenshotSnipping,
   readOnly,
+  presence,
+  onDrawingDraft,
   tool,
   zoom,
   onAddDrawing,
@@ -3083,6 +3185,8 @@ function PdfPageContent({
       spaces: pageSpaces,
     };
   }, [annotations, geometry]);
+  const presenceMarks = useMemo<PdfAnnotation[]>(() => [...highlights, ...drawings, ...textAnnotations], [drawings, highlights, textAnnotations]);
+  const drawingDraftChange = useCallback((draft: PdfDrawingDraft | null) => onDrawingDraft?.(pageNumber, draft), [onDrawingDraft, pageNumber]);
   const surfaceCommentMarks = useMemo(
     () => spaced
       ? commentMarks.map((mark) => ({ ...mark, rects: mark.rects.map((rect) => textRectToSurface(geometry, rect)) }))
@@ -3306,6 +3410,7 @@ function PdfPageContent({
         annotations={drawings}
         markups={highlights}
         mode={readOnly ? "idle" : drawingMode}
+        onDraftChange={drawingDraftChange}
         pageSize={pageLayout}
         selectedAnnotationId={selectedAnnotationId}
         style={drawingStyle}
@@ -3333,6 +3438,17 @@ function PdfPageContent({
         onSelectAnnotation={onSelectAnnotation}
         onUpdateAnnotation={updateAnnotation}
       />
+
+      {presence ? (
+        <PdfPresenceLayer
+          height={sheetHeight}
+          marks={presenceMarks}
+          pageNumber={pageNumber}
+          store={presence}
+          width={pageLayout.width}
+          zoom={zoom}
+        />
+      ) : null}
 
       <ScreenshotSnipLayer
         active={screenshotSnipping}

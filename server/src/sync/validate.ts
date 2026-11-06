@@ -40,7 +40,7 @@ const ANNOTATION_MAPS: readonly string[] = [AnnotationKeys.anchors, AnnotationKe
 
 /** Root types that must exist before an update is applied, so `changed` refers to them. */
 export const PREDEFINED_MAPS: Record<string, readonly string[]> = {
-  annotations: [...ANNOTATION_MAPS, PdfKeys.marks, PdfKeys.imports],
+  annotations: [...ANNOTATION_MAPS, PdfKeys.marks, PdfKeys.imports, PdfKeys.anchors],
   manifest: [ManifestKeys.files, ManifestKeys.settings, ManifestKeys.photos],
 };
 
@@ -99,6 +99,11 @@ export function annotationViolation(
       if (problem) return problem;
       continue;
     }
+    if (kind === "pdf" && root === PdfKeys.anchors) {
+      const problem = pdfAnchorViolation(before, type, keys, accountId);
+      if (problem) return problem;
+      continue;
+    }
     const tracked = root !== null && ANNOTATION_MAPS.includes(root);
     if (!tracked) {
       // Editors may keep other data in annotations; commenters only touch
@@ -151,6 +156,22 @@ function pdfImportViolation(type: Y.AbstractType<any>, keys: Set<string | null>,
     const record = (type as Y.Map<unknown>).get(key);
     if (record === undefined) return "Import records are never removed.";
     if (!isPlainJsonRecord(record) || record.by !== accountId || typeof record.at !== "string") return `${PdfKeys.imports}/${key} must say that you imported it.`;
+  }
+  return null;
+}
+
+/** A comment's place on the page: written once, by the person commenting. */
+function pdfAnchorViolation(before: Y.Doc, type: Y.AbstractType<any>, keys: Set<string | null>, accountId: string): string | null {
+  if (type._item !== null) return `${PdfKeys.anchors} records must be plain JSON values.`;
+  const previous = before.getMap<unknown>(PdfKeys.anchors);
+  for (const key of keys) {
+    if (key === null) return `${PdfKeys.anchors} must be a map.`;
+    const record = (type as Y.Map<unknown>).get(key);
+    if (!isPlainRecord(record)) return `${PdfKeys.anchors}/${key} must be a plain JSON object.`;
+    if (previous.has(key) && !sameJson(previous.get(key), record)) return `${PdfKeys.anchors}/${key} cannot change.`;
+    if (record.createdBy !== accountId) return `${PdfKeys.anchors}/${key} must be created by you.`;
+    if (!Array.isArray(record.segments) || typeof record.quote !== "string") return `${PdfKeys.anchors}/${key} needs its segments and quote.`;
+    if (JSON.stringify(record).length > 64 * 1024) return `${PdfKeys.anchors}/${key} is too large.`;
   }
   return null;
 }

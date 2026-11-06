@@ -13,6 +13,7 @@
 import type { Command, CreateMessageRequest, ThreadMessage } from "./protocol/api";
 import type { AlbumOriginalResponse, InviteRequest, LocalAlbum, ShareAlbumRequest, ShareAlbumResult, UpdateAlbumRequest, LocalProject, AnchoredThreadsResponse, EnqueueCommandResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, ResolvedPdf, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
 import { ControlRoutes } from "./local-api";
+import type { PdfCommentThread } from "@/lib/types";
 
 export interface HostClientConfig {
   url: string;
@@ -128,6 +129,15 @@ export function getHostStatus(config?: HostClientConfig | null): Promise<HostSta
 }
 
 /** The shared document for a Libera path ("Notebook/sub/file.md"), or null when the file is not shared. */
+/** A live PDF's comments, in the shape the panel uses. */
+export function listLivePdfComments(docId: string, config?: HostClientConfig | null): Promise<PdfCommentThread[]> {
+  return hostJson<PdfCommentThread[]>(ControlRoutes.pdfComments(docId), { config });
+}
+
+export function changeLivePdfComments(docId: string, change: unknown, config?: HostClientConfig | null): Promise<PdfCommentThread[]> {
+  return hostJson<PdfCommentThread[]>(ControlRoutes.pdfComments(docId), { method: "POST", body: change, config });
+}
+
 /** A PDF's live document; null when its notebook keeps marks in the sidecar. */
 export async function resolveSharedPdf(liberaPath: string, config?: HostClientConfig | null): Promise<ResolvedPdf | null> {
   const query = new URLSearchParams({ path: liberaPath }).toString();

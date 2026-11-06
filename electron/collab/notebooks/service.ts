@@ -47,6 +47,7 @@ import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
 import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord } from "./layout";
+import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
   deleteMarker,
@@ -115,6 +116,7 @@ export interface ShareResult {
 
 /** What a share starts from: a notebook folder, or a gallery folder shared as an album. */
 interface ShareTarget {
+  pdfLive?: boolean;
   kind: ProjectKind;
   /** Folder name (a notebook, or an album's folder in the gallery). */
   notebook: string;
@@ -1160,7 +1162,7 @@ export class NotebookServiceImpl implements NotebookService {
 
   share(request: ShareNotebookRequest): Promise<ShareResult> {
     const notebook = typeof request?.notebook === "string" ? request.notebook.trim() : "";
-    return this.locked(`notebook:${notebook.toLowerCase()}`, async () => this.doShare({ kind: "notebook", notebook, root: await this.shareableRoot(notebook) }, request.name));
+    return this.locked(`notebook:${notebook.toLowerCase()}`, async () => this.doShare({ kind: "notebook", notebook, root: await this.shareableRoot(notebook), ...(request.pdfLive === true ? { pdfLive: true } : {}) }, request.name));
   }
 
   /** Shares a gallery folder as an album (Libera has moved the album's photos into it). */
@@ -1404,6 +1406,7 @@ export class NotebookServiceImpl implements NotebookService {
               };
               map.set(file.fileId, entryRecord(entry));
             }
+            if (target.pdfLive) doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true);
             if (album) {
               const settings = doc.getMap<unknown>(ManifestKeys.settings);
               if (album.direct) settings.set(AlbumSettingKeys.direct, true);

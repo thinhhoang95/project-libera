@@ -6,6 +6,7 @@ import { registerAccountRoutes } from "./routes-account";
 import { registerDiagnosticsRoutes } from "./routes-diagnostics";
 import { registerDocRoutes, type DocRouteOptions } from "./routes-docs";
 import { registerProjectRoutes } from "./routes-projects";
+import { registerPdfRoutes } from "./routes-pdf";
 import { registerReviewRoutes } from "./routes-reviews";
 import { registerRevisionRoutes } from "./routes-revisions";
 import { registerThreadRoutes } from "./routes-threads";
@@ -37,6 +38,7 @@ export async function startControlApp(options: ControlAppOptions): Promise<Contr
   registerRevisionRoutes(server.routes, runtime);
   registerSuggestionRoutes(server.routes, runtime);
   registerReviewRoutes(server.routes, runtime);
+  registerPdfRoutes(server.routes, runtime);
   // Core routes first; shared-notebook routes (share, join, files,
   // reconciliations) come from the current NotebookService.
   server.mount(runtime.notebookRoutes);

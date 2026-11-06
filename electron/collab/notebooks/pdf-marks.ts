@@ -47,7 +47,7 @@ export interface PdfRuntimeContext {
   /** Reads the notebook's manifest document. */
   manifest(): Y.Doc | null;
   /** Comment threads of a sidecar, to become server threads. */
-  importComments?(docId: string, comments: unknown[]): Promise<void>;
+  importComments?(docId: string, comments: unknown[]): void;
   /** The server's comment threads, for the sidecar copy. */
   listComments?(docId: string): Promise<unknown[] | null>;
 }
@@ -232,7 +232,7 @@ export class PdfMarksRuntime {
           for (const batch of importBatches(doc.hub.getDoc("annotations"), annotations)) {
             doc.hub.applyLocalChange("annotations", (ydoc) => createMarks(ydoc, batch, context), IMPORT);
           }
-          if (comments.length) await this.ctx.importComments?.(doc.docId, comments);
+          if (comments.length) this.ctx.importComments?.(doc.docId, comments);
           doc.hub.applyLocalChange("annotations", (ydoc) => ydoc.getMap<unknown>(PdfKeys.imports).set(hash, { by: accountId, at: new Date().toISOString() }), IMPORT);
         }
       }

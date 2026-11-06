@@ -5,28 +5,26 @@
 // changed access and a note someone deleted while it was open here.
 
 import { Lock, RotateCcw, X } from "lucide-react";
-import type { ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { AccessChangedBanner, CollabStatusPill, PresenceAvatars, RejectedEditBanner } from "@/components/libera/collab";
 import { downloadText, sharedBannerKind } from "@/lib/collab/bindings/react-shared-chrome";
 import type { ReplicaSnapshot } from "@/lib/collab/client/replica";
+import type { PdfPresenceSnapshot, PdfPresenceStore } from "@/lib/collab/pdf/presence";
 import type { SharedPdfState } from "@/lib/collab/pdf/react";
 import type { SyncStatus } from "@/lib/collab/protocol/local";
 
 const LOADING_STATUS: SyncStatus = { state: "loading", pending: 0, oldestPendingAgeMs: 0, lastAckAt: null, connected: false };
 
-export interface PdfCollaborator {
-  clientId: number;
-  name: string;
-  color: string;
-  /** Where they are, for the avatar's tooltip. */
-  section?: string;
-}
+const NO_PRESENCE: PdfPresenceSnapshot = { users: [], ghosts: [] };
+const noSubscribe = () => () => {};
+const noPresence = () => NO_PRESENCE;
 
 export interface PdfCollabChromeProps {
   shared: SharedPdfState;
   snapshot: ReplicaSnapshot | null;
   fileName: string;
-  collaborators?: PdfCollaborator[];
+  /** Read here, not passed in, so a moving pointer never re-renders the viewer. */
+  presence?: PdfPresenceStore | null;
   followingClientId?: number | null;
   onFollow?: (clientId: number) => void;
   /** A mark someone deleted while it was selected here. */
@@ -37,7 +35,8 @@ export interface PdfCollabChromeProps {
   children?: ReactNode;
 }
 
-export function PdfCollabChrome({ shared, snapshot, fileName, collaborators = [], followingClientId, onFollow, deletedMark, onRestoreDeleted, onDismissDeleted, children }: PdfCollabChromeProps) {
+export function PdfCollabChrome({ shared, snapshot, fileName, presence, followingClientId, onFollow, deletedMark, onRestoreDeleted, onDismissDeleted, children }: PdfCollabChromeProps) {
+  const { users } = useSyncExternalStore(presence?.subscribe ?? noSubscribe, presence?.getSnapshot ?? noPresence, noPresence);
   if (shared.kind !== "shared") return null;
   const banner = sharedBannerKind(snapshot);
   const rejection = snapshot?.rejection;
@@ -57,7 +56,7 @@ export function PdfCollabChrome({ shared, snapshot, fileName, collaborators = []
         {children}
         <PresenceAvatars
           className="ml-auto"
-          users={collaborators.map((user) => ({ clientId: user.clientId, name: user.name, color: user.color, section: user.section }))}
+          users={users.map((user) => ({ clientId: user.clientId, name: user.name, color: user.color, section: user.presence ? `Page ${user.presence.page}` : undefined }))}
           followingClientId={followingClientId ?? null}
           onFollow={onFollow ? (clientId) => onFollow(Number(clientId)) : undefined}
         />

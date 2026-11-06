@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { readPdfAnnotations, toStorageError, writePdfAnnotations } from "@/lib/storage";
+import { collabHostConfig, resolveSharedPdf } from "@/lib/collab/host-client";
+import { isSharedNotebookPath, SharedDocumentError } from "@/lib/collab/shared-notebook";
 
 export const runtime = "nodejs";
 
@@ -37,8 +39,14 @@ export async function PATCH(request: NextRequest) {
       annotations?: unknown;
     };
 
+    // A live PDF's sidecar is a copy the host writes. With the host down
+    // nothing says so, and the write stands: the next start merges new marks.
+    const path = body.path ?? "";
+    const config = isSharedNotebookPath(path) ? collabHostConfig() : null;
+    if (config && await resolveSharedPdf(path, config).catch(() => null)) throw new SharedDocumentError(path);
+
     return NextResponse.json(
-      await writePdfAnnotations(body.path ?? "", body.annotations ?? []),
+      await writePdfAnnotations(path, body.annotations ?? []),
     );
   } catch (error) {
     return handleError(error);

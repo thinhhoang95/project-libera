@@ -10,6 +10,8 @@ export const PdfKeys = {
   marks: "pdfMarks",
   /** Y.Map<sidecarHash, PdfImportRecord>: local sidecars already merged. */
   imports: "pdfImports",
+  /** Y.Map<anchorId, record>: where each comment thread is on the page. */
+  anchors: "pdfAnchors",
 } as const;
 
 /** Key of the manifest `settings` flag that turns live PDFs on for a notebook. */

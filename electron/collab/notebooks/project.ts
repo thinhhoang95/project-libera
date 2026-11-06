@@ -61,7 +61,9 @@ import {
   type WriteGuard,
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
+import { PdfCommentService } from "./pdf-comments";
 import { PdfMarksRuntime } from "./pdf-marks";
+import type { PdfCommentThread } from "../../../src/lib/types";
 import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
@@ -224,6 +226,8 @@ export class SharedProject {
       accountId: () => ctx.accountId(),
       filesChanged: (paths) => this.filesChanged(paths),
       manifest: () => (this.manifestHub && !this.manifestHub.isClosed ? this.manifestHub.getDoc("manifest") : null),
+      importComments: (docId, comments) => this.pdfComments().importLocal(docId, comments as PdfCommentThread[]),
+      listComments: (docId) => this.pdfComments().list(docId),
     });
   }
 
@@ -876,6 +880,10 @@ export class SharedProject {
   }
 
   // ------------------------------------------------------------ live PDFs
+
+  private pdfComments(): PdfCommentService {
+    return new PdfCommentService(this.ctx.host, () => this.ctx.host.accountId ?? "");
+  }
 
   /** Turns live PDFs on for everyone. One way: marks would otherwise be stranded in the document. */
   enablePdfLive(): Promise<void> {

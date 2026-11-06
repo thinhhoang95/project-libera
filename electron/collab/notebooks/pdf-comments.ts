@@ -1,0 +1,212 @@
+// Comments on a live PDF are server threads, like comments on a Markdown
+// document: authors, mentions, notifications and the offline queue all come
+// with that. The panel and the agent keep speaking in PdfCommentThread terms,
+// through /api/pdf-comments, so this module is the only thing that changes.
+
+import { createHash, randomBytes } from "node:crypto";
+
+import { ApiClientError } from "../core/api-client";
+import type { CollabHost } from "../core/host";
+import { PdfKeys } from "../../../src/lib/collab/protocol/pdf";
+import type { Command, Thread } from "../../../src/lib/collab/protocol/api";
+import type { AiActorHint } from "../../../src/lib/collab/protocol/actor";
+import type { PdfCommentAnchor, PdfCommentMessage, PdfCommentThread } from "../../../src/lib/types";
+import { ControlError } from "../control/types";
+
+export type LivePdfCommentChange =
+  | { action: "comment"; anchor: PdfCommentAnchor; text: string }
+  | { action: "reply"; threadId: string; text: string; ai?: AiActorHint }
+  | { action: "edit"; threadId: string; messageId: string; text: string }
+  | { action: "resolve"; threadId: string; resolved: boolean }
+  | { action: "delete"; threadId: string }
+  | { action: "delete-message"; threadId: string; messageId: string };
+
+interface AnchorRecord extends PdfCommentAnchor {
+  id: string;
+  createdBy: string;
+  createdAt: number;
+}
+
+const newId = (prefix: string) => `${prefix}_${randomBytes(15).toString("hex")}`;
+const stableId = (prefix: string, seed: string) => `${prefix}_${createHash("sha256").update(seed).digest("hex").slice(0, 40)}`;
+
+function messageOf(message: Thread["messages"][number], accountId: string): PdfCommentMessage {
+  const ai = message.actor.kind === "ai";
+  return {
+    id: message.id,
+    text: message.body,
+    createdAt: message.createdAt,
+    ...(message.editedAt ? { editedAt: message.editedAt } : {}),
+    ...(ai ? { author: "agent" as const } : {}),
+    authorName: message.author.displayName,
+    own: !ai && message.author.id === accountId,
+  };
+}
+
+/** A server thread as the panel shows it; null while its anchor has not arrived. */
+export function pdfThreadOf(thread: Thread, anchor: PdfCommentAnchor | undefined, accountId: string): PdfCommentThread | null {
+  if (!anchor) return null;
+  const messages = thread.messages.filter((message) => !message.deletedAt).map((message) => messageOf(message, accountId));
+  return { id: thread.id, anchor, status: thread.status === "resolved" ? "resolved" : "open", messages, createdAt: thread.createdAt, updatedAt: thread.updatedAt };
+}
+
+/** Commands still waiting for the network, applied so offline work shows as it will land. */
+export function withPendingCommands(threads: PdfCommentThread[], commands: readonly Command[], docId: string, anchorOf: (anchorId: string) => PdfCommentAnchor | undefined): PdfCommentThread[] {
+  let next = threads;
+  const now = new Date().toISOString();
+  const pendingMessage = (id: string, text: string): PdfCommentMessage => ({ id, text, createdAt: now, own: true, pending: true });
+  for (const command of commands) {
+    switch (command.kind) {
+      case "thread.create": {
+        const anchor = anchorOf(command.body.anchorId);
+        if (command.docId !== docId || !anchor || next.some((thread) => thread.id === command.body.id)) break;
+        next = [...next, { id: command.body.id, anchor, status: "open", messages: [pendingMessage(`${command.id}-first`, command.body.body)], createdAt: now, updatedAt: now, pending: true }];
+        break;
+      }
+      case "message.create":
+        next = next.map((thread) => thread.id === command.threadId && !thread.messages.some((message) => message.id === command.body.id) ? { ...thread, messages: [...thread.messages, pendingMessage(command.body.id, command.body.body)] } : thread);
+        break;
+      case "message.edit":
+        next = next.map((thread) => ({ ...thread, messages: thread.messages.map((message) => message.id === command.messageId ? { ...message, text: command.body.body, pending: true } : message) }));
+        break;
+      case "message.delete":
+        next = next.map((thread) => ({ ...thread, messages: thread.messages.filter((message) => message.id !== command.messageId) }));
+        break;
+      case "thread.status":
+        next = next.map((thread) => thread.id === command.threadId ? { ...thread, status: command.body.status === "resolved" ? "resolved" : "open" } : thread);
+        break;
+      case "thread.delete":
+        next = next.filter((thread) => thread.id !== command.threadId);
+        break;
+      default:
+        break;
+    }
+  }
+  return next;
+}
+
+export class PdfCommentService {
+  constructor(private readonly host: CollabHost, private readonly accountId: () => string) {}
+
+  private anchors(docId: string): Map<string, AnchorRecord> {
+    const hub = this.host.acquire(docId);
+    try {
+      const anchors = new Map<string, AnchorRecord>();
+      for (const [id, value] of hub.getDoc("annotations").getMap<AnchorRecord>(PdfKeys.anchors).entries()) anchors.set(id, value);
+      return anchors;
+    } finally {
+      this.host.release(docId);
+    }
+  }
+
+  private writeAnchor(docId: string, anchor: PdfCommentAnchor, id: string) {
+    const hub = this.host.acquire(docId);
+    try {
+      hub.applyLocalChange("annotations", (doc) => {
+        const anchors = doc.getMap<AnchorRecord>(PdfKeys.anchors);
+        if (!anchors.has(id)) anchors.set(id, { ...anchor, id, createdBy: this.accountId(), createdAt: Date.now() });
+      });
+    } finally {
+      this.host.release(docId);
+    }
+  }
+
+  private pending(): Command[] {
+    return this.host.commands.list().map((row) => row.command).filter((command): command is Command => Boolean(command));
+  }
+
+  /**
+   * The PDF's threads. The cache answers when the server cannot, so a person
+   * offline keeps seeing what they saw, plus their own queued comments.
+   */
+  async list(docId: string): Promise<PdfCommentThread[]> {
+    let threads: Thread[];
+    try {
+      const api = this.host.api;
+      if (!api) throw new ApiClientError("network", 0, "Not signed in.");
+      threads = await api.listThreads(docId);
+      for (const thread of threads) this.host.store.putThread(thread.id, docId, thread);
+    } catch (error) {
+      if (error instanceof ApiClientError && !error.transient && error.code !== "network" && error.code !== "needs-sign-in" && error.status !== 404) throw error;
+      threads = this.host.store.listThreads(docId).map((row) => row.json as Thread);
+    }
+    const anchors = this.anchors(docId);
+    const anchorOf = (anchorId: string) => anchors.get(anchorId);
+    const shown = threads.flatMap((thread) => pdfThreadOf(thread, anchorOf(thread.anchorId), this.accountId()) ?? []);
+    return withPendingCommands(shown, this.pending(), docId, anchorOf);
+  }
+
+  /** Sends now when the connection is up, and queues otherwise; `direct` and the command do the same thing. */
+  private async send(command: Command, direct: () => Promise<unknown> | undefined): Promise<void> {
+    if (!this.host.api || this.host.connectionState !== "connected") {
+      this.host.commands.enqueue(command);
+      return;
+    }
+    try {
+      await direct();
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || !(error.transient || error.code === "network" || error.code === "needs-sign-in")) throw error;
+      this.host.commands.enqueue(command);
+    }
+  }
+
+  async change(docId: string, change: LivePdfCommentChange): Promise<PdfCommentThread[]> {
+    const api = this.host.api;
+    const command = newId("cmd");
+    switch (change.action) {
+      case "comment": {
+        const anchorId = newId("anc");
+        this.writeAnchor(docId, change.anchor, anchorId);
+        const body = { id: newId("thr"), anchorId, quote: change.anchor.quote.slice(0, 10_000), body: change.text };
+        await this.send({ id: command, kind: "thread.create", docId, body }, () => api?.createThread(docId, body));
+        break;
+      }
+      case "reply": {
+        const body = { id: newId("msg"), body: change.text, ...(change.ai ? { ai: change.ai } : {}) };
+        await this.send({ id: command, kind: "message.create", threadId: change.threadId, body }, () => api?.createMessage(change.threadId, body));
+        break;
+      }
+      case "edit": {
+        const body = { body: change.text };
+        await this.send({ id: command, kind: "message.edit", messageId: change.messageId, body }, () => api?.editMessage(change.messageId, body));
+        break;
+      }
+      case "resolve": {
+        const body = { status: change.resolved ? "resolved" as const : "open" as const };
+        await this.send({ id: command, kind: "thread.status", threadId: change.threadId, body }, () => api?.setThreadStatus(change.threadId, body));
+        break;
+      }
+      case "delete":
+        await this.send({ id: command, kind: "thread.delete", threadId: change.threadId }, () => api?.deleteThread(change.threadId));
+        break;
+      case "delete-message":
+        await this.send({ id: command, kind: "message.delete", messageId: change.messageId }, () => api?.deleteMessage(change.messageId));
+        break;
+      default:
+        throw new ControlError(400, "bad-request", "Unknown comment action.");
+    }
+    return this.list(docId);
+  }
+
+  /**
+   * Local comments become server threads, by whoever merges them. Ids come
+   * from the old ones, so a second device merging the same sidecar replays
+   * instead of duplicating. Everything goes through the queue, which survives
+   * a restart and retries; the server dates them when they arrive.
+   */
+  importLocal(docId: string, comments: readonly PdfCommentThread[]): void {
+    for (const local of comments) {
+      if (!local?.id || !Array.isArray(local.messages) || !local.messages.length || !local.anchor) continue;
+      const threadId = stableId("thr", `${docId}:${local.id}`);
+      const anchorId = stableId("anc", `${docId}:${local.id}`);
+      this.writeAnchor(docId, local.anchor, anchorId);
+      const [first, ...replies] = local.messages;
+      this.host.commands.enqueue({ id: stableId("cmd", `${threadId}:create`), kind: "thread.create", docId, body: { id: threadId, anchorId, quote: String(local.anchor.quote ?? "").slice(0, 10_000), body: first.text } });
+      for (const reply of replies) {
+        const id = stableId("msg", `${threadId}:${reply.id}`);
+        this.host.commands.enqueue({ id: stableId("cmd", `${id}:create`), kind: "message.create", threadId, body: { id, body: reply.text } });
+      }
+      if (local.status === "resolved") this.host.commands.enqueue({ id: stableId("cmd", `${threadId}:resolve`), kind: "thread.status", threadId, body: { status: "resolved" } });
+    }
+  }
+}

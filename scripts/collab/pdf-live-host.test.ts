@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { DocHub } from "../../electron/collab/core/doc-hub";
+import { PdfCommentService } from "../../electron/collab/notebooks/pdf-comments";
 import { pdfDocId } from "../../electron/collab/notebooks/pdf-marks";
 import { ControlRoutes, type ResolvedPdf } from "../../src/lib/collab/local-api";
 import { applyMarksDiff, marksOf, readAllMarks, visibleMarks } from "../../src/lib/collab/pdf/model";
@@ -298,3 +299,85 @@ test("leaving keeps the last state as an ordinary sidecar", { timeout: 60_000 },
   }
 });
 
+
+const anchor = { segments: [{ pageNumber: 1, rects: [{ x: 0.1, y: 0.1, width: 0.2, height: 0.02 }] }], quote: "a passage" };
+const comments = (peer: Peer) => new PdfCommentService(peer.host, () => peer.auth.account.id);
+
+test("comments are shared threads with authors, and only the author edits", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-comments-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    await resolvePdf(setup.member, `${setup.memberNotebook}/paper.pdf`);
+    const ownerHub = setup.owner.host.acquire(mine.docId);
+    const memberHub = setup.member.host.acquire(mine.docId);
+    await until(() => ownerHub.getStatus().state === "saved-remote" && memberHub.getStatus().state === "saved-remote", "opened");
+    const [thread] = await comments(setup.owner).change(mine.docId, { action: "comment", anchor, text: "Is this right?" });
+    assert.equal(thread.messages[0].own, true);
+    assert.equal(thread.messages[0].authorName, "Owner");
+    await until(async () => (await comments(setup.member).list(mine.docId)).length === 1, "the commenter sees the thread");
+    const seen = (await comments(setup.member).list(mine.docId))[0];
+    assert.deepEqual(seen.anchor.quote, "a passage");
+    assert.equal(seen.messages[0].own, false);
+    const replied = await comments(setup.member).change(mine.docId, { action: "reply", threadId: seen.id, text: "Yes." });
+    assert.equal(replied[0].messages.length, 2);
+    await comments(setup.owner).change(mine.docId, { action: "resolve", threadId: seen.id, resolved: true });
+    assert.equal((await comments(setup.member).list(mine.docId))[0].status, "resolved");
+    await assert.rejects(comments(setup.member).change(mine.docId, { action: "edit", threadId: seen.id, messageId: seen.messages[0].id, text: "Not mine" }));
+    setup.owner.host.release(mine.docId);
+    setup.member.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("comments written offline show as pending, then land", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-comments-offline-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    const ownerHub = setup.owner.host.acquire(mine.docId);
+    await until(() => ownerHub.getStatus().state === "saved-remote", "opened");
+    const service = comments(setup.owner);
+    const [online] = await service.change(mine.docId, { action: "comment", anchor, text: "Online" });
+    const saved = (setup.owner.host as unknown as { account: unknown }).account;
+    setup.owner.host.setAccount(null);
+    const threads = await service.change(mine.docId, { action: "comment", anchor, text: "Offline" });
+    assert.equal(threads.length, 2, "the cached thread and the queued one");
+    assert.equal(threads.find((thread) => thread.id !== online.id)?.pending, true);
+    const replied = await service.change(mine.docId, { action: "reply", threadId: online.id, text: "Offline reply" });
+    assert.equal(replied.find((thread) => thread.id === online.id)?.messages.at(-1)?.pending, true);
+    setup.owner.host.setAccount(saved as Parameters<typeof setup.owner.host.setAccount>[0]);
+    await until(async () => {
+      const list = await comments(setup.member).list(mine.docId);
+      return list.length === 2 && list.find((thread) => thread.id === online.id)?.messages.length === 2;
+    }, "the queue drains");
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});
+
+test("local comments become threads once, even from two devices", { timeout: 60_000 }, async () => {
+  const local = [{ id: "local-1", anchor, status: "resolved", messages: [{ id: "m1", text: "First", createdAt: "2026-01-01T00:00:00.000Z" }, { id: "m2", text: "Second", createdAt: "2026-01-02T00:00:00.000Z" }], createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z" }];
+  const setup = await pair("libera-pdf-comments-import-", { "paper.pdf": PDF }, "commenter", (root) => writeSidecar(root, "paper.pdf", [], { comments: local }));
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf")) as ResolvedPdf;
+    await resolvePdf(setup.member, `${setup.memberNotebook}/paper.pdf`);
+    const ownerHub = setup.owner.host.acquire(mine.docId);
+    await until(async () => {
+      const list = await comments(setup.owner).list(mine.docId);
+      return list.length === 1 && list[0].messages.length === 2 && list[0].status === "resolved";
+    }, "the comment arrives as a thread");
+    comments(setup.owner).importLocal(mine.docId, local as never);
+    await sleep(600);
+    const list = await comments(setup.owner).list(mine.docId);
+    assert.equal(list.length, 1);
+    assert.equal(list[0].messages.length, 2);
+    assert.ok(ownerHub);
+    setup.owner.host.release(mine.docId);
+  } finally {
+    await setup.cleanup();
+  }
+});

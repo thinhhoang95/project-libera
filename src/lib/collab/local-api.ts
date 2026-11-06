@@ -231,6 +231,8 @@ export interface ShareNotebookRequest {
   notebook: string;
   /** Project name shown to collaborators; defaults to the notebook name. */
   name?: string;
+  /** Turn on live PDFs, which shares everyone's existing PDF marks. */
+  pdfLive?: boolean;
 }
 
 export interface ShareProgress {
@@ -627,6 +629,8 @@ export const ControlRoutes = {
   resolve: "/docs/resolve",
   /** GET ?path= → ResolvedPdf | null. */
   pdfResolve: "/pdf-docs/resolve",
+  /** GET → PdfCommentThread[]; POST one change → PdfCommentThread[]. */
+  pdfComments: (docId: string) => `/pdf-docs/${encodeURIComponent(docId)}/comments`,
   /** POST → 204: the owner turns on live PDFs for a notebook. */
   pdfLive: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/pdf-live`,
   docText: (docId: string) => `/docs/${encodeURIComponent(docId)}/text`,

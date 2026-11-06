@@ -20,7 +20,7 @@ function AgentChip({ title }: { title: string }) {
 
 function MessageMeta({ message, now }: { message: PdfCommentMessage; now: number }) {
   return <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-    {message.author === "agent" ? <AgentChip title="Replied by the AI agent" /> : <span>You</span>}
+    {message.author === "agent" ? <AgentChip title="Replied by the AI agent" /> : <span>{message.own === false ? message.authorName : "You"}{message.pending ? " · pending" : ""}</span>}
     <span title={new Date(message.createdAt).toLocaleString()}>{timeAgo(now - Date.parse(message.createdAt))}</span>
     {message.editedAt && <span>· edited</span>}
   </span>;
@@ -105,7 +105,7 @@ export function PdfReviewComments({ path }: { path: string }) {
             {replies.map((message) => <div key={message.id} className="space-y-1 border-l-2 border-border pl-2" data-author={message.author ?? "user"}>
               <div className="flex items-center justify-between gap-2">
                 <MessageMeta message={message} now={now} />
-                {message.author !== "agent" && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit reply" title="Edit reply" disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
+                {message.author !== "agent" && message.own !== false && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit reply" title="Edit reply" disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
               </div>
               <CommentBody text={message.text} />
             </div>)}

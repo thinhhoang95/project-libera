@@ -275,6 +275,12 @@ export type PdfCommentMessage = {
   createdAt: string;
   editedAt?: string;
   author?: "agent";
+  /** On a live PDF: who wrote it. */
+  authorName?: string;
+  /** On a live PDF: this person wrote it. Absent on a local PDF, where all of them are. */
+  own?: boolean;
+  /** Written offline and waiting to reach the server. */
+  pending?: boolean;
 };
 
 /**
@@ -289,6 +295,8 @@ export type PdfCommentThread = {
   messages: PdfCommentMessage[];
   createdAt: string;
   updatedAt: string;
+  /** Written offline and waiting to reach the server. */
+  pending?: boolean;
 };
 
 export type PdfCommentsPayload = {
