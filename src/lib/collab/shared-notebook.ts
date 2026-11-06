@@ -33,6 +33,8 @@ export interface SharedNotebookMarker {
   sharedAt: string;
   /** Access was revoked: the folder is kept read-only. */
   revoked?: boolean;
+  /** Live PDFs are on, for when the host cannot be asked. */
+  pdfLive?: boolean;
 }
 
 /** A write to a shared notebook through a path that would bypass the collab host. */
@@ -128,6 +130,12 @@ export function isSharedNotebookPath(liberaPath: string): boolean {
   const [notebook, first] = splitLiberaPath(liberaPath);
   if (!notebook || first === ARCHIVE_DIR) return false;
   return sharedNotebookMarker(notebook) !== null;
+}
+
+/** Whether this notebook's marker says live PDFs are on. */
+export function notebookHasLivePdfs(liberaPath: string): boolean {
+  const [notebook] = splitLiberaPath(liberaPath);
+  return Boolean(notebook && sharedNotebookMarker(notebook)?.pdfLive);
 }
 
 /** Throws SharedDocumentError (409 shared-document) for a path in a shared notebook. */

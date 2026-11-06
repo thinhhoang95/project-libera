@@ -22,7 +22,7 @@ for (const follower of [false, true]) for (const sameNotebook of [true, false]) 
   const runtime = new PdfMarksRuntime({ host, logger: quietLogger, projectId: "prj_test", notebook: "Notebook", root, writeMs: 60_000,
     role: () => "commenter", canWriteDisk: () => canWrite,
     guard: (finalizing) => ({ root, canCommit: async () => sameNotebook && (finalizing === true || canWrite) }),
-    authorityReady: () => true, filesChanged() {}, manifest: () => manifest });
+    authorityReady: () => true, recordLive: async () => {}, filesChanged() {}, commentsChanged() {}, manifest: () => manifest });
   try {
     const entry: ManifestEntry = { fileId: "fil_pdf", path: "paper.pdf", kind: "blob", createdBy: "acc_me", createdAt: 1, updatedAt: 1 };
     runtime.sync([entry], new Map([[entry.fileId, entry.path]]));

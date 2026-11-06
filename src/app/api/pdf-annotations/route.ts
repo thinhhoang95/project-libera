@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { StorageError } from "@/lib/storage/errors";
 import { requireAuth } from "@/lib/api";
 import { readPdfAnnotations, toStorageError, writePdfAnnotations } from "@/lib/storage";
-import { CollabHostError, collabHostConfig, resolveSharedPdf } from "@/lib/collab/host-client";
-import { isSharedNotebookPath, SharedDocumentError } from "@/lib/collab/shared-notebook";
+import { CollabHostError, livePdfFor } from "@/lib/collab/host-client";
+import { SharedDocumentError } from "@/lib/collab/shared-notebook";
 
 export const runtime = "nodejs";
 
@@ -43,11 +42,7 @@ export async function PATCH(request: NextRequest) {
 
     // Only a successful resolution can authorize a sidecar write.
     const path = body.path ?? "";
-    if (isSharedNotebookPath(path)) {
-      const config = collabHostConfig();
-      if (!config) throw new StorageError("Live PDF status is unavailable.", 503);
-      if (await resolveSharedPdf(path, config)) throw new SharedDocumentError(path);
-    }
+    if (await livePdfFor(path)) throw new SharedDocumentError(path);
 
     return NextResponse.json(
       await writePdfAnnotations(path, body.annotations ?? []),

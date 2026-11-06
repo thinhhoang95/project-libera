@@ -20,6 +20,8 @@ export type PdfCommentsState = {
   error: string;
   /** The thread whose card is open and whose passage is marked as selected. */
   selectedId: string | null;
+  /** On a live PDF: this person can read comments, not write them. */
+  readOnly: boolean;
 };
 
 export type PdfCommentChange =
@@ -29,7 +31,7 @@ export type PdfCommentChange =
   | { action: "resolve"; threadId: string; resolved: boolean }
   | { action: "delete"; threadId: string };
 
-const EMPTY: PdfCommentsState = { threads: [], loaded: false, busy: "", error: "", selectedId: null };
+const EMPTY: PdfCommentsState = { threads: [], loaded: false, busy: "", error: "", selectedId: null, readOnly: false };
 const ROUTE = "/api/pdf-comments";
 const CHANNEL = "libera-pdf-comments";
 const FOCUS_EVENT = "libera:pdf-comment-focus";
@@ -44,10 +46,10 @@ function set(path: string, patch: Partial<PdfCommentsState>) {
   for (const listener of [...(listeners.get(path) ?? [])]) listener();
 }
 
-function adopt(path: string, received: unknown) {
+function adopt(path: string, received: unknown, readOnly = pdfCommentsState(path).readOnly) {
   const threads = Array.isArray(received) ? received as PdfCommentThread[] : [];
   const selectedId = states.get(path)?.selectedId ?? null;
-  set(path, { threads, loaded: true, error: "", selectedId: selectedId && threads.some((thread) => thread.id === selectedId) ? selectedId : null });
+  set(path, { threads, loaded: true, error: "", readOnly, selectedId: selectedId && threads.some((thread) => thread.id === selectedId) ? selectedId : null });
 }
 
 export function pdfCommentsState(path: string): PdfCommentsState {
@@ -69,7 +71,7 @@ export function loadPdfComments(path: string): Promise<void> {
   const pending = loads.get(path);
   if (pending) return pending;
   const work = apiRequest<PdfCommentsPayload>(`${ROUTE}?path=${encodeURIComponent(path)}`)
-    .then((payload) => adopt(path, payload.threads))
+    .then((payload) => adopt(path, payload.threads, payload.readOnly === true))
     .catch((error) => set(path, { loaded: true, error: error instanceof Error ? error.message : "Could not load comments." }))
     .finally(() => loads.delete(path));
   loads.set(path, work);
@@ -86,7 +88,7 @@ export async function changePdfComments(path: string, change: PdfCommentChange):
   set(path, { busy: change.action, error: "" });
   try {
     const payload = await apiRequest<PdfCommentsPayload>(ROUTE, { method: "POST", body: JSON.stringify({ ...change, path }) });
-    adopt(path, payload.threads);
+    adopt(path, payload.threads, payload.readOnly === true);
     const threads = pdfCommentsState(path).threads;
     broadcast(path, threads);
     return threads;
@@ -143,7 +145,7 @@ export function usePdfComments(path: string | null | undefined): PdfCommentsStat
     const stopEvents = subscribeHostEvents((event) => {
       const thread = event.t === "server-event" && (event.kind === EventKind.ThreadChanged || event.kind === EventKind.ThreadDeleted) && isPdfDocId(event.id);
       const settled = event.t === "command-settled" && /^(thread|message)\./.test(event.kind);
-      if (thread || settled) void refreshPdfComments(key);
+      if (thread || settled || event.t === "pdf-comments-changed") void refreshPdfComments(key);
     });
     if (typeof BroadcastChannel === "undefined") return stopEvents;
     const channel = new BroadcastChannel(`${CHANNEL}:${key}`);

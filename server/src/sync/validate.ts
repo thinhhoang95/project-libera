@@ -91,7 +91,7 @@ export function annotationViolation(
     // A shared PDF's marks belong to everyone who can annotate, unlike
     // comments and suggestions, so the ownership rules below do not apply.
     if (kind === "pdf" && root === PdfKeys.marks) {
-      const problem = pdfMarkViolation(before, after, type, keys, accountId);
+      const problem = pdfMarkViolation(before, after, type, keys, accountId, changed);
       if (problem) return problem;
       continue;
     }
@@ -194,7 +194,7 @@ function markOwner(type: Pick<Y.Text, "_item">): Y.Map<unknown> | null {
  * every value fits its field. Imports use the server's serialized operation,
  * because independently created nested maps cannot merge their children.
  */
-function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: SharedType, keys: Set<string | null>, accountId: string): string | null {
+function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: SharedType, keys: Set<string | null>, accountId: string, changed: ChangedTypes): string | null {
   const beforeMarks = before.getMap<unknown>(PdfKeys.marks);
   const afterMarks = after.getMap<unknown>(PdfKeys.marks);
 
@@ -231,7 +231,8 @@ function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: SharedType, keys: S
   if (type instanceof Y.Text) {
     const mark = markOwner(type);
     if (!mark || type._item?.parentSub !== PdfMarkFields.text) return "Only a note's text field may hold text.";
-    if (mark.get(PdfMarkFields.updatedBy) !== accountId) return "updatedBy must be you.";
+    const previousMark = beforeMarks.get(String(mark._item?.parentSub ?? ""));
+    if (!namesAuthor(changed.get(mark as unknown as SharedType), previousMark, accountId)) return "updatedBy must be you.";
     if (type.length > PdfLimits.maxTextLength) return "This note is too long.";
     return null;
   }
@@ -241,17 +242,32 @@ function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: SharedType, keys: S
   const id = type._item?.parentSub ?? "";
   const previous = beforeMarks.get(id);
   const markType = String(type.get(PdfMarkFields.type) ?? "");
-  if (type.get(PdfMarkFields.updatedBy) !== accountId) return "updatedBy must be you.";
+  if (!namesAuthor(keys, previous, accountId)) return "updatedBy must be you.";
   for (const field of keys) {
     if (field === null) return `${PdfKeys.marks}/${id} must be a map.`;
     const value = type.get(field);
-    if (field === PdfMarkFields.updatedBy && value !== accountId) return "updatedBy must be you.";
-    if (field === PdfMarkFields.deleted && value !== undefined && (value as { by?: unknown })?.by !== accountId) return "deleted.by must be you.";
+    // A write that lost to a concurrent one leaves the earlier value showing,
+    // and Yjs picks the winner by client id, so an honest offline edit can
+    // lose here. Only a value this update put in place can be forged.
+    const standing = previous instanceof Y.Map && sameJson(previous.get(field), value);
+    if (field === PdfMarkFields.updatedBy && value !== accountId && !standing) return "updatedBy must be you.";
+    if (field === PdfMarkFields.deleted && value !== undefined && (value as { by?: unknown })?.by !== accountId && !standing) return "deleted.by must be you.";
     if (previous instanceof Y.Map && PDF_IMMUTABLE_FIELDS.includes(field) && !sameJson(previous.get(field), value)) return `${field} cannot change.`;
     const problem = pdfFieldValueViolation(id, markType, field, value);
     if (problem) return problem;
   }
   return null;
+}
+
+/**
+ * A change to a mark says who made it, by writing updatedBy or because that was
+ * already this account. The value showing after the merge cannot answer this:
+ * a concurrent writer's updatedBy may have won, and refusing would roll back
+ * an honest edit. Clients always write the field, so they never rely on the
+ * second case for a mark someone else may be changing.
+ */
+function namesAuthor(keys: Set<string | null> | undefined, previous: unknown, accountId: string): boolean {
+  return Boolean(keys?.has(PdfMarkFields.updatedBy)) || (previous instanceof Y.Map && previous.get(PdfMarkFields.updatedBy) === accountId);
 }
 
 function pdfFieldValueViolation(id: string, markType: string, field: string, value: unknown): string | null {

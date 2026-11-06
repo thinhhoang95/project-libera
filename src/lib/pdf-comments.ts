@@ -94,6 +94,8 @@ export function sortPdfCommentThreads(threads: PdfCommentThread[]) {
 
 /** "page 3" or "pages 3-4", as Read numbers a PDF's pages. */
 export function pdfCommentPages(anchor: PdfCommentAnchor) {
+  // A thread whose place has not arrived yet.
+  if (!anchor.segments.length) return "page unknown";
   const first = anchor.segments[0].pageNumber;
   const last = anchor.segments.at(-1)!.pageNumber;
   return first === last ? `page ${first}` : `pages ${first}-${last}`;

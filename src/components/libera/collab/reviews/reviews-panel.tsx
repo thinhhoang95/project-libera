@@ -7,6 +7,7 @@
 // in checkpoint mode: the frozen base revision with "N changes since this
 // revision" and a diff to now, while everyone keeps drafting live.
 
+import { isPdfDocId } from "@/lib/collab/protocol/pdf";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Check, ClipboardCheck, Clock, History, Loader2, X } from "lucide-react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -122,18 +123,21 @@ function ReviewCard({ review, controller, snapshot, role, now, onOpen }: { revie
  */
 export function ReviewCheckpoint({ review, session, controller, snapshot, onClose, api = historyApi }: { review: Review; session: SharedDocSession; controller: ReviewsController; snapshot: ReviewsSnapshot; onClose: () => void; api?: HistoryApi }) {
   const docId = session.docId;
+  // A PDF has no text to show as it was: its reviewer reads it in the viewer.
+  const pdf = isPdfDocId(docId);
   const [base, setBase] = useState<{ text: string; serverSeq: number } | null>(null);
   const [showDiff, setShowDiff] = useState(false);
   const [diff, setDiff] = useState<{ before: string; attribution: Attribution } | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
+    if (pdf) return;
     let live = true;
     api.content(docId, review.baseRevisionId).then(
       (content) => { if (live) setBase({ text: content.text, serverSeq: content.revision.serverSeq }); },
       (cause: unknown) => { if (live) setError(describeError(cause)); },
     );
     return () => { live = false; };
-  }, [api, docId, review.baseRevisionId]);
+  }, [api, docId, pdf, review.baseRevisionId]);
   useEffect(() => {
     if (!showDiff || !base) return;
     let live = true;
@@ -151,13 +155,17 @@ export function ReviewCheckpoint({ review, session, controller, snapshot, onClos
     <div className="space-y-2" data-testid="review-checkpoint">
       <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs" data-testid="review-checkpoint-banner">
         <History aria-hidden size={14} />
-        <span>{changesSinceLabel(current)}. Collaborators keep editing the live document; you are reading the revision the review was requested on.</span>
-        <button type="button" className={`${buttonClass} ml-auto`} aria-pressed={showDiff} onClick={() => setShowDiff((value) => !value)}>{showDiff ? "Show the revision" : "Show changes since"}</button>
+        {pdf
+          ? <span>This review covers the whole PDF. Read it and its marks in the viewer, then decide here.</span>
+          : <>
+            <span>{changesSinceLabel(current)}. Collaborators keep editing the live document; you are reading the revision the review was requested on.</span>
+            <button type="button" className={`${buttonClass} ml-auto`} aria-pressed={showDiff} onClick={() => setShowDiff((value) => !value)}>{showDiff ? "Show the revision" : "Show changes since"}</button>
+          </>}
       </div>
       {current.note ? <p className="whitespace-pre-wrap text-xs"><strong>Note:</strong> {current.note}</p> : null}
       {current.scope.kind === "range" ? <p className="text-xs text-muted-foreground">Scope: <q>{current.scope.quote}</q></p> : null}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
-      {!base ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />Loading the revision…</p>
+      {pdf ? null : !base ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />Loading the revision…</p>
         : showDiff ? (diff ? <DiffView attribution={diff.attribution} before={diff.before} /> : <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />Comparing…</p>)
           : <RevisionView text={base.text} onSelection={() => {}} />}
       {mine && current.status !== "closed" ? <DecisionButtons review={current} controller={controller} snapshot={snapshot} revisionId={current.baseRevisionId} /> : null}

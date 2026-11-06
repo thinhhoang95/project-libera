@@ -15,6 +15,7 @@ import {
   canonicalJson,
   ContentKeys,
   ManifestKeys,
+  PdfKeys,
   type DocumentDigest,
   type Subdoc,
 } from "../protocol.js";
@@ -27,6 +28,10 @@ export function digestContent(kind: DocumentKind, docs: ReadonlyMap<Subdoc, Y.Do
   if (kind === "manifest") {
     const manifest = get("manifest");
     return sha256Hex(canonicalJson(manifest ? manifest.getMap(ManifestKeys.files).toJSON() : {}));
+  }
+  if (kind === "pdf") {
+    const annotations = get("annotations");
+    return sha256Hex(canonicalJson(annotations ? annotations.getMap(PdfKeys.marks).toJSON() : {}));
   }
   const content = get("content");
   return sha256Hex(content ? content.getText(ContentKeys.source).toString() : "");

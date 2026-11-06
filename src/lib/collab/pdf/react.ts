@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import type { ResolvedDoc, ResolvedPdf } from "../local-api";
 import { collabClient } from "../ui/client";
 import { useHostEvents } from "../ui/hooks";
+import { canWriteSubdoc } from "../protocol/roles";
 import { getCollabStatusStore, type CollabSnapshot } from "../ui/status-store";
 import { getSharedDocRegistry, type SharedDocLease, type SharedDocSession } from "../client/registry";
 import type { ReplicaSnapshot } from "../client/replica";
@@ -25,10 +26,26 @@ interface OpenPdf {
 
 const open = new Map<string, Promise<OpenPdf>>();
 
+function isStale(pdf: OpenPdf): boolean {
+  return pdf.session.replica.getSnapshot().closed !== null || getSharedDocRegistry().session(pdf.session.docId)?.replica !== pdf.session.replica;
+}
+
+function discard(pdf: OpenPdf) {
+  if (pdf.release) clearTimeout(pdf.release);
+  pdf.store.destroy();
+  pdf.lease.release();
+}
+
 function acquire(resolved: ResolvedPdf): Promise<OpenPdf> {
   const existing = open.get(resolved.docId);
   if (existing) {
     return existing.then((pdf) => {
+      // Signing out or a host restart closes replicas; one kept for undo must not outlive that.
+      if (isStale(pdf)) {
+        if (open.get(resolved.docId) === existing) open.delete(resolved.docId);
+        discard(pdf);
+        return acquire(resolved);
+      }
       pdf.holders += 1;
       if (pdf.release) clearTimeout(pdf.release);
       pdf.release = null;
@@ -40,14 +57,19 @@ function acquire(resolved: ResolvedPdf): Promise<OpenPdf> {
     // The registry only needs the ids; `kind` is for text editors, which never see this session.
     const asDoc: ResolvedDoc = { ...resolved, kind: "text" };
     const lease = getSharedDocRegistry().acquire(asDoc, `pdf:${resolved.docId}`);
-    const session = await lease.ready;
-    await session.replica.whenAttached();
-    const store = new SharedPdfStore(
-      { get annotations() { return session.replica.annotations; }, onRebuild: (listener) => session.replica.onRebuild(listener) },
-      resolved.docId,
-      { accountId: resolved.accountId },
-    );
-    return { store, session, lease, holders: 1, release: null } satisfies OpenPdf;
+    try {
+      const session = await lease.ready;
+      await session.replica.whenAttached();
+      const store = new SharedPdfStore(
+        { get annotations() { return session.replica.annotations; }, onRebuild: (listener) => session.replica.onRebuild(listener) },
+        resolved.docId,
+        { accountId: resolved.accountId },
+      );
+      return { store, session, lease, holders: 1, release: null } satisfies OpenPdf;
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
   })();
   open.set(resolved.docId, opening);
   opening.catch(() => open.delete(resolved.docId));
@@ -59,8 +81,7 @@ function letGo(docId: string, pdf: OpenPdf) {
   if (pdf.holders > 0) return;
   const release = setTimeout(() => {
     open.delete(docId);
-    pdf.store.destroy();
-    pdf.lease.release();
+    discard(pdf);
   }, RETAIN_MS);
   (release as { unref?: () => void }).unref?.();
   pdf.release = release;
@@ -88,7 +109,9 @@ export function useSharedPdf(filePath: string): SharedPdfState {
   const { phase, status } = useSyncExternalStore(statusStore?.subscribe ?? noSubscribe, statusStore?.getSnapshot ?? noStatus, noStatus);
   const project = status?.projects?.find((candidate) => candidate.notebook === notebook && candidate.kind !== "album");
   const wanted = available && project?.pdfLive === true && !project.revoked;
-  const undecided = available && (phase === "loading" || phase === "error") && !wanted;
+  // A status that failed to load must not stop PDFs opening. The sidecar routes
+  // refuse writes to a notebook whose marker says live PDFs are on.
+  const undecided = available && phase === "loading" && !wanted;
   const [state, setState] = useState<{ path: string; attempt: number; value: SharedPdfState }>({ path: "", attempt: -1, value: CHECKING });
   const [attempt, setAttempt] = useState(0);
   const failures = useRef(0);
@@ -155,9 +178,12 @@ export function useSharedPdfSnapshot(state: SharedPdfState): ReplicaSnapshot | n
 /** Marks can be changed here right now. */
 export function canAnnotateShared(state: SharedPdfState, snapshot: ReplicaSnapshot | null): boolean {
   if (state.kind !== "shared") return state.kind === "local";
-  if (state.resolved.readOnly || snapshot?.closed) return false;
+  if (state.resolved.revoked || snapshot?.closed) return false;
+  // The live role, not the one this PDF was opened with: a promotion takes
+  // effect at once. "role" only says the text cannot be edited, and a PDF has none.
+  const role = snapshot?.meta?.role ?? state.resolved.role;
   const reason = snapshot?.meta?.readOnlyReason;
-  return !reason;
+  return canWriteSubdoc(role, "annotations") && (!reason || reason === "role");
 }
 
 export function useCanAnnotate(state: SharedPdfState, snapshot: ReplicaSnapshot | null): boolean {

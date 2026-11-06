@@ -302,6 +302,8 @@ export type PdfCommentThread = {
 export type PdfCommentsPayload = {
   path: string;
   threads: PdfCommentThread[];
+  /** On a live PDF: this person can read comments, not write them. */
+  readOnly?: boolean;
 };
 
 export type ImageAnnotationsPayload = {

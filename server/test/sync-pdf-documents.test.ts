@@ -159,6 +159,37 @@ describe("shared PDF documents", () => {
     assert.equal((await first.client.rejected(first.client.edit(first.docId, annotations, insert(0, "x".repeat(10_001))))).reason, "annotation-ownership");
   });
 
+  test("two people changing one mark at once are both accepted, whichever write wins", async () => {
+    const editor = await env.member("editor");
+    // Yjs picks the winner of a concurrent write by client id, which is random
+    // per connection, so a single run only sees one side of the race.
+    for (let round = 0; round < 12; round += 1) {
+      const first = await openPdf();
+      const second = await env.connect(editor);
+      await second.open(first.docId, { projectId: env.project.id, fileId: first.fileId });
+      await first.client.acked(first.client.edit(first.docId, annotations, mark("m", env.owner.id)));
+      await second.waitFor((message) => message.type === MessageType.Remote && message.docId === first.docId);
+      const left = first.client.edit(first.docId, annotations, field("m", "style", { color: "#22c55e" }, env.owner.id));
+      const right = second.edit(first.docId, annotations, round % 2
+        ? field("m", "deleted", { by: editor.id, at: "2026-11-06T10:01:00.000Z" }, editor.id)
+        : field("m", "style", { color: "#ef4444" }, editor.id));
+      await Promise.all([first.client.acked(left), second.acked(right)]);
+      await second.close();
+      await first.client.close();
+    }
+  });
+
+  test("a change to a mark cannot be credited to someone else", async () => {
+    const editor = await env.member("editor");
+    const first = await openPdf();
+    const second = await env.connect(editor);
+    await second.open(first.docId, { projectId: env.project.id, fileId: first.fileId });
+    await first.client.acked(first.client.edit(first.docId, annotations, mark("m", env.owner.id)));
+    await second.waitFor((message) => message.type === MessageType.Remote && message.docId === first.docId);
+    const silent = await second.rejected(second.edit(first.docId, annotations, field("m", "style", { color: "#ef4444" })));
+    assert.equal(silent.reason, "annotation-ownership");
+  });
+
   test("F6: concurrent server imports retain the one nested map and its acknowledged edits", async () => {
     const first = await openPdf();
     const second = await env.member("commenter");
@@ -241,6 +272,27 @@ describe("shared PDF documents", () => {
     const decided = await json<{ status: string }>(env.server.url, `/v1/reviews/${created.body.id}/decision`, { body: { decision: "approved" }, token: reviewer.token });
     assert.equal(decided.status, 200, JSON.stringify(decided.body));
     assert.equal(decided.body.status, "approved");
+  });
+
+  test("the server says it supports live PDFs, and its digest covers their marks", async () => {
+    const version = await json<{ livePdfs?: boolean }>(env.server.url, "/v1/version");
+    assert.equal(version.body.livePdfs, true);
+    const { client, docId } = await openPdf();
+    const before = await json<{ contentSha256: string }>(env.server.url, `/v1/documents/${docId}/digest`, { token: env.owner.token });
+    await client.acked(client.edit(docId, annotations, mark("digested", env.owner.id)));
+    const after = await json<{ contentSha256: string }>(env.server.url, `/v1/documents/${docId}/digest`, { token: env.owner.token });
+    assert.notEqual(after.body.contentSha256, before.body.contentSha256);
+  });
+
+  test("only the owner turns on live PDFs, and it stays on", async () => {
+    const editor = await env.member("editor");
+    const owner = await env.connect();
+    await owner.open(env.project.manifestDocId);
+    const member = await env.connect(editor);
+    await member.open(env.project.manifestDocId);
+    assert.equal((await member.rejected(member.edit(env.project.manifestDocId, "manifest", (doc) => doc.getMap(ManifestKeys.settings).set("pdfLive", true)))).reason, "invalid-update");
+    await owner.acked(owner.edit(env.project.manifestDocId, "manifest", (doc) => doc.getMap(ManifestKeys.settings).set("pdfLive", true)));
+    assert.equal((await owner.rejected(owner.edit(env.project.manifestDocId, "manifest", (doc) => doc.getMap(ManifestKeys.settings).set("pdfLive", false)))).reason, "invalid-update");
   });
 
   test("awareness is rate limited without closing the socket", async () => {

@@ -10,6 +10,7 @@ import { type RefObject, useLayoutEffect, useMemo, useRef, useState } from "reac
 import { mergeText } from "@/lib/collab/pdf/merge-text";
 import { mathMarkerPairs, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from "@/lib/math-markers";
 import { createAnnotationMarkdownExtensions } from "@/lib/pdf-annotation-markdown";
+import type { ContentTrust } from "@/lib/markdown-sanitize";
 import { convertLiteralMath } from "@/lib/tiptap-math";
 
 // Serializing Markdown walks the whole document; coalesce it while typing.
@@ -24,6 +25,8 @@ export type PdfNoteEditorHandle = {
 };
 
 type PdfNoteEditorProps = {
+  /** "shared" on a live PDF: the note may be a collaborator's. */
+  trust?: ContentTrust;
   caret?: NoteCaret;
   documentPath: string;
   handleRef: RefObject<PdfNoteEditorHandle | null>;
@@ -123,6 +126,7 @@ export function PdfNoteEditor({
   onChange,
   maxLength,
   onEscape,
+  trust = "local",
 }: PdfNoteEditorProps) {
   const callbacksRef = useRef({ mathMarkers, onChange, onEscape });
   const pendingRef = useRef<number | null>(null);
@@ -143,10 +147,10 @@ export function PdfNoteEditor({
   const pairsRef = useRef(pairs);
   const extensions = useMemo(
     () => [
-      ...createAnnotationMarkdownExtensions(documentPath, mathMarkers),
+      ...createAnnotationMarkdownExtensions(documentPath, mathMarkers, trust),
       Placeholder.configure({ placeholder: "Write a note… Markdown and math work" }),
     ],
-    [documentPath, mathMarkers],
+    [documentPath, mathMarkers, trust],
   );
 
   useLayoutEffect(() => {

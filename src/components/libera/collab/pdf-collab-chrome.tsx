@@ -45,7 +45,7 @@ export function PdfCollabChrome({ shared, snapshot, fileName, presence, followin
   if (shared.kind !== "shared") return null;
   const banner = sharedBannerKind(snapshot);
   const rejection = snapshot?.rejection;
-  const viewOnly = shared.resolved.readOnly && banner === null;
+  const viewOnly = !canAnnotate && banner === null;
   const myVersion = shared.resolved.blobHash?.slice(0, 12);
   const otherVersion = users.find((user) => user.presence?.version && myVersion && user.presence.version !== myVersion);
   const exportMarks = () => downloadText(`${fileName}.annotations.json`, JSON.stringify(shared.store.getSnapshot(), null, 2));

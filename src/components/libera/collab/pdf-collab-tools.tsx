@@ -21,6 +21,32 @@ function markLabel(type: string) {
   return type === "text" ? "Note" : type === "ink" ? "Stroke" : type === "space" ? "Space" : type === "shape" ? "Shape" : "Highlight";
 }
 
+/** How long naming a version waits for marks still on their way to the server. */
+const SETTLE_MS = 5_000;
+
+/**
+ * Waits until this device's marks have reached the server. A version is taken
+ * there, so without this it could miss what the person sees on screen.
+ */
+async function settled({ session }: Shared): Promise<void> {
+  const { replica } = session;
+  replica.flush();
+  const synced = () => replica.getSnapshot().status?.pending === 0;
+  if (synced()) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      stop();
+      reject(new Error("Some marks are still syncing. Try again once the status says they are saved to the workspace."));
+    }, SETTLE_MS);
+    const stop = replica.subscribe(() => {
+      if (!synced()) return;
+      clearTimeout(timer);
+      stop();
+      resolve();
+    });
+  });
+}
+
 function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared; role: Role; canAnnotate: boolean; onClose: () => void }) {
   const { docId } = shared.session;
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
@@ -69,7 +95,11 @@ function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared;
           {can(role, "name-revision") ? (
             <form className="flex gap-2" onSubmit={(event) => {
               event.preventDefault();
-              if (label.trim()) void run(async () => { await historyApi.nameVersion(docId, label.trim()); setLabel(""); });
+              if (label.trim()) void run(async () => {
+                await settled(shared);
+                await historyApi.nameVersion(docId, label.trim());
+                setLabel("");
+              });
             }}>
               <input aria-label="Version name" className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm" maxLength={200} placeholder="Name this version" value={label} onChange={(event) => setLabel(event.target.value)} />
               <button type="submit" className={BUTTON} disabled={busy || !label.trim()}>Save</button>

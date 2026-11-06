@@ -14,13 +14,13 @@ import type * as Y from "yjs";
 
 import { importBatches, readAllMarks, visibleMarks, annotationViolation } from "../../../src/lib/collab/pdf/model";
 import { ManifestKeys, type ManifestEntry } from "../../../src/lib/collab/protocol/schema";
-import { isPdfPath, PDF_LIVE_SETTING, pdfDocIdFromDigest, pdfDocIdSeed, PDF_MARK_TYPES, type PdfImportRequest } from "../../../src/lib/collab/protocol/pdf";
+import { isPdfPath, PDF_LIVE_SETTING, pdfDocIdFromDigest, pdfDocIdSeed, PDF_MARK_TYPES, PdfKeys, type PdfImportRequest } from "../../../src/lib/collab/protocol/pdf";
 import { roleAtLeast, type Role } from "../../../src/lib/collab/protocol/roles";
 import type { PdfAnnotation } from "../../../src/lib/types";
 import type { Logger } from "../core/clock";
 import type { DocHub } from "../core/doc-hub";
 import type { CollabHost } from "../core/host";
-import { ensureDirectory, readIfExists, sha256, writeFileAtomic, type WriteGuard } from "./fs-ops";
+import { ensureDirectory, readIfExists, sha256, WriteCancelledError, writeFileAtomic, type WriteGuard } from "./fs-ops";
 
 const SIDECAR_DIRECTORY = [".libera", "annotations", "pdf", "by-path"] as const;
 
@@ -40,8 +40,13 @@ export interface PdfRuntimeContext {
   role(): Role;
   /** This installation writes the folder (it is not a follower). */
   canWriteDisk(): boolean;
+  /** `finalizing` is for the last write of a stopping project, past the usual checks. */
   guard(finalizing?: boolean): WriteGuard;
   authorityReady(): boolean;
+  /** Notes in the notebook's marker that live PDFs are on. */
+  recordLive(): Promise<void>;
+  /** A comment's place arrived, which may be after its thread. */
+  commentsChanged(docId: string): void;
   filesChanged(paths: string[]): void;
   /** Reads the notebook's manifest document. */
   manifest(): Y.Doc | null;
@@ -72,6 +77,8 @@ interface PdfDoc {
   importing: boolean;
   observedHash: string | null;
   writes: Promise<void>;
+  /** How many comment anchors were here, to notice one arriving. */
+  anchors: number;
 }
 
 function validAnnotation(value: unknown): value is PdfAnnotation {
@@ -89,6 +96,8 @@ export class PdfMarksRuntime {
   private stopped = false;
 
   private sidecarTimer: ReturnType<typeof setInterval> | null = null;
+  /** The notebook's marker says live PDFs are on, for when the host cannot be asked. */
+  private markerRecorded = false;
 
   constructor(private readonly ctx: PdfRuntimeContext) {}
 
@@ -101,6 +110,22 @@ export class PdfMarksRuntime {
 
   private sidecarPath(relative: string): string {
     return `${path.join(this.ctx.root, ...SIDECAR_DIRECTORY, ...relative.split("/"))}.json`;
+  }
+
+  /**
+   * Where a PDF's sidecar is. Older ones were keyed by file name alone, so
+   * they belong to a PDF only when no other PDF in the notebook has that name.
+   */
+  private async sidecarToRead(relative: string): Promise<string> {
+    const current = this.sidecarPath(relative);
+    if (await readIfExists(current).catch(() => null)) return current;
+    const name = path.posix.basename(relative);
+    const sameName = [...this.entries.values()].filter((entry) => path.posix.basename(entry.path) === name);
+    if (sameName.length !== 1) return current;
+    for (const legacy of [path.join(this.ctx.root, ".libera", "annotations", "pdf", `${name}.json`), path.join(this.ctx.root, `.${name}.libera-pdf-annotations.json`)]) {
+      if (await readIfExists(legacy).catch(() => null)) return legacy;
+    }
+    return current;
   }
 
   private canAnnotate(): boolean {
@@ -131,6 +156,10 @@ export class PdfMarksRuntime {
       doc.path = entry.path;
       this.ctx.host.store.upsertDoc({ docId: doc.docId, projectId: this.ctx.projectId, fileId: doc.fileId, path: doc.path, materializedHash: null });
     }
+    if (!this.markerRecorded && this.ctx.canWriteDisk()) {
+      this.markerRecorded = true;
+      void this.ctx.recordLive().catch(() => { this.markerRecorded = false; });
+    }
     if (!this.discovered) {
       this.discovered = true;
       void this.discover();
@@ -150,7 +179,7 @@ export class PdfMarksRuntime {
       if (this.stopped) return;
       const entry = this.entries.get(fileId);
       if (!entry || this.docs.has(fileId)) continue;
-      if (await readIfExists(this.sidecarPath(entry.path)).catch(() => null)) this.open(fileId);
+      if (await readIfExists(await this.sidecarToRead(entry.path)).catch(() => null)) this.open(fileId);
       else waiting.push(fileId);
     }
     if (!waiting.length || retries === 0) return;
@@ -192,7 +221,7 @@ export class PdfMarksRuntime {
     // Written first: the hub reads it to tell the server what to make.
     host.store.upsertDoc({ docId, projectId, fileId, path: entry.path, materializedHash: null });
     const hub = host.acquire(docId, { kind: "file", projectId });
-    const doc: PdfDoc = { fileId, docId, path: entry.path, hub, unsubscribe: [], timer: null, imported: false, importing: false, observedHash: null, writes: Promise.resolve() };
+    const doc: PdfDoc = { fileId, docId, path: entry.path, hub, unsubscribe: [], timer: null, imported: false, importing: false, observedHash: null, writes: Promise.resolve(), anchors: 0 };
     this.docs.set(fileId, doc);
     if (!this.sidecarTimer) {
       this.sidecarTimer = setInterval(() => {
@@ -202,7 +231,13 @@ export class PdfMarksRuntime {
     }
     doc.unsubscribe.push(
       hub.observe("annotations", (change) => {
-        if (change.origin !== "rebuilt") this.scheduleWrite(doc);
+        if (change.origin === "rebuilt") return;
+        this.scheduleWrite(doc);
+        const anchors = hub.getDoc("annotations").getMap<unknown>(PdfKeys.anchors).size;
+        if (anchors !== doc.anchors) {
+          doc.anchors = anchors;
+          this.ctx.commentsChanged(docId);
+        }
       }),
       hub.onStatus(() => void this.importSidecar(doc)),
       hub.onRejected((edit) => {
@@ -228,18 +263,17 @@ export class PdfMarksRuntime {
     if (!this.ctx.canWriteDisk() || !this.hasServerState(doc)) return;
     doc.importing = true;
     try {
-      const bytes = await readIfExists(this.sidecarPath(doc.path));
-      const observed = bytes ? sha256(bytes) : null;
+      const current = await readIfExists(this.sidecarPath(doc.path));
+      const observed = current ? sha256(current) : null;
       if (doc.imported && doc.observedHash === observed) return;
+      // Only a PDF with no sidecar of its own can have an older one to merge.
+      const bytes = current ?? await readIfExists(await this.sidecarToRead(doc.path));
       const sidecar = bytes ? JSON.parse(bytes.toString("utf8")) as Sidecar : null;
       const annotations = Array.isArray(sidecar?.annotations) ? sidecar.annotations.filter(validAnnotation) : [];
-      let comments = Array.isArray(sidecar?.comments) ? sidecar.comments : [];
-      if (sidecar?.sharedCopy === doc.docId) {
-        const known = await this.ctx.listComments?.(doc.docId);
-        if (!known) return;
-        const ids = new Set(known.map((thread) => (thread as { id: string }).id));
-        comments = comments.filter((thread) => !ids.has((thread as { id?: string })?.id ?? ""));
-      }
+      // Server threads in a sidecar are copies of what the server holds. Only
+      // comments written locally are new: importing a copy would duplicate a
+      // thread, or bring back one deleted since the copy was made.
+      const comments = (Array.isArray(sidecar?.comments) ? sidecar.comments : []).filter((thread) => !String((thread as { id?: unknown })?.id).startsWith("thr_"));
       if (annotations.length || comments.length) {
         const api = this.ctx.host.api;
         if (!api) return;
@@ -275,7 +309,10 @@ export class PdfMarksRuntime {
     if (this.stopped || doc.timer || !this.ctx.canWriteDisk()) return;
     doc.timer = setTimeout(() => {
       doc.timer = null;
-      void this.writeCopy(doc).catch((error) => this.ctx.logger.warn(`Shared notebook ${this.ctx.notebook}: could not write the annotations of ${doc.path}`, error));
+      void this.writeCopy(doc).catch((error) => {
+        // Cancelled means the folder moved on under it; the next change writes again.
+        if (!(error instanceof WriteCancelledError)) this.ctx.logger.warn(`Shared notebook ${this.ctx.notebook}: could not write the annotations of ${doc.path}`, error);
+      });
     }, this.ctx.writeMs);
     doc.timer.unref?.();
   }
@@ -299,7 +336,9 @@ export class PdfMarksRuntime {
     const expected = observed ? sha256(observed) : null;
     const existing = observed ? JSON.parse(observed.toString("utf8")) as Sidecar : null;
     if (!options.local && (!doc.imported || doc.importing || expected !== doc.observedHash)) return;
-    const annotations = visibleMarks(readAllMarks(doc.hub.getDoc("annotations")));
+    const annotations: unknown[] = visibleMarks(readAllMarks(doc.hub.getDoc("annotations")));
+    // Records this version cannot read stay, as the sidecar writer keeps them.
+    if (Array.isArray(existing?.annotations)) annotations.push(...existing.annotations.filter((record) => !(PDF_MARK_TYPES as readonly unknown[]).includes((record as { type?: unknown })?.type)));
     // Terminal export is independent of the writer lease. Keep private local
     // ids too, since access may end before they could be imported.
     if (options.local && Array.isArray(existing?.annotations)) {
@@ -384,6 +423,24 @@ export class PdfMarksRuntime {
       if (!batches.length) batches.push([]);
       for (let index = 0; index < batches.length; index += 1) await api.importPdf(docId, { ...input, marks: batches[index], comments: index === 0 ? input.comments : [] });
     } finally { host.release(docId); }
+  }
+
+  /** The role changed: a commenter can now merge what a viewer could not. */
+  roleChanged(): void {
+    if (!this.enabled || this.stopped) return;
+    for (const doc of this.docs.values()) void this.importSidecar(doc);
+    void this.openWithSidecars([...this.entries.keys()]);
+  }
+
+  /** Someone changed a comment thread: the sidecar's copy of them is out of date. */
+  commentsChanged(docId: string): void {
+    for (const doc of this.docs.values()) if (doc.docId === docId) this.scheduleWrite(doc);
+  }
+
+  /** The open PDF document with this id, for following a notification to its file. */
+  fileOf(docId: string): { fileId: string; path: string } | null {
+    for (const doc of this.docs.values()) if (doc.docId === docId) return { fileId: doc.fileId, path: doc.path };
+    return null;
   }
 
   /** How many PDF documents are open (tests, diagnostics). */

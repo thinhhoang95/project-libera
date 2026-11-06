@@ -4,7 +4,7 @@ import test from "node:test";
 import { act, createElement } from "react";
 import type { Editor } from "@tiptap/core";
 import { JSDOM } from "jsdom";
-import { Awareness } from "y-protocols/awareness";
+import { applyAwarenessUpdate, Awareness, encodeAwarenessUpdate } from "y-protocols/awareness";
 import * as Y from "yjs";
 
 import { createHash } from "node:crypto";
@@ -48,7 +48,7 @@ test("the PDF viewer on a live document", async (t) => {
   const pdfModule = require.resolve("pdfjs-dist");
   const pages = Array.from({ length: 2 }, (_, index) => ({
     view: [0, 0, 612, 792],
-    getViewport: ({ scale }: { scale: number }) => ({ width: 612 * scale, height: 792 * scale, scale }),
+    getViewport: ({ scale }: { scale: number }) => ({ width: 612 * scale, height: 792 * scale, scale, convertToViewportPoint: (x: number, y: number) => [x * scale, (792 - y) * scale] }),
     getTextContent: async () => ({ items: [{ str: index === 0 ? "Selectable PDF text" : "Other page text", hasEOL: true, width: 190, height: 10, transform: [10, 0, 0, 10, 100, 700] }], styles: {} }),
     render: () => ({ promise: Promise.resolve(), cancel() {} }),
   }));
@@ -82,8 +82,8 @@ test("the PDF viewer on a live document", async (t) => {
     const replica = { annotations, awareness, whenAttached: async () => {}, onRebuild: () => () => {}, subscribe: () => () => {}, getSnapshot: () => snapshot, dismissRejection() {} };
     documents += 1;
     const session = { docId: `pdf_live_doc_${documents}`, resolved: { projectId, path: "Papers/paper.pdf" }, replica };
-    setSharedDocRegistry({ available: true, destroy() {}, acquire: () => ({ docId: session.docId, ready: Promise.resolve(session), session: () => session, release() {} }) } as never);
-    return { annotations, role, remote: (update: (marks: PdfAnnotation[]) => PdfAnnotation[], before: PdfAnnotation[]) => applyMarksDiff(annotations, before, update(before), { accountId: "acc_them" }, "remote") };
+    setSharedDocRegistry({ available: true, destroy() {}, session: () => session, acquire: () => ({ docId: session.docId, ready: Promise.resolve(session), session: () => session, release() {} }) } as never);
+    return { annotations, awareness, role, remote: (update: (marks: PdfAnnotation[]) => PdfAnnotation[], before: PdfAnnotation[]) => applyMarksDiff(annotations, before, update(before), { accountId: "acc_them" }, "remote") };
   }
 
   const originalFetch = globalThis.fetch;
@@ -352,6 +352,10 @@ test("the PDF viewer on a live document", async (t) => {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
       assert.ok(pdfLoads > start + 1, "the later byte delivery reloads even with the same manifest hash");
       assert.equal(marksOf(live.annotations).get("relocate")!.get("sourceHash"), hash(2));
+      const settled = pdfLoads;
+      await act(async () => { filesChanged(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+      assert.equal(pdfLoads, settled, "with the right bytes on screen, a change to the file leaves the reader where they are");
     });
 
     await t.test("F16: oversized live note input is refused before it reaches Yjs", async () => {
@@ -370,6 +374,57 @@ test("the PDF viewer on a live document", async (t) => {
       assert.match(host.textContent ?? "", /10,000 characters/);
     });
     assert.deepEqual(browserErrors, [], "unexpected browser errors fail the harness");
+    await t.test("a viewer can open a note to read it, and cannot change it", async () => {
+      const live = liveDocument("viewer");
+      applyMarksDiff(live.annotations, [], [note("n7", "read me")], { accountId: "acc_them" }, "remote");
+      serve("viewer");
+      await mount();
+      const shown = notes()[0];
+      const press = async () => { for (const type of ["pointerdown", "pointerup"]) await act(async () => { shown.dispatchEvent(new dom.window.MouseEvent(type, { bubbles: true, button: 0 })); }); };
+      await press();
+      assert.equal(shown.dataset.selected, "true", "pressing selects it");
+      assert.equal(host.querySelector(".pdf-note-grip"), null, "no controls to move it");
+      await press();
+      await act(async () => { shown.dispatchEvent(new dom.window.MouseEvent("dblclick", { bubbles: true })); });
+      assert.equal(host.querySelector(".pdf-note-editor"), null, "no editor");
+      assert.ok(host.querySelector(".pdf-note-reader"), "the reader opens, so a clipped note can still be read");
+      await unmount();
+    });
+
+    await t.test("a commenter is not blocked by the view-only rule, and a promotion works at once", async () => {
+      liveDocument("commenter");
+      serve("commenter");
+      await mount();
+      assert.equal(host.querySelector("[data-pdf-read-only]"), null);
+      assert.doesNotMatch(host.textContent ?? "", /View only/);
+      await unmount();
+    });
+
+    await t.test("presence lands in the right place on a page made taller by a space", async () => {
+      const live = liveDocument();
+      const spaced: PdfAnnotation = { id: "sp", type: "space", pageNumber: 1, y: 0.2, height: 0.5, band: { top: 0.2, bottom: 0.2, splits: [] }, column: 0, createdAt: at, updatedAt: at };
+      applyMarksDiff(live.annotations, [], [spaced], { accountId: "acc_them" }, "remote");
+      serve("commenter");
+      await mount();
+      const page = host.querySelector<HTMLElement>("[data-pdf-page-number]");
+      const height = parseFloat((page?.firstElementChild as HTMLElement).style.height);
+      const other = new Awareness(new Y.Doc());
+      other.setLocalStateField("user", { name: "Them", color: "#112233" });
+      other.setLocalStateField("pdf", { page: 1, top: 0, bottom: 1, pointer: { page: 1, x: 0.5, y: 0.5 } });
+      await act(async () => { applyAwarenessUpdate(live.awareness, encodeAwarenessUpdate(other, [other.clientID]), "remote"); });
+      const pointer = host.querySelector<HTMLElement>(".pdf-presence-pointer");
+      assert.ok(pointer, "their pointer shows");
+      assert.equal(parseFloat(pointer.style.top), height / 2, "halfway down the page as displayed");
+      await unmount();
+    });
+
+    await t.test("a note from a collaborator does not load what shared Markdown would not", async () => {
+      const { renderAnnotationMarkdown } = await import("../../src/lib/pdf-annotation-markdown");
+      const image = "![x](http://tracker.example/pixel.png)";
+      assert.match(renderAnnotationMarkdown(image, undefined, "local"), /tracker\.example/);
+      assert.doesNotMatch(renderAnnotationMarkdown(image, undefined, "shared"), /src="http:/);
+      assert.match(renderAnnotationMarkdown("![x](https://example.com/a.png)", undefined, "shared"), /https:\/\/example\.com\/a\.png/);
+    });
   } finally {
     await act(async () => root.unmount());
     setCollabStatusStore(null);

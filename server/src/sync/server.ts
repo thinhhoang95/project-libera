@@ -227,7 +227,7 @@ export class SyncServer {
     const project = await db.selectFrom("projects").select("kind").where("id", "=", target.projectId).executeTakeFirst();
     if (project?.kind !== "notebook") return;
     const count = await db.selectFrom("documents").select((eb) => eb.fn.countAll<string>().as("count"))
-      .where("project_id", "=", target.projectId).where("kind", "=", "pdf").executeTakeFirstOrThrow();
+      .where("project_id", "=", target.projectId).where("kind", "=", "pdf").where("deleted_at", "is", null).executeTakeFirstOrThrow();
     if (Number(count.count) >= PdfLimits.maxDocuments) return;
     const created = await db.insertInto("documents")
       .values({ id: docId, project_id: target.projectId, kind: "pdf", file_id: target.fileId, created_by: accountId, last_server_seq: 0 })

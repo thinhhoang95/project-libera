@@ -10,7 +10,7 @@ import { copyFileIntoSharedDirectory } from "../../src/lib/collab/shared-writes"
 import { invalidateSharedNotebookCache } from "../../src/lib/collab/shared-notebook";
 import { createNotebook } from "../../src/lib/storage/notebooks";
 import { filePathFromParts, pdfAnnotationsPath } from "../../src/lib/storage/paths";
-import { changePdfComments } from "../../src/lib/storage/pdf-comments";
+import { changePdfComments, readPdfComments } from "../../src/lib/storage/pdf-comments";
 import type { FileOpRequest } from "../../src/lib/collab/local-api";
 
 const annotation = (id: string) => ({ id, type: "text", pageNumber: 1, text: id, fontSize: 10, rect: { x: 0, y: 0, width: 0.2, height: 0.1 }, createdAt: "2026-11-06T10:00:00.000Z", updatedAt: "2026-11-06T10:00:00.000Z" });
@@ -27,8 +27,11 @@ test("PDF authority routing and copy", async (t) => {
     await createNotebook("Shared");
     const source = filePathFromParts("Shared", ["source.pdf"]);
     await writeFile(source, "%PDF-1.4\n%%EOF\n");
-    await writeFile(path.join(path.dirname(source), ".libera-shared.json"), JSON.stringify({ projectId: "prj_test", serverUrl: "https://collab.test", accountId: "acc_me", manifestDocId: "doc_manifest", sharedAt: new Date().toISOString() }));
-    invalidateSharedNotebookCache();
+    const writeSharedMarker = async (fields: object = {}) => {
+      await writeFile(path.join(path.dirname(source), ".libera-shared.json"), JSON.stringify({ ...{ projectId: "prj_test", serverUrl: "https://collab.test", accountId: "acc_me", manifestDocId: "doc_manifest", sharedAt: new Date().toISOString() }, ...fields }));
+      invalidateSharedNotebookCache();
+    };
+    await writeSharedMarker({ pdfLive: true });
     const sidecar = pdfAnnotationsPath("Shared", ["source.pdf"]);
     await mkdir(path.dirname(sidecar), { recursive: true });
     const original = JSON.stringify({ annotations: [annotation("stale-sidecar")] });
@@ -44,6 +47,19 @@ test("PDF authority routing and copy", async (t) => {
       assert.equal((await PATCH(request())).status, 503);
       assert.equal(await readFile(sidecar, "utf8"), original);
       process.env.LIBERA_COLLAB_HOST_URL = "http://host.test";
+    });
+
+    await t.test("a notebook without live PDFs keeps its sidecars when the host cannot answer", async () => {
+      await writeSharedMarker();
+      globalThis.fetch = async () => { throw new Error("host restarting"); };
+      assert.equal((await PATCH(request())).status, 200);
+      assert.equal(JSON.parse(await readFile(sidecar, "utf8")).annotations[0].id, "local-write");
+      delete process.env.LIBERA_COLLAB_HOST_URL;
+      assert.equal((await PATCH(request())).status, 200);
+      assert.deepEqual((await readPdfComments("Shared/source.pdf")).threads, []);
+      process.env.LIBERA_COLLAB_HOST_URL = "http://host.test";
+      await writeFile(sidecar, original);
+      await writeSharedMarker({ pdfLive: true });
     });
 
     await t.test("F14: confirmed local still writes and confirmed live refuses", async () => {

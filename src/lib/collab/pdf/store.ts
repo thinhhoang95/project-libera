@@ -150,9 +150,23 @@ export class SharedPdfStore {
     return [...this.records.values()].filter((record) => !record.deleted && record.sourceHash && record.sourceHash !== sourceHash);
   }
 
-  /** Records that marks fit the PDF at `sourceHash`, moving those that say where to. */
-  acceptVersion(moves: ReadonlyArray<{ id: string; geometry?: Record<string, unknown> }>, sourceHash: string) {
-    if (moves.length) markVersion(this.doc, moves, sourceHash, this.context, this.origin);
+  /**
+   * Records that marks fit the PDF at `sourceHash`, moving those that say
+   * where to. `history` is for the person's own "Keep them here"; automatic
+   * relocation is not a step of theirs to undo.
+   */
+  acceptVersion(moves: ReadonlyArray<{ id: string; geometry?: Record<string, unknown> }>, sourceHash: string, options: { history?: boolean } = {}) {
+    if (!moves.length) return;
+    const changes: MarkChange[] = moves.map(({ id }) => ({ id, before: { sourceHash: this.records.get(id)?.sourceHash }, after: { sourceHash } }));
+    markVersion(this.doc, moves, sourceHash, this.context, this.origin);
+    if (options.history) this.addStep(changes);
+  }
+
+  /** A step of its own, for changes that do not come through commit. */
+  private addStep(changes: MarkChange[]) {
+    this.undoStack = [...this.undoStack, { time: Date.now(), changes }].slice(-MAX_UNDO_STEPS);
+    this.redoStack = [];
+    this.publish({ local: true, removed: [] });
   }
 
   /** Deleted marks, newest deletion first, for Restore. */
@@ -223,7 +237,10 @@ export class SharedPdfStore {
   }
 
   restore(id: string): boolean {
-    return restoreMark(this.doc, id, this.context, this.origin);
+    const deleted = this.records.get(id)?.deleted;
+    if (!restoreMark(this.doc, id, this.context, this.origin)) return false;
+    this.addStep([{ id, before: { deleted }, after: { deleted: undefined } }]);
+    return true;
   }
 
   /** Keeps what was typed into a note someone deleted meanwhile. */

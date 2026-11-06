@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { MAX_PDF_COMMENT_CHARS, normalizePdfCommentAnchor } from "@/lib/pdf-comments";
 import { StorageError } from "@/lib/storage/errors";
 import { readPdfCommentThreads, updatePdfCommentThreads } from "@/lib/storage/annotations";
-import { changeLivePdfComments, collabHostConfig, listLivePdfComments, resolveSharedPdf } from "@/lib/collab/host-client";
-import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { changeLivePdfComments, listLivePdfComments, livePdfFor } from "@/lib/collab/host-client";
 import type { PdfCommentMessage, PdfCommentThread, PdfCommentsPayload } from "@/lib/types";
 
 // Review comments on PDFs. Threads are kept in the PDF's annotation sidecar
@@ -11,24 +10,13 @@ import type { PdfCommentMessage, PdfCommentThread, PdfCommentsPayload } from "@/
 // moves, copies, archiving and deletion of the PDF or its folders carry them
 // exactly as they carry its highlights. Each operation changes one thread
 // under the sidecar's lock, so the viewer saving markup and the agent
-// replying never overwrite each other.
-
-/**
- * The PDF's live document, when its notebook has live PDFs on. Its comments
- * are then collaboration-server threads. Resolution failure is unknown and
- * must never authorize a fallback to sidecar storage.
- */
-async function livePdfDocId(relativePath: string): Promise<string | null> {
-  if (!isSharedNotebookPath(relativePath)) return null;
-  const config = collabHostConfig();
-  if (!config) throw new StorageError("Live PDF status is unavailable.", 503);
-  const live = await resolveSharedPdf(relativePath, config);
-  return live?.docId ?? null;
-}
+// replying never overwrite each other. A live PDF's comments are collaboration
+// server threads instead; livePdfFor says which, and failing to find out never
+// falls back to the sidecar in a notebook that has live PDFs on.
 
 export async function readPdfComments(relativePath: string): Promise<PdfCommentsPayload> {
-  const docId = await livePdfDocId(relativePath);
-  return docId ? { path: relativePath, threads: await listLivePdfComments(docId) } : readPdfCommentThreads(relativePath);
+  const live = await livePdfFor(relativePath);
+  return live ? { path: relativePath, threads: await listLivePdfComments(live.docId), readOnly: live.readOnly } : readPdfCommentThreads(relativePath);
 }
 
 export type PdfCommentAction =
@@ -81,8 +69,8 @@ function liveChange(input: PdfCommentAction) {
 
 /** Applies one Comments-panel action to a PDF's threads and returns them all. */
 export async function changePdfComments(relativePath: string, input: PdfCommentAction): Promise<PdfCommentsPayload> {
-  const docId = await livePdfDocId(relativePath);
-  if (docId) return { path: relativePath, threads: await changeLivePdfComments(docId, liveChange(input)) };
+  const live = await livePdfFor(relativePath);
+  if (live) return { path: relativePath, threads: await changeLivePdfComments(live.docId, liveChange(input)), readOnly: live.readOnly };
   const now = new Date().toISOString();
   const { payload } = await updatePdfCommentThreads(relativePath, (threads) => {
     switch (input.action) {
@@ -131,10 +119,10 @@ export async function changePdfComments(relativePath: string, input: PdfCommentA
 /** The agent's reply in a thread (ReplyToComment). StorageError 404 when the thread is gone. */
 export async function addPdfCommentReply(relativePath: string, threadId: string, text: string, author?: "agent") {
   const now = new Date().toISOString();
-  const docId = await livePdfDocId(relativePath);
-  if (docId) {
+  const live = await livePdfFor(relativePath);
+  if (live) {
     const change = { action: "reply", threadId, text: commentText(text), ...(author ? { ai: { feature: "agent" } } : {}) };
-    const threads = await changeLivePdfComments(docId, change);
+    const threads = await changeLivePdfComments(live.docId, change);
     const message = threads.find((thread) => thread.id === threadId)?.messages.at(-1);
     if (!message) throw new StorageError("Comment was not found.", 404);
     return message;

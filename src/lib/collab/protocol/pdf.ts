@@ -71,6 +71,8 @@ export const PDF_STYLE_KEYS: readonly string[] = ["color", "strokeWidth", "marku
 export const PdfLimits = {
   /** Longest note, as the sidecar normalizer allows. */
   maxTextLength: 10_000,
+  /** Longest highlight quote, as normalizePdfHighlightQuote keeps it. */
+  maxQuoteLength: 10_000,
   /** Largest geometry: an ink stroke at the sidecar's 5,000-point limit. */
   maxGeometryBytes: 512 * 1024,
   maxStyleBytes: 2 * 1024,
@@ -147,7 +149,7 @@ function geometryViolation(type: string, value: unknown): string | null {
   for (const key of Object.keys(value)) {
     if (PDF_STYLE_KEYS.includes(key) || Object.values(PdfMarkFields).includes(key as typeof PdfMarkFields.id)) return `geometry cannot override ${key}.`;
   }
-  if (value.quote !== undefined && (typeof value.quote !== "string" || value.quote.length > 4000)) return "quote is too long.";
+  if (value.quote !== undefined && (typeof value.quote !== "string" || value.quote.length > PdfLimits.maxQuoteLength)) return "quote is too long.";
   const page = value.pageNumber;
   if (!Number.isInteger(page) || (page as number) < 1 || (page as number) > PdfLimits.maxPageNumber) return "pageNumber is not a page.";
   switch (type) {
