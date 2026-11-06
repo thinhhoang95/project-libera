@@ -590,11 +590,15 @@ export class SharedProject {
       }
     }
 
-    // Folders.
+    // Folders. One the scan has seen go is someone's rename or delete, waiting
+    // out its grace period: making it again would cancel that for good. A
+    // folder absent at startup has no such proof, and is made.
+    const leaving = new Set(Object.entries(previous).filter(([fileId, record]) => record.kind === "folder" && this.missingSince.has(fileId)).map(([, record]) => record.path));
     for (const directory of [...layout.directories].sort()) {
       try {
         const absolute = await resolveInside(this.info.root, directory);
         const stats = await statIfExists(absolute);
+        if (!stats && leaving.has(directory)) continue;
         if (stats && !stats.isDirectory()) await this.archive(directory);
         if (!stats || !stats.isDirectory()) {
           await ensureDirectory(absolute, this.diskGuard());
@@ -852,6 +856,9 @@ export class SharedProject {
     if (disk && sha256(disk) !== sha256(encodeText(text)) && sha256(disk) !== record.hash) await this.archive(record.path);
     await writeFileAtomic(target, encodeText(text), this.diskGuard());
     await this.archive(record.path);
+    // Writing it back made its folders again if they were deleted with it.
+    const inUse = (relative: string) => Object.values(this.state.layout).some((other) => other.path === relative || other.path.startsWith(`${relative}/`));
+    await pruneEmptyDirectories(this.info.root, path.posix.dirname(record.path), inUse);
   }
 
   private refuse(relative: string, error: unknown): void {
@@ -1736,7 +1743,11 @@ export class SharedProject {
             if (!request.to) throw new ControlError(400, "bad-request", "rename needs `to`.");
             const to = normalizeRelative(request.to);
             const moving = entriesUnder(this.entries.values(), relative);
-            if (moving.length === 0) throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            if (moving.length === 0) {
+              // The same rename again: on a follower the disk still shows the old name.
+              if (this.retired.has(manifestPathKey(relative)) && entriesUnder(this.entries.values(), to).length > 0) return { paths: [] };
+              throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            }
             this.assertFree(to, moving.map((entry) => entry.fileId));
             const depth = relative.split("/").length;
             const updates = moving.map((entry) => {

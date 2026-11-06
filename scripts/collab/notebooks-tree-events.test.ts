@@ -4,7 +4,7 @@
 // per keystroke.
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -121,5 +121,43 @@ test("a collaborator typing steadily does not write my working copy per keystrok
     await server.stop().catch(() => undefined);
     removeDataDir(server.dataDir);
     temp.cleanup();
+  }
+});
+
+test("a folder renamed or deleted in Finder does not come back empty", { timeout: 60_000 }, async () => {
+  const temp = tempRoot("libera-finder-folders-");
+  const server = await startServerProcess();
+  const peers: Peer[] = [];
+  try {
+    const aliceAuth = await register(server, "Alice");
+    const bobAuth = await register(server, "Bob");
+    const alice = await makePeer(temp.dir, "alice", server, aliceAuth);
+    const bob = await makePeer(temp.dir, "bob", server, bobAuth);
+    peers.push(alice, bob);
+    const root = path.join(alice.library, "Lab");
+    writeTree(root, { "keep.md": "keep\n", "old/in.md": "in\n", "old/deep/x.md": "x\n", "doomed/y.md": "y\n", "doomed/deep/z.md": "z\n" });
+    const shared = await alice.router.call("POST", ControlRoutes.share, { notebook: "Lab" });
+    const { projectId } = shared.body as { projectId: string };
+    const link = await invite(server, aliceAuth, projectId, "bob@example.test");
+    const joined = await bob.router.call("POST", ControlRoutes.join, { invitation: link });
+    const bobRoot = path.join(bob.library, (joined.body as { notebook: string }).notebook);
+    await until(() => existsSync(path.join(bobRoot, "doomed", "deep", "z.md")), "Bob's copy of the notebook");
+
+    const gone = (folder: string) => !existsSync(path.join(root, folder)) && !existsSync(path.join(bobRoot, folder));
+    renameSync(path.join(root, "old"), path.join(root, "new"));
+    await until(() => readText(bobRoot, "new/deep/x.md") === "x\n", "Bob's renamed folder");
+    await until(() => gone("old"), "the old folder to go from both disks");
+
+    rmSync(path.join(root, "doomed"), { recursive: true });
+    await until(() => gone("doomed"), "the deleted folder to go from both disks");
+
+    await sleep(1500);
+    assert.ok(gone("old") && gone("doomed"), "neither folder comes back");
+    assert.equal(readText(root, "new/in.md"), "in\n");
+    assert.equal(readText(bobRoot, "keep.md"), "keep\n");
+  } finally {
+    for (const peer of peers) await closePeer(peer);
+    await server.stop();
+    removeDataDir(server.dataDir);
   }
 });

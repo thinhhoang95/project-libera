@@ -242,6 +242,14 @@ test("a follower's window hears when the writer's disk catches up", { timeout: 6
     await until(() => existsSync(path.join(root, "new.md")), "the writer to write the file");
     await until(() => heard("Research/new.md"), "the follower's window to hear that it reached the disk");
 
+    const renamed = await twin.router.call("POST", files, { op: "rename", path: "note.md", to: "renamed.md" });
+    assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+    const renamedAgain = await twin.router.call("POST", files, { op: "rename", path: "note.md", to: "renamed.md" });
+    assert.equal(renamedAgain.status, 200, `the same rename again is not an error: ${JSON.stringify(renamedAgain.body)}`);
+    await until(() => existsSync(path.join(root, "renamed.md")) && !existsSync(path.join(root, "note.md")), "the writer to rename the file");
+
+    const elsewhere = await twin.router.call("POST", files, { op: "rename", path: "note.md", to: "elsewhere.md" });
+    assert.equal(elsewhere.status, 404, "a different rename of a path that has moved on is refused");
     const unknown = await twin.router.call("POST", files, { op: "delete", path: "never-here.md" });
     assert.equal(unknown.status, 404, "a path that was never shared is still refused");
   } finally {
