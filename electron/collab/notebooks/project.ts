@@ -63,7 +63,6 @@ import {
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
 import { PdfCommentService } from "./pdf-comments";
 import { PdfMarksRuntime } from "./pdf-marks";
-import type { PdfCommentThread } from "../../../src/lib/types";
 import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
@@ -198,6 +197,7 @@ export class SharedProject {
   private started = false;
   private rootUnavailable = false;
   private albumSnapshot: string | null = null;
+  private pdfLiveSnapshot = false;
   private readonly baselineMissing = new Set<string>();
   private readonly uploadedBlobs = new Map<string, Uint8Array>();
   private dirtyPaths = new Set<string>();
@@ -222,11 +222,10 @@ export class SharedProject {
       writeMs: ctx.timings.pdfWriteMs,
       role: () => this.info.role,
       canWriteDisk: () => !this.follower,
-      guard: () => this.diskGuard(true),
-      accountId: () => ctx.accountId(),
+      guard: (finalizing) => this.diskGuard(finalizing),
+      authorityReady: () => this.manifestReady(),
       filesChanged: (paths) => this.filesChanged(paths),
       manifest: () => (this.manifestHub && !this.manifestHub.isClosed ? this.manifestHub.getDoc("manifest") : null),
-      importComments: (docId, comments) => this.pdfComments().importLocal(docId, comments as PdfCommentThread[]),
       listComments: (docId) => this.pdfComments().list(docId),
     });
   }
@@ -488,6 +487,11 @@ export class SharedProject {
   private async applyManifest(): Promise<void> {
     if (!this.manifestReady()) return;
     this.manifestWasReady = true;
+    const pdfLive = this.pdfs.enabled;
+    if (pdfLive !== this.pdfLiveSnapshot) {
+      this.pdfLiveSnapshot = pdfLive;
+      this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
+    }
     if (this.follower) {
       this.followManifest();
       this.notifyAlbumChanged();
@@ -1634,6 +1638,7 @@ export class SharedProject {
               // A new file: the same as create-file, from bytes.
               this.assertFree(relative, []);
               const fileId = randomId("fil");
+              if (request.pdfSeed && this.pdfs.enabled) await this.pdfs.seed(fileId, relative, request.pdfSeed);
               const created = await this.createFileEntry(fileId, relative, bytes, accountId, now);
               await this.writeManifest((map) => map.set(fileId, entryRecord(created)), { source: "typing" });
               paths.push(relative);

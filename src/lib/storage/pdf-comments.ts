@@ -15,14 +15,14 @@ import type { PdfCommentMessage, PdfCommentThread, PdfCommentsPayload } from "@/
 
 /**
  * The PDF's live document, when its notebook has live PDFs on. Its comments
- * are then collaboration-server threads. With the host down the answer is
- * null and the sidecar's copy is read, which is the last state written here.
+ * are then collaboration-server threads. Resolution failure is unknown and
+ * must never authorize a fallback to sidecar storage.
  */
 async function livePdfDocId(relativePath: string): Promise<string | null> {
   if (!isSharedNotebookPath(relativePath)) return null;
   const config = collabHostConfig();
-  if (!config) return null;
-  const live = await resolveSharedPdf(relativePath, config).catch(() => null);
+  if (!config) throw new StorageError("Live PDF status is unavailable.", 503);
+  const live = await resolveSharedPdf(relativePath, config);
   return live?.docId ?? null;
 }
 

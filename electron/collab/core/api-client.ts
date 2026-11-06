@@ -7,6 +7,7 @@
 // "network" when the request never got a response).
 
 import { createHash } from "node:crypto";
+import { isPlainJsonRecord, type PdfImportRequest } from "../../../src/lib/collab/protocol/pdf";
 
 import type {
   Account,
@@ -363,6 +364,45 @@ export class ApiClient {
 
   createDocument(projectId: string, body: CreateDocumentRequest): Promise<DocumentInfo> {
     return this.request("POST", ApiRoutes.documents(projectId), { body });
+  }
+
+  async importPdf(docId: string, body: PdfImportRequest): Promise<{ serverSeq: number }> {
+    const batches: PdfImportRequest[] = [];
+    let batch = { marks: [] as unknown[], comments: [] as unknown[], sourceHash: body.sourceHash };
+    let size = 0;
+    const append = (kind: "marks" | "comments", value: unknown) => {
+      const bytes = JSON.stringify(value).length;
+      if (size && (size + bytes > 1024 * 1024 || batch.marks.length + batch.comments.length >= 2000)) {
+        batches.push(batch);
+        batch = { marks: [], comments: [], sourceHash: body.sourceHash };
+        size = 0;
+      }
+      batch[kind].push(value);
+      size += bytes;
+    };
+    for (const mark of body.marks) append("marks", mark);
+    for (const local of body.comments ?? []) {
+      if (!isPlainJsonRecord(local) || !Array.isArray(local.messages) || !local.messages.length) { append("comments", local); continue; }
+      const [first, ...replies] = local.messages;
+      let messages = [first];
+      let bytes = JSON.stringify({ ...local, messages }).length;
+      for (const reply of replies) {
+        const added = JSON.stringify(reply).length;
+        if (messages.length > 1 && bytes + added > 512 * 1024) {
+          append("comments", { ...local, messages });
+          messages = [first];
+          bytes = JSON.stringify({ ...local, messages }).length;
+        }
+        messages.push(reply);
+        bytes += added;
+      }
+      append("comments", { ...local, messages });
+    }
+    if (size) batches.push(batch);
+    if (body.hash || !batches.length) batches.push({ marks: [], hash: body.hash });
+    let result = { serverSeq: 0 };
+    for (const input of batches) result = await this.request("POST", ApiRoutes.pdfImport(docId), { body: input });
+    return result;
   }
 
   getDocument(docId: string): Promise<DocumentInfo> {

@@ -34,8 +34,12 @@ function mark(id: string, createdBy: string, overrides: Record<string, unknown> 
   };
 }
 
-function field(id: string, key: string, value: unknown) {
-  return (doc: Y.Doc) => (doc.getMap(PdfKeys.marks).get(id) as Y.Map<unknown>).set(key, value);
+function field(id: string, key: string, value: unknown, editor?: string) {
+  return (doc: Y.Doc) => {
+    const mark = doc.getMap(PdfKeys.marks).get(id) as Y.Map<unknown>;
+    mark.set(key, value);
+    if (editor) mark.set("updatedBy", editor);
+  };
 }
 
 const annotations: Subdoc = "annotations";
@@ -94,8 +98,8 @@ describe("shared PDF documents", () => {
     await other.open(owner.docId, { projectId: env.project.id, fileId: owner.fileId });
     await owner.client.acked(owner.client.edit(owner.docId, annotations, mark("m1", env.owner.id)));
     await other.waitFor((message) => message.type === MessageType.Remote && message.docId === owner.docId);
-    await other.acked(other.edit(owner.docId, annotations, field("m1", "style", { color: "#22c55e" })));
-    await other.acked(other.edit(owner.docId, annotations, field("m1", "deleted", { by: commenter.id, at: "2026-11-06T10:01:00.000Z" })));
+    await other.acked(other.edit(owner.docId, annotations, field("m1", "style", { color: "#22c55e" }, commenter.id)));
+    await other.acked(other.edit(owner.docId, annotations, field("m1", "deleted", { by: commenter.id, at: "2026-11-06T10:01:00.000Z" }, commenter.id)));
     await other.acked(other.edit(owner.docId, annotations, mark("m2", commenter.id, { type: "ink", geometry: { pageNumber: 2, points: [{ x: 0.1, y: 0.2 }] }, style: { color: "#111111", strokeWidth: 2 } })));
 
     const reader = await env.connect(viewer);
@@ -145,21 +149,29 @@ describe("shared PDF documents", () => {
     await second.waitFor((message) => message.type === MessageType.Remote && message.docId === first.docId);
     const insert = (at: number, value: string) => (doc: Y.Doc) => ((doc.getMap(PdfKeys.marks).get("note") as Y.Map<unknown>).get("text") as Y.Text).insert(at, value);
     const a = first.client.edit(first.docId, annotations, insert(0, "A "));
-    const b = second.edit(first.docId, annotations, insert(5, " B"));
+    const b = second.edit(first.docId, annotations, (doc) => {
+      insert(5, " B")(doc);
+      (doc.getMap(PdfKeys.marks).get("note") as Y.Map<unknown>).set("updatedBy", editor.id);
+    });
     await Promise.all([first.client.acked(a), second.acked(b)]);
     const text = await env.server.server.context.rooms.withDocs(first.docId, (docs) => ((docs.annotations.getMap(PdfKeys.marks).get("note") as Y.Map<unknown>).get("text") as Y.Text).toString());
     assert.equal(text, "A hello B");
     assert.equal((await first.client.rejected(first.client.edit(first.docId, annotations, insert(0, "x".repeat(10_001))))).reason, "annotation-ownership");
   });
 
-  test("two devices importing one sidecar can both create a mark", async () => {
+  test("F6: concurrent server imports retain the one nested map and its acknowledged edits", async () => {
     const first = await openPdf();
-    const second = await env.connect();
-    await second.open(first.docId, { projectId: env.project.id, fileId: first.fileId });
-    const a = first.client.edit(first.docId, annotations, mark("imported", env.owner.id));
-    const b = second.edit(first.docId, annotations, mark("imported", env.owner.id));
-    await Promise.all([first.client.acked(a), second.acked(b)]);
-    assert.equal(await env.server.server.context.rooms.withDocs(first.docId, (docs) => docs.annotations.getMap(PdfKeys.marks).size), 1);
+    const second = await env.member("commenter");
+    const note = { id: "imported", type: "text", pageNumber: 1, rect: { x: 0, y: 0, width: 0.2, height: 0.1 }, fontSize: 10, text: "base", createdAt: "2026-11-06T10:00:00.000Z", updatedAt: "2026-11-06T10:00:00.000Z" };
+    const endpoint = `/v1/documents/${first.docId}/pdf-import`;
+    const imported = await json(env.server.url, endpoint, { body: { marks: [note] }, token: env.owner.token });
+    assert.equal(imported.status, 200, JSON.stringify(imported.body));
+    await first.client.waitFor((message) => message.type === MessageType.Remote && message.docId === first.docId);
+    await first.client.acked(first.client.edit(first.docId, annotations, (doc) => ((doc.getMap(PdfKeys.marks).get("imported") as Y.Map<unknown>).get("text") as Y.Text).insert(4, " acknowledged")));
+    const results = await Promise.all([env.owner, second].map((account) => json(env.server.url, endpoint, { body: { marks: [note] }, token: account.token })));
+    assert.deepEqual(results.map((result) => result.status), [200, 200]);
+    const text = await env.server.server.context.rooms.withDocs(first.docId, (docs) => ((docs.annotations.getMap(PdfKeys.marks).get("imported") as Y.Map<unknown>).get("text") as Y.Text).toString());
+    assert.equal(text, "base acknowledged");
   });
 
   test("import records name their importer", async () => {
@@ -241,4 +253,123 @@ describe("shared PDF documents", () => {
     }
     await client.acked(client.edit(docId, annotations, mark("still-open", env.owner.id)));
   });
+
+  test("F7: replacing containers and forging editor/deleter identities are refused", async () => {
+    const { client, docId } = await openPdf();
+    await client.acked(client.edit(docId, annotations, mark("protected", env.owner.id)));
+    for (const change of [mark("protected", env.owner.id), field("protected", "updatedBy", "acc_forged"), field("protected", "deleted", { by: "acc_forged", at: "2026-11-06T10:00:00.000Z" })]) {
+      assert.equal((await client.rejected(client.edit(docId, annotations, change))).reason, "annotation-ownership");
+      await client.rollback(docId);
+    }
+    const reader = await env.connect();
+    await reader.open(docId);
+    assert.equal((reader.doc(docId, annotations).getMap(PdfKeys.marks).get("protected") as Y.Map<unknown>).get("createdBy"), env.owner.id);
+    const commenter = await env.member("commenter");
+    const other = await env.connect(commenter);
+    await other.open(docId);
+    assert.equal((await other.rejected(other.edit(docId, annotations, field("protected", "style", { color: "#22c55e" })))).reason, "annotation-ownership", "changing someone else's mark also requires the sender's editor identity");
+    await other.rollback(docId);
+    await other.acked(other.edit(docId, annotations, field("protected", "style", { color: "#22c55e" }, commenter.id)));
+  });
+
+  test("F8: incomplete spaces, geometry overrides and malformed nested anchors are refused", async () => {
+    const changes = [
+      mark("space", env.owner.id, { type: "space", geometry: { pageNumber: 1, y: 0.5, height: 0.2 } }),
+      mark("override", env.owner.id, { style: { color: "#111111", rects: null } }),
+      (doc: Y.Doc) => doc.getMap(PdfKeys.anchors).set("anchor", { createdBy: env.owner.id, quote: "", segments: [] }),
+      (doc: Y.Doc) => doc.getMap(PdfKeys.anchors).set("anchor", { createdBy: env.owner.id, quote: "", segments: [{ pageNumber: 1, rects: [null] }] }),
+    ];
+    for (const change of changes) {
+      const { client, docId } = await openPdf();
+      assert.equal((await client.rejected(client.edit(docId, annotations, change))).reason, "annotation-ownership");
+    }
+  });
+
+  test("F9: a restore queued before demotion reauthorizes inside the room", async () => {
+    const { client, docId } = await openPdf();
+    const editor = await env.member("editor");
+    await client.acked(client.edit(docId, annotations, mark("restore", env.owner.id)));
+    const named = await json<{ id: string }>(env.server.url, `/v1/documents/${docId}/revisions`, { body: { kind: "named" }, token: env.owner.token });
+    await client.acked(client.edit(docId, annotations, field("restore", "style", { color: "#111111" })));
+    const rooms = env.server.server.context.rooms;
+    const batch = rooms.batch;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    rooms.batch = (id, task) => { entered(); return batch(id, async (room) => { await gate; return task(room); }); };
+    try {
+      const request = json(env.server.url, `/v1/documents/${docId}/restore`, { body: { revisionId: named.body.id }, token: editor.token });
+      await waiting;
+      await env.db.updateTable("memberships").set({ role: "viewer" }).where("project_id", "=", env.project.id).where("account_id", "=", editor.id).execute();
+      release();
+      assert.equal((await request).status, 403);
+      assert.deepEqual(await rooms.withDocs(docId, (docs) => (docs.annotations.getMap(PdfKeys.marks).get("restore") as Y.Map<unknown>).get("style")), { color: "#111111" });
+    } finally { release(); rooms.batch = batch; }
+  });
+
+  test("F9: a membership change after queued authorization is fenced at persistence", async () => {
+    const { client, docId } = await openPdf();
+    const editor = await env.member("editor");
+    await client.acked(client.edit(docId, annotations, mark("restore", env.owner.id)));
+    const named = await json<{ id: string }>(env.server.url, `/v1/documents/${docId}/revisions`, { body: { kind: "named" }, token: env.owner.token });
+    await client.acked(client.edit(docId, annotations, field("restore", "style", { color: "#111111" })));
+    const rooms = env.server.server.context.rooms;
+    const batch = rooms.batch;
+    rooms.batch = (id, task) => batch(id, (room) => task({ ...room, transact: async (...args) => {
+      await env.db.updateTable("memberships").set({ role: "viewer" }).where("project_id", "=", env.project.id).where("account_id", "=", editor.id).execute();
+      return room.transact(...args);
+    } }));
+    try {
+      const response = await json(env.server.url, `/v1/documents/${docId}/restore`, { body: { revisionId: named.body.id }, token: editor.token });
+      assert.equal(response.status, 403, JSON.stringify(response.body));
+      assert.deepEqual(await rooms.withDocs(docId, (docs) => (docs.annotations.getMap(PdfKeys.marks).get("restore") as Y.Map<unknown>).get("style")), { color: "#111111" });
+    } finally { rooms.batch = batch; }
+  });
+
+  test("F16: REST imports validate complete marks before creating anything", async () => {
+    const { docId } = await openPdf();
+    const note = { id: "invalid", type: "text", pageNumber: 1, rect: { x: 0, y: 0, width: 0.2, height: 0.1 }, fontSize: 10, text: "x".repeat(10_001), createdAt: "2026-11-06T10:00:00.000Z", updatedAt: "invalid" };
+    const result = await json(env.server.url, `/v1/documents/${docId}/pdf-import`, { body: { marks: [note] }, token: env.owner.token });
+    assert.equal(result.status, 400);
+    assert.equal(await env.server.server.context.rooms.withDocs(docId, (docs) => docs.annotations.getMap(PdfKeys.marks).size), 0);
+  });
+
+  test("F18: simultaneous imports by different accounts create one immutable anchor and thread", async () => {
+    const { docId } = await openPdf();
+    const other = await env.member("commenter");
+    const local = { id: "old-thread", anchor: { quote: "passage", segments: [{ pageNumber: 1, rects: [{ x: 0, y: 0, width: 0.2, height: 0.02 }] }] }, status: "open", messages: [{ id: "old-message", text: "First" }, { id: "reply", text: "Reply" }] };
+    const requests = [env.owner, other].map((account) => json(env.server.url, `/v1/documents/${docId}/pdf-import`, { body: { marks: [], comments: [local] }, token: account.token }));
+    assert.deepEqual((await Promise.all(requests)).map((result) => result.status), [200, 200]);
+    assert.equal((await env.db.selectFrom("threads").selectAll().where("doc_id", "=", docId).execute()).length, 1);
+    const rows = await env.db.selectFrom("messages").innerJoin("threads", "threads.id", "messages.thread_id").select("messages.id").where("threads.doc_id", "=", docId).execute();
+    assert.equal(rows.length, 2);
+    assert.equal(await env.server.server.context.rooms.withDocs(docId, (docs) => docs.annotations.getMap(PdfKeys.anchors).size), 1);
+  });
+
+  test("F19: deleting a never-opened PDF tombstones late opens and stale blob re-adds", async () => {
+    const client = await env.connect();
+    const manifestId = env.project.manifestDocId;
+    await client.open(manifestId);
+    const fileId = nextFile();
+    const docId = pdfDocId(env.project.id, fileId);
+    const entry = { fileId, path: "never-opened.pdf", kind: "blob", blobHash: "a".repeat(64), createdBy: env.owner.id, createdAt: 1, updatedAt: 1 };
+    await client.acked(client.edit(manifestId, "manifest", (doc) => doc.getMap(ManifestKeys.files).set(fileId, entry)));
+    const stale = await env.connect();
+    await stale.open(manifestId);
+    let offlineRename!: Uint8Array;
+    const offlineDoc = stale.doc(manifestId, "manifest");
+    const capture = (update: Uint8Array) => { offlineRename = update; };
+    offlineDoc.on("update", capture);
+    offlineDoc.getMap(ManifestKeys.files).set(fileId, { ...entry, path: "stale.pdf" });
+    offlineDoc.off("update", capture);
+    await client.acked(client.edit(manifestId, "manifest", (doc) => doc.getMap(ManifestKeys.files).delete(fileId)));
+    const row = await env.db.selectFrom("documents").selectAll().where("id", "=", docId).executeTakeFirstOrThrow();
+    assert.ok(row.deleted_at);
+    const late = await env.connect();
+    await assert.rejects(late.open(docId, { projectId: env.project.id, fileId }), /document-deleted/);
+    const sent = stale.sendUpdate({ docId: manifestId, subdoc: "manifest", clientSeq: stale.nextSeq(), update: offlineRename });
+    assert.equal((await stale.rejected(sent)).reason, "invalid-update");
+  });
+
 });

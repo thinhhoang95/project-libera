@@ -239,3 +239,18 @@ test("5xx keeps the command and backs off; a permanent 4xx settles it as failed"
   assert.equal(settled.error?.code, "already-decided");
   store.close();
 });
+
+test("F6: imports bound mark counts and split large conversations without dropping records", async () => {
+  const { fetch, calls } = fakeFetch(() => json(200, { serverSeq: 42 }));
+  const api = new ApiClient({ baseUrl: "https://collab.test", tokenProvider: new TestTokens("token", null), fetch });
+  const marks = Array.from({ length: 4001 }, (_, index) => ({ id: `m${index}`, type: "highlight", pageNumber: 1, rects: [{ x: 0, y: 0, width: 0.2, height: 0.02 }], color: "#111111", createdAt: "2026-11-06T10:00:00.000Z", updatedAt: "2026-11-06T10:00:00.000Z" }));
+  const messages = Array.from({ length: 101 }, (_, index) => ({ id: `message-${index}`, text: "x".repeat(20_000) }));
+  await api.importPdf("pdf_doc", { marks, comments: [{ id: "local", anchor: { quote: "", segments: [{ pageNumber: 1, rects: [{ x: 0, y: 0, width: 0.2, height: 0.02 }] }] }, status: "resolved", messages }], hash: "a".repeat(64) });
+  const bodies = calls.map((call) => call.body as { marks: typeof marks; comments?: Array<{ messages: typeof messages }>; hash?: string });
+  assert.ok(bodies.length > 3);
+  assert.ok(bodies.every((body) => body.marks.length <= 2000 && JSON.stringify(body).length < 2 * 1024 * 1024));
+  assert.deepEqual(bodies.flatMap((body) => body.marks.map((mark) => mark.id)), marks.map((mark) => mark.id));
+  const ids = new Set(bodies.flatMap((body) => body.comments?.flatMap((comment) => comment.messages.map((message) => message.id)) ?? []));
+  assert.equal(ids.size, messages.length);
+  assert.equal(bodies.at(-1)!.hash, "a".repeat(64), "completion is recorded only after every batch");
+});

@@ -32,6 +32,7 @@ export interface RoomService {
     actor: Actor,
     provenance: Provenance,
     change: (doc: Y.Doc) => T | Promise<T>,
+    requiredAccess?: { projectId: string; role: Role },
   ): Promise<{ serverSeq: number; result: T }>;
 
   /**
@@ -93,6 +94,7 @@ export interface RoomBatch {
     actor: Actor,
     provenance: Provenance,
     change: (doc: Y.Doc) => T,
+    requiredAccess?: { projectId: string; role: Role },
   ): Promise<{ serverSeq: number; result: T }>;
 }
 

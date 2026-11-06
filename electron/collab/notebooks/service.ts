@@ -47,7 +47,7 @@ import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
 import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord } from "./layout";
-import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
+import { PDF_LIVE_SETTING, isPdfPath } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
   deleteMarker,
@@ -831,8 +831,11 @@ export class NotebookServiceImpl implements NotebookService {
   resolvePdf(liberaPath: string): ResolvedPdf | null {
     if (typeof liberaPath !== "string") return null;
     const segments = liberaPath.replace(/\\/g, "/").split("/").filter(Boolean);
-    if (segments.length < 2) return null;
+    if (segments.length < 2 || !isPdfPath(segments.at(-1) ?? "")) return null;
     const handle = this.handleForNotebook(segments[0]);
+    if (handle?.revoking) throw new ControlError(503, "unavailable", "Keeping the last PDF annotations.");
+    if (handle && !handle.revoked && (!handle.runtime || !handle.runtime.pdfs.ready)) throw new ControlError(503, "unavailable", "Live PDF status is still loading.");
+    if (handle?.revoked) return null;
     const resolved = handle?.runtime?.pdfs.resolve(segments.slice(1).join("/"));
     if (!handle || !resolved) return null;
     return {
@@ -1676,7 +1679,19 @@ export class NotebookServiceImpl implements NotebookService {
         }
       };
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
-    router.add("GET", ControlRoutes.pdfResolve, wrap(async (request) => ({ body: this.resolvePdf(request.query.get("path") ?? "") })));
+    router.add("GET", ControlRoutes.pdfResolve, wrap(async (request) => {
+      const relative = request.query.get("path") ?? "";
+      const resolved = this.resolvePdf(relative);
+      if (!resolved) {
+        const notebook = relative.replace(/\\/g, "/").split("/")[0];
+        if (notebook && notebook !== "." && notebook !== "..") {
+          const handle = this.handleForNotebook(notebook);
+          const marker = await readMarker(path.join(this.deps.libraryRoot, notebook)).catch(() => null);
+          if (!handle?.revoked && ((marker && !handle) || handle?.runtime?.pdfs.enabled)) throw new ControlError(503, "unavailable", "Live PDF status is still loading.");
+        }
+      }
+      return { body: resolved };
+    }));
     router.add("POST", decodeURIComponent(ControlRoutes.pdfLive(":projectId")), wrap(async (request) => {
       const runtime = this.project(request.params.projectId);
       if (!runtime) throw new ControlError(404, "not-found", "This notebook is not running here.");

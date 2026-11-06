@@ -4,6 +4,8 @@ import test from "node:test";
 import * as Y from "yjs";
 
 import { applyMarksDiff, importMarks, marksOf, readAllMarks, visibleMarks } from "../../src/lib/collab/pdf/model";
+import { mergeText } from "../../src/lib/collab/pdf/merge-text";
+import { pdfAnchorViolation } from "../../src/lib/collab/protocol/pdf";
 import { SharedPdfStore } from "../../src/lib/collab/pdf/store";
 import { PdfKeys } from "../../src/lib/collab/protocol/pdf";
 import type { PdfAnnotation, PdfHighlightAnnotation, PdfInkAnnotation, PdfSpaceAnnotation, PdfTextAnnotation } from "../../src/lib/types";
@@ -128,7 +130,7 @@ test("a store tells the viewer who lost a mark", () => {
   remove(a.store, "n");
   sync(a, b);
   assert.deepEqual(seen, ["n"]);
-  b.store.keepDeletedText("n", "typing more");
+  b.store.keepDeletedText("n", "typing more", "typing");
   sync(a, b);
   a.store.restore("n");
   assert.equal((byId(a.store, "n") as PdfTextAnnotation).text, "typing more");
@@ -323,4 +325,84 @@ test("the keys stay in the annotations sub-document's named roots", () => {
   const a = client("a");
   add(a.store, highlight("h"));
   assert.deepEqual([...a.doc.share.keys()], [PdfKeys.marks]);
+});
+
+
+test("F3: typing after a remote text edit starts a new undo step", () => {
+  const a = client("a");
+  importMarks(a.doc, [note("n", "base")], { accountId: "importer" }, "import");
+  patch(a.store, "n", { text: "base A" }, "typing");
+  a.doc.transact(() => (marksOf(a.doc).get("n")!.get("text") as Y.Text).insert(0, "B "), "remote");
+  patch(a.store, "n", { text: "B base A C" }, "typing");
+  assert.equal(a.store.undo(), true);
+  assert.equal((byId(a.store, "n") as PdfTextAnnotation).text, "B base A");
+  assert.equal(a.store.redo(), true);
+  assert.equal((byId(a.store, "n") as PdfTextAnnotation).text, "B base A C");
+});
+
+test("F4: replacement boundaries preserve remote insertions and overlapping replacements", () => {
+  assert.equal(mergeText("hello", "bye", "hello!"), "bye!");
+  assert.equal(mergeText("cat", "dog", "fox"), "foxdog");
+  assert.equal(mergeText("hello", "bye", "!hello"), "!bye");
+  assert.equal(mergeText("abc", "", "aBc"), "B");
+  assert.equal(mergeText("abc", "aXbc", "abc!"), "aXbc!");
+  assert.equal(mergeText("a\nb\nc", "A\nb\nC", "Q"), "QAC");
+});
+
+test("F5: editor cleanup merges its pending text with the current tombstone", () => {
+  const a = client("a");
+  importMarks(a.doc, [note("n", "base")], { accountId: "importer" }, "import");
+  a.doc.transact(() => {
+    const mark = marksOf(a.doc).get("n")!;
+    (mark.get("text") as Y.Text).insert(0, "Their ");
+    mark.set("deleted", { by: "b", at: at(2) });
+  }, "remote");
+  a.store.keepDeletedText("n", "base mine", "base");
+  assert.equal(a.store.record("n")!.deleted!.by, "b");
+  assert.equal((a.store.record("n")!.annotation as PdfTextAnnotation).text, "Their base mine");
+  a.store.restore("n");
+  assert.equal((byId(a.store, "n") as PdfTextAnnotation).text, "Their base mine");
+});
+
+test("F7/F26: undo writes fresh deletion identity and redo only replays reversed fields", () => {
+  const a = client("a");
+  importMarks(a.doc, [highlight("h")], { accountId: "importer" }, "import");
+  patch(a.store, "h", { color: "#111111" });
+  a.doc.transact(() => marksOf(a.doc).get("h")!.set("style", { color: "#fde047" }), "remote");
+  assert.equal(a.store.undo(), false);
+  assert.equal(a.store.redo(), false);
+  assert.equal((byId(a.store, "h") as PdfHighlightAnnotation).color, "#fde047");
+  a.doc.transact(() => marksOf(a.doc).get("h")!.set("deleted", { by: "b", at: at(0) }), "remote");
+  // Reintroducing a deleted mark records the old tombstone in history.
+  add(a.store, highlight("h"));
+  a.store.undo();
+  assert.equal(a.store.record("h")!.deleted!.by, "a");
+  assert.notEqual(a.store.record("h")!.deleted!.at, at(0));
+  a.store.redo();
+  assert.equal(a.store.record("h")!.deleted, undefined);
+});
+
+test("F8: malformed grouped values and nested anchors never reach rendering", () => {
+  const a = client("a");
+  importMarks(a.doc, [highlight("h"), space("s", 0.5)], { accountId: "importer" }, "import");
+  a.doc.transact(() => {
+    marksOf(a.doc).get("h")!.set("style", { color: "#111111", rects: null });
+    marksOf(a.doc).get("s")!.set("geometry", { pageNumber: 1, y: 0.5, height: 0.2 });
+  }, "remote");
+  assert.deepEqual(a.store.getSnapshot(), []);
+  assert.ok(pdfAnchorViolation({ segments: [], quote: "" }));
+  assert.ok(pdfAnchorViolation({ segments: [{ pageNumber: 1, rects: [null] }], quote: "" }));
+});
+
+test("F16: invalid local input is refused before any part of a gesture is queued", () => {
+  const a = client("a");
+  const updates: Uint8Array[] = [];
+  a.doc.on("update", (update: Uint8Array) => updates.push(update));
+  assert.throws(() => a.store.commit([highlight("good"), note("too-long", "x".repeat(10_001))]), /too long/);
+  assert.equal(updates.length, 0);
+  assert.equal(marksOf(a.doc).size, 0);
+  assert.throws(() => a.store.commit([{ ...note("bad-date"), updatedAt: "invalid" }]), /date/);
+  assert.equal(updates.length, 0);
+  add(a.store, note("valid", "x".repeat(10_000)));
+  assert.equal(updates.length, 1);
 });

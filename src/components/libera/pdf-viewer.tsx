@@ -684,13 +684,20 @@ export function PdfViewer({
   const canAnnotate = useCanAnnotate(shared, sharedSnapshot);
   const sharedStore = shared.kind === "shared" ? shared.store : null;
   const sharedKind = shared.kind;
+  const sharedResolved = shared.kind === "shared" ? shared.resolved : null;
   const sharedStoreRef = useRef(sharedStore);
   const canAnnotateRef = useRef(canAnnotate);
+  const previousAuthorityRef = useRef(sharedKind);
+  const activationAnnotationsRef = useRef<PdfAnnotation[] | null>(null);
   useLayoutEffect(() => {
+    if (previousAuthorityRef.current === "local" && sharedKind !== "local") activationAnnotationsRef.current = latestAnnotationsRef.current;
+    if (sharedKind === "local") activationAnnotationsRef.current = null;
+    previousAuthorityRef.current = sharedKind;
     sharedStoreRef.current = sharedStore;
     canAnnotateRef.current = canAnnotate;
   });
   const sharedHistory = useSyncExternalStore(sharedStore?.subscribe ?? noHistorySubscribe, sharedStore?.getHistoryState ?? noHistoryState, noHistoryState);
+  const [privateRecovery, setPrivateRecovery] = useState<{ path: string; annotations: PdfAnnotation[] } | null>(null);
   const [deletedNote, setDeletedNote] = useState<{ id: string; by: string } | null>(null);
   const presence = shared.kind === "shared" ? pdfPresenceFor(shared.session.replica.awareness) : null;
   const presenceRef = useRef(presence);
@@ -699,8 +706,11 @@ export function PdfViewer({
   const [followingClientId, setFollowingClientId] = useState<number | null>(null);
   const drawingPresenceIdRef = useRef("");
   const blobHash = shared.kind === "shared" ? shared.resolved.blobHash : undefined;
-  const blobHashRef = useRef(blobHash);
-  useLayoutEffect(() => { blobHashRef.current = blobHash; });
+  const [loadedHash, setLoadedHash] = useState<string>();
+  const blobHashRef = useRef(loadedHash);
+  useLayoutEffect(() => {
+    blobHashRef.current = loadedHash;
+  }, [loadedHash]);
   const viewerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pendingScrollRestoreRef = useRef<PdfScrollPosition | null>({
@@ -1067,8 +1077,8 @@ export function PdfViewer({
   // there exactly once, nearby. Anything else stays where it was, flagged.
   useEffect(() => {
     const store = sharedStore;
-    if (!store || !blobHash || !pdfDocument || !textContentCache || !canAnnotate) return;
-    const candidates = store.stale(blobHash).filter((record) => record.annotation.type === "highlight" && record.annotation.quote);
+    if (!store || !loadedHash || loadedHash !== blobHash || !pdfDocument || !textContentCache || !canAnnotate) return;
+    const candidates = store.stale(loadedHash).filter((record) => record.annotation.type === "highlight" && record.annotation.quote);
     if (!candidates.length) return;
     let active = true;
     void (async () => {
@@ -1091,10 +1101,10 @@ export function PdfViewer({
         const found = relocateQuote(annotation.quote, near);
         if (found) moves.push({ id: annotation.id, geometry: { pageNumber: found.pageNumber, rects: found.rects } });
       }
-      if (active) store.acceptVersion(moves, blobHash);
+      if (active) store.acceptVersion(moves, loadedHash);
     })().catch(() => undefined);
     return () => { active = false; };
-  }, [blobHash, canAnnotate, pdfDocument, sharedStore, textContentCache]);
+  }, [blobHash, loadedHash, canAnnotate, pdfDocument, sharedStore, textContentCache]);
 
   // Moving by hand ends following; only a scroll this viewer made keeps it.
   const stopFollowing = useCallback(() => setFollowingClientId(null), []);
@@ -1137,7 +1147,7 @@ export function PdfViewer({
         PDF_SCROLL_STATE_INTERVAL_MS,
       );
     },
-    [flushPendingScrollViewState],
+    [flushPendingScrollViewState, publishView],
   );
 
   useEffect(() => {
@@ -1155,6 +1165,7 @@ export function PdfViewer({
       // Which store holds the marks decides what is loaded.
       if (sharedKind === "checking") return;
       setPdfDocument(null);
+      setLoadedHash(undefined);
       setBasePageLayouts([]);
       setCurrentPage(1);
       setRenderWindowPages(new Set());
@@ -1191,6 +1202,12 @@ export function PdfViewer({
             ),
         ]);
         controller.signal.throwIfAborted();
+        // Hash the actual response: followers may still have the previous
+        // file while its replacement is arriving through folder sync.
+        const bytesHash = sharedStoreRef.current
+          ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", pdfResponse)), (byte) => byte.toString(16).padStart(2, "0")).join("")
+          : undefined;
+        controller.signal.throwIfAborted();
         loadingTask = getDocument({ data: new Uint8Array(pdfResponse) });
         const loadedDocument = await loadingTask.promise;
         controller.signal.throwIfAborted();
@@ -1201,11 +1218,12 @@ export function PdfViewer({
         }
 
         setPdfDocument(loadedDocument);
+        setLoadedHash(bytesHash);
         setBasePageLayouts(loadedPageLayouts);
         // Unsaved notes kept from before a crash or restart come back unsaved.
         const kept = sharedStoreRef.current ? null : await annotationWriterRef.current.recover();
         if (!active) return;
-        const loadedAnnotations = kept ?? annotationsPayload.annotations;
+        const loadedAnnotations = sharedStoreRef.current?.getSnapshot() ?? kept ?? annotationsPayload.annotations;
         latestAnnotationsRef.current = loadedAnnotations;
         automaticSpaceNotesRef.current.clear();
         setAnnotations(loadedAnnotations);
@@ -1235,7 +1253,7 @@ export function PdfViewer({
       destroyLoadingTask();
       forgetPdfAnnotations(filePath);
     };
-  }, [filePath, src, sharedKind]);
+  }, [filePath, src, sharedKind, blobHash, sharedResolved]);
 
   // Quotes cite printed pages: keep the PDF's own page labels, when it has any.
   const pageLabelsRef = useRef<readonly string[] | null>(null);
@@ -1481,7 +1499,7 @@ export function PdfViewer({
   const localSavePendingRef = useRef(false);
   useEffect(() => { localSavePendingRef.current = false; }, [filePath]);
   useAnnotationSync<PdfAnnotation>("pdf", filePath, (remoteAnnotations) => {
-    if (localSavePendingRef.current) {
+    if (sharedKind !== "local" || localSavePendingRef.current) {
       return;
     }
 
@@ -1502,14 +1520,23 @@ export function PdfViewer({
     dispatchPdfAnnotationsUpdated({ path: filePath, annotations: savedAnnotations });
   }, (saveError) => {
     setError(saveError instanceof Error ? saveError.message : "Could not save PDF annotations.");
-  });
+  }, sharedKind === "local");
+  useEffect(() => {
+    if (sharedKind !== "shared") return;
+    let active = true;
+    void annotationWriter.preserveForLive().then((kept) => {
+      activationAnnotationsRef.current = null;
+      if (active) setPrivateRecovery(kept ? { path: filePath, annotations: kept } : null);
+    });
+    return () => { active = false; };
+  }, [annotationWriter, filePath, sharedKind]);
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfAnnotation[]) => {
       if (!canAnnotateRef.current) return;
       const store = sharedStoreRef.current;
       if (store) {
         // No history here: the callers that come this way have dealt with it.
-        store.commit(nextAnnotations, undefined, { history: false });
+        store.commit(nextAnnotations, undefined, { history: false, sourceHash: blobHashRef.current });
         return;
       }
       latestAnnotationsRef.current = nextAnnotations;
@@ -1670,7 +1697,7 @@ export function PdfViewer({
 
     const store = sharedStoreRef.current;
     if (store) {
-      store.commit(next, historyKey);
+      store.commit(next, historyKey, { sourceHash: blobHashRef.current });
       return;
     }
 
@@ -1717,10 +1744,17 @@ export function PdfViewer({
     }
   }, [selectAnnotationId]);
 
-  const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>) => {
+  const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>, base?: string) => {
+    const local = activationAnnotationsRef.current;
+    if (base !== undefined && local?.some((mark) => mark.id === id)) {
+      const kept = local.map((mark) => mark.id === id ? { ...mark, ...patch, updatedAt: nowIso() } as PdfAnnotation : mark);
+      activationAnnotationsRef.current = kept;
+      annotationWriterRef.current.schedule(kept);
+      return;
+    }
     const store = sharedStoreRef.current;
     if (store?.record(id)?.deleted) {
-      if ("text" in patch && typeof patch.text === "string") store.keepDeletedText(id, patch.text);
+      if ("text" in patch && typeof patch.text === "string") store.keepDeletedText(id, patch.text, base ?? patch.text);
       return;
     }
     if ("text" in patch && patch.text?.trim()) automaticSpaceNotesRef.current.delete(id);
@@ -2486,6 +2520,16 @@ export function PdfViewer({
           event.currentTarget.focus({ preventScroll: true });
         }
       }}>
+      {privateRecovery?.path === filePath && sharedKind === "shared" ? <div role="status" className="px-3 py-2 text-sm">
+        Unsaved local annotations are kept in a private recovery copy. <button type="button" onClick={() => {
+          const url = URL.createObjectURL(new Blob([JSON.stringify({ annotations: privateRecovery.annotations }, null, 2)], { type: "application/json" }));
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `${filePath.split("/").pop()}.recovery.json`;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 0);
+        }}>Download recovery</button>
+      </div> : null}
       <PdfCollabChrome
         deletedMark={deletedNote}
         fileName={filePath.split("/").pop() ?? filePath}
@@ -2496,7 +2540,7 @@ export function PdfViewer({
         snapshot={sharedSnapshot}
         staleMarks={sharedStore ? sharedStore.stale(blobHash).length : 0}
         onAcceptVersion={() => {
-          if (sharedStore && blobHash) sharedStore.acceptVersion(sharedStore.stale(blobHash).map((record) => ({ id: record.annotation.id })), blobHash);
+          if (sharedStore && loadedHash && loadedHash === blobHash) sharedStore.acceptVersion(sharedStore.stale(loadedHash).map((record) => ({ id: record.annotation.id })), loadedHash);
         }}
         onFollow={(clientId) => setFollowingClientId((current) => (current === clientId ? null : clientId))}
         onDismissDeleted={() => setDeletedNote(null)}
@@ -2961,7 +3005,7 @@ type PdfPageContentProps = {
   onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
   onSelectAnnotation: (annotation: PdfAnnotation) => void;
   onSelectComment: (id: string) => void;
-  onUpdateAnnotation: (id: string, patch: Partial<PdfAnnotation>) => void;
+  onUpdateAnnotation: (id: string, patch: Partial<PdfAnnotation>, base?: string) => void;
 };
 
 const PdfPageView = memo(function PdfPageView({
@@ -3259,9 +3303,9 @@ function PdfPageContent({
   useLayoutEffect(() => {
     annotationsRef.current = annotations;
   });
-  const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>) => {
+  const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>, base?: string) => {
     const original = annotationsRef.current.find((annotation) => annotation.id === id);
-    onUpdateAnnotation(id, original ? patchFromSurface(original, patch, geometryRef.current) : patch);
+    onUpdateAnnotation(id, original ? patchFromSurface(original, patch, geometryRef.current) : patch, base);
   }, [onUpdateAnnotation]);
   const placeCut = useCallback((point: { x: number; y: number }, fullWidth: boolean, snap: boolean) => {
     const mask = raster.inkMask(sheetHeight / Math.max(pageLayout.width, 1));
@@ -3470,6 +3514,7 @@ function PdfPageContent({
 
       <TextAnnotationLayer
         annotations={textAnnotations}
+        noteMaxLength={presence ? 10_000 : undefined}
         documentPath={documentPath}
         drawing={tool === "text"}
         editRequestId={noteToEdit}

@@ -327,6 +327,8 @@ export class DocHub implements CompactionTarget {
     return this.status.onChange(listener);
   }
 
+  get hasOpened(): boolean { return this.opened; }
+
   getStatus(): SyncStatus {
     return this.status.current();
   }

@@ -21,7 +21,7 @@ import {
   PdfKeys,
   PdfLimits,
   PdfMarkFields,
-  pdfMarkFieldViolation,
+  pdfMarkFieldViolation, pdfAnchorViolation as anchorValueViolation, pdfMarkValuesViolation,
   type Actor,
   type AiFeature,
   type ProjectKind,
@@ -32,9 +32,10 @@ import {
 
 /**
  * Keys each changed Y type reported in the probe transaction (null: an
- * array-like change). `any` because that is how yjs types Transaction.changed.
+ * array-like change), using the event types Yjs actually reports.
  */
-export type ChangedTypes = Map<Y.AbstractType<any>, Set<string | null>>;
+export type ChangedTypes = Y.Transaction["changed"];
+type SharedType = Parameters<ChangedTypes["get"]>[0];
 
 const ANNOTATION_MAPS: readonly string[] = [AnnotationKeys.anchors, AnnotationKeys.suggestions, AnnotationKeys.reviewScopes];
 
@@ -61,7 +62,7 @@ function sameJson(a: unknown, b: unknown): boolean {
 }
 
 /** Name of the top-level type `type` belongs to, or null when it is not integrated. */
-function rootName(doc: Y.Doc, type: Y.AbstractType<any>): string | null {
+function rootName(doc: Y.Doc, type: SharedType): string | null {
   let current = type;
   while (current._item !== null) {
     const parent = current._item.parent;
@@ -115,7 +116,8 @@ export function annotationViolation(
     // bypass the per-key checks below.
     if (type._item !== null) return `Entries in ${root} must be plain JSON values.`;
     const beforeMap = before.getMap<unknown>(root);
-    const afterMap = type as Y.Map<unknown>;
+    if (!(type instanceof Y.Map)) return `${root} must be a map.`;
+    const afterMap = type;
     for (const key of keys) {
       if (key === null) return `${root} must be a map.`;
       const previous = beforeMap.get(key);
@@ -149,11 +151,12 @@ export function annotationViolation(
   return null;
 }
 
-function pdfImportViolation(type: Y.AbstractType<any>, keys: Set<string | null>, accountId: string): string | null {
+function pdfImportViolation(type: SharedType, keys: Set<string | null>, accountId: string): string | null {
   if (type._item !== null) return `${PdfKeys.imports} records must be plain JSON values.`;
+  if (!(type instanceof Y.Map)) return `${PdfKeys.imports} must be a map.`;
   for (const key of keys) {
     if (key === null) return `${PdfKeys.imports} must be a map.`;
-    const record = (type as Y.Map<unknown>).get(key);
+    const record = type.get(key);
     if (record === undefined) return "Import records are never removed.";
     if (!isPlainJsonRecord(record) || record.by !== accountId || typeof record.at !== "string") return `${PdfKeys.imports}/${key} must say that you imported it.`;
   }
@@ -161,23 +164,25 @@ function pdfImportViolation(type: Y.AbstractType<any>, keys: Set<string | null>,
 }
 
 /** A comment's place on the page: written once, by the person commenting. */
-function pdfAnchorViolation(before: Y.Doc, type: Y.AbstractType<any>, keys: Set<string | null>, accountId: string): string | null {
+function pdfAnchorViolation(before: Y.Doc, type: SharedType, keys: Set<string | null>, accountId: string): string | null {
   if (type._item !== null) return `${PdfKeys.anchors} records must be plain JSON values.`;
+  if (!(type instanceof Y.Map)) return `${PdfKeys.anchors} must be a map.`;
   const previous = before.getMap<unknown>(PdfKeys.anchors);
   for (const key of keys) {
     if (key === null) return `${PdfKeys.anchors} must be a map.`;
-    const record = (type as Y.Map<unknown>).get(key);
+    const record = type.get(key);
     if (!isPlainRecord(record)) return `${PdfKeys.anchors}/${key} must be a plain JSON object.`;
     if (previous.has(key) && !sameJson(previous.get(key), record)) return `${PdfKeys.anchors}/${key} cannot change.`;
     if (record.createdBy !== accountId) return `${PdfKeys.anchors}/${key} must be created by you.`;
-    if (!Array.isArray(record.segments) || typeof record.quote !== "string") return `${PdfKeys.anchors}/${key} needs its segments and quote.`;
+    const problem = anchorValueViolation(record);
+    if (problem) return `${PdfKeys.anchors}/${key}: ${problem}`;
     if (JSON.stringify(record).length > 64 * 1024) return `${PdfKeys.anchors}/${key} is too large.`;
   }
   return null;
 }
 
 /** The mark a nested type belongs to, as [the mark's Y.Map, the field holding this type], or null. */
-function markOwner(type: Y.AbstractType<any>): Y.Map<unknown> | null {
+function markOwner(type: Pick<Y.Text, "_item">): Y.Map<unknown> | null {
   const parent = type._item?.parent;
   return parent instanceof Y.Map && parent._item !== null ? parent : null;
 }
@@ -186,10 +191,10 @@ function markOwner(type: Y.AbstractType<any>): Y.Map<unknown> | null {
  * Rules for a change to a PDF's marks. Anyone who can write annotations may
  * change any mark, so this checks shape only: a mark is deleted by setting
  * its `deleted` field and never removed, nobody rewrites who made it, and
- * every value fits its field. Two devices importing one sidecar can both
- * create a mark, so a key may be replaced by a mark with the same identity.
+ * every value fits its field. Imports use the server's serialized operation,
+ * because independently created nested maps cannot merge their children.
  */
-function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: Y.AbstractType<any>, keys: Set<string | null>, accountId: string): string | null {
+function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: SharedType, keys: Set<string | null>, accountId: string): string | null {
   const beforeMarks = before.getMap<unknown>(PdfKeys.marks);
   const afterMarks = after.getMap<unknown>(PdfKeys.marks);
 
@@ -197,6 +202,7 @@ function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: Y.AbstractType<any>
   if (type._item === null) {
     for (const key of keys) {
       if (key === null) return `${PdfKeys.marks} must be a map.`;
+      if (beforeMarks.has(key)) return `${PdfKeys.marks}/${key} cannot be replaced.`;
       const mark = afterMarks.get(key);
       if (mark === undefined) return "Marks are deleted by marking them deleted, not removed.";
       if (!(mark instanceof Y.Map)) return `${PdfKeys.marks}/${key} must be a Y.Map.`;
@@ -205,13 +211,17 @@ function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: Y.AbstractType<any>
       if (mark.get(PdfMarkFields.createdBy) !== accountId) return `${PdfKeys.marks}/${key} must be created by you.`;
       // Yjs reports only types that existed before the transaction, so a new
       // mark's fields never reach the per-field branch below.
+      const complete = Object.fromEntries([...mark.entries()].map(([field, value]) => [field, value instanceof Y.Text ? value.toString() : value]));
+      const invalid = pdfMarkValuesViolation(complete);
+      if (invalid) return invalid;
       const markType = String(mark.get(PdfMarkFields.type) ?? "");
       for (const [field, value] of mark.entries()) {
         const problem = pdfFieldValueViolation(key, markType, field, value);
         if (problem) return problem;
       }
-      const previous = beforeMarks.get(key);
-      if (previous instanceof Y.Map && previous.get(PdfMarkFields.type) !== mark.get(PdfMarkFields.type)) return `${PdfKeys.marks}/${key} cannot change type.`;
+      if (mark.has(PdfMarkFields.updatedBy) && mark.get(PdfMarkFields.updatedBy) !== accountId) return "updatedBy must be you.";
+      const deleted = mark.get(PdfMarkFields.deleted) as { by?: unknown } | undefined;
+      if (deleted && deleted.by !== accountId) return "deleted.by must be you.";
     }
     if (afterMarks.size > PdfLimits.maxMarks) return "This PDF holds too many marks.";
     return null;
@@ -221,6 +231,7 @@ function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: Y.AbstractType<any>
   if (type instanceof Y.Text) {
     const mark = markOwner(type);
     if (!mark || type._item?.parentSub !== PdfMarkFields.text) return "Only a note's text field may hold text.";
+    if (mark.get(PdfMarkFields.updatedBy) !== accountId) return "updatedBy must be you.";
     if (type.length > PdfLimits.maxTextLength) return "This note is too long.";
     return null;
   }
@@ -230,9 +241,12 @@ function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: Y.AbstractType<any>
   const id = type._item?.parentSub ?? "";
   const previous = beforeMarks.get(id);
   const markType = String(type.get(PdfMarkFields.type) ?? "");
+  if (type.get(PdfMarkFields.updatedBy) !== accountId) return "updatedBy must be you.";
   for (const field of keys) {
     if (field === null) return `${PdfKeys.marks}/${id} must be a map.`;
     const value = type.get(field);
+    if (field === PdfMarkFields.updatedBy && value !== accountId) return "updatedBy must be you.";
+    if (field === PdfMarkFields.deleted && value !== undefined && (value as { by?: unknown })?.by !== accountId) return "deleted.by must be you.";
     if (previous instanceof Y.Map && PDF_IMMUTABLE_FIELDS.includes(field) && !sameJson(previous.get(field), value)) return `${field} cannot change.`;
     const problem = pdfFieldValueViolation(id, markType, field, value);
     if (problem) return problem;
@@ -242,7 +256,7 @@ function pdfMarkViolation(before: Y.Doc, after: Y.Doc, type: Y.AbstractType<any>
 
 function pdfFieldValueViolation(id: string, markType: string, field: string, value: unknown): string | null {
   if (field === PdfMarkFields.text) {
-    if (!(value instanceof Y.Text)) return `${PdfKeys.marks}/${id}/text must be a Y.Text.`;
+    if (markType !== "text" || !(value instanceof Y.Text)) return `${PdfKeys.marks}/${id}/text must be a note's Y.Text.`;
     return value.length > PdfLimits.maxTextLength ? "This note is too long." : null;
   }
   if (value instanceof Y.AbstractType) return `${PdfKeys.marks}/${id}/${field} must be a plain value.`;
@@ -309,23 +323,25 @@ export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKi
   for (const [type, keys] of changed) {
     const root = rootName(after, type);
     if (album && root === ManifestKeys.settings) {
+      if (!(type instanceof Y.Map)) return "settings must be a map.";
       if (type._item !== null) return "Album settings must be plain values.";
       for (const key of keys) {
         if (key === null) return "settings must be a map.";
         if (key !== AlbumSettingKeys.keepLocation && key !== AlbumSettingKeys.sharePrompts) continue;
         if (role !== "owner") return "Only the album's owner can change what it shares.";
-        const value = (type as Y.Map<unknown>).get(key);
+        const value = type.get(key);
         if (value !== undefined && typeof value !== "boolean") return `settings/${key} must be a boolean.`;
       }
       continue;
     }
     if (!album && root === ManifestKeys.settings) {
+      if (!(type instanceof Y.Map)) return "settings must be a map.";
       // Marks go to everyone, so the owner decides; and it is one way, because
       // turning it off would strand marks in their documents.
       for (const key of keys) {
         if (key !== PDF_LIVE_SETTING) continue;
         if (role !== "owner") return "Only the notebook's owner can turn on live PDFs.";
-        if ((type as Y.Map<unknown>).get(key) !== true) return "Live PDFs cannot be turned off.";
+        if (type.get(key) !== true) return "Live PDFs cannot be turned off.";
       }
       continue;
     }
@@ -337,7 +353,8 @@ export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKi
     }
     if (root !== ManifestKeys.files) continue;
     if (type._item !== null) return "Manifest entries must be plain JSON values.";
-    const files = type as Y.Map<unknown>;
+    if (!(type instanceof Y.Map)) return "files must be a map.";
+    const files = type;
     for (const key of keys) {
       if (key === null) return "files must be a map.";
       const entry = files.get(key);
@@ -358,9 +375,10 @@ function albumEntryViolation(entry: JsonRecord): string | null {
   return null;
 }
 
-function albumPhotosViolation(after: Y.Doc, type: Y.AbstractType<any>, keys: Set<string | null>, accountId: string): string | null {
+function albumPhotosViolation(after: Y.Doc, type: SharedType, keys: Set<string | null>, accountId: string): string | null {
   if (type._item !== null) return "Photo details must be plain JSON values.";
-  const photos = type as Y.Map<unknown>;
+  if (!(type instanceof Y.Map)) return "photos must be a map.";
+  const photos = type;
   for (const key of keys) {
     if (key === null) return "photos must be a map.";
     const record = photos.get(key);

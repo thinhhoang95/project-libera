@@ -10,8 +10,9 @@
 // delivery from bringing it back.
 
 import * as Y from "yjs";
+import { mergeText } from "./merge-text";
 import { diffText } from "../../../../electron/collab/notebooks/text-diff";
-import { PDF_MARK_TYPES, PDF_STYLE_KEYS, PdfKeys, PdfMarkFields, pdfMarkFieldViolation, type PdfDeletion } from "../protocol/pdf";
+import { PDF_MARK_TYPES, PDF_STYLE_KEYS, PdfLimits, PdfKeys, PdfMarkFields, pdfMarkValuesViolation, type PdfDeletion } from "../protocol/pdf";
 import { reconcilePdfSpaces } from "../../pdf-space";
 import type { PdfAnnotation, PdfAnnotationPoint, PdfAnnotationRect, PdfSpaceAnnotation } from "../../types";
 
@@ -64,8 +65,9 @@ function textOf(mark: MarkMap): Y.Text | null {
 export function readMark(mark: MarkMap): MarkRecord | null {
   const type = mark.get(PdfMarkFields.type);
   if (typeof type !== "string" || !KNOWN_TYPES.has(type)) return null;
+  const values = Object.fromEntries([...mark.entries()].map(([key, value]) => [key, value instanceof Y.Text ? value.toString() : value]));
+  if (pdfMarkValuesViolation(values)) return null;
   const fields = { geometry: mark.get(PdfMarkFields.geometry), style: mark.get(PdfMarkFields.style) ?? {}, createdAt: mark.get(PdfMarkFields.createdAt) };
-  for (const [field, value] of Object.entries(fields)) if (pdfMarkFieldViolation(type, field, value)) return null;
   const annotation = {
     ...(fields.geometry as JsonRecord),
     ...(fields.style as JsonRecord),
@@ -220,6 +222,13 @@ function deletion(context: MarkContext): PdfDeletion {
  */
 export function applyMarksDiff(doc: Y.Doc, previous: readonly PdfAnnotation[], next: readonly PdfAnnotation[], context: MarkContext, origin: unknown): MarkChange[] {
   const before = new Map(previous.map((annotation) => [annotation.id, annotation]));
+  // Validate the entire gesture before entering Yjs: transactions do not roll back.
+  for (const annotation of next) {
+    if (before.get(annotation.id) === annotation) continue;
+    const problem = annotationViolation(annotation, context);
+    if (problem) throw new Error(problem);
+  }
+  if (new Set([...marksOf(doc).keys(), ...next.map((mark) => mark.id)]).size > PdfLimits.maxMarks) throw new Error("This PDF holds too many marks.");
   const after = new Set(next.map((annotation) => annotation.id));
   const changes: MarkChange[] = [];
   doc.transact(() => {
@@ -233,6 +242,8 @@ export function applyMarksDiff(doc: Y.Doc, previous: readonly PdfAnnotation[], n
           // Back from the dead: an undo in the viewer's terms, or a paste of the same id.
           const wasDeleted = mark.get(PdfMarkFields.deleted);
           mark.delete(PdfMarkFields.deleted);
+          mark.set(PdfMarkFields.updatedBy, context.accountId);
+          mark.set(PdfMarkFields.updatedAt, new Date().toISOString());
           changes.push({ id: annotation.id, before: { deleted: wasDeleted }, after: { deleted: undefined } });
           continue;
         }
@@ -249,6 +260,8 @@ export function applyMarksDiff(doc: Y.Doc, previous: readonly PdfAnnotation[], n
       if (!mark || mark.has(PdfMarkFields.deleted)) continue;
       const deleted = deletion(context);
       mark.set(PdfMarkFields.deleted, deleted);
+      mark.set(PdfMarkFields.updatedBy, context.accountId);
+      mark.set(PdfMarkFields.updatedAt, new Date().toISOString());
       changes.push({ id: annotation.id, before: { deleted: undefined }, after: { deleted } });
     }
   }, origin);
@@ -261,8 +274,9 @@ export function applyMarksDiff(doc: Y.Doc, previous: readonly PdfAnnotation[], n
  * your own work, and a mark never disappears because of undo: creating is
  * undone by deleting, which stays recoverable.
  */
-export function applyMarkValues(doc: Y.Doc, id: string, values: MarkFieldValues, expected: MarkFieldValues, context: MarkContext, origin: unknown): boolean {
-  let applied = false;
+export function applyMarkValues(doc: Y.Doc, id: string, values: MarkFieldValues, expected: MarkFieldValues, context: MarkContext, origin: unknown): MarkChange | null {
+  const before: MarkFieldValues = {};
+  const after: MarkFieldValues = {};
   doc.transact(() => {
     const mark = marksOf(doc).get(id);
     if (!mark) return;
@@ -270,20 +284,23 @@ export function applyMarkValues(doc: Y.Doc, id: string, values: MarkFieldValues,
       if (field === "text") {
         const text = textOf(mark);
         if (!text || text.toString() !== expected.text) continue;
+        before.text = text.toString();
         applyText(text, String(value ?? ""));
-        applied = true;
+        after.text = text.toString();
         continue;
       }
       if (!same(mark.get(field), expected[field])) continue;
-      setIfChanged(mark, field, value);
-      applied = true;
+      before[field] = mark.get(field);
+      const next = field === "deleted" && value !== undefined ? deletion(context) : value;
+      setIfChanged(mark, field, next);
+      after[field] = next;
     }
-    if (applied) {
+    if (Object.keys(after).length) {
       mark.set(PdfMarkFields.updatedAt, new Date().toISOString());
       mark.set(PdfMarkFields.updatedBy, context.accountId);
     }
   }, origin);
-  return applied;
+  return Object.keys(after).length ? { id, before, after } : null;
 }
 
 /**
@@ -319,10 +336,16 @@ export function restoreMark(doc: Y.Doc, id: string, context: MarkContext, origin
 }
 
 /** Adds text typed into a mark that was deleted meanwhile, so it survives in the tombstone. */
-export function writeDeletedText(doc: Y.Doc, id: string, value: string, origin: unknown): void {
+export function writeDeletedText(doc: Y.Doc, id: string, value: string, base: string, context: MarkContext, origin: unknown): void {
+  const mark = marksOf(doc).get(id);
+  const text = mark && textOf(mark);
+  if (!mark || !text) return;
+  const merged = mergeText(base, value, text.toString());
+  if (merged.length > PdfLimits.maxTextLength) throw new Error("This note is too long.");
   doc.transact(() => {
-    const text = marksOf(doc).get(id) ? textOf(marksOf(doc).get(id) as MarkMap) : null;
-    if (text) applyText(text, value);
+    applyText(text, merged);
+    mark.set(PdfMarkFields.updatedBy, context.accountId);
+    mark.set(PdfMarkFields.updatedAt, new Date().toISOString());
   }, origin);
 }
 
@@ -341,7 +364,7 @@ export function importBatches(doc: Y.Doc, annotations: readonly PdfAnnotation[],
     if (marks.has(annotation.id) || seen.has(annotation.id)) continue;
     seen.add(annotation.id);
     const size = JSON.stringify(annotation).length;
-    if (batch.length && bytes + size > batchBytes) {
+    if (batch.length && (bytes + size > batchBytes || batch.length >= 2000)) {
       batches.push(batch);
       batch = [];
       bytes = 0;
@@ -353,10 +376,21 @@ export function importBatches(doc: Y.Doc, annotations: readonly PdfAnnotation[],
   return batches;
 }
 
+/** Validates the same complete values the sync server accepts. */
+export function annotationViolation(annotation: PdfAnnotation, context: MarkContext): string | null {
+  const { geometry, style, space, text } = markGroups(annotation);
+  return pdfMarkValuesViolation({ id: annotation.id, type: annotation.type, createdAt: annotation.createdAt, updatedAt: annotation.updatedAt,
+    createdBy: context.accountId, updatedBy: context.accountId, geometry, style, ...(space ? { space } : {}), ...(text !== undefined ? { text } : {}), ...(context.sourceHash ? { sourceHash: context.sourceHash } : {}) });
+}
+
 /** Adds marks to a document inside the caller's transaction. */
 export function createMarks(doc: Y.Doc, annotations: readonly PdfAnnotation[], context: MarkContext): void {
   const marks = marksOf(doc);
-  for (const annotation of annotations) createMark(marks, annotation, context);
+  for (const annotation of annotations) {
+    const problem = annotationViolation(annotation, context);
+    if (problem) throw new Error(problem);
+  }
+  for (const annotation of annotations) if (!marks.has(annotation.id)) createMark(marks, annotation, context);
 }
 
 /** {@link importBatches} applied directly: one transaction per batch. Returns how many were added. */

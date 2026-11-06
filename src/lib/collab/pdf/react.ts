@@ -32,7 +32,7 @@ function acquire(resolved: ResolvedPdf): Promise<OpenPdf> {
       pdf.holders += 1;
       if (pdf.release) clearTimeout(pdf.release);
       pdf.release = null;
-      pdf.store.setContext({ accountId: resolved.accountId, ...(resolved.blobHash ? { sourceHash: resolved.blobHash } : {}) });
+      pdf.store.setContext({ accountId: resolved.accountId });
       return pdf;
     });
   }
@@ -45,7 +45,7 @@ function acquire(resolved: ResolvedPdf): Promise<OpenPdf> {
     const store = new SharedPdfStore(
       { get annotations() { return session.replica.annotations; }, onRebuild: (listener) => session.replica.onRebuild(listener) },
       resolved.docId,
-      { accountId: resolved.accountId, ...(resolved.blobHash ? { sourceHash: resolved.blobHash } : {}) },
+      { accountId: resolved.accountId },
     );
     return { store, session, lease, holders: 1, release: null } satisfies OpenPdf;
   })();
@@ -88,8 +88,8 @@ export function useSharedPdf(filePath: string): SharedPdfState {
   const { phase, status } = useSyncExternalStore(statusStore?.subscribe ?? noSubscribe, statusStore?.getSnapshot ?? noStatus, noStatus);
   const project = status?.projects?.find((candidate) => candidate.notebook === notebook && candidate.kind !== "album");
   const wanted = available && project?.pdfLive === true && !project.revoked;
-  const undecided = available && phase === "loading";
-  const [state, setState] = useState<{ path: string; value: SharedPdfState }>({ path: "", value: CHECKING });
+  const undecided = available && (phase === "loading" || phase === "error") && !wanted;
+  const [state, setState] = useState<{ path: string; attempt: number; value: SharedPdfState }>({ path: "", attempt: -1, value: CHECKING });
   const [attempt, setAttempt] = useState(0);
   const failures = useRef(0);
 
@@ -105,6 +105,7 @@ export function useSharedPdf(filePath: string): SharedPdfState {
   useEffect(() => {
     if (!wanted) return;
     let active = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     let held: OpenPdf | null = null;
     let heldId = "";
     void (async () => {
@@ -112,7 +113,7 @@ export function useSharedPdf(filePath: string): SharedPdfState {
         const resolved = await collabClient.resolvePdf(filePath);
         if (!active) return;
         if (!resolved) {
-          setState({ path: filePath, value: LOCAL });
+          setState({ path: filePath, attempt, value: LOCAL });
           return;
         }
         const pdf = await acquire(resolved);
@@ -123,24 +124,24 @@ export function useSharedPdf(filePath: string): SharedPdfState {
         held = pdf;
         heldId = resolved.docId;
         failures.current = 0;
-        setState({ path: filePath, value: { kind: "shared", store: pdf.store, session: pdf.session, resolved } });
+        setState({ path: filePath, attempt, value: { kind: "shared", store: pdf.store, session: pdf.session, resolved } });
       } catch {
         if (!active) return;
         // The host may be restarting; a PDF must not fall back to local writes silently.
         failures.current += 1;
-        if (failures.current < 5) setTimeout(() => { if (active) setAttempt((value) => value + 1); }, 1000);
-        else setState({ path: filePath, value: LOCAL });
+        retry = setTimeout(() => { if (active) setAttempt((value) => value + 1); }, Math.min(30_000, 1000 * failures.current));
       }
     })();
     return () => {
       active = false;
+      if (retry) clearTimeout(retry);
       if (held) letGo(heldId, held);
     };
   }, [filePath, wanted, attempt]);
 
   if (undecided) return CHECKING;
   if (!wanted) return LOCAL;
-  return state.path === filePath ? state.value : CHECKING;
+  return state.path === filePath && (state.value.kind === "shared" || state.attempt === attempt) ? state.value : CHECKING;
 }
 
 const NO_SNAPSHOT: ReplicaSnapshot | null = null;
@@ -153,7 +154,7 @@ export function useSharedPdfSnapshot(state: SharedPdfState): ReplicaSnapshot | n
 
 /** Marks can be changed here right now. */
 export function canAnnotateShared(state: SharedPdfState, snapshot: ReplicaSnapshot | null): boolean {
-  if (state.kind !== "shared") return true;
+  if (state.kind !== "shared") return state.kind === "local";
   if (state.resolved.readOnly || snapshot?.closed) return false;
   const reason = snapshot?.meta?.readOnlyReason;
   return !reason;

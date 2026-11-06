@@ -12,6 +12,8 @@ export const PDF_PRESENCE_INTERVAL_MS = 50;
 /** A finished stroke's ghost stays until the real mark has had time to arrive. */
 export const PDF_GHOST_LINGER_MS = 400;
 const MAX_DRAFT_POINTS = 400;
+export const MAX_GHOST_POINTS = 5000;
+export const MAX_GHOST_LIFETIME_MS = 30_000;
 const MAX_SELECTION = 20;
 const SAFE_COLOR = /^#[0-9a-f]{6}$/i;
 const DEFAULT_COLOR = "#30bced";
@@ -124,11 +126,27 @@ export function readPdfPresence(value: unknown): PdfPresence | null {
 /** Assembles strokes in progress from the frames that reach this client. */
 export class PdfGhosts {
   private readonly ghosts = new Map<number, PdfGhost>();
+  private readonly sequences = new Map<number, { id: string; started: number; next: number }>();
+
+  constructor(private readonly now: () => number = Date.now) {}
 
   /** Applies a client's latest frame. Returns whether anything changed. */
   apply(clientId: number, draft: PdfDraftFrame): boolean {
     const current = this.ghosts.get(clientId);
+    const sequence = this.sequences.get(clientId);
+    const sameDraft = sequence?.id === draft.id;
+    if (sameDraft && this.now() - sequence.started >= MAX_GHOST_LIFETIME_MS) {
+      return this.ghosts.delete(clientId);
+    }
+    if (!Number.isSafeInteger(draft.start) || draft.start < 0 || draft.start + draft.points.length > MAX_GHOST_POINTS
+      || draft.points.length > MAX_DRAFT_POINTS) return false;
+    // Duplicates/backwards frames and large gaps never grow or rebuild a ghost.
+    if (sameDraft && (draft.kind === "ink" && (draft.start < sequence.next || draft.start > sequence.next + MAX_DRAFT_POINTS))) return false;
+    if (!sameDraft && draft.start > MAX_DRAFT_POINTS) return false;
     const base = current && current.id === draft.id ? current : null;
+    if (base && (base.kind !== draft.kind || base.page !== draft.page)) return false;
+    if (draft.kind === "shape" && draft.start !== 0) return false;
+    this.sequences.set(clientId, { id: draft.id, started: sameDraft ? sequence.started : this.now(), next: draft.start + draft.points.length });
     if (base && draft.points.length === 0) return false;
     const points = !base
       ? draft.points
@@ -141,14 +159,22 @@ export class PdfGhosts {
   }
 
   get(clientId: number): PdfGhost | undefined {
+    const sequence = this.sequences.get(clientId);
+    if (sequence && this.now() - sequence.started >= MAX_GHOST_LIFETIME_MS) this.ghosts.delete(clientId);
     return this.ghosts.get(clientId);
   }
 
   remove(clientId: number): boolean {
+    this.sequences.delete(clientId);
     return this.ghosts.delete(clientId);
   }
 
+  removeAbsent(clients: ReadonlySet<number>) {
+    for (const clientId of this.sequences.keys()) if (!clients.has(clientId)) this.remove(clientId);
+  }
+
   list(): PdfGhost[] {
+    for (const clientId of this.ghosts.keys()) this.get(clientId);
     return [...this.ghosts.values()];
   }
 }
@@ -229,6 +255,7 @@ export class PdfPresenceStore {
       this.lingering.delete(ghost.clientId);
       this.ghosts.remove(ghost.clientId);
     }
+    this.ghosts.removeAbsent(new Set(users.map((user) => user.clientId)));
     this.publish(users.sort((a, b) => a.name.localeCompare(b.name) || a.clientId - b.clientId));
   };
 

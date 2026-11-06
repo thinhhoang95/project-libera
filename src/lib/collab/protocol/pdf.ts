@@ -93,6 +93,27 @@ export interface PdfImportRecord {
 
 type JsonRecord = Record<string, unknown>;
 
+/** Additive REST operation: old clients need no wire changes. */
+export interface PdfImportRequest {
+  marks: unknown[];
+  comments?: unknown[];
+  sourceHash?: string;
+  hash?: string;
+}
+
+export function pdfAnnotationValues(annotation: JsonRecord, accountId: string, sourceHash?: string): JsonRecord {
+  const geometry: JsonRecord = {};
+  const style: JsonRecord = {};
+  const metadata = ["id", "type", "createdAt", "updatedAt", "space", "text", "sourceHash"];
+  for (const [key, value] of Object.entries(annotation)) {
+    if (value !== undefined && !metadata.includes(key)) (PDF_STYLE_KEYS.includes(key) ? style : geometry)[key] = value;
+  }
+  return { id: annotation.id, type: annotation.type, createdAt: annotation.createdAt, updatedAt: annotation.updatedAt,
+    createdBy: accountId, updatedBy: accountId, geometry, style,
+    ...(annotation.space !== undefined ? { space: annotation.space } : {}),
+    ...(annotation.type === "text" ? { text: annotation.text } : {}), ...(annotation.sourceHash !== undefined || sourceHash ? { sourceHash: annotation.sourceHash ?? sourceHash } : {}) };
+}
+
 export function isPlainJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
@@ -116,12 +137,17 @@ function validPoint(value: unknown): boolean {
 }
 
 function validRect(value: unknown): boolean {
-  return validPoint(value) && finiteNumber((value as JsonRecord).width) && finiteNumber((value as JsonRecord).height);
+  if (!isPlainJsonRecord(value) || !validPoint(value)) return false;
+  return finiteNumber(value.width) && value.width >= 0 && finiteNumber(value.height) && value.height >= 0;
 }
 
 function geometryViolation(type: string, value: unknown): string | null {
   if (!isPlainJsonRecord(value)) return "geometry must be a plain JSON object.";
   if (jsonBytes(value) > PdfLimits.maxGeometryBytes) return "geometry is too large.";
+  for (const key of Object.keys(value)) {
+    if (PDF_STYLE_KEYS.includes(key) || Object.values(PdfMarkFields).includes(key as typeof PdfMarkFields.id)) return `geometry cannot override ${key}.`;
+  }
+  if (value.quote !== undefined && (typeof value.quote !== "string" || value.quote.length > 4000)) return "quote is too long.";
   const page = value.pageNumber;
   if (!Number.isInteger(page) || (page as number) < 1 || (page as number) > PdfLimits.maxPageNumber) return "pageNumber is not a page.";
   switch (type) {
@@ -133,17 +159,26 @@ function geometryViolation(type: string, value: unknown): string | null {
       return Array.isArray(value.points) && value.points.length > 0 && value.points.every(validPoint) ? null : "A stroke needs points.";
     case "text":
       return validRect(value.rect) ? null : "A note needs a rectangle.";
-    case "space":
-      return finiteNumber(value.y) && finiteNumber(value.height) ? null : "A space needs a cut and a height.";
+    case "space": {
+      const band = value.band;
+      return finiteNumber(value.y) && finiteNumber(value.height) && value.height > 0
+        && isPlainJsonRecord(band) && finiteNumber(band.top) && finiteNumber(band.bottom) && band.bottom >= band.top
+        && Array.isArray(band.splits) && band.splits.length <= 100 && band.splits.every((split, index, splits) => finiteNumber(split) && split >= 0 && split <= 1 && (index === 0 || split > splits[index - 1]))
+        && Number.isInteger(value.column) && (value.column as number) >= 0 && (value.column as number) <= band.splits.length
+        ? null : "A space needs a cut, height, band and column.";
+    }
     default:
       // A type from a newer client: only its size and page are checked.
       return null;
   }
 }
 
-function styleViolation(value: unknown): string | null {
+function styleViolation(type: string, value: unknown): string | null {
   if (!isPlainJsonRecord(value)) return "style must be a plain JSON object.";
   if (jsonBytes(value) > PdfLimits.maxStyleBytes) return "style is too large.";
+  const required: Record<string, string[]> = { highlight: ["color"], shape: ["shape", "color", "strokeWidth"], ink: ["color", "strokeWidth"], text: ["fontSize"] };
+  for (const key of required[type] ?? []) if (value[key] === undefined) return `A ${type} needs ${key}.`;
+  for (const key of Object.keys(value)) if (!PDF_STYLE_KEYS.includes(key)) return `style cannot override ${key}.`;
   for (const key of ["color", "fill"]) {
     if (value[key] !== undefined && !(typeof value[key] === "string" && HEX_COLOR.test(value[key]))) return `${key} must be a hex colour.`;
   }
@@ -171,17 +206,19 @@ export function pdfMarkFieldViolation(type: string, field: string, value: unknow
     case PdfMarkFields.createdAt:
     case PdfMarkFields.updatedAt:
       return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? null : `${field} must be a date.`;
+    case PdfMarkFields.text:
+      return type === "text" && typeof value === "string" && value.length <= PdfLimits.maxTextLength ? null : "This note is too long or invalid.";
     case PdfMarkFields.geometry:
       return geometryViolation(type, value);
     case PdfMarkFields.style:
-      return styleViolation(value);
+      return styleViolation(type, value);
     case PdfMarkFields.space:
       return value === undefined || (typeof value === "string" && value.length <= 200) ? null : "space must be a mark id.";
     case PdfMarkFields.sourceHash:
       return value === undefined || (typeof value === "string" && SHA256_HEX.test(value)) ? null : "sourceHash must be a SHA-256.";
     case PdfMarkFields.deleted:
       if (value === undefined) return null;
-      return isPlainJsonRecord(value) && typeof value.by === "string" && typeof value.at === "string" ? null : "deleted must say who and when.";
+      return isPlainJsonRecord(value) && !pdfMarkFieldViolation(type, "createdBy", value.by) && !pdfMarkFieldViolation(type, "createdAt", value.at) ? null : "deleted must say who and when.";
     default:
       return `Marks have no ${field} field.`;
   }
@@ -189,3 +226,31 @@ export function pdfMarkFieldViolation(type: string, field: string, value: unknow
 
 /** The fields a new mark must have. */
 export const PDF_REQUIRED_FIELDS: readonly string[] = [PdfMarkFields.id, PdfMarkFields.type, PdfMarkFields.createdAt, PdfMarkFields.createdBy, PdfMarkFields.geometry];
+
+/** Complete plain values, also used before a client queues a mutation. */
+export function pdfMarkValuesViolation(fields: Record<string, unknown>): string | null {
+  const type = String(fields.type ?? "");
+  for (const field of [...PDF_REQUIRED_FIELDS, ...(type === "text" ? ["text"] : [])]) {
+    if (fields[field] === undefined) return `A mark needs ${field}.`;
+  }
+  const requiredStyle: Record<string, string[]> = { highlight: ["color"], shape: ["shape", "color", "strokeWidth"], ink: ["color", "strokeWidth"], text: ["fontSize"] };
+  for (const key of requiredStyle[type] ?? []) {
+    if (!isPlainJsonRecord(fields.style) || fields.style[key] === undefined) return `A ${type} needs ${key}.`;
+  }
+  for (const [field, value] of Object.entries(fields)) {
+    const problem = pdfMarkFieldViolation(type, field, value);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+/** Anchors are checked before storage and again before projecting remote threads. */
+export function pdfAnchorViolation(value: unknown): string | null {
+  if (!isPlainJsonRecord(value) || typeof value.quote !== "string" || value.quote.length > 4000) return "An anchor needs a quote.";
+  if (!Array.isArray(value.segments) || !value.segments.length || value.segments.length > 50) return "An anchor needs segments.";
+  for (const segment of value.segments) {
+    if (!isPlainJsonRecord(segment) || !Number.isInteger(segment.pageNumber) || (segment.pageNumber as number) < 1 || (segment.pageNumber as number) > PdfLimits.maxPageNumber
+      || !Array.isArray(segment.rects) || !segment.rects.length || segment.rects.length > 200 || !segment.rects.every(validRect)) return "Invalid anchor segment.";
+  }
+  return jsonBytes(value) > 64 * 1024 ? "Anchor is too large." : null;
+}

@@ -3,11 +3,11 @@
 // with that. The panel and the agent keep speaking in PdfCommentThread terms,
 // through /api/pdf-comments, so this module is the only thing that changes.
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 import { ApiClientError } from "../core/api-client";
 import type { CollabHost } from "../core/host";
-import { PdfKeys } from "../../../src/lib/collab/protocol/pdf";
+import { PdfKeys, pdfAnchorViolation } from "../../../src/lib/collab/protocol/pdf";
 import type { Command, Thread } from "../../../src/lib/collab/protocol/api";
 import type { AiActorHint } from "../../../src/lib/collab/protocol/actor";
 import type { PdfCommentAnchor, PdfCommentMessage, PdfCommentThread } from "../../../src/lib/types";
@@ -28,7 +28,6 @@ interface AnchorRecord extends PdfCommentAnchor {
 }
 
 const newId = (prefix: string) => `${prefix}_${randomBytes(15).toString("hex")}`;
-const stableId = (prefix: string, seed: string) => `${prefix}_${createHash("sha256").update(seed).digest("hex").slice(0, 40)}`;
 
 function messageOf(message: Thread["messages"][number], accountId: string): PdfCommentMessage {
   const ai = message.actor.kind === "ai";
@@ -45,7 +44,7 @@ function messageOf(message: Thread["messages"][number], accountId: string): PdfC
 
 /** A server thread as the panel shows it; null while its anchor has not arrived. */
 export function pdfThreadOf(thread: Thread, anchor: PdfCommentAnchor | undefined, accountId: string): PdfCommentThread | null {
-  if (!anchor) return null;
+  if (!anchor || pdfAnchorViolation(anchor)) return null;
   const messages = thread.messages.filter((message) => !message.deletedAt).map((message) => messageOf(message, accountId));
   return { id: thread.id, anchor, status: thread.status === "resolved" ? "resolved" : "open", messages, createdAt: thread.createdAt, updatedAt: thread.updatedAt };
 }
@@ -100,6 +99,8 @@ export class PdfCommentService {
   }
 
   private writeAnchor(docId: string, anchor: PdfCommentAnchor, id: string) {
+    const problem = pdfAnchorViolation(anchor);
+    if (problem) throw new ControlError(400, "bad-request", problem);
     const hub = this.host.acquire(docId);
     try {
       hub.applyLocalChange("annotations", (doc) => {
@@ -138,7 +139,8 @@ export class PdfCommentService {
 
   /** Sends now when the connection is up, and queues otherwise; `direct` and the command do the same thing. */
   private async send(command: Command, direct: () => Promise<unknown> | undefined): Promise<void> {
-    if (!this.host.api || this.host.connectionState !== "connected") {
+    const waitingForPdf = command.kind === "thread.create" && !this.host.registry.get(command.docId)?.hasOpened;
+    if (!this.host.api || this.host.connectionState !== "connected" || waitingForPdf) {
       this.host.commands.enqueue(command);
       return;
     }
@@ -194,19 +196,9 @@ export class PdfCommentService {
    * instead of duplicating. Everything goes through the queue, which survives
    * a restart and retries; the server dates them when they arrive.
    */
-  importLocal(docId: string, comments: readonly PdfCommentThread[]): void {
-    for (const local of comments) {
-      if (!local?.id || !Array.isArray(local.messages) || !local.messages.length || !local.anchor) continue;
-      const threadId = stableId("thr", `${docId}:${local.id}`);
-      const anchorId = stableId("anc", `${docId}:${local.id}`);
-      this.writeAnchor(docId, local.anchor, anchorId);
-      const [first, ...replies] = local.messages;
-      this.host.commands.enqueue({ id: stableId("cmd", `${threadId}:create`), kind: "thread.create", docId, body: { id: threadId, anchorId, quote: String(local.anchor.quote ?? "").slice(0, 10_000), body: first.text } });
-      for (const reply of replies) {
-        const id = stableId("msg", `${threadId}:${reply.id}`);
-        this.host.commands.enqueue({ id: stableId("cmd", `${id}:create`), kind: "message.create", threadId, body: { id, body: reply.text } });
-      }
-      if (local.status === "resolved") this.host.commands.enqueue({ id: stableId("cmd", `${threadId}:resolve`), kind: "thread.status", threadId, body: { status: "resolved" } });
-    }
+  async importLocal(docId: string, comments: readonly PdfCommentThread[]): Promise<void> {
+    const api = this.host.api;
+    if (!api) throw new ControlError(503, "unavailable", "The collaboration server is unavailable.");
+    await api.importPdf(docId, { marks: [], comments: [...comments] });
   }
 }

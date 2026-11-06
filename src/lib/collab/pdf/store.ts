@@ -92,6 +92,11 @@ export class SharedPdfStore {
         if (typeof id === "string") touched.add(id);
         else for (const key of event.keys.keys()) touched.add(key);
       }
+      // A new history step must start after an intervening collaborator edit.
+      if (transaction.origin !== this.origin && touched.size) {
+        const last = this.undoStack.at(-1);
+        if (last) last.key = undefined;
+      }
       const removed: MarkRecord[] = [];
       for (const id of touched) {
         const mark = marks.get(id);
@@ -160,10 +165,11 @@ export class SharedPdfStore {
    * undo step, as the viewer's own history does; `history: false` leaves no
    * step behind (a note abandoned empty).
    */
-  commit(next: readonly PdfAnnotation[], historyKey?: string, options: { history?: boolean } = {}) {
+  commit(next: readonly PdfAnnotation[], historyKey?: string, options: { history?: boolean; sourceHash?: string } = {}) {
     const previous = this.snapshot;
     if (next === previous) return;
-    const changes = applyMarksDiff(this.doc, previous, next, this.context, this.origin);
+    const context = Object.hasOwn(options, "sourceHash") ? { ...this.context, sourceHash: options.sourceHash } : this.context;
+    const changes = applyMarksDiff(this.doc, previous, next, context, this.origin);
     if (!changes.length || options.history === false) return;
     const time = Date.now();
     const last = this.undoStack.at(-1);
@@ -195,13 +201,14 @@ export class SharedPdfStore {
   private step(from: HistoryEntry[], to: HistoryEntry[], side: "before" | "after", expected: "before" | "after"): boolean {
     const entry = from.pop();
     if (!entry) return false;
-    to.push(entry);
-    let applied = false;
+    const reversed: MarkChange[] = [];
     for (const change of [...entry.changes].reverse()) {
-      if (applyMarkValues(this.doc, change.id, change[side], change[expected], this.context, this.origin)) applied = true;
+      const applied = applyMarkValues(this.doc, change.id, change[side], change[expected], this.context, this.origin);
+      if (applied) reversed.unshift(side === "before" ? { id: change.id, before: applied.after, after: applied.before } : applied);
     }
+    if (reversed.length) to.push({ ...entry, changes: reversed });
     this.publish({ local: true, removed: [] });
-    return applied;
+    return reversed.length > 0;
   }
 
   undo(): boolean { return this.step(this.undoStack, this.redoStack, "before", "after"); }
@@ -220,8 +227,8 @@ export class SharedPdfStore {
   }
 
   /** Keeps what was typed into a note someone deleted meanwhile. */
-  keepDeletedText(id: string, text: string) {
-    if (this.records.get(id)?.deleted) writeDeletedText(this.doc, id, text, this.origin);
+  keepDeletedText(id: string, text: string, base: string) {
+    if (this.records.get(id)?.deleted) writeDeletedText(this.doc, id, text, base, this.context, this.origin);
   }
 
   destroy() {

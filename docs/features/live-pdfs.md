@@ -11,6 +11,8 @@ The owner chooses:
 
 Turning it on cannot be undone. Marks already on the notebook's PDFs, on every member's computer, become visible to everyone, and the dialog says so. Members need a Libera version that supports live PDFs, and the collaboration server must be updated first. Until a member updates, they see no live marks, and their edits stay on their own computer.
 
+If you have unsaved local annotations when live PDFs turn on, they are kept in a private recovery copy. **Download recovery** above the PDF downloads them, including note text still waiting to save. Live annotations use the shared document from then on.
+
 ## What each role can do
 
 | | Owner | Editor | Commenter | Viewer |
@@ -59,6 +61,6 @@ Comments stay where they were placed, and do not move with their text. PDFs comp
 
 ## On disk
 
-The shared document is the source of truth. The sidecar in `.libera/annotations` becomes a read-only copy, rewritten about once a minute so search, deep search and export keep working. It is never read back, so an old copy from a sync client cannot change anything. A sidecar that differs from that copy, such as one written by an older Libera, adds only marks the document has never seen.
+The shared document is the source of truth. The sidecar in `.libera/annotations` becomes a read-only copy, rewritten about once a minute so search, deep search and export keep working. A sidecar never replaces shared state. Changed sidecars, such as ones written by an older Libera, add only records the shared document has never seen. The host checks for those records before replacing a changed sidecar.
 
 Leaving the notebook, or losing access, writes the last state as an ordinary sidecar, so you keep your copy.

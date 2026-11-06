@@ -8,6 +8,7 @@ import { registerAlbumRoutes } from "./albums.js";
 import { registerAuthRoutes } from "./auth.js";
 import { registerBlobRoutes } from "./blobs.js";
 import { registerCommandRoutes } from "./commands.js";
+import { registerPdfRoutes } from "./pdf.js";
 import { registerDocumentRoutes } from "./documents.js";
 import { registerInvitationRoutes } from "./invitations.js";
 import { registerNotificationRoutes } from "./notifications.js";
@@ -24,6 +25,7 @@ export async function registerApi(app: FastifyInstance, context: ServerContext):
   registerProjectRoutes(app, context);
   registerInvitationRoutes(app, context);
   registerDocumentRoutes(app, context);
+  registerPdfRoutes(app, context);
   registerBlobRoutes(app, context);
   registerAlbumRoutes(app, context);
   registerThreadRoutes(app, context);

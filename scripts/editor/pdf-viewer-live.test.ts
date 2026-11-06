@@ -7,7 +7,9 @@ import { JSDOM } from "jsdom";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
-import { resetPendingSavesForTests } from "../../src/components/libera/pending-saves";
+import { createHash } from "node:crypto";
+import type { HostEvent } from "../../src/lib/collab/local-api";
+import { pendingSaves, unsavedJournal, resetPendingSavesForTests } from "../../src/components/libera/pending-saves";
 import { applyMarksDiff, marksOf } from "../../src/lib/collab/pdf/model";
 import type { PdfAnnotation, PdfTextAnnotation } from "../../src/lib/types";
 
@@ -25,6 +27,14 @@ test("the PDF viewer on a live document", async (t) => {
     Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
   }
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const browserErrors: unknown[] = [];
+  dom.window.addEventListener("error", (event) => browserErrors.push(event.error));
+  const rangeRect = () => ({ x: 0, y: 0, width: 10, height: 10, top: 0, left: 0, bottom: 10, right: 10, toJSON() {} });
+  dom.window.Range.prototype.getBoundingClientRect = rangeRect;
+  dom.window.Range.prototype.getClientRects = () => Object.assign([rangeRect()], { item: (index: number) => index === 0 ? rangeRect() : null });
+  const hostListeners = new Set<(event: HostEvent) => void>();
+  Object.assign(dom.window, { liberaCollab: { onEvent: (listener: (event: HostEvent) => void) => { hostListeners.add(listener); return () => hostListeners.delete(listener); }, nudge() {} } });
+  const filesChanged = () => { for (const listener of hostListeners) listener({ t: "files-changed", projectId: "prj_live_test", paths: ["Papers/paper.pdf"] }); };
   Object.assign(globalThis, { getComputedStyle: dom.window.getComputedStyle.bind(dom.window), requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) });
   Object.defineProperty(dom.window.HTMLElement.prototype, "isContentEditable", { configurable: true, get() { return this.closest('[contenteditable="true"]') !== null; } });
   Object.assign(dom.window.HTMLElement.prototype, { setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture: () => false });
@@ -36,16 +46,17 @@ test("the PDF viewer on a live document", async (t) => {
   });
   const require = createRequire(import.meta.url);
   const pdfModule = require.resolve("pdfjs-dist");
-  const pages = Array.from({ length: 2 }, () => ({
+  const pages = Array.from({ length: 2 }, (_, index) => ({
     view: [0, 0, 612, 792],
     getViewport: ({ scale }: { scale: number }) => ({ width: 612 * scale, height: 792 * scale, scale }),
-    getTextContent: async () => ({ items: [{ str: "Selectable PDF text", hasEOL: true, width: 190, height: 10, transform: [10, 0, 0, 10, 100, 700] }], styles: {} }),
+    getTextContent: async () => ({ items: [{ str: index === 0 ? "Selectable PDF text" : "Other page text", hasEOL: true, width: 190, height: 10, transform: [10, 0, 0, 10, 100, 700] }], styles: {} }),
     render: () => ({ promise: Promise.resolve(), cancel() {} }),
   }));
   const pdf = { numPages: pages.length, getPage: async (n: number) => pages[n - 1] };
+  let pdfLoads = 0;
   require.cache[pdfModule] = { exports: {
     GlobalWorkerOptions: {},
-    getDocument: () => ({ promise: Promise.resolve(pdf), destroy: async () => {} }),
+    getDocument: () => { pdfLoads += 1; return { promise: Promise.resolve(pdf), destroy: async () => {} }; },
     TextLayer: class { textDivs: HTMLElement[] = []; async render() {} cancel() {} },
   } } as NodeModule;
 
@@ -55,8 +66,13 @@ test("the PDF viewer on a live document", async (t) => {
   const { setCollabStatusStore } = await import("../../src/lib/collab/ui/status-store");
 
   const projectId = "prj_live_test";
-  const status = { phase: "ready" as const, status: { hostVersion: 1, connection: "connected" as const, account: { id: "acc_me", email: "me@example.test", displayName: "Me", color: "#ff8800", serverUrl: "" }, projects: [{ projectId, name: "Papers", role: "commenter" as const, notebook: "Papers", revoked: false, reconcilePending: 0, pdfLive: true }], pendingCommands: 0 } };
-  setCollabStatusStore({ subscribe: () => () => {}, getSnapshot: () => status, refresh: async () => {}, refreshProjects: async () => {}, setStatus: () => {} } as never);
+  let status = { phase: "ready" as const, status: { hostVersion: 1, connection: "connected" as const, account: { id: "acc_me", email: "me@example.test", displayName: "Me", color: "#ff8800", serverUrl: "" }, projects: [{ projectId, name: "Papers", role: "commenter" as const, notebook: "Papers", revoked: false, reconcilePending: 0, pdfLive: true }], pendingCommands: 0 } };
+  const statusListeners = new Set<() => void>();
+  const setLive = (pdfLive: boolean) => {
+    status = { ...status, status: { ...status.status, projects: status.status.projects.map((project) => ({ ...project, pdfLive })) } };
+    for (const listener of statusListeners) listener();
+  };
+  setCollabStatusStore({ subscribe: (listener: () => void) => { statusListeners.add(listener); return () => statusListeners.delete(listener); }, getSnapshot: () => status, refresh: async () => {}, refreshProjects: async () => {}, setStatus: () => {} } as never);
 
   let documents = 0;
   function liveDocument(role: "commenter" | "viewer" = "commenter") {
@@ -72,14 +88,18 @@ test("the PDF viewer on a live document", async (t) => {
 
   const originalFetch = globalThis.fetch;
   const requests: string[] = [];
+  let manifestHash = "a".repeat(64);
+  let rawBytes = new Uint8Array([1]);
   function serve(role: "commenter" | "viewer") {
+    manifestHash = "a".repeat(64);
+    rawBytes = new Uint8Array([1]);
     globalThis.fetch = async (input, init) => {
       const url = String(input);
       requests.push(`${init?.method ?? "GET"} ${url}`);
-      if (url.includes("/pdf-docs/resolve")) return Response.json({ docId: `pdf_live_doc_${documents}`, projectId, fileId: "fil_paper_doc", path: "Papers/paper.pdf", role, readOnly: role === "viewer", accountId: "acc_me", blobHash: "a".repeat(64) });
+      if (url.includes("/pdf-docs/resolve")) return Response.json({ docId: `pdf_live_doc_${documents}`, projectId, fileId: "fil_paper_doc", path: "Papers/paper.pdf", role, readOnly: role === "viewer", accountId: "acc_me", blobHash: manifestHash });
       if (url.startsWith("/api/pdf-comments")) return Response.json({ threads: [] });
       if (url.startsWith("/api/pdf-annotations")) return Response.json({ annotations: [highlight("from-the-sidecar")] });
-      return new Response(new Uint8Array([1]));
+      return new Response(rawBytes);
     };
   }
 
@@ -96,6 +116,7 @@ test("the PDF viewer on a live document", async (t) => {
     resetPendingSavesForTests();
     requests.length = 0;
   }
+  t.afterEach(async () => { await unmount(); setLive(true); });
   const notes = () => [...host.querySelectorAll<HTMLElement>(".pdf-note")];
   /** Selects the note, as the press before a double click does, then opens it. */
   async function openNote(element: HTMLElement) {
@@ -114,7 +135,6 @@ test("the PDF viewer on a live document", async (t) => {
       assert.equal(notes().length, 1);
       assert.match(notes()[0].textContent ?? "", /from the document/);
       assert.equal(requests.some((request) => request.includes("/api/pdf-annotations")), false);
-      await unmount();
     });
 
     await t.test("a collaborator's new mark and text appear without a reload", async () => {
@@ -126,7 +146,6 @@ test("the PDF viewer on a live document", async (t) => {
       assert.equal(notes().length, 1);
       await act(async () => { live.remote((marks) => marks.map((mark) => ({ ...mark, text: "hello there" }) as PdfAnnotation), [note("n2", "hello")]); });
       assert.match(notes()[0].textContent ?? "", /hello there/);
-      await unmount();
     });
 
     await t.test("undo stays off for someone else's change", async () => {
@@ -136,7 +155,6 @@ test("the PDF viewer on a live document", async (t) => {
       await act(async () => { live.remote((marks) => [...marks, highlight("h1")], []); });
       const undo = host.querySelector<HTMLButtonElement>("button[aria-label='Undo']");
       assert.equal(undo?.disabled, true);
-      await unmount();
     });
 
     await t.test("a viewer gets no tools", async () => {
@@ -145,7 +163,6 @@ test("the PDF viewer on a live document", async (t) => {
       await mount();
       assert.ok(host.querySelector("[data-pdf-read-only]"));
       assert.match(host.textContent ?? "", /View only/);
-      await unmount();
     });
 
     await t.test("deleting elsewhere removes the mark here, and it stays in the document", async () => {
@@ -157,7 +174,6 @@ test("the PDF viewer on a live document", async (t) => {
       await act(async () => { live.remote(() => [], [note("n3", "going")]); });
       assert.equal(notes().length, 0);
       assert.equal(marksOf(live.annotations).has("n3"), true);
-      await unmount();
     });
     await t.test("typing in a note reaches the document, and a collaborator's text merges into the open editor", async () => {
       const live = liveDocument();
@@ -183,7 +199,6 @@ test("the PDF viewer on a live document", async (t) => {
       assert.equal(editor.getText().trim(), "Their shared text mine");
       assert.equal(editor.state.selection.from, caret + "Their ".length, "the caret moved with the text");
       assert.equal(text(), "Their shared text mine", "taking it in writes nothing back");
-      await unmount();
     });
 
     await t.test("keystrokes not sent yet merge with a collaborator's, instead of being lost", async () => {
@@ -204,7 +219,6 @@ test("the PDF viewer on a live document", async (t) => {
       assert.match(text, /Their/);
       assert.match(text, /mine/);
       assert.equal(editor.getText().trim(), text);
-      await unmount();
     });
 
     await t.test("undo in the viewer takes back only this person's change", async () => {
@@ -224,8 +238,138 @@ test("the PDF viewer on a live document", async (t) => {
       const mark = marksOf(live.annotations).get("n6");
       assert.equal((mark?.get("text") as Y.Text).toString(), "base");
       assert.deepEqual(mark?.get("style"), { fontSize: 14 }, "their change stays");
-      await unmount();
     });
+
+    await t.test("F1: marks arriving while PDF bytes load remain visible after completion", async () => {
+      const live = liveDocument();
+      serve("commenter");
+      const fetch = globalThis.fetch;
+      let release!: () => void;
+      globalThis.fetch = (input, init) => String(input) === "/paper.pdf"
+        ? new Promise<Response>((resolve) => { release = () => resolve(new Response(rawBytes)); })
+        : fetch(input, init);
+      await mount();
+      assert.ok(release);
+      await act(async () => { live.remote((marks) => [...marks, note("during-load", "arrived while loading")], []); });
+      await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 40)); });
+      assert.equal(notes().length, 1);
+      assert.match(notes()[0].textContent ?? "", /arrived while loading/);
+      assert.equal(marksOf(live.annotations).get("during-load")?.has("deleted"), false);
+    });
+
+    await t.test("F5: deleting during the editor debounce preserves both people's text", async () => {
+      const live = liveDocument();
+      applyMarksDiff(live.annotations, [], [note("deleted-debounce", "base")], { accountId: "acc_them" }, "remote");
+      serve("commenter");
+      await mount();
+      await openNote(notes()[0]);
+      const editor = (host.querySelector(".pdf-note-editor") as HTMLElement & { editor: Editor }).editor;
+      await act(async () => {
+        editor.commands.focus("end");
+        editor.commands.insertContent(" mine");
+        live.annotations.transact(() => {
+          const mark = marksOf(live.annotations).get("deleted-debounce")!;
+          (mark.get("text") as Y.Text).insert(0, "Their ");
+          mark.set("deleted", { by: "acc_them", at });
+        }, "remote");
+      });
+      const mark = marksOf(live.annotations).get("deleted-debounce")!;
+      assert.equal((mark.get("text") as Y.Text).toString(), "Their base mine");
+      assert.ok(mark.has("deleted"));
+    });
+
+    await t.test("F13: activation keeps unsaved annotations as a downloadable private recovery", async () => {
+      liveDocument();
+      serve("commenter");
+      setLive(false);
+      const kept = [note("unsaved-local", "private pending work")];
+      unsavedJournal.put("Papers/paper.pdf", "annotations:pdf", kept);
+      await mount();
+      assert.match(notes()[0].textContent ?? "", /private pending work/);
+      await openNote(notes()[0]);
+      const editor = (host.querySelector(".pdf-note-editor") as HTMLElement & { editor: Editor }).editor;
+      await act(async () => { editor.commands.focus("end"); editor.commands.insertContent(" latest buffered typing"); setLive(true); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+      const recovered = await unsavedJournal.get<PdfTextAnnotation[]>("Papers/paper.pdf", "recovery:pdf-live");
+      assert.equal(recovered?.[0].text, "private pending work latest buffered typing");
+      const download = [...host.querySelectorAll("button")].find((button) => button.textContent === "Download recovery");
+      assert.ok(download);
+      const create = URL.createObjectURL;
+      const revoke = URL.revokeObjectURL;
+      const click = dom.window.HTMLAnchorElement.prototype.click;
+      let blob: Blob | undefined;
+      URL.createObjectURL = (value) => { blob = value as Blob; return "blob:private-recovery"; };
+      URL.revokeObjectURL = () => {};
+      dom.window.HTMLAnchorElement.prototype.click = function () {};
+      try {
+        await act(async () => { download.click(); });
+        assert.deepEqual(JSON.parse(await blob!.text()).annotations, recovered);
+        await pendingSaves.save("Papers/paper.pdf");
+        assert.equal(requests.some((request) => request.startsWith("PATCH")), false);
+        assert.equal(pendingSaves.isDirty("Papers/paper.pdf"), false);
+        pendingSaves.moveUnsaved("Papers/paper.pdf", "Papers/renamed.pdf");
+        assert.deepEqual(await unsavedJournal.get("Papers/renamed.pdf", "recovery:pdf-live"), recovered);
+        pendingSaves.moveUnsaved("Papers/renamed.pdf", "Papers/paper.pdf");
+      } finally { URL.createObjectURL = create; URL.revokeObjectURL = revoke; dom.window.HTMLAnchorElement.prototype.click = click; }
+    });
+
+    await t.test("F14: repeated host resolution failures stay unknown and retry into live mode", async () => {
+      liveDocument();
+      serve("commenter");
+      const fetch = globalThis.fetch;
+      let attempts = 0;
+      let available = false;
+      globalThis.fetch = (input, init) => {
+        if (String(input).includes("/pdf-docs/resolve") && !available) { attempts += 1; return Promise.reject(new Error("host restarting")); }
+        return fetch(input, init);
+      };
+      const timeout = globalThis.setTimeout;
+      globalThis.setTimeout = ((work: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => timeout(work, delay && delay >= 1000 ? 5 : delay, ...args)) as typeof setTimeout;
+      try {
+        await mount();
+        for (let index = 0; index < 8; index += 1) await act(async () => { await new Promise((resolve) => timeout(resolve, 20)); });
+        assert.ok(attempts > 5, `attempts: ${attempts}`);
+        assert.equal(requests.some((request) => request.includes("/api/pdf-annotations")), false);
+        available = true;
+        await act(async () => { await new Promise((resolve) => timeout(resolve, 100)); });
+        assert.ok(host.querySelector(".libera-pdf-collab"));
+      } finally { globalThis.setTimeout = timeout; }
+    });
+
+    await t.test("F15: replacement reloads the same URL and only accepts verified new bytes", async () => {
+      const live = liveDocument();
+      const hash = (byte: number) => createHash("sha256").update(new Uint8Array([byte])).digest("hex");
+      applyMarksDiff(live.annotations, [], [highlight("relocate")], { accountId: "acc_them", sourceHash: hash(1) }, "remote");
+      serve("commenter");
+      manifestHash = hash(1);
+      await mount();
+      const start = pdfLoads;
+      await act(async () => { manifestHash = hash(2); filesChanged(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); });
+      assert.ok(pdfLoads > start, "changing the version reloads an unchanged URL");
+      assert.equal(marksOf(live.annotations).get("relocate")!.get("sourceHash"), hash(1), "old folder bytes cannot be certified as the manifest's new version");
+      await act(async () => { rawBytes = new Uint8Array([2]); filesChanged(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+      assert.ok(pdfLoads > start + 1, "the later byte delivery reloads even with the same manifest hash");
+      assert.equal(marksOf(live.annotations).get("relocate")!.get("sourceHash"), hash(2));
+    });
+
+    await t.test("F16: oversized live note input is refused before it reaches Yjs", async () => {
+      const live = liveDocument();
+      applyMarksDiff(live.annotations, [], [note("limited", "base")], { accountId: "acc_them" }, "remote");
+      serve("commenter");
+      await mount();
+      await openNote(notes()[0]);
+      const editor = (host.querySelector(".pdf-note-editor") as HTMLElement & { editor: Editor }).editor;
+      let updates = 0;
+      live.annotations.on("update", () => { updates += 1; });
+      await act(async () => { editor.commands.focus("end"); editor.commands.insertContent("x".repeat(10_001)); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)); });
+      assert.equal((marksOf(live.annotations).get("limited")!.get("text") as Y.Text).toString(), "base");
+      assert.equal(updates, 0);
+      assert.match(host.textContent ?? "", /10,000 characters/);
+    });
+    assert.deepEqual(browserErrors, [], "unexpected browser errors fail the harness");
   } finally {
     await act(async () => root.unmount());
     setCollabStatusStore(null);

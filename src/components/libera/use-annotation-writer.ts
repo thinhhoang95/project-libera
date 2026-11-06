@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo } from "react";
 import { apiRequest } from "./api-client";
 import { broadcastSavedAnnotations } from "./annotation-sync";
-import { pendingSaves, unsavedJournal } from "./pending-saves";
+import { flushJournal, pendingSaves, unsavedJournal } from "./pending-saves";
 import type { PdfAnnotation, PdfTextAnnotation } from "@/lib/types";
 
 // A file's annotations wait in memory until the person saves, as a note's
@@ -20,6 +20,7 @@ export type AnnotationWriter<T> = {
   readonly dirty: boolean;
   /** Unsaved annotations kept from before a crash or restart, if any. */
   recover: () => Promise<T[] | null>;
+  preserveForLive: () => Promise<T[] | null>;
 };
 
 function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
@@ -30,6 +31,7 @@ function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
   let pending: T[] | null = null;
   let saving: Promise<void> | null = null;
   let version = 0;
+  let enabled = true;
 
   const setPending = (annotations: T[] | null) => {
     pending = annotations;
@@ -41,6 +43,16 @@ function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
 
   const writer = {
     setCallbacks: (value: WriterCallbacks<T> | null) => { callbacks = value; },
+    setEnabled(value: boolean) { enabled = value; },
+    async preserveForLive() {
+      const kept = await writer.recover();
+      if (kept) {
+        unsavedJournal.put(filePath, "recovery:pdf-live", kept);
+        await flushJournal();
+        if (pending === kept) setPending(null);
+      }
+      return kept ?? unsavedJournal.get<T[]>(filePath, "recovery:pdf-live");
+    },
     get dirty() { return pending !== null; },
     schedule: (annotations: T[]) => setPending(annotations),
     discard: () => setPending(null),
@@ -58,6 +70,7 @@ function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
     },
     async save(): Promise<void> {
       while (saving) await saving.catch(() => undefined);
+      if (!enabled) return;
       const sent = pending;
       const path = filePath;
       if (!sent) return;
@@ -88,13 +101,16 @@ function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
 export function useAnnotationWriter<T extends PdfAnnotation | PdfTextAnnotation>(
   kind: "pdf" | "image", filePath: string,
   onSaved: (annotations: T[]) => void, onError: (error: unknown) => void,
+  enabled = true,
 ): AnnotationWriter<T> {
   const writer = useMemo(() => pendingSaves.getWriter<ReturnType<typeof createAnnotationWriter<T>>>(filePath, `annotations:${kind}`) ?? createAnnotationWriter<T>(kind, filePath), [filePath, kind]);
   useLayoutEffect(() => {
+    writer.setEnabled(enabled);
     writer.setCallbacks({ onSaved, onError });
     return () => { writer.setCallbacks(null); };
   });
   useEffect(() => {
+    if (!enabled) return;
     const unregister = pendingSaves.register(filePath, `annotations:${kind}`, {
       dirty: writer.dirty,
       writer,
@@ -106,6 +122,6 @@ export function useAnnotationWriter<T extends PdfAnnotation | PdfTextAnnotation>
       // Unsaved annotations stay in the recovery journal, and the file stays unsaved.
       unregister();
     };
-  }, [filePath, kind, writer]);
+  }, [filePath, kind, writer, enabled]);
   return writer;
 }

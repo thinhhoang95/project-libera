@@ -51,8 +51,13 @@ function manifestPdfFileIds(doc: Y.Doc): Set<string> {
   return ids;
 }
 
-function manifestDocIds(doc: Y.Doc): Set<string> {
+function derivedPdfId(projectId: string, fileId: string): string {
+  return pdfDocIdFromDigest(createHash("sha256").update(pdfDocIdSeed(projectId, fileId)).digest("base64url"));
+}
+
+function manifestDocIds(doc: Y.Doc, projectId?: string): Set<string> {
   const ids = new Set<string>();
+  if (projectId) for (const fileId of manifestPdfFileIds(doc)) ids.add(derivedPdfId(projectId, fileId));
   for (const value of doc.getMap<unknown>(ManifestKeys.files).values()) {
     if (value && typeof value === "object" && "kind" in value && value.kind === "doc" && "docId" in value && typeof value.docId === "string") ids.add(value.docId);
   }
@@ -92,7 +97,7 @@ export class SyncServer {
     this.sweepTimer = setInterval(() => this.sweep(), SyncTimings.sweepIntervalMs);
     this.sweepTimer.unref();
     this.rooms = {
-      transact: (docId, subdoc, actor, provenance, change) => this.transact(docId, subdoc, actor, provenance, change),
+      transact: (docId, subdoc, actor, provenance, change, requiredAccess) => this.transact(docId, subdoc, actor, provenance, change, requiredAccess),
       withDocs: (docId, read) => this.withDocs(docId, read),
       batch: (docId, task) => this.batch(docId, task),
       onPersisted: (listener) => {
@@ -333,8 +338,8 @@ export class SyncServer {
         return session.sendReject(message, "invalid-update", violation);
       }
       // A stale offline rename must not resurrect a document already deleted by another member.
-      const previous = manifestDocIds(room.live(subdoc));
-      const added = [...manifestDocIds(room.shadow(subdoc))].filter((id) => !previous.has(id));
+      const previous = manifestDocIds(room.live(subdoc), room.projectId);
+      const added = [...manifestDocIds(room.shadow(subdoc), room.projectId)].filter((id) => !previous.has(id));
       if (added.length) {
         const deleted = await this.context.db.selectFrom("documents").select("id")
           .where("project_id", "=", room.projectId).where("id", "in", added)
@@ -399,6 +404,7 @@ export class SyncServer {
     const stop = this.metrics.persistSeconds.startTimer();
     let serverSeq: number | null;
     let removedDocIds: string[] = [];
+    let removedPdfFiles: Array<{ id: string; fileId: string }> = [];
     try {
       const remaining = subdoc === "manifest" ? manifestDocIds(room.shadow(subdoc)) : null;
       const removed = remaining ? [...manifestDocIds(room.live(subdoc))].filter((id) => !remaining.has(id)) : [];
@@ -410,13 +416,11 @@ export class SyncServer {
         const stillThere = manifestFileIdsAfter(room.shadow(subdoc));
         const gone = [...manifestPdfFileIds(room.live(subdoc))].filter((id) => !stillThere.has(id));
         if (gone.length) {
-          const pdfDocs = await this.context.db.selectFrom("documents").select("id")
-            .where("project_id", "=", room.projectId).where("kind", "=", "pdf")
-            .where("file_id", "in", gone).execute();
-          removedDocIds.push(...pdfDocs.map((row) => row.id));
+          removedPdfFiles = gone.map((fileId) => ({ id: derivedPdfId(room.projectId, fileId), fileId }));
+          removedDocIds.push(...removedPdfFiles.map((file) => file.id));
         }
       }
-      serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input, removedDocIds });
+      serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input, removedDocIds, removedPdfFiles });
     } catch (error) {
       room.discardShadow(subdoc);
       throw error;
@@ -458,8 +462,9 @@ export class SyncServer {
     actor: Actor,
     provenance: Provenance,
     change: (doc: Y.Doc) => T | Promise<T>,
+    requiredAccess?: PersistInput["requiredAccess"],
   ): Promise<{ serverSeq: number; result: T }> {
-    return this.withRoom(docId, (room) => room.queue.run(() => this.transactInRoom(room, subdoc, actor, provenance, change)));
+    return this.withRoom(docId, (room) => room.queue.run(() => this.transactInRoom(room, subdoc, actor, provenance, change, requiredAccess)));
   }
 
   /** The body of transact; the caller holds the room's queue. */
@@ -469,6 +474,7 @@ export class SyncServer {
     actor: Actor,
     provenance: Provenance,
     change: (doc: Y.Doc) => T | Promise<T>,
+    requiredAccess?: PersistInput["requiredAccess"],
   ): Promise<{ serverSeq: number; result: T }> {
     const { docId } = room;
     if (room.disposed) throw new Error(`Document ${docId} was deleted.`);
@@ -498,6 +504,7 @@ export class SyncServer {
       actor,
       provenance,
       update,
+      requiredAccess,
     });
     if (serverSeq === null) throw new Error(`Document ${docId} was deleted.`);
     this.metrics.updates.inc({ subdoc, source: "server" });
@@ -516,7 +523,7 @@ export class SyncServer {
         const batch: RoomBatch = {
           docs: Object.fromEntries(room.docs) as Record<Subdoc, Y.Doc>,
           serverSeq: () => room.serverSeq,
-          transact: (subdoc, actor, provenance, change) => this.transactInRoom(room, subdoc, actor, provenance, change),
+          transact: (subdoc, actor, provenance, change, requiredAccess) => this.transactInRoom(room, subdoc, actor, provenance, change, requiredAccess),
         };
         return task(batch);
       }),

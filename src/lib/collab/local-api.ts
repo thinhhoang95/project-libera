@@ -399,6 +399,8 @@ export interface FileOpRequest {
   stagedFile?: string;
   /** For write-blob: refuse an existing entry instead of replacing its bytes. */
   createOnly?: boolean;
+  /** Seed a new live PDF before publishing its manifest entry. */
+  pdfSeed?: import("./protocol/pdf").PdfImportRequest;
 }
 
 export interface Reconciliation {
@@ -629,6 +631,7 @@ export const ControlRoutes = {
   resolve: "/docs/resolve",
   /** GET ?path= → ResolvedPdf | null. */
   pdfResolve: "/pdf-docs/resolve",
+  pdfSnapshot: (docId: string) => `/pdf-docs/${encodeURIComponent(docId)}/snapshot`,
   /** GET → PdfCommentThread[]; POST one change → PdfCommentThread[]. */
   pdfComments: (docId: string) => `/pdf-docs/${encodeURIComponent(docId)}/comments`,
   /** POST → 204: the owner turns on live PDFs for a notebook. */

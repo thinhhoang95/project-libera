@@ -3,12 +3,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { registerPdfRoutes } from "../../electron/collab/control/routes-pdf";
 import type { DocHub } from "../../electron/collab/core/doc-hub";
 import { PdfCommentService } from "../../electron/collab/notebooks/pdf-comments";
 import { pdfDocId } from "../../electron/collab/notebooks/pdf-marks";
 import { ControlRoutes, type ResolvedPdf } from "../../src/lib/collab/local-api";
 import { applyMarksDiff, marksOf, readAllMarks, visibleMarks } from "../../src/lib/collab/pdf/model";
-import { closePeer, invite, makePeer, register, sleep, tempRoot, until, writeTree, type Peer } from "./support/notebooks-harness";
+import { api, closePeer, invite, makePeer, register, sleep, tempRoot, until, writeTree, type Peer } from "./support/notebooks-harness";
 import { removeDataDir, startServerProcess, type ServerProcess } from "./support/server-process";
 import type { PdfAnnotation, PdfHighlightAnnotation, PdfTextAnnotation } from "../../src/lib/types";
 
@@ -55,13 +56,13 @@ interface Pair {
   cleanup(): Promise<void>;
 }
 
-async function pair(prefix: string, files: Record<string, string | Buffer>, role = "commenter", sidecars?: (root: string) => void): Promise<Pair> {
+async function pair(prefix: string, files: Record<string, string | Buffer>, role = "commenter", sidecars?: (root: string) => void, pdfWriteMs = 40): Promise<Pair> {
   const temp = tempRoot(prefix);
   const server = await startServerProcess();
   const ownerAuth = await register(server, "Owner");
   const memberAuth = await register(server, "Member");
-  const owner = await makePeer(temp.dir, "owner", server, ownerAuth, FAST);
-  const member = await makePeer(temp.dir, "member", server, memberAuth, FAST);
+  const owner = await makePeer(temp.dir, "owner", server, ownerAuth, { timings: { ...FAST.timings, pdfWriteMs } });
+  const member = await makePeer(temp.dir, "member", server, memberAuth, { timings: { ...FAST.timings, pdfWriteMs } });
   const ownerRoot = path.join(owner.library, "Papers");
   writeTree(ownerRoot, files);
   sidecars?.(ownerRoot);
@@ -96,7 +97,9 @@ test("live PDFs stay off until the owner turns them on, and only the owner can",
     assert.equal(await resolvePdf(setup.owner, "Papers/paper.pdf"), null);
     const refused = await setup.member.router.call("POST", ControlRoutes.pdfLive(setup.projectId));
     assert.equal(refused.status, 403);
+    const before = setup.member.events.length;
     await enable(setup);
+    await until(() => setup.member.events.slice(before).some((event) => event.t === "project-changed" && event.projectId === setup.projectId), "F2: the settings-only activation notifies the other renderer");
     assert.ok(await resolvePdf(setup.owner, "Papers/paper.pdf"));
     assert.equal(await resolvePdf(setup.owner, "Papers/note.md"), null);
     assert.equal(setup.owner.service.localProjects()[0].pdfLive, true);
@@ -370,7 +373,7 @@ test("local comments become threads once, even from two devices", { timeout: 60_
       const list = await comments(setup.owner).list(mine.docId);
       return list.length === 1 && list[0].messages.length === 2 && list[0].status === "resolved";
     }, "the comment arrives as a thread");
-    comments(setup.owner).importLocal(mine.docId, local as never);
+    await Promise.all([comments(setup.owner).importLocal(mine.docId, local as never), comments(setup.member).importLocal(mine.docId, local as never)]);
     await sleep(600);
     const list = await comments(setup.owner).list(mine.docId);
     assert.equal(list.length, 1);
@@ -419,4 +422,119 @@ test("a new PDF arriving with a sidecar merges it, even one copied from another 
   } finally {
     await setup.cleanup();
   }
+});
+
+
+test("F10: revocation before the sidecar debounce exports the latest marks", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-revoke-", { "paper.pdf": PDF }, "commenter", undefined, 60_000);
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.member, `${setup.memberNotebook}/paper.pdf`))!;
+    const hub = setup.member.host.acquire(mine.docId);
+    await until(() => hub.getStatus().state === "saved-remote", "opened");
+    change(hub, setup.member.auth.account.id, (marks) => [...marks, note("latest-at-revoke", "kept before debounce")]);
+    assert.equal(existsSync(sidecarPath(setup.memberRoot, "paper.pdf")), false);
+    const response = await api(setup.server, `/v1/projects/${setup.projectId}/members/${setup.member.auth.account.id}`, undefined, setup.owner.auth.accessToken, "DELETE");
+    assert.equal(response.status, 204);
+    await until(() => setup.member.service.localProjects().some((project) => project.revoked), "revocation finishes");
+    const sidecar = readSidecar(setup.memberRoot, "paper.pdf");
+    assert.equal(sidecar.sharedCopy, undefined);
+    assert.equal((sidecar.annotations.find((mark) => mark.id === "latest-at-revoke") as PdfTextAnnotation).text, "kept before debounce");
+    setup.member.host.release(mine.docId);
+  } finally { await setup.cleanup(); }
+});
+
+test("F11: a later external sidecar adds unseen ids before the next copy replaces it", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-later-sidecar-", { "paper.pdf": PDF });
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf"))!;
+    const hub = setup.owner.host.acquire(mine.docId);
+    await until(() => hub.getStatus().state === "saved-remote", "opened");
+    change(hub, setup.owner.auth.account.id, () => [highlight("deleted"), highlight("current")]);
+    await until(() => existsSync(sidecarPath(setup.ownerRoot, "paper.pdf")), "initial copy");
+    change(hub, setup.owner.auth.account.id, (marks) => marks.filter((mark) => mark.id !== "deleted"));
+    await until(() => readSidecar(setup.ownerRoot, "paper.pdf").annotations.length === 1, "deletion copied");
+    writeSidecar(setup.ownerRoot, "paper.pdf", [highlight("deleted"), highlight("late-from-cloud")]);
+    change(hub, setup.owner.auth.account.id, (marks) => marks.map((mark) => ({ ...mark, color: "#22c55e" }) as PdfAnnotation));
+    await until(() => marksIn(hub).some((mark) => mark.id === "late-from-cloud"), "late work reaches shared state");
+    await until(() => readSidecar(setup.ownerRoot, "paper.pdf").annotations.some((mark) => mark.id === "late-from-cloud"), "late work survives replacement");
+    assert.equal(marksIn(hub).some((mark) => mark.id === "deleted"), false);
+    assert.equal((marksIn(hub).find((mark) => mark.id === "current") as PdfHighlightAnnotation).color, "#22c55e");
+    setup.owner.host.release(mine.docId);
+  } finally { await setup.cleanup(); }
+});
+
+test("F12: a copied PDF is seeded from the host snapshot before anyone can open it", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-copy-", { "paper.pdf": PDF }, "commenter", undefined, 60_000);
+  try {
+    await enable(setup);
+    const source = (await resolvePdf(setup.owner, "Papers/paper.pdf"))!;
+    const hub = setup.owner.host.acquire(source.docId);
+    await until(() => hub.getStatus().state === "saved-remote", "opened");
+    change(hub, setup.owner.auth.account.id, () => [note("fresh", "not on disk yet")]);
+    assert.equal(existsSync(sidecarPath(setup.ownerRoot, "paper.pdf")), false);
+    registerPdfRoutes(setup.owner.router as never, { host: setup.owner.host, accounts: { account: setup.owner.auth.account } } as never);
+    const snapshot = await setup.owner.router.call("GET", ControlRoutes.pdfSnapshot(source.docId));
+    assert.equal(snapshot.status, 200);
+    const marks = (snapshot.body as { marks: PdfAnnotation[] }).marks.map((mark) => ({ ...mark, id: "fresh-copy" }));
+    await setup.owner.service.fileOp(setup.projectId, { op: "write-blob", path: "copy.pdf", contentBase64: PDF.toString("base64"), createOnly: true, pdfSeed: { marks } });
+    const copied = (await resolvePdf(setup.owner, "Papers/copy.pdf"))!;
+    const destination = setup.owner.host.acquire(copied.docId);
+    await until(() => marksIn(destination).length === 1, "the destination already has the live mark");
+    assert.notEqual(copied.fileId, source.fileId);
+    assert.equal((marksIn(destination)[0] as PdfTextAnnotation).text, "not on disk yet");
+    await until(async () => Boolean(await resolvePdf(setup.member, `${setup.memberNotebook}/copy.pdf`)), "the copy reaches the manifest");
+    const remote = (await resolvePdf(setup.member, `${setup.memberNotebook}/copy.pdf`))!;
+    const memberHub = setup.member.host.acquire(remote.docId);
+    await until(() => marksIn(memberHub).length === 1, "the first remote open includes the copied mark");
+    setup.owner.host.release(source.docId);
+    setup.owner.host.release(copied.docId);
+    setup.member.host.release(remote.docId);
+  } finally { await setup.cleanup(); }
+});
+
+test("F15/F16: sidecar imports keep their original source hash and isolate invalid records", { timeout: 60_000 }, async () => {
+  const invalid = { ...note("invalid-local", "x".repeat(10_001)), updatedAt: "invalid" };
+  const setup = await pair("libera-pdf-import-validation-", { "paper.pdf": PDF }, "commenter", (root) => writeSidecar(root, "paper.pdf", [highlight("old-version"), invalid], { source: { size: 123, contentHash: "b".repeat(64) } }));
+  try {
+    await enable(setup);
+    const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf"))!;
+    const hub = setup.owner.host.acquire(mine.docId);
+    await until(() => marksIn(hub).length === 1, "the valid record imports");
+    assert.equal(marksOf(hub.getDoc("annotations")).get("old-version")!.get("sourceHash"), "b".repeat(64));
+    assert.notEqual(mine.blobHash, "b".repeat(64));
+    assert.equal(marksOf(hub.getDoc("annotations")).has("invalid-local"), false);
+    await until(() => existsSync(path.join(setup.ownerRoot, ".libera", "collab", "rejected-pdf")), "invalid sidecar remains recoverable");
+    assert.equal(hub.getStatus().state, "saved-remote", "the queue was never poisoned");
+    setup.owner.host.release(mine.docId);
+  } finally { await setup.cleanup(); }
+});
+
+
+test("F17: a queued first comment waits for PDF open instead of settling a 404", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-command-open-", { "paper.pdf": PDF, "unopened.pdf": PDF });
+  try {
+    await enable(setup);
+    const saved = (setup.owner.host as unknown as { account: Parameters<typeof setup.owner.host.setAccount>[0] }).account;
+    setup.owner.host.setAccount(null);
+    const target = (await resolvePdf(setup.owner, "Papers/unopened.pdf"))!;
+    const hub = setup.owner.host.acquire(target.docId);
+    const canSync = hub.canSync;
+    hub.canSync = () => false;
+    await comments(setup.owner).change(target.docId, { action: "comment", anchor, text: "first while offline" });
+    assert.equal(setup.owner.host.commands.list().length, 1);
+    setup.owner.host.setAccount(saved);
+    await until(() => setup.owner.host.connectionState === "connected", "socket connects before PDF open");
+    await sleep(300);
+    assert.equal(setup.owner.host.commands.list().length, 1, "the durable command survives the missing server document");
+    assert.equal(hub.hasOpened, false);
+    hub.canSync = canSync;
+    setup.owner.host.setAccount(null);
+    setup.owner.host.setAccount(saved);
+    await until(() => hub.hasOpened, "the delayed PDF open is acknowledged");
+    setup.owner.host.commands.setOnline(true);
+    await until(async () => setup.owner.host.commands.list().length === 0 && (await comments(setup.owner).list(target.docId)).some((thread) => thread.messages[0]?.text === "first while offline"), "the comment lands after open");
+    setup.owner.host.release(target.docId);
+  } finally { await setup.cleanup(); }
 });

@@ -29,7 +29,8 @@ type PdfNoteEditorProps = {
   handleRef: RefObject<PdfNoteEditorHandle | null>;
   initialMarkdown: string;
   mathMarkers?: MathMarkerSettings;
-  onChange: (markdown: string) => void;
+  onChange: (markdown: string, base?: string) => void;
+  maxLength?: number;
   onEscape: () => void;
 };
 
@@ -120,10 +121,12 @@ export function PdfNoteEditor({
   initialMarkdown,
   mathMarkers,
   onChange,
+  maxLength,
   onEscape,
 }: PdfNoteEditorProps) {
   const callbacksRef = useRef({ mathMarkers, onChange, onEscape });
   const pendingRef = useRef<number | null>(null);
+  const [lengthError, setLengthError] = useState(false);
   const editorRef = useRef<Editor | null>(null);
   /**
    * The last moment this editor and the note agreed: what the editor then
@@ -265,7 +268,13 @@ export function PdfNoteEditor({
     sendRef.current = () => {
       const local = readMarkdown();
       const text = outgoing();
-      callbacksRef.current.onChange(text);
+      if (maxLength !== undefined && text.length > maxLength) {
+        setLengthError(true);
+        show(syncRef.current.note);
+        return;
+      }
+      setLengthError(false);
+      callbacksRef.current.onChange(text, noteRef.current);
       if (text === local) {
         syncRef.current = { serialized: local, note: text };
         noteRef.current = text;
@@ -296,10 +305,11 @@ export function PdfNoteEditor({
       if (pendingRef.current !== null) {
         window.clearTimeout(pendingRef.current);
         pendingRef.current = null;
-        callbacksRef.current.onChange(outgoing());
+        const text = outgoing();
+        if (maxLength === undefined || text.length <= maxLength) callbacksRef.current.onChange(text, noteRef.current);
       }
     };
-  }, [editor, handleRef, initial, pairs]);
+  }, [editor, handleRef, initial, pairs, maxLength]);
 
-  return <EditorContent className="pdf-note-editor-host" editor={editor} />;
+  return <><EditorContent className="pdf-note-editor-host" editor={editor} />{lengthError ? <span role="status">Notes are limited to {maxLength?.toLocaleString("en")} characters.</span> : null}</>;
 }

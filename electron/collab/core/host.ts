@@ -11,7 +11,8 @@ import * as Y from "yjs";
 import { ApiRoutes } from "../../../src/lib/collab/protocol/api";
 import type { DivergenceRecord } from "../../../src/lib/collab/ui/diagnostics-types";
 import { SyncLimits } from "../../../src/lib/collab/protocol/version";
-import { ApiClient, type FetchLike } from "./api-client";
+import { isPdfDocId } from "../../../src/lib/collab/protocol/pdf";
+import { ApiClientError, ApiClient, type FetchLike } from "./api-client";
 import type { Clock, Logger } from "./clock";
 import { Emitter, consoleLogger, systemClock } from "./clock";
 import { CommandOutcomes } from "./command-outcomes";
@@ -165,6 +166,15 @@ export class CollabHost {
     });
     this.commandsInstance = new PendingCommands({
       store,
+      beforeSend: (command) => {
+        if (command.kind !== "thread.create" || !isPdfDocId(command.docId)) return;
+        const hub = this.acquire(command.docId);
+        try {
+          const reason = hub.getMeta().readOnlyReason;
+          if (reason === "document-deleted" || reason === "access-revoked") throw new ApiClientError("forbidden", 403, "This PDF is no longer accessible.");
+          if (!hub.hasOpened) throw new ApiClientError("network", 0, "Waiting for the PDF document to open.");
+        } finally { this.release(command.docId); }
+      },
       clock: this.clock,
       random: this.options.random,
       logger: this.logger,

@@ -46,7 +46,7 @@ import { readLiberaFile } from "@/lib/storage/files";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
-import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
+import { CollabHostError, resolveSharedPdf, livePdfSnapshot, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
 import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
@@ -377,7 +377,7 @@ export async function createSharedFile(liberaPath: string, content: string, opti
  * existing one, as a manifest blob. A new text file (.md, .tex, …) becomes a
  * document instead. Returns the Libera paths written.
  */
-export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean } = {}): Promise<{ paths: string[] }> {
+export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean; pdfSeed?: import("./protocol/pdf").PdfImportRequest } = {}): Promise<{ paths: string[] }> {
   const target = manifestTarget(liberaPath);
   if (bytes.byteLength > MAX_STAGED_BLOB_BYTES) {
     throw new SharedWriteError(
@@ -387,7 +387,7 @@ export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, opt
     );
   }
   const config = hostConfig(liberaPath, options);
-  const createOnly = options.createOnly ? { createOnly: true } : {};
+  const createOnly = { ...(options.createOnly ? { createOnly: true } : {}), ...(options.pdfSeed ? { pdfSeed: options.pdfSeed } : {}) };
   if (bytes.byteLength <= MAX_SHARED_BLOB_BYTES) {
     const contentBase64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
     return host(liberaPath, () => fileOp(target.projectId, { op: "write-blob", path: target.path, contentBase64, ...createOnly }, config));
@@ -621,10 +621,26 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
     }
     await createSharedFile(liberaPath, content, options);
   } else {
-    await writeSharedBlob(liberaPath, new Uint8Array(await readFile(filePathFromParts(current.notebook, current.pathParts))), { ...options, createOnly: true });
+    let pdfSeed: import("./protocol/pdf").PdfImportRequest | undefined;
+    if (node.fileType === "pdf") {
+      const config = hostConfig(liberaPath, options);
+      const source = isSharedNotebookPath(relativePath) ? await resolveSharedPdf(relativePath, config) : null;
+      if (source) pdfSeed = await livePdfSnapshot(source.docId, config);
+      else {
+        const sidecar = await readFile(pdfAnnotationsPath(current.notebook, current.pathParts), "utf8").then((text) => JSON.parse(text)).catch((error) => { if (error.code === "ENOENT") return {}; throw error; });
+        pdfSeed = { marks: sidecar.annotations ?? [], comments: sidecar.comments ?? [], sourceHash: sidecar.source?.contentHash };
+      }
+      const ids = new Map<string, string>();
+      const fresh = (id: string) => { if (!ids.has(id)) ids.set(id, randomUUID()); return ids.get(id)!; };
+      pdfSeed.marks = pdfSeed.marks.map((value) => {
+        const mark = value as { id: string; space?: string };
+        return { ...mark, id: fresh(mark.id), ...(mark.space ? { space: fresh(mark.space) } : {}) };
+      });
+    }
+    await writeSharedBlob(liberaPath, new Uint8Array(await readFile(filePathFromParts(current.notebook, current.pathParts))), { ...options, createOnly: true, pdfSeed });
     if (node.fileType === "audio") await copyTranscript(relativePath, liberaPath);
     // A copy's marks are its own. On a notebook with live PDFs, the host merges them into the copy's document.
-    if (node.fileType === "pdf") {
+    if (node.fileType === "pdf" && !(await listProjects(hostConfig(liberaPath, options))).find((project) => project.notebook === destination.notebook)?.pdfLive) {
       await copyFileIfExists(pdfAnnotationsPath(current.notebook, current.pathParts), pdfAnnotationsPath(destination.notebook, parts));
     }
   }

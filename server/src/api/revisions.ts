@@ -197,7 +197,7 @@ function restorePdfMarks(doc: Y.Doc, target: Y.Doc, accountId: string): number {
       const next = old.get(field);
       if (JSON.stringify(value.get(field)) === JSON.stringify(next)) continue;
       if (next === undefined) value.delete(field);
-      else value.set(field, next);
+      else value.set(field, field === PdfMarkFields.deleted ? { by: accountId, at } : next);
       touched = true;
     }
     const text = value.get(PdfMarkFields.text);
@@ -220,8 +220,9 @@ async function restorePdfRevision(context: ServerContext, accountId: string, doc
   const systemActor: Actor = { kind: "system", reason: "restore", onBehalfOf: accountId };
   try {
     const outcome = await context.rooms.batch(docId, async (batch) => {
+      const currentAccess = await requireDocumentAction(context.db, docId, accountId, "restore", actor);
       const checkpoint = await insertRevision(context, { docId, serverSeq: batch.serverSeq(), kind: "pre-restore", label: null, createdBy: accountId });
-      const { serverSeq } = await batch.transact("annotations", systemActor, { source: "restore" }, (doc) => { restorePdfMarks(doc, target, accountId); });
+      const { serverSeq } = await batch.transact("annotations", systemActor, { source: "restore" }, (doc) => { restorePdfMarks(doc, target, accountId); }, { projectId: currentAccess.projectId, role: currentAccess.role });
       return { serverSeq, checkpoint };
     });
     await writeAudit(context.db, {

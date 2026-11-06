@@ -265,6 +265,9 @@ All settled on 6 Nov 2026.
 - **Undo is not `Y.UndoManager`.** Undoing a create would hard-delete the mark, which breaks soft deletes and is refused by the server. `SharedPdfStore` keeps field-level history instead. A press applies one step, and a step someone has overwritten is used up without reaching further back.
 - **Rollout is an owner setting, not a per-project flag plus a hold.** `pdfLive` in the manifest's settings is off until the owner turns it on. It cannot be turned off.
 - **Comment anchors are in `pdfAnchors`,** not `anchors`, which holds Yjs positions.
+- **Sidecar import is a server operation.** `POST /v1/documents/:docId/pdf-import` validates plain marks and comment anchors, then creates only absent keys inside the PDF room's serialized batch. Clients never create imported nested maps independently. Imports and long comment conversations are chunked; existing marks, tombstones, anchors and imported threads keep their identities across devices and accounts. This REST addition keeps the sync wire unchanged and requires the documented server-first rollout.
+- **Deleted PDFs leave document tombstones even if never opened.** Removing a blob PDF inserts its derived, deleted document row in the manifest update's persistence transaction. Late opens get `document-deleted`, and stale blob re-adds are rejected.
+- **Unsaved local work at activation has private recovery.** Pending writer and journal work, including buffered note text, is kept in the local journal and offered through **Download recovery**. It is not silently discarded or sent through a sidecar Save after activation.
 - **The sidecar copy is marked with its document id.** A sidecar naming another document, such as one that arrived with a copied PDF, counts as local work.
 
 **Not done as planned**

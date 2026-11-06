@@ -687,6 +687,7 @@ export const ApiRoutes = {
   acceptInvitation: (token: string) => `/v1/invitations/token/${encodeURIComponent(token)}/accept`,
   documents: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/documents`,
   document: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}`,
+  pdfImport: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}/pdf-import`,
   documentUpdates: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}/updates`,
   blob: (projectId: string, hash: string) =>
     `/v1/projects/${encodeURIComponent(projectId)}/blobs/${encodeURIComponent(hash)}`,

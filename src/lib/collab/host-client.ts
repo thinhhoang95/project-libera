@@ -130,6 +130,10 @@ export function getHostStatus(config?: HostClientConfig | null): Promise<HostSta
 
 /** The shared document for a Libera path ("Notebook/sub/file.md"), or null when the file is not shared. */
 /** A live PDF's comments, in the shape the panel uses. */
+export function livePdfSnapshot(docId: string, config?: HostClientConfig | null): Promise<import("./protocol/pdf").PdfImportRequest> {
+  return hostJson(ControlRoutes.pdfSnapshot(docId), { config });
+}
+
 export function listLivePdfComments(docId: string, config?: HostClientConfig | null): Promise<PdfCommentThread[]> {
   return hostJson<PdfCommentThread[]>(ControlRoutes.pdfComments(docId), { config });
 }

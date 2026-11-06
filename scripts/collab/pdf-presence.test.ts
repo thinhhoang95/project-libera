@@ -152,3 +152,22 @@ test("leaving clears this window's presence", () => {
   assert.equal(receiver.getSnapshot().users[0].presence, null);
   receiver.destroy();
 });
+
+
+test("F20: cumulative ghosts, lifetime and sequence progression are bounded", () => {
+  let now = 0;
+  const ghosts = new PdfGhosts(() => now);
+  const points: Array<[number, number]> = Array.from({ length: 400 }, () => [0.1, 0.2]);
+  for (let index = 0; index < 300; index += 1) ghosts.apply(1, frame(index * 400, points));
+  assert.ok(ghosts.get(1)!.points.length <= 5000);
+  const before = ghosts.get(1);
+  assert.equal(ghosts.apply(1, frame(0, [[0.9, 0.9]])), false, "a backwards frame cannot rebuild the stroke");
+  assert.equal(ghosts.get(1), before);
+  assert.equal(ghosts.apply(1, frame(Number.MAX_SAFE_INTEGER, [[0.9, 0.9]])), false);
+  now = 30_000;
+  assert.equal(ghosts.get(1), undefined);
+  ghosts.apply(1, frame(0, points));
+  assert.equal(ghosts.get(1), undefined, "the expired draft id cannot start over");
+  ghosts.apply(1, frame(0, points, "next-stroke"));
+  assert.equal(ghosts.get(1)?.points.length, 400);
+});

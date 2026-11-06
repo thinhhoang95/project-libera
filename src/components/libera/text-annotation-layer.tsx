@@ -68,7 +68,8 @@ type TextAnnotationLayerProps = {
   /** Called when a drawn note is placed, so the host can return to its select tool. */
   onExitTextEditing: () => void;
   onSelectAnnotation: (annotation: PdfTextAnnotation) => void;
-  onUpdateAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
+  onUpdateAnnotation: (id: string, patch: Partial<PdfTextAnnotation>, base?: string) => void;
+  noteMaxLength?: number;
 };
 
 type NoteHandlers = {
@@ -82,7 +83,7 @@ type NoteHandlers = {
   moveGesture: (event: PointerEvent<HTMLElement>) => void;
   startEditing: (id: string, caret?: NoteCaret) => void;
   stopEditing: () => void;
-  updateText: (id: string, markdown: string) => void;
+  updateText: (id: string, markdown: string, base?: string) => void;
 };
 
 const RESIZE_HANDLES: { handle: ResizeHandle; label: string }[] = [
@@ -278,6 +279,7 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
   editorHandleRef,
   handlers,
   interactive,
+  noteMaxLength,
   pageSize,
   rect,
   selected,
@@ -290,6 +292,7 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
   editorHandleRef: RefObject<PdfNoteEditorHandle | null>;
   handlers: NoteHandlers;
   interactive: boolean;
+  noteMaxLength?: number;
   pageSize: AnnotationSurfaceSize;
   rect: PdfAnnotationRect;
   selected: boolean;
@@ -306,7 +309,7 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
   }, [editing]);
 
   const updateText = useCallback(
-    (markdown: string) => handlers.updateText(annotation.id, markdown),
+    (markdown: string, base?: string) => handlers.updateText(annotation.id, markdown, base),
     [annotation.id, handlers],
   );
 
@@ -352,6 +355,7 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
             handleRef={editorHandleRef}
             initialMarkdown={annotation.text}
             mathMarkers={mathMarkers}
+            maxLength={noteMaxLength}
             onChange={updateText}
             onEscape={handlers.stopEditing}
           />
@@ -469,6 +473,7 @@ export function TextAnnotationLayer({
   onExitTextEditing,
   onSelectAnnotation,
   onUpdateAnnotation,
+  noteMaxLength,
 }: TextAnnotationLayerProps) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<DraftTextBox | null>(null);
@@ -534,7 +539,7 @@ export function TextAnnotationLayer({
         if (!markdown.trim()) {
           latestRef.current.onDeleteAnnotation(annotation.id);
         } else if (markdown !== annotation.text) {
-          latestRef.current.onUpdateAnnotation(annotation.id, { text: markdown });
+          latestRef.current.onUpdateAnnotation(annotation.id, { text: markdown }, annotation.text);
         }
       }
 
@@ -640,13 +645,13 @@ export function TextAnnotationLayer({
         setEditing({ caret, id });
       },
       stopEditing,
-      updateText(id, markdown) {
+      updateText(id, markdown, base) {
         const annotation = findAnnotation(id);
 
         // No annotation: someone deleted it while it was open here. The text
         // still goes through, and a shared PDF keeps it with the deleted note.
         if (!annotation || annotation.text !== markdown) {
-          latestRef.current.onUpdateAnnotation(id, { text: markdown });
+          latestRef.current.onUpdateAnnotation(id, { text: markdown }, base);
         }
       },
     };
@@ -811,6 +816,7 @@ export function TextAnnotationLayer({
             editorHandleRef={editorHandleRef}
             handlers={handlers}
             interactive={interactive}
+            noteMaxLength={noteMaxLength}
             pageSize={pageSize}
             rect={transient?.id === annotation.id ? transient.rect : annotation.rect}
             selected={selectedAnnotationId === annotation.id}
