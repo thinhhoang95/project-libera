@@ -67,6 +67,9 @@ import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
 
+/** How long a follower keeps watching for one path, for a slow sync client or a writer that is away. */
+const FOLLOWER_DISK_WAIT_MS = 10 * 60_000;
+
 export interface Timings {
   /**
    * Quiet time after a change before a document's working copy is written.
@@ -84,6 +87,8 @@ export interface Timings {
   deleteGraceMs: number;
   /** Fallback poll for file systems where fs.watch misses events (ExFAT, network drives). */
   pollMs: number;
+  /** How often a follower checks whether the writer's disk has caught up with the manifest. */
+  followerDiskMs: number;
   /** Retry delay for downloads and creates that failed (offline). */
   retryMs: number;
   /** Maximum age of a content verification even if every stat is unchanged. */
@@ -98,6 +103,7 @@ export const DEFAULT_TIMINGS: Timings = {
   settleMs: 250,
   deleteGraceMs: 1200,
   pollMs: 5000,
+  followerDiskMs: 1000,
   retryMs: 5000,
   verifyMs: 60_000,
   pdfWriteMs: 60_000,
@@ -190,6 +196,9 @@ export class SharedProject {
   private scanTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Paths a follower is waiting on: whether each should be on disk, and until when to wait. */
+  private readonly awaitedOnDisk = new Map<string, { present: boolean; until: number }>();
+  private followerDiskTimer: ReturnType<typeof setInterval> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly missingSince = new Map<string, number>();
   private readonly refusedLogged = new Set<string>();
@@ -345,6 +354,7 @@ export class SharedProject {
     this.watcher?.close();
     this.watcher = null;
     if (this.pollTimer) clearInterval(this.pollTimer);
+    this.stopAwaitingDisk();
     for (const timer of [this.manifestTimer, this.scanTimer, this.retryTimer, ...this.timers]) if (timer) clearTimeout(timer);
     this.manifestTimer = this.scanTimer = this.retryTimer = null;
     this.timers.clear();
@@ -667,6 +677,50 @@ export class SharedProject {
     this.state.layout = next;
     this.ctx.layoutChanged(this.info.projectId);
     this.treeChanged(previous, next);
+    this.awaitDisk(previous, next);
+  }
+
+  /**
+   * A follower has no watcher, and the writer changes the disk after the
+   * manifest, so the tree a window read on tree-changed can be out of date.
+   * This says when the disk catches up, which through a sync client can take
+   * minutes. An empty `previous` is the first read of the manifest, not a change.
+   */
+  private awaitDisk(previous: Record<string, LayoutRecord>, next: Record<string, LayoutRecord>): void {
+    if (Object.keys(previous).length === 0) return;
+    const until = Date.now() + FOLLOWER_DISK_WAIT_MS;
+    for (const [fileId, record] of Object.entries(previous)) {
+      if (next[fileId]?.path !== record.path) this.awaitedOnDisk.set(record.path, { present: false, until });
+    }
+    for (const [fileId, record] of Object.entries(next)) {
+      if (previous[fileId]?.path !== record.path) this.awaitedOnDisk.set(record.path, { present: true, until });
+    }
+    if (this.awaitedOnDisk.size === 0 || this.followerDiskTimer) return;
+    this.followerDiskTimer = setInterval(() => void this.checkAwaitedDisk(), this.ctx.timings.followerDiskMs);
+    this.followerDiskTimer.unref?.();
+  }
+
+  private async checkAwaitedDisk(): Promise<void> {
+    if (!this.follower) {
+      this.stopAwaitingDisk();
+      return;
+    }
+    const arrived: string[] = [];
+    for (const [relative, awaited] of [...this.awaitedOnDisk]) {
+      const target = await resolveInside(this.info.root, relative).catch(() => null);
+      const settled = target !== null && (await statIfExists(target) !== null) === awaited.present;
+      if (settled) arrived.push(relative);
+      if (settled || Date.now() >= awaited.until) this.awaitedOnDisk.delete(relative);
+    }
+    if (this.stopped) return;
+    if (arrived.length) this.filesChanged(arrived);
+    if (this.awaitedOnDisk.size === 0) this.stopAwaitingDisk();
+  }
+
+  private stopAwaitingDisk(): void {
+    if (this.followerDiskTimer) clearInterval(this.followerDiskTimer);
+    this.followerDiskTimer = null;
+    this.awaitedOnDisk.clear();
   }
 
   private scheduleRetry(): void {
@@ -1699,7 +1753,11 @@ export class SharedProject {
           }
           case "delete": {
             const removing = entriesUnder(this.entries.values(), relative);
-            if (removing.length === 0) throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            if (removing.length === 0) {
+              // Already removed, and still on a follower's disk until the writer gets to it.
+              if (this.retired.has(manifestPathKey(relative))) return { paths: [] };
+              throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            }
             await this.writeManifest((map) => {
               for (const entry of removing) map.delete(entry.fileId);
             }, { source: "typing" });
