@@ -93,13 +93,14 @@ export type PdfTabViewState = {
 };
 
 export type LatexTabViewState = EditorScrollState & {
-  autoCompile?: boolean;
   /** "current" typesets the open file itself instead of its main file. */
   compileTarget?: "main" | "current";
   /** "auto" honors `% !TEX program` and the packages in the preamble. */
   engine?: "auto" | "pdflatex" | "xelatex" | "lualatex";
   line?: number;
   logOpen?: boolean;
+  /** The PDF pane is folded away, leaving the editor the full width. */
+  pdfHidden?: boolean;
   pdfScrollLeft?: number;
   /** The page at the top of the preview, counted from zero. */
   pdfScrollPage?: number;

@@ -177,6 +177,8 @@ export type LiberaNotebookMetadata = {
   color: string;
   emoji: string;
   groupId: string | null;
+  /** Whether edits to LaTeX files recompile on their own; unset means on. */
+  latexAutoCompile?: boolean;
 };
 
 export type LiberaNotebookGroup = {

@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, AlertTriangle, ChevronDown, Info, Loader2, PictureInPicture2, Play, ScrollText, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, ChevronDown, Info, Loader2, PanelRightClose, PanelRightOpen, PictureInPicture2, Play, ScrollText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import type { LatexTabViewState, OpenTab, OpenTabViewState } from "@/components/libera/types";
@@ -76,6 +76,8 @@ function formatDuration(milliseconds: number) {
 
 const bibCache = new Map<string, { key: string; entries: BibEntrySummary[] }>();/** Main files found for chapter files, so reopening a chapter needs no lookup. */
 const discoveredRoots = new Map<string, string | null>();
+/** Each notebook's Auto Compile choice, so reopening a file starts with it. */
+const notebookAutoCompile = new Map<string, boolean>();
 
 /** The live text of another open tab for compile staging: shared tabs always (the disk copy may lag), others when edited. */
 function stagedDraft(other: OpenTab): string | null {
@@ -86,6 +88,7 @@ function stagedDraft(other: OpenTab): string | null {
 
 export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab }: LatexWorkspaceProps) {
   const filePath = tab.file.path;
+  const notebook = tab.file.notebook;
   const viewState = tab.viewState?.latex;
   // Read once: the preview restores from this when it first has a layout.
   const [initialPdfScrollAnchor] = useState(() => viewState?.pdfScrollPage === undefined
@@ -121,7 +124,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   const canCompile = compileTarget === "current" || resolvedRoot !== null;
   const build = useLatexBuild(rootPath);
   const engineSetting: LatexEngineSetting = viewState?.engine ?? "auto";
-  const autoCompile = viewState?.autoCompile ?? true;
+  const [autoCompile, setAutoCompile] = useState(() => notebookAutoCompile.get(notebook) ?? true);
   const [aiError, setAiError] = useState("");
   const [syncError, setSyncError] = useState("");
   const [notice, setNotice] = useState("");
@@ -146,6 +149,26 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   useEffect(() => { latest.current = { readOpenTabs, engineSetting, onSave, autoCompile, rootPath, canCompile }; });
 
   useEffect(() => registerLatexEditor(tab.id, editorRef), [tab.id]);
+
+  useEffect(() => {
+    if (!isTex || notebookAutoCompile.has(notebook)) return;
+    let cancelled = false;
+    void apiRequest<{ enabled: boolean }>(`/api/latex/auto-compile?notebook=${encodeURIComponent(notebook)}`)
+      .then(({ enabled }) => {
+        // A choice made while this loaded is newer than the answer.
+        if (!notebookAutoCompile.has(notebook)) notebookAutoCompile.set(notebook, enabled);
+        if (!cancelled) setAutoCompile(notebookAutoCompile.get(notebook) ?? enabled);
+      })
+      .catch(() => { /* Stay on the default; the menu still works for this session. */ });
+    return () => { cancelled = true; };
+  }, [isTex, notebook]);
+
+  function changeAutoCompile(enabled: boolean) {
+    notebookAutoCompile.set(notebook, enabled);
+    setAutoCompile(enabled);
+    void apiRequest("/api/latex/auto-compile", { method: "PUT", body: JSON.stringify({ notebook, enabled }) })
+      .catch(() => setNotice("Could not save Auto Compile for this notebook, so it will reset next time."));
+  }
 
   const shared = !!collab;
   const handleChange = useCallback((value: string) => {
@@ -269,7 +292,6 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   const libraryEntries = useMemo(() => latexLibraryEntries(referenceLibrary), [referenceLibrary]);
   // A chapter's bibliography lives in its main file; only a main file gets the add-bibliography hint.
   const hasBibliography = rootPath !== filePath || readLatexBibliographyReferences(draftForAnalysis).length > 0;
-  const notebook = tab.file.notebook;
   const enableBibMirror = useCallback(() => {
     void apiRequest<{ mirror: BibMirrorResult }>("/api/references/bib-mirror", { method: "POST", body: JSON.stringify({ notebook, enabled: true }) })
       .then(({ mirror }) => setNotice(mirror.status === "protected"
@@ -327,16 +349,21 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
         method: "POST",
         body: JSON.stringify({ direction: "forward", rootPath, buildId: build.buildId, path: filePath, line: location.line, column: location.column }),
       });
-      if (locations.length) setHighlight({ locations, nonce: Date.now() });
+      if (locations.length) {
+        // Asking for a spot in the PDF needs the PDF on screen.
+        onSetViewState({ pdfHidden: false });
+        setHighlight({ locations, nonce: Date.now() });
+      }
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : "Could not find this spot in the PDF.");
     }
-  }, [build.buildId, filePath, isTex, rootPath]);
+  }, [build.buildId, filePath, isTex, onSetViewState, rootPath]);
 
   /* ---- PDF in a separate window ------------------------------------------------- */
 
   const pdfWindowOpen = useLatexPdfWindowOpen(rootPath);
   const showsPdfWindow = isTex && canCompile && pdfWindowOpen;
+  const pdfHidden = viewState?.pdfHidden ?? false;
 
   useEffect(() => {
     if (!showsPdfWindow) return;
@@ -350,6 +377,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   function togglePdfWindow() {
     if (pdfWindowOpen) {
       closeLatexPdfWindow(rootPath);
+      onSetViewState({ pdfHidden: false });
     } else if (!openLatexPdfWindow(rootPath)) {
       setSyncError("Could not open the PDF window. Please allow pop-up windows and try again.");
     }
@@ -472,7 +500,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       currentDisabledReason,
       onSelect: (target) => onSetViewState({ compileTarget: target }),
       autoCompile,
-      onAutoCompileChange: (value) => onSetViewState({ autoCompile: value }),
+      onAutoCompileChange: changeAutoCompile,
       engine: engineSetting,
       resolvedEngine: resolveLatexEngine(draftForAnalysis, "auto"),
       onEngineChange: (engine) => onSetViewState({ engine }),
@@ -546,7 +574,20 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               <ScrollText aria-hidden className="h-3.5 w-3.5" />
             </button>
           ) : null}
-          {isTex ? (
+        </div>
+        {isTex ? (
+          // Pinned: on narrow panes the toolbar scrolls, and with the PDF hidden this is the way back.
+          <div className="sticky right-0 z-10 flex shrink-0 items-center gap-2 bg-card pl-1">
+            <button
+              type="button"
+              className="libera-latex-icon-button disabled:opacity-50"
+              aria-label={pdfHidden ? "Show PDF pane" : "Hide PDF pane"}
+              title={showsPdfWindow ? "The PDF is in a separate window" : pdfHidden ? "Show PDF pane" : "Hide PDF pane"}
+              disabled={showsPdfWindow}
+              onClick={() => onSetViewState({ pdfHidden: !pdfHidden })}
+            >
+              {pdfHidden ? <PanelRightOpen aria-hidden className="h-4 w-4" /> : <PanelRightClose aria-hidden className="h-4 w-4" />}
+            </button>
             <button
               type="button"
               className="libera-latex-icon-button disabled:opacity-50"
@@ -558,8 +599,8 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
             >
               <PictureInPicture2 aria-hidden className="h-4 w-4" />
             </button>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </div>
 
       {snippetDialog ? <LatexSnippetDialog request={snippetDialog} onClose={() => { setSnippetDialog(null); editorRef.current?.view.focus(); }} /> : null}
@@ -596,9 +637,10 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
         <div
           ref={splitRef}
           className={`markdown-split-grid min-h-0 flex-1 overflow-hidden ${dragging ? "select-none" : ""}`}
-          style={{ "--markdown-split": `${splitPercent}%` } as CSSProperties}
+          // Hidden, the editor stacks over the log; the preview stays mounted to keep its PDF and place.
+          style={pdfHidden ? { display: "flex", flexDirection: "column" } : { "--markdown-split": `${splitPercent}%` } as CSSProperties}
         >
-          {editor}
+          <div className="grid min-h-0 min-w-0 flex-1">{editor}</div>
           <div
             aria-label="Resize LaTeX editor and PDF"
             aria-orientation="vertical"
@@ -607,6 +649,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
             aria-valuenow={Math.round(splitPercent)}
             className="markdown-split-resizer group flex cursor-row-resize items-center justify-center bg-muted outline-none hover:bg-input focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-foreground lg:cursor-col-resize"
             role="separator"
+            style={pdfHidden ? { display: "none" } : undefined}
             tabIndex={0}
             onPointerDown={startSplitDrag}
             onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) updateSplit(event.clientX, event.clientY); }}
@@ -626,9 +669,10 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
           >
             <span className="h-1 w-10 rounded-full bg-input transition group-hover:bg-muted-foreground lg:h-10 lg:w-1" />
           </div>
-          <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <div className={pdfHidden ? "contents" : "flex min-h-0 min-w-0 flex-col overflow-hidden"}>
             <LatexPdfPreview
               url={pdfUrl}
+              hidden={pdfHidden}
               zoom={(viewState?.pdfZoom ?? "width") as PdfZoom}
               initialScrollTop={viewState?.pdfScrollTop}
               initialScrollLeft={viewState?.pdfScrollLeft}

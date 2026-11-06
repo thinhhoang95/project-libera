@@ -85,7 +85,7 @@ async function listNotebookNames() {
   ];
 }
 
-async function readNotebookMetadataWithFallback(
+export async function readNotebookMetadataWithFallback(
   notebook: string,
 ): Promise<LiberaNotebookMetadata> {
   if (getLinkedFolder(notebook)) {

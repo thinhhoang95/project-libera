@@ -50,6 +50,7 @@ export function normalizeNotebookMetadata(
       ? input.illustration
       : legacyNotebookIllustration(input?.createdAt?.trim() || fallbackCreatedAt),
     ...(isNotebookCoverFile(input?.illustrationPath) ? { illustrationPath: input.illustrationPath } : {}),
+    ...(typeof input?.latexAutoCompile === "boolean" ? { latexAutoCompile: input.latexAutoCompile } : {}),
   };
 }
 

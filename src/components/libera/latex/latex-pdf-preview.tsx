@@ -40,6 +40,8 @@ async function readPageSizes(pdf: PDFDocumentProxy) {
 
 type LatexPdfPreviewProps = {
   url: string | null;
+  /** Folded away but still mounted, so showing it again is instant. */
+  hidden?: boolean;
   zoom: PdfZoom;
   initialScrollTop?: number;
   initialScrollLeft?: number;
@@ -54,7 +56,7 @@ type LatexPdfPreviewProps = {
   onInverseSync: (location: { page: number; x: number; y: number; hint?: SynctexTextHint }) => void;
 };
 
-export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft, initialScrollAnchor, highlight, busy, downloadUrl, emptyState, onZoomChange, onScrollChange, onInverseSync }: LatexPdfPreviewProps) {
+export function LatexPdfPreview({ url, hidden = false, zoom, initialScrollTop, initialScrollLeft, initialScrollAnchor, highlight, busy, downloadUrl, emptyState, onZoomChange, onScrollChange, onInverseSync }: LatexPdfPreviewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [loaded, setLoaded] = useState<{ url: string; pdf: PDFDocumentProxy; sizes: PageSize[]; textCache: PdfTextContentCache } | null>(null);
   const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
@@ -69,6 +71,7 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
   const restoredScrollRef = useRef(false);
   // Kept as the reader scrolls, so a change of scale knows what they were reading.
   const scrollAnchorRef = useRef<PdfPageAnchor | null>(null);
+  const scrollLeftRef = useRef(initialScrollLeft ?? 0);
   const pageElementsRef = useRef(new Map<number, HTMLDivElement>());
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingScrollRef = useRef<{ top: number; left: number; anchor: PdfPageAnchor | null } | null>(null);
@@ -124,7 +127,8 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    const observer = new ResizeObserver(() => setContainerWidth(element.clientWidth));
+    // Hidden reads as zero width: keep the last one so the pages keep their scale.
+    const observer = new ResizeObserver(() => { if (element.clientWidth) setContainerWidth(element.clientWidth); });
     observer.observe(element);
     setContainerWidth(element.clientWidth);
     return () => observer.disconnect();
@@ -160,7 +164,12 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (element && scrollAnchorRef.current) element.scrollTop = pdfAnchorScrollTop(scrollAnchorRef.current, offsets, pageHeights);
-  }, [offsets, pageHeights]);
+  }, [hidden, offsets, pageHeights]);
+
+  // Being hidden resets the scroll offsets, so the sideways one comes back too.
+  useLayoutEffect(() => {
+    if (!hidden && scrollRef.current) scrollRef.current.scrollLeft = scrollLeftRef.current;
+  }, [hidden]);
 
   // Track which pages are near the viewport; only those keep a canvas.
   useEffect(() => {
@@ -222,13 +231,14 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
 
   useCanvasViewStateCapture(() => {
     const element = scrollRef.current;
-    if (element && restoredScrollRef.current) onScrollChangeRef.current(element.scrollTop, element.scrollLeft, scrollAnchorRef.current);
+    // A hidden element reads as scrolled to 0; the last saved position stands.
+    if (element?.clientWidth && restoredScrollRef.current) onScrollChangeRef.current(element.scrollTop, element.scrollLeft, scrollAnchorRef.current);
   });
 
   // Switching tabs unmounts the preview; save the last position before it goes.
   useLayoutEffect(() => () => {
     const element = scrollRef.current;
-    if (element && restoredScrollRef.current) {
+    if (element?.clientWidth && restoredScrollRef.current) {
       pendingScrollRef.current = { top: element.scrollTop, left: element.scrollLeft, anchor: scrollAnchorRef.current };
     }
     flushScroll();
@@ -240,6 +250,7 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
     const element = scrollRef.current;
     if (!element) return;
     scrollAnchorRef.current = pdfPageAnchorAt(element.scrollTop, offsets, pageHeights);
+    scrollLeftRef.current = element.scrollLeft;
     pendingScrollRef.current = { top: element.scrollTop, left: element.scrollLeft, anchor: scrollAnchorRef.current };
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(flushScroll, 200);
@@ -261,7 +272,7 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft
   }, []);
 
   return (
-    <div className="libera-latex-pdf flex min-h-0 min-w-0 flex-col overflow-hidden">
+    <div className={`libera-latex-pdf min-h-0 min-w-0 flex-col overflow-hidden ${hidden ? "hidden" : "flex"}`}>
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border bg-card px-2 text-xs text-muted-foreground">
         <span className="tabular-nums" aria-live="polite">{sizes.length ? `Page ${currentPage} of ${sizes.length}` : "PDF"}</span>
         {busy || loading ? <Loader2 aria-label="Updating PDF" className="ml-1 h-3.5 w-3.5 animate-spin text-accent" /> : null}
