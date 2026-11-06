@@ -368,9 +368,17 @@ async function main() {
   let invitation = "";
   await step("3", `Alice shares "${NOTEBOOK}" and invites Bob as editor`, async () => {
     const page = alice.page!;
-    await alice.chooseMenuItem(["Share notebook…"]);
-    await page.click(`document.querySelector("button[aria-label='Notebook actions for ${NOTEBOOK}']")`, "Notebook actions button");
-    await waitFor(() => page.evaluate<string | null>(js.dialogText).then((t) => t?.startsWith("Share notebook")), { timeoutMs: 15_000, message: "the Share notebook dialog did not open" });
+    // The item joins the menu once the sign-in reaches the shell, a moment after the dialog says Connected.
+    const shareOpen = () => page.evaluate<string | null>(js.dialogText).then((t) => Boolean(t?.startsWith("Share notebook")));
+    await waitFor(async () => {
+      if (await shareOpen()) return true;
+      await alice.chooseMenuItem(["Share notebook…"]);
+      await page.click(`document.querySelector("button[aria-label='Notebook actions for ${NOTEBOOK}']")`, "Notebook actions button");
+      await sleep(300);
+      return shareOpen();
+    }, { timeoutMs: 15_000, message: "the Share notebook dialog did not open", intervalMs: 200 });
+    const menus = await alice.menusOffered();
+    note(`notebook menu opened ${menus.length} time(s); clicked: ${JSON.stringify(menus.map((menu) => menu.clicked))}`);
     const offered = (await alice.menusOffered()).at(-1);
     assert(offered?.clicked === "Share notebook…", `the notebook menu did not offer "Share notebook…": ${JSON.stringify(offered?.items)}`);
     const started = Date.now();
@@ -758,6 +766,21 @@ async function main() {
     note(`note reached Bob in ${timings["PDF note → on Bob's page"]} ms`);
     await waitFor(() => other.evaluate<boolean>(`!!document.querySelector(".pdf-presence-pointer, .pdf-presence-rail-mark")`), { timeoutMs: 10_000, message: "Bob sees no presence from Alice" });
     await shot(other, "pdf-note-on-bob");
+    // A collaborator's tooltip opens at their avatar, not somewhere along the row.
+    const tooltipAtAvatar = async (where: string) => {
+      const avatar = await other.evaluate<{ x: number; y: number; width: number; height: number }>(`(() => { const r = document.querySelector('[aria-label="People in this document"] button').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+      await other.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: avatar.x + avatar.width / 2, y: avatar.y + avatar.height / 2 });
+      const tooltip = await waitFor(() => other.evaluate<{ left: number; right: number } | null>(`(() => { const t = document.querySelector('[role="tooltip"]'); if (!t) return null; const r = t.getBoundingClientRect(); return { left: r.left, right: r.right }; })()`), { timeoutMs: 5_000, message: "hovering the avatar shows no tooltip" });
+      assert(tooltip.left <= avatar.x + avatar.width && tooltip.right >= avatar.x, `${where}: the tooltip (${tooltip.left} to ${tooltip.right}) is not at the avatar (${avatar.x} to ${avatar.x + avatar.width})`);
+      note(`${where}: avatar tooltip at ${Math.round(tooltip.left)}-${Math.round(tooltip.right)}, avatar at ${Math.round(avatar.x)}-${Math.round(avatar.x + avatar.width)}`);
+      await other.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
+    };
+    await tooltipAtAvatar("chat open");
+    // With the chat closed the avatar sits at the window's edge, where a tooltip has no room to its right.
+    await other.click(`document.querySelector('button[aria-label="Close AI panel"]')`, "the chat's close button");
+    await waitFor(() => other.evaluate<boolean>(`!document.querySelector('button[aria-label="Close AI panel"]')`), { timeoutMs: 5_000, message: "the chat did not close" });
+    await sleep(300);
+    await tooltipAtAvatar("chat closed");
     await waitFor(() => other.evaluate<boolean>(`(${strip}).textContent.includes("Saved")`), { timeoutMs: 20_000, message: "Bob's strip never settled" });
   }, { soft: true });
 

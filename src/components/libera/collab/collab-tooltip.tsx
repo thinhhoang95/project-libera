@@ -15,6 +15,10 @@ export interface TooltipTriggerProps {
 
 type Placement = "below" | "above" | "right";
 
+const WINDOW_MARGIN = 8;
+/** The tooltip's `max-w-72`. */
+const MAX_WIDTH = 288;
+
 /**
  * A tooltip that, unlike `title`, also appears on keyboard focus and can hold
  * more than one line. Same look as SidebarNameTooltipButton; rendered in a
@@ -30,18 +34,23 @@ export function CollabTooltip({
   placement?: Placement;
 }) {
   const id = useId();
-  const [position, setPosition] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
+  const [position, setPosition] = useState<{ left?: number; right?: number; top?: number; bottom?: number } | null>(null);
 
   function show(target: HTMLElement) {
     const bounds = target.getBoundingClientRect();
     const width = typeof window === "undefined" ? 1024 : window.innerWidth;
     const height = typeof window === "undefined" ? 768 : window.innerHeight;
+    // Beside its trigger whatever its width: from the trigger's left edge, or
+    // growing leftward from its right edge when the widest tooltip would not fit.
+    const beside = bounds.left + MAX_WIDTH + WINDOW_MARGIN <= width
+      ? { left: Math.max(WINDOW_MARGIN, bounds.left) }
+      : { right: Math.max(WINDOW_MARGIN, width - bounds.right) };
     setPosition(
       placement === "right"
         ? { left: Math.min(bounds.right + 8, width - 16), top: Math.max(8, Math.min(bounds.top, height - 64)) }
         : placement === "above"
-          ? { left: Math.max(8, Math.min(bounds.left, width - 296)), bottom: height - bounds.top + 6 }
-          : { left: Math.max(8, Math.min(bounds.left, width - 296)), top: Math.min(bounds.bottom + 6, height - 64) },
+          ? { ...beside, bottom: height - bounds.top + 6 }
+          : { ...beside, top: Math.min(bounds.bottom + 6, height - 64) },
     );
   }
 
