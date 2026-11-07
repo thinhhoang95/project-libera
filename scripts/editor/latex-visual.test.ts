@@ -14,6 +14,7 @@ import { latexVisualMode, latexVisualState, setNumberingStart, toggleLatexFormat
 import { buildPendingEffect, CHUNK, structuralField, LARGE_DOCUMENT } from "../../src/lib/latex/codemirror/visual/structural";
 import { numberingField, setNumbering, visualDefinitions } from "../../src/lib/latex/codemirror/visual/model";
 import { computeLatexNumbering } from "../../src/lib/latex/macros/numbering";
+import { macroAt } from "../../src/lib/latex/macros/definitions";
 import { refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
 import { stateReferenceText } from "../../src/lib/latex/codemirror/visual/references";
 
@@ -163,6 +164,69 @@ See \cref{tab:notation}.
   assert.equal(numbering.labels.get("tab:notation")?.kind, "table");
   view.dispatch({ effects: setNumbering.of(numbering) });
   assert.equal(stateReferenceText(view.state, "\\cref", ["tab:notation"]), "table 1");
+  view.destroy();
+});
+
+test("a redefined built-in is drawn as the document's macro, not as the built-in", () => {
+  const view = mount("\\renewcommand{\\textbf}[1]{NEVER #1}\n\\providecommand{\\emph}[1]{X}\nSome \\textbf{x} and \\emph{y}.");
+  const list = constructs(view.state);
+  const bold = view.state.doc.toString().indexOf("\\textbf{x}");
+  assert.ok(!list.some((entry) => entry === `style:${bold}:${bold + 10}`), "not drawn as bold");
+  assert.ok(list.some((entry) => entry.startsWith(`macro-args:${bold}:`)), list.join(" "));
+  assert.ok(!view.contentDOM.querySelector(".cm-vis-b"));
+  assert.ok(view.contentDOM.querySelector(".cm-vis-macro-piece")?.textContent?.includes("NEVER"));
+  assert.ok(list.some((entry) => entry.startsWith("style:")), "\\providecommand does not replace \\emph");
+  view.destroy();
+});
+
+test("a user environment's arguments are read after its name, and its body is not eaten", () => {
+  const view = mount("\\newenvironment{note}[1]{\\textbf{#1}}{}\n\\begin{note}{Hello}body\\end{note}");
+  assert.equal(view.contentDOM.querySelector(".cm-vis-env-header")?.textContent, "Hello");
+  const header = constructs(view.state).find((entry) => entry.startsWith("env-header:"))!;
+  assert.equal(view.state.doc.sliceString(Number(header.split(":")[1]), Number(header.split(":")[2])), "\\begin{note}{Hello}");
+  view.destroy();
+});
+
+test("a figure with content the widget does not draw stays source", () => {
+  const drawn = mount("\\begin{figure}[h]\n\\centering\\small\n\\includegraphics[width=.5\\textwidth]{a}\n\\caption{C}\\label{fig:a}\n\\end{figure}");
+  assert.equal(kinds(drawn.state).figure, 1);
+  drawn.destroy();
+  for (const inner of ["Some text \\includegraphics{a}\\caption{C}", "\\includegraphics{a}\\foo\\caption{C}", "\\begin{subfigure}{.5\\textwidth}\\includegraphics{a}\\caption{A}\\end{subfigure}\\caption{C}"]) {
+    const view = mount(`\\begin{figure}\n${inner}\n\\end{figure}`);
+    // (A sub-figure may still be drawn on its own.)
+    assert.ok(!constructs(view.state).some((entry) => entry.startsWith("figure:0:")), inner);
+    view.destroy();
+  }
+});
+
+test("a starred definition's name and body stay source", () => {
+  const view = mount("\\newcommand*{\\a}{\\textbf{definition}}\n\\renewcommand*\\b[1]{\\emph{#1}}\nText \\textbf{real}.");
+  const list = constructs(view.state);
+  const real = view.state.doc.toString().indexOf("\\textbf{real}");
+  assert.deepEqual(list.filter((entry) => entry.startsWith("style:")), [`style:${real}:${real + 13}`]);
+  assert.ok(!list.some((entry) => entry.startsWith("macro")), list.join(" "));
+  view.destroy();
+});
+
+test("definitions follow edits inside a multi-line body and before them", () => {
+  const doc = "\\documentclass{article}\n\\begin{document}\nIntro.\n\\newcommand{\\test}{\n  A}\nUse \\test.\n\\end{document}";
+  const view = mount(doc);
+  const body = doc.indexOf("  A");
+  view.dispatch({ changes: { from: body + 2, to: body + 3, insert: "B" } });
+  assert.equal(macroAt(visualDefinitions(view.state), "test", view.state.doc.length)?.body, "\n  B");
+  // Text typed before the definition moves it: it still applies only from where it is written.
+  const intro = view.state.doc.toString().indexOf("Intro.");
+  view.dispatch({ changes: { from: intro, insert: "x".repeat(200) } });
+  const defs = visualDefinitions(view.state);
+  const at = view.state.doc.toString().indexOf("\\newcommand{\\test}");
+  assert.equal(macroAt(defs, "test", at - 1), null);
+  assert.equal(macroAt(defs, "test", at)?.body, "\n  B");
+  view.destroy();
+});
+
+test("item markers follow \\setcounter, as references do", () => {
+  const view = mount("\\begin{enumerate}\n\\item a\n\\setcounter{enumi}{3}\n\\item b\n\\end{enumerate}");
+  assert.deepEqual([...view.contentDOM.querySelectorAll(".cm-vis-item")].map((item) => item.textContent), ["1.", "4."]);
   view.destroy();
 });
 

@@ -1,10 +1,10 @@
 import type { EditorState, Text } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, Tree } from "@lezer/common";
-import { readGroup, readOptional } from "../../../macros/core";
-import { macroAt, type LatexDefinitions } from "../../macros/definitions";
+import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
+import { definitionExtentAround, definitionExtentAt, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
-import { environmentName, formatCounterValue } from "../../macros/numbering";
+import { enumerateItemLabel, environmentName } from "../../macros/numbering";
 import { katexForEnvironment, renderKatex } from "./math-render";
 import { argumentInner, commandArguments, hasDirectError } from "./render-fragment";
 import { CONTROL_SYMBOLS, cssColor, LIGATURE_CHARS, readAccent, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
@@ -60,6 +60,19 @@ const SKIPPED = new Set([
   "Comment", "VerbatimEnvironment", "TikzPictureEnvironment", "VerbCommand", "LstInlineCommand", "Csname",
   "NewCommand", "RenewCommand", "NewEnvironment", "RenewEnvironment", "Def", "Let", "NewTheoremCommand", "TheoremStyleCommand",
 ]);
+/** Definition nodes of the grammar, which may end before the definition does (`\newcommand*{\a}{…}`). */
+const DEFINITION_NODES = new Set(["NewCommand", "RenewCommand", "NewEnvironment", "RenewEnvironment", "Def", "Let", "NewTheoremCommand", "TheoremStyleCommand"]);
+/** Built-in commands drawn by the walk, which a document may redefine. */
+const OVERRIDABLE = new Set([
+  "TextBoldCommand", "TextItalicCommand", "EmphasisCommand", "UnderlineCommand", "TextTeletypeCommand", "TextSmallCapsCommand", "TextSansSerifCommand",
+  "TextMediumCommand", "StrikeOutCommand", "TextSuperscriptCommand", "TextSubscriptCommand", "TextColorCommand", "ColorBoxCommand", "HrefCommand",
+  "UrlCommand", "FootnoteCommand", "EndnoteCommand", "Cite", "Ref", "Label", "Maketitle", "IncludeGraphics",
+  "Book", "Part", "Chapter", "Section", "SubSection", "SubSubSection", "Paragraph", "SubParagraph",
+]);
+/** Built-in environments drawn by the walk, which `\renewenvironment` may change. */
+const ENVIRONMENT_NODES = new Set(["FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "EquationEnvironment", "EquationArrayEnvironment"]);
+/** What may be in a figure or table besides its images, tables, caption and label, and still be drawn as one. */
+const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline)$/;
 /** Definitions the grammar parses as unknown commands. */
 const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname)$/;
 const SECTION_CLASSES: Record<string, string> = {
@@ -127,25 +140,27 @@ function graphicsWidth(options: string | null) {
   return length ? `${length[1]}${length[2]}` : undefined;
 }
 
-function enumerateLabel(count: number, depth: number, template: string | null) {
-  if (template) {
-    // enumerate's `[(i)]` and enumitem's `label=(\alph*)`.
-    const label = /label\s*=\s*([^,]+)/.exec(template)?.[1]?.trim() ?? template;
-    const starred = label.replace(/\\(arabic|alph|Alph|roman|Roman)\*/, (_, style: "arabic" | "alph" | "Alph" | "roman" | "Roman") => formatCounterValue(count, style));
-    if (starred !== label) return starred.replace(/[{}]/g, "");
-    const token = /[1aAiI]/.exec(label);
-    if (token) {
-      const style = token[0] === "1" ? "arabic" : token[0] === "a" ? "alph" : token[0] === "A" ? "Alph" : token[0] === "i" ? "roman" : "Roman";
-      return label.slice(0, token.index) + formatCounterValue(count, style) + label.slice(token.index + 1);
-    }
-  }
-  const style = (["arabic", "alph", "roman", "Alph"] as const)[Math.min(3, depth - 1)];
-  const value = formatCounterValue(count, style);
-  return depth === 2 ? `(${value})` : `${value}.`;
+/** The enumerate counter of a numbered list at `depth` (`enumi`…`enumiv`). */
+function enumCounter(depth: number) {
+  return ["enumi", "enumii", "enumiii", "enumiv"][depth - 1] ?? null;
 }
 
-/** How many `\item`s of `list` (not of lists inside it) end before `pos`. */
-function itemsBefore(list: SyntaxNode, pos: number) {
+/** What a `\setcounter`, `\addtocounter` or `\stepcounter` of `counter` does to a list's item count; null for other commands. */
+function counterChange(state: EditorState, node: SyntaxNode, counter: string | null): ((count: number) => number) | null {
+  if (!counter) return null;
+  const ctrl = node.firstChild;
+  const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
+  if (!/^\\(?:setcounter|addtocounter|stepcounter|refstepcounter)$/.test(command)) return null;
+  const args = commandArguments(node).filter((arg) => !arg.optional).map((arg) => { const inner = argumentInner(arg.node); return inner ? read(state, inner.from, inner.to).trim() : ""; });
+  if (args[0] !== counter) return null;
+  if (command === "\\stepcounter" || command === "\\refstepcounter") return (count) => count + 1;
+  const amount = Number(args[1]);
+  if (!args[1] || !Number.isFinite(amount)) return null;
+  return command === "\\setcounter" ? () => amount : (count) => count + amount;
+}
+
+/** The item count of `list` (not of lists inside it) at `pos`: its `\item`s before it, and changes to its counter. */
+function itemsBefore(list: SyntaxNode, pos: number, state: EditorState, counter: string | null) {
   let count = 0;
   const content = list.getChild("Content");
   if (!content) return 0;
@@ -155,6 +170,7 @@ function itemsBefore(list: SyntaxNode, pos: number) {
       if (cursor.from >= pos) return;
       if (cursor.name === "ListEnvironment") continue;
       if (cursor.name === "Item") { if (cursor.to <= pos && !cursor.node.getChild("OptionalArgument")) count++; continue; }
+      if (cursor.name === "UnknownCommand") { const change = cursor.to <= pos ? counterChange(state, cursor.node, counter) : null; if (change) { count = change(count); continue; } }
       if (cursor.firstChild()) { walk(); cursor.parent(); }
     } while (cursor.nextSibling());
   };
@@ -208,7 +224,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
   }
 
+  // A walk that starts inside a definition: the rest of it is source too.
+  const around = from > 0 ? definitionExtentAround(defs, from) : null;
+  if (around) consumed.push([around.from, around.to]);
+
   const isConsumed = (node: { from: number; to: number }) => consumed.some(([start, end]) => node.from >= start && node.to <= end);
+
+  /** The document's own definition of a built-in command at `node` (`\renewcommand{\textbf}`), which replaces the built-in drawing. */
+  const overridden = (node: SyntaxNode) => {
+    const command = node.getChild("SectioningCommand") ?? node;
+    const name = /^\\([A-Za-z@]+)/.exec(read(state, command.from, Math.min(doc.length, command.from + 64)));
+    const macro = name ? macroAt(defs, name[1], command.from) : null;
+    // `\providecommand` does nothing for a command LaTeX already has.
+    return name && macro && !macro.provided ? { node: command, name: name[1] } : null;
+  };
 
   /** Hides a `\begin`/`\end` line when it is alone on its line, collapsing it; else only the markup. */
   const collapseLine = (node: SyntaxNode, kind: string, extra?: Replace) => {
@@ -225,13 +254,30 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     to,
     enter(ref) {
       const name = ref.name;
-      if (SKIPPED.has(name)) return false;
+      if (SKIPPED.has(name)) {
+        // The grammar may end a definition early (`\newcommand*`): its name and body that follow are source too.
+        const extent = DEFINITION_NODES.has(name) ? definitionExtentAt(defs, ref.from) : null;
+        if (extent && extent.to > ref.to) consumed.push([ref.from, extent.to]);
+        return false;
+      }
       if (env.preambleEnd > 0 && ref.to <= env.preambleEnd) return false;
       if (consumed.length && isConsumed(ref)) return false;
       // Most nodes are text and argument holders: go inside without building a node object.
       if (!HANDLED.has(name)) return undefined;
       const node = ref.node;
       const starts = node.from >= from && node.from < to;
+
+      if (OVERRIDABLE.has(name)) {
+        // A redefined built-in is drawn as the document's macro, or stays source.
+        const override = overridden(node);
+        if (override) {
+          if (override.node.from < from || override.node.from >= to) return undefined;
+          const result = macroUse(override.node, override.name);
+          // A heading's text after the command is still walked.
+          return override.node === node ? result : undefined;
+        }
+      }
+      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
 
       if (name in SECTION_CLASSES) {
         const command = node.getChild("SectioningCommand");
@@ -260,7 +306,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // Containers that began before the walked range: keep list context for the items inside.
         if (name === "ListEnvironment") {
           const formed = wellFormedEnvironment(node, state);
-          if (formed) lists.push(listContext(node, formed.name, lists, state, itemsBefore(node, from)));
+          if (formed) {
+            const list = listContext(node, formed.name, lists, state, 0);
+            list.count = itemsBefore(node, from, state, list.variant === "number" ? enumCounter(list.depth) : null);
+            lists.push(list);
+          }
         }
         return;
       }
@@ -442,7 +492,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             if (list.variant !== "description") variant = "number";
           } else if (list.variant === "number") {
             list.count++;
-            label = enumerateLabel(list.count, list.depth, list.template);
+            label = enumerateItemLabel(list.count, list.depth, list.template);
           } else label = list.variant === "description" ? "" : BULLETS[(list.depth - 1) % BULLETS.length];
           const line = doc.lineAt(node.from);
           const replaceFrom = read(state, line.from, node.from).trim() ? node.from : line.from;
@@ -517,17 +567,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     let headerEnd = begin.to;
     let note: string | null = null;
     const inside = begin.getChild("OptionalArgument");
-    if (inside) { const range = argumentInner(inside); note = range ? read(state, range.from, range.to) : null; }
-    else {
-      const after = readOptional(read(state, begin.to, Math.min(doc.length, begin.to + 400)), 0);
+    // A group the grammar put in BeginEnv is body text unless the environment takes arguments (`\begin{quote}{Hello}`).
+    const stray = begin.getChild("TextArgument") ?? begin.getChild("ShortTextArgument");
+    const takesArguments = !!user && !!(user.arity || user.spec);
+    if (stray && !takesArguments) headerEnd = inside && inside.to <= stray.from ? inside.to : begin.getChild("EnvNameGroup")?.to ?? begin.to;
+    if (inside && inside.to <= headerEnd) { const range = argumentInner(inside); note = range ? read(state, range.from, range.to) : null; }
+    else if (!stray) {
+      const after = readOptional(read(state, begin.to, Math.min(doc.length, begin.to + 400)), 0, TEX_GROUPS);
       if (after && (theorem || name === "proof")) { note = after.content; headerEnd = begin.to + after.end; }
     }
     let userArgs: string[] | null = null;
-    if (user && (user.arity || user.spec)) {
-      const read = readMacroArguments(state.doc.sliceString(begin.to, Math.min(doc.length, begin.to + 2000)), 0, user);
+    if (user && takesArguments) {
+      // The arguments follow the name: the grammar may have put some of them in BeginEnv already.
+      const argsFrom = begin.getChild("EnvNameGroup")?.to ?? begin.to;
+      const read = readMacroArguments(state.doc.sliceString(argsFrom, Math.min(doc.length, argsFrom + 2000)), 0, user);
       if (!read) return undefined;
       userArgs = read.args;
-      headerEnd = begin.to + read.end;
+      headerEnd = Math.max(begin.to, argsFrom + read.end);
     }
     const label = trailingLabel(state, formed.content, headerEnd);
     if (label) headerEnd = label.to;
@@ -566,7 +622,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     // quote, center and the other text blocks.
     if (structural) {
-      collapseLine(begin, "env-begin");
+      collapseLine(begin, "env-begin", headerEnd < begin.to ? { from: begin.from, to: headerEnd } : undefined);
       collapseLine(formed.end, "env-end");
     }
     if (contentLines && contentLines.to >= contentLines.from) emit({ kind: "env-body", from: begin.to, to: formed.end.from, reveal: "never", replaces: [], lines: [{ ...contentLines, class: block }] });
@@ -577,6 +633,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
     const text = read(state, ctrl.from, ctrl.to);
+    // `\setcounter{enumi}{3}` in a list: its next item is 4.
+    if (/^\\(?:set|addto|step|refstep)counter$/.test(text)) for (let i = lists.length - 1; i >= 0; i--) {
+      if (lists[i].variant !== "number") continue;
+      const change = counterChange(state, node, enumCounter(lists[i].depth));
+      if (change) { lists[i].count = change(lists[i].count); return undefined; }
+    }
     if (!structural) {
       // The style layer only needs the arguments of macros drawn with editable arguments.
       if (ctrl.name === "CtrlSeq" && macroAt(defs, text.slice(1), node.from)) return macroUse(node, text.slice(1));
@@ -626,6 +688,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    * arguments are source, so nothing in its body is drawn. They may follow the command as separate nodes.
    */
   function skipDefinition(node: SyntaxNode): false {
+    // The definition reader knows where it ends.
+    const extent = definitionExtentAt(defs, node.from);
+    if (extent) { consumed.push([node.from, Math.max(node.to, extent.to)]); return false; }
     const text = read(state, node.from, Math.min(doc.length, node.from + 8000));
     let index = /^\\[A-Za-z@]+\*?/.exec(text)![0].length;
     for (let parts = 0; parts < 8; parts++) {
@@ -633,7 +698,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (space.includes("\n\n")) break;
       const at = index + space.length;
       const name = /^\\[A-Za-z@]+/.exec(text.slice(at));
-      const group = name ? null : readGroup(text, at) ?? readOptional(text, at);
+      const group = name ? null : readGroup(text, at, TEX_GROUPS) ?? readOptional(text, at, TEX_GROUPS);
       if (name) index = at + name[0].length;
       else if (group) index = group.end;
       else break;
@@ -693,8 +758,43 @@ function listContext(node: SyntaxNode, name: string, lists: ListContext[], state
   return { node, variant, depth, count, template: range ? state.doc.sliceString(range.from, range.to) : null };
 }
 
+/**
+ * Whether the figure widget would show everything in a figure or table: its
+ * images, tables, one caption, labels, comments and layout commands. Text,
+ * other commands and sub-figures are not drawn by it, so such a figure stays
+ * source (its parts render on their own).
+ */
+function figureCovered(node: SyntaxNode, state: EditorState) {
+  const content = node.getChild("Content");
+  if (!content) return true;
+  let covered = true;
+  let captions = 0;
+  content.cursor().iterate((ref) => {
+    if (!covered) return false;
+    const name = ref.name;
+    if (ref.type.isError) { covered = false; return false; }
+    if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "BlankLine" || name === "LineBreak" || name === "Tilde") return false;
+    if (name === "IncludeGraphics" || name === "Label" || name === "TabularEnvironment" || name === "SetLengthCommand" || name === "Centering") return false;
+    if (name === "Caption") { if (++captions > 1) covered = false; return false; }
+    if (name === "Normal") { if (read(state, ref.from, ref.to).trim()) covered = false; return false; }
+    if (name === "UnknownCommand") {
+      const ctrl = ref.node.firstChild;
+      if (!ctrl || !FIGURE_LAYOUT.test(read(state, ctrl.from, ctrl.to))) covered = false;
+      return false;
+    }
+    // `\begin{center}` around a table: its markup is layout, its content is checked.
+    if (name === "Environment") { if (environmentName(ref.node, (from, to) => read(state, from, to)) !== "center") covered = false; return undefined; }
+    if (name === "BeginEnv" || name === "EndEnv") return false;
+    if (name === "Content" || name === "Text" || name === "Command" || name === "KnownCommand" || name === "KnownEnvironment") return undefined;
+    covered = false;
+    return false;
+  });
+  return covered;
+}
+
 /** What a figure or table environment shows: its images or tabulars, and its caption. */
 function figureSpec(node: SyntaxNode, env: string, state: EditorState): FigureSpec | null {
+  if (!figureCovered(node, state)) return null;
   const images: FigureSpec["images"] = [];
   const tabulars: Array<{ source: string; offset: number }> = [];
   let caption: SyntaxNode | null = null;

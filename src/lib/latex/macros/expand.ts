@@ -1,4 +1,4 @@
-import { MAX_MACRO_DEPTH, readGroup, readOptional } from "../../macros/core";
+import { MAX_MACRO_DEPTH, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import { macroAt, type LatexDefinitions, type LatexMacro, type XparseArgument } from "./definitions";
 
 /* Expanding the document's macros (docs/latex-visual-editor-plan.md §7.4).
@@ -21,17 +21,29 @@ const BOOLEAN_FALSE = "\u0000False\u0000";
 
 type Argument = { value: string; end: number };
 
+/** Skips what TeX skips before an undelimited argument: spaces, one line end, and comments (a blank line is a paragraph, which ends them). */
 function skipSpaces(source: string, index: number) {
-  while (source[index] === " " || source[index] === "\t" || (source[index] === "\n" && source[index + 1] !== "\n")) index++;
-  return index;
+  for (;;) {
+    const char = source[index];
+    if (char === " " || char === "\t" || char === "\r") index++;
+    else if (char === "\n" && !/^\n[ \t\r]*\n/.test(source.slice(index, index + 40))) index++;
+    else if (char === "%") {
+      const end = source.indexOf("\n", index);
+      if (end < 0) return source.length;
+      // The comment takes its line end; a blank line after it still ends the arguments.
+      if (/^\n[ \t\r]*\n/.test(source.slice(end, end + 40))) return end;
+      index = end + 1;
+    } else return index;
+  }
 }
 
 /** One undelimited argument, as TeX reads it: a `{…}` group, a control sequence, or one character. */
 function readUndelimited(source: string, index: number): Argument | null {
   index = skipSpaces(source, index);
-  if (index >= source.length) return null;
+  // A paragraph break is not an argument.
+  if (index >= source.length || /^\n[ \t\r]*\n/.test(source.slice(index, index + 40))) return null;
   if (source[index] === "{") {
-    const group = readGroup(source, index);
+    const group = readGroup(source, index, TEX_GROUPS);
     return group ? { value: group.content, end: group.end } : null;
   }
   if (source[index] === "}" ) return null;
@@ -53,7 +65,7 @@ export function readMacroArguments(source: string, index: number, macro: Pick<La
       if (argument.type === "s") {
         if (source[at] === "*") { args.push(BOOLEAN_TRUE); index = at + 1; } else args.push(BOOLEAN_FALSE);
       } else if (argument.type === "o" || argument.type === "O") {
-        const optional = readOptional(source, at);
+        const optional = readOptional(source, at, TEX_GROUPS);
         if (optional) { args.push(optional.content); index = optional.end; } else args.push(argument.type === "O" ? (argument as Extract<XparseArgument, { type: "O" }>).default : NO_VALUE);
       } else {
         const read = readUndelimited(source, index);
@@ -66,7 +78,7 @@ export function readMacroArguments(source: string, index: number, macro: Pick<La
   }
   let remaining = macro.arity;
   if (macro.optional !== undefined && remaining > 0) {
-    const optional = readOptional(source, skipSpaces(source, index));
+    const optional = readOptional(source, skipSpaces(source, index), TEX_GROUPS);
     if (optional) { args.push(optional.content); index = optional.end; } else args.push(macro.optional);
     remaining--;
   }
@@ -79,9 +91,31 @@ export function readMacroArguments(source: string, index: number, macro: Pick<La
   return { args, end: index };
 }
 
-/** Puts arguments into a body: `#n` is an argument, `##` a literal `#`. */
+/** Whether text ends with a control word (`\alpha`, not the `\\` line break), which a following letter would run into. */
+function endsWithControlWord(text: string) {
+  return /(?:^|[^\\])(?:\\\\)*\\[A-Za-z@]+$/.test(text.slice(-80));
+}
+
+/** Joins two pieces of TeX without merging tokens: `\alpha` and `x` become `\alpha x`, not `\alphax`. */
+function joinTokens(left: string, right: string) {
+  return /^[A-Za-z@]/.test(right) && endsWithControlWord(left) ? `${left} ${right}` : left + right;
+}
+
+/** Puts arguments into a body: `#n` is an argument, `##` a literal `#`. Token boundaries are kept (`\alpha#1` with `x` is `\alpha x`). */
 export function substituteArguments(body: string, args: string[]) {
-  return body.replace(/##|#([1-9])/g, (whole, n: string | undefined) => (n ? args[Number(n) - 1] ?? whole : "#"));
+  let out = "";
+  let last = 0;
+  let joined = false;
+  for (const match of body.matchAll(/##|#([1-9])/g)) {
+    const text = body.slice(last, match.index);
+    out = joined ? joinTokens(out, text) : out + text;
+    last = match.index! + match[0].length;
+    if (!match[1]) { out += "#"; joined = false; continue; }
+    out = joinTokens(out, args[Number(match[1]) - 1] ?? match[0]);
+    joined = true;
+  }
+  const rest = body.slice(last);
+  return joined ? joinTokens(out, rest) : out + rest;
 }
 
 /** xparse's tests on arguments: `\IfBooleanTF`, `\IfNoValueTF`, `\IfValueTF` and their one-branch forms. */
@@ -116,6 +150,8 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   if (!match) return null;
   const macro = macroAt(context.defs, match[1], context.pos);
   if (!macro) return null;
+  // A definition that cannot be rendered: the use stays source.
+  if (macro.unsupported) return false;
   if (macro.mathOnly && context.mode === "text") return false;
   if (depth >= MAX_MACRO_DEPTH) return false;
   const read = readMacroArguments(source, index + match[0].length, macro);
@@ -132,6 +168,9 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
 
 function expandText(source: string, context: Context, depth: number): string | null {
   if (!source.includes("\\")) return source;
+  const outer = context.mode;
+  // In text, math inside `$…$`, `\(…\)`, `\[…\]` and `\ensuremath{…}` is expanded as math.
+  let closer: string | null = null;
   let output = "";
   let copied = 0;
   for (let i = 0; i < source.length; i++) {
@@ -144,12 +183,42 @@ function expandText(source: string, context: Context, depth: number): string | n
       copied = i;
       continue;
     }
+    if (char === "$" && outer === "text") {
+      const delimiter = source[i + 1] === "$" ? "$$" : "$";
+      if (closer === null) closer = delimiter;
+      else if (closer === delimiter) closer = null;
+      i += delimiter.length - 1;
+      continue;
+    }
     if (char !== "\\") continue;
-    if (!/[A-Za-z@]/.test(source[i + 1] ?? "")) { i++; continue; }
+    const next = source[i + 1] ?? "";
+    if (!/[A-Za-z@]/.test(next)) {
+      if (outer === "text") {
+        if (closer === null && (next === "(" || next === "[")) closer = next === "(" ? "\\)" : "\\]";
+        else if (closer !== null && closer === `\\${next}`) closer = null;
+      }
+      i++;
+      continue;
+    }
+    if (outer === "text" && closer === null && /^\\ensuremath(?![A-Za-z@])/.test(source.slice(i, i + 12)) && !macroAt(context.defs, "ensuremath", context.pos)) {
+      const group = readGroup(source, skipSpaces(source, i + 11), TEX_GROUPS);
+      if (group) {
+        context.mode = "math";
+        const inner = expandText(group.content, context, depth);
+        context.mode = outer;
+        if (inner === null) return null;
+        output += `${source.slice(copied, i)}\\ensuremath{${inner}}`;
+        copied = group.end;
+        i = group.end - 1;
+        continue;
+      }
+    }
+    context.mode = closer === null ? outer : "math";
     const result = expandUse(source, i, context, depth);
+    context.mode = outer;
     if (result === false) return null;
     if (!result) { i += /^\\[A-Za-z@]+/.exec(source.slice(i, i + 80))![0].length - 1; continue; }
-    output += source.slice(copied, i) + result.text;
+    output = joinTokens(output + source.slice(copied, i), result.text);
     if (output.length > MAX_EXPANSION_LENGTH) return null;
     copied = result.end;
     i = result.end - 1;
@@ -172,6 +241,10 @@ export function expandLatexMacros(source: string, defs: LatexDefinitions, option
 /** Expands one use (`\name` and its arguments) at the start of `source`; null when it is not a usable macro. */
 export function expandLatexMacroUse(source: string, defs: LatexDefinitions, options: { mode?: "math" | "text"; pos?: number } = {}) {
   const context: Context = { defs, pos: options.pos ?? Number.MAX_SAFE_INTEGER, used: new Set(), mode: options.mode ?? "text" };
+  // `\let\b\textbf`: what follows `\b` would be the arguments of a command whose arguments are unknown here.
+  const name = /^\\([A-Za-z@]+)/.exec(source);
+  const macro = name ? macroAt(defs, name[1], context.pos) : null;
+  if (macro?.alias && /^[{[*]/.test(source.slice(skipSpaces(source, name![0].length)))) return null;
   const result = expandUse(source, 0, context, 0);
   return result ? { text: result.text, length: result.end, used: [...context.used] } : null;
 }

@@ -120,7 +120,7 @@ export class MathWidget extends VisualWidget {
         const pos = widgetPos(target, dom);
         if (pos === null) return;
         const entry = numberingEntryAt(visualNumbering(target.state), pos + this.numberOffset, "equation");
-        applyEquationNumbers(dom, entry?.rows ?? []);
+        applyEquationNumbers(dom, entry?.rows ?? [], entry?.tagged);
       });
     }
     dom.addEventListener("mousedown", (event) => {

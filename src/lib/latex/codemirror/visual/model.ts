@@ -1,6 +1,6 @@
 import { Facet, StateEffect, StateField, type EditorState, type Text, type Transaction } from "@codemirror/state";
 import { EMPTY_AUX, type LatexAuxData } from "../../aux-file";
-import { bodyStartOf, emptyLatexDefinitions, readLatexDefinitions, type LatexDefinitions } from "../../macros/definitions";
+import { bodyStartOf, collectLatexDefinitions, definitionsFingerprint, emptyLatexDefinitions, mapLatexDefinitions, type DefinitionSource, type LatexDefinitions } from "../../macros/definitions";
 import { EMPTY_NUMBERING, type LatexNumbering, type NumberingStart } from "../../macros/numbering";
 
 /* State shared by the Visual mode's layers (docs/latex-visual-editor-plan.md).
@@ -28,8 +28,12 @@ export const visualConfig = Facet.define<Partial<VisualConfig>, VisualConfig>({
   combine: (values) => Object.assign({}, DEFAULT_CONFIG, ...values),
 });
 
-/** Another file of the project whose definitions apply (the root's preamble, `\input` macro files, local `.sty` files). */
-export type MacroSource = { path: string; text: string; version: string };
+/**
+ * Another file of the project whose definitions apply (the root's preamble,
+ * `\input` macro files, local `.sty` files). `loadedBy` and `key` say where it
+ * is read (definitions.ts `DefinitionSource`): sources without them first.
+ */
+export type MacroSource = DefinitionSource & { version: string };
 
 export const setMacroSources = StateEffect.define<MacroSource[]>();
 export const setAuxData = StateEffect.define<LatexAuxData>();
@@ -111,24 +115,30 @@ export function noteBodyStart(tr: Transaction) {
   if (safe) bodyStarts.set(tr.state.doc, old <= 0 ? old : tr.changes.mapPos(old));
 }
 
-const DEFINITION_HINT =/\\(?:new|renew|provide|Declare|def|gdef|edef|xdef|let|theoremstyle|numberwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage)/;
+/** Commands that define something, or that change which definitions TeX runs (conditionals, groups, verbatim). */
+const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|def|gdef|edef|xdef|let|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage|input|graphicspath|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
 
 function computeDefinitions(state: EditorState, sources: readonly MacroSource[]): LatexDefinitions {
-  const defs = emptyLatexDefinitions();
-  for (const source of sources) readLatexDefinitions(source.text, defs, { file: source.path });
-  readLatexDefinitions(state.doc.toString(), defs, { bodyStart: bodyStartIn(state.doc) });
-  return defs;
+  return collectLatexDefinitions(sources, { text: state.doc.toString(), bodyStart: bodyStartIn(state.doc) });
 }
 
-/** Whether a transaction may have changed a definition: an edit in the preamble, or on a line that defines something. */
-function touchesDefinitions(tr: Transaction) {
+/**
+ * Whether a transaction may have changed a definition: an edit in the
+ * preamble, inside a definition (its body may span lines), on a line that
+ * defines something, or a brace before the end of a local definition's group.
+ */
+function touchesDefinitions(tr: Transaction, defs: LatexDefinitions) {
   if (!tr.docChanged) return false;
   const oldBody = bodyStartIn(tr.startState.doc);
   noteBodyStart(tr);
+  let scopedUntil = -1;
+  for (const list of defs.macros.values()) for (const macro of list) if (macro.end !== undefined) scopedUntil = Math.max(scopedUntil, macro.end);
   let touched = false;
-  tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
     if (touched) return;
     if (fromA <= oldBody) { touched = true; return; }
+    if (defs.extents.some((extent) => fromA <= extent.to && toA >= extent.from)) { touched = true; return; }
+    if (fromA <= scopedUntil && /[{}\\]/.test(inserted.toString() + tr.startState.doc.sliceString(fromA, toA))) { touched = true; return; }
     const oldLines = tr.startState.doc.sliceString(tr.startState.doc.lineAt(fromA).from, tr.startState.doc.lineAt(toA).to);
     const newLines = tr.state.doc.sliceString(tr.state.doc.lineAt(fromB).from, tr.state.doc.lineAt(toB).to);
     if (DEFINITION_HINT.test(oldLines) || DEFINITION_HINT.test(newLines)) touched = true;
@@ -136,14 +146,27 @@ function touchesDefinitions(tr: Transaction) {
   return touched;
 }
 
+/** Whether definitions have anything with a position in the open file, which edits before it move. */
+function hasPositions(defs: LatexDefinitions) {
+  if (defs.extents.length || defs.problems.some((note) => note.file === undefined) || defs.unsupported.some((note) => note.file === undefined)) return true;
+  for (const list of defs.macros.values()) for (const macro of list) if (macro.pos >= 0 || macro.end !== undefined) return true;
+  return false;
+}
+
 /** The definitions that apply in the open file: other files' first, then its own preamble and body. */
 export const definitionsField = StateField.define<LatexDefinitions>({
   create: (state) => computeDefinitions(state, state.field(macroSourcesField, false) ?? []),
   update(value, tr) {
     const sourcesChanged = tr.startState.field(macroSourcesField, false) !== tr.state.field(macroSourcesField, false);
-    if (!sourcesChanged && !touchesDefinitions(tr)) return value;
+    const touched = touchesDefinitions(tr, value);
+    // Positions in the body follow the edit, as the decorations do: the fingerprint stays.
+    const mapped = tr.docChanged && hasPositions(value) ? mapLatexDefinitions(value, tr.changes) : value;
+    if (!sourcesChanged && !touched) return mapped;
     const next = computeDefinitions(tr.state, tr.state.field(macroSourcesField, false) ?? []);
-    return next.fingerprint === value.fingerprint && next.problems.length === value.problems.length ? value : next;
+    const same = next.fingerprint === (mapped === value ? value.fingerprint : definitionsFingerprint(mapped)) && next.problems.length === value.problems.length;
+    if (!same) return next;
+    // The same definitions: keep the fingerprint the decorations were built with, with the extents just read.
+    return mapped === value ? value : { ...next, fingerprint: mapped.fingerprint };
   },
 });
 
