@@ -2991,8 +2991,13 @@ html.dark .libera-workspace-region[data-ai-active="true"] .libera-ai-glow { opac
 .libera-workspace-region[data-ai-active="true"] .libera-document-workspace,
 .libera-workspace-region[data-ai-active="true"] .libera-editor-toolbar,
 .libera-workspace-region[data-ai-active="true"] .libera-latex-toolbar,
+.libera-workspace-region[data-ai-active="true"] .libera-latex-pane-toggles,
+.libera-workspace-region[data-ai-active="true"] .libera-shared-tab-chrome,
 .libera-workspace-region[data-ai-active="true"] .libera-visual-editor { background: transparent; }
 .libera-workspace-region[data-ai-active="true"] :is(.libera-visual-page, .markdown-split-grid) { background: var(--card); }
+/* On a narrow pane the toolbar scrolls under these pinned buttons; with no fill,
+   a blur keeps the icons passing beneath from colliding with them. */
+.libera-workspace-region[data-ai-active="true"] .libera-latex-pane-toggles { -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 
 /* ---- LaTeX editor -----------------------------------------------------------
  * CodeMirror 6 source editor with a PDF preview. Colors follow the app theme

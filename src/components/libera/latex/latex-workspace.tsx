@@ -577,7 +577,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
         </div>
         {isTex ? (
           // Pinned: on narrow panes the toolbar scrolls, and with the PDF hidden this is the way back.
-          <div className="sticky right-0 z-10 flex shrink-0 items-center gap-2 bg-card pl-1">
+          <div className="libera-latex-pane-toggles sticky right-0 z-10 flex shrink-0 items-center gap-2 bg-card pl-1">
             <button
               type="button"
               className="libera-latex-icon-button disabled:opacity-50"
