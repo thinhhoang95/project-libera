@@ -7,6 +7,8 @@ import { macroAt, type LatexDefinitions, type LatexMacro, type XparseArgument } 
  * (and the use stays as source) past the depth or size limits. */
 
 export const MAX_EXPANSION_LENGTH = 20_000;
+/** Most macro expansions one formula or use may take. */
+export const MAX_EXPANSIONS = 2_000;
 
 export type ExpansionResult = {
   text: string;
@@ -108,7 +110,7 @@ function evaluateConditionals(text: string) {
   return output + text.slice(copied);
 }
 
-type Context = { defs: LatexDefinitions; pos: number; used: Set<string>; mode: "math" | "text" };
+type Context = { defs: LatexDefinitions; pos: number; used: Set<string>; mode: "math" | "text"; /** Expansions left: bounds the work, not only the result (a macro chain that ends in nothing). */ budget: number };
 
 /** The use of a macro at `index` (which holds a backslash), expanded, or null when it is not a usable macro. */
 function expandUse(source: string, index: number, context: Context, depth: number): { text: string; end: number } | null | false {
@@ -117,7 +119,7 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   const macro = macroAt(context.defs, match[1], context.pos);
   if (!macro) return null;
   if (macro.mathOnly && context.mode === "text") return false;
-  if (depth >= MAX_MACRO_DEPTH) return false;
+  if (depth >= MAX_MACRO_DEPTH || --context.budget < 0) return false;
   const read = readMacroArguments(source, index + match[0].length, macro);
   if (!read) return false;
   context.used.add(macro.fingerprint);
@@ -164,14 +166,14 @@ function expandText(source: string, context: Context, depth: number): string | n
  */
 export function expandLatexMacros(source: string, defs: LatexDefinitions, options: { mode?: "math" | "text"; pos?: number } = {}): ExpansionResult {
   if (!defs.macros.size || !source.includes("\\")) return { text: source, used: [], ok: true };
-  const context: Context = { defs, pos: options.pos ?? Number.MAX_SAFE_INTEGER, used: new Set(), mode: options.mode ?? "math" };
+  const context: Context = { defs, pos: options.pos ?? Number.MAX_SAFE_INTEGER, used: new Set(), mode: options.mode ?? "math", budget: MAX_EXPANSIONS };
   const text = expandText(source, context, 0);
   return text === null ? { text: source, used: [...context.used], ok: false } : { text, used: [...context.used], ok: true };
 }
 
 /** Expands one use (`\name` and its arguments) at the start of `source`; null when it is not a usable macro. */
 export function expandLatexMacroUse(source: string, defs: LatexDefinitions, options: { mode?: "math" | "text"; pos?: number } = {}) {
-  const context: Context = { defs, pos: options.pos ?? Number.MAX_SAFE_INTEGER, used: new Set(), mode: options.mode ?? "text" };
+  const context: Context = { defs, pos: options.pos ?? Number.MAX_SAFE_INTEGER, used: new Set(), mode: options.mode ?? "text", budget: MAX_EXPANSIONS };
   const result = expandUse(source, 0, context, 0);
   return result ? { text: result.text, length: result.end, used: [...context.used] } : null;
 }

@@ -1,5 +1,5 @@
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
-import { Facet, RangeSet, RangeValue, StateEffect, StateField, type EditorState, type Range, type Transaction } from "@codemirror/state";
+import { Facet, RangeSet, RangeValue, StateEffect, StateField, type ChangeDesc, type EditorState, type Range, type Transaction } from "@codemirror/state";
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
 import { environmentName } from "../../macros/numbering";
@@ -168,6 +168,14 @@ function sameSignatures(built: Built, extents: RangeSet<ConstructMark>, from: nu
   return old.every((signature, index) => signature === fresh[index]);
 }
 
+/** Whether the syntax around `pos` is the same as around the same text before the edit (true without an edit to compare). */
+function sameContext(state: EditorState, tree: Tree, pos: number, edit?: EditContext) {
+  if (!edit) return true;
+  const old = edit.changes.invertedDesc.mapPos(pos, 1);
+  if (old > edit.oldTree.length) return false;
+  return contextAt(state, tree, pos) === contextAt(edit.oldDoc, edit.oldTree, old);
+}
+
 function addPending(pending: PendingRange[], range: PendingRange) {
   if (range.to <= range.from) return pending;
   const merged: PendingRange[] = [];
@@ -192,18 +200,46 @@ function removePending(pending: PendingRange[], from: number, to: number) {
 
 type Working = { decorations: DecorationSet; extents: RangeSet<ConstructMark>; pending: PendingRange[] };
 
+/** The containers around a position (math, verbatim, environments with their names), from the inside out. */
+function contextAt(state: { sliceDoc: (from: number, to: number) => string }, tree: Tree, pos: number) {
+  const names: string[] = [];
+  for (let node: ReturnType<Tree["resolveInner"]> | null = tree.resolveInner(pos, 1); node; node = node.parent) {
+    if (!CONTEXT_NODES.has(node.name) && !node.type.isError) continue;
+    names.push(node.type.isError ? "⚠" : node.name === "Environment" ? `Environment:${environmentName(node, (start, end) => state.sliceDoc(start, end)) ?? ""}` : node.name);
+  }
+  return names.join("<");
+}
+/** Nodes whose presence around text decides how it is drawn: when they differ, old and new constructs may differ further on. */
+const CONTEXT_NODES = new Set([
+  "VerbatimEnvironment", "TikzPictureEnvironment", "Comment", "DollarMath", "BracketMath", "ParenMath", "EquationEnvironment",
+  "EquationArrayEnvironment", "Environment", "ListEnvironment", "FigureEnvironment", "TableEnvironment", "TabularEnvironment",
+  "DocumentEnvironment", "TextArgument", "LongArg", "Group", "NewCommand", "RenewCommand", "NewEnvironment", "RenewEnvironment", "Def",
+]);
+
+/** The tree before an edit and the edit itself, to tell where the old and new parses agree again. */
+export type EditContext = { oldTree: Tree; oldDoc: { sliceDoc: (from: number, to: number) => string }; changes: ChangeDesc };
+
 /** Rebuilds [from, to] (widened), then follows changes forward until the old and new constructs agree again. */
-function rebuild(state: EditorState, tree: Tree, working: Working, from: number, to: number, preambleEnd: number, preambleOpen: boolean, stabilize: boolean) {
+function rebuild(state: EditorState, tree: Tree, working: Working, from: number, to: number, preambleEnd: number, preambleOpen: boolean, stabilize: boolean, edit?: EditContext) {
   const available = Math.min(state.doc.length, tree.length);
-  if (from >= available) { working.pending = addPending(working.pending, { from, to: Math.max(to, from) }); return; }
+  // An edit at the very end of a fully parsed document is still rebuilt (deleting the last `$`).
+  if (from > available || (from === available && available < state.doc.length)) {
+    const lines = lineBounds(state, Math.min(from, state.doc.length), Math.min(Math.max(to, from), state.doc.length));
+    // What was drawn there may be wrong now: leave it as source until the piece is built.
+    const { ids } = overlapping(working.extents, lines.from, lines.to);
+    working.decorations = working.decorations.update({ filter: (_f, _t, value) => !ids.has(value.spec.cid), filterFrom: lines.from, filterTo: lines.to });
+    working.extents = working.extents.update({ filter: (_f, _t, value) => !ids.has(value.id), filterFrom: lines.from, filterTo: lines.to });
+    working.pending = addPending(working.pending, { from: Math.min(lines.from, from), to: Math.max(lines.to, to, from) });
+    return;
+  }
   let range = widen(state, tree, working.extents, from, Math.min(to, available));
   let built = walk(state, tree, range.from, range.to, preambleEnd, preambleOpen);
-  // New constructs may run past the range (a new `$` pairs with a later one).
+  // New constructs may run past the range (a new `$` pairs with a later one): walk the whole widened range
+  // again, so what the first walk covered (a macro's arguments) is known to the rest.
   for (let round = 0; built.maxTo > range.to && round < 16; round++) {
-    const extra = widen(state, tree, working.extents, range.to, built.maxTo);
-    const more = walk(state, tree, range.to, extra.to, preambleEnd, preambleOpen);
-    built = { decorations: built.decorations.concat(more.decorations), extents: built.extents.concat(more.extents), signatures: built.signatures.concat(more.signatures), maxTo: Math.max(built.maxTo, more.maxTo) };
-    range = { from: range.from, to: Math.max(range.to, extra.to) };
+    const extra = widen(state, tree, working.extents, range.from, built.maxTo);
+    range = { from: Math.min(range.from, extra.from), to: Math.max(range.to, extra.to) };
+    built = walk(state, tree, range.from, range.to, preambleEnd, preambleOpen);
   }
   const apply = (start: number, end: number, fresh: Built) => {
     const { ids } = overlapping(working.extents, start, end);
@@ -221,7 +257,9 @@ function rebuild(state: EditorState, tree: Tree, working: Working, from: number,
     const window = lineBounds(state, at + 1, Math.min(available, at + WINDOW));
     if (window.to <= at) break;
     const next = walk(state, tree, window.from, window.to, preambleEnd, preambleOpen);
-    if (sameSignatures(next, working.extents, window.from, window.to)) break;
+    // Agreement needs the same constructs and the same syntax around the window's end in the old and new
+    // trees: two windows of plain text agree on constructs even when the new one has become verbatim.
+    if (sameSignatures(next, working.extents, window.from, window.to) && sameContext(state, tree, window.to, edit)) break;
     if (spent > SYNC_BUDGET) {
       // Too far to follow now: drop what may be stale and build it in pieces.
       const { ids } = overlapping(working.extents, at, state.doc.length);
@@ -355,10 +393,11 @@ export const structuralField = StateField.define<StructuralState>({
         working.decorations = working.decorations.map(tr.changes);
         working.extents = working.extents.map(tr.changes);
         working.pending = working.pending.map((range) => ({ from: tr.changes.mapPos(range.from, -1), to: tr.changes.mapPos(range.to, 1) })).filter((range) => range.to > range.from);
+        const edit: EditContext = { oldTree: syntaxTree(tr.startState), oldDoc: tr.startState, changes: tr.changes };
         const ranges: Array<[number, number, boolean]> = [];
         tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => ranges.push([fromB, toB, structuralEdit(tr, fromA, toA, inserted.toString())]));
         // Plain typing only changes its own lines; structural characters are followed forward.
-        for (const [from, to, structural] of ranges) rebuild(state, tree, working, from, to, preambleEnd, preambleOpen, structural);
+        for (const [from, to, structural] of ranges) rebuild(state, tree, working, from, to, preambleEnd, preambleOpen, structural, edit);
       }
       // The parser caught up: build what it now covers, and check forward from where the old tree
       // stopped, since constructs built before it caught up may have changed shape past that point.
@@ -370,7 +409,7 @@ export const structuralField = StateField.define<StructuralState>({
         }
         const frontier = Math.max(0, Math.min(value.treeLength, state.doc.length));
         if (frontier < state.doc.length && !working.pending.some((range) => range.from <= frontier && range.to > frontier)) {
-          rebuild(state, tree, working, frontier, Math.min(state.doc.length, frontier + 1), preambleEnd, preambleOpen, true);
+          rebuild(state, tree, working, frontier, Math.min(state.doc.length, frontier + 1), preambleEnd, preambleOpen, true, { oldTree: syntaxTree(tr.startState), oldDoc: tr.startState, changes: tr.changes });
         }
       }
       for (const effect of tr.effects) {

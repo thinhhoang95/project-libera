@@ -30,32 +30,72 @@ export function tokenizeTex(source: string): TexToken[] {
 /** A canonical token; `outerFrom`/`outerTo` include the braces of a one-token group it was unwrapped from. */
 type Canonical = { text: string; from: number; to: number; outerFrom: number; outerTo: number };
 
+/** Commands whose argument is text, where spaces count: compared exactly, as written. */
+const TEXT_ARGUMENT = /^\\(?:text|textrm|textit|textbf|textsf|texttt|textup|textnormal|mbox|hbox|intertext|shortintertext|operatorname\*?)$/;
+
 /**
- * The formula's tokens without spaces, and without braces around a single
- * token (`^{2}` reads as `^2`, `\frac{1}{2}` as `\frac12`): spellings TeX
- * typesets the same.
+ * The formula's tokens in a form where spellings TeX typesets the same are
+ * equal: spaces between math tokens are dropped (math ignores them), and
+ * braces around a single token are dropped only where they delimit an
+ * argument (`^{2}` and `^2`, `\frac{1}{2}` and `\frac12`). Elsewhere braces
+ * change spacing (`a{+}b` is not `a+b`), control spaces (`\ `) are kept, and
+ * text arguments (`\text{a b}`) are compared exactly.
  */
 export function canonicalTokens(source: string): Canonical[] {
-  const tokens = tokenizeTex(source).filter((token) => !/^\s+$/.test(token.text) && token.text !== "\\ " );
+  const tokens = tokenizeTex(source);
   const out: Canonical[] = [];
+  /** Whether the next group is an argument: after `^`, `_`, a control word, or another argument group. */
+  let argument: null | "script" | "command" = null;
+  const push = (text: string, from: number, to: number, outerFrom = from, outerTo = to) => out.push({ text: ALIASES[text] ?? text, from, to, outerFrom, outerTo });
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
-    if (token.text === "{" && tokens[i + 2]?.text === "}" && tokens[i + 1] && tokens[i + 1].text !== "{" && tokens[i + 1].text !== "}") {
-      // A group of one token: the token alone.
-      const inner = tokens[i + 1];
-      out.push({ text: inner.text, from: inner.from, to: inner.to, outerFrom: token.from, outerTo: tokens[i + 2].to });
-      i += 2;
+    if (/^\s+$/.test(token.text)) continue;
+    // A text argument: one token holding the whole group as written.
+    if (TEXT_ARGUMENT.test(token.text)) {
+      push(token.text, token.from, token.to);
+      let j = i + 1;
+      while (tokens[j] && /^\s+$/.test(tokens[j].text)) j++;
+      if (tokens[j]?.text === "{") {
+        let depth = 0;
+        let k = j;
+        for (; k < tokens.length; k++) {
+          if (tokens[k].text === "{") depth++;
+          else if (tokens[k].text === "}" && --depth === 0) break;
+        }
+        if (k < tokens.length) {
+          push(source.slice(tokens[j].from, tokens[k].to), tokens[j].from, tokens[k].to);
+          i = k;
+          argument = null;
+          continue;
+        }
+      }
+      argument = "command";
       continue;
     }
-    out.push({ text: token.text, from: token.from, to: token.to, outerFrom: token.from, outerTo: token.to });
+    if (argument && token.text === "{") {
+      let j = i + 1;
+      while (tokens[j] && /^\s+$/.test(tokens[j].text)) j++;
+      let k = j + 1;
+      while (tokens[k] && /^\s+$/.test(tokens[k].text)) k++;
+      const inner = tokens[j];
+      if (inner && inner.text !== "{" && inner.text !== "}" && tokens[k]?.text === "}") {
+        // A one-token argument: the token alone.
+        push(inner.text, inner.from, inner.to, token.from, tokens[k].to);
+        i = k;
+        // A command's second argument may follow (`\frac{1}{2}`); nothing follows a script's.
+        if (argument === "script") argument = null;
+        continue;
+      }
+    }
+    push(token.text, token.from, token.to);
+    argument = token.text === "^" || token.text === "_" ? "script" : /^\\[A-Za-z@]+\*?$/.test(token.text) || (token.text === "}" && argument === "command") ? "command" : null;
   }
-  // Spellings of the same command.
-  return out.map((token) => ({ ...token, text: ALIASES[token.text] ?? token.text }));
+  return out;
 }
 
+/** Spellings of the same command (KaTeX and TeX define them as each other). */
 const ALIASES: Record<string, string> = {
   "\\le": "\\leq", "\\ge": "\\geq", "\\ne": "\\neq", "\\to": "\\rightarrow", "\\gets": "\\leftarrow", "\\lbrace": "\\{", "\\rbrace": "\\}",
-  "\\vert": "|", "\\lvert": "|", "\\rvert": "|", "\\dfrac": "\\dfrac", "\\cdotp": "\\cdot",
 };
 
 export type TexChange = { from: number; to: number; insert: string };
@@ -116,7 +156,12 @@ export function texDiff(original: string, edited: string, offset = 0): TexChange
     bi = j + 1;
   }
   flush(a.length, b.length);
-  return mergeAdjacent(changes);
+  const merged = mergeAdjacent(changes);
+  // Removing tokens can change what the ones kept mean (deleting `\frac{1}` leaves `{2}`, now a group).
+  // When the small change would not typeset as the edit, replace the formula whole.
+  const result = applyTexChanges(original, merged, offset);
+  const same = (x: Canonical[], y: Canonical[]) => x.length === y.length && x.every((token, index) => token.text === y[index].text);
+  return same(canonicalTokens(result), b) ? merged : [{ from: offset, to: offset + original.length, insert: edited }];
 }
 
 function mergeAdjacent(changes: TexChange[]) {

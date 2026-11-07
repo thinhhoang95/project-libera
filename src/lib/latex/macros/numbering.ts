@@ -56,7 +56,8 @@ function alph(value: number) {
 }
 
 export function formatCounterValue(value: number, style: "arabic" | "roman" | "Roman" | "alph" | "Alph") {
-  if (style === "arabic") return String(value);
+  // Out of range for letters and numerals (TeX would stop with an error): shown as a number, without the work.
+  if (style === "arabic" || !Number.isSafeInteger(value) || value < 1 || ((style === "roman" || style === "Roman") && value > 4999)) return String(value);
   if (style === "roman") return roman(value);
   if (style === "Roman") return roman(value).toUpperCase();
   if (style === "alph") return alph(value);
@@ -134,6 +135,15 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   for (const theorem of defs.theorems.values()) if (theorem.within && theorem.counter === theorem.name) within.set(theorem.name, theorem.within);
   for (let i = 1; i < SECTION_COUNTERS.length; i++) within.set(SECTION_COUNTERS[i], SECTION_COUNTERS[i - 1]);
   if (!chapters) within.delete("section");
+  // A counter numbered within itself, directly or through others (`\numberwithin{equation}{equation}`), is
+  // an error in TeX: drop the edge that closes the cycle so stepping and formatting stay finite.
+  for (const counter of [...within.keys()]) {
+    const seen = new Set<string>([counter]);
+    for (let parent = within.get(counter); parent !== undefined; parent = within.get(parent)) {
+      if (seen.has(parent)) { within.delete(counter); break; }
+      seen.add(parent);
+    }
+  }
   let appendix = options.start?.appendix ?? false;
 
   const value = (name: string) => counters.get(name) ?? 0;

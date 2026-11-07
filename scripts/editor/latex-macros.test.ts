@@ -5,7 +5,7 @@ import { parser } from "codemirror-lang-latex/src/latex.mjs";
 import { parseLatexAux } from "../../src/lib/latex/aux-file";
 import { bodyStartOf, emptyLatexDefinitions, macroAt, readLatexDefinitions, readLatexInputs } from "../../src/lib/latex/macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode } from "../../src/lib/latex/macros/expand";
-import { computeLatexNumbering, referenceText, splitMathRows } from "../../src/lib/latex/macros/numbering";
+import { computeLatexNumbering, formatCounterValue, referenceText, splitMathRows } from "../../src/lib/latex/macros/numbering";
 import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
 import { readGroup, readOptional } from "../../src/lib/macros/core";
 import { readBalancedGroup } from "../../src/lib/latex/project";
@@ -266,4 +266,23 @@ test("labels and citation labels are read from the .aux, in plain and hyperref f
   assert.equal(aux.labels["sec:intro@cref"], undefined);
   assert.deepEqual(aux.citations.vaswani2017, { label: "12" });
   assert.deepEqual(aux.citations.knuth1984, { label: "3", year: "1984", authors: "Knuth" });
+});
+
+/* ---- Review fixes ------------------------------------------------------------ */
+
+test("expansion work is bounded, not only its result", () => {
+  const defs = defsOf(String.raw`\newcommand{\a}{\b\b\b\b\b\b}\newcommand{\b}{\c\c\c\c\c\c}\newcommand{\c}{\d\d\d\d\d\d}\newcommand{\d}{\e\e\e\e\e\e}\newcommand{\e}{\f\f\f\f\f\f}\newcommand{\f}{\g\g\g\g\g\g}\newcommand{\g}{}`);
+  const started = Date.now();
+  assert.equal(expandLatexMacros(String.raw`\a`, defs).ok, false);
+  assert.ok(Date.now() - started < 500, "stops early");
+});
+
+test("counters numbered within themselves and huge values do not hang or crash", () => {
+  const numbering = number(String.raw`\documentclass{article}\numberwithin{equation}{equation}\newcounter{a}[b]\newcounter{b}[a]
+\begin{document}\begin{equation}x\label{eq:x}\end{equation}\stepcounter{a}\end{document}`);
+  assert.equal(numbering.labels.get("eq:x")?.number, "1");
+  const started = Date.now();
+  assert.equal(formatCounterValue(1_000_000_000, "Roman"), "1000000000");
+  assert.equal(formatCounterValue(0, "alph"), "0");
+  assert.ok(Date.now() - started < 50);
 });

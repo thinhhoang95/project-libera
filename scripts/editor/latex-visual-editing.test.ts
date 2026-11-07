@@ -4,7 +4,7 @@ import { after, test } from "node:test";
 import fc from "fast-check";
 import { JSDOM } from "jsdom";
 import { applyTexChanges, canonicalTokens, texDiff, tokenizeTex } from "../../src/lib/latex/codemirror/visual/tex-tokens";
-import { deleteColumn, deleteRow, insertColumn, insertRow, parseColumnSpec, parseTabular, setCellText, type TableChange } from "../../src/lib/latex/codemirror/visual/table-model";
+import { columnSpans, deleteColumn, deleteRow, insertColumn, insertRow, parseColumnSpec, parseTabular, setCellText, type TableChange } from "../../src/lib/latex/codemirror/visual/table-model";
 import { escapeLatexText, htmlToLatex } from "../../src/lib/latex/codemirror/visual/html2latex";
 import { refusalReason } from "../../src/lib/latex/codemirror/visual/math-edit";
 
@@ -160,4 +160,44 @@ test("rich text from Word, Google Docs and web pages becomes LaTeX", () => {
   // Code editors' clipboards are source text: pasted as plain text.
   assert.equal(htmlToLatex("<div><span style=\"color:#f00\">\\textbf{x}</span></div>"), null);
   assert.equal(htmlToLatex("<script>alert(1)</script><p>safe</p>"), "safe");
+});
+
+/* ---- Review fixes ------------------------------------------------------------ */
+
+test("\\(…\\) inside a table does not swallow the cells after it, and unbalanced tables are left as source", () => {
+  const model = parseTabular(String.raw`\begin{tabular}{cc}a \(x\) & b \\ c & d\end{tabular}`)!;
+  assert.deepEqual(model.rows.map((row) => row.cells.map((cell) => cell.text)), [[String.raw`a \(x\)`, "b"], ["c", "d"]]);
+  assert.equal(parseTabular(String.raw`\begin{tabular}{cc}a {b & c\end{tabular}`), null);
+  assert.equal(parseTabular(String.raw`\begin{tabular}{cc}a \(b & c\end{tabular}`), null);
+});
+
+test("columns are edited with their whole specification", () => {
+  const source = String.raw`\begin{tabular}{p{2cm}>{\bfseries}c<{!}w{l}{1cm}}
+a & b & c \\
+d & e & f
+\end{tabular}`;
+  const model = parseTabular(source)!;
+  assert.deepEqual(model.columns, ["p", "c", "w"]);
+  assert.ok(apply(source, insertColumn(model, 0)!).startsWith(String.raw`\begin{tabular}{p{2cm}l>{\bfseries}c<{!}w{l}{1cm}}`));
+  assert.ok(apply(source, deleteColumn(model, 1)!).startsWith(String.raw`\begin{tabular}{p{2cm}w{l}{1cm}}`));
+  assert.deepEqual(parseColumnSpec("*{2}{lc}r"), ["l", "c", "l", "c", "r"]);
+  // Repeats cannot be edited one column at a time.
+  const repeated = parseTabular(String.raw`\begin{tabular}{*{2}{c}}a & b\end{tabular}`)!;
+  assert.equal(insertColumn(repeated, 0), null);
+});
+
+test("huge or nested column repeats are left as source, without the work", () => {
+  const started = Date.now();
+  assert.equal(columnSpans("*{64}{*{64}{*{64}{c}}}"), null);
+  assert.equal(parseTabular(String.raw`\begin{tabular}{*{64}{*{64}{c}}}a\end{tabular}`), null);
+  assert.ok(Date.now() - started < 200);
+});
+
+test("the formula diff keeps changes TeX typesets differently", () => {
+  assert.notDeepEqual(texDiff(String.raw`\text{a b}`, String.raw`\text{ab}`), []);
+  assert.notDeepEqual(texDiff("a{+}b", "a+b"), []);
+  assert.notDeepEqual(texDiff(String.raw`a\ b`, "ab"), []);
+  // Spellings that typeset the same still write nothing.
+  assert.deepEqual(texDiff(String.raw`x^{2} + \frac{1}{2}`, String.raw`x^2+\frac12`), []);
+  assert.deepEqual(texDiff(String.raw`\mathbf{v}`, String.raw`\mathbf v`), []);
 });

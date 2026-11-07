@@ -48,33 +48,80 @@ const RULE = /^\\(hline|toprule|midrule|bottomrule|cmidrule|cline|specialrule|ad
 
 /** The column letters of a specification, without rules, `@{…}`, `>{…}`, `p{…}` widths and repeats expanded. */
 export function parseColumnSpec(spec: string) {
-  const columns: string[] = [];
+  return columnSpans(spec)?.map((column) => column.letter) ?? [];
+}
+
+/** Most columns a specification may expand to; a larger one (nested `*{64}{…}` repeats) is left as source. */
+const MAX_COLUMNS = 256;
+/** Arguments each column type takes: `p{2cm}`, `w{l}{2cm}`. */
+const COLUMN_ARGUMENTS: Record<string, number> = { p: 1, m: 1, b: 1, w: 2, W: 2 };
+
+/**
+ * Each column of a specification with its whole source span: the letter, its
+ * arguments, and the `>{…}` before and `<{…}` after it. `*{n}{…}` repeats are
+ * expanded (the spans of repeated columns are the repeat's), within limits.
+ * Null for a specification that cannot be read or is too large.
+ */
+export function columnSpans(spec: string, depth = 0): Array<{ letter: string; from: number; to: number; repeated: boolean }> | null {
+  const columns: Array<{ letter: string; from: number; to: number; repeated: boolean }> = [];
+  let before = -1;
   for (let i = 0; i < spec.length; i++) {
     const char = spec[i];
     if (/\s|\|/.test(char)) continue;
-    if (char === "@" || char === "!" || char === ">" || char === "<") {
-      const end = matchingBrace(spec, spec.indexOf("{", i));
-      i = end < 0 ? spec.length : end;
+    if (char === "@" || char === "!") {
+      const end = matchingBrace(spec, i + 1);
+      if (end < 0) return null;
+      i = end;
+      continue;
+    }
+    if (char === ">") {
+      const end = matchingBrace(spec, i + 1);
+      if (end < 0) return null;
+      if (before < 0) before = i;
+      i = end;
+      continue;
+    }
+    if (char === "<") {
+      // Belongs to the column before it.
+      const end = matchingBrace(spec, i + 1);
+      if (end < 0 || !columns.length) return null;
+      columns[columns.length - 1].to = end + 1;
+      i = end;
       continue;
     }
     if (char === "*") {
+      if (depth >= 2) return null;
       const countEnd = matchingBrace(spec, i + 1);
-      const bodyStart = countEnd + 1;
-      const bodyEnd = matchingBrace(spec, bodyStart);
-      if (countEnd < 0 || bodyEnd < 0) break;
-      const count = Number(spec.slice(i + 2, countEnd)) || 0;
-      const inner = parseColumnSpec(spec.slice(bodyStart + 1, bodyEnd));
-      for (let n = 0; n < Math.min(count, 64); n++) columns.push(...inner);
+      const bodyEnd = countEnd < 0 ? -1 : matchingBrace(spec, countEnd + 1);
+      if (countEnd < 0 || bodyEnd < 0) return null;
+      const count = Number(spec.slice(i + 2, countEnd).trim());
+      const inner = columnSpans(spec.slice(countEnd + 2, bodyEnd), depth + 1);
+      if (!Number.isInteger(count) || count < 0 || !inner || columns.length + count * inner.length > MAX_COLUMNS) return null;
+      for (let n = 0; n < count; n++) for (const column of inner) columns.push({ letter: column.letter, from: i, to: bodyEnd + 1, repeated: true });
       i = bodyEnd;
       continue;
     }
-    if (/[pmbwWX]/.test(char) && spec[i + 1] === "{") {
-      columns.push(char);
-      i = matchingBrace(spec, i + 1);
-      if (i < 0) break;
+    if (/[A-Za-z]/.test(char)) {
+      let end = i + 1;
+      for (let n = 0; n < (COLUMN_ARGUMENTS[char] ?? 0); n++) {
+        const close = matchingBrace(spec, end);
+        if (close < 0) return null;
+        end = close + 1;
+      }
+      // siunitx-style options: `S[table-format=2.1]`.
+      if (spec[end] === "[") {
+        const close = spec.indexOf("]", end);
+        if (close < 0) return null;
+        end = close + 1;
+      }
+      columns.push({ letter: char, from: before >= 0 ? before : i, to: end, repeated: false });
+      if (columns.length > MAX_COLUMNS) return null;
+      before = -1;
+      i = end - 1;
       continue;
     }
-    if (/[A-Za-z]/.test(char)) columns.push(char);
+    // Anything else in a specification is not understood.
+    if (char !== "{" && char !== "}") return null;
   }
   return columns;
 }
@@ -170,8 +217,9 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
       continue;
     }
     if (math) {
-      if (char === "\\") { i++; continue; }
-      if (source.startsWith(math, i)) { i += math.length - 1; math = null; }
+      // The closing delimiter first: `\)` starts with a backslash.
+      if (source.startsWith(math, i)) { i += math.length - 1; math = null; continue; }
+      if (char === "\\") i++;
       continue;
     }
     if (char === "$") { math = source[i + 1] === "$" ? "$$" : "$"; if (math === "$$") i++; continue; }
@@ -181,6 +229,7 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
       if (source.startsWith("\\begin", i)) { environments++; sourceOnly = true; }
       else if (source.startsWith("\\end", i)) environments--;
       else if (source[i + 1] === "(") math = "\\)";
+      else if (source[i + 1] === "[") math = "\\]";
       else if (source[i + 1] === "\\" && depth === 0 && environments === 0) {
         pushCell(i);
         let end = i + 2;
@@ -203,6 +252,10 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
       cellStart = i + 1;
     }
   }
+  // Unbalanced math, braces or environments: the cell map would be wrong, so the table stays as source.
+  if (math || depth !== 0 || environments !== 0) return null;
+  const spans = columnSpans(spec);
+  if (!spans) return null;
   // The text after the last `\\`: a last row, or only rules.
   const tail = source.slice(cellStart, bodyTo);
   const rulesAfter: string[] = [];
@@ -221,7 +274,7 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
     }
   } else rulesAfter.push(...rules);
 
-  return { specFrom: offset + specFrom, specTo: offset + specEnd, spec, columns: parseColumnSpec(spec), rows, rulesAfter, bodyFrom: offset + bodyFrom, bodyTo: offset + bodyTo };
+  return { specFrom: offset + specFrom, specTo: offset + specEnd, spec, columns: spans.map((column) => column.letter), rows, rulesAfter, bodyFrom: offset + bodyFrom, bodyTo: offset + bodyTo };
 }
 
 export type TableChange = { from: number; to: number; insert: string };
@@ -284,10 +337,10 @@ export function deleteRow(model: TableModel, source: string, offset: number, ind
 /** Changes that insert an empty column after column `index` (-1: before the first), in the spec and every row. */
 export function insertColumn(model: TableModel, index: number, letter = "l"): TableChange[] | null {
   const changes: TableChange[] = [];
-  // Place the letter in the spec after the index-th column letter.
-  const specPositions = columnLetterPositions(model.spec);
-  if (specPositions.length !== model.columns.length) return null;
-  const specAt = index < 0 ? model.specFrom + (specPositions[0] ?? 0) : model.specFrom + specPositions[index] + 1;
+  // Place the letter after the whole specification of the index-th column (`p{2cm}`, `>{…}l<{…}`).
+  const spans = editableSpans(model.spec);
+  if (!spans || spans.length !== model.columns.length) return null;
+  const specAt = model.specFrom + (index < 0 ? (spans[0]?.from ?? 0) : spans[index].to);
   changes.push({ from: specAt, to: specAt, insert: letter });
   for (const row of model.rows) {
     let column = 0;
@@ -311,11 +364,10 @@ export function insertColumn(model: TableModel, index: number, letter = "l"): Ta
 
 /** Changes that delete column `index` from the spec and every row; null when a \multicolumn spans it. */
 export function deleteColumn(model: TableModel, index: number): TableChange[] | null {
-  const specPositions = columnLetterPositions(model.spec);
-  if (specPositions.length !== model.columns.length || model.columns.length <= 1) return null;
-  const letterStart = model.specFrom + specPositions[index];
-  const letterEnd = letterStart + columnLetterLength(model.spec, specPositions[index]);
-  const changes: TableChange[] = [{ from: letterStart, to: letterEnd, insert: "" }];
+  const spans = editableSpans(model.spec);
+  if (!spans || spans.length !== model.columns.length || model.columns.length <= 1) return null;
+  // The column's whole specification goes, with its `>{…}` and `<{…}`.
+  const changes: TableChange[] = [{ from: model.specFrom + spans[index].from, to: model.specFrom + spans[index].to, insert: "" }];
   for (const row of model.rows) {
     let column = 0;
     for (let c = 0; c < row.cells.length; c++) {
@@ -336,21 +388,8 @@ export function deleteColumn(model: TableModel, index: number): TableChange[] | 
   return changes.sort((a, b) => a.from - b.from);
 }
 
-/** Positions in the spec where each column's letter starts. */
-function columnLetterPositions(spec: string) {
-  const positions: number[] = [];
-  for (let i = 0; i < spec.length; i++) {
-    const char = spec[i];
-    if (/\s|\|/.test(char)) continue;
-    if (char === "@" || char === "!" || char === ">" || char === "<") { const end = matchingBrace(spec, spec.indexOf("{", i)); i = end < 0 ? spec.length : end; continue; }
-    if (char === "*") return []; // repeats cannot be edited per column
-    if (/[pmbwWX]/.test(char) && spec[i + 1] === "{") { positions.push(i); i = matchingBrace(spec, i + 1); if (i < 0) break; continue; }
-    if (/[A-Za-z]/.test(char)) positions.push(i);
-  }
-  return positions;
-}
-
-function columnLetterLength(spec: string, at: number) {
-  if (/[pmbwWX]/.test(spec[at]) && spec[at + 1] === "{") return matchingBrace(spec, at + 1) - at + 1;
-  return 1;
+/** Column spans that can be edited one by one: null when a repeat (`*{n}{…}`) covers any column. */
+function editableSpans(spec: string) {
+  const spans = columnSpans(spec);
+  return spans && spans.every((span) => !span.repeated) ? spans : null;
 }

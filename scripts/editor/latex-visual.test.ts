@@ -262,6 +262,44 @@ test("incremental updates build the same constructs as a fresh build", () => {
   }), { numRuns: 60 });
 });
 
+/** Applies `changes` incrementally and checks the result against a fresh build of the same text. */
+function assertIncrementalMatchesFresh(doc: string, changes: Array<{ from: number; to?: number; insert?: string }>) {
+  const view = mount(doc);
+  view.dispatch({ changes });
+  ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+  view.dispatch({});
+  assert.deepEqual(constructs(view.state), constructs(stateFor(view.state.doc.toString())));
+  view.destroy();
+}
+
+test("deleting at the end of the document rebuilds what it ended", () => {
+  const doc = "Text $x$";
+  assertIncrementalMatchesFresh(doc, [{ from: doc.length - 1, to: doc.length }]);
+  assertIncrementalMatchesFresh("A \\textbf{b}", [{ from: 11, to: 12 }]);
+});
+
+test("a rebuild that grows keeps what its first part covered (a macro's second argument on the next line)", () => {
+  const doc = String.raw`\documentclass{article}
+\newcommand{\two}[2]{#1 and #2}
+\begin{document}
+Before \tw{$x$}
+  {\textbf{b} $y$} after.
+\end{document}
+`;
+  assertIncrementalMatchesFresh(doc, [{ from: doc.indexOf("\\tw{") + 3, insert: "o" }]);
+});
+
+test("text that becomes verbatim far from the edit stops being drawn", () => {
+  const plain = "Plain words here. ".repeat(250);
+  const doc = `\\begin{verbatix}\n${plain}\n\\textbf{SECRET} $x$\n\\end{verbatix}\nAfter.\n`;
+  const first = doc.indexOf("verbatix");
+  const second = doc.lastIndexOf("verbatix");
+  assertIncrementalMatchesFresh(doc, [{ from: first, to: first + 8, insert: "verbatim" }, { from: second, to: second + 8, insert: "verbatim" }]);
+  // And back: verbatim text that becomes ordinary text is drawn again.
+  const back = doc.replace(/verbatix/g, "verbatim");
+  assertIncrementalMatchesFresh(back, [{ from: first, to: first + 8, insert: "verbatix" }, { from: second, to: second + 8, insert: "verbatix" }]);
+});
+
 test("cursor moves, scrolling and mode switches never change the document", () => {
   fc.assert(fc.property(fc.array(fc.nat(), { maxLength: 30 }), (positions) => {
     const visual = new Compartment();
@@ -328,5 +366,56 @@ test("a chapter's numbers start where its main file includes it", () => {
   assert.equal(numbering.labels.get("sec:att")?.number, "3.1");
   assert.equal(numbering.labels.get("eq:x")?.number, "5");
   assert.ok(view.state.field(numberingField, false));
+  view.destroy();
+});
+
+/* ---- Table editing with collaborators -------------------------------------------- */
+
+const GRID = String.raw`Before.
+\begin{tabular}{lc}
+\multicolumn{2}{c}{ a } \\
+Base & 27.3
+\end{tabular}
+`;
+
+function cellElement(view: EditorView, text: string) {
+  const cell = [...view.contentDOM.querySelectorAll<HTMLElement>(".cm-vis-table-cell")].find((element) => element.textContent?.trim() === text);
+  assert.ok(cell, `cell ${text} is drawn`);
+  return cell!;
+}
+
+test("opening and leaving a cell without typing writes nothing", () => {
+  const view = mount(GRID);
+  const cell = cellElement(view, "a");
+  cell.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  assert.equal(cell.contentEditable, "true");
+  assert.equal(cell.textContent, " a ");
+  cell.dispatchEvent(new dom.window.FocusEvent("blur"));
+  assert.equal(view.state.doc.toString(), GRID);
+  view.destroy();
+});
+
+test("a cell edit follows its cell through a collaborator's edit before the table", () => {
+  const view = mount(GRID);
+  const cell = cellElement(view, "27.3");
+  cell.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  // A collaborator inserts text before the table while the cell is open.
+  view.dispatch({ changes: { from: 0, insert: "Inserted by someone else. " } });
+  cell.textContent = "28.4";
+  cell.dispatchEvent(new dom.window.Event("input"));
+  cell.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  assert.equal(view.state.doc.toString(), `Inserted by someone else. ${GRID.replace("27.3", "28.4")}`);
+  view.destroy();
+});
+
+test("a table menu command is planned against the table as it is when chosen", () => {
+  const view = mount(GRID);
+  const cell = cellElement(view, "27.3");
+  cell.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  const menu = document.querySelector(".cm-vis-table-menu")!;
+  view.dispatch({ changes: { from: 0, insert: "Moved. " } });
+  const insertBelow = [...menu.querySelectorAll("button")].find((button) => button.textContent === "Insert row below")!;
+  insertBelow.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  assert.equal(view.state.doc.toString(), `Moved. ${GRID.replace("Base & 27.3", String.raw`Base & 27.3 \\` + "\n&")}`);
   view.destroy();
 });
