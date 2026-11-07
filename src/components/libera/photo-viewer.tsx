@@ -211,7 +211,7 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, over
       style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transition: dragging ? "none" : "transform 80ms ease-out, opacity 150ms" }}
       onLoad={() => { setLoadedSrc(src); reportFit(); }} />
     {ink && box && loaded && <div className="absolute" style={box} data-photo-ink>
-      <PhotoInkLayer photoId={photo.id} version={photo.updatedAt} drawing={ink.drawing} toolbarSlot={ink.toolbarSlot} onEdited={ink.onEdited}
+      <PhotoInkLayer photoId={photo.id} version={photo.updatedAt} drawing={ink.drawing} toolbarSlot={ink.toolbarSlot} onEdited={ink.onEdited} inSharedAlbum={Boolean(photo.shared)}
         onPan={(dx, dy) => onTransform(clampPan({ ...transform, x: transform.x + dx, y: transform.y + dy }))} />
     </div>}
     {overlay && box && <div className="pointer-events-none absolute" style={box} data-photo-overlay>

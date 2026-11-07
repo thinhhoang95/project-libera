@@ -73,7 +73,7 @@ test("legacy database ownership preserves pending bytes and cannot be reassigned
     initial.close();
     // Exercise the actual shipped schema upgrade, including durable work.
     const old = openDatabase(legacy);
-    old.exec("DROP TABLE retired_hashes; DROP TABLE retired_paths; DROP TABLE database_authority; PRAGMA user_version = 1");
+    old.exec("DROP TABLE refused_commands; DROP TABLE retired_hashes; DROP TABLE retired_paths; DROP TABLE database_authority; PRAGMA user_version = 1");
     old.close();
     assert.equal(await databasePath(temp.dir, a, a, quiet), legacy);
     const scopedB = await databasePath(temp.dir, b, b, quiet);

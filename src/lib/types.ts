@@ -281,6 +281,8 @@ export type PdfCommentMessage = {
   own?: boolean;
   /** Written offline and waiting to reach the server. */
   pending?: boolean;
+  /** Written offline, then refused by the server (why). Deleting it discards it. */
+  notSent?: string;
 };
 
 /**
@@ -297,6 +299,8 @@ export type PdfCommentThread = {
   updatedAt: string;
   /** Written offline and waiting to reach the server. */
   pending?: boolean;
+  /** Written offline, then refused by the server (why). Deleting it discards it. */
+  notSent?: string;
 };
 
 export type PdfCommentsPayload = {

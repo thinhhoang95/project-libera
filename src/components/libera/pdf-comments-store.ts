@@ -4,6 +4,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import type { PdfCommentAnchor, PdfCommentsPayload, PdfCommentThread } from "@/lib/types";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
+import type { HostStatus } from "@/lib/collab/local-api";
 import { EventKind } from "@/lib/collab/protocol/messages";
 import { isPdfDocId } from "@/lib/collab/protocol/pdf";
 
@@ -42,6 +43,9 @@ const windowId = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypt
 const states = new Map<string, PdfCommentsState>();
 const listeners = new Map<string, Set<() => void>>();
 const loads = new Map<string, Promise<void>>();
+/** The account, connection and roles each path's comments were loaded under (see commentAuthority). */
+const loadedUnder = new Map<string, string | null>();
+let currentAuthority: string | null = null;
 
 function set(path: string, patch: Partial<PdfCommentsState>) {
   states.set(path, { ...(states.get(path) ?? EMPTY), ...patch });
@@ -72,8 +76,12 @@ function subscribe(path: string, listener: () => void) {
 export function loadPdfComments(path: string): Promise<void> {
   const pending = loads.get(path);
   if (pending) return pending;
+  const authority = currentAuthority;
   const work = apiRequest<PdfCommentsPayload>(`${ROUTE}?path=${encodeURIComponent(path)}`)
-    .then((payload) => adopt(path, payload.threads, payload.readOnly === true, payload.live ?? null))
+    .then((payload) => {
+      loadedUnder.set(path, authority);
+      adopt(path, payload.threads, payload.readOnly === true, payload.live ?? null);
+    })
     .catch((error) => set(path, { loaded: true, error: error instanceof Error ? error.message : "Could not load comments." }))
     .finally(() => loads.delete(path));
   loads.set(path, work);
@@ -132,6 +140,11 @@ function broadcast(path: string, threads: PdfCommentThread[]) {
   channel.close();
 }
 
+/** What decides which comments a window may see and write: account, connection and roles. */
+function commentAuthority(status: HostStatus): string {
+  return JSON.stringify([status.account?.id ?? null, status.connection, status.projects.map((project) => [project.projectId, project.role, project.revoked]).sort()]);
+}
+
 /** The PDF's comments, loaded on first use and kept in step with other windows. */
 export function usePdfComments(path: string | null | undefined): PdfCommentsState {
   const key = path ?? "";
@@ -144,10 +157,17 @@ export function usePdfComments(path: string | null | undefined): PdfCommentsStat
     if (!key) return;
     if (!pdfCommentsState(key).loaded) void loadPdfComments(key);
     // Comments on a live PDF change on the server: someone's reply, or a queued one landing.
+    // Who may see and write them changes with the account, its roles and the
+    // connection (edits made while away arrive on reconnect), so those reload too.
     const stopEvents = subscribeHostEvents((event) => {
       const thread = event.t === "server-event" && (event.kind === EventKind.ThreadChanged || event.kind === EventKind.ThreadDeleted) && isPdfDocId(event.id);
       const settled = event.t === "command-settled" && /^(thread|message)\./.test(event.kind);
-      if (thread || settled || event.t === "pdf-comments-changed") void refreshPdfComments(key);
+      let moved = event.t === "project-changed";
+      if (event.t === "status") {
+        currentAuthority = commentAuthority(event.status);
+        moved = loadedUnder.has(key) && loadedUnder.get(key) !== currentAuthority;
+      }
+      if (thread || settled || moved || event.t === "pdf-comments-changed") void refreshPdfComments(key);
     });
     if (typeof BroadcastChannel === "undefined") return stopEvents;
     const channel = new BroadcastChannel(`${CHANNEL}:${key}`);

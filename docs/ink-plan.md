@@ -212,8 +212,11 @@ chunk is computed by `mergeInkFiles`:
   `erased` ids.
 - **Moving a stroke** (lasso) that belongs to someone else erases it and adds a
   copy with a new id to your own file.
-- **Tombstones** are ids only, about 12 bytes each. An author file drops a
-  tombstone once the stroke it erases is gone from every other file.
+- **Tombstones** are ids only, about 12 bytes each. A stroke missing from
+  every other file does not prove its author dropped it: that author's file
+  may only be absent for now (a sync client still delivering or replacing it).
+  So an author file keeps tombstones for strokes no file holds, up to the 500
+  most recent, and drops the oldest beyond that.
 
 **Surface units.** Units are uniform in x and y, so a circle stays round and
 widths mean the same in every direction.

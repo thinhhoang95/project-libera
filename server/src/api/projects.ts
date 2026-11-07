@@ -5,6 +5,7 @@ import type { Kysely } from "kysely";
 import { z } from "zod";
 
 import { requireProjectAction, writeAudit } from "../auth/access.js";
+import { recordOrphanedBlobs } from "../blobs/gc.js";
 import type { ServerContext } from "../context.js";
 import type { DB } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
@@ -207,7 +208,9 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
       // Reviews reference revisions without ON DELETE CASCADE. Remove them
       // first, then let the project's foreign keys erase all dependent rows.
       await trx.deleteFrom("reviews").where("project_id", "=", projectId).execute();
+      const hashes = (await trx.selectFrom("blobs").select("hash").where("project_id", "=", projectId).execute()).map((row) => row.hash);
       await trx.deleteFrom("projects").where("id", "=", projectId).execute();
+      await recordOrphanedBlobs(trx, hashes);
       return { docs, members };
     });
     // Project subscriptions disappear when the last document is closed.

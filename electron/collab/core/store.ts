@@ -90,6 +90,18 @@ export interface PendingCommandRow {
   lastError: string | null;
 }
 
+/** A queued command the server refused for good, kept with its body until a window discards it. */
+export interface RefusedCommandRow {
+  id: string;
+  command: Command;
+  status: number;
+  error: { code: string; message: string };
+  failedAt: number;
+}
+
+/** Refused commands kept; the oldest go first. */
+export const MAX_REFUSED_COMMANDS = 200;
+
 export interface ThreadCacheRow {
   threadId: string;
   docId: string;
@@ -303,6 +315,19 @@ const MIGRATIONS: string[] = [
     path TEXT NOT NULL,
     hash TEXT NOT NULL,
     PRIMARY KEY (project_id, path, hash)
+  );
+  `,
+  `
+  -- Queued commands the server refused for good (a comment written offline
+  -- after losing access, say), with what the person wrote, until a window
+  -- discards them: a restart must not lose that text.
+  CREATE TABLE refused_commands (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    payload TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    error TEXT NOT NULL,
+    failed_at INTEGER NOT NULL
   );
   `,
 ];
@@ -1066,6 +1091,36 @@ export class HostStore {
   deleteCommand(id: string): void {
     this.run(`DELETE FROM pending_commands WHERE id = ?`, id);
   }
+
+  /** Moves a refused command from the queue to refused_commands, in one transaction, so a crash keeps it in one or the other. */
+  refuseCommand(id: string, status: number, error: { code: string; message: string }, failedAt: number): void {
+    this.transaction(() => {
+      const row = this.get(`SELECT payload FROM pending_commands WHERE id = ?`, id);
+      this.run(`DELETE FROM pending_commands WHERE id = ?`, id);
+      if (!row) return;
+      this.run(
+        `INSERT OR REPLACE INTO refused_commands (id, payload, status, error, failed_at) VALUES (?, ?, ?, ?, ?)`,
+        id, String(row.payload), status, JSON.stringify(error), failedAt,
+      );
+      this.run(`DELETE FROM refused_commands WHERE seq NOT IN (SELECT seq FROM refused_commands ORDER BY seq DESC LIMIT ?)`, MAX_REFUSED_COMMANDS);
+    });
+  }
+
+  listRefusedCommands(): RefusedCommandRow[] {
+    return this.all(`SELECT * FROM refused_commands ORDER BY seq`).map((row) => ({
+      id: String(row.id),
+      command: JSON.parse(String(row.payload)) as Command,
+      status: asNumber(row.status),
+      error: JSON.parse(String(row.error)) as { code: string; message: string },
+      failedAt: asNumber(row.failed_at),
+    }));
+  }
+
+  /** Returns false when there was no refused command with this id. */
+  deleteRefusedCommand(id: string): boolean {
+    return asNumber(this.run(`DELETE FROM refused_commands WHERE id = ?`, id).changes) > 0;
+  }
+
 
   // ------------------------------------------------------------ projects, docs, blobs
 

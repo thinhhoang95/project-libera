@@ -1,17 +1,20 @@
 // What happened to offline commands after they left the queue (plan M2.6).
 //
-// PendingCommands deletes a command once the server answers it for good, so
+// PendingCommands removes a command once the server answers it for good, so
 // a refusal (a 403 on a comment made offline after a role change, say) would
 // be gone before a window that was closed at the time could show it. This
 // keeps the refused ones until a window discards them, so the comment card
 // can offer Retry or Discard after a reload. Successes need no record: the
 // server's thread events carry their result to every window.
 //
-// Kept in memory on purpose: after a host restart the server's thread list is
-// the truth, and a refusal is not worth a schema change.
+// With a store, refusals are durable: PendingCommands moves a refused command
+// into refused_commands in the same transaction that takes it off the queue,
+// so a host restart does not lose what the person wrote. Without one (unit
+// tests), they are kept in memory.
 
 import type { Command } from "../../../src/lib/collab/protocol/api";
 import type { PendingCommandEvent, PendingCommands } from "./pending-commands";
+import type { HostStore } from "./store";
 
 export interface FailedCommandRecord {
   command: Command;
@@ -22,6 +25,8 @@ export interface FailedCommandRecord {
 
 const MAX_FAILURES = 200;
 
+type RefusalStore = Pick<HostStore, "listRefusedCommands" | "deleteRefusedCommand">;
+
 export class CommandOutcomes {
   private readonly failures = new Map<string, FailedCommandRecord>();
   /** Commands seen while queued, so a refusal can be reported with its body. */
@@ -31,6 +36,7 @@ export class CommandOutcomes {
   constructor(
     private readonly commands: PendingCommands,
     private readonly now: () => number = Date.now,
+    private readonly store: RefusalStore | null = null,
   ) {
     for (const row of commands.list()) this.queued.set(row.id, row.command);
     this.unsubscribe = commands.on((event) => this.observe(event));
@@ -44,7 +50,8 @@ export class CommandOutcomes {
     if (event.type !== "settled") return;
     const command = this.queued.get(event.id);
     this.queued.delete(event.id);
-    if (event.ok || !command) return;
+    // The store already holds a refusal; memory is only for store-less use.
+    if (event.ok || !command || this.store) return;
     this.failures.set(event.id, {
       command,
       status: event.status,
@@ -59,11 +66,13 @@ export class CommandOutcomes {
   }
 
   failed(): FailedCommandRecord[] {
+    if (this.store) return this.store.listRefusedCommands().map(({ command, status, error, failedAt }) => ({ command, status, error, failedAt }));
     return [...this.failures.values()];
   }
 
   /** Forgets a refused command; returns false when there was none with this id. */
   discard(id: string): boolean {
+    if (this.store) return this.store.deleteRefusedCommand(id);
     return this.failures.delete(id);
   }
 

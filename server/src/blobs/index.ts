@@ -18,6 +18,8 @@ export interface BlobStore {
   /** A stream of the bytes, or null when the store does not have them. */
   get(hash: string): Promise<Readable | null>;
   has(hash: string): Promise<boolean>;
+  /** Removes the bytes (blob-gc, once no project references them). A no-op when absent. */
+  delete?(hash: string): Promise<void>;
 }
 
 export function createBlobStore(config: Config): BlobStore {

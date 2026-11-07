@@ -105,6 +105,9 @@ export class PdfMarksRuntime {
   private stopped = false;
 
   private sidecarTimer: ReturnType<typeof setInterval> | null = null;
+  /** Looks again for sidecars of PDFs nobody has opened (they can arrive any time). */
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private discovering = false;
   /** The notebook's marker says live PDFs are on, for when the host cannot be asked. */
   private markerRecorded = false;
 
@@ -175,10 +178,25 @@ export class PdfMarksRuntime {
     }
   }
 
-  /** Opens the PDFs with work to merge and those others have marked. */
+  /**
+   * Opens the PDFs with work to merge and those others have marked. A sidecar
+   * can arrive long after its PDF (a cloud provider delivering a folder, a
+   * device back online), so unopened PDFs are checked again periodically:
+   * one missing-file check each, until their sidecar appears.
+   */
   private async discover(): Promise<void> {
     await this.refreshServerDocuments();
     await this.openWithSidecars([...this.entries.keys()]);
+    if (this.stopped || this.discoveryTimer) return;
+    this.discoveryTimer = setInterval(() => {
+      if (this.discovering || !this.enabled) return;
+      this.discovering = true;
+      const unopened = [...this.entries.keys()].filter((fileId) => !this.docs.has(fileId));
+      void this.openWithSidecars(unopened, 0)
+        .catch((error) => this.ctx.logger.warn(`Shared notebook ${this.ctx.notebook}: could not look for PDF annotations`, error))
+        .finally(() => { this.discovering = false; });
+    }, this.ctx.writeMs);
+    this.discoveryTimer.unref?.();
   }
 
   private async openWithSidecars(fileIds: string[], retries = 2): Promise<void> {
@@ -417,6 +435,8 @@ export class PdfMarksRuntime {
     this.stopped = true;
     if (this.sidecarTimer) clearInterval(this.sidecarTimer);
     this.sidecarTimer = null;
+    if (this.discoveryTimer) clearInterval(this.discoveryTimer);
+    this.discoveryTimer = null;
     // Only a copy still waiting for its delay has anything new to write.
     await Promise.all([...this.docs.values()].map((doc) => this.close(doc, doc.timer !== null || options.local === true, { ...options, final: true })));
   }

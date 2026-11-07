@@ -100,6 +100,9 @@ export interface ApiClientOptions {
 
 type Query = Record<string, string | number | boolean | undefined | null>;
 
+/** Messages per imported comment the server accepts (server/src/api/pdf.ts). */
+const PDF_IMPORT_MAX_MESSAGES = 500;
+
 interface RequestOptions {
   timeoutMs?: number;
   body?: unknown;
@@ -388,7 +391,9 @@ export class ApiClient {
       let bytes = JSON.stringify({ ...local, messages }).length;
       for (const reply of replies) {
         const added = JSON.stringify(reply).length;
-        if (messages.length > 1 && bytes + added > 512 * 1024) {
+        // Each part repeats the opening message (the server skips ones it has),
+        // and stays within the server's bytes and messages per comment.
+        if (messages.length > 1 && (bytes + added > 512 * 1024 || messages.length >= PDF_IMPORT_MAX_MESSAGES)) {
           append("comments", { ...local, messages });
           messages = [first];
           bytes = JSON.stringify({ ...local, messages }).length;

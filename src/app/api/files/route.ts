@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { copyFileIntoSharedDirectory, createSharedMarkdownFile, deleteSharedFile, moveSharedFile } from "@/lib/collab/shared-writes";
+import { copyFileIntoSharedDirectory, createSharedMarkdownFile, deleteSharedFile, moveSharedFile, saveSharedFileText } from "@/lib/collab/shared-writes";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSafeSegment, splitFilePath } from "@/lib/storage/paths";
 import {
@@ -134,6 +134,9 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
+    // A shared notebook's text documents are saved through the shared document;
+    // only a text file it holds as a file arrives here, and is replaced whole.
+    if (isSharedNotebookPath(body.path ?? "")) return NextResponse.json(await saveSharedFileText(body.path ?? "", body.content ?? ""));
     return NextResponse.json(await updateMarkdownFile(body.path ?? "", body.content ?? ""));
   } catch (error) {
     return handleError(error);

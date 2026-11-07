@@ -8,9 +8,15 @@ import type { InkAuthorFile, InkChunk, InkOps, InkStroke, MergedInkStroke } from
  *
  * Tombstones: erasing records the id in the eraser's file. Before each write
  * (`compactInkAuthorFile`) an author drops their own strokes that someone
- * erased, and tombstones whose stroke no other file still holds, so files
- * stay small.
+ * erased. A tombstone whose stroke no file holds any more is kept a while:
+ * the stroke's author file may only be missing for now (still arriving
+ * through a sync client, or replaced by it), and would bring the stroke back.
+ * Only the most recent `MAX_ORPHAN_TOMBSTONES` of those stay, so files stay
+ * small.
  */
+
+/** Tombstones kept per author file for strokes no file currently holds. */
+export const MAX_ORPHAN_TOMBSTONES = 500;
 
 /** Strokes paint oldest first; ties break by id so every computer agrees. */
 export function compareInkStrokes(a: InkStroke, b: InkStroke) {
@@ -51,8 +57,8 @@ function strokesHeldBy(others: readonly InkAuthorFile[], self: string) {
  * the chunk. Returns the same object when nothing changes.
  *
  * - `add` puts new strokes in the file.
- * - `erase` removes the author's own copy and records a tombstone, which
- *   compaction drops at once if no one else holds the stroke.
+ * - `erase` removes the author's own copy and records a tombstone. One for a
+ *   stroke no other file holds is kept among the recent orphans (see above).
  * - `unerase` removes the tombstone, and keeps a copy of the stroke when its
  *   own author's file no longer has it.
  */
@@ -95,9 +101,12 @@ export function applyInkOps(file: InkAuthorFile, ops: InkOps, others: readonly I
 }
 
 /**
- * Drops the author's strokes another author erased, and the author's
- * tombstones for strokes no other file holds. Returns the same object when
- * nothing is dropped.
+ * Drops the author's strokes another author erased, and the oldest of the
+ * author's tombstones for strokes no other file holds beyond
+ * `MAX_ORPHAN_TOMBSTONES`. Returns the same object when nothing is dropped.
+ *
+ * An absent stroke is not proof that its author dropped it: that author's
+ * file may be missing only for now, so recent orphan tombstones stay.
  */
 export function compactInkAuthorFile(file: InkAuthorFile, others: readonly InkAuthorFile[]): InkAuthorFile {
   const erasedByOthers = new Set<string>();
@@ -105,7 +114,10 @@ export function compactInkAuthorFile(file: InkAuthorFile, others: readonly InkAu
   const held = strokesHeldBy(others, file.author.key);
 
   const strokes = file.strokes.filter((stroke) => !erasedByOthers.has(stroke.id));
-  const erased = file.erased.filter((id) => held.has(id));
+  // Tombstones are appended as they are made, so the last ones are the newest.
+  const orphans = file.erased.filter((id) => !held.has(id));
+  const kept = new Set(orphans.slice(Math.max(0, orphans.length - MAX_ORPHAN_TOMBSTONES)));
+  const erased = file.erased.filter((id) => held.has(id) || kept.has(id));
   if (strokes.length === file.strokes.length && erased.length === file.erased.length) return file;
   return { ...file, strokes, erased };
 }

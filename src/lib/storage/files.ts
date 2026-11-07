@@ -1,9 +1,10 @@
-import { deleteImageAnnotationDirectory, deletePdfAnnotationDirectory, migrateImageAnnotationDirectory, migrateImageAnnotations, migratePdfAnnotationDirectory, migratePdfAnnotations } from "./annotations";
+import { deleteImageAnnotationDirectory, deletePdfAnnotationDirectory, migrateImageAnnotationDirectory, migrateImageAnnotations, migratePdfAnnotationDirectory, migratePdfAnnotations, updatePdfCommentThreads, writePdfAnnotations } from "./annotations";
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
 import { detachReferenceAttachments, moveReferenceAttachments } from "./references";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
@@ -72,13 +73,14 @@ import {
   renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFileMovePayload, type LiberaFilePayload } from "@/lib/types";
+import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
 import { copyInkFolder, copyInkThroughEdit, deleteInkFolder, moveInkFolder, supportsInk } from "@/lib/storage/ink";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyTranscript } from "@/lib/storage/transcripts";
 import { supportsDefinitions } from "@/lib/storage/definitions";
 import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
-import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
+import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 
 /** Reads a file for a tab. Text files come with their content, except plain
  * text files that are too large or turn out to be binary: those throw when
@@ -559,6 +561,12 @@ export async function copyFileToDirectory(
   assertNotSharedItem(destination.notebook, [...destination.pathParts, requestedName]);
 
   await assertDirectoryExists(destinationPath, "Destination folder was not found.");
+  // A shared notebook's disk copy can lag what collaborators see (a
+  // follower's cloud copy, a write still waiting): copy the shared version,
+  // read before anything is created so a failure leaves nothing behind.
+  const sharedSource = isSharedNotebookPath(relativePath);
+  const sharedText = sharedSource && isTextFileType(currentFileType) ? await readSharedTextForCopy(relativePath) : null;
+  const livePdf = sharedSource && currentFileType === "pdf" ? await livePdfAnnotationsForCopy(relativePath) : null;
 
   let available;
   for (;;) {
@@ -572,6 +580,7 @@ export async function copyFileToDirectory(
   }
   const safeNextName = available.name;
   const nextParts = [...destination.pathParts, safeNextName];
+  if (sharedText !== null) await writeFile(available.path, sharedText, "utf8");
 
   if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
   if (currentFileType === "image") await migrateImageAnnotations(current.notebook, current.pathParts);
@@ -594,6 +603,13 @@ export async function copyFileToDirectory(
     nextParts,
     currentFileType,
   );
+
+  // A live PDF's marks and comments are in its shared document, not the sidecar on disk.
+  if (livePdf) {
+    const copyPath = relativeFilePath(destination.notebook, nextParts);
+    await writePdfAnnotations(copyPath, livePdf.marks);
+    await updatePdfCommentThreads(copyPath, () => ({ threads: livePdf.threads, result: undefined }));
+  }
 
   await copyReviewPath(relativePath, relativeFilePath(destination.notebook, nextParts));
   // A copy is a new file: no reference is attached to it, and the original keeps its references.
@@ -810,6 +826,35 @@ async function moveRelatedMetadata(
     if (nextFileType === currentFileType) await moveInkFolder(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
     else await deleteInkFolder(currentNotebook, currentPathParts);
   }
+}
+
+/** The shared document's text, or null (then the disk bytes are copied) when the host cannot answer. */
+async function readSharedTextForCopy(sourcePath: string): Promise<string | null> {
+  // Imported here: shared-writes reaches back into storage.
+  const { readSharedText } = await import("@/lib/collab/shared-writes");
+  return (await readSharedText(sourcePath).catch(() => null))?.text ?? null;
+}
+
+/**
+ * A live PDF's marks and comments, from its shared document, for a local
+ * copy; null when the PDF is not live. They become the copy's own: new ids,
+ * so sharing this notebook later imports them instead of taking them for
+ * copies of server threads.
+ */
+async function livePdfAnnotationsForCopy(sourcePath: string) {
+  const { livePdfSnapshot, resolveSharedPdf } = await import("@/lib/collab/host-client");
+  const source = await resolveSharedPdf(sourcePath).catch(() => null);
+  if (!source) return null;
+  const snapshot = await livePdfSnapshot(source.docId);
+  const ids = new Map<string, string>();
+  const fresh = (id: string) => { if (!ids.has(id)) ids.set(id, randomUUID()); return ids.get(id)!; };
+  const marks = snapshot.marks.map((value) => {
+    const mark = value as { id: string; space?: string };
+    return { ...mark, id: fresh(mark.id), ...(mark.space ? { space: fresh(mark.space) } : {}) };
+  });
+  const threads = normalizePdfCommentThreads(snapshot.comments ?? [], randomUUID)
+    .map((thread) => ({ ...thread, id: randomUUID(), messages: thread.messages.map((message) => ({ ...message, id: randomUUID() })) }));
+  return { marks, threads };
 }
 
 async function copyRelatedMetadata(

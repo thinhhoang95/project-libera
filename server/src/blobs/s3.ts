@@ -79,5 +79,10 @@ export function createS3BlobStore(options: S3Options): BlobStore {
       if (!response.ok) throw new Error(`S3 HEAD failed with ${response.status}`);
       return true;
     },
+    async delete(hash) {
+      const response = await send("DELETE", hash);
+      if (!response.ok && response.status !== 404) throw await failure(response, "DELETE");
+      await response.body?.cancel();
+    },
   };
 }

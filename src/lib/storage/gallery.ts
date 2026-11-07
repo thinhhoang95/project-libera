@@ -253,12 +253,16 @@ async function reconcile(index: GalleryIndex) {
   index.folders = index.folders.filter((folder) => folders.includes(folder) || index.albums.some((album) => album.folder === folder));
 
   const missing = new Set(Object.keys(index.photos).filter((id) => !seen.has(id)));
+  // A file moved by hand keeps its name, size and modification time; keep its
+  // stars, albums and ink. Only an unambiguous match counts: a different photo
+  // with the same name and size must not inherit another's identity.
+  const sameFile = (id: string, file: ScannedFile) => {
+    const record = index.photos[id];
+    return path.posix.basename(record.path) === file.name && record.size === file.stats.size && record.mtimeMs === file.stats.mtimeMs;
+  };
   for (const file of unmatched) {
-    // A file moved by hand keeps its name and size; keep its stars and albums.
-    const movedId = [...missing].find((id) => {
-      const record = index.photos[id];
-      return path.posix.basename(record.path) === file.name && record.size === file.stats.size;
-    });
+    const matches = [...missing].filter((id) => sameFile(id, file));
+    const movedId = matches.length === 1 && unmatched.filter((other) => sameFile(matches[0], other)).length === 1 ? matches[0] : undefined;
     if (movedId) {
       index.photos[movedId].path = file.relative;
       missing.delete(movedId);

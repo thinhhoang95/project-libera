@@ -29,8 +29,13 @@ const IDENTITY: InkMatrix = [1, 0, 0, 1, 0, 0];
 
 const halt = (event: { stopPropagation: () => void }) => event.stopPropagation();
 
-export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, onEdited }: {
+export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, onEdited, inSharedAlbum = false }: {
   photoId: string;
+  /**
+   * The photo is in a shared album. Its ink stays on this device (by the
+   * gallery's photo id, outside the album's shared files), so say so.
+   */
+  inSharedAlbum?: boolean;
   /** Changes when the photo's file does (an edit, a revert), to reload its view. */
   version: string;
   drawing: boolean;
@@ -124,6 +129,11 @@ export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, o
         // React bubbles portal events to the zoomable stage, which would pan or zoom the photo.
         <span className="libera-photo-ink-tools" onPointerDown={halt} onPointerMove={halt} onPointerUp={halt} onPointerCancel={halt} onDoubleClick={halt}>
           <InkToolbar canUndo={ink.canUndo} canRedo={ink.canRedo} onUndo={ink.undo} onRedo={ink.redo} />
+          {inSharedAlbum ? (
+            <span className="px-2 text-[11px] opacity-80" title="Ink on a shared album's photo is not shared: the album's other members do not see it. Save with ink to share a copy.">
+              Only you see this ink
+            </span>
+          ) : null}
           <span className="libera-photo-ink-actions" role="group" aria-label="Save ink">
             <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy} title="Save the ink, then download a copy of the photo with the ink drawn on it"
               onClick={() => { void ink.save().then(() => downloadImage({ name: "photo-with-ink", src: `/api/gallery/photos/ink/export?id=${encodeURIComponent(photoId)}` }), () => undefined); }}>

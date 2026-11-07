@@ -78,6 +78,12 @@ export interface NotebookServiceOptions {
    * pass looks for shared folders that arrived through a sync client.
    */
   leaseTtlMs?: number;
+  /**
+   * How long a bound folder's sharing marker must stay missing before it is
+   * restored from this installation's binding (a cloud provider may only be
+   * delivering it late; restoring it early would make a conflict copy).
+   */
+  markerRepairDelayMs?: number;
 }
 
 /** A shared-notebook folder for the signed-in account whose project this account cannot open. */
@@ -258,6 +264,9 @@ export class NotebookServiceImpl implements NotebookService {
   private started = false;
   private loading: Promise<void> | null = null;
   private readonly leaseTtlMs: number;
+  private readonly markerRepairDelayMs: number;
+  /** Bound roots whose marker is missing, and since when (see repairMissingMarker). */
+  private readonly markerMissingSince = new Map<string, number>();
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
   private ticking: Promise<void> | null = null;
   /** Between beforeAccountChange and accountChanged: no lease is renewed or taken. */
@@ -278,6 +287,7 @@ export class NotebookServiceImpl implements NotebookService {
     this.joinTimeoutMs = options.joinTimeoutMs ?? 60_000;
     this.shareSyncTimeoutMs = options.shareSyncTimeoutMs ?? 20_000;
     this.leaseTtlMs = options.leaseTtlMs ?? 60_000;
+    this.markerRepairDelayMs = options.markerRepairDelayMs ?? 5 * 60_000;
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -373,15 +383,21 @@ export class NotebookServiceImpl implements NotebookService {
         let marker = await readMarker(root).catch(() => null);
         if (!marker || marker.projectId !== row.projectId) {
           // A present foreign/corrupt root is not a move. Rebind only a missing
-          // old directory to one unique compatible discovered identity.
-          if (await statIfExists(root)) continue;
-          const moved = await this.movedRoot(row.projectId, root);
-          if (!moved) continue;
-          root = moved;
-          marker = await readMarker(root);
-          if (!marker) continue;
-          this.deps.host.store.upsertProject({ ...row, localRoot: root });
-          this.unjoined.delete(root);
+          // old directory to one unique compatible discovered identity. A
+          // present root whose marker is gone gets it back from the binding.
+          if (await statIfExists(root)) {
+            if (!(await this.repairMissingMarker(row.projectId, root))) continue;
+            marker = await readMarker(root).catch(() => null);
+            if (!marker || marker.projectId !== row.projectId) continue;
+          } else {
+            const moved = await this.movedRoot(row.projectId, root);
+            if (!moved) continue;
+            root = moved;
+            marker = await readMarker(root);
+            if (!marker) continue;
+            this.deps.host.store.upsertProject({ ...row, localRoot: root });
+            this.unjoined.delete(root);
+          }
         }
         if (!this.markerAuthorityMatches(marker)) continue;
         if (await this.repairEndedMarker(root, marker) === "local") {
@@ -560,9 +576,15 @@ export class NotebookServiceImpl implements NotebookService {
       try {
         await this.loading?.catch(() => undefined);
         await this.loadStoredProjects();
+        let rebound = false;
         for (const handle of [...this.projects.values()]) {
           if (!this.started || this.releasing) return;
           await this.locked(`project:${handle.projectId}`, async () => {
+            if (!handle.revoked && await this.rebindMovedRoot(handle)) {
+              rebound = true;
+              return;
+            }
+            if (!handle.revoked) await this.repairMissingMarker(handle.projectId, handle.root);
             if (handle.revoked) {
               const marker = await readMarker(handle.root).catch(() => null);
               if (this.matchesMarker(handle, marker)) {
@@ -573,6 +595,8 @@ export class NotebookServiceImpl implements NotebookService {
             } else await this.checkLease(handle);
           }).catch((error) => this.logger.warn(`Shared notebook ${handle.name}: lifecycle/lease check will retry.`, error));
         }
+        // A rebound project starts again at its new folder, as at startup.
+        if (rebound && this.started && !this.releasing) await this.loadStoredProjects();
         if (this.started && !this.releasing) await this.adoptMarkers();
       } catch (error) {
         this.logger.warn("Shared notebooks: the writer lease check failed.", error);
@@ -581,6 +605,66 @@ export class NotebookServiceImpl implements NotebookService {
       }
     })();
     return this.ticking;
+  }
+
+  /**
+   * A running notebook's folder renamed or moved (Finder, a sync client):
+   * hands the project to the one compatible folder found, with the startup
+   * identity checks (movedRoot); loadStoredProjects then starts it there.
+   * A folder only missing for now (an unmounted drive, a provider re-sync)
+   * has no such candidate and keeps its runtime, whose disk work pauses.
+   */
+  private async rebindMovedRoot(handle: ProjectHandle): Promise<boolean> {
+    if (!this.started || this.projects.get(handle.projectId) !== handle || await statIfExists(handle.root)) return false;
+    const moved = await this.movedRoot(handle.projectId, handle.root);
+    if (!moved || moved === handle.root || this.projects.get(handle.projectId) !== handle) return false;
+    const runtime = handle.runtime;
+    handle.runtime = null;
+    // The old folder is gone: nothing to persist there.
+    await runtime?.stop({ persist: false });
+    const row = this.deps.host.store.getProject(handle.projectId);
+    if (row) this.deps.host.store.upsertProject({ ...row, localRoot: moved });
+    this.projects.delete(handle.projectId);
+    this.unjoined.delete(moved);
+    this.logger.warn(`Shared notebook ${handle.name}: its folder moved to ${path.basename(moved)}; it continues there.`);
+    this.deps.emit({ t: "project-changed", projectId: handle.projectId });
+    this.deps.statusChanged?.();
+    return true;
+  }
+
+  /**
+   * Restores a bound folder's sharing marker after it went missing (deleted
+   * by hand, or by a sync client) while the folder and this installation's
+   * binding stay: without it every write is refused and nothing syncs. Only
+   * once it has been missing for markerRepairDelayMs (a provider may be about
+   * to deliver it) and the server confirms the same project.
+   */
+  private async repairMissingMarker(projectId: string, root: string): Promise<boolean> {
+    const file = path.join(root, SHARED_MARKER_FILE);
+    // A present marker, even an unreadable one, is not ours to replace.
+    if (await statIfExists(file) || !(await statIfExists(root))) {
+      this.markerMissingSince.delete(root);
+      return false;
+    }
+    const binding = readNotebookBinding(this.lifecycleDirectory, root);
+    if (!binding || binding.projectId !== projectId || readNotebookLifecycle(this.lifecycleDirectory, binding) !== null) return false;
+    const now = Date.now();
+    const since = this.markerMissingSince.get(root) ?? now;
+    this.markerMissingSince.set(root, since);
+    if (now - since < this.markerRepairDelayMs) return false;
+    const api = this.deps.host.api;
+    if (!api || !this.markerAuthorityMatches(binding)) return false;
+    const project = await api.getProject(projectId).catch(() => null);
+    if (!project || project.manifestDocId !== binding.manifestDocId) return false;
+    // The writer is claimed again through the lease.
+    const restored: SharedMarker = { ...binding };
+    delete restored.writer;
+    delete restored.revoked;
+    delete restored.revokedAt;
+    await writeMarker(root, restored, { root, canCommit: async () => !(await statIfExists(file)) });
+    this.markerMissingSince.delete(root);
+    this.logger.warn(`Shared notebook ${path.basename(root)}: its sharing marker was missing and has been restored.`);
+    return true;
   }
 
   private async checkLease(handle: ProjectHandle): Promise<void> {
@@ -681,7 +765,15 @@ export class NotebookServiceImpl implements NotebookService {
   private async rememberEnded(handle: ProjectHandle, outcome: "local" | "revoked"): Promise<void> {
     const marker = await readMarker(handle.root).catch(() => null);
     const binding = this.matchesMarker(handle, marker) ? marker : readNotebookBinding(this.lifecycleDirectory, handle.root);
-    if (this.matchesMarker(handle, binding)) recordNotebookLifecycle(this.lifecycleDirectory, binding, outcome);
+    if (!this.matchesMarker(handle, binding)) return;
+    recordNotebookLifecycle(this.lifecycleDirectory, binding, outcome);
+    // A copy of the marker from before it had a folder id (a cloud provider
+    // delivering an old version late) names the same share: it has ended too.
+    if (binding.folderId) {
+      const legacy: SharedMarker = { ...binding };
+      delete legacy.folderId;
+      recordNotebookLifecycle(this.lifecycleDirectory, legacy, outcome);
+    }
   }
 
   private async adopt(api: ApiClient, root: string, marker: SharedMarker): Promise<void> {
@@ -1064,10 +1156,15 @@ export class NotebookServiceImpl implements NotebookService {
     await runtime?.stop();
     await this.rememberEnded(handle, "revoked");
     handle.runtime = null;
-    if (handle.writer) {
+    // A follower cleans up too: its writer may be offline for good, and the
+    // account's other installations remove the same photos, so the copies
+    // converge whichever device gets there first. The marker check below
+    // keeps a folder that another share or account now owns untouched.
+    {
       const accountId = this.cachedAccountId ?? (await this.accountId().catch(() => null));
       const marker = await readMarker(handle.root).catch(() => null);
-      if (marker && this.ownsMarker(marker, handle.projectId)) {
+      const ours = marker && (handle.writer ? this.ownsMarker(marker, handle.projectId) : this.matchesMarker(handle, marker) && this.markerAuthorityMatches(marker));
+      if (marker && ours) {
         for (const photo of photos) {
           if (accountId && photo.addedBy === accountId) continue;
           await fs.rm(path.join(handle.root, photo.name), { force: true }).catch(() => undefined);

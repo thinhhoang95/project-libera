@@ -6,7 +6,7 @@ import type { Kysely, Selectable } from "kysely";
 import * as Y from "yjs";
 import { z } from "zod";
 
-import { requireDocumentAction, requireProjectAction, writeAudit } from "../auth/access.js";
+import { lockProjectAction, requireDocumentAction, requireProjectAction, writeAudit } from "../auth/access.js";
 import type { ServerContext } from "../context.js";
 import type { DB, DocumentsTable, SubdocColumn } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
@@ -113,6 +113,7 @@ export function registerDocumentRoutes(app: FastifyInstance, context: ServerCont
     const actor: Actor = { kind: "system", reason: "import", onBehalfOf: accountId };
     const provenance: Provenance = { source: "import" };
     const created = await db.transaction().execute(async (trx) => {
+      await lockProjectAction(trx, projectId, accountId, "manage-files");
       const inserted = await trx
         .insertInto("documents")
         .values({

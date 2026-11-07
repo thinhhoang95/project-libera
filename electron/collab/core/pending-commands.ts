@@ -153,12 +153,14 @@ export class PendingCommands {
         return;
       }
       this.attempt = 0;
-      this.store.deleteCommand(next.id);
       const ok = status >= 200 && status < 300;
       if (!ok && !error) {
         const detail = (body as { error?: { code?: string; message?: string } } | null)?.error;
         error = { code: detail?.code ?? "rejected", message: detail?.message ?? `HTTP ${status}` };
       }
+      // A refusal keeps the command's body durably (CommandOutcomes) until a window discards it.
+      if (ok) this.store.deleteCommand(next.id);
+      else this.store.refuseCommand(next.id, status, error ?? { code: "rejected", message: `HTTP ${status}` }, this.clock.now());
       if (!ok) this.logger.warn(`Command ${next.kind} ${next.id} was refused (${status})`, error);
       this.events.emit({ type: "settled", id: next.id, kind: next.command.kind, ok, status, body, ...(error ? { error } : {}) });
     }

@@ -39,6 +39,9 @@ import { findPersisted, loadDocument, persistUpdate, UpdateAccessChangedError, t
 import { SyncTimings } from "./timings.js";
 import { actorForUpdate, annotationViolation, manifestViolation, sanitizeProvenance } from "./validate.js";
 
+/** An unwritten PDF document younger than this is a client that just opened one; it stays. */
+const EMPTY_PDF_GRACE_MS = 10 * 60_000;
+
 const SYNC_PATH = "/sync";
 const CLOSE_WAIT_MS = 1000;
 
@@ -226,14 +229,39 @@ export class SyncServer {
     if (existing) return;
     const project = await db.selectFrom("projects").select("kind").where("id", "=", target.projectId).executeTakeFirst();
     if (project?.kind !== "notebook") return;
-    const count = await db.selectFrom("documents").select((eb) => eb.fn.countAll<string>().as("count"))
-      .where("project_id", "=", target.projectId).where("kind", "=", "pdf").where("deleted_at", "is", null).executeTakeFirstOrThrow();
-    if (Number(count.count) >= PdfLimits.maxDocuments) return;
+    const count = async () => Number((await db.selectFrom("documents").select((eb) => eb.fn.countAll<string>().as("count"))
+      .where("project_id", "=", target.projectId).where("kind", "=", "pdf").where("deleted_at", "is", null).executeTakeFirstOrThrow()).count);
+    if (await count() >= PdfLimits.maxDocuments) {
+      // Any member can name a document for any file id (the manifest is not
+      // consulted, above), so a full project first reclaims the ones nobody
+      // ever wrote to. Their id comes from the file: a later open remakes one.
+      await this.reclaimEmptyPdfDocuments(target.projectId);
+      if (await count() >= PdfLimits.maxDocuments) return;
+    }
     const created = await db.insertInto("documents")
       .values({ id: docId, project_id: target.projectId, kind: "pdf", file_id: target.fileId, created_by: accountId, last_server_seq: 0 })
       .onConflict((conflict) => conflict.column("id").doNothing())
       .returning("id").executeTakeFirst();
     if (created) this.context.events.publish({ scope: "project", id: target.projectId, kind: EventKind.PdfDocumentCreated, payload: { docId, fileId: target.fileId } });
+  }
+
+  /**
+   * Removes a project's PDF documents that were never written (no update, no
+   * thread), are not open, and are older than EMPTY_PDF_GRACE_MS: what opening
+   * nonexistent or long-gone files leaves behind. Ones written meanwhile stay.
+   */
+  async reclaimEmptyPdfDocuments(projectId: string, olderThanMs = EMPTY_PDF_GRACE_MS): Promise<number> {
+    const { db } = this.context;
+    const cutoff = new Date(Date.now() - olderThanMs);
+    const rows = await db.selectFrom("documents").select("id")
+      .where("project_id", "=", projectId).where("kind", "=", "pdf").where("deleted_at", "is", null)
+      .where("last_server_seq", "=", 0).where("created_at", "<", cutoff)
+      .where((eb) => eb.not(eb.exists(eb.selectFrom("threads").select("threads.id").whereRef("threads.doc_id", "=", "documents.id"))))
+      .limit(5_000).execute();
+    const ids = rows.map((row) => row.id).filter((id) => !this.loaded.has(id));
+    if (!ids.length) return 0;
+    const removed = await db.deleteFrom("documents").where("id", "in", ids).where("last_server_seq", "=", 0).executeTakeFirst();
+    return Number(removed.numDeletedRows ?? 0);
   }
 
   // Rooms -------------------------------------------------------------------

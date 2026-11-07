@@ -6,6 +6,7 @@
 import { randomBytes } from "node:crypto";
 
 import { ApiClientError } from "../core/api-client";
+import type { FailedCommandRecord } from "../core/command-outcomes";
 import type { CollabHost } from "../core/host";
 import { PdfKeys, pdfAnchorViolation } from "../../../src/lib/collab/protocol/pdf";
 import type { Command, Thread } from "../../../src/lib/collab/protocol/api";
@@ -90,6 +91,35 @@ export function withPendingCommands(threads: PdfCommentThread[], commands: reado
   return next;
 }
 
+/**
+ * Comments written offline that the server then refused (a role change, a
+ * deleted thread): shown, marked as not sent, instead of vanishing. Their text
+ * stays until the person deletes them, which discards the refusal.
+ */
+export function withRefusedCommands(threads: PdfCommentThread[], refused: readonly FailedCommandRecord[], docId: string, anchorOf: (anchorId: string) => PdfCommentAnchor | undefined): PdfCommentThread[] {
+  let next = threads;
+  for (const { command, error, failedAt } of refused) {
+    const at = new Date(failedAt).toISOString();
+    const message = (id: string, text: string): PdfCommentMessage => ({ id, text, createdAt: at, own: true, notSent: error.message });
+    if (command.kind === "thread.create") {
+      const anchor = anchorOf(command.body.anchorId);
+      if (command.docId !== docId || !anchor || next.some((thread) => thread.id === command.body.id)) continue;
+      next = [...next, { id: command.body.id, anchor, status: "open", messages: [message(command.body.id, command.body.body)], createdAt: at, updatedAt: at, notSent: error.message }];
+    } else if (command.kind === "message.create") {
+      next = next.map((thread) => thread.id === command.threadId && !thread.messages.some((item) => item.id === command.body.id) ? { ...thread, messages: [...thread.messages, message(command.body.id, command.body.body)] } : thread);
+    }
+  }
+  return next;
+}
+
+/** The refused command that created a thread or message, so deleting it discards the refusal. */
+function refusedCommandFor(refused: readonly FailedCommandRecord[], id: string): string | null {
+  for (const { command } of refused) {
+    if ((command.kind === "thread.create" || command.kind === "message.create") && command.body.id === id) return command.id;
+  }
+  return null;
+}
+
 export class PdfCommentService {
   constructor(private readonly host: CollabHost, private readonly accountId: () => string) {}
 
@@ -142,7 +172,7 @@ export class PdfCommentService {
     const anchors = this.anchors(docId);
     const anchorOf = (anchorId: string) => anchors.get(anchorId);
     const shown = threads.map((thread) => pdfThreadOf(thread, anchorOf(thread.anchorId), this.accountId()));
-    return withPendingCommands(shown, this.pending(), docId, anchorOf);
+    return withRefusedCommands(withPendingCommands(shown, this.pending(), docId, anchorOf), this.host.commandOutcomes.failed(), docId, anchorOf);
   }
 
   /**
@@ -171,6 +201,14 @@ export class PdfCommentService {
 
   async change(docId: string, change: LivePdfCommentChange): Promise<PdfCommentThread[]> {
     const id = newId("cmd");
+    // Deleting a comment the server refused discards it here; the server never had it.
+    if (change.action === "delete" || change.action === "delete-message") {
+      const refused = refusedCommandFor(this.host.commandOutcomes.failed(), change.action === "delete" ? change.threadId : change.messageId);
+      if (refused) {
+        this.host.commandOutcomes.discard(refused);
+        return this.list(docId);
+      }
+    }
     switch (change.action) {
       case "comment": {
         const anchorId = newId("anc");

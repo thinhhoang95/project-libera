@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { MAX_PDF_COMMENT_CHARS, normalizePdfCommentAnchor } from "@/lib/pdf-comments";
+import { MAX_PDF_COMMENT_CHARS, MAX_PDF_COMMENT_MESSAGES, normalizePdfCommentAnchor } from "@/lib/pdf-comments";
 import { StorageError } from "@/lib/storage/errors";
 import { readPdfCommentThreads, updatePdfCommentThreads } from "@/lib/storage/annotations";
 import { changeLivePdfComments, listLivePdfComments, livePdfFor } from "@/lib/collab/host-client";
@@ -43,6 +43,11 @@ function findThread(threads: PdfCommentThread[], threadId: unknown) {
   const thread = typeof threadId === "string" ? threads.find((candidate) => candidate.id === threadId) : undefined;
   if (!thread) throw new StorageError("Comment thread was not found.", 404);
   return thread;
+}
+
+/** A reply the sidecar could not read back whole is refused up front. */
+function assertRoomForReply(thread: PdfCommentThread) {
+  if (thread.messages.length >= MAX_PDF_COMMENT_MESSAGES) throw new StorageError("This thread has too many replies. Start a new comment instead.", 413);
 }
 
 function touched(thread: PdfCommentThread, now: string, patch: Partial<PdfCommentThread>): PdfCommentThread {
@@ -93,6 +98,7 @@ export async function changePdfComments(relativePath: string, input: PdfCommentA
       }
       case "reply": {
         const thread = findThread(threads, input.threadId);
+        assertRoomForReply(thread);
         const message: PdfCommentMessage = { id: randomUUID(), text: commentText(input.text), createdAt: now };
         return { threads: threads.map((t) => t === thread ? touched(t, now, { messages: [...t.messages, message] }) : t), result: thread.id };
       }
@@ -140,6 +146,7 @@ export async function addPdfCommentReply(relativePath: string, threadId: string,
   }
   const { result } = await updatePdfCommentThreads(relativePath, (threads) => {
     const thread = findThread(threads, threadId);
+    assertRoomForReply(thread);
     const message: PdfCommentMessage = { id: randomUUID(), text: commentText(text), createdAt: now, ...(author ? { author } : {}) };
     return { threads: threads.map((t) => t === thread ? touched(t, now, { messages: [...t.messages, message] }) : t), result: message };
   });
