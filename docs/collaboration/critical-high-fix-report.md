@@ -81,8 +81,19 @@ Regression suite abbreviations:
 
 ## Validation
 
-FINAL_VALIDATION
+Codex reached its usage limit while running the full suites, before writing this section. The checks were then run by the reviewer (Claude) on 7 November 2026:
+
+- **On `fix/collab-critical-high`:** the new suites P, S, T and E pass (15 tests), and `server/test/collab-critical.test.ts` passes (3). The touched collaboration files pass, except the `p3a-editors` AI Rewrite test, which also fails at `c1cbf0e`. `albums-host` failed once under load and passed twice on its own. `tsc` passes for the app and the server, and ESLint reports nothing new.
+- **After merging with `fix/collab-medium` (R22–R48):**
+  - Server 196/196.
+  - Collaboration 631/638 in parallel, plus 42/42 timing-sensitive tests. The failures are the AI Rewrite test above and an external-rename test that passes on its own.
+  - Editor 1827/1832 after updating six tests to R17 and R20's intended behavior. Three of the remaining failures also fail at `c1cbf0e` (gallery continuity, gallery performance, notebook-links). RunPython and a 5 ms search budget pass on their own.
 
 ## Additional observations
 
-FINAL_OBSERVATIONS
+Four mitigations change behavior that people will notice. They are product decisions rather than finished fixes:
+
+- **R04:** files deleted outside Libera (Finder, a cloud provider) are restored rather than deleted for collaborators. Deletion happens only through Libera. `docs/features/notebook-sync.md` still describes inferred deletion.
+- **R08:** the adoption fence is permanent once set, and nothing in the app shows it. Files dropped into such a folder are never shared automatically.
+- **R10:** the bibliography mirror and tether no longer write into shared notebooks at all.
+- **R15:** takedown needs the updated server (`guardedProjectDeletion`) and its migrations.
