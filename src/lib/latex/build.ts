@@ -67,7 +67,9 @@ export type LatexSnapshotMeta = {
 function realTemporaryDirectory() {
   try {
     // On macOS the temp folder is reached through the /var -> /private/var link.
-    return realpathSync(os.tmpdir());
+    // On Windows only the native call expands 8.3 short names (C:\Users\NAME~1),
+    // whose "~" makes TeX fail to open the input file.
+    return realpathSync.native(os.tmpdir());
   } catch {
     return os.tmpdir();
   }
