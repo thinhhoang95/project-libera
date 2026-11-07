@@ -213,6 +213,11 @@ export const unsavedJournal = {
   },
 };
 
+// Private recovery follows file moves without becoming a pending sidecar Save.
+function hasPendingJournal(path: string) {
+  return [...(journaled.get(path) ?? [])].some((key) => !key.startsWith("recovery:"));
+}
+
 // ---- The registry ------------------------------------------------------------------
 
 export const pendingSaves = {
@@ -255,7 +260,7 @@ export const pendingSaves = {
   /** Unsaved ink or annotations for a file, in an open view or kept for recovery. */
   isDirty(path: string) {
     for (const entry of entries.get(path)?.values() ?? []) if (entry.dirty) return true;
-    return journaled.has(path);
+    return hasPendingJournal(path);
   },
 
   anyDirty(openPaths?: string[]) {
@@ -263,7 +268,7 @@ export const pendingSaves = {
     for (const [path, forPath] of entries) for (const entry of forPath.values()) if (entry.dirty && (!open || entry.mounted || open.has(path))) return true;
     // Recovery for a deleted file stays available if it returns, but must not
     // block quitting when there is no tab or view in which to save/discard it.
-    return open ? [...open].some((path) => journaled.has(path)) : journaled.size > 0;
+    return open ? [...open].some(hasPendingJournal) : [...journaled.keys()].some(hasPendingJournal);
   },
 
   /** Saves every open view's unsaved changes for a file. */

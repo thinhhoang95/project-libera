@@ -64,3 +64,15 @@
 @media (prefers-reduced-motion: reduce) {
   .libera-collab-spin { animation: none; }
 }
+
+/* A viewer of a live PDF has no annotation tools to reach for. */
+.libera-annotation-toolbar[data-pdf-read-only] > * { display: none; }
+
+/* Collaborators on a live PDF. */
+.pdf-presence-layer { position: absolute; inset: 0; z-index: 40; pointer-events: none; overflow: hidden; }
+.pdf-presence-layer > svg { position: absolute; inset: 0; }
+.pdf-presence-pointer { position: absolute; display: flex; align-items: flex-start; gap: 2px; transition: left 60ms linear, top 60ms linear; }
+.pdf-presence-name { max-width: 10rem; overflow: hidden; border-radius: 4px; padding: 0 4px; color: #fff; font-size: 10px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-presence-rail { position: absolute; top: 0; right: 2px; bottom: 0; z-index: 25; width: 8px; pointer-events: none; }
+.pdf-presence-rail-mark { position: absolute; right: 0; width: 6px; min-height: 6px; border: 0; border-radius: 3px; opacity: 0.8; padding: 0; pointer-events: auto; cursor: pointer; }
+.pdf-presence-rail-mark[aria-pressed="true"] { width: 8px; opacity: 1; box-shadow: 0 0 0 1px var(--background, #fff); }

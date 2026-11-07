@@ -1,11 +1,11 @@
-import { generateHTML, type AnyExtension, type JSONContent } from "@tiptap/core";
+import { generateHTML, type AnyExtension, type JSONContent, type NodeViewRenderer } from "@tiptap/core";
 import { Markdown, MarkdownManager } from "@tiptap/markdown";
 import katex, { type KatexOptions } from "katex";
 import { Marked, type marked } from "marked";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { createMathExtensions } from "@/lib/tiptap-math";
-import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
-import { sanitizeHtmlFragment } from "@/lib/markdown-sanitize";
+import { createMarkdownExtensions, markdownAssetSource } from "@/lib/tiptap-markdown";
+import { safeImageUrl, sanitizeHtmlFragment, type ContentTrust } from "@/lib/markdown-sanitize";
 
 const INLINE_KATEX_OPTIONS: KatexOptions = { displayMode: false, throwOnError: false, trust: false };
 // KaTeX requires display mode for equation tags.
@@ -24,15 +24,31 @@ function createNoteMarked() {
 export function createAnnotationMarkdownExtensions(
   documentPath: string,
   mathMarkers?: MathMarkerSettings,
+  trust: ContentTrust = "local",
 ): AnyExtension[] {
   const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
+  // A live PDF's notes come from collaborators, so an image in one being
+  // edited follows the same rule as one at rest: nothing loads that shared
+  // Markdown would not load.
+  const options = trust === "shared" ? { imageNodeView: sharedNoteImage(documentPath) } : {};
 
   return [
-    ...createMarkdownExtensions(documentPath).filter((extension) => extension.name !== Markdown.name),
+    ...createMarkdownExtensions(documentPath, options).filter((extension) => extension.name !== Markdown.name),
     InlineMath.configure({ katexOptions: INLINE_KATEX_OPTIONS }),
     BlockMath.configure({ katexOptions: BLOCK_KATEX_OPTIONS }),
     Markdown.configure({ marked: createNoteMarked() }),
   ];
+}
+
+function sharedNoteImage(documentPath: string): NodeViewRenderer {
+  return ({ node }) => {
+    const image = document.createElement("img");
+    const source = safeImageUrl(markdownAssetSource(documentPath, String(node.attrs.src ?? "")), "shared");
+    if (source) image.src = source;
+    image.alt = node.attrs.alt ?? "";
+    if (node.attrs.title) image.title = node.attrs.title;
+    return { dom: image };
+  };
 }
 
 // One parser per math-marker configuration (in practice there is only one).
@@ -107,9 +123,9 @@ function mathMarkersKey(mathMarkers: MathMarkerSettings = {}) {
  * are memoized by source: pages mount and unmount constantly while scrolling
  * and must not re-parse unchanged notes.
  */
-export function renderAnnotationMarkdown(markdown: string, mathMarkers?: MathMarkerSettings): string {
+export function renderAnnotationMarkdown(markdown: string, mathMarkers?: MathMarkerSettings, trust: ContentTrust = "local"): string {
   const markersKey = mathMarkersKey(mathMarkers);
-  const cacheKey = `${markersKey}\u0000${markdown}`;
+  const cacheKey = `${trust}\u0000${markersKey}\u0000${markdown}`;
   const cached = htmlCache.get(cacheKey);
 
   if (cached !== undefined) {
@@ -137,7 +153,7 @@ export function renderAnnotationMarkdown(markdown: string, mathMarkers?: MathMar
     // The schema already limits the markup; the allowlist also covers
     // attribute values (link and image URLs) before this goes to innerHTML,
     // since notes can come from a shared notebook.
-    html = sanitizeHtmlFragment(typesetMath(generateHTML(doc, renderer.extensions), doc));
+    html = sanitizeHtmlFragment(typesetMath(generateHTML(doc, renderer.extensions), doc), { trust });
   } catch {
     html = plainTextHtml(markdown);
   }

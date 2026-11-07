@@ -57,6 +57,8 @@ class FakeHost {
   readonly token = "fake-control-token";
   readonly docs = new Map<string, FakeDoc>();
   readonly fileOps: FileOpRequest[] = [];
+  /** A follower's host: the folder's writer does the disk's part this much later. */
+  writerDelayMs: number | null = null;
   readonly blobs = new Map<string, Buffer>();
   canModifyFiles = true;
   beforeFileOp: ((op: FileOpRequest) => void) | null = null;
@@ -76,6 +78,11 @@ class FakeHost {
   private next = 1;
 
   constructor(private readonly library: string) {}
+
+  private byWriter(write: () => void): void {
+    if (this.writerDelayMs === null) write();
+    else if (Number.isFinite(this.writerDelayMs)) setTimeout(write, this.writerDelayMs);
+  }
 
   addDoc(liberaPath: string, text: string, role: Role = "editor", readOnly = false): FakeDoc {
     const docId = `doc_${this.next++}`;
@@ -212,7 +219,7 @@ class FakeHost {
         const nextPath = `Shared/${op.to}`;
         const nextTarget = path.join(this.library, "Shared", ...(op.to ?? "").split("/"));
         if (nextTarget !== target && existsSync(nextTarget)) return this.send(response, 409, { error: { code: "conflict", message: "Destination already exists." } });
-        renameSync(target, nextTarget);
+        this.byWriter(() => renameSync(target, nextTarget));
         for (const [oldPath, doc] of [...this.docs]) {
           if (oldPath !== liberaPath && !oldPath.startsWith(`${liberaPath}/`)) continue;
           this.docs.delete(oldPath);
@@ -239,8 +246,10 @@ class FakeHost {
       if (op.op === "create-file") {
         if (this.docs.has(liberaPath) || existsSync(target)) return this.send(response, 409, { error: { code: "conflict", message: `${op.path} already exists.` } });
         this.addDoc(liberaPath, op.content ?? "");
-        mkdirSync(path.dirname(target), { recursive: true });
-        writeFileSync(target, op.content ?? "");
+        this.byWriter(() => {
+          mkdirSync(path.dirname(target), { recursive: true });
+          writeFileSync(target, op.content ?? "");
+        });
         return this.send(response, 200, { paths: [liberaPath] });
       }
       if (op.op === "write-blob") {
@@ -248,8 +257,10 @@ class FakeHost {
         const bytes = Buffer.from(op.contentBase64 ?? "", "base64");
         this.blobs.set(op.path, bytes);
         // Like the host: the working copy is written before answering.
-        mkdirSync(path.dirname(target), { recursive: true });
-        writeFileSync(target, bytes);
+        this.byWriter(() => {
+          mkdirSync(path.dirname(target), { recursive: true });
+          writeFileSync(target, bytes);
+        });
         return this.send(response, 200, { paths: [liberaPath] });
       }
     }
@@ -1140,5 +1151,50 @@ test("with the host unavailable, shared writes fail with a clear 503 and nothing
     assert.equal(disk("Shared/notes.md"), "Hello world (disk copy)\n");
     // withFixture's cleanup stops the host again; that is harmless.
     await host.start();
+  });
+});
+
+test("a follower's save succeeds while the folder's writer has yet to put the file on disk", async () => {
+  await withFixture(async ({ host, root }) => {
+    host.writerDelayMs = Number.POSITIVE_INFINITY;
+    const saved = async (response: Response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return (await response.json()) as { file: { path: string; size: number; fileType: string }; content?: string; rawUrl?: string };
+    };
+
+    const empty = await saved(await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name: "empty", content: "" } })));
+    assert.deepEqual([empty.file.path, empty.file.size, empty.content], ["Shared/empty.md", 0, ""]);
+    assert.equal(existsSync(path.join(root, "Shared", "empty.md")), false);
+
+    const written = await saved(await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name: "written", content: "héllo\n" } })));
+    assert.deepEqual([written.file.path, written.file.size, written.content], ["Shared/written.md", 7, "héllo\n"]);
+
+    const converted = await OCR_POST(authed("/api/document-ocr/output", { json: { pdfPath: "Shared/paper.pdf" } }));
+    assert.equal(converted.status, 200, await converted.clone().text());
+    assert.equal(((await converted.json()) as { file: { path: string } }).file.path, "Shared/paper.md");
+
+    const renamed = await saved(await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/notes.md", destinationNotebook: "Shared", destinationName: "renamed.md" } })));
+    assert.deepEqual([renamed.file.path, renamed.content], ["Shared/renamed.md", "Hello world\n"]);
+
+    const copied = await saved(await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/pic.png", destinationDirectory: "Shared", copy: true } })));
+    assert.equal(copied.file.path, "Shared/pic copy.png");
+    assert.equal(copied.rawUrl, "/api/files/raw/Shared/pic%20copy.png");
+
+    const form = new FormData();
+    form.set("notebook", "Shared");
+    form.append("files", new File([new Uint8Array(PNG)], "upload.png", { type: "image/png" }));
+    const uploaded = await UPLOADS_POST(authed("/api/uploads", { body: form }));
+    assert.equal(uploaded.status, 200, await uploaded.clone().text());
+    assert.deepEqual(((await uploaded.json()) as { uploaded: Array<{ path: string }> }).uploaded.map((item) => item.path), ["Shared/upload.png"]);
+  });
+});
+
+test("a follower's save reads the file once the writer has put it on disk", async () => {
+  await withFixture(async ({ host, root }) => {
+    host.writerDelayMs = 100;
+    const response = await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name: "soon", content: "text\n" } }));
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(((await response.json()) as { content: string }).content, "text\n");
+    assert.equal(existsSync(path.join(root, "Shared", "soon.md")), true, "it waited for the file");
   });
 });

@@ -71,7 +71,7 @@ export async function projectRole(db: Kysely<DB>, projectId: string, accountId: 
 export interface DocAccess {
   docId: string;
   projectId: string;
-  kind: DocKind | "manifest";
+  kind: DocKind | "manifest" | "pdf";
   schemaVersion: number;
   role: Role;
 }

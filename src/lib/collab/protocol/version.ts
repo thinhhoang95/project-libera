@@ -46,6 +46,10 @@ export const SyncLimits = {
   /** Largest WebSocket frame either side sends. */
   maxFrameBytes: 8 * 1024 * 1024,
   awarenessTimeoutMs: 30_000,
+  /** A socket's awareness allowance: a burst of this many updates... */
+  awarenessBurst: 60,
+  /** ...refilled at this rate. PDF presence streams strokes; a text caret never gets near it. */
+  awarenessPerSecond: 30,
   awarenessHeartbeatMs: 15_000,
   backoffBaseMs: 500,
   /** Ceiling for retrying queued commands. */

@@ -125,6 +125,24 @@ test("history panel: list, gating, diff with attribution, restore", async () => 
   }
 });
 
+test("history panel: a long history shows the newest versions and pages through the rest", async () => {
+  installMembers();
+  const list: Revision[] = Array.from({ length: 45 }, (_, index) => ({ id: `rev-${index}`, docId: "d1", serverSeq: 45 - index, label: null, kind: "session-end", createdBy: BOB, createdAt: "2026-10-18T09:00:00.000Z" }));
+  const shown = () => document.querySelectorAll("[data-revision-kind]").length;
+  try {
+    await render(createElement(DocumentHistoryPanel, { target: { docId: "d1", projectId: "p1", path: "Shared/a.md", role: "editor" }, onClose: () => {}, api: { ...fakeApi([]), revisions: async () => list } }));
+    await flush(4);
+    assert.equal(shown(), 20);
+    await click(button("Show older (25 more)"));
+    assert.equal(shown(), 40);
+    await click(button("Show older (5 more)"));
+    assert.equal(shown(), 45);
+    assert.equal(button(/Show older/), undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("history panel: commenters can read history but neither name nor restore", async () => {
   installMembers();
   try {

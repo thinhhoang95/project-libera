@@ -61,7 +61,10 @@ import {
   type WriteGuard,
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
-import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
+import { PdfCommentService } from "./pdf-comments";
+import { PdfMarksRuntime } from "./pdf-marks";
+import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
+import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
 
 export interface Timings {
@@ -85,6 +88,8 @@ export interface Timings {
   retryMs: number;
   /** Maximum age of a content verification even if every stat is unchanged. */
   verifyMs: number;
+  /** Delay before a shared PDF's sidecar copy is rewritten. */
+  pdfWriteMs: number;
 }
 
 export const DEFAULT_TIMINGS: Timings = {
@@ -95,6 +100,7 @@ export const DEFAULT_TIMINGS: Timings = {
   pollMs: 5000,
   retryMs: 5000,
   verifyMs: 60_000,
+  pdfWriteMs: 60_000,
 };
 
 export interface ProjectInfo {
@@ -172,6 +178,7 @@ export class SharedProject {
   private entries = new Map<string, ManifestEntry>();
   private manifestHub: DocHub | null = null;
   private manifestRebuilt = false;
+  private manifestConnected = false;
   private manifestWasReady = false;
   private readonly docs = new Map<string, DocRuntime>();
   private readonly unsubscribe: Array<() => void> = [];
@@ -191,6 +198,7 @@ export class SharedProject {
   private started = false;
   private rootUnavailable = false;
   private albumSnapshot: string | null = null;
+  private pdfLiveSnapshot = false;
   private readonly baselineMissing = new Set<string>();
   private readonly uploadedBlobs = new Map<string, Uint8Array>();
   private dirtyPaths = new Set<string>();
@@ -199,12 +207,33 @@ export class SharedProject {
   /** Retired path keys, each with the content hashes known for it. */
   private readonly retired: Map<string, Set<string>>;
   private observedEntries = new Map<string, ManifestEntry>();
+  readonly pdfs: PdfMarksRuntime;
 
   private constructor(ctx: ProjectContext, info: ProjectInfo, state: ProjectState) {
     this.ctx = ctx;
     this.info = info;
     this.state = state;
     this.retired = ctx.host.store.retiredPaths(info.projectId);
+    this.pdfs = new PdfMarksRuntime({
+      host: ctx.host,
+      logger: ctx.logger,
+      projectId: info.projectId,
+      notebook: info.notebook,
+      root: info.root,
+      writeMs: ctx.timings.pdfWriteMs,
+      role: () => this.info.role,
+      canWriteDisk: () => !this.follower,
+      guard: (finalizing) => this.diskGuard(finalizing),
+      authorityReady: () => this.manifestReady(),
+      recordLive: async () => {
+        const marker = await readMarker(info.root);
+        if (marker && !marker.pdfLive) await writeMarker(info.root, { ...marker, pdfLive: true }, this.diskGuard());
+      },
+      commentsChanged: (docId) => ctx.emit({ t: "pdf-comments-changed", docId }),
+      filesChanged: (paths) => this.filesChanged(paths),
+      manifest: () => (this.manifestHub && !this.manifestHub.isClosed ? this.manifestHub.getDoc("manifest") : null),
+      listComments: (docId) => this.pdfComments().list(docId),
+    });
   }
 
   static async open(ctx: ProjectContext, info: ProjectInfo): Promise<SharedProject> {
@@ -234,6 +263,7 @@ export class SharedProject {
 
   set role(role: Role) {
     this.info.role = role;
+    this.pdfs.roleChanged();
   }
 
   private get canEdit(): boolean {
@@ -285,6 +315,10 @@ export class SharedProject {
       }),
       hub.onStatus(() => {
         if (!this.manifestWasReady && this.manifestReady()) this.scheduleManifest(30);
+        // PDFs first opened elsewhere while this host was away announced it to nobody here.
+        const { connected } = hub.getStatus();
+        if (connected && !this.manifestConnected) void this.pdfs.refreshServerDocuments();
+        this.manifestConnected = connected;
       }),
       hub.onMeta((meta) => this.metaChanged(meta.role, meta.readOnlyReason)),
     );
@@ -325,6 +359,7 @@ export class SharedProject {
       this.saveTimer = null;
     }
     if (options.preserveContent) await this.preserveLatestText();
+    await this.pdfs.stop({ local: options.preserveContent === true }).catch((error) => this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not stop its PDFs`, error));
     if ((options.preserveContent || !this.follower) && options.persist !== false && await this.rootAvailable()) await writeState(this.info.root, this.state, this.diskGuard(true)).catch(() => undefined);
     for (const unsubscribe of this.unsubscribe) unsubscribe();
     this.unsubscribe.length = 0;
@@ -463,6 +498,11 @@ export class SharedProject {
   private async applyManifest(): Promise<void> {
     if (!this.manifestReady()) return;
     this.manifestWasReady = true;
+    const pdfLive = this.pdfs.enabled;
+    if (pdfLive !== this.pdfLiveSnapshot) {
+      this.pdfLiveSnapshot = pdfLive;
+      this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
+    }
     if (this.follower) {
       this.followManifest();
       this.notifyAlbumChanged();
@@ -588,6 +628,7 @@ export class SharedProject {
       this.treeChanged(previous, next);
     }
     if (touched.size > 0) this.filesChanged([...touched]);
+    this.pdfs.sync(this.entries.values(), layout.paths);
     // Documents whose file is missing or new get written now that their place exists.
     for (const [fileId, record] of Object.entries(next)) {
       if (record.kind === "doc" && record.docId && (!record.hash || this.rootUnavailable || this.baselineMissing.has(fileId))) {
@@ -621,6 +662,7 @@ export class SharedProject {
       }
     }
     for (const [fileId, record] of Object.entries(next)) if (record.docId) this.ensureDoc(record.docId, fileId);
+    this.pdfs.sync(this.entries.values(), layout.paths);
     if (JSON.stringify(previous) === JSON.stringify(next)) return;
     this.state.layout = next;
     this.ctx.layoutChanged(this.info.projectId);
@@ -850,6 +892,25 @@ export class SharedProject {
       delete next.edits;
     }
     photos.set(fileId, JSON.parse(JSON.stringify(next)));
+  }
+
+  // ------------------------------------------------------------ live PDFs
+
+  private pdfComments(): PdfCommentService {
+    return new PdfCommentService(this.ctx.host, () => this.ctx.host.accountId ?? "");
+  }
+
+  /** Turns live PDFs on for everyone. One way: marks would otherwise be stranded in the document. */
+  enablePdfLive(): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.info.album) throw new ControlError(400, "bad-request", "Albums have no PDFs.");
+      if (this.info.role !== "owner") throw new ControlError(403, "forbidden", "Only the notebook's owner can turn on live PDFs.");
+      if (!this.manifestReady()) throw new ControlError(503, "offline", "The notebook's file list has not loaded yet.");
+      const version = await this.ctx.host.api?.version();
+      if (!version?.livePdfs) throw new ControlError(409, "update-required", "Update the collaboration server before turning on live PDFs.");
+      await this.writeManifest((_files, doc) => doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true), { source: "typing" });
+      this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
+    });
   }
 
   /** Tells the album's other members about new photos; nothing is retried. */
@@ -1590,6 +1651,7 @@ export class SharedProject {
               // A new file: the same as create-file, from bytes.
               this.assertFree(relative, []);
               const fileId = randomId("fil");
+              if (request.pdfSeed && this.pdfs.enabled) await this.pdfs.seed(fileId, relative, request.pdfSeed);
               const created = await this.createFileEntry(fileId, relative, bytes, accountId, now);
               await this.writeManifest((map) => map.set(fileId, entryRecord(created)), { source: "typing" });
               paths.push(relative);

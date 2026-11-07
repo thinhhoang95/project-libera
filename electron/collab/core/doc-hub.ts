@@ -27,6 +27,7 @@ import type {
   SubdocStateVector,
 } from "../../../src/lib/collab/protocol/messages";
 import type { Role, Subdoc } from "../../../src/lib/collab/protocol/roles";
+import { isPdfDocId, PdfKeys } from "../../../src/lib/collab/protocol/pdf";
 import { AnnotationKeys, ContentKeys, ManifestKeys, MetaKeys } from "../../../src/lib/collab/protocol/schema";
 import { DOC_SCHEMA_VERSION, SyncLimits } from "../../../src/lib/collab/protocol/version";
 import type { Clock, Logger, TimerHandle } from "./clock";
@@ -38,6 +39,13 @@ import { StatusTracker, type StatusInputs } from "./status";
 import type { DocKindTag, DocMetaRow, HostStore, ReadOnlyReason, RejectedEditRow } from "./store";
 
 export type HubKind = DocKindTag;
+
+/** What a shared PDF's first `open` tells the server, so it can make the document. */
+export function pdfOpenTarget(docId: string, store: HostStore): { projectId: string; fileId: string } | undefined {
+  if (!isPdfDocId(docId)) return undefined;
+  const record = store.getDoc(docId);
+  return record?.projectId && record.fileId ? { projectId: record.projectId, fileId: record.fileId } : undefined;
+}
 
 export const SUBDOCS_BY_KIND: Record<HubKind, readonly Subdoc[]> = {
   file: ["content", "annotations", "meta"],
@@ -303,6 +311,11 @@ export class DocHub implements CompactionTarget {
     return captured && captured.origin === origin ? captured.update : null;
   }
 
+  /** The hint for this document's `open` (shared PDFs only). */
+  pdfTarget(): { projectId: string; fileId: string } | undefined {
+    return pdfOpenTarget(this.docId, this.store);
+  }
+
   /** Subscribes to changes of one sub-document, or all of them with null. */
   observe(subdoc: Subdoc | null, listener: (change: HubChange) => void): () => void {
     return this.changes.on((change) => {
@@ -313,6 +326,8 @@ export class DocHub implements CompactionTarget {
   onStatus(listener: (status: SyncStatus) => void): () => void {
     return this.status.onChange(listener);
   }
+
+  get hasOpened(): boolean { return this.opened; }
 
   getStatus(): SyncStatus {
     return this.status.current();
@@ -962,7 +977,8 @@ export function subdocText(subdoc: Subdoc, doc: Y.Doc): string {
     case "content":
       return doc.getText(ContentKeys.source).toString();
     case "annotations":
-      return maps(Object.values(AnnotationKeys));
+      // A PDF with comments and no marks is still a PDF: choose by what is populated.
+      return Object.values(PdfKeys).some((key) => doc.getMap(key).size > 0) ? maps(Object.values(PdfKeys)) : maps(Object.values(AnnotationKeys));
     case "meta":
       return maps(Object.values(MetaKeys));
     case "manifest":

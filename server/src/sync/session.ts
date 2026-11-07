@@ -16,6 +16,7 @@ import {
   encodeMessage,
   MessageType,
   PROTOCOL_VERSION,
+  SyncLimits,
   type AwarenessMessage,
   type ClosedReason,
   type ErrorCode,
@@ -64,6 +65,8 @@ export class Session implements RoomMember {
   private helloTimer: NodeJS.Timeout | undefined;
   private expiryTimer: NodeJS.Timeout | undefined;
   private membershipVersion = 0;
+  private awarenessTokens: number = SyncLimits.awarenessBurst;
+  private awarenessRefilledAt = Date.now();
 
   /** Includes pending opens, which are not yet present in docs. */
   membershipChanged(projectId: string, role: Role | null): void {
@@ -273,6 +276,8 @@ export class Session implements RoomMember {
 
   private async open(message: OpenMessage): Promise<void> {
     const { docId } = message;
+    if (message.pdf) await this.server.ensurePdfDocument(this.accountId, docId, message.pdf);
+    if (this.closed) return;
     const access = await this.currentAccess(docId);
     if (this.closed) return;
     if (!access) {
@@ -375,11 +380,22 @@ export class Session implements RoomMember {
     const open = this.docs.get(message.docId);
     if (!open) return this.sendError("bad-message", "Document is not open.", message.docId);
     if (message.update.length > 64 * 1024) return this.badFrame("Awareness update is too large.");
+    // Presence is disposable, so a chatty client just loses updates.
+    if (!this.takeAwarenessToken()) return;
     try {
       open.room.applyAwareness(this, message.update);
     } catch {
       this.badFrame("Awareness update does not decode.");
     }
+  }
+
+  private takeAwarenessToken(): boolean {
+    const now = Date.now();
+    this.awarenessTokens = Math.min(SyncLimits.awarenessBurst, this.awarenessTokens + ((now - this.awarenessRefilledAt) / 1000) * SyncLimits.awarenessPerSecond);
+    this.awarenessRefilledAt = now;
+    if (this.awarenessTokens < 1) return false;
+    this.awarenessTokens -= 1;
+    return true;
   }
 
   /** Stops sending this document to the socket. `reason` null closes silently (socket gone). */

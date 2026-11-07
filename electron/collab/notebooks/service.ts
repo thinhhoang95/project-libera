@@ -20,6 +20,7 @@ import type {
   ResolvedDoc,
   ShareAlbumRequest,
   ShareAlbumResult,
+  ResolvedPdf,
   ShareNotebookRequest,
   ShareProgress,
   UpdateAlbumRequest,
@@ -46,6 +47,7 @@ import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
 import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord } from "./layout";
+import { isPdfDocId, isPdfPath, PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
   deleteMarker,
@@ -114,6 +116,7 @@ export interface ShareResult {
 
 /** What a share starts from: a notebook folder, or a gallery folder shared as an album. */
 interface ShareTarget {
+  pdfLive?: boolean;
   kind: ProjectKind;
   /** Folder name (a notebook, or an album's folder in the gallery). */
   notebook: string;
@@ -824,10 +827,46 @@ export class NotebookServiceImpl implements NotebookService {
     };
   }
 
+  /** A PDF's live document, when the notebook has live PDFs on. Null means use its sidecar. */
+  resolvePdf(liberaPath: string): ResolvedPdf | null {
+    if (typeof liberaPath !== "string") return null;
+    const segments = liberaPath.replace(/\\/g, "/").split("/").filter(Boolean);
+    if (segments.length < 2 || !isPdfPath(segments.at(-1) ?? "")) return null;
+    const handle = this.handleForNotebook(segments[0]);
+    if (handle?.revoking) throw new ControlError(503, "unavailable", "Keeping the last PDF annotations.");
+    if (handle && !handle.revoked && (!handle.runtime || !handle.runtime.pdfs.ready)) throw new ControlError(503, "unavailable", "Live PDF status is still loading.");
+    if (handle?.revoked) return null;
+    const resolved = handle?.runtime?.pdfs.resolve(segments.slice(1).join("/"));
+    if (!handle || !resolved) return null;
+    return {
+      ...resolved,
+      projectId: handle.projectId,
+      path: `${handle.notebook}/${resolved.path}`,
+      role: handle.role,
+      readOnly: handle.revoked || handle.revoking === true || !roleAtLeast(handle.role, "commenter"),
+      accountId: this.cachedAccountId ?? "",
+      ...(handle.revoked ? { revoked: true } : {}),
+    };
+  }
+
   /** The reverse of resolvePath, over the same index (GET /docs/:docId). */
   resolveDoc(docId: string): ResolvedDoc | null {
     if (typeof docId !== "string" || !docId) return null;
     for (const handle of this.projects.values()) {
+      // A notification about a live PDF opens the PDF.
+      const pdf = handle.runtime?.pdfs.fileOf(docId);
+      if (pdf) {
+        return {
+          docId,
+          projectId: handle.projectId,
+          fileId: pdf.fileId,
+          path: `${handle.notebook}/${pdf.path}`,
+          kind: "text",
+          role: handle.role,
+          readOnly: handle.revoked || handle.revoking === true || !roleAtLeast(handle.role, "commenter"),
+          ...(handle.revoked ? { revoked: true } : {}),
+        };
+      }
       for (const doc of handle.index.values()) {
         if (doc.docId !== docId) continue;
         return {
@@ -867,6 +906,7 @@ export class NotebookServiceImpl implements NotebookService {
       revoked: handle.revoked,
       reconcilePending: handle.runtime?.reconcilePending ?? handle.reconcilePending,
       ...(handle.kind === "album" ? { kind: "album" as const } : {}),
+      ...(handle.runtime?.pdfs.enabled ? { pdfLive: true } : {}),
     }));
   }
 
@@ -878,6 +918,7 @@ export class NotebookServiceImpl implements NotebookService {
   // ------------------------------------------------------------ revocation and roles
 
   private hostEvent(event: CollabHostEvent): void {
+    this.pdfDocumentCreated(event);
     if (event.source !== "sync" || event.event.type !== "server-event") return;
     const { scope, kind, payload } = event.event.event;
     const data = (payload ?? {}) as { projectId?: unknown; accountId?: unknown; role?: unknown };
@@ -891,6 +932,17 @@ export class NotebookServiceImpl implements NotebookService {
       void this.revoke(projectId).catch((error) => this.logger.warn("Could not finish notebook revocation.", error));
     } else if (kind === EventKind.RoleChanged && aboutMe && isRole(data.role)) {
       this.setRole(projectId, data.role);
+    }
+  }
+
+  /** Someone opened a PDF for the first time, so it may gain marks this host should follow. */
+  private pdfDocumentCreated(event: CollabHostEvent): void {
+    if (event.source !== "sync" || event.event.type !== "server-event") return;
+    const { id, kind } = event.event.event;
+    if (kind === EventKind.PdfDocumentCreated) void this.projects.get(id)?.runtime?.pdfs.refreshServerDocuments();
+    // Comments live on the server, so nothing in the document says they changed.
+    if ((kind === EventKind.ThreadChanged || kind === EventKind.ThreadDeleted) && isPdfDocId(id)) {
+      for (const handle of this.projects.values()) handle.runtime?.pdfs.commentsChanged(id);
     }
   }
 
@@ -1132,7 +1184,7 @@ export class NotebookServiceImpl implements NotebookService {
 
   share(request: ShareNotebookRequest): Promise<ShareResult> {
     const notebook = typeof request?.notebook === "string" ? request.notebook.trim() : "";
-    return this.locked(`notebook:${notebook.toLowerCase()}`, async () => this.doShare({ kind: "notebook", notebook, root: await this.shareableRoot(notebook) }, request.name));
+    return this.locked(`notebook:${notebook.toLowerCase()}`, async () => this.doShare({ kind: "notebook", notebook, root: await this.shareableRoot(notebook), ...(request.pdfLive === true ? { pdfLive: true } : {}) }, request.name));
   }
 
   /** Shares a gallery folder as an album (Libera has moved the album's photos into it). */
@@ -1304,6 +1356,8 @@ export class NotebookServiceImpl implements NotebookService {
       if (!plan.projectId) {
         const version = await api.version();
         if (!version.projectCreationKeys) throw new ControlError(409, "update-required", "Update the collaboration server before starting a new share; durable project creation keys are required.");
+        // An older server refuses the opens live PDFs need, so it stays off until the server is updated.
+        if (!version.livePdfs) target.pdfLive = false;
         await checkWriteGuard(guard);
         const project = await api.createProject({ name, kind: target.kind, creationId: operationId });
         if (project.creationId !== operationId) throw new ControlError(409, "update-required", "The server did not confirm the saved project creation key.");
@@ -1376,6 +1430,7 @@ export class NotebookServiceImpl implements NotebookService {
               };
               map.set(file.fileId, entryRecord(entry));
             }
+            if (target.pdfLive) doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true);
             if (album) {
               const settings = doc.getMap<unknown>(ManifestKeys.settings);
               if (album.direct) settings.set(AlbumSettingKeys.direct, true);
@@ -1645,6 +1700,25 @@ export class NotebookServiceImpl implements NotebookService {
         }
       };
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
+    router.add("GET", ControlRoutes.pdfResolve, wrap(async (request) => {
+      const relative = request.query.get("path") ?? "";
+      const resolved = this.resolvePdf(relative);
+      if (!resolved) {
+        const notebook = relative.replace(/\\/g, "/").split("/")[0];
+        if (notebook && notebook !== "." && notebook !== "..") {
+          const handle = this.handleForNotebook(notebook);
+          const marker = await readMarker(path.join(this.deps.libraryRoot, notebook)).catch(() => null);
+          if (!handle?.revoked && ((marker && !handle) || handle?.runtime?.pdfs.enabled)) throw new ControlError(503, "unavailable", "Live PDF status is still loading.");
+        }
+      }
+      return { body: resolved };
+    }));
+    router.add("POST", decodeURIComponent(ControlRoutes.pdfLive(":projectId")), wrap(async (request) => {
+      const runtime = this.project(request.params.projectId);
+      if (!runtime) throw new ControlError(404, "not-found", "This notebook is not running here.");
+      await runtime.enablePdfLive();
+      return { status: 204 };
+    }));
     router.add("POST", ControlRoutes.join, wrap(async (request) => ({ body: await this.join(request.body as JoinProjectRequest) })));
     router.add("GET", ControlRoutes.albums, wrap(async () => ({ body: this.albums() })));
     router.add("POST", ControlRoutes.albumShare, wrap(async (request) => ({ body: await this.shareAlbum(request.body as ShareAlbumRequest) })));

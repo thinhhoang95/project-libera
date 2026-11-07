@@ -95,7 +95,7 @@ export async function pdfThreads(path: string): Promise<CommentThread[] | null> 
     resolved: thread.status === "resolved",
     where: `${pdfCommentPages(thread.anchor)}${thread.anchor.quote ? `, on ${shortQuote(thread.anchor.quote)}` : ""}`,
     messages: thread.messages.map((message) => ({
-      who: message.author === "agent" ? "AI (Agent mode, for the user)" : "the user",
+      who: message.author === "agent" ? "AI (Agent mode, for the user)" : message.own === false && message.authorName ? message.authorName : "the user",
       date: date(message.createdAt),
       text: message.text,
       edited: !!message.editedAt,

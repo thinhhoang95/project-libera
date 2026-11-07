@@ -16,6 +16,7 @@ export interface NotebookMarker {
   syncedElsewhere?: boolean;
   revoked?: boolean;
   revokedAt?: string;
+  pdfLive?: boolean;
 }
 
 export const MAX_MARKER_BYTES = 64 * 1024;
@@ -34,7 +35,7 @@ export function parseNotebookMarker(value: unknown): NotebookMarker | null {
   } catch { return null; }
   if (record.kind !== undefined && record.kind !== "notebook" && record.kind !== "album") return null;
   for (const key of ["writer", "folderId"]) if (record[key] !== undefined && !id(record[key])) return null;
-  for (const key of ["revoked", "syncedElsewhere"]) if (record[key] !== undefined && typeof record[key] !== "boolean") return null;
+  for (const key of ["revoked", "syncedElsewhere", "pdfLive"]) if (record[key] !== undefined && typeof record[key] !== "boolean") return null;
   if (record.revokedAt !== undefined && !text(record.revokedAt, 100)) return null;
   return record as unknown as NotebookMarker;
 }

@@ -157,3 +157,17 @@ Review findings and validation: [credential sync review](credential-sync-review.
 | Telemetry respects the server's rate limit (6 reports per minute per account, `retry-after`) and is off while signed out. | `core/telemetry.ts` |
 
 **Remaining:** a divergence the full re-open cannot fix (local deletions the server never received) stays reported as "unresolved" for an operator; the host does not push delete-only state on its own.
+
+## Live PDFs
+
+A shared PDF's marks come from collaborators, so every field is untrusted.
+
+| Control | Where |
+|---|---|
+| The server checks every mark's shape, colours, numbers and sizes, and that `createdBy` is the sender. Who made a mark never changes, and a mark is never removed, only marked deleted. Any member who can annotate may change any mark, by design. | `server/src/sync/validate.ts`, `src/lib/collab/protocol/pdf.ts` |
+| Clients validate again on read, with the same code, and skip what fails. Colours must be hex: they reach SVG and CSS. | `src/lib/collab/pdf/model.ts` |
+| Note text is Markdown from collaborators. It renders through the same sanitizer as other shared content. | `src/lib/pdf-annotation-markdown.ts`, `src/lib/markdown-sanitize.ts` |
+| A change to a mark must name its sender as `updatedBy`, unless the sender already was. A write that lost a concurrent tie-break cannot be judged by the merged value, so a value equal to the one before the update is allowed. A member can therefore leave a mark's existing `updatedBy` in place by writing the same value. This affects the label only: the sender is still recorded with the update, and any member may change any mark. | `server/src/sync/validate.ts` |
+| Presence is checked field by field, capped in size, and rate limited per socket. Names render as text. | `src/lib/collab/pdf/presence.ts`, `server/src/sync/session.ts` |
+| Any member can make a PDF document by opening one, so its id must hash from the project and file, the project must be theirs and a notebook, and each project has a document limit. The file is not checked against the manifest, because a client may open a PDF whose manifest update is still queued. | `server/src/sync/server.ts` |
+| Only the owner can turn on live PDFs, and it cannot be turned off, because marks would be stranded. | `server/src/sync/validate.ts` |

@@ -25,6 +25,7 @@ import * as Y from "yjs";
 
 import { ApiRoutes, canonicalJson, type DocumentDigest } from "../../../src/lib/collab/protocol/api";
 import type { Subdoc } from "../../../src/lib/collab/protocol/roles";
+import { isPdfDocId, PdfKeys } from "../../../src/lib/collab/protocol/pdf";
 import { ContentKeys, ManifestKeys } from "../../../src/lib/collab/protocol/schema";
 import type { DivergenceRecord } from "../../../src/lib/collab/ui/diagnostics-types";
 import type { ApiClient } from "./api-client";
@@ -86,9 +87,15 @@ export function sha256Utf8(text: string): string {
 
 /** The hashed content of a sub-document, as the server computes it (DocumentDigest). */
 export function digestOf(subdoc: Subdoc, doc: Y.Doc): string {
+  if (subdoc === "annotations") return sha256Utf8(canonicalJson(doc.getMap(PdfKeys.marks).toJSON()));
   return subdoc === "manifest"
     ? sha256Utf8(canonicalJson(doc.getMap(ManifestKeys.files).toJSON()))
     : sha256Utf8(doc.getText(ContentKeys.source).toString());
+}
+
+/** What the check compares: a PDF's state is its marks, and its `content` stays empty. */
+function comparedSubdoc(docId: string, manifest: boolean): Subdoc {
+  return manifest ? "manifest" : isPdfDocId(docId) ? "annotations" : "content";
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
@@ -352,7 +359,7 @@ export class DivergenceChecker {
     if (hub) {
       if (hub.readOnlyReason) return { ok: false, detail: `read-only:${hub.readOnlyReason}` };
       if (hub.getStatus().pending > 0) return { ok: false, detail: "pending" };
-      const subdoc: Subdoc = hub.kind === "manifest" ? "manifest" : "content";
+      const subdoc = comparedSubdoc(docId, hub.kind === "manifest");
       const doc = hub.getDoc(subdoc);
       return { ok: true, state: { subdoc, stateVector: Y.encodeStateVector(doc), contentSha256: digestOf(subdoc, doc) } };
     }
@@ -361,7 +368,7 @@ export class DivergenceChecker {
     if (!meta) return { ok: false, detail: "unknown-doc" };
     if (meta.readOnlyReason) return { ok: false, detail: `read-only:${meta.readOnlyReason}` };
     if (store.unackedSummary(docId).length > 0) return { ok: false, detail: "pending" };
-    const subdoc: Subdoc = meta.kind === "manifest" ? "manifest" : "content";
+    const subdoc = comparedSubdoc(docId, meta.kind === "manifest");
     const doc = new Y.Doc();
     try {
       const { snapshot, tail } = store.loadSubdoc(docId, subdoc);

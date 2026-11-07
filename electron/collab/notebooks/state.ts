@@ -28,6 +28,11 @@ export interface SharedMarker {
   /** "album": a shared album's folder in the gallery. Missing for notebooks. */
   kind?: ProjectKind;
   /**
+   * Live PDFs are on. The manifest decides; this copy is for when the host
+   * cannot be asked, so sidecar writes know whether they are safe.
+   */
+  pdfLive?: boolean;
+  /**
    * The installation that keeps this folder in sync. A folder synced to
    * other devices (OneDrive and the like) carries the marker there too; their
    * hosts leave the folder alone. Missing in markers written before this

@@ -128,6 +128,8 @@ export interface ChangePasswordRequest {
 export interface VersionResponse {
   /** Server supports account-scoped, durable project creation keys. */
   projectCreationKeys?: boolean;
+  /** Server makes PDF documents on `open`. Live PDFs need it, and older servers refuse those opens. */
+  livePdfs?: boolean;
   protocolVersion: number;
   minProtocolVersion: number;
   /** Lowest desktop app version that can sync, semver. */
@@ -246,7 +248,7 @@ export interface CreateDocumentRequest {
 export interface DocumentInfo {
   id: string;
   projectId: string;
-  kind: DocKind | "manifest";
+  kind: DocKind | "manifest" | "pdf";
   fileId: string | null;
   schemaVersion: number;
   lastServerSeq: number;
@@ -608,7 +610,7 @@ export interface CommandResult {
  */
 export interface DocumentDigest {
   docId: string;
-  kind: DocKind | "manifest";
+  kind: DocKind | "manifest" | "pdf";
   serverSeq: number;
   contentSha256: string;
   stateVectors: Partial<Record<Subdoc, string>>;
@@ -687,6 +689,7 @@ export const ApiRoutes = {
   acceptInvitation: (token: string) => `/v1/invitations/token/${encodeURIComponent(token)}/accept`,
   documents: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/documents`,
   document: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}`,
+  pdfImport: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}/pdf-import`,
   documentUpdates: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}/updates`,
   blob: (projectId: string, hash: string) =>
     `/v1/projects/${encodeURIComponent(projectId)}/blobs/${encodeURIComponent(hash)}`,

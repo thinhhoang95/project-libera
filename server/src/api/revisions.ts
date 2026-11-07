@@ -8,6 +8,7 @@
 
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { Kysely, Selectable } from "kysely";
+import * as Y from "yjs";
 import { z } from "zod";
 
 import { requireDocumentAction, writeAudit, type DocAccess } from "../auth/access.js";
@@ -15,6 +16,7 @@ import type { ServerContext } from "../context.js";
 import type { DB, RevisionsTable } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
 import { newId } from "../ids.js";
+import { PdfKeys, PdfMarkFields } from "../protocol.js";
 import {
   ApiRoutes,
   bindActor,
@@ -168,6 +170,76 @@ export async function revisionContent(context: ServerContext, accountId: string,
   return { revision: await revisionWithUsers(context.db, row), text: await textAt(context.db, docId, Number(row.server_seq)) };
 }
 
+const PDF_RESTORED_FIELDS = [PdfMarkFields.geometry, PdfMarkFields.style, PdfMarkFields.space, PdfMarkFields.sourceHash, PdfMarkFields.deleted];
+
+/**
+ * Makes a PDF's marks match a revision, as a new forward change. Nothing is
+ * rewound: a mark added since is deleted, recoverably, and every other field
+ * goes back to what it was. Returns how many marks changed.
+ */
+function restorePdfMarks(doc: Y.Doc, target: Y.Doc, accountId: string): number {
+  const marks = doc.getMap<unknown>(PdfKeys.marks);
+  const wanted = target.getMap<unknown>(PdfKeys.marks);
+  const at = new Date().toISOString();
+  let changed = 0;
+  for (const [id, value] of marks.entries()) {
+    if (!(value instanceof Y.Map)) continue;
+    const old = wanted.get(id);
+    if (!(old instanceof Y.Map)) {
+      if (!value.has(PdfMarkFields.deleted)) {
+        value.set(PdfMarkFields.deleted, { by: accountId, at });
+        changed += 1;
+      }
+      continue;
+    }
+    let touched = false;
+    for (const field of PDF_RESTORED_FIELDS) {
+      const next = old.get(field);
+      if (JSON.stringify(value.get(field)) === JSON.stringify(next)) continue;
+      if (next === undefined) value.delete(field);
+      else value.set(field, field === PdfMarkFields.deleted ? { by: accountId, at } : next);
+      touched = true;
+    }
+    const text = value.get(PdfMarkFields.text);
+    const oldText = old.get(PdfMarkFields.text);
+    if (text instanceof Y.Text && oldText instanceof Y.Text && text.toString() !== oldText.toString()) {
+      applyTextEdits(text, diffText(text.toString(), oldText.toString()));
+      touched = true;
+    }
+    if (touched) {
+      value.set(PdfMarkFields.updatedAt, at);
+      value.set(PdfMarkFields.updatedBy, accountId);
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
+async function restorePdfRevision(context: ServerContext, accountId: string, docId: string, revision: RevisionRow, access: DocAccess, actor: Actor): Promise<HandlerResult> {
+  const target = await loadSubdocState(context.db, docId, "annotations", Number(revision.server_seq));
+  const systemActor: Actor = { kind: "system", reason: "restore", onBehalfOf: accountId };
+  try {
+    const outcome = await context.rooms.batch(docId, async (batch) => {
+      const currentAccess = await requireDocumentAction(context.db, docId, accountId, "restore", actor);
+      const checkpoint = await insertRevision(context, { docId, serverSeq: batch.serverSeq(), kind: "pre-restore", label: null, createdBy: accountId });
+      const { serverSeq } = await batch.transact("annotations", systemActor, { source: "restore" }, (doc) => { restorePdfMarks(doc, target, accountId); }, { projectId: currentAccess.projectId, role: currentAccess.role });
+      return { serverSeq, checkpoint };
+    });
+    await writeAudit(context.db, {
+      projectId: access.projectId,
+      actor,
+      accountId,
+      action: "document.restore",
+      target: docId,
+      details: { revisionId: revision.id, revisionServerSeq: Number(revision.server_seq), checkpointRevisionId: outcome.checkpoint.id, serverSeq: outcome.serverSeq },
+    });
+    const response: RestoreResponse = { serverSeq: outcome.serverSeq, checkpointRevisionId: outcome.checkpoint.id };
+    return { status: 200, body: response };
+  } finally {
+    target.destroy();
+  }
+}
+
 export async function restoreRevision(context: ServerContext, accountId: string, docId: string, input: unknown): Promise<HandlerResult> {
   const { db } = context;
   const body = restoreBody.parse(input);
@@ -175,6 +247,7 @@ export async function restoreRevision(context: ServerContext, accountId: string,
   const access = await requireDocumentAction(db, docId, accountId, "restore", actor);
   requireTextDocument(access);
   const revision = await findRevision(db, docId, body.revisionId);
+  if (access.kind === "pdf") return restorePdfRevision(context, accountId, docId, revision, access, actor);
   // History is immutable, so the target text can be rebuilt outside the lock.
   const target = await textAt(db, docId, Number(revision.server_seq));
   if (body.range && body.range.end > target.length) {

@@ -6,11 +6,12 @@
 
 import type { Kysely } from "kysely";
 import * as Y from "yjs";
+import { HttpError } from "../http/errors.js";
 
 import type { DB } from "../db/types.js";
 import type { Actor, DocKind, ProjectKind, Provenance, Role, Subdoc } from "../protocol.js";
 
-export type DocumentKind = DocKind | "manifest";
+export type DocumentKind = DocKind | "manifest" | "pdf";
 
 /** The sub-documents a document of `kind` is made of. */
 export function subdocsForKind(kind: DocumentKind): Subdoc[] {
@@ -109,13 +110,14 @@ export interface PersistInput {
   update: Uint8Array;
   /** File documents removed by this manifest update, tombstoned in the same transaction. */
   removedDocIds?: string[];
+  removedPdfFiles?: Array<{ id: string; fileId: string }>;
   /** Client updates are validated for this role; lock it through commit. */
   requiredAccess?: { projectId: string; role: Role };
 }
 
-export class UpdateAccessChangedError extends Error {
+export class UpdateAccessChangedError extends HttpError {
   constructor() {
-    super("Your notebook access changed before the update could be saved.");
+    super("forbidden", "Your notebook access changed before the update could be saved.");
   }
 }
 
@@ -160,6 +162,11 @@ export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promis
         size: input.update.length,
       })
       .execute();
+    if (input.subdoc === "manifest" && input.removedPdfFiles?.length) {
+      await trx.insertInto("documents").values(input.removedPdfFiles.map(({ id, fileId }) => ({
+        id, file_id: fileId, project_id: row.project_id, kind: "pdf" as const, created_by: input.accountId, deleted_at: new Date(),
+      }))).onConflict((conflict) => conflict.column("id").doNothing()).execute();
+    }
     if (input.subdoc === "manifest" && input.removedDocIds?.length) {
       await trx.updateTable("documents").set({ deleted_at: new Date() })
         .where("project_id", "=", row.project_id)

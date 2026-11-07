@@ -11,8 +11,10 @@
 // server.
 
 import type { Command, CreateMessageRequest, ThreadMessage } from "./protocol/api";
-import type { AlbumOriginalResponse, InviteRequest, LocalAlbum, ShareAlbumRequest, ShareAlbumResult, UpdateAlbumRequest, LocalProject, AnchoredThreadsResponse, EnqueueCommandResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
+import type { AlbumOriginalResponse, InviteRequest, LocalAlbum, ShareAlbumRequest, ShareAlbumResult, UpdateAlbumRequest, LocalProject, AnchoredThreadsResponse, EnqueueCommandResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, ResolvedPdf, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
 import { ControlRoutes } from "./local-api";
+import { isSharedNotebookPath, notebookHasLivePdfs } from "./shared-notebook";
+import type { PdfCommentThread } from "@/lib/types";
 
 export interface HostClientConfig {
   url: string;
@@ -128,6 +130,47 @@ export function getHostStatus(config?: HostClientConfig | null): Promise<HostSta
 }
 
 /** The shared document for a Libera path ("Notebook/sub/file.md"), or null when the file is not shared. */
+/** A live PDF's comments, in the shape the panel uses. */
+export function livePdfSnapshot(docId: string, config?: HostClientConfig | null): Promise<import("./protocol/pdf").PdfImportRequest> {
+  return hostJson(ControlRoutes.pdfSnapshot(docId), { config });
+}
+
+export function listLivePdfComments(docId: string, config?: HostClientConfig | null): Promise<PdfCommentThread[]> {
+  return hostJson<PdfCommentThread[]>(ControlRoutes.pdfComments(docId), { config });
+}
+
+export function changeLivePdfComments(docId: string, change: unknown, config?: HostClientConfig | null): Promise<PdfCommentThread[]> {
+  return hostJson<PdfCommentThread[]>(ControlRoutes.pdfComments(docId), { method: "POST", body: change, config });
+}
+
+/**
+ * Whether a PDF is live, for code about to touch its sidecar. A notebook whose
+ * marker says live PDFs are off needs no host to answer, so it keeps working
+ * as it always has. With the marker on and no answer, nobody can say, so this
+ * throws rather than let a write land in the wrong place.
+ */
+export async function livePdfFor(liberaPath: string): Promise<ResolvedPdf | null> {
+  if (!isSharedNotebookPath(liberaPath)) return null;
+  const marked = notebookHasLivePdfs(liberaPath);
+  const config = collabHostConfig();
+  if (!config) {
+    if (marked) throw new CollabHostError(503, "collab-unavailable", "Live PDF status is unavailable.");
+    return null;
+  }
+  try {
+    return await resolveSharedPdf(liberaPath, config);
+  } catch (error) {
+    if (marked) throw error;
+    return null;
+  }
+}
+
+/** A PDF's live document; null when its notebook keeps marks in the sidecar. */
+export async function resolveSharedPdf(liberaPath: string, config?: HostClientConfig | null): Promise<ResolvedPdf | null> {
+  const query = new URLSearchParams({ path: liberaPath }).toString();
+  return hostJson<ResolvedPdf | null>(`${ControlRoutes.pdfResolve}?${query}`, { config });
+}
+
 export async function resolveSharedPath(liberaPath: string, config?: HostClientConfig | null): Promise<ResolvedDoc | null> {
   if (!(config ?? collabHostConfig())) return null;
   const query = new URLSearchParams({ path: liberaPath });

@@ -132,7 +132,7 @@ test("sharing shows live progress, then switches to member management", async ()
     form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
   });
   await flush();
-  assert.deepEqual(routes.find((call) => call.path === "/projects/share")?.body, { notebook: "Thesis", name: "Our thesis" });
+  assert.deepEqual(routes.find((call) => call.path === "/projects/share")?.body, { notebook: "Thesis", name: "Our thesis", pdfLive: true });
   assert.ok(button("Sharing…"), "the button shows the request is running");
 
   await act(async () => {

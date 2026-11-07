@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Check, PencilLine, RotateCcw, Save, Search, Send, Sparkles, Trash2, X } from "lucide-react";
 import { pdfCommentPages, sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { timeAgo } from "@/lib/collab/ui/wording";
+import { MentionTextarea } from "./collab/mentions/mention-textarea";
 import { CommentBody, useNow } from "./markdown-review-ui";
 import { changePdfComments, clearPdfCommentsError, focusPdfComment, loadPdfComments, selectPdfComment, usePdfComments } from "./pdf-comments-store";
 import type { PdfCommentMessage, PdfCommentThread } from "@/lib/types";
@@ -20,7 +21,7 @@ function AgentChip({ title }: { title: string }) {
 
 function MessageMeta({ message, now }: { message: PdfCommentMessage; now: number }) {
   return <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-    {message.author === "agent" ? <AgentChip title="Replied by the AI agent" /> : <span>You</span>}
+    {message.author === "agent" ? <AgentChip title="Replied by the AI agent" /> : <span>{message.own === false ? message.authorName : "You"}{message.pending ? " · pending" : ""}</span>}
     <span title={new Date(message.createdAt).toLocaleString()}>{timeAgo(now - Date.parse(message.createdAt))}</span>
     {message.editedAt && <span>· edited</span>}
   </span>;
@@ -34,6 +35,8 @@ export function PdfReviewComments({ path }: { path: string }) {
   const [query, setQuery] = useState("");
   const selectedCard = useRef<HTMLElement | null>(null);
   const busy = !!state.busy;
+  // Only your own words, and only if you can write here at all.
+  const canEdit = (message: PdfCommentMessage) => !state.readOnly && message.author !== "agent" && message.own !== false;
   const threads = sortPdfCommentThreads(state.threads);
   const active = threads.find((thread) => thread.id === state.selectedId) ?? null;
 
@@ -42,6 +45,7 @@ export function PdfReviewComments({ path }: { path: string }) {
   }, [state.selectedId]);
 
   // A different thread starts with an empty box.
+  const [mentions, setMentions] = useState<string[]>([]);
   const [draftFor, setDraftFor] = useState(state.selectedId);
   if (draftFor !== state.selectedId) {
     setDraftFor(state.selectedId);
@@ -60,9 +64,9 @@ export function PdfReviewComments({ path }: { path: string }) {
     const text = draft.trim();
     if (!text) return;
     const done = editing
-      ? await changePdfComments(path, { action: "edit", threadId: thread.id, messageId: editing, text })
-      : await changePdfComments(path, { action: "reply", threadId: thread.id, text });
-    if (done) { setDraft(""); setEditing(null); }
+      ? await changePdfComments(path, { action: "edit", threadId: thread.id, messageId: editing, text, mentions })
+      : await changePdfComments(path, { action: "reply", threadId: thread.id, text, mentions });
+    if (done) { setDraft(""); setMentions([]); setEditing(null); }
   }
 
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
@@ -99,25 +103,32 @@ export function PdfReviewComments({ path }: { path: string }) {
           {selected && <div className="mt-2 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <MessageMeta message={thread.messages[0]} now={now} />
-              <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit comment" title="Edit comment" disabled={busy} onClick={() => { setEditing(thread.messages[0].id); setDraft(thread.messages[0].text); }}><PencilLine aria-hidden size={16} /></button>
+              {canEdit(thread.messages[0]) && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit comment" title="Edit comment" disabled={busy} onClick={() => { setEditing(thread.messages[0].id); setDraft(thread.messages[0].text); }}><PencilLine aria-hidden size={16} /></button>}
             </div>
             <CommentBody text={thread.messages[0].text} />
             {replies.map((message) => <div key={message.id} className="space-y-1 border-l-2 border-border pl-2" data-author={message.author ?? "user"}>
               <div className="flex items-center justify-between gap-2">
                 <MessageMeta message={message} now={now} />
-                {message.author !== "agent" && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit reply" title="Edit reply" disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
+                {canEdit(message) && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit reply" title="Edit reply" disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
               </div>
               <CommentBody text={message.text} />
             </div>)}
-            <textarea aria-label={editing ? "Edit comment" : "Reply to comment"} className="review-textarea" placeholder={editing ? "Edit your comment…" : "Write a reply…"} rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(thread); }
-              if (e.key === "Escape" && editing) { e.stopPropagation(); setEditing(null); setDraft(""); }
-            }} />
+            {state.readOnly ? null : <>
+            {(() => {
+              const box = { "aria-label": editing ? "Edit comment" : "Reply to comment", className: "review-textarea", placeholder: editing ? "Edit your comment…" : "Write a reply…", rows: 2, onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(thread); }
+                if (e.key === "Escape" && editing) { e.stopPropagation(); setEditing(null); setDraft(""); }
+              } };
+              return state.live
+                ? <MentionTextarea {...box} projectId={state.live.projectId} selfId={state.live.accountId} value={draft} onChange={setDraft} onMentionsChange={setMentions} />
+                : <textarea {...box} value={draft} onChange={(e) => setDraft(e.target.value)} />;
+            })()}
             <div className="review-comment-actions">
               <button type="button" className="review-comment-icon" data-tone="blue" aria-label={editing ? "Save comment" : "Reply"} title={editing ? "Save comment" : "Reply"} disabled={!draft.trim() || busy} onClick={() => void send(thread)}>{editing ? <Save aria-hidden size={16} /> : <Send aria-hidden size={16} />}</button>
               <button type="button" className="review-comment-icon" data-tone="green" aria-label={thread.status === "open" ? "Resolve" : "Reopen"} title={thread.status === "open" ? "Resolve" : "Reopen"} disabled={busy} onClick={() => void changePdfComments(path, { action: "resolve", threadId: thread.id, resolved: thread.status === "open" })}>{thread.status === "open" ? <Check aria-hidden size={16} /> : <RotateCcw aria-hidden size={16} />}</button>
               <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label="Delete comment" title="Delete comment" disabled={busy} onClick={() => void changePdfComments(path, { action: "delete", threadId: thread.id })}><Trash2 aria-hidden size={16} /></button>
             </div>
+            </>}
           </div>}
         </article>;
       })}

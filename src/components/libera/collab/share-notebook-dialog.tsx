@@ -92,11 +92,48 @@ export function ShareNotebookDialog({ notebook, onClose }: ShareNotebookDialogPr
   );
 }
 
+const PDF_LIVE_WARNING = "Everyone can see and change marks on this notebook's PDFs as they are made. Highlights, notes and comments already on these PDFs become visible to everyone, and this cannot be turned off.";
+
+/** The owner of a notebook shared before live PDFs existed turns them on here. */
+function PdfLiveSection({ project }: { project: LocalProject }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (project.pdfLive || project.role !== "owner" || project.kind === "album") return null;
+  return (
+    <section className="space-y-2">
+      <h3 className="text-sm font-medium">Live PDF annotations</h3>
+      <p className="text-xs text-muted-foreground">{PDF_LIVE_WARNING} Members need the latest Libera to see them.</p>
+      {error ? <p className="text-sm text-destructive" role="alert">{error}</p> : null}
+      {confirming ? (
+        <div className="flex gap-2">
+          <button
+            className={SMALL_BUTTON}
+            disabled={busy}
+            type="button"
+            onClick={() => {
+              setBusy(true);
+              setError("");
+              collabClient.enablePdfLive(project.projectId).catch((failure: unknown) => setError(describeError(failure))).finally(() => setBusy(false));
+            }}
+          >
+            Turn on for everyone
+          </button>
+          <button className={SMALL_BUTTON} disabled={busy} type="button" onClick={() => setConfirming(false)}>Cancel</button>
+        </div>
+      ) : (
+        <button className={SMALL_BUTTON} type="button" onClick={() => setConfirming(true)}>Turn on…</button>
+      )}
+    </section>
+  );
+}
+
 function ShareStep({ notebook, onShared }: { notebook: string; onShared: (project: LocalProject) => void }) {
   const id = useId();
   const { status } = useCollabStatus();
   const { refresh } = useCollabProjects();
   const [name, setName] = useState(notebook);
+  const [pdfLive, setPdfLive] = useState(true);
   const [sharing, setSharing] = useState(false);
   const [progress, setProgress] = useState<ShareProgress | null>(null);
   const [error, setError] = useState("");
@@ -111,7 +148,7 @@ function ShareStep({ notebook, onShared }: { notebook: string; onShared: (projec
     setError("");
     setProgress(null);
     try {
-      const result = await collabClient.share({ notebook, name: name.trim() && name.trim() !== notebook ? name.trim() : undefined });
+      const result = await collabClient.share({ notebook, name: name.trim() && name.trim() !== notebook ? name.trim() : undefined, pdfLive });
       await refresh();
       if (result && typeof result === "object" && "projectId" in result) {
         onShared(result);
@@ -163,6 +200,13 @@ function ShareStep({ notebook, onShared }: { notebook: string; onShared: (projec
           {error}
         </p>
       ) : null}
+      <label className="flex items-start gap-2 text-sm">
+        <input checked={pdfLive} className="mt-0.5" disabled={sharing} type="checkbox" onChange={(event) => setPdfLive(event.target.checked)} />
+        <span>
+          Live PDF annotations
+          <span className="block text-xs text-muted-foreground">{PDF_LIVE_WARNING}</span>
+        </span>
+      </label>
       <button className={PRIMARY_BUTTON} disabled={sharing} type="submit">
         {sharing ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Users aria-hidden className="h-3.5 w-3.5" />}
         {sharing ? "Sharing…" : "Share"}
@@ -266,6 +310,7 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
 
   return (
     <div className="space-y-4">
+      <PdfLiveSection project={project} />
       {canInvite ? (
         <InviteSection
           projectId={project.projectId}

@@ -7,8 +7,10 @@ import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Placeholder } from "@tiptap/extensions";
 import { type RefObject, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { mergeText } from "@/lib/collab/pdf/merge-text";
 import { mathMarkerPairs, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from "@/lib/math-markers";
 import { createAnnotationMarkdownExtensions } from "@/lib/pdf-annotation-markdown";
+import type { ContentTrust } from "@/lib/markdown-sanitize";
 import { convertLiteralMath } from "@/lib/tiptap-math";
 
 // Serializing Markdown walks the whole document; coalesce it while typing.
@@ -18,15 +20,20 @@ export type NoteCaret = { x: number; y: number };
 
 export type PdfNoteEditorHandle = {
   getMarkdown: () => string;
+  /** Takes in text that changed outside this editor (a collaborator's). */
+  adoptMarkdown: (markdown: string) => void;
 };
 
 type PdfNoteEditorProps = {
+  /** "shared" on a live PDF: the note may be a collaborator's. */
+  trust?: ContentTrust;
   caret?: NoteCaret;
   documentPath: string;
   handleRef: RefObject<PdfNoteEditorHandle | null>;
   initialMarkdown: string;
   mathMarkers?: MathMarkerSettings;
-  onChange: (markdown: string) => void;
+  onChange: (markdown: string, base?: string) => void;
+  maxLength?: number;
   onEscape: () => void;
 };
 
@@ -77,6 +84,34 @@ function noteMarkdown(editor: Editor, pairs: MathMarkerPair[]) {
   return editor.markdown ? editor.markdown.serialize(typeset.toJSON()) : editor.getMarkdown();
 }
 
+/** Marks a change that came from collaborators, so it is not sent back as an edit. */
+const REMOTE_TEXT_META = "liberaRemoteNoteText";
+
+/**
+ * Takes a collaborator's text into the open editor. Only the part that
+ * differs is replaced, so the caret and selection map through it and the
+ * person typing here keeps their place.
+ */
+function adoptMarkdown(editor: Editor, markdown: string) {
+  if (!editor.markdown) return;
+  const next = editor.schema.nodeFromJSON(editor.markdown.parse(markdown));
+  const { doc } = editor.state;
+  const start = doc.content.findDiffStart(next.content);
+  if (start === null) return;
+  const end = doc.content.findDiffEnd(next.content);
+  if (!end) return;
+  let { a: endOld, b: endNew } = end;
+  const overlap = start - Math.min(endOld, endNew);
+  if (overlap > 0) {
+    endOld += overlap;
+    endNew += overlap;
+  }
+  const transaction = editor.state.tr.replace(start, endOld, next.slice(start, endNew));
+  transaction.setMeta("addToHistory", false);
+  transaction.setMeta(REMOTE_TEXT_META, true);
+  editor.view.dispatch(transaction);
+}
+
 /**
  * The single live editor for the note being edited. Resting notes are static
  * HTML, so a page full of notes costs no ProseMirror instances; this one does
@@ -89,21 +124,33 @@ export function PdfNoteEditor({
   initialMarkdown,
   mathMarkers,
   onChange,
+  maxLength,
   onEscape,
+  trust = "local",
 }: PdfNoteEditorProps) {
   const callbacksRef = useRef({ mathMarkers, onChange, onEscape });
   const pendingRef = useRef<number | null>(null);
+  const [lengthError, setLengthError] = useState(false);
   const editorRef = useRef<Editor | null>(null);
+  /**
+   * The last moment this editor and the note agreed: what the editor then
+   * serialized to, and the note's text. A collaborator's change arriving after
+   * that merges three ways, so what they typed is not diffed away.
+   */
+  const syncRef = useRef<{ serialized: string | null; note: string }>({ serialized: null, note: initialMarkdown });
+  /** The note's text as last reported from outside. */
+  const noteRef = useRef(initialMarkdown);
+  const sendRef = useRef<(editor: Editor) => void>(() => undefined);
   // Mount-time values: later prop changes must not reset the document.
   const [initial] = useState(() => ({ caret, markdown: initialMarkdown }));
   const pairs = useMemo(() => mathMarkerPairs(mathMarkers), [mathMarkers]);
   const pairsRef = useRef(pairs);
   const extensions = useMemo(
     () => [
-      ...createAnnotationMarkdownExtensions(documentPath, mathMarkers),
+      ...createAnnotationMarkdownExtensions(documentPath, mathMarkers, trust),
       Placeholder.configure({ placeholder: "Write a note… Markdown and math work" }),
     ],
-    [documentPath, mathMarkers],
+    [documentPath, mathMarkers, trust],
   );
 
   useLayoutEffect(() => {
@@ -151,7 +198,7 @@ export function PdfNoteEditor({
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && pendingRef.current !== null && editorRef.current) {
           window.clearTimeout(pendingRef.current);
           pendingRef.current = null;
-          callbacksRef.current.onChange(noteMarkdown(editorRef.current, pairsRef.current));
+          sendRef.current(editorRef.current);
           return false;
         }
 
@@ -164,14 +211,15 @@ export function PdfNoteEditor({
         return false;
       },
     },
-    onUpdate({ editor: updatedEditor }) {
+    onUpdate({ editor: updatedEditor, transaction }) {
+      if (transaction.getMeta(REMOTE_TEXT_META)) return;
       if (pendingRef.current !== null) {
         window.clearTimeout(pendingRef.current);
       }
 
       pendingRef.current = window.setTimeout(() => {
         pendingRef.current = null;
-        callbacksRef.current.onChange(noteMarkdown(updatedEditor, pairsRef.current));
+        sendRef.current(updatedEditor);
       }, CHANGE_DEBOUNCE_MS);
     },
   });
@@ -204,11 +252,55 @@ export function PdfNoteEditor({
       }
     };
 
-    handleRef.current = { getMarkdown: readMarkdown };
+    syncRef.current.serialized ??= readMarkdown();
+
+    /** The text to send: this editor's work, on top of anything that arrived since. */
+    const outgoing = () => {
+      const local = readMarkdown();
+      const { serialized, note } = syncRef.current;
+      return noteRef.current === note ? local : mergeText(serialized ?? local, local, noteRef.current);
+    };
+    const show = (markdown: string) => {
+      try {
+        adoptMarkdown(editor, markdown);
+      } catch {
+        // A note mid-way through an edit may not parse; the next change will.
+      }
+      syncRef.current = { serialized: readMarkdown(), note: markdown };
+      noteRef.current = markdown;
+    };
+    sendRef.current = () => {
+      const local = readMarkdown();
+      const text = outgoing();
+      if (maxLength !== undefined && text.length > maxLength) {
+        setLengthError(true);
+        show(syncRef.current.note);
+        return;
+      }
+      setLengthError(false);
+      callbacksRef.current.onChange(text, noteRef.current);
+      if (text === local) {
+        syncRef.current = { serialized: local, note: text };
+        noteRef.current = text;
+      } else show(text);
+    };
+    const adopt = (markdown: string) => {
+      noteRef.current = markdown;
+      // Keystrokes waiting for the debounce go now, merged with this.
+      if (pendingRef.current !== null) {
+        window.clearTimeout(pendingRef.current);
+        pendingRef.current = null;
+        sendRef.current(editor);
+        return;
+      }
+      if (markdown !== syncRef.current.note) show(markdown);
+    };
+
+    handleRef.current = { getMarkdown: outgoing, adoptMarkdown: adopt };
     editorRef.current = editor;
 
     return () => {
-      if (handleRef.current?.getMarkdown === readMarkdown) {
+      if (handleRef.current?.getMarkdown === outgoing) {
         handleRef.current = null;
       }
 
@@ -217,10 +309,11 @@ export function PdfNoteEditor({
       if (pendingRef.current !== null) {
         window.clearTimeout(pendingRef.current);
         pendingRef.current = null;
-        callbacksRef.current.onChange(readMarkdown());
+        const text = outgoing();
+        if (maxLength === undefined || text.length <= maxLength) callbacksRef.current.onChange(text, noteRef.current);
       }
     };
-  }, [editor, handleRef, initial, pairs]);
+  }, [editor, handleRef, initial, pairs, maxLength]);
 
-  return <EditorContent className="pdf-note-editor-host" editor={editor} />;
+  return <><EditorContent className="pdf-note-editor-host" editor={editor} />{lengthError ? <span role="status">Notes are limited to {maxLength?.toLocaleString("en")} characters.</span> : null}</>;
 }

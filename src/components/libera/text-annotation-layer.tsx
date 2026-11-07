@@ -2,7 +2,8 @@
 
 import { GripHorizontal, PencilLine, X } from "lucide-react";
 import type { CSSProperties, PointerEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ContentTrust } from "@/lib/markdown-sanitize";
 import {
   PdfNoteEditor,
   type NoteCaret,
@@ -68,7 +69,10 @@ type TextAnnotationLayerProps = {
   /** Called when a drawn note is placed, so the host can return to its select tool. */
   onExitTextEditing: () => void;
   onSelectAnnotation: (annotation: PdfTextAnnotation) => void;
-  onUpdateAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
+  onUpdateAnnotation: (id: string, patch: Partial<PdfTextAnnotation>, base?: string) => void;
+  noteMaxLength?: number;
+  /** Notes can be selected and read, not changed. */
+  readOnly?: boolean;
 };
 
 type NoteHandlers = {
@@ -82,7 +86,7 @@ type NoteHandlers = {
   moveGesture: (event: PointerEvent<HTMLElement>) => void;
   startEditing: (id: string, caret?: NoteCaret) => void;
   stopEditing: () => void;
-  updateText: (id: string, markdown: string) => void;
+  updateText: (id: string, markdown: string, base?: string) => void;
 };
 
 const RESIZE_HANDLES: { handle: ResizeHandle; label: string }[] = [
@@ -263,9 +267,13 @@ function noteTypography(annotation: PdfTextAnnotation, textScale: number): CSSPr
   };
 }
 
+/** "shared" on a live PDF, where a note may be a collaborator's. */
+export const NoteContentTrust = createContext<ContentTrust>("local");
+
 const NoteMarkdown = memo(function NoteMarkdown({ markdown }: { markdown: string }) {
+  const trust = useContext(NoteContentTrust);
   const mathMarkers = useNoteMathMarkers();
-  const html = useMemo(() => renderAnnotationMarkdown(markdown, mathMarkers), [markdown, mathMarkers]);
+  const html = useMemo(() => renderAnnotationMarkdown(markdown, mathMarkers, trust), [markdown, mathMarkers, trust]);
 
   return <div className="pdf-note-content" dangerouslySetInnerHTML={{ __html: html }} />;
 });
@@ -278,7 +286,9 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
   editorHandleRef,
   handlers,
   interactive,
+  noteMaxLength,
   pageSize,
+  readOnly,
   rect,
   selected,
   textScale,
@@ -290,13 +300,17 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
   editorHandleRef: RefObject<PdfNoteEditorHandle | null>;
   handlers: NoteHandlers;
   interactive: boolean;
+  noteMaxLength?: number;
   pageSize: AnnotationSurfaceSize;
+  /** The note can be selected and read, not changed. */
+  readOnly: boolean;
   rect: PdfAnnotationRect;
   selected: boolean;
   textScale: number;
 }) {
   const noteRef = useRef<HTMLDivElement>(null);
   const mathMarkers = useNoteMathMarkers();
+  const trust = useContext(NoteContentTrust);
 
   // Re-attach when the content element is swapped (resting HTML ↔ editor).
   useLayoutEffect(() => {
@@ -306,9 +320,14 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
   }, [editing]);
 
   const updateText = useCallback(
-    (markdown: string) => handlers.updateText(annotation.id, markdown),
+    (markdown: string, base?: string) => handlers.updateText(annotation.id, markdown, base),
     [annotation.id, handlers],
   );
+
+  // A collaborator typed in this note while it is open here.
+  useEffect(() => {
+    if (editing) editorHandleRef.current?.adoptMarkdown(annotation.text);
+  }, [annotation.text, editing, editorHandleRef]);
 
   function handleResizePointerDown(event: PointerEvent<HTMLElement>, handle: ResizeHandle) {
     event.stopPropagation();
@@ -334,7 +353,7 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
       onPointerUp={handlers.endGesture}
       onPointerCancel={handlers.endGesture}
       onDoubleClick={(event) => {
-        if (interactive && !editing) {
+        if (interactive && !readOnly && !editing) {
           handlers.startEditing(annotation.id, { x: event.clientX, y: event.clientY });
         }
       }}
@@ -347,15 +366,17 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
             handleRef={editorHandleRef}
             initialMarkdown={annotation.text}
             mathMarkers={mathMarkers}
+            maxLength={noteMaxLength}
             onChange={updateText}
             onEscape={handlers.stopEditing}
+            trust={trust}
           />
         ) : (
           <NoteMarkdown markdown={annotation.text} />
         )}
       </div>
 
-      {selected && interactive ? (
+      {selected && interactive && !readOnly ? (
         <>
           <button
             aria-label="Move text annotation"
@@ -455,6 +476,7 @@ export function TextAnnotationLayer({
   editRequestId = "",
   onEditRequestHandled,
   interactive,
+  readOnly = false,
   newAnnotationFontSize = DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   pageSize,
   selectedAnnotationId,
@@ -464,6 +486,7 @@ export function TextAnnotationLayer({
   onExitTextEditing,
   onSelectAnnotation,
   onUpdateAnnotation,
+  noteMaxLength,
 }: TextAnnotationLayerProps) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<DraftTextBox | null>(null);
@@ -480,6 +503,7 @@ export function TextAnnotationLayer({
     annotations,
     editing,
     interactive,
+    readOnly,
     onDeleteAnnotation,
     onSelectAnnotation,
     onUpdateAnnotation,
@@ -491,6 +515,7 @@ export function TextAnnotationLayer({
       annotations,
       editing,
       interactive,
+      readOnly,
       onDeleteAnnotation,
       onSelectAnnotation,
       onUpdateAnnotation,
@@ -529,7 +554,7 @@ export function TextAnnotationLayer({
         if (!markdown.trim()) {
           latestRef.current.onDeleteAnnotation(annotation.id);
         } else if (markdown !== annotation.text) {
-          latestRef.current.onUpdateAnnotation(annotation.id, { text: markdown });
+          latestRef.current.onUpdateAnnotation(annotation.id, { text: markdown }, annotation.text);
         }
       }
 
@@ -543,6 +568,13 @@ export function TextAnnotationLayer({
         }
 
         const wasSelected = latestRef.current.selectedAnnotationId === annotation.id;
+
+        // Read-only: pressing selects, and a second press opens the reader.
+        if (latestRef.current.readOnly) {
+          if (wasSelected) setExpandedId(annotation.id);
+          else latestRef.current.onSelectAnnotation(annotation);
+          return;
+        }
 
         event.currentTarget.setPointerCapture(event.pointerId);
         gestureRef.current = {
@@ -635,11 +667,13 @@ export function TextAnnotationLayer({
         setEditing({ caret, id });
       },
       stopEditing,
-      updateText(id, markdown) {
+      updateText(id, markdown, base) {
         const annotation = findAnnotation(id);
 
-        if (annotation && annotation.text !== markdown) {
-          latestRef.current.onUpdateAnnotation(id, { text: markdown });
+        // No annotation: someone deleted it while it was open here. The text
+        // still goes through, and a shared PDF keeps it with the deleted note.
+        if (!annotation || annotation.text !== markdown) {
+          latestRef.current.onUpdateAnnotation(id, { text: markdown }, base);
         }
       },
     };
@@ -804,7 +838,9 @@ export function TextAnnotationLayer({
             editorHandleRef={editorHandleRef}
             handlers={handlers}
             interactive={interactive}
+            noteMaxLength={noteMaxLength}
             pageSize={pageSize}
+            readOnly={readOnly}
             rect={transient?.id === annotation.id ? transient.rect : annotation.rect}
             selected={selectedAnnotationId === annotation.id}
             textScale={textScale}

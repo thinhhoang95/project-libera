@@ -8,6 +8,7 @@ export * from "../../src/lib/collab/protocol/api.js";
 export * from "../../src/lib/collab/protocol/codec.js";
 export * from "../../src/lib/collab/protocol/local.js";
 export * from "../../src/lib/collab/protocol/messages.js";
+export * from "../../src/lib/collab/protocol/pdf.js";
 export * from "../../src/lib/collab/protocol/roles.js";
 export * from "../../src/lib/collab/protocol/schema.js";
 export * from "../../src/lib/collab/protocol/version.js";

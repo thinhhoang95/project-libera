@@ -75,6 +75,11 @@ export interface OpenMessage {
   type: typeof MessageType.Open;
   docId: string;
   subdocs: SubdocStateVector[];
+  /**
+   * A shared PDF's document is made on first use, by whoever opens it first,
+   * from these. The server checks that they hash to `docId`.
+   */
+  pdf?: { projectId: string; fileId: string };
 }
 
 export interface OpenedSubdoc {
@@ -255,6 +260,7 @@ export function encodeMessage(message: SyncMessage): Uint8Array {
     case MessageType.Open:
       writer.string(message.docId).varUint(message.subdocs.length);
       for (const entry of message.subdocs) writer.string(entry.subdoc).bytes(entry.stateVector);
+      if (message.pdf) writer.string(message.pdf.projectId).string(message.pdf.fileId);
       break;
     case MessageType.Opened:
       writer
@@ -355,7 +361,7 @@ export function decodeMessage(data: Uint8Array): SyncMessage {
       for (let index = 0; index < count; index += 1) {
         subdocs.push({ subdoc: readSubdoc(reader), stateVector: reader.bytes() });
       }
-      message = { type, docId, subdocs };
+      message = reader.done ? { type, docId, subdocs } : { type, docId, subdocs, pdf: { projectId: reader.string(), fileId: reader.string() } };
       break;
     }
     case MessageType.Opened: {
@@ -466,4 +472,5 @@ export const EventKind = {
   MemberRemoved: "member.removed",
   ProjectDeleted: "project.deleted",
   Notification: "notification.created",
+  PdfDocumentCreated: "pdf-document.created",
 } as const;

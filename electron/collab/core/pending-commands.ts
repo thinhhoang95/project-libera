@@ -32,6 +32,7 @@ export interface PendingCommandsOptions {
   clock?: Clock;
   random?: () => number;
   logger?: Logger;
+  beforeSend?: (command: Command) => void | Promise<void>;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
 }
@@ -55,7 +56,7 @@ export class PendingCommands {
   private attempt = 0;
   private stopped = false;
 
-  constructor(options: PendingCommandsOptions) {
+  constructor(private readonly options: PendingCommandsOptions) {
     this.store = options.store;
     this.clock = options.clock ?? systemClock;
     this.random = options.random ?? Math.random;
@@ -128,6 +129,7 @@ export class PendingCommands {
       let body: unknown;
       let error: { code: string; message: string } | undefined;
       try {
+        await this.options.beforeSend?.(next.command);
         const result = await api.postCommand(next.command);
         status = result.status;
         body = result.body;

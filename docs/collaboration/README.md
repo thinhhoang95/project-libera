@@ -27,6 +27,7 @@ Inside a shared notebook:
 | Markdown (`.md`, `.markdown`) | A collaborative document (CRDT) |
 | LaTeX (`.tex`, `.bib`, `.sty`, `.cls`) and other text files the code editor opens | A collaborative document (CRDT) |
 | Images, PDFs, other binaries (including Markdown `_assets/`) | Immutable blobs addressed by content hash. Replacing a file uploads a new blob. |
+| PDF marks, in a notebook with live PDFs on | A document of kind `pdf` per PDF, with field-level merging ([plan](pdf-realtime-plan.md), [guide](../features/live-pdfs.md)). Comments are server threads. |
 | Folder tree, file names, file IDs | The **project manifest** document |
 | Comments, suggestions, reviews, history | Server API, plus anchors in the document's `annotations` sub-document |
 
@@ -40,7 +41,7 @@ Inside a shared album:
 
 Not shared in v1:
 
-- PDF and image annotations (`.libera/annotations`)
+- PDF annotations in notebooks without live PDFs, and image annotations (`.libera/annotations`)
 - Tags, stars, notebook view options, AI chat history, image-generation settings, the gallery's Protected Archive
 - SVG images and other non-photo files in an album's folder
 - Notebooks that are not shared, and linked (directory-mode) folders

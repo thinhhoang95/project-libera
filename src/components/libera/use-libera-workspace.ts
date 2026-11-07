@@ -2971,6 +2971,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     // PDFs, images and the like: their annotations and ink are all there is to save.
     if (!isTextFileType(activeTab.file.fileType)) {
       await savePendingFor(activeTab);
+      // A live PDF answers this, by its path: it has no shared tab.
+      sharedRegistry.revealStatus(activeTab.file.path);
       return;
     }
 

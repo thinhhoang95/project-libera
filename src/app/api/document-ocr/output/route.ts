@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { createSharedFile, SharedWriteError, writeSharedText } from "@/lib/collab/shared-writes";
+import { createSharedFile, savedNode, SharedWriteError, writeSharedText } from "@/lib/collab/shared-writes";
 import type { Provenance } from "@/lib/collab/protocol/actor";
 import { toStorageError } from "@/lib/storage";
 import { getFileType } from "@/lib/storage/file-types";
 import { pathExists } from "@/lib/storage/fs-utils";
 import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
-import { getFileNode } from "@/lib/storage/tree";
 
 export const runtime = "nodejs";
 
@@ -51,14 +50,15 @@ export async function POST(request: NextRequest) {
       const name = copy === 1 ? `${stem}.md` : `${stem} (${copy}).md`;
       const parts = [...directory, name];
       if (await pathExists(filePathFromParts(notebook, parts))) continue;
+      const liberaPath = [notebook, ...parts].join("/");
       try {
-        await createSharedFile([notebook, ...parts].join("/"), "");
+        await createSharedFile(liberaPath, "");
       } catch (error) {
         // Created by a collaborator but not on this disk yet: try the next name.
         if (error instanceof SharedWriteError && error.status === 409) continue;
         throw error;
       }
-      return NextResponse.json({ shared: true, file: await getFileNode(notebook, parts) });
+      return NextResponse.json({ shared: true, file: await savedNode(liberaPath, 0) });
     }
     return jsonError(`Could not find a free name for ${stem}.md.`, 409);
   } catch (error) {

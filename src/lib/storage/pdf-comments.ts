@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { MAX_PDF_COMMENT_CHARS, normalizePdfCommentAnchor } from "@/lib/pdf-comments";
 import { StorageError } from "@/lib/storage/errors";
 import { readPdfCommentThreads, updatePdfCommentThreads } from "@/lib/storage/annotations";
+import { changeLivePdfComments, listLivePdfComments, livePdfFor } from "@/lib/collab/host-client";
+import type { ResolvedPdf } from "@/lib/collab/local-api";
 import type { PdfCommentMessage, PdfCommentThread, PdfCommentsPayload } from "@/lib/types";
 
 // Review comments on PDFs. Threads are kept in the PDF's annotation sidecar
@@ -9,14 +11,23 @@ import type { PdfCommentMessage, PdfCommentThread, PdfCommentsPayload } from "@/
 // moves, copies, archiving and deletion of the PDF or its folders carry them
 // exactly as they carry its highlights. Each operation changes one thread
 // under the sidecar's lock, so the viewer saving markup and the agent
-// replying never overwrite each other.
+// replying never overwrite each other. A live PDF's comments are collaboration
+// server threads instead; livePdfFor says which, and failing to find out never
+// falls back to the sidecar in a notebook that has live PDFs on.
 
-export { readPdfCommentThreads as readPdfComments };
+export async function readPdfComments(relativePath: string): Promise<PdfCommentsPayload> {
+  const live = await livePdfFor(relativePath);
+  return live ? { path: relativePath, threads: await listLivePdfComments(live.docId), ...livePayload(live) } : readPdfCommentThreads(relativePath);
+}
+
+function livePayload(live: ResolvedPdf) {
+  return { readOnly: live.readOnly, live: { projectId: live.projectId, accountId: live.accountId } };
+}
 
 export type PdfCommentAction =
-  | { action: "comment"; anchor: unknown; text: unknown }
-  | { action: "reply"; threadId: unknown; text: unknown }
-  | { action: "edit"; threadId: unknown; messageId: unknown; text: unknown }
+  | { action: "comment"; anchor: unknown; text: unknown; mentions?: unknown }
+  | { action: "reply"; threadId: unknown; text: unknown; mentions?: unknown }
+  | { action: "edit"; threadId: unknown; messageId: unknown; text: unknown; mentions?: unknown }
   | { action: "resolve"; threadId: unknown; resolved: unknown }
   | { action: "delete"; threadId: unknown }
   | { action: "delete-message"; threadId: unknown; messageId: unknown };
@@ -38,8 +49,39 @@ function touched(thread: PdfCommentThread, now: string, patch: Partial<PdfCommen
   return { ...thread, ...patch, updatedAt: now };
 }
 
+/** Members to notify. Only a live PDF has members; the server checks who they are. */
+function mentionIds(value: unknown): { mentions?: string[] } {
+  const ids = Array.isArray(value) ? value.filter((id): id is string => typeof id === "string").slice(0, 50) : [];
+  return ids.length ? { mentions: ids } : {};
+}
+
+/** The same checks as the sidecar path, before a change goes to the host. */
+function liveChange(input: PdfCommentAction) {
+  switch (input.action) {
+    case "comment": {
+      const anchor = normalizePdfCommentAnchor(input.anchor);
+      if (!anchor) throw new StorageError("Select text on a page to comment on.");
+      return { action: input.action, anchor, text: commentText(input.text), ...mentionIds(input.mentions) };
+    }
+    case "reply":
+      return { action: input.action, threadId: input.threadId, text: commentText(input.text), ...mentionIds(input.mentions) };
+    case "edit":
+      return { action: input.action, threadId: input.threadId, messageId: input.messageId, text: commentText(input.text), ...mentionIds(input.mentions) };
+    case "resolve":
+      return { action: input.action, threadId: input.threadId, resolved: input.resolved === true };
+    case "delete":
+      return { action: input.action, threadId: input.threadId };
+    case "delete-message":
+      return { action: input.action, threadId: input.threadId, messageId: input.messageId };
+    default:
+      throw new StorageError("Unknown comment action.");
+  }
+}
+
 /** Applies one Comments-panel action to a PDF's threads and returns them all. */
 export async function changePdfComments(relativePath: string, input: PdfCommentAction): Promise<PdfCommentsPayload> {
+  const live = await livePdfFor(relativePath);
+  if (live) return { path: relativePath, threads: await changeLivePdfComments(live.docId, liveChange(input)), ...livePayload(live) };
   const now = new Date().toISOString();
   const { payload } = await updatePdfCommentThreads(relativePath, (threads) => {
     switch (input.action) {
@@ -88,6 +130,14 @@ export async function changePdfComments(relativePath: string, input: PdfCommentA
 /** The agent's reply in a thread (ReplyToComment). StorageError 404 when the thread is gone. */
 export async function addPdfCommentReply(relativePath: string, threadId: string, text: string, author?: "agent") {
   const now = new Date().toISOString();
+  const live = await livePdfFor(relativePath);
+  if (live) {
+    const change = { action: "reply", threadId, text: commentText(text), ...(author ? { ai: { feature: "agent" } } : {}) };
+    const threads = await changeLivePdfComments(live.docId, change);
+    const message = threads.find((thread) => thread.id === threadId)?.messages.at(-1);
+    if (!message) throw new StorageError("Comment was not found.", 404);
+    return message;
+  }
   const { result } = await updatePdfCommentThreads(relativePath, (threads) => {
     const thread = findThread(threads, threadId);
     const message: PdfCommentMessage = { id: randomUUID(), text: commentText(text), createdAt: now, ...(author ? { author } : {}) };

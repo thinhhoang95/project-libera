@@ -337,6 +337,7 @@ export function PdfDrawingLayer({
   style,
   zoom,
   onAdd,
+  onDraftChange,
   onErase,
   onSelect,
   onUpdate,
@@ -350,6 +351,8 @@ export function PdfDrawingLayer({
   style: NewDrawingStyle;
   zoom: number;
   onAdd: (draft: PdfDrawingDraft) => void;
+  /** The stroke or shape in progress, once per painted frame, so presence stays off the input path. */
+  onDraftChange?: (draft: PdfDrawingDraft | null) => void;
   /** Every deletion in one eraser drag shares a gesture key, for one undo step. */
   onErase: (ids: string[], gestureKey: string) => void;
   onSelect: (annotation: PdfAnnotation) => void;
@@ -364,6 +367,7 @@ export function PdfDrawingLayer({
   const transientRef = useRef<Transient | null>(null);
   const latestRef = useRef({ annotations, markups, pageSize, zoom, selectedAnnotationId, onSelect });
   const paintFrameRef = useRef<number | null>(null);
+  useEffect(() => { onDraftChange?.(draft); }, [draft, onDraftChange]);
   const schedulePaint = () => {
     if (paintFrameRef.current !== null) return;
     paintFrameRef.current = window.requestAnimationFrame(() => {
