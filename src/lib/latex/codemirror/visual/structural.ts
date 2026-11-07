@@ -324,15 +324,19 @@ function emptyWorking(): Working {
   return { decorations: Decoration.none, extents: RangeSet.empty, pending: [] };
 }
 
-/** Builds a document from scratch: everything when it is short, else the part around the cursor, the rest pending. */
-function initialBuild(state: EditorState, preambleEnd: number, preambleOpen: boolean): Working {
+/**
+ * Builds a document from scratch: everything when it is short, else the part around the cursor, the rest pending.
+ * `treeLength` is the length of the tree it built with, which can be ahead of `syntaxTree(state)`: recording the
+ * shorter one would make the next update think the parser had caught up and build again what is already built.
+ */
+function initialBuild(state: EditorState, preambleEnd: number, preambleOpen: boolean): Working & { treeLength: number } {
   const working = emptyWorking();
   const length = state.doc.length;
   if (length <= LARGE_DOCUMENT) {
     const tree = ensureSyntaxTree(state, length, 400) ?? syntaxTree(state);
     working.pending = [{ from: 0, to: length }];
     rebuild(state, tree, working, 0, length, preambleEnd, preambleOpen, false);
-    return working;
+    return { ...working, treeLength: tree.length };
   }
   const head = state.selection.main.head;
   const from = Math.max(0, head - FIRST_BUILD_RADIUS);
@@ -342,7 +346,7 @@ function initialBuild(state: EditorState, preambleEnd: number, preambleOpen: boo
   // The preamble block sits at the top: build it with the first piece.
   if (preambleEnd > 0 && from > 0) rebuild(state, tree, working, 0, Math.min(preambleEnd + 1, length), preambleEnd, preambleOpen, false);
   rebuild(state, tree, working, from, to, preambleEnd, preambleOpen, false);
-  return working;
+  return { ...working, treeLength: tree.length };
 }
 
 function revealPolicyMatches(state: EditorState, mark: ConstructMark, from: number, to: number, selection: { from: number; to: number; head: number }) {
@@ -412,9 +416,9 @@ export const structuralField = StateField.define<StructuralState>({
   create(state) {
     const preambleEnd = preambleEndOf(state);
     const preambleOpen = state.field(preambleOpenField, false) ?? false;
-    const working = initialBuild(state, preambleEnd, preambleOpen);
+    const { treeLength, ...working } = initialBuild(state, preambleEnd, preambleOpen);
     return withShown(state, {
-      ...working, forced: null, defsFingerprint: visualDefinitions(state).fingerprint, preambleOpen, preambleEnd, treeLength: treeOf(state).length,
+      ...working, forced: null, defsFingerprint: visualDefinitions(state).fingerprint, preambleOpen, preambleEnd, treeLength,
     }, null);
   },
   update(value, tr) {
@@ -429,8 +433,12 @@ export const structuralField = StateField.define<StructuralState>({
     const full = defsFingerprint !== value.defsFingerprint || preambleOpen !== value.preambleOpen || preambleEnd !== value.preambleEnd
       || tr.effects.some((effect) => effect.is(rebuildVisualEffect));
 
+    // How far the parse that built the decorations reached (an earlier build may have parsed ahead of this tree).
+    let treeLength = tr.docChanged ? tree.length : Math.max(tree.length, value.treeLength);
     if (full) {
-      working = initialBuild(state, preambleEnd, preambleOpen);
+      const built = initialBuild(state, preambleEnd, preambleOpen);
+      working = { decorations: built.decorations, extents: built.extents, pending: built.pending };
+      treeLength = Math.max(tree.length, built.treeLength);
       forced = null;
     } else {
       if (tr.docChanged) {
@@ -472,7 +480,7 @@ export const structuralField = StateField.define<StructuralState>({
       working.extents.between(state.selection.main.head, state.selection.main.head, (_f, _t, mark) => { if (mark.id === forced) inside = true; });
       if (!inside) forced = null;
     }
-    const base = { ...working, forced, defsFingerprint, preambleOpen, preambleEnd, treeLength: tree.length };
+    const base = { ...working, forced, defsFingerprint, preambleOpen, preambleEnd, treeLength };
     return withShown(state, base, value);
   },
   provide: (field) => [

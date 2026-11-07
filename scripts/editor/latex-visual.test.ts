@@ -685,3 +685,17 @@ test("a table menu command is planned against the table as it is when chosen", (
   assert.equal(view.state.doc.toString(), `Moved. ${GRID.replace("Base & 27.3", String.raw`Base & 27.3 \\` + "\n&")}`);
   view.destroy();
 });
+
+test("switching to Visual mode with a parse ahead of the state's tree builds only around the cursor", () => {
+  const paragraph = "A paragraph with $x^2$ and \textbf{bold} text.\n\n";
+  const doc = `\documentclass{article}\n\begin{document}\n${paragraph.repeat(Math.ceil((LARGE_DOCUMENT * 3) / paragraph.length))}\end{document}\n`;
+  const visual = new Compartment();
+  let state = EditorState.create({ doc, selection: { anchor: Math.floor(doc.length / 2) }, extensions: [latexLanguageSupport("main.tex", "tree"), latexVisualState(), visual.of([])] });
+  // Source mode parsed the whole file, but the state's tree is only updated by its next transaction.
+  ensureSyntaxTree(state, doc.length, 20_000);
+  state = state.update({ effects: visual.reconfigure(latexVisualMode({ documentPath: "nb/main.tex" })) }).state;
+  const field = state.field(structuralField);
+  assert.equal(field.treeLength, doc.length, "the build records the parse it used");
+  const built = doc.length - field.pending.reduce((sum, range) => sum + range.to - range.from, 0);
+  assert.ok(built < 3 * CHUNK, `only the part around the cursor is built at once (${built} characters were)`);
+});
