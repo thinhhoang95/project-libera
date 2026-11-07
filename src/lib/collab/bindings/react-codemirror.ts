@@ -285,6 +285,7 @@ export function sharedCodeMirrorSource(session: SharedDocSession, registry: Shar
           const change = minimalTextChange(view.state.doc.toString(), ytext.toString());
           if (change) view.dispatch({ changes: change, annotations: ySyncAnnotation.of(binding.origin) });
           controller.addView(view, binding, suggest);
+          if (view.state.doc.toString() !== ytext.toString()) throw new Error("The shared editor did not retain the document's exact characters.");
           unregisterReveal = suggestions.registerRevealer((start, end) => {
             if (!view.dom.isConnected || end > view.state.doc.length) return false;
             view.dispatch({ selection: { anchor: start, head: end }, effects: EditorView.scrollIntoView(start, { y: "center" }) });

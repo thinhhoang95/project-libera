@@ -1,3 +1,4 @@
+import { copyLifecycleSidecar } from "@/lib/storage/sidecar-lifecycle";
 import { randomUUID } from "node:crypto";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -19,7 +20,7 @@ import {
   relativeFilePath,
   splitFilePath,
 } from "@/lib/storage/paths";
-import { deletePdfTextCache, movePdfTextCache } from "@/lib/storage/pdf-text-cache";
+import { deletePdfTextCache } from "@/lib/storage/pdf-text-cache";
 
 // A PDF's side-cars on this computer — its annotations and comment threads,
 // its generated outline, its definitions cards, and the disposable text cache
@@ -91,40 +92,28 @@ async function setAside(notebook: string, store: KindStore, sidecarPath: string,
  * Moves (or sets aside) a PDF's side-cars after the collab host moved or
  * removed it in a shared notebook. Returns how many paths it handled.
  */
-export async function followSharedPdfChanges(moves: Array<{ from: string; to: string }>, removed: string[]) {
+export async function followSharedPdfChanges(moves: Array<{ from: string; to: string }>, _removed: string[]) {
+  void _removed; // Normal identity reconciliation retains removal recovery.
   let changed = 0;
+  // Destinations are exclusive and sources are retained. Occupied paths and
+  // swaps wait for identity-based reconciliation rather than destroying work.
   for (const { from, to } of moves) {
     try {
-      if (getFileType(from) !== "pdf" || from === to) continue;
+      if (getFileType(from) !== "pdf" || getFileType(to) !== "pdf" || from === to) continue;
       const source = splitFilePath(from);
       const target = splitFilePath(to);
-      const stillPdf = getFileType(to) === "pdf";
+      const pdf = filePathFromParts(target.notebook, target.pathParts);
       for (const store of KINDS) {
-        const current = store.path(source.notebook, source.pathParts);
-        if (stillPdf) await moveFileIfExists(current, store.path(target.notebook, target.pathParts));
-        else await setAside(source.notebook, store, current, from);
+        if (await copyLifecycleSidecar(store.path(source.notebook, source.pathParts), store.path(target.notebook, target.pathParts), notebookPath(target.notebook), async (bytes) => {
+          const identity = sidecarIdentity(JSON.parse(bytes.toString("utf8")));
+          const current = identity ? await cachedPdfIdentity(pdf) : null;
+          return current !== null && identity !== null && current.contentHash === identity.contentHash && current.size === identity.size;
+        })) changed += 1;
       }
-      if (stillPdf) await movePdfTextCache(source.notebook, source.pathParts, target.notebook, target.pathParts);
-      else await deletePdfTextCache(source.notebook, source.pathParts);
-      changed += 1;
-    } catch {
-      // A path that is not a library file: nothing of ours to move.
-    }
+    } catch { /* Unavailable or ambiguous inputs stay in their original sidecar. */ }
   }
-  for (const gone of removed) {
-    try {
-      if (getFileType(gone) !== "pdf") continue;
-      const { notebook, pathParts } = splitFilePath(gone);
-      for (const store of KINDS) {
-        const sidecar = store.path(notebook, pathParts);
-        if (await pathExists(sidecar)) await setAside(notebook, store, sidecar, gone);
-      }
-      await deletePdfTextCache(notebook, pathParts);
-      changed += 1;
-    } catch {
-      // As above.
-    }
-  }
+  // Removal carries no reviewed file identity. Leave the sidecar for normal
+  // PDF identity reconciliation, which can set it aside with recovery data.
   return changed;
 }
 

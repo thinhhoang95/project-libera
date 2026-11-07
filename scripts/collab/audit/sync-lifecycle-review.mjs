@@ -292,6 +292,7 @@ test("remaining sync lifecycle boundaries", { timeout: 150_000 }, async (t) => {
       mkdirSync(library);
       cpSync(root, path.join(library, "ConcurrentCreate"), { recursive: true });
       const twin = await peer(ownerAuth, { library });
+      await until(() => twin.service.project(shared.projectId)?.manifestReady(), "collision peer's authoritative manifest loads");
       delay = true;
       const creating = owner.service.fileOp(shared.projectId, { op: "create-file", path: "same.md", content: "from first\n" });
       try {

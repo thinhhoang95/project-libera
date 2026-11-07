@@ -95,7 +95,7 @@ import { aiEditThreadFor, recordAiEditTurn, type AiEditThreadResult } from "./ai
 import { latexDocumentTemplate } from "@/lib/latex/project";
 import type { AiFeature, Provenance } from "@/lib/collab/protocol/actor";
 import { useSharedTabs } from "@/lib/collab/bindings/react-shared-tabs";
-import { applyTextToSession, applyTextToShared } from "@/lib/collab/client/apply-text";
+import { adoptPendingSharedDraft, applyTextToShared } from "@/lib/collab/client/apply-text";
 import { getSharedDocRegistry, type SharedDocSession } from "@/lib/collab/client/registry";
 import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type DraftWriteOptions } from "@/lib/collab/client/workspace";
 import { aiSuggestionNotice, suggestAiOnSharedTab } from "@/lib/collab/client/suggestions-ai";
@@ -888,7 +888,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const tab = tabsRef.current.find((item) => item.id === tabId);
     const draft = latestDraftByTabIdRef.current[tabId];
     if (!tab || draft === undefined || draft === tab.saved) return;
-    applyTextToSession(session, draft, TYPING, tab.saved);
+    adoptPendingSharedDraft(session, draft, tab.saved, (content) => {
+      createUntitledFile("", undefined, { fileName: `${tab.file.name}.recovered.md`, content });
+      setWorkspaceError("Your local draft could not be applied to the shared document. It was kept in a recovered draft tab.");
+    });
   }
 
   /**

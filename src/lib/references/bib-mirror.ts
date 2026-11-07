@@ -1,3 +1,4 @@
+import { assertNotSharedAbsolutePath } from "@/lib/collab/shared-notebook";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -80,9 +81,11 @@ async function readState(notebook: string): Promise<MirrorState> {
 
 /** Write next to the target and rename over it, so LaTeX never reads half a file. */
 async function writeAtomically(target: string, text: string) {
+  assertNotSharedAbsolutePath(target);
   const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, text, "utf8");
+    assertNotSharedAbsolutePath(target);
     await rename(temporary, target);
   } finally {
     await rm(temporary, { force: true });

@@ -311,8 +311,8 @@ export class ApiClient {
     return this.request("PATCH", ApiRoutes.project(projectId), { body });
   }
 
-  deleteProject(projectId: string): Promise<void> {
-    return this.request("DELETE", ApiRoutes.project(projectId));
+  deleteProject(projectId: string, expectedManifestSeq?: number): Promise<void> {
+    return this.request("DELETE", ApiRoutes.project(projectId), expectedManifestSeq === undefined ? {} : { body: { expectedManifestSeq } });
   }
 
   /** Takes or renews the writer lease of a synced folder (granted: false when another installation holds it). */

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { publishAlbumPhoto, removeAlbumPhoto } from "@/lib/storage/gallery-shared-mutations";
 import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import type { Stats } from "node:fs";
@@ -185,7 +186,7 @@ async function saveIndex(index: GalleryIndex) {
   }
 }
 
-async function imageSize(absolute: string) {
+async function imageSize(absolute: string | Buffer) {
   try {
     const metadata = await sharp(absolute, { animated: false }).metadata();
     if (!metadata.width || !metadata.height) return {};
@@ -210,9 +211,9 @@ async function scanGallery() {
   const files: ScannedFile[] = [];
   async function collect(folder: string) {
     const directory = folder ? path.join(root, folder) : root;
-    const names = folder ? await readdir(directory).catch(() => [] as string[]) : entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+    const names = folder ? await readdir(directory) : entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
     await Promise.all(names.filter(isGalleryImage).map(async (name) => {
-      const stats = await stat(path.join(directory, name)).catch(() => null);
+      const stats = await stat(path.join(directory, name));
       if (stats?.isFile()) files.push({ relative: folder ? `${folder}/${name}` : name, folder, name, stats });
     }));
   }
@@ -252,6 +253,17 @@ async function reconcile(index: GalleryIndex) {
   }
   index.folders = index.folders.filter((folder) => folders.includes(folder) || index.albums.some((album) => album.folder === folder));
 
+  // A successful follower publication may precede cloud delivery. A host
+  // photo is still present even when this scan cannot see its working copy.
+  const sharedFolders = new Map<string, Awaited<ReturnType<typeof sharedFolder>>>();
+  for (const record of Object.values(index.photos)) {
+    const folder = folderOf(record.path);
+    if (folder && !sharedFolders.has(folder)) sharedFolders.set(folder, await sharedFolder(getGalleryRoot(), folder));
+  }
+  for (const [id, record] of Object.entries(index.photos)) {
+    const shared = sharedFolders.get(folderOf(record.path));
+    if (shared && (!shared.album || shared.album.photos.some((photo) => photo.name.toLowerCase() === path.posix.basename(record.path).toLowerCase()))) seen.add(id);
+  }
   const missing = new Set(Object.keys(index.photos).filter((id) => !seen.has(id)));
   // A file moved by hand keeps its name, size and modification time; keep its
   // stars, albums and ink. Only an unambiguous match counts: a different photo
@@ -261,6 +273,8 @@ async function reconcile(index: GalleryIndex) {
     return path.posix.basename(record.path) === file.name && record.size === file.stats.size && record.mtimeMs === file.stats.mtimeMs;
   };
   for (const file of unmatched) {
+    const shared = file.folder ? sharedFolders.get(file.folder) ?? await sharedFolder(getGalleryRoot(), file.folder) : null;
+    if (shared?.album && !shared.album.photos.some((photo) => photo.name.toLowerCase() === file.name.toLowerCase())) continue;
     const matches = [...missing].filter((id) => sameFile(id, file));
     const movedId = matches.length === 1 && unmatched.filter((other) => sameFile(matches[0], other)).length === 1 ? matches[0] : undefined;
     if (movedId) {
@@ -428,7 +442,12 @@ async function freeFolderName(name: string) {
 async function moveRecordInto(record: PhotoRecord, folder: string) {
   if (folderOf(record.path) === folder) return;
   const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), path.posix.basename(record.path));
-  await movePath(absolutePath(record.path), destination.path);
+  const sourceFolder = folderOf(record.path);
+  if (inSharedFolder(record) || sharedAlbumMarker(getGalleryRoot(), folder)) {
+    const bytes = await readFile(absolutePath(record.path));
+    if (!await publishAlbumPhoto(getGalleryRoot(), folder, destination.name, bytes, true)) await copyFile(absolutePath(record.path), destination.path);
+    if (!await removeAlbumPhoto(getGalleryRoot(), sourceFolder, path.posix.basename(record.path), bytes)) await rm(absolutePath(record.path), { force: true });
+  } else await movePath(absolutePath(record.path), destination.path);
   record.path = folder ? `${folder}/${destination.name}` : destination.name;
 }
 
@@ -442,8 +461,10 @@ function inSharedFolder(record: PhotoRecord) {
 async function copyRecordInto(index: GalleryIndex, id: string, folder: string, name?: string) {
   const record = index.photos[id];
   const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), name ?? path.posix.basename(record.path));
-  await copyFile(absolutePath(record.path), destination.path);
-  const stats = await stat(destination.path);
+  const bytes = await readFile(absolutePath(record.path));
+  const shared = await publishAlbumPhoto(getGalleryRoot(), folder, destination.name, bytes, true);
+  if (!shared) await copyFile(absolutePath(record.path), destination.path);
+  const stats = shared ? { size: bytes.byteLength, mtimeMs: Date.now() } : await stat(destination.path);
   const copyId = randomUUID();
   index.photos[copyId] = {
     path: folder ? `${folder}/${destination.name}` : destination.name,
@@ -620,7 +641,7 @@ export function deletePhotos(ids: string[]) {
     for (const id of unique) {
       const record = index.photos[id];
       if (!record) continue;
-      await rm(absolutePath(record.path), { force: true });
+      if (!await removeAlbumPhoto(getGalleryRoot(), folderOf(record.path), path.posix.basename(record.path))) await rm(absolutePath(record.path), { force: true });
       await removeOriginal(record);
       await deletePhotoInk(inkInGallery(id));
       delete index.photos[id];
@@ -769,8 +790,9 @@ export async function writeGalleryPhoto(albumRef: string, fileName: string, body
     await mkdir(path.join(getGalleryRoot(), folder), { recursive: true });
     if (folder && !index.folders.includes(folder)) index.folders.push(folder);
     const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), safeName);
-    await writeFile(destination.path, body, { flag: "wx" });
-    const stats = await stat(destination.path);
+    const shared = await publishAlbumPhoto(getGalleryRoot(), folder, destination.name, body, true);
+    if (!shared) await writeFile(destination.path, body, { flag: "wx" });
+    const stats = shared ? { size: body.byteLength, mtimeMs: Date.now() } : await stat(destination.path);
     const id = randomUUID();
     index.photos[id] = {
       path: folder ? `${folder}/${destination.name}` : destination.name,
@@ -779,7 +801,7 @@ export async function writeGalleryPhoto(albumRef: string, fileName: string, body
       model: details.model,
       size: stats.size,
       mtimeMs: stats.mtimeMs,
-      ...await imageSize(destination.path),
+      ...await imageSize(shared ? body : destination.path),
     };
     album?.photoIds.push(id);
     return { id, path: index.photos[id].path };
@@ -837,6 +859,7 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
       if (!canChange) throw new StorageError("You can view this shared album but not edit its photos. Save the edits as a copy instead.", 403);
       if (extension !== path.extname(record.path).toLowerCase()) throw new StorageError("Edited GIFs become PNGs; in a shared album, save the edits as a copy instead.", 409);
     }
+    const reviewedHash = createHash("sha256").update(await readFile(absolutePath(record.path))).digest("hex");
     const body = await renderEditedPhoto(absolutePath(record.path), edits, format);
 
     if (mode === "copy") {
@@ -844,8 +867,9 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
       const folder = canChange ? folderOf(record.path) : "";
       const stem = path.posix.basename(record.path, path.extname(record.path));
       const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), `${stem} (edited)${extension}`);
-      await writeFile(destination.path, body, { flag: "wx" });
-      const stats = await stat(destination.path);
+      const published = await publishAlbumPhoto(getGalleryRoot(), folder, destination.name, body, true);
+      if (!published) await writeFile(destination.path, body, { flag: "wx" });
+      const stats = published ? { size: body.byteLength, mtimeMs: Date.now() } : await stat(destination.path);
       const copyId = randomUUID();
       // Keep the original's date (plus a moment) so the copy sorts beside it.
       index.photos[copyId] = {
@@ -855,7 +879,7 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
         model: record.model,
         size: stats.size,
         mtimeMs: stats.mtimeMs,
-        ...await imageSize(destination.path),
+        ...await imageSize(published ? body : destination.path),
       };
       if (canChange) for (const album of index.albums) if (album.photoIds.includes(id)) album.photoIds.push(copyId);
       // The copy keeps the photo's ink, moved with the crop and turns.
@@ -877,15 +901,19 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
     }
     const nextRelative = withExtension(record.path, extension);
     const temporary = `${absolutePath(nextRelative)}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(temporary, body);
-      await rename(temporary, absolutePath(nextRelative));
-    } finally {
-      await rm(temporary, { force: true });
+    if (shared) {
+      await publishAlbumPhoto(getGalleryRoot(), folderOf(record.path), path.posix.basename(nextRelative), body, false, reviewedHash);
+    } else {
+      try {
+        await writeFile(temporary, body);
+        await rename(temporary, absolutePath(nextRelative));
+      } finally {
+        await rm(temporary, { force: true });
+      }
+      if (nextRelative !== record.path) await rm(current, { force: true });
     }
-    if (nextRelative !== record.path) await rm(current, { force: true });
-    const stats = await stat(absolutePath(nextRelative));
-    Object.assign(record, { path: nextRelative, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(nextRelative)));
+    const stats = shared ? { size: body.byteLength, mtimeMs: Date.now() } : await stat(absolutePath(nextRelative));
+    Object.assign(record, { path: nextRelative, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(shared ? body : absolutePath(nextRelative)));
     // Ink stays a layer: its view takes the edit's turns and crop (gallery-ink.ts).
     await photoEditedInPlace(inkInGallery(id), absolutePath(nextRelative), edits);
     // The album's members see what was done (the watcher shares the edited file).
@@ -916,12 +944,19 @@ export function revertPhoto(id: string) {
     if (!original) throw new StorageError("This photo has no earlier version.");
     const backup = path.join(getGalleryRoot(), ORIGINALS_DIR, original);
     const restored = withExtension(record.path, path.extname(original));
-    await copyFile(backup, absolutePath(restored));
-    if (restored !== record.path) await rm(absolutePath(record.path), { force: true });
+    const body = shared ? await readFile(backup) : null;
+    if (shared && body) {
+      if (restored !== record.path) throw new StorageError("A shared photo must keep its file type when reverted.", 409);
+      const expected = createHash("sha256").update(await readFile(absolutePath(record.path))).digest("hex");
+      await publishAlbumPhoto(getGalleryRoot(), folderOf(record.path), path.posix.basename(restored), body, false, expected);
+    } else {
+      await copyFile(backup, absolutePath(restored));
+      if (restored !== record.path) await rm(absolutePath(record.path), { force: true });
+    }
     await rm(backup, { force: true });
     if (previousOriginal && previousOriginal !== original) await removeOriginal(record);
-    const stats = await stat(absolutePath(restored));
-    Object.assign(record, { path: restored, original: undefined, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(restored)));
+    const stats = body ? { size: body.byteLength, mtimeMs: Date.now() } : await stat(absolutePath(restored));
+    Object.assign(record, { path: restored, original: undefined, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(body ?? absolutePath(restored)));
     await photoReverted(inkInGallery(id), absolutePath(restored));
     return toContents(index);
   });

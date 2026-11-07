@@ -318,6 +318,11 @@ const MIGRATIONS: string[] = [
   );
   `,
   `
+  CREATE TABLE IF NOT EXISTS project_adoption_fences (
+    project_id TEXT PRIMARY KEY
+  );
+  `,
+  `
   -- Queued commands the server refused for good (a comment written offline
   -- after losing access, say), with what the person wrote, until a window
   -- discards them: a restart must not lose that text.
@@ -1132,6 +1137,14 @@ export class HostStore {
 
   setDatabaseAuthority(authority: AccountAuthority | null): void {
     this.run(`INSERT INTO database_authority (id, account_id, server_url) VALUES (1, ?, ?)`, authority?.accountId ?? null, authority?.serverUrl ?? null);
+  }
+
+  requireExternalAdoption(projectId: string): void {
+    this.run(`INSERT OR IGNORE INTO project_adoption_fences (project_id) VALUES (?)`, projectId);
+  }
+
+  requiresExternalAdoption(projectId: string): boolean {
+    return !!this.get(`SELECT project_id FROM project_adoption_fences WHERE project_id = ?`, projectId);
   }
 
   retirePath(projectId: string, path: string, hashes: Iterable<string> = []): void {

@@ -225,7 +225,11 @@ export function listProjects(config?: HostClientConfig | null): Promise<LocalPro
   return hostJson(ControlRoutes.projects, { config });
 }
 
-/** A file operation in a shared notebook (create, write-blob, rename, delete); resolves with the Libera paths it touched. */
+/** The authoritative blob at a visible project path, including follower writes. */
+export function readProjectBlob(projectId: string, relative: string, config?: HostClientConfig | null): Promise<import("./local-api").FileBlobResponse> {
+  return hostJson(`${ControlRoutes.fileBlob(projectId)}?path=${encodeURIComponent(relative)}`, { config });
+}
+
 export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<{ paths: string[] }> {
   return hostJson(ControlRoutes.files(projectId), { method: "POST", body: request, config });
 }

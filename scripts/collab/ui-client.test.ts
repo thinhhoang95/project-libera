@@ -49,7 +49,7 @@ test("every control route goes through /api/collab with the expected method and 
   await client.applyEdits("d1", { edits: [{ start: 0, end: 0, text: "x" }], provenance: { kind: "user" } as never });
   await client.createSuggestions("d1", { edits: [] });
   await client.reconciliations();
-  await client.resolveReconciliation("r1", { text: "merged" });
+  await client.resolveReconciliation("r1", { text: "merged", reviewed: { shared: "shared", disk: "disk" } });
   await client.notifications({ unread: true, limit: 20 });
   await client.markNotificationsRead({ all: true });
   await client.deleteProject("p /1");

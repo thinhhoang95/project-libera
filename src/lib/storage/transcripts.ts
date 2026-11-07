@@ -1,12 +1,13 @@
+import { copyLifecycleSidecar, preserveLifecycleSidecar } from "@/lib/storage/sidecar-lifecycle";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
-import { moveFileIfExists, writeJsonForSource } from "@/lib/storage/fs-utils";
+import { writeJsonForSource } from "@/lib/storage/fs-utils";
 import { assertFileSignature, readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
-import { audioSidecarDirectories, audioSidecarPaths, filePathFromParts, splitFilePath, transcriptPath } from "@/lib/storage/paths";
+import { audioSidecarDirectories, audioSidecarPaths, filePathFromParts, notebookPath, splitFilePath, transcriptPath } from "@/lib/storage/paths";
 import { cleanSegments, countWords } from "@/lib/transcription/edits";
 import { TRANSCRIPT_VERSION, type Transcript, type TranscriptSegment, type TranscriptSpeaker } from "@/lib/transcription/types";
 
@@ -236,6 +237,9 @@ export async function copyTranscript(fromPath: string, toPath: string) {
 
 /** Discard local sidecars of externally deleted recordings, retaining offline files. */
 export async function pruneAudioSidecars(notebook: string) {
+  // Missing cloud files are not deletion intent. Retain the local recovery
+  // sources left by identity-checked shared lifecycle transfers.
+  if (isSharedNotebookPath(notebook)) return;
   async function visit(directory: string, parts: string[] = []) {
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); }
@@ -257,32 +261,30 @@ export async function pruneAudioSidecars(notebook: string) {
  * when they move or go away, whoever did it: the collab host moves the
  * recordings (and their companion transcripts) itself.
  */
-export async function followSharedAudioChanges(moves: Array<{ from: string; to: string }>, removed: string[]) {
+export async function followSharedAudioChanges(moves: Array<{ from: string; to: string }>, _removed: string[]) {
+  // Recovery outlives active-path pruning, including after local conversion.
+  for (const previous of [...moves.map((move) => move.from), ..._removed]) {
+    try {
+      if (getFileType(previous) !== "audio") continue;
+      const source = splitFilePath(previous);
+      for (const sidecar of audioSidecarPaths(source.notebook, source.pathParts)) await preserveLifecycleSidecar(sidecar, notebookPath(source.notebook));
+    } catch { /* Keep the active source when its recovery target is unavailable. */ }
+  }
   let changed = 0;
   for (const { from, to } of moves) {
     try {
-      if (getFileType(from) !== "audio") continue;
-      const fromParts = splitFilePath(from);
-      const toParts = splitFilePath(to);
-      const next = getFileType(to) === "audio" ? audioSidecarPaths(toParts.notebook, toParts.pathParts) : null;
-      for (const [index, sidecar] of audioSidecarPaths(fromParts.notebook, fromParts.pathParts).entries()) {
-        if (next) await moveFileIfExists(sidecar, next[index]);
-        else await rm(sidecar, { force: true });
+      if (getFileType(from) !== "audio" || getFileType(to) !== "audio" || from === to) continue;
+      const source = splitFilePath(from);
+      const target = splitFilePath(to);
+      const next = audioSidecarPaths(target.notebook, target.pathParts);
+      for (const [index, sidecar] of audioSidecarPaths(source.notebook, source.pathParts).entries()) {
+        if (await copyLifecycleSidecar(sidecar, next[index], notebookPath(target.notebook), async (bytes) => {
+          const transcript = parseTranscript(JSON.parse(bytes.toString("utf8")));
+          return !!transcript?.audio.contentHash && transcript.audio.contentHash === await readFileContentHash(filePathFromParts(target.notebook, target.pathParts));
+        })) changed += 1;
       }
-      changed += 1;
-    } catch {
-      // A path that is not a library file: nothing of ours to move.
-    }
+    } catch { /* Retain ambiguous sidecars, including occupied destinations and swaps. */ }
   }
-  for (const gone of removed) {
-    try {
-      if (getFileType(gone) !== "audio") continue;
-      const parts = splitFilePath(gone);
-      for (const sidecar of audioSidecarPaths(parts.notebook, parts.pathParts)) await rm(sidecar, { force: true });
-      changed += 1;
-    } catch {
-      // As above.
-    }
-  }
+  // A path-only removal is not evidence that these local notes were reviewed.
   return changed;
 }

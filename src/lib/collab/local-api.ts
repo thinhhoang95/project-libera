@@ -376,6 +376,13 @@ export type SuggestionCommandStatus =
   | { state: "settled"; ok: boolean; status: number; response?: DecideSuggestionsResponse; error?: { code: string; message: string } }
   | { state: "unknown" };
 
+export interface FileBlobResponse {
+  fileId?: string;
+  blobHash?: string;
+  /** Null means the manifest has no entry at this path. */
+  contentBase64: string | null;
+}
+
 export interface FileOpRequest {
   /**
    * `write-blob` adds a binary file (an upload, a pasted image, an edited
@@ -399,6 +406,9 @@ export interface FileOpRequest {
   stagedFile?: string;
   /** For write-blob: refuse an existing entry instead of replacing its bytes. */
   createOnly?: boolean;
+  /** The visible identity/version reviewed by a storage mutation. */
+  expectedFileId?: string;
+  expectedBlobHash?: string;
   /** Seed a new live PDF before publishing its manifest entry. */
   pdfSeed?: import("./protocol/pdf").PdfImportRequest;
 }
@@ -425,6 +435,8 @@ export interface NotificationsQuery {
 }
 
 export interface ResolveReconciliationRequest {
+  /** Exact versions reviewed in the dialog; stale submissions are refused. */
+  reviewed: { shared: string; disk: string };
   /** The merged text to keep; applied as edits authored by the user. */
   text: string;
 }
@@ -648,6 +660,7 @@ export const ControlRoutes = {
   docText: (docId: string) => `/docs/${encodeURIComponent(docId)}/text`,
   docEdits: (docId: string) => `/docs/${encodeURIComponent(docId)}/edits`,
   docSuggestions: (docId: string) => `/docs/${encodeURIComponent(docId)}/suggestions`,
+  fileBlob: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/file-blob`,
   files: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/files`,
   reconciliations: "/reconciliations",
   reconciliation: (id: string) => `/reconciliations/${encodeURIComponent(id)}`,

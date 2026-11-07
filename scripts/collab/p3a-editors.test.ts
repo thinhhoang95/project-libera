@@ -486,3 +486,18 @@ test("the Suggestions panel lists, filters, groups, steps with the keyboard and 
     tab.close();
   }
 });
+
+for (const role of ["viewer", "commenter"] as const) test(`R21: ${role} attachment recovers a refused local draft before shared mirroring`, async () => {
+  const { adoptPendingSharedDraft } = await import("../../src/lib/collab/client/apply-text");
+  const { journalTab } = await import("../../src/lib/collab/client/workspace");
+  const tab = await sharedTab({ text: "shared text", role });
+  const recovered: string[] = [];
+  try {
+    const result = adoptPendingSharedDraft(tab.session, "unsaved local draft", "original disk text", (text) => recovered.push(text));
+    assert.deepEqual(result, { applied: false, reason: "read-only" });
+    assert.equal(tab.session.replica.ytext.toString(), "shared text");
+    assert.deepEqual(recovered, ["unsaved local draft"]);
+    const recovery = { id: "untitled-recovered", untitled: true, draft: recovered[0], saved: "", status: "dirty", file: { path: "recovered.md", notebook: "", fileType: "markdown" as const } };
+    assert.equal(journalTab(recovery, (id) => id === tab.session.docId).draft, "unsaved local draft");
+  } finally { tab.close(); }
+});

@@ -202,7 +202,15 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     const { projectId } = projectParams.parse(request.params);
     const actor = bindActor(accountId, undefined);
     await requireProjectAction(db, projectId, accountId, "delete-project", actor);
+    const body = z.object({ expectedManifestSeq: z.number().int().nonnegative().optional() }).parse(request.body ?? {});
     const { docs, members } = await db.transaction().execute(async (trx) => {
+      if (body.expectedManifestSeq !== undefined) {
+        const manifest = await trx.selectFrom("documents").select("last_server_seq")
+          .where("project_id", "=", projectId).where("kind", "=", "manifest").forUpdate().executeTakeFirst();
+        if (!manifest || manifest.last_server_seq !== body.expectedManifestSeq) {
+          throw new HttpError("conflict", "The notebook changed after its local export. Export its current files before taking it down.");
+        }
+      }
       const docs = await trx.selectFrom("documents").select("id").where("project_id", "=", projectId).execute();
       const members = await trx.selectFrom("memberships").select("account_id").where("project_id", "=", projectId).execute();
       // Reviews reference revisions without ON DELETE CASCADE. Remove them

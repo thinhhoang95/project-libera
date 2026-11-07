@@ -255,7 +255,7 @@ test("share checkpoint recovery boundaries", { timeout: 150_000 }, async (t) => 
           }
           return write(target, ...args);
         };
-        await assert.rejects(project.resolveReconciliation(item.id, "chosen merge\n"), (error: { status?: number }) => error.status === 409);
+        await assert.rejects(project.resolveReconciliation(item.id, "chosen merge\n", { shared: item.shared, disk: item.disk }), (error: { status?: number }) => error.status === 409);
         assert.equal(arrived, true);
         assert.equal(hub.getText("content"), "chosen merge\n");
         assert.equal(readFileSync(path.join(root, "note.md"), "utf8"), "new disk input during merge\n");

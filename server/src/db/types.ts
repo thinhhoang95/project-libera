@@ -301,6 +301,7 @@ export interface DB {
   memberships: MembershipsTable;
   invitations: InvitationsTable;
   documents: DocumentsTable;
+  file_tombstones: { project_id: string; file_id: string; deleted_at: CreatedAt };
   doc_updates: DocUpdatesTable;
   doc_snapshots: DocSnapshotsTable;
   revisions: RevisionsTable;

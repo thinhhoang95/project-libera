@@ -3,7 +3,7 @@
 // what is left when access ends.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -198,7 +198,7 @@ test("shared albums between two hosts", { timeout: 180_000 }, async (t) => {
       // Putting the original back clears the edit. (After the host has
       // recorded the download, as a person would be slower than that.)
       await member.service.project(projectId)!.whenIdle();
-      writeFileSync(path.join(memberAlbum, "beach.jpg"), original);
+      await member.service.fileOp(projectId, { op: "write-blob", path: "beach.jpg", contentBase64: original.toString("base64") });
       await until(async () => (await albums(owner))[0].photos.find((photo) => photo.name === "beach.jpg")?.edited === false, "revert clears the edit");
     });
 
@@ -206,7 +206,7 @@ test("shared albums between two hosts", { timeout: 180_000 }, async (t) => {
       writeFileSync(path.join(memberAlbum, "cat.jpg"), jpegWithExif("cat"));
       await until(() => existsSync(path.join(ownerAlbum, "cat.jpg")), "photo reaches the owner");
       await owner.service.project(projectId)!.whenIdle();
-      rmSync(path.join(ownerAlbum, "cat.jpg"));
+      await owner.service.fileOp(projectId, { op: "delete", path: "cat.jpg" });
       await until(() => !existsSync(path.join(memberAlbum, "cat.jpg")), "deletion reaches the member");
       assert.ok(!existsSync(path.join(memberAlbum, "_archive")), "no hidden backup copy on the member's computer");
       assert.ok(!existsSync(path.join(ownerAlbum, "_archive")));
