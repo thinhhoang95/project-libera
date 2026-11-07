@@ -4,11 +4,11 @@
 
 ## Editing
 
-Syntax highlighting comes from a LaTeX stream tokenizer (`src/lib/latex/codemirror/language.ts`). It knows math environments, verbatim-like environments and the arguments of sectioning, label, reference and citation commands. Typing `}` to finish `\begin{name}` inserts the matching `\end{name}`, with an `\item` for lists. Enter continues a list item, and an empty one ends the list. Renaming one side of an environment renames the other. `{`, `[`, `(` and `$` are closed automatically; after a single backslash they get their escaped partner.
+`.tex` files are parsed by `codemirror-lang-latex` (`src/lib/latex/codemirror/latex-language.ts`), which gives one syntax tree for the highlighting, folding and the [Visual mode](latex-visual-editor.md); **Source | Visual** in the toolbar switches between the LaTeX as written and formatted text, formulas and figures over the same file. `.bib` files keep a stream tokenizer (`src/lib/latex/codemirror/language.ts`), which `.tex` files can also use with `localStorage["libera.latexParser"] = "stream"`. Typing `}` to finish `\begin{name}` inserts the matching `\end{name}`, with an `\item` for lists. Enter continues a list item, and an empty one ends the list. Renaming one side of an environment renames the other. `{`, `[`, `(` and `$` are closed automatically; after a single backslash they get their escaped partner.
 
-Completion offers commands (math commands rank higher inside math), environments, `\ref` labels from the document and other open files, `\cite` keys from the `.bib` files the main file names, files for `\input`, `\includegraphics` and `\bibliography`, and package and class names. Environments and sections fold. A KaTeX preview of the formula floats under the cursor inside math, including simple `\newcommand` macros; Escape hides it.
+Completion offers commands (math commands rank higher inside math), environments, `\ref` labels from the document and other open files, `\cite` keys from the `.bib` files the main file names, files for `\input`, `\includegraphics` and `\bibliography`, and package and class names. Environments and sections fold. A KaTeX preview of the formula floats under the cursor inside math, with the document's macros expanded (including optional arguments, `\def`, macro files and a chapter's main file); Escape hides it.
 
-Shortcuts: ⌘B, ⌘I and ⌘U wrap the selection in `\textbf`, `\textit` and `\underline`, and ⌘⇧E and ⌘⇧T in `\emph` and `\texttt`. ⌘/ toggles comments, ⌘F opens search and replace, ⌘S saves, ⌘↵ compiles, and ⌘⇧J shows the cursor's spot in the PDF.
+Shortcuts: ⌘B, ⌘I and ⌘U wrap the selection in `\textbf`, `\textit` and `\underline`, and ⌘⇧E and ⌘⇧T in `\emph` and `\texttt` (the toolbar's Bold and Italic remove the wrapper when the cursor is inside one). ⌘/ toggles comments, ⌘F opens search and replace, ⌘S saves, ⌘↵ compiles, and ⌘⇧J shows the cursor's spot in the PDF.
 
 ## Compiling
 
@@ -17,6 +17,8 @@ Shortcuts: ⌘B, ⌘I and ⌘U wrap the selection in `\textbf`, `\textit` and `\
 The editor's unsaved text is compiled: the main file is written into the build folder, and TeX runs from the document's folder. Unsaved drafts of other open `.tex` files are written there too, and TeX's "output directory first" lookup reads them instead of the saved versions. Auto compile runs after a pause in typing, and is on by default per file. When it is off, saving compiles.
 
 A file without `\documentclass` is typeset through its main file: a `% !TEX root = …` line, or else the `.tex` file in the notebook whose `\input`/`\include` graph reaches it (`GET /api/latex/root`).
+
+The compile response also carries the labels and citation labels TeX wrote to the `.aux` files, which the Visual mode uses for references to other files, page references and numeric citations.
 
 Each PDF is copied into an immutable snapshot (the last three are kept) that the viewer and SyncTeX read while the next compile runs. Errors and warnings from the TeX log, BibTeX and Biber are mapped back to notebook files. They appear as editor diagnostics, underlined at the command TeX stopped on, and in the Problems panel with the raw log.
 

@@ -419,6 +419,12 @@ In a shared notebook, a live block shows a **Run** button instead of running on 
 
 **Download → PDF file** (in the file actions menu, desktop app) prints a deck one slide per page, at the slide's own size, with every build step shown and hidden slides left out. Citations are numbered across the whole deck; put `:::bibliography` on a slide to place the reference list.
 
+## LaTeX Visual mode
+
+**Source | Visual** in the LaTeX toolbar draws a `.tex` file as formatted text: headings with their numbers, bold and italic text, lists, formulas typeset by KaTeX, figures with their images, tables as editable grids, theorems, citations and numbered references, and `\maketitle`. The file stays plain LaTeX: Visual mode is a layer over the same text, so it never reformats the source, and shared tabs need nothing extra. Where the cursor is, the LaTeX comes back. Click a formula to edit it in MathLive (only the parts you change are written back), click a table cell to edit it, and paste from Word or the web as LaTeX. The document's own `\newcommand`s, `\newtheorem`s and `\newenvironment`s render as they will in the PDF, and numbers follow the document, continuing across a project's `\input` files and taking exact labels from the last compile. Anything Visual mode does not recognise stays as source. See [docs/features/latex-visual-editor.md](docs/features/latex-visual-editor.md).
+
+The LaTeX parser is [codemirror-lang-latex](https://github.com/texlyre/codemirror-lang-latex) (based on Overleaf's grammar), licensed AGPL-3.0-or-later; Libera as distributed is subject to that licence's terms for this component.
+
 ## LaTeX PDF export
 
 Use the optional **Custom instructions** textarea to guide the model (for example, add a table of contents or style section headings). Instructions are saved with the other export settings and applied during generation and automatic repairs. The field accepts up to 10,000 characters; selected page settings take precedence.

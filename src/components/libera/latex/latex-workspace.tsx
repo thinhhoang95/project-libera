@@ -12,6 +12,11 @@ import {
   LATEX_ENGINE_LABELS, hasDocumentClass, isCompilableLatexPath, readBibEntries, readLatexBibliographyReferences, readLatexLabels,
   readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, type BibEntrySummary, type LatexEngineSetting,
 } from "@/lib/latex/project";
+import { bodyStartOf, readLatexInputs } from "@/lib/latex/macros/definitions";
+import type { NumberingStart } from "@/lib/latex/macros/numbering";
+import { chapterNumberingStart } from "@/lib/latex/macros/project-numbering";
+import type { MacroSource } from "@/lib/latex/codemirror/visual";
+import { hashString } from "@/lib/macros/core";
 import { usesPackage } from "@/lib/latex/snippets";
 import type { SynctexPdfLocation, SynctexSourceLocation } from "@/lib/latex/synctex";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
@@ -121,6 +126,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   const currentDisabledReason = !standalone ? "Has no \\documentclass, so it cannot be typeset on its own" : resolvedRoot === filePath ? "This file is already the main file" : null;
   const compileTarget: LatexCompileTarget = viewState?.compileTarget === "current" && !currentDisabledReason ? "current" : "main";
   const rootPath = compileTarget === "current" ? filePath : resolvedRoot ?? filePath;
+  const editorMode = viewState?.editorMode ?? "source";
   const canCompile = compileTarget === "current" || resolvedRoot !== null;
   const build = useLatexBuild(rootPath);
   const engineSetting: LatexEngineSetting = viewState?.engine ?? "auto";
@@ -278,6 +284,68 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
     // bibKey covers the paths and their versions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bibKey, build.version]);
+
+  // Definitions the Visual mode needs from other files: the main file's
+  // preamble (for a chapter), and the macro files and local packages a preamble loads.
+  const ownPreamble = draftForAnalysis.slice(0, bodyStartOf(draftForAnalysis) || 0);
+  const [macroSources, setMacroSources] = useState<MacroSource[]>([]);
+  const macroKey = `${rootPath}|${ownPreamble.length}|${fileUpdatedAt.get(rootPath) ?? ""}|${hashString(ownPreamble)}`;
+  useEffect(() => {
+    if (!isTex) return;
+    let cancelled = false;
+    void (async () => {
+      const readText = async (path: string) => latest.current.readOpenTabs().find((other) => other.file.path === path)?.draft
+        ?? (await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => ""));
+      const sources: MacroSource[] = [];
+      let preamble = ownPreamble;
+      let base = filePath;
+      if (rootPath !== filePath) {
+        const rootText = await readText(rootPath);
+        const rootPreamble = rootText.slice(0, bodyStartOf(rootText) || 0);
+        if (rootPreamble) sources.push({ path: rootPath, text: rootPreamble, version: String(fileUpdatedAt.get(rootPath) ?? "") });
+        preamble = rootPreamble;
+        base = rootPath;
+      }
+      const known = new Set(files.map((file) => file.path));
+      const loaded: string[] = [];
+      for (const input of readLatexInputs(preamble)) {
+        const name = /\.(?:tex|sty)$/i.test(input.path) ? input.path : `${input.path}.tex`;
+        const resolved = resolveRelativeNotebookPath(base, name);
+        if (resolved && known.has(resolved)) loaded.push(resolved);
+      }
+      for (const match of preamble.matchAll(/\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
+        for (const name of match[1].split(",")) {
+          const resolved = resolveRelativeNotebookPath(base, `${name.trim()}.sty`);
+          if (resolved && known.has(resolved)) loaded.push(resolved);
+        }
+      }
+      for (const path of loaded.slice(0, 24)) {
+        const text = await readText(path);
+        if (text) sources.push({ path, text, version: String(fileUpdatedAt.get(path) ?? "") });
+      }
+      if (!cancelled) setMacroSources((current) => (JSON.stringify(current) === JSON.stringify(sources) ? current : sources));
+    })();
+    return () => { cancelled = true; };
+    // macroKey covers the preambles and file versions involved.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [macroKey, isTex, files.length]);
+
+  // A chapter's counters continue from where its main file includes it.
+  const [chapterStart, setNumberingStartState] = useState<NumberingStart | null>(null);
+  const isChapter = isTex && rootPath !== filePath;
+  const numberingStart = isChapter ? chapterStart : null;
+  useEffect(() => {
+    if (!isChapter) return;
+    let cancelled = false;
+    const readText = async (path: string) => latest.current.readOpenTabs().find((other) => other.file.path === path)?.draft
+      ?? (await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => ""));
+    void chapterNumberingStart(filePath, rootPath, readText).then((start) => {
+      if (!cancelled) setNumberingStartState((current) => (JSON.stringify(current) === JSON.stringify(start) ? current : start));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+    // Recomputed when the main file changes on disk or a compile finishes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePath, rootPath, isChapter, fileUpdatedAt.get(rootPath), build.version]);
 
   // Refreshed after each compile, which follows edits in any open file.
   const otherLabels = useMemo(() => {
@@ -486,6 +554,10 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       onForwardSync={(location) => void forwardSync(location)}
       onAiError={setAiError}
       onAddSnippet={(body) => { if (body.trim()) setSnippetDialog({ mode: "create", body }); }}
+      editorMode={isTex ? editorMode : "source"}
+      macroSources={macroSources}
+      auxData={build.aux ?? null}
+      numberingStart={numberingStart}
     />
   );
 
@@ -544,6 +616,22 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               >
                 <ChevronDown aria-hidden className="h-3.5 w-3.5" />
               </button>
+            </div>
+            <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
+            <div className="libera-latex-mode flex shrink-0 items-center rounded-lg border border-border p-0.5" role="radiogroup" aria-label="Editor mode">
+              {(["source", "visual"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={editorMode === mode}
+                  className={`rounded-md px-2 py-0.5 text-xs font-medium ${editorMode === mode ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  title={mode === "visual" ? "Visual: formatted text, formulas and figures over the same LaTeX (the file is never rewritten)" : "Source: the LaTeX as written"}
+                  onClick={() => { if (editorMode !== mode) onSetViewState({ editorMode: mode }); }}
+                >
+                  {mode === "visual" ? "Visual" : "Source"}
+                </button>
+              ))}
             </div>
             <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
             <LatexInsertToolbar

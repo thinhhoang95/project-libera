@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import type { LatexAuxData } from "@/lib/latex/aux-file";
 import type { LatexBuildResult } from "@/lib/latex/build";
 import type { LatexEngineSetting } from "@/lib/latex/project";
 
@@ -21,6 +22,8 @@ export type LatexBuildEntry = {
   /** Increments for every finished compile, including failed ones. */
   version: number;
   requestError: string;
+  /** Labels and citation labels of the newest compile that wrote an `.aux`. */
+  aux?: LatexAuxData;
 };
 
 type Listener = () => void;
@@ -99,6 +102,7 @@ async function runCompile(rootPath: string, job: QueuedCompile) {
       ...entry,
       result: body,
       buildId: body.buildId ?? entry.buildId,
+      aux: body.aux ?? entry.aux,
       version: entry.version + 1,
       requestError: "",
     }));

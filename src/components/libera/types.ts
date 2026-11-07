@@ -93,6 +93,8 @@ export type PdfTabViewState = {
 };
 
 export type LatexTabViewState = EditorScrollState & {
+  /** "visual" draws a `.tex` file as formatted text, formulas and widgets (docs/latex-visual-editor-plan.md). */
+  editorMode?: "source" | "visual";
   /** "current" typesets the open file itself instead of its main file. */
   compileTarget?: "main" | "current";
   /** "auto" honors `% !TEX program` and the packages in the preamble. */

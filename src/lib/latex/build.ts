@@ -7,6 +7,7 @@ import { homeDirectory, joinPath } from "@/lib/runtime-path";
 import path from "node:path";
 import { StorageError } from "@/lib/storage/errors";
 import { filePathFromParts, notebookPath as notebookFolderPath, splitFilePath } from "@/lib/storage/paths";
+import { parseLatexAux, type LatexAuxData } from "./aux-file";
 import { parseBiberLog, parseBibtexLog, parseLatexLog, type LatexLogEntry, type LatexLogSeverity } from "./log-parser";
 import { isCompilableLatexPath, resolveLatexEngine, type LatexEngine, type LatexEngineSetting } from "./project";
 import { findTexToolchain, texEnvironment, texExecutable, texLatexmkLineLengthRc, texLineLengthArguments, texMissingMessage, type TexToolchain } from "./toolchain";
@@ -44,6 +45,8 @@ export type LatexBuildResult = {
   log: string;
   output: string;
   durationMs: number;
+  /** Labels and citation labels TeX wrote to the `.aux` files, for the Visual mode's numbers. */
+  aux?: LatexAuxData;
 };
 
 export type LatexBuildRequest = {
@@ -448,6 +451,7 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
 
     const status: LatexBuildStatus = !pdfReady ? "failure" : hasErrors ? "error" : "success";
     const buildId = pdfReady ? await snapshotPdf(paths, meta) : await latestSnapshot(paths);
+    const aux = await readAuxData(paths.workDirectory, paths.jobName);
     await writeFile(statePath, JSON.stringify({ signature, status }), "utf8").catch(() => undefined);
 
     return {
@@ -460,8 +464,23 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
       log: log.length > MAX_LOG_CHARACTERS ? log.slice(-MAX_LOG_CHARACTERS) : log,
       output: result.output,
       durationMs: Date.now() - startedAt,
+      aux,
     };
   });
+}
+
+/** The job's `.aux` and the `.aux` files of its `\include`d chapters (named by `\@input`), parsed. */
+async function readAuxData(workDirectory: string, jobName: string): Promise<LatexAuxData | undefined> {
+  const main = await readFile(path.join(workDirectory, `${jobName}.aux`), "utf8").catch(() => "");
+  if (!main) return undefined;
+  let text = main;
+  for (const match of main.matchAll(/\\@input\{([^}]+\.aux)\}/g)) {
+    const file = path.resolve(workDirectory, match[1]);
+    // Only files inside the build folder.
+    if (!file.startsWith(path.resolve(workDirectory) + path.sep)) continue;
+    text += `\n${await readFile(file, "utf8").catch(() => "")}`;
+  }
+  return parseLatexAux(text);
 }
 
 /** The folder of a finished build, after validating its id. */

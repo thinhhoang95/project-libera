@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { wrapSelection, type LatexProjectFile } from "@/lib/latex/codemirror/editing";
+import { toggleLatexFormat } from "@/lib/latex/codemirror/visual/keys";
 import { ensurePackages, insertSnippetText, insertTemplate } from "@/lib/latex/codemirror/snippets";
 import {
   BIBLATEX_STYLES, BIBTEX_STYLES, CODE_LANGUAGES, bibliographyBlock, codeTemplate, figureTemplate, listTemplate, literalField,
@@ -214,8 +215,8 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
   // The macOS menu bar's Format and Insert menus, with the toolbar's tools.
   useAppMenuEditor(toolbarRef, () => ({
     format: [
-      { id: "bold", label: "Bold", onSelect: () => edit((view) => { wrapSelection("textbf")(view); }) },
-      { id: "italic", label: "Italic", onSelect: () => edit((view) => { wrapSelection("textit")(view); }) },
+      { id: "bold", label: "Bold", onSelect: () => edit((view) => { toggleLatexFormat("textbf")(view); }) },
+      { id: "italic", label: "Italic", onSelect: () => edit((view) => { toggleLatexFormat("textit")(view); }) },
       { type: "separator" },
       { id: "heading", label: "Heading", submenu: menuItems("heading", true) },
       { id: "list", label: "List", submenu: menuItems("list", true) },
@@ -275,8 +276,8 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
 
   return (
     <div ref={toolbarRef} role="toolbar" aria-label="Insert LaTeX" className="libera-latex-insertbar flex shrink-0 items-center gap-0.5">
-      {button(null, "Bold", <Bold aria-hidden className={iconClass} />, () => edit((view) => { wrapSelection("textbf")(view); }), `${mod}B`)}
-      {button(null, "Italic", <Italic aria-hidden className={iconClass} />, () => edit((view) => { wrapSelection("textit")(view); }), `${mod}I`)}
+      {button(null, "Bold", <Bold aria-hidden className={iconClass} />, () => edit((view) => { toggleLatexFormat("textbf")(view); }), `${mod}B`)}
+      {button(null, "Italic", <Italic aria-hidden className={iconClass} />, () => edit((view) => { toggleLatexFormat("textit")(view); }), `${mod}I`)}
       {separator}
       {button("heading", "Heading", <Heading aria-hidden className={iconClass} />)}
       {button("list", "List", <List aria-hidden className={iconClass} />)}

@@ -1,0 +1,112 @@
+\documentclass{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\lVert #1 \rVert}
+\newcommand{\vect}[2][x]{(#1_1, \dots, #1_{#2})}
+\newcommand\todo[1]{\textcolor{red}{[[#1]]}}
+\newcommand{\eg}{e.g.}
+\DeclareMathOperator{\tr}{tr}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newenvironment{note}{\par\textbf{Note.}}{\par}
+
+\title{A Sample Paper}
+\author{Ada Lovelace \and Alan Turing}
+\date{2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We study \emph{things} in $\R^n$.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+This is \textbf{bold}, \textit{italic} and \texttt{code}, with a footnote\footnote{A note with $x$.}.
+Costs fell 50\% --- see \cite{knuth1984} and \cite[p.~3]{lamport1994}, \eg in Section~\ref{sec:method}.
+A norm $\norm{v} \le 1$, a trace $\tr A$, and a vector $\vect{n}$. \todo{check this}
+Visit \href{https://example.com}{our site} or \url{https://example.org}.
+
+\subsection{Lists}
+
+\begin{itemize}
+  \item First item
+  \item Second item
+  \begin{enumerate}
+    \item Nested one
+    \item Nested two
+  \end{enumerate}
+\end{itemize}
+
+\section{Method}\label{sec:method}
+
+\begin{theorem}[Pythagoras]\label{thm:pyth}
+For a right triangle, $a^2 + b^2 = c^2$.
+\end{theorem}
+
+\begin{lemma}
+A lemma shares the theorem counter.
+\end{lemma}
+
+\begin{proof}
+Obvious.
+\end{proof}
+
+\begin{definition}
+A definition, numbered on its own.
+\end{definition}
+
+\begin{note}
+User environment body.
+\end{note}
+
+\begin{equation}
+E = mc^2 \label{eq:energy}
+\end{equation}
+
+\begin{align}
+a &= b + c \label{eq:first} \\
+d &= e \nonumber \\
+f &= g
+\end{align}
+
+By \eqref{eq:energy} and \cref{eq:first}, and Theorem~\ref{thm:pyth}.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.5\textwidth]{figures/plot.png}
+  \caption{A \textbf{plot} of $f(x)$.}
+  \label{fig:plot}
+\end{figure}
+
+\begin{table}[h]
+  \caption{Results}
+  \label{tab:results}
+  \begin{tabular}{lcr}
+    \hline
+    Model & BLEU & Cost \\
+    \hline
+    Base & 27.3 & $10^{18}$ \\
+    \multicolumn{2}{c}{Big} & 41.0 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+See Figure~\ref{fig:plot} and Table~\ref{tab:results}.
+
+\begin{verbatim}
+\textbf{not bold} $not math$
+\end{verbatim}
+
+% \section{Commented out}
+Unknown \frobnicate{x} stays as source.
+
+\end{document}

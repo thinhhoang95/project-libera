@@ -2,6 +2,8 @@ import katex from "katex";
 import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
 import { findMathRegion, readPreviewMacros, type MathRegion } from "./math";
+import { expandLatexMacros } from "../macros/expand";
+import { definitionsField } from "./visual/model";
 
 /* While the cursor is inside math, a rendered preview of that formula floats
  * below it. Escape hides it until the cursor leaves the formula. */
@@ -75,12 +77,17 @@ function tooltipFor(state: EditorState): Tooltip | null {
       dom.className = "cm-latex-math-preview";
       dom.setAttribute("aria-label", "Formula preview");
       try {
-        katex.render(texForRegion(preview.region, preview.source), dom, {
+        // The document's own macros (optional arguments, \def, macro files, the main file's preamble) are
+        // expanded first by the Visual mode's engine; without it, simple \newcommands go to KaTeX.
+        const defs = state.field(definitionsField, false);
+        const tex = texForRegion(preview.region, preview.source);
+        const expanded = defs ? expandLatexMacros(tex, defs, { mode: "math", pos: preview.region.from }) : null;
+        katex.render(expanded?.ok ? expanded.text : tex, dom, {
           displayMode: preview.region.display,
           throwOnError: false,
           strict: "ignore",
           trust: false,
-          macros: { ...previewMacros(state) },
+          macros: expanded?.ok ? {} : { ...previewMacros(state) },
           maxExpand: 500,
           output: "html",
         });

@@ -1,4 +1,5 @@
 /** LaTeX project helpers shared by the editor and the build. Pure functions. */
+import { readGroup } from "../macros/core";
 
 export const LATEX_ENGINES = ["pdflatex", "xelatex", "lualatex"] as const;
 export type LatexEngine = (typeof LATEX_ENGINES)[number];
@@ -115,15 +116,7 @@ export function readLatexOutline(source: string): LatexOutlineEntry[] {
 
 /** The contents of the `{...}` group opening at `openIndex`, if it closes. */
 export function readBalancedGroup(text: string, openIndex: number) {
-  if (text[openIndex] !== "{") return null;
-  let depth = 0;
-  for (let index = openIndex; index < text.length; index++) {
-    const character = text[index];
-    if (character === "\\") { index++; continue; }
-    if (character === "{") depth++;
-    else if (character === "}" && --depth === 0) return text.slice(openIndex + 1, index);
-  }
-  return null;
+  return readGroup(text, openIndex)?.content ?? null;
 }
 
 /** `\label{...}` keys defined in a document. */

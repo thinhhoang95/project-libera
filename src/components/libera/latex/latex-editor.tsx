@@ -3,9 +3,9 @@
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
-import { lintGutter, lintKeymap, setDiagnostics, type Diagnostic } from "@codemirror/lint";
+import { forEachDiagnostic, lintGutter, lintKeymap, setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { EditorState, Prec, Transaction } from "@codemirror/state";
+import { Compartment, EditorState, Prec, Transaction } from "@codemirror/state";
 import { ySyncAnnotation } from "y-codemirror.next";
 import {
   EditorView, crosshairCursor, drawSelection, dropCursor, highlightActiveLine, highlightActiveLineGutter,
@@ -15,8 +15,15 @@ import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useSt
 import type { LatexDiagnostic } from "@/lib/latex/build";
 import { locateTextHint, type SynctexTextHint } from "@/lib/latex/synctex-text";
 import { latexCompletionSource, latexFormattingKeymap, latexInputHandler, latexProjectField, setLatexProject, syncEnvironmentNames, type LatexProjectData } from "@/lib/latex/codemirror/editing";
-import { latexLanguageSupport } from "@/lib/latex/codemirror/language";
+import { latexLanguageSupport } from "@/lib/latex/codemirror/latex-language";
 import { latexMathPreview } from "@/lib/latex/codemirror/preview";
+import {
+  latexVisualMode, latexVisualState, setAuxData, setMacroSources, setNumberingStart, visualCompartment, visualEntrySelection, visualRevealRanges, type MacroSource,
+} from "@/lib/latex/codemirror/visual";
+import type { LatexAuxData } from "@/lib/latex/aux-file";
+import type { NumberingStart } from "@/lib/latex/macros/numbering";
+import { previewSuggestions } from "@/lib/collab/suggestions/codemirror";
+import { encodeFilePath } from "@/components/libera/api-client";
 import { latexSnippetCompletionSource } from "@/lib/latex/codemirror/snippets";
 import { snippetBodyFromSelection } from "@/lib/latex/snippets";
 import { decideReviewHunks, latexReviewExtension, reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
@@ -76,9 +83,27 @@ type LatexEditorProps = {
    * Fixed for the editor's lifetime; key the editor on its generation.
    */
   collab?: SharedCodeMirrorSource;
+  /** "visual" draws the LaTeX as formatted text, formulas and widgets (`.tex` files only). */
+  editorMode?: LatexEditorMode;
+  /** Other files whose definitions apply here (the root's preamble, macro files). */
+  macroSources?: MacroSource[];
+  /** Labels and citation labels from the last compile's `.aux`. */
+  auxData?: LatexAuxData | null;
+  /** Counter values where this chapter is included in its main file. */
+  numberingStart?: NumberingStart | null;
 };
 
+export type LatexEditorMode = "source" | "visual";
+
 const DRAFT_DELAY_MS = 250;
+const lineNumbersCompartment = new Compartment();
+
+function visualExtensions(documentPath: string) {
+  return latexVisualMode({
+    documentPath,
+    fileUrl: (path) => `/api/files/raw/${encodeFilePath(path)}`,
+  });
+}
 const VIEW_STATE_DELAY_MS = 300;
 
 /** The part of a line TeX had read when it stopped, from its "l.12 …" context
@@ -112,6 +137,7 @@ function toEditorDiagnostics(state: EditorState, diagnostics: LatexDiagnostic[])
 export function LatexEditor({
   documentPath, fileName, value, fontFamily, fontSizePx, lineHeight, initialViewState, diagnostics, project, editorRef,
   onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet, collab,
+  editorMode = "source", macroSources, auxData, numberingStart,
 }: LatexEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -126,7 +152,7 @@ export function LatexEditor({
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath });
+  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath, editorMode });
   const shared = !!collab;
 
   const publishDraft = useCallback(() => {
@@ -164,6 +190,7 @@ export function LatexEditor({
     if (!host) return;
     const { initialViewState: restore, fileName: name } = initialRef.current;
     const isTex = !/\.(bib|sty|cls)$/i.test(name);
+    const visual = isTex && initialRef.current.editorMode === "visual";
     // Created with the view so the two live and die together (Strict Mode, tab switches).
     const binding = initialRef.current.collab?.create() ?? null;
     const initialValue = binding ? binding.initialText : initialRef.current.value;
@@ -182,7 +209,7 @@ export function LatexEditor({
         : undefined,
       extensions: [
         appKeymap,
-        lineNumbers(),
+        lineNumbersCompartment.of(visual ? [] : lineNumbers()),
         highlightActiveLineGutter(),
         highlightSpecialChars(),
         // Shared tabs undo through the binding's Y.UndoManager, which never
@@ -212,7 +239,16 @@ export function LatexEditor({
         // The agent's changes under manual review; shared tabs get suggestions instead.
         ...(binding ? [] : [agentReviewCodeMirror(initialRef.current.documentPath, { outside: (transaction) => transaction.annotation(Transaction.remote) === true })]),
         latexSyncExtension(),
-        ...(isTex ? [latexMathPreview()] : []),
+        ...(isTex ? [latexMathPreview(), latexVisualState()] : []),
+        // Pending suggestions and AI changes stay visible as source in the Visual mode.
+        visualRevealRanges.of((target) => [...(target.field(reviewHunksField, false) ?? []), ...previewSuggestions(target)]),
+        // So does LaTeX with a compile error, so its underline is not hidden with the markup.
+        visualRevealRanges.of((target) => {
+          const ranges: Array<{ from: number; to: number }> = [];
+          forEachDiagnostic(target, (diagnostic, from, to) => { if (diagnostic.severity === "error") ranges.push({ from, to }); });
+          return ranges;
+        }),
+        visualCompartment.of(visual ? visualExtensions(initialRef.current.documentPath) : []),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
         EditorView.contentAttributes.of({ "aria-label": "LaTeX source editor", spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
         EditorView.updateListener.of((update) => {
@@ -370,9 +406,41 @@ export function LatexEditor({
     if (view) view.dispatch({ effects: setLatexProject.of(project) });
   }, [project, view]);
 
+  // Switching modes reconfigures the view; the document and its undo history are untouched.
+  const isTexFile = !/\.(bib|sty|cls)$/i.test(fileName);
+  const visualActive = isTexFile && editorMode === "visual";
+  useEffect(() => {
+    if (!view) return;
+    // Compare with what the view has, not with the last request: a recreated view starts from its own state.
+    const current = visualCompartment.get(view.state);
+    const active = Array.isArray(current) ? current.length > 0 : !!current;
+    if (active === visualActive) return;
+    const selection = visualActive ? visualEntrySelection(view.state) : null;
+    view.dispatch({
+      effects: [
+        visualCompartment.reconfigure(visualActive ? visualExtensions(documentPath) : []),
+        lineNumbersCompartment.reconfigure(visualActive ? [] : lineNumbers()),
+      ],
+      ...(selection ? { selection } : {}),
+      scrollIntoView: true,
+    });
+  }, [documentPath, view, visualActive]);
+
+  useEffect(() => {
+    if (view && macroSources && isTexFile) view.dispatch({ effects: setMacroSources.of(macroSources) });
+  }, [isTexFile, macroSources, view]);
+
+  useEffect(() => {
+    if (view && auxData && isTexFile) view.dispatch({ effects: setAuxData.of(auxData) });
+  }, [auxData, isTexFile, view]);
+
+  useEffect(() => {
+    if (view && isTexFile && numberingStart !== undefined) view.dispatch({ effects: setNumberingStart.of(numberingStart) });
+  }, [isTexFile, numberingStart, view]);
+
   return (
     <div
-      className="libera-latex-editor relative min-h-0 min-w-0 overflow-hidden bg-card"
+      className={`libera-latex-editor relative min-h-0 min-w-0 overflow-hidden bg-card${visualActive ? " libera-latex-visual" : ""}`}
       data-libera-code-editor
       ref={wrapperRef}
       style={{ "--latex-editor-font": fontFamily, "--latex-editor-font-size": `${fontSizePx}px`, "--latex-editor-line-height": String(lineHeight) } as CSSProperties}

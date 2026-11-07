@@ -1,6 +1,7 @@
 import type { Plugin } from "unified";
 import type { Root } from "mdast";
 import { MARKDOWN_BOX_SHORTCUTS } from "./markdown-boxes";
+import { MAX_MACRO_DEPTH, readGroup } from "./macros/core";
 import { escapedAt, mathMarkerPairs, matchMath, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from "./math-markers";
 
 /**
@@ -53,7 +54,7 @@ export type MarkdownMacroReplacement = {
   prefix?: string;
 };
 
-const MAX_DEPTH = 16;
+const MAX_DEPTH = MAX_MACRO_DEPTH;
 const COUNTER = /^\\counter-([A-Za-z][A-Za-z0-9_]*)/;
 const REMARK_MATH_PAIRS: MathMarkerPair[] = [{ open: "$$", close: "$$", display: true }, { open: "$", close: "$", display: false }];
 const FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})([^\n]*)$/;
@@ -81,19 +82,6 @@ export function isMacroBlockLanguage(info: unknown) {
 
 export function emptyMacroDefinitions(): MarkdownMacroDefinitions {
   return { macros: new Map(), errors: [] };
-}
-
-/** Reads a `{…}` group at `index`; braces escaped with a backslash do not count. */
-function readGroup(source: string, index: number) {
-  if (source[index] !== "{") return null;
-  let depth = 0;
-  for (let i = index; i < source.length; i++) {
-    const char = source[i];
-    if (char === "\\") { i++; continue; }
-    if (char === "{") depth++;
-    else if (char === "}" && --depth === 0) return { content: source.slice(index + 1, i), end: i + 1 };
-  }
-  return null;
 }
 
 function highestParameter(body: string) {
