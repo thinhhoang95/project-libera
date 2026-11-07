@@ -1,7 +1,7 @@
 import type { EditorState, Text } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, Tree } from "@lezer/common";
-import { readOptional } from "../../../macros/core";
+import { readGroup, readOptional } from "../../../macros/core";
 import { macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { environmentName, formatCounterValue } from "../../macros/numbering";
@@ -55,7 +55,13 @@ export type WalkEnvironment = {
   layer: "structural" | "style";
 };
 
-const SKIPPED = new Set(["Comment", "VerbatimEnvironment", "TikzPictureEnvironment", "VerbCommand", "LstInlineCommand", "Csname"]);
+// Definitions are source: their bodies are not drawn (a `textit` in a `newcommand` body is not italic text).
+const SKIPPED = new Set([
+  "Comment", "VerbatimEnvironment", "TikzPictureEnvironment", "VerbCommand", "LstInlineCommand", "Csname",
+  "NewCommand", "RenewCommand", "NewEnvironment", "RenewEnvironment", "Def", "Let", "NewTheoremCommand", "TheoremStyleCommand",
+]);
+/** Definitions the grammar parses as unknown commands. */
+const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname)$/;
 const SECTION_CLASSES: Record<string, string> = {
   Book: "cm-vis-hpart", Part: "cm-vis-hpart", Chapter: "cm-vis-h0", Section: "cm-vis-h1", SubSection: "cm-vis-h2",
   SubSubSection: "cm-vis-h3", Paragraph: "cm-vis-h4", SubParagraph: "cm-vis-h4",
@@ -601,6 +607,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     const name = text.slice(1);
+    if (DEFINITION_COMMANDS.test(text)) return skipDefinition(node);
     const macro = macroAt(defs, name, node.from);
     if (macro) return macroUse(node, name);
     if (SYMBOL_COMMANDS[text] !== undefined && emptyArgs) {
@@ -612,6 +619,27 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     return undefined;
+  }
+
+  /**
+   * A definition the grammar does not know (`\providecommand`, `\NewDocumentCommand`, …): its name and
+   * arguments are source, so nothing in its body is drawn. They may follow the command as separate nodes.
+   */
+  function skipDefinition(node: SyntaxNode): false {
+    const text = read(state, node.from, Math.min(doc.length, node.from + 8000));
+    let index = /^\\[A-Za-z@]+\*?/.exec(text)![0].length;
+    for (let parts = 0; parts < 8; parts++) {
+      const space = /^(?:\s|%[^\n]*\n)*/.exec(text.slice(index))![0];
+      if (space.includes("\n\n")) break;
+      const at = index + space.length;
+      const name = /^\\[A-Za-z@]+/.exec(text.slice(at));
+      const group = name ? null : readGroup(text, at) ?? readOptional(text, at);
+      if (name) index = at + name[0].length;
+      else if (group) index = group.end;
+      else break;
+    }
+    consumed.push([node.from, node.from + index]);
+    return false;
   }
 
   function macroUse(node: SyntaxNode, name: string): false | undefined {
@@ -646,10 +674,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const html = renderKatex(expandLatexMacros(latex, defs, { mode: "math", pos: node.from }).text, false);
       if (!html) return undefined;
       emit({ kind: "math", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new MathWidget(html, false, false, read(state, node.from, to), false, 0, to - node.from) }] });
+      // The parser may attach only some of the arguments to the command: the rest are inside the widget too.
+      consumed.push([node.from, to]);
       return false;
     }
     if (needsMathMode(use.text)) return undefined;
     emit({ kind: "macro", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new MacroWidget(name, use.text, to - node.from, fingerprint) }] });
+    consumed.push([node.from, to]);
     return false;
   }
 }

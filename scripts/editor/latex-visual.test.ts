@@ -132,6 +132,40 @@ test("broken or unknown LaTeX stays as source, but constructs inside a broken on
   view.destroy();
 });
 
+test("a hand-built notation table: definitions stay source, rows cover their arguments, and its label is a table", () => {
+  const doc = String.raw`\documentclass{article}
+\newcommand{\Fset}{\mathcal{F}}
+\begin{document}
+\begingroup
+  \newcommand{\COrow}[2]{\noindent\parbox[t]{0.23\linewidth}{#1}\hspace{10pt}\parbox[t]{0.7\linewidth}{#2}\par}
+  \newcommand{\COsection}[1]{\par\noindent\textit{#1}\par}
+  \providecommand{\COnote}[1]{\textbf{#1}}
+  \refstepcounter{table}
+  \label{tab:notation}
+  \COrow{$\Fset,\ f$}
+    {Set of all flights, indexed by $f \in \Fset$.}
+\endgroup
+See \cref{tab:notation}.
+\end{document}
+`;
+  const view = mount(doc);
+  const list = constructs(view.state);
+  const definitions = doc.indexOf("\\newcommand{\\COrow}");
+  const bodiesEnd = doc.indexOf("\\refstepcounter");
+  assert.ok(list.every((entry) => { const from = Number(entry.split(":")[1]); return from < definitions || from >= bodiesEnd; }), `nothing in definition bodies is drawn: ${list.join(" ")}`);
+  const row = list.find((entry) => entry.startsWith("macro:"));
+  assert.ok(row, "the row is drawn as its expansion");
+  const [, rowFrom, rowTo] = row!.split(":").map(Number);
+  assert.equal(doc.slice(rowFrom, rowTo), "\\COrow{$\\Fset,\\ f$}\n    {Set of all flights, indexed by $f \\in \\Fset$.}");
+  assert.ok(list.every((entry) => { const [, from, to] = entry.split(":"); return entry === row || Number(to) <= rowFrom || Number(from) >= rowTo; }), "nothing inside the row's arguments is drawn separately");
+  const state = view.state;
+  const numbering = computeLatexNumbering(syntaxTree(state), (from, to) => state.doc.sliceString(from, to), visualDefinitions(state));
+  assert.equal(numbering.labels.get("tab:notation")?.kind, "table");
+  view.dispatch({ effects: setNumbering.of(numbering) });
+  assert.equal(stateReferenceText(view.state, "\\cref", ["tab:notation"]), "table 1");
+  view.destroy();
+});
+
 /* ---- Revealing the source ---------------------------------------------------------- */
 
 test("the innermost construct at the cursor shows its source, by its policy", () => {

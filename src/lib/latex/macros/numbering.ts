@@ -108,6 +108,14 @@ function stripTitle(text: string) {
   return text.replace(/\\(?:textbf|textit|emph|texttt|textsc|mathrm|mbox|textrm|textsf)\s*/g, "").replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
 }
 
+/** What a label after `\refstepcounter{counter}` refers to: `\refstepcounter{table}` makes a table label. */
+function counterKind(counter: string): NumberingKind {
+  if (SECTION_COUNTERS.includes(counter) || counter === "part") return "section";
+  if (counter === "equation" || counter === "figure" || counter === "table" || counter === "footnote") return counter;
+  if (/^enum(?:i|ii|iii|iv)$/.test(counter)) return "item";
+  return "theorem";
+}
+
 export type NumberingStart = {
   /** Counter values where the file is included (a chapter of a main file). */
   counters: Record<string, number>;
@@ -202,7 +210,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const counter = argumentText(node, 0)?.trim();
           if (counter) {
             step(counter);
-            if (command === "\\refstepcounter") setTarget({ number: format(counter), kind: "theorem", pos: node.from, env: counter });
+            if (command === "\\refstepcounter") setTarget({ number: format(counter), kind: counterKind(counter), pos: node.from, env: counter });
           }
         } else if (command === "\\footnotemark") {
           // A bare \footnotemark steps the counter; one with [n] does not.
