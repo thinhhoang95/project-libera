@@ -250,6 +250,39 @@ test("a restored LaTeX tab refreshes its viewport and reveals citations in the c
   }
 });
 
+test("a tab opened in the Visual mode leaves the preamble, follows renames and clears compiled data", async () => {
+  Object.defineProperty(globalThis, "Window", { value: dom.window.Window, configurable: true });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(dom.window.Range.prototype, { getClientRects: () => [], getBoundingClientRect: () => new dom.window.DOMRect() });
+  for (const key of ["DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
+  const { LatexEditor } = await import("../../src/components/libera/latex/latex-editor");
+  const { visualConfig, auxField } = await import("../../src/lib/latex/codemirror/visual/model");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const editorRef = { current: null as LatexEditorHandle | null };
+  const source = "\\documentclass{article}\n\\usepackage{x}\n\\begin{document}\nBody.\n\\end{document}\n";
+  const aux = { labels: { a: { number: "1", page: "1" } }, citations: {} };
+  const render = (documentPath: string, auxData: typeof aux | null) => act(async () => root.render(createElement(LatexEditor, {
+    documentPath, fileName: "main.tex", value: source, fontFamily: "monospace", fontSizePx: 14, lineHeight: 1.6,
+    initialViewState: { selectionStart: 5 }, diagnostics: [], project: { labels: [], bibEntries: [], files: [] }, editorRef,
+    onChange: () => {}, onEdit: () => {}, onCompile: () => {}, onForwardSync: () => {}, onAiError: () => {}, onAddSnippet: () => {}, onViewStateChange: () => {},
+    editorMode: "visual", auxData,
+  })));
+  try {
+    await render("Thesis/main.tex", aux);
+    const view = editorRef.current!.view;
+    assert.equal(view.state.selection.main.head, source.indexOf("Body."), "the restored cursor is moved out of the folded preamble");
+    assert.equal(view.state.field(auxField).labels.a?.number, "1");
+    await render("Thesis/Renamed/main.tex", null);
+    assert.equal(view.state.facet(visualConfig).documentPath, "Thesis/Renamed/main.tex", "the Visual mode follows the tab's new path");
+    assert.deepEqual(view.state.field(auxField).labels, {}, "no compiled data clears the previous labels");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
 test("command snippets produce valid LaTeX, including escaped braces", () => {
   for (const name of ["frac", "left\\{", "date", "includegraphics", "newcommand", "lim"]) {
     const command = LATEX_COMMANDS.find((candidate) => candidate.name === name)!;

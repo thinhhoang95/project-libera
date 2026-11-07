@@ -18,9 +18,10 @@ import { latexCompletionSource, latexFormattingKeymap, latexInputHandler, latexP
 import { latexLanguageSupport } from "@/lib/latex/codemirror/latex-language";
 import { latexMathPreview } from "@/lib/latex/codemirror/preview";
 import {
-  latexVisualMode, latexVisualState, setAuxData, setMacroSources, setNumberingStart, visualCompartment, visualEntrySelection, visualRevealRanges, type MacroSource,
+  latexVisualMode, latexVisualState, rebuildVisualEffect, setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, visualCompartment, visualEntrySelection,
+  visualRevealRanges, type MacroSource,
 } from "@/lib/latex/codemirror/visual";
-import type { LatexAuxData } from "@/lib/latex/aux-file";
+import { EMPTY_AUX, type LatexAuxData } from "@/lib/latex/aux-file";
 import type { NumberingStart } from "@/lib/latex/macros/numbering";
 import { previewSuggestions } from "@/lib/collab/suggestions/codemirror";
 import { encodeFilePath } from "@/components/libera/api-client";
@@ -91,6 +92,10 @@ type LatexEditorProps = {
   auxData?: LatexAuxData | null;
   /** Counter values where this chapter is included in its main file. */
   numberingStart?: NumberingStart | null;
+  /** Texts of the files this file includes in its body (by `loadKey`), whose counters advance its numbers. */
+  numberingIncludes?: ReadonlyMap<string, string>;
+  /** The file TeX compiles (a chapter's main file): figures resolve from its directory. */
+  rootPath?: string;
 };
 
 export type LatexEditorMode = "source" | "visual";
@@ -98,9 +103,10 @@ export type LatexEditorMode = "source" | "visual";
 const DRAFT_DELAY_MS = 250;
 const lineNumbersCompartment = new Compartment();
 
-function visualExtensions(documentPath: string) {
+function visualExtensions(documentPath: string, rootPath: string) {
   return latexVisualMode({
     documentPath,
+    rootPath,
     fileUrl: (path) => `/api/files/raw/${encodeFilePath(path)}`,
   });
 }
@@ -137,8 +143,9 @@ function toEditorDiagnostics(state: EditorState, diagnostics: LatexDiagnostic[])
 export function LatexEditor({
   documentPath, fileName, value, fontFamily, fontSizePx, lineHeight, initialViewState, diagnostics, project, editorRef,
   onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet, collab,
-  editorMode = "source", macroSources, auxData, numberingStart,
+  editorMode = "source", macroSources, auxData, numberingStart, numberingIncludes, rootPath,
 }: LatexEditorProps) {
+  const compileRoot = rootPath ?? documentPath;
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -152,7 +159,9 @@ export function LatexEditor({
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath, editorMode });
+  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath, editorMode, compileRoot });
+  /** The paths the installed Visual mode resolves against, to reconfigure it when the tab is renamed or moved. */
+  const visualPathsRef = useRef<string | null>(null);
   const shared = !!collab;
 
   const publishDraft = useCallback(() => {
@@ -202,7 +211,8 @@ export function LatexEditor({
       { key: "Mod-Shift-j", run: (target) => { callbacks.current.onForwardSync(compiledLocationForPosition(target.state, target.state.selection.main.head)); return true; } },
     ]));
 
-    const state = EditorState.create({
+    if (visual) visualPathsRef.current = `${initialRef.current.documentPath}\u0000${initialRef.current.compileRoot}`;
+    const created0 = EditorState.create({
       doc: initialValue,
       selection: restore?.selectionStart !== undefined
         ? { anchor: Math.min(restore.selectionStart, initialValue.length), head: Math.min(restore.selectionEnd ?? restore.selectionStart, initialValue.length) }
@@ -248,7 +258,7 @@ export function LatexEditor({
           forEachDiagnostic(target, (diagnostic, from, to) => { if (diagnostic.severity === "error") ranges.push({ from, to }); });
           return ranges;
         }),
-        visualCompartment.of(visual ? visualExtensions(initialRef.current.documentPath) : []),
+        visualCompartment.of(visual ? visualExtensions(initialRef.current.documentPath, initialRef.current.compileRoot) : []),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
         EditorView.contentAttributes.of({ "aria-label": "LaTeX source editor", spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
         EditorView.updateListener.of((update) => {
@@ -292,6 +302,9 @@ export function LatexEditor({
         }),
       ],
     });
+    // Opening straight into the Visual mode: the restored cursor must not sit inside the folded preamble either.
+    const entry = visual ? visualEntrySelection(created0) : null;
+    const state = entry ? created0.update({ selection: entry }).state : created0;
 
     const created = new EditorView({ state, parent: host });
     binding?.attach(created);
@@ -414,29 +427,43 @@ export function LatexEditor({
     // Compare with what the view has, not with the last request: a recreated view starts from its own state.
     const current = visualCompartment.get(view.state);
     const active = Array.isArray(current) ? current.length > 0 : !!current;
-    if (active === visualActive) return;
+    const paths = `${documentPath}\u0000${compileRoot}`;
+    if (active === visualActive) {
+      // Still in the Visual mode, but the tab was renamed or moved (or its main file changed): images resolve anew.
+      if (active && visualPathsRef.current !== paths) {
+        visualPathsRef.current = paths;
+        view.dispatch({ effects: [visualCompartment.reconfigure(visualExtensions(documentPath, compileRoot)), rebuildVisualEffect.of(null)] });
+      }
+      return;
+    }
+    visualPathsRef.current = visualActive ? paths : null;
     const selection = visualActive ? visualEntrySelection(view.state) : null;
     view.dispatch({
       effects: [
-        visualCompartment.reconfigure(visualActive ? visualExtensions(documentPath) : []),
+        visualCompartment.reconfigure(visualActive ? visualExtensions(documentPath, compileRoot) : []),
         lineNumbersCompartment.reconfigure(visualActive ? [] : lineNumbers()),
       ],
       ...(selection ? { selection } : {}),
       scrollIntoView: true,
     });
-  }, [documentPath, view, visualActive]);
+  }, [compileRoot, documentPath, view, visualActive]);
 
   useEffect(() => {
     if (view && macroSources && isTexFile) view.dispatch({ effects: setMacroSources.of(macroSources) });
   }, [isTexFile, macroSources, view]);
 
   useEffect(() => {
-    if (view && auxData && isTexFile) view.dispatch({ effects: setAuxData.of(auxData) });
+    // No compiled data (another compile target, or none yet) clears the labels of the previous one.
+    if (view && auxData !== undefined && isTexFile) view.dispatch({ effects: setAuxData.of(auxData ?? EMPTY_AUX) });
   }, [auxData, isTexFile, view]);
 
   useEffect(() => {
     if (view && isTexFile && numberingStart !== undefined) view.dispatch({ effects: setNumberingStart.of(numberingStart) });
   }, [isTexFile, numberingStart, view]);
+
+  useEffect(() => {
+    if (view && isTexFile && numberingIncludes) view.dispatch({ effects: setNumberingIncludes.of(numberingIncludes) });
+  }, [isTexFile, numberingIncludes, view]);
 
   return (
     <div

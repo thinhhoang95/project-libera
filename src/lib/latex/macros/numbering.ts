@@ -178,7 +178,14 @@ export type NumberingStart = {
   appendix: boolean;
 };
 
-export type NumberingOptions = { start?: NumberingStart | null };
+/** A file the document `\input`s or `\include`s, parsed: its counters advance the document's. */
+export type IncludedFile = { tree: Tree; read: Read };
+
+export type NumberingOptions = {
+  start?: NumberingStart | null;
+  /** The files `\input{name}` and `\include{name}` read, by name as written (see definitions.ts `loadKey`); null when unknown. */
+  includes?: ((name: string) => IncludedFile | null) | null;
+};
 
 /** Numbers the document. `read` gives the text of a range of the document `tree` belongs to. */
 export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinitions, options: NumberingOptions = {}): LatexNumbering {
@@ -266,11 +273,40 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     return null;
   };
 
-  tree.iterate({
+  let includeDepth = 0;
+  const included = new Set<string>();
+  /** Numbers an `\input`/`\include`d file in place: its counters count, its entries and labels (positions in another file) do not. */
+  const numberIncluded = (node: SyntaxNode) => {
+    const argument = node.getChild("InputArgument") ?? node.getChild("IncludeArgument");
+    const name = argument ? read(argument.from + 1, argument.to - 1).trim() : "";
+    const file = name && includeDepth < 4 && !included.has(name) ? options.includes?.(name) : null;
+    if (!file) return;
+    const entryCount = entries.length;
+    const savedLabels = new Map(labels);
+    const savedRead = read;
+    included.add(name);
+    includeDepth++;
+    read = file.read;
+    try {
+      file.tree.iterate(visitor);
+    } finally {
+      read = savedRead;
+      includeDepth--;
+      included.delete(name);
+      entries.length = entryCount;
+      labels.clear();
+      for (const [key, target] of savedLabels) labels.set(key, target);
+      // A label right after the include refers to the last number in it, which is not in this file.
+      if (globalTarget) globalTarget = { ...globalTarget, pos: -1 };
+    }
+  };
+
+  const visitor: Parameters<Tree["iterate"]>[0] = {
     enter(ref) {
       const name = ref.name;
       const node = ref.node;
       if (name === "Comment" || name === "VerbatimEnvironment" || name === "TikzPictureEnvironment") return false;
+      if (name === "Input" || name === "Include") { numberIncluded(node); return false; }
       if (name in SECTION_LEVELS) {
         const command = node.getChild("SectioningCommand");
         if (!command) return;
@@ -450,7 +486,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         if (name === "Environment" && group?.node === ref.from) { subequations.pop(); counters.set("equation", group.saved); }
       }
     },
-  });
+  };
+  tree.iterate(visitor);
 
   // An entry is recorded where its construct starts, which can be before entries already recorded
   // (a figure's number comes from its caption): lookups search by position.

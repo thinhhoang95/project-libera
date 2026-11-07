@@ -430,6 +430,68 @@ test("a chapter's counters continue from where the main file includes it", async
   assert.equal(await chapterNumberingStart("nb/other.tex", "nb/main.tex", async (path) => files[path] ?? ""), null);
 });
 
+test("a main file's numbers count the chapters it includes", () => {
+  const chapter = String.raw`\section{Background}\begin{equation}x\label{eq:in}\end{equation}`;
+  const main = String.raw`\documentclass{article}
+\begin{document}
+\section{Intro}
+\input{chapters/background}
+\section{Method}\label{sec:method}
+\end{document}`;
+  const tree = parser.parse(chapter);
+  const numbering = computeLatexNumbering(parser.parse(main), (from, to) => main.slice(from, to), defsOf(main), {
+    includes: (name) => (name === "chapters/background" ? { tree, read: (from, to) => chapter.slice(from, to) } : null),
+  });
+  assert.equal(numbering.labels.get("sec:method")?.number, "3");
+  assert.equal(numbering.labels.get("eq:in"), undefined, "labels in the included file are its own (the .aux has them)");
+  assert.deepEqual(numbering.entries.map((entry) => entry.number), ["1", "3"]);
+});
+
+test("a chapter's inputs resolve from the main file's directory, with the theorems its macro files define", async () => {
+  const files: Record<string, string> = {
+    "nb/main.tex": String.raw`\documentclass{article}
+\input{macros}
+\begin{document}
+\input{chapters/one}
+\input{chapters/two}
+\end{document}`,
+    "nb/macros.tex": String.raw`\newtheorem{theorem}{Theorem}`,
+    "nb/chapters/one.tex": String.raw`\section{One}\input{chapters/one-more}`,
+    "nb/chapters/one-more.tex": String.raw`\begin{theorem}a\end{theorem}\begin{theorem}b\end{theorem}`,
+    "nb/chapters/two.tex": String.raw`\begin{theorem}c\end{theorem}`,
+  };
+  const base = collectLatexDefinitions([
+    { path: "nb/main.tex", text: files["nb/main.tex"].slice(0, files["nb/main.tex"].indexOf("\\begin{document}")) },
+    { path: "nb/macros.tex", text: files["nb/macros.tex"], loadedBy: "nb/main.tex", key: loadKey("input", "macros") },
+  ]);
+  const start = await chapterNumberingStart("nb/chapters/two.tex", "nb/main.tex", async (path) => files[path] ?? "", base);
+  assert.equal(start?.counters.theorem, 2);
+});
+
+test("macro sources are found through nested inputs, each marked with what loads it", async () => {
+  const { collectBodyIncludes, collectMacroSources } = await import("../../src/components/libera/latex/latex-dependencies");
+  const files: Record<string, string> = {
+    "nb/macros.tex": String.raw`\newcommand\m{M}\input{defs/symbols}`,
+    "nb/defs/symbols.tex": String.raw`\newcommand\s{S}`,
+    "nb/mine.sty": String.raw`\newcommand\p{P}`,
+    "nb/ch1.tex": String.raw`\input{ch1-part}`,
+    "nb/ch1-part.tex": String.raw`\section{Part}`,
+  };
+  const known = new Set(Object.keys(files));
+  const readText = async (path: string) => files[path] ?? "";
+  const { sources, paths } = await collectMacroSources({
+    filePath: "nb/main.tex", rootPath: "nb/main.tex", ownPreamble: String.raw`\documentclass{article}\input{macros}\usepackage{mine}`, known, readText, version: () => "1",
+  });
+  assert.deepEqual(sources.map((source) => [source.path, source.loadedBy, source.key]), [
+    ["nb/macros.tex", "", "input:macros"], ["nb/mine.sty", "", "package:mine"], ["nb/defs/symbols.tex", "nb/macros.tex", "input:defs/symbols"],
+  ]);
+  assert.deepEqual(paths, ["nb/macros.tex", "nb/mine.sty", "nb/defs/symbols.tex"]);
+  const defs = collectLatexDefinitions(sources, { text: String.raw`\documentclass{article}\input{macros}\usepackage{mine}\begin{document}\end{document}` });
+  assert.equal(macroAt(defs, "s", 0)?.body, "S");
+  const { includes } = await collectBodyIncludes({ filePath: "nb/main.tex", rootPath: "nb/main.tex", text: String.raw`\begin{document}\include{ch1}\end{document}`, known, readText });
+  assert.deepEqual([...includes.keys()], ["input:ch1", "input:ch1-part"]);
+});
+
 /* ---- The compiled .aux -------------------------------------------------------- */
 
 test("labels and citation labels are read from the .aux, in plain and hyperref forms", () => {

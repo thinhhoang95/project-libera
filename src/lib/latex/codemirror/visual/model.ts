@@ -7,8 +7,10 @@ import { EMPTY_NUMBERING, type LatexNumbering, type NumberingStart } from "../..
  * Nothing here changes the document. */
 
 export type VisualConfig = {
-  /** Notebook path of the open file, to resolve figures and links. */
+  /** Notebook path of the open file. */
   documentPath: string;
+  /** Notebook path of the file TeX compiles (the main file of a chapter): figures resolve from its directory, as TeX does. Defaults to `documentPath`. */
+  rootPath?: string;
   /** URL of a notebook file, for image previews; null when it cannot be shown. */
   fileUrl: (notebookPath: string) => string | null;
   /** Opens an http(s) or mailto link. */
@@ -40,6 +42,17 @@ export const setAuxData = StateEffect.define<LatexAuxData>();
 export const setNumbering = StateEffect.define<LatexNumbering>();
 export const togglePreamble = StateEffect.define<boolean>();
 export const setNumberingStart = StateEffect.define<NumberingStart | null>();
+
+/** Texts of the files this file `\input`s or `\include`s in its body, by `loadKey("input", name)`: their counters advance its numbers. */
+export const setNumberingIncludes = StateEffect.define<ReadonlyMap<string, string>>();
+
+export const numberingIncludesField = StateField.define<ReadonlyMap<string, string>>({
+  create: () => new Map(),
+  update(value, tr) {
+    for (const effect of tr.effects) if (effect.is(setNumberingIncludes)) value = effect.value;
+    return value;
+  },
+});
 
 /** Counter values where this file is included in its main file (null for a main file). */
 export const numberingStartField = StateField.define<NumberingStart | null>({
@@ -182,4 +195,4 @@ export function visualAux(state: EditorState) {
   return state.field(auxField, false) ?? EMPTY_AUX;
 }
 
-export const visualStateFields = [macroSourcesField, auxField, numberingField, numberingStartField, preambleOpenField, definitionsField];
+export const visualStateFields = [macroSourcesField, auxField, numberingField, numberingStartField, numberingIncludesField, preambleOpenField, definitionsField];

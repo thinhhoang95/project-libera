@@ -278,7 +278,7 @@ export class MacroPieceWidget extends VisualWidget {
 
 /** `\ensuremath`-style macros and `\(…\)` with macros inside: covered by MathWidget. Images outside figures: */
 export class ImageWidget extends VisualWidget {
-  constructor(readonly path: string, readonly length: number) { super(`${path}\u0000${length}`); }
+  constructor(readonly path: string, readonly length: number, readonly base = "") { super(`${path}\u0000${length}\u0000${base}`); }
   toDOM(view: EditorView) {
     const dom = el("span", "cm-vis-image-inline");
     renderImage(dom, view, this.path);
@@ -293,11 +293,28 @@ export class ImageWidget extends VisualWidget {
   ignoreEvent() { return true; }
 }
 
-/** The notebook path of a graphics file named in the document, with the extension LaTeX would find. */
+/** The notebook path of a graphics file named in the document, from the compile root's directory, as TeX finds it. */
 export function resolveGraphicsPath(view: EditorView, name: string) {
+  return graphicsCandidates(view, name)[0] ?? null;
+}
+
+/** Where TeX looks for a graphics file: the compile root's directory, then each `\graphicspath` directory. */
+export function graphicsCandidates(view: EditorView, name: string) {
   const config = view.state.facet(visualConfig);
-  const resolved = resolveRelativeNotebookPath(config.documentPath, name.trim());
-  return resolved;
+  const base = config.rootPath || config.documentPath;
+  const directories = ["", ...visualDefinitions(view.state).graphicsPaths];
+  const found: string[] = [];
+  for (const directory of directories) {
+    const resolved = resolveRelativeNotebookPath(base, `${directory}${name.trim()}`);
+    if (resolved && !found.includes(resolved)) found.push(resolved);
+  }
+  return found;
+}
+
+/** What image widgets resolve against, part of their keys so they redraw when it changes. */
+export function graphicsBase(state: EditorView["state"]) {
+  const config = state.facet(visualConfig);
+  return `${config.rootPath || config.documentPath}`;
 }
 
 const pdfThumbnails = new Map<string, Promise<string | null>>();
@@ -328,13 +345,12 @@ const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "pdf", "svg", "gif", "webp", "ep
 /** Draws a graphics file into `container`: an image, a PDF's first page, or a labelled placeholder. */
 function renderImage(container: HTMLElement, view: EditorView, name: string, className = "cm-vis-image") {
   const config = view.state.facet(visualConfig);
-  const resolved = resolveGraphicsPath(view, name);
+  const resolvedPaths = graphicsCandidates(view, name);
   const placeholder = (message: string) => {
     container.replaceChildren(el("span", "cm-vis-image-placeholder", message));
   };
-  if (!resolved) { placeholder(`${name} (outside the notebook)`); return; }
-  const extension = /\.([a-z0-9]+)$/i.exec(resolved)?.[1]?.toLowerCase();
-  const candidates = extension ? [resolved] : IMAGE_EXTENSIONS.map((ext) => `${resolved}.${ext}`);
+  if (!resolvedPaths.length) { placeholder(`${name} (outside the notebook)`); return; }
+  const candidates = resolvedPaths.flatMap((resolved) => (/\.([a-z0-9]+)$/i.test(resolved) ? [resolved] : IMAGE_EXTENSIONS.map((ext) => `${resolved}.${ext}`)));
   const tryNext = (index: number) => {
     const path = candidates[index];
     if (!path) { placeholder(`${name} (not found)`); return; }

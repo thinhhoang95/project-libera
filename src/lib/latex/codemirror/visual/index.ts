@@ -15,7 +15,8 @@ import { visualStylePlugin } from "./style";
  * touched. */
 
 export { visualStateFields };
-export { setAuxData, setMacroSources, setNumberingStart, type MacroSource } from "./model";
+export { setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, type MacroSource } from "./model";
+export { rebuildVisualEffect } from "./structural";
 export { visualRevealRanges } from "./structural";
 export { toggleLatexFormat, isFormatActive } from "./keys";
 

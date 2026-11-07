@@ -11,7 +11,7 @@ import { CONTROL_SYMBOLS, cssColor, LIGATURE_CHARS, readAccent, SYMBOL_COMMANDS,
 import { parseTabular } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
-  ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, FigureWidget, FootnoteMarkWidget, HeadingNumberWidget, ImageWidget,
+  ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
   ItemMarkerWidget, LineBreakWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, type FigureSpec,
 } from "./widgets";
 
@@ -521,7 +521,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const argument = node.getChild("IncludeGraphicsArgument")?.getChild("FilePathArgument") ?? node.getChild("IncludeGraphicsArgument");
           const inner = argument && argumentInner(argument);
           if (!inner || hasDirectError(node)) return false;
-          emit({ kind: "image", from: node.from, to: node.to, reveal: "strict", replaces: [{ from: node.from, to: node.to, widget: new ImageWidget(read(state, inner.from, inner.to), node.to - node.from) }] });
+          emit({ kind: "image", from: node.from, to: node.to, reveal: "strict", replaces: [{ from: node.from, to: node.to, widget: new ImageWidget(read(state, inner.from, inner.to), node.to - node.from, graphicsBase(state)) }] });
           return false;
         }
         case "LineBreak": {
@@ -838,6 +838,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState): FigureSp
     caption: captionRange ? state.doc.sliceString(captionRange.from, captionRange.to) : null,
     captionPos: captionRange?.from ?? node.from,
     start: node.from,
+    base: images.length ? graphicsBase(state) : undefined,
     kind: node.name === "TableEnvironment" ? "table" : "figure",
     numberOffset: 0,
     length: node.to - node.from,

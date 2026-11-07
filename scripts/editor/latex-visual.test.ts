@@ -21,7 +21,7 @@ import { transparentPlan } from "../../src/lib/latex/codemirror/visual/transpare
 import { latexMathPreview } from "../../src/lib/latex/codemirror/preview";
 import { setMacroSources } from "../../src/lib/latex/codemirror/visual/model";
 import { showTooltip } from "@codemirror/view";
-import { isEditingCell, refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
+import { graphicsCandidates, isEditingCell, refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
 import { stateReferenceText } from "../../src/lib/latex/codemirror/visual/references";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
@@ -359,6 +359,15 @@ test("transparent plans and formula previews follow the definitions they depend 
   const before = state.facet(showTooltip);
   const after = state.update({ effects: setMacroSources.of([{ path: "nb/macros.tex", text: "\\newcommand{\\R}{\\mathbb{R}}", version: "1" }]) }).state;
   assert.notEqual(after.facet(showTooltip)[0], before[0], "the preview is drawn again with the new definition");
+});
+
+test("graphics resolve from the compile root's directory and \\graphicspath, as TeX finds them", () => {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  const doc = "\\graphicspath{{figures/}}\n\\begin{document}\n\\includegraphics{plot}\n\\end{document}";
+  const view = new EditorView({ parent, state: EditorState.create({ doc, extensions: [latexLanguageSupport("main.tex", "tree"), latexVisualState(), latexVisualMode({ documentPath: "nb/chapters/one.tex", rootPath: "nb/main.tex" })] }) });
+  assert.deepEqual(graphicsCandidates(view, "plot"), ["nb/plot", "nb/figures/plot"]);
+  view.destroy();
 });
 
 /* ---- Revealing the source ---------------------------------------------------------- */
