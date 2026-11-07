@@ -1,8 +1,8 @@
-import { isolateHistory } from "@codemirror/commands";
 import { syntaxTree } from "@codemirror/language";
 import { MapMode, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { ySyncFacet } from "y-codemirror.next";
+import { dispatchAsOneStep as dispatchWidgetEdit } from "../../../collab/undo-boundary";
+import { visualConfig } from "./model";
 import { fragmentContext, setTableHooks, type TableElement } from "./widgets";
 import { renderLatexFragment } from "./render-fragment";
 import { deleteColumn, deleteRow, insertColumn, insertRow, parseTabular, setCellText, type TableCell, type TableChange, type TableModel } from "./table-model";
@@ -25,21 +25,25 @@ function tableAt(view: EditorView, start: number): { model: TableModel; source: 
   return null;
 }
 
-/** One undo step that does not merge with typing, on local and shared tabs alike. */
+/** One undo step that does not merge with typing, on local and shared tabs alike (suggest mode's history too). */
 function dispatchAsOneStep(view: EditorView, changes: TableChange[], userEvent: string) {
-  const config = view.state.facet(ySyncFacet) as unknown as { undoManager?: { stopCapturing?: () => void } } | undefined;
-  config?.undoManager?.stopCapturing?.();
-  view.dispatch({ changes, userEvent, annotations: isolateHistory.of("full") });
-  config?.undoManager?.stopCapturing?.();
+  dispatchWidgetEdit(view, { changes, userEvent });
 }
 
-/** The cell element at (row, cell) of the table that now starts at `start`, after a redraw. */
-function findCell(view: EditorView, start: number, row: number, cell: number) {
-  for (const table of view.contentDOM.querySelectorAll<TableElement>(".cm-vis-table")) {
-    if (table.liberaTableStart?.() !== start) continue;
-    return table.querySelector<HTMLElement>(`.cm-vis-table-cell[data-row="${row}"][data-cell="${cell}"]`);
-  }
-  return null;
+/** Whether the view may still be edited through the grid (a viewer, a read-only tab, or a closed view may not). */
+function canEdit(view: EditorView) {
+  return view.dom.isConnected && !view.state.readOnly && view.state.facet(visualConfig).editable();
+}
+
+/** A cell's editable text range: a \multicolumn's content, or the cell's text. */
+function cellRange(cell: TableCell) {
+  return cell.contentFrom !== undefined && cell.contentTo !== undefined ? { from: cell.contentFrom, to: cell.contentTo } : { from: cell.from, to: cell.to };
+}
+
+function cellText(view: EditorView, cell: TableCell | undefined) {
+  if (!cell) return null;
+  const range = cellRange(cell);
+  return view.state.sliceDoc(range.from, range.to);
 }
 
 /**
@@ -48,11 +52,18 @@ function findCell(view: EditorView, start: number, row: number, cell: number) {
  * or a menu command finds the same table and cell, or knows they are gone.
  */
 type TableSession = { view: EditorView; start: number | null; cellFrom: number | null; cellTo: number | null };
+/**
+ * An open cell editor, kept outside the cell's DOM: a co-author's edit to the
+ * table redraws its widget, and the draft carries on in the new cell.
+ */
+type CellSession = TableSession & { row: number; cell: number; original: string; typed: boolean; td: HTMLElement; abandon: () => void };
 const sessions = new Set<TableSession>();
+const cellSessions = new Set<CellSession>();
 
+/** Maps open editors' and menus' positions through every change, remote ones included; a deleted one becomes null. */
 const sessionTracker = EditorView.updateListener.of((update) => {
   if (!update.docChanged) return;
-  for (const session of sessions) {
+  for (const session of [...sessions, ...cellSessions]) {
     if (session.view !== update.view) continue;
     const map = (pos: number | null, assoc: -1 | 1) => (pos === null ? null : update.changes.mapPos(pos, assoc, MapMode.TrackDel));
     session.start = map(session.start, 1);
@@ -60,11 +71,6 @@ const sessionTracker = EditorView.updateListener.of((update) => {
     session.cellTo = map(session.cellTo, 1);
   }
 });
-
-/** A cell's editable text range: a \multicolumn's content, or the whole cell. */
-function cellRange(cell: TableCell) {
-  return cell.contentFrom !== undefined && cell.contentTo !== undefined ? { from: cell.contentFrom, to: cell.contentTo } : { from: cell.from, to: cell.to };
-}
 
 /** The session's table and cell in the current document, or null when either is gone or changed shape. */
 function resolveSession(view: EditorView, session: TableSession) {
@@ -81,72 +87,103 @@ function resolveSession(view: EditorView, session: TableSession) {
   return null;
 }
 
-function openSession(view: EditorView, start: number, cell: TableCell): TableSession {
-  const range = cellRange(cell);
-  const session: TableSession = { view, start, cellFrom: range.from, cellTo: range.to };
-  sessions.add(session);
-  return session;
+/** Closes a view's cell editors and table menu without writing: the view is going away, or leaving the Visual mode. */
+export function closeTableSessions(view: EditorView) {
+  for (const session of [...cellSessions]) if (session.view === view) session.abandon();
+  if (openMenu?.view === view) openMenu.close();
 }
 
-function editCell(view: EditorView, td: HTMLElement, tableStart: () => number | null, row: number, cellIndex: number) {
-  const start = tableStart();
-  if (start === null) return;
-  const table = tableAt(view, start);
+/** A redrawn table: an editor open in the old one continues in the same cell, with its draft. */
+function adoptCellSessions(view: EditorView, table: TableElement) {
+  for (const session of [...cellSessions]) {
+    if (session.view !== view || session.td.isConnected || !table.liberaTableStart || table.liberaTableStart() !== session.start) continue;
+    // The cell the editor's text range maps to, else the same place in the grid.
+    const found = resolveSession(view, session);
+    const row = found?.row ?? session.row;
+    const cell = found?.cellIndex ?? session.cell;
+    const td = table.querySelector<HTMLElement>(`.cm-vis-table-cell[data-row="${row}"][data-cell="${cell}"]`);
+    if (!td) continue;
+    const draft = session.td.textContent ?? "";
+    const { original, typed } = session;
+    session.abandon();
+    editCell(view, td, table.liberaTableStart, row, cell, { original, draft, typed });
+  }
+}
+
+/** The cell element at (row, cell) of the table that now starts at `start`, after a redraw. */
+function findCell(view: EditorView, start: number, row: number, cell: number) {
+  for (const table of view.contentDOM.querySelectorAll<TableElement>(".cm-vis-table")) {
+    if (table.liberaTableStart?.() !== start) continue;
+    return table.querySelector<HTMLElement>(`.cm-vis-table-cell[data-row="${row}"][data-cell="${cell}"]`);
+  }
+  return null;
+}
+
+function editCell(view: EditorView, td: HTMLElement, tableStart: () => number | null, row: number, cellIndex: number, resume?: { original: string; draft: string; typed: boolean }) {
+  const begin = tableStart();
+  if (begin === null || !canEdit(view)) return;
+  const table = tableAt(view, begin);
   const cell = table?.model.rows[row]?.cells[cellIndex];
   if (!table || !cell || cell.sourceOnly) return;
-  const session = openSession(view, start, cell);
-  const original = view.state.sliceDoc(session.cellFrom!, session.cellTo!);
-  const rendered = Array.from(td.childNodes);
-  td.contentEditable = "true";
+  const range = cellRange(cell);
+  const original = resume?.original ?? view.state.sliceDoc(range.from, range.to);
+  td.setAttribute("contenteditable", "true");
   td.spellcheck = false;
-  td.textContent = original;
+  td.textContent = resume?.draft ?? original;
   td.focus();
   const selection = window.getSelection();
-  const range = document.createRange();
-  range.selectNodeContents(td);
+  const domRange = document.createRange();
+  domRange.selectNodeContents(td);
+  // A resumed draft keeps typing at its end.
+  if (resume) domRange.collapse(false);
   selection?.removeAllRanges();
-  selection?.addRange(range);
+  selection?.addRange(domRange);
   let done = false;
-  let typed = false;
-  const onInput = () => { typed = true; };
-  const finish = (save: boolean, next: -1 | 0 | 1 = 0) => {
-    if (done) return;
+  const session: CellSession = {
+    view, start: begin, cellFrom: range.from, cellTo: range.to, row, cell: cellIndex, original, typed: resume?.typed ?? false, td, abandon: () => undefined,
+  };
+  cellSessions.add(session);
+  const onInput = () => { session.typed = true; };
+  const detach = () => {
     done = true;
-    sessions.delete(session);
+    cellSessions.delete(session);
     td.removeEventListener("keydown", onKey, true);
     td.removeEventListener("blur", onBlur);
     td.removeEventListener("input", onInput);
-    td.contentEditable = "false";
+    td.setAttribute("contenteditable", "false");
+  };
+  session.abandon = () => { if (!done) detach(); };
+  /** The cell shows the source it has now (not what it showed when editing began). */
+  const showCurrent = (text: string | null) => td.replaceChildren(renderLatexFragment(text ?? original, fragmentContext(view)));
+  const finish = (save: boolean, next: -1 | 0 | 1 = 0) => {
+    if (done) return;
+    detach();
     // The text as typed. Editable elements turn spaces into no-break spaces; the cell had plain ones.
     let text = td.textContent ?? "";
     if (!original.includes(" ")) text = text.replace(/ /g, " ");
+    // Find the cell again: edits elsewhere (a collaborator's too) may have moved it.
+    const found = resolveSession(view, session);
+    const now = found ? cellText(view, found.cell) : null;
     // Opening and leaving a cell without typing writes nothing.
-    const changed = typed && text !== original;
-    const found = changed && save ? resolveSession(view, session) : null;
-    let saved = false;
-    if (changed && save) {
-      if (!found || view.state.readOnly) {
+    if (save && session.typed && text !== original) {
+      if (!found || !canEdit(view)) {
+        showCurrent(now);
         window.alert(`The table changed while you were editing this cell, so your text was not saved:\n\n${text}`);
-      } else {
-        const range = cellRange(found.cell);
-        const now = view.state.sliceDoc(range.from, range.to);
-        if (now === original || window.confirm("A co-author changed this cell while you were editing it. Replace their text with yours?")) {
-          dispatchAsOneStep(view, [setCellText(found.cell, text)], "input.visual.table");
-          saved = true;
-        }
-      }
-    }
-    if (!saved) td.replaceChildren(...rendered);
-    const at = found ?? (session.start !== null ? { table: tableAt(view, session.start), row, cellIndex } : null);
+      } else if (now === original || window.confirm("A co-author changed this cell while you were editing it. Replace their text with yours?")) {
+        // Only the characters that changed are written.
+        dispatchAsOneStep(view, [setCellText(found.cell, text, now ?? undefined)], "input.visual.table");
+      } else showCurrent(now);
+    } else showCurrent(now);
     const base = session.start;
-    if (next !== 0 && base !== null && at) {
+    const at = found ? { row: found.row, cellIndex: found.cellIndex } : { row, cellIndex };
+    if (save && next !== 0 && base !== null) {
       requestAnimationFrame(() => {
         const rows = tableAt(view, base)?.model.rows;
         const sibling = findCell(view, base, at.row, at.cellIndex + next) ?? findCell(view, base, at.row + next, next > 0 ? 0 : (rows?.[at.row + next]?.cells.length ?? 1) - 1);
         if (sibling) editCell(view, sibling, () => base, Number(sibling.dataset.row), Number(sibling.dataset.cell));
         else view.focus();
       });
-    } else view.focus();
+    } else if (view.dom.isConnected) view.focus();
   };
   const onKey = (event: KeyboardEvent) => {
     event.stopPropagation();
@@ -154,7 +191,14 @@ function editCell(view: EditorView, td: HTMLElement, tableStart: () => number | 
     else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); finish(true); }
     else if (event.key === "Tab") { event.preventDefault(); finish(true, event.shiftKey ? -1 : 1); }
   };
-  const onBlur = () => finish(true);
+  const onBlur = () => {
+    // Removed from the page because the table was redrawn: the new table adopts the draft (adoptCellSessions).
+    if (!td.isConnected) {
+      requestAnimationFrame(() => { if (!done && !td.isConnected) session.abandon(); });
+      return;
+    }
+    finish(true);
+  };
   td.addEventListener("keydown", onKey, true);
   td.addEventListener("blur", onBlur);
   td.addEventListener("input", onInput);
@@ -168,7 +212,9 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
   if (!table || !clicked) return;
   // The changes are planned again when an item is chosen, against the table as it is then:
   // a collaborator's edit while the menu is open moves the offsets.
-  const session = openSession(view, start, clicked);
+  const clickedRange = cellRange(clicked);
+  const session: TableSession = { view, start, cellFrom: clickedRange.from, cellTo: clickedRange.to };
+  sessions.add(session);
   type Plan = (model: TableModel, source: string, from: number, row: number, column: number) => TableChange[] | null;
   const items: Array<[string, Plan]> = [
     ["Insert row above", (model, source, from, r) => insertRow(model, source, from, r - 1)],
@@ -188,45 +234,70 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
     if (!found) return null;
     return plan(found.table.model, found.table.source, found.table.from, found.row, columnOf(found.table.model, found.row, found.cellIndex));
   };
-  document.querySelector(".cm-vis-table-menu")?.remove();
+  openMenu?.close();
   const menu = document.createElement("div");
   menu.className = "cm-vis-table-menu";
   menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Table");
   menu.style.left = `${Math.min(event.clientX, window.innerWidth - 200)}px`;
   menu.style.top = `${Math.min(event.clientY, window.innerHeight - 220)}px`;
-  const close = () => { sessions.delete(session); menu.remove(); document.removeEventListener("mousedown", outside, true); };
+  const returnFocus = document.activeElement as HTMLElement | null;
+  const close = () => {
+    sessions.delete(session);
+    if (openMenu?.menu === menu) openMenu = null;
+    menu.remove();
+    document.removeEventListener("mousedown", outside, true);
+  };
   const outside = (down: MouseEvent) => { if (!menu.contains(down.target as Node)) close(); };
+  const buttons: HTMLButtonElement[] = [];
   for (const [label, plan] of items) {
     const button = document.createElement("button");
     button.type = "button";
     button.setAttribute("role", "menuitem");
+    button.tabIndex = -1;
     button.textContent = label;
     const planned = planNow(plan);
     if (!planned || !planned.length) {
       button.disabled = true;
       button.title = "Not possible here (a \\multicolumn spans it, or the column specification repeats)";
     }
-    button.addEventListener("mousedown", (down) => {
-      down.preventDefault();
-      const changes = view.state.readOnly ? null : planNow(plan);
+    // Pressing keeps the focus where it is; the click (also from Enter or Space) acts.
+    button.addEventListener("mousedown", (down) => down.preventDefault());
+    button.addEventListener("click", (click) => {
+      click.preventDefault();
+      const changes = canEdit(view) ? planNow(plan) : null;
       close();
+      if (view.dom.isConnected) view.focus();
       if (changes?.length) dispatchAsOneStep(view, changes, "input.visual.table");
-      else if (planned?.length) window.alert("The table changed while this menu was open; nothing was changed. Try again.");
+      else if (planned?.length && canEdit(view)) window.alert("The table changed while this menu was open; nothing was changed. Try again.");
     });
+    buttons.push(button);
     menu.append(button);
   }
+  // A menu from the keyboard too: arrows move, Escape closes and returns the focus.
+  menu.addEventListener("keydown", (key) => {
+    const enabled = buttons.filter((button) => !button.disabled);
+    const index = enabled.indexOf(document.activeElement as HTMLButtonElement);
+    if (key.key === "Escape") { key.preventDefault(); close(); returnFocus?.focus(); }
+    else if (key.key === "ArrowDown" || key.key === "ArrowUp") {
+      key.preventDefault();
+      enabled[(index + (key.key === "ArrowDown" ? 1 : enabled.length - 1)) % enabled.length]?.focus();
+    } else if (key.key === "Home" || key.key === "End") { key.preventDefault(); (key.key === "Home" ? enabled[0] : enabled.at(-1))?.focus(); }
+    else if (key.key === "Tab") { key.preventDefault(); close(); returnFocus?.focus(); }
+  });
   document.body.append(menu);
   document.addEventListener("mousedown", outside, true);
+  openMenu = { view, menu, close };
+  buttons.find((button) => !button.disabled)?.focus();
 }
+
+let openMenu: { view: EditorView; menu: HTMLElement; close: () => void } | null = null;
 
 /** Installs the table editor; the widgets call it through hooks. */
 export function installTableEditor(): Extension {
-  setTableHooks({ edit: editCell, menu: tableMenu });
-  return sessionTracker;
+  setTableHooks({ edit: editCell, menu: tableMenu, adopt: adoptCellSessions });
+  return [sessionTracker];
 }
-
-/** Exported for tests: open a cell session and resolve it later. */
-export const tableSessionsForTests = { openSession, resolveSession, sessionTracker };
 
 /** Renders a cell's LaTeX (exported for tests). */
 export function renderCell(view: EditorView, latex: string) {

@@ -3,9 +3,11 @@ import { StateEffect, StateField, type Range } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { ySyncFacet } from "y-codemirror.next";
 import { remoteUsers } from "../../../collab/awareness";
-import { computeLatexNumbering } from "../../macros/numbering";
+import { parser as latexParser } from "codemirror-lang-latex/src/latex.mjs";
+import { loadKey } from "../../macros/definitions";
+import { computeLatexNumbering, type IncludedFile } from "../../macros/numbering";
 import { latexProjectField } from "../editing";
-import { auxField, definitionsField, numberingField, numberingStartField, setNumbering, visualConfig, visualDefinitions } from "./model";
+import { auxField, definitionsField, numberingField, numberingIncludesField, numberingStartField, setNumbering, visualConfig, visualDefinitions } from "./model";
 import { buildPendingEffect, CHUNK, constructAt, structuralField } from "./structural";
 import { refreshVisualWidgets } from "./widgets";
 
@@ -15,6 +17,19 @@ import { refreshVisualWidgets } from "./widgets";
  * document. */
 
 const NUMBERING_DELAY = 150;
+
+/** Included files' parse trees, kept while their texts stay the same. */
+const includedTrees = new Map<string, IncludedFile>();
+function includedFile(text: string | undefined): IncludedFile | null {
+  if (text === undefined) return null;
+  let file = includedTrees.get(text);
+  if (!file) {
+    file = { tree: latexParser.parse(text), read: (from, to) => text.slice(from, to) };
+    includedTrees.set(text, file);
+    if (includedTrees.size > 40) includedTrees.delete(includedTrees.keys().next().value!);
+  }
+  return file;
+}
 
 type IdleWindow = { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number; cancelIdleCallback?: (handle: number) => void };
 const idle = () => globalThis as unknown as IdleWindow;
@@ -32,7 +47,8 @@ export const numberingPlugin = ViewPlugin.fromClass(class {
   update(update: ViewUpdate) {
     const state = update.state;
     if (update.docChanged || syntaxTree(update.startState) !== syntaxTree(state) || update.startState.field(definitionsField, false) !== state.field(definitionsField, false)
-      || update.startState.field(numberingStartField, false) !== state.field(numberingStartField, false)) {
+      || update.startState.field(numberingStartField, false) !== state.field(numberingStartField, false)
+      || update.startState.field(numberingIncludesField, false) !== state.field(numberingIncludesField, false)) {
       this.schedule(NUMBERING_DELAY);
     }
     if (update.startState.field(numberingField, false) !== state.field(numberingField, false)
@@ -48,7 +64,11 @@ export const numberingPlugin = ViewPlugin.fromClass(class {
   private compute() {
     const state = this.view.state;
     const tree = ensureSyntaxTree(state, state.doc.length, 100) ?? syntaxTree(state);
-    const numbering = computeLatexNumbering(tree, (from, to) => state.doc.sliceString(from, to), visualDefinitions(state), { start: state.field(numberingStartField, false) });
+    const includes = state.field(numberingIncludesField, false);
+    const numbering = computeLatexNumbering(tree, (from, to) => state.doc.sliceString(from, to), visualDefinitions(state), {
+      start: state.field(numberingStartField, false),
+      includes: includes?.size ? (name) => includedFile(includes.get(loadKey("input", name))) : null,
+    });
     if (numbering.fingerprint !== state.field(numberingField, false)?.fingerprint) this.view.dispatch({ effects: setNumbering.of(numbering) });
   }
   private queueRefresh() {

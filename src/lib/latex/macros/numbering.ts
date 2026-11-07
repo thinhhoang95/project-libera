@@ -1,6 +1,6 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { hashString } from "../../macros/core";
-import type { LatexDefinitions } from "./definitions";
+import { macroAt, type LatexDefinitions } from "./definitions";
 
 /* Numbers as the PDF will show them (docs/latex-visual-editor-plan.md §7.7):
  * one pass over the headings, equations, figures, tables, theorems,
@@ -16,6 +16,8 @@ export type NumberingEntry = {
   number: string | null;
   /** Equation numbers per row of an `align`-like environment (null: not numbered). */
   rows?: Array<string | null>;
+  /** Rows numbered by an explicit `\tag`, which KaTeX draws itself (it gets no number slot). */
+  tagged?: boolean[];
   level?: number;
   /** Theorem environment name. */
   env?: string;
@@ -105,6 +107,60 @@ export function splitMathRows(body: string) {
   return rows;
 }
 
+/** TeX source without its `%` comments (an escaped `\%` stays). */
+export function stripTexComments(text: string) {
+  return text.includes("%") ? text.replace(/(^|[^\\])((?:\\\\)*)%[^\n]*/g, "$1$2") : text;
+}
+
+/** amsmath ignores a `\\` right before `\end{align}`; eqnarray makes it an empty, numbered row. */
+function dropTrailingBreak(env: string, rows: string[]) {
+  if (env !== "eqnarray" && rows.length > 1 && !rows[rows.length - 1].trim()) rows.pop();
+  return rows;
+}
+
+const ENUM_COUNTERS = ["enumi", "enumii", "enumiii", "enumiv"];
+
+/** The label an `enumerate` item shows: `1.`, `(a)`, or a custom `[(i)]` / `label=(\alph*)` template. */
+export function enumerateItemLabel(count: number, depth: number, template: string | null) {
+  if (template) {
+    // enumerate's `[(i)]` and enumitem's `label=(\alph*)`.
+    const label = /(?:^|,)\s*label\s*=\s*([^,]+)/.exec(template)?.[1]?.trim() ?? (/=/.test(template) ? null : template);
+    if (label !== null) {
+      const starred = label.replace(/\\(arabic|alph|Alph|roman|Roman)\*/, (_, style: "arabic" | "alph" | "Alph" | "roman" | "Roman") => formatCounterValue(count, style));
+      if (starred !== label) return starred.replace(/[{}]/g, "");
+      const token = /[1aAiI]/.exec(label);
+      if (token) {
+        const style = token[0] === "1" ? "arabic" : token[0] === "a" ? "alph" : token[0] === "A" ? "Alph" : token[0] === "i" ? "roman" : "Roman";
+        return label.slice(0, token.index) + formatCounterValue(count, style) + label.slice(token.index + 1);
+      }
+    }
+  }
+  const style = (["arabic", "alph", "roman", "Alph"] as const)[Math.min(3, depth - 1)];
+  const value = formatCounterValue(count, style);
+  return depth === 2 ? `(${value})` : `${value}.`;
+}
+
+/**
+ * What `\ref` shows for an item: LaTeX's `\p@enumii\theenumii` and so on
+ * (`1a`, `1(a)i`) by default; with a custom label, enumitem's `ref=` or the
+ * label itself. `counts` are the item numbers of the enclosing enumerate
+ * levels, outermost first, ending with this item's.
+ */
+export function enumerateItemReference(counts: number[], templates: Array<string | null>) {
+  const depth = counts.length;
+  const template = templates[depth - 1];
+  if (template) {
+    const ref = /(?:^|,)\s*ref\s*=\s*([^,]+)/.exec(template)?.[1]?.trim();
+    if (ref) return ref.replace(/\\(arabic|alph|Alph|roman|Roman)\*/g, (_, style: "arabic" | "alph" | "Alph" | "roman" | "Roman") => formatCounterValue(counts[depth - 1], style)).replace(/[{}]/g, "");
+    return enumerateItemLabel(counts[depth - 1], depth, template).replace(/\.$/, "");
+  }
+  const [first, second, third, fourth] = counts;
+  if (depth === 1) return formatCounterValue(first, "arabic");
+  if (depth === 2) return `${first}${formatCounterValue(second, "alph")}`;
+  if (depth === 3) return `${first}(${formatCounterValue(second, "alph")})${formatCounterValue(third, "roman")}`;
+  return `${first}(${formatCounterValue(second, "alph")})${formatCounterValue(third, "roman")}${formatCounterValue(fourth, "Alph")}`;
+}
+
 function stripTitle(text: string) {
   return text.replace(/\\(?:textbf|textit|emph|texttt|textsc|mathrm|mbox|textrm|textsf)\s*/g, "").replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
 }
@@ -123,42 +179,80 @@ export type NumberingStart = {
   appendix: boolean;
 };
 
-export type NumberingOptions = { start?: NumberingStart | null };
+/** A file the document `\input`s or `\include`s, parsed: its counters advance the document's. */
+export type IncludedFile = { tree: Tree; read: Read };
+
+export type NumberingOptions = {
+  start?: NumberingStart | null;
+  /** The files `\input{name}` and `\include{name}` read, by name as written (see definitions.ts `loadKey`); null when unknown. */
+  includes?: ((name: string) => IncludedFile | null) | null;
+};
 
 /** Numbers the document. `read` gives the text of a range of the document `tree` belongs to. */
 export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinitions, options: NumberingOptions = {}): LatexNumbering {
   const chapters = CHAPTER_CLASSES.test(defs.documentClass ?? "");
-  const secnumdepth = chapters ? 2 : 3;
   const counters = new Map<string, number>(Object.entries(options.start?.counters ?? {}));
+  // `\setcounter{secnumdepth}{n}` in the body is a counter; in the preamble, a definition.
+  const secnumdepth = () => (counters.has("secnumdepth") ? counters.get("secnumdepth")! : defs.secnumdepth ?? (chapters ? 2 : 3));
   const within = new Map<string, string>([...defs.counterWithin]);
-  if (chapters) for (const name of ["equation", "figure", "table", "footnote"]) if (!within.has(name)) within.set(name, "chapter");
-  for (const theorem of defs.theorems.values()) if (theorem.within && theorem.counter === theorem.name) within.set(theorem.name, theorem.within);
-  for (let i = 1; i < SECTION_COUNTERS.length; i++) within.set(SECTION_COUNTERS[i], SECTION_COUNTERS[i - 1]);
-  if (!chapters) within.delete("section");
+  // The counters printed with their parent's number first (`\thefigure` is `\thechapter.\arabic{figure}` in a book);
+  // resetting is separate: a book's footnotes restart each chapter but print alone.
+  const prefix = new Map<string, string>([...defs.counterPrefix]);
+  if (chapters) for (const name of ["equation", "figure", "table", "footnote"]) if (!within.has(name)) { within.set(name, "chapter"); if (name !== "footnote") prefix.set(name, "chapter"); }
+  for (const theorem of defs.theorems.values()) if (theorem.within && theorem.counter === theorem.name) { within.set(theorem.name, theorem.within); prefix.set(theorem.name, theorem.within); }
+  for (let i = 1; i < SECTION_COUNTERS.length; i++) { within.set(SECTION_COUNTERS[i], SECTION_COUNTERS[i - 1]); prefix.set(SECTION_COUNTERS[i], SECTION_COUNTERS[i - 1]); }
+  if (!chapters) { within.delete("section"); prefix.delete("section"); }
   // A counter numbered within itself, directly or through others (`\numberwithin{equation}{equation}`), is
   // an error in TeX: drop the edge that closes the cycle so stepping and formatting stay finite.
-  for (const counter of [...within.keys()]) {
-    const seen = new Set<string>([counter]);
-    for (let parent = within.get(counter); parent !== undefined; parent = within.get(parent)) {
-      if (seen.has(parent)) { within.delete(counter); break; }
-      seen.add(parent);
+  for (const map of [within, prefix]) {
+    for (const counter of [...map.keys()]) {
+      const seen = new Set<string>([counter]);
+      for (let parent = map.get(counter); parent !== undefined; parent = map.get(parent)) {
+        if (seen.has(parent)) { map.delete(counter); break; }
+        seen.add(parent);
+      }
     }
   }
   let appendix = options.start?.appendix ?? false;
+  /** Open `subequations` environments: their equations are numbered 3a, 3b. */
+  const subequations: Array<{ node: number; parent: string; saved: number }> = [];
 
   const value = (name: string) => counters.get(name) ?? 0;
   const reset = (name: string) => {
     for (const [counter, parent] of within) if (parent === name) { counters.set(counter, 0); reset(counter); }
   };
   const step = (name: string) => { counters.set(name, value(name) + 1); reset(name); };
-  const format = (name: string): string => {
+  const formatting = new Set<string>();
+  /** A document's own `\renewcommand{\theequation}{…}`: its counter commands evaluated, "?" when it uses anything else. */
+  const customFormat = (name: string): string | undefined => {
+    const macro = macroAt(defs, `the${name}`, Number.MAX_SAFE_INTEGER);
+    if (!macro) return undefined;
+    if (macro.arity || macro.unsupported || formatting.has(name)) return "?";
+    formatting.add(name);
+    try {
+      const text = macro.body.replace(/\\(arabic|roman|Roman|alph|Alph)\s*\{\s*([A-Za-z@]+)\s*\}|\\the([A-Za-z@]+)|\\relax|[{}]/g, (_whole, style?: "arabic" | "roman" | "Roman" | "alph" | "Alph", counter?: string, other?: string) => {
+        if (style && counter) return formatCounterValue(value(counter), style);
+        if (other) return format(other);
+        return "";
+      });
+      return /\\|\?/.test(text) ? "?" : text.trim();
+    } finally {
+      formatting.delete(name);
+    }
+  };
+  const format = (name: string, depth = 0): string => {
+    // subequations redefines \theequation as \theparentequation\alph{equation}.
+    const top = subequations[subequations.length - 1];
+    if (name === "equation" && top) return `${top.parent}${formatCounterValue(value(name), "alph")}`;
+    const custom = customFormat(name);
+    if (custom !== undefined) return custom;
     const own = name === "part" ? formatCounterValue(value(name), "Roman")
       : appendix && ((chapters && name === "chapter") || (!chapters && name === "section")) ? formatCounterValue(value(name), "Alph")
         : String(value(name));
-    const parent = within.get(name);
+    const parent = prefix.get(name);
     // \thesubsection is \thesection.\arabic{subsection}, and so on; a section in a chapter class starts with the chapter.
-    if (!parent || (parent === "chapter" && !chapters)) return own;
-    return `${format(parent)}.${own}`;
+    if (!parent || (parent === "chapter" && !chapters) || depth > 8) return own;
+    return `${format(parent, depth + 1)}.${own}`;
   };
 
   const entries: NumberingEntry[] = [];
@@ -168,7 +262,18 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   const scopes: Array<{ node: number; target: LabelTarget | null }> = [];
   const currentTarget = () => scopes.length ? scopes[scopes.length - 1].target : globalTarget;
   const setTarget = (target: LabelTarget) => { if (scopes.length) scopes[scopes.length - 1].target = target; else globalTarget = target; };
-  const lists: Array<{ enumerate: boolean; count: number; depth: number }> = [];
+  const lists: Array<{ enumerate: boolean; count: number; depth: number; template: string | null }> = [];
+  /** The enumerate list a counter `enumi`…`enumiv` belongs to, innermost first. */
+  const enumerateList = (counter: string) => {
+    const depth = ENUM_COUNTERS.indexOf(counter) + 1;
+    if (!depth) return null;
+    for (let i = lists.length - 1; i >= 0; i--) if (lists[i].enumerate && lists[i].depth === depth) return lists[i];
+    return null;
+  };
+  const itemTarget = (list: (typeof lists)[number], pos: number): LabelTarget => {
+    const enclosing = lists.filter((item) => item.enumerate && lists.indexOf(item) <= lists.indexOf(list));
+    return { number: enumerateItemReference(enclosing.map((item) => item.count), enclosing.map((item) => item.template)), kind: "item", pos };
+  };
 
   const argumentText = (node: SyntaxNode, index = 0) => {
     let seen = 0;
@@ -180,11 +285,40 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     return null;
   };
 
-  tree.iterate({
+  let includeDepth = 0;
+  const included = new Set<string>();
+  /** Numbers an `\input`/`\include`d file in place: its counters count, its entries and labels (positions in another file) do not. */
+  const numberIncluded = (node: SyntaxNode) => {
+    const argument = node.getChild("InputArgument") ?? node.getChild("IncludeArgument");
+    const name = argument ? read(argument.from + 1, argument.to - 1).trim() : "";
+    const file = name && includeDepth < 4 && !included.has(name) ? options.includes?.(name) : null;
+    if (!file) return;
+    const entryCount = entries.length;
+    const savedLabels = new Map(labels);
+    const savedRead = read;
+    included.add(name);
+    includeDepth++;
+    read = file.read;
+    try {
+      file.tree.iterate(visitor);
+    } finally {
+      read = savedRead;
+      includeDepth--;
+      included.delete(name);
+      entries.length = entryCount;
+      labels.clear();
+      for (const [key, target] of savedLabels) labels.set(key, target);
+      // A label right after the include refers to the last number in it, which is not in this file.
+      if (globalTarget) globalTarget = { ...globalTarget, pos: -1 };
+    }
+  };
+
+  const visitor: Parameters<Tree["iterate"]>[0] = {
     enter(ref) {
       const name = ref.name;
       const node = ref.node;
       if (name === "Comment" || name === "VerbatimEnvironment" || name === "TikzPictureEnvironment") return false;
+      if (name === "Input" || name === "Include") { numberIncluded(node); return false; }
       if (name in SECTION_LEVELS) {
         const command = node.getChild("SectioningCommand");
         if (!command) return;
@@ -195,7 +329,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const titleNode = command.getChild("SectioningArgument");
         const title = titleNode ? stripTitle(read(titleNode.from + 1, titleNode.to - 1)) : "";
         let number: string | null = null;
-        if (counter && !starred && (level <= secnumdepth || level < 0)) {
+        if (counter && !starred && level <= secnumdepth()) {
           step(counter);
           number = format(counter);
         }
@@ -215,10 +349,19 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         } else if (command === "\\setcounter" || command === "\\addtocounter") {
           const counter = argumentText(node, 0)?.trim();
           const amount = Number(argumentText(node, 1)?.trim());
-          if (counter && Number.isFinite(amount)) counters.set(counter, command === "\\setcounter" ? amount : value(counter) + amount);
+          if (counter && Number.isFinite(amount)) {
+            counters.set(counter, command === "\\setcounter" ? amount : value(counter) + amount);
+            // An enumerate counter: the list's next item continues from it.
+            const list = enumerateList(counter);
+            if (list) list.count = command === "\\setcounter" ? amount : list.count + amount;
+          }
         } else if (command === "\\stepcounter" || command === "\\refstepcounter") {
           const counter = argumentText(node, 0)?.trim();
-          if (counter) {
+          const list = counter ? enumerateList(counter) : null;
+          if (list) {
+            list.count++;
+            if (command === "\\refstepcounter") setTarget(itemTarget(list, node.from));
+          } else if (counter) {
             step(counter);
             if (command === "\\refstepcounter") setTarget({ number: format(counter), kind: counterKind(counter), pos: node.from, env: counter });
           }
@@ -228,9 +371,16 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         }
         return;
       }
-      if (name === "FootnoteCommand") {
-        step("footnote");
-        entries.push({ pos: node.from, kind: "footnote", number: format("footnote") });
+      if (name === "FootnoteCommand" || name === "EndnoteCommand") {
+        // `\footnote[5]{…}` prints 5 and steps nothing; endnotes have their own counter.
+        const optional = node.getChild("OptionalArgument");
+        const counter = name === "FootnoteCommand" ? "footnote" : "endnote";
+        let number: string;
+        if (optional) number = read(optional.from + 1, optional.to - 1).trim();
+        else { step(counter); number = format(counter); }
+        entries.push({ pos: node.from, kind: "footnote", number });
+        // A label in the note's text refers to the note (LaTeX sets \@currentlabel there), until the note ends.
+        scopes.push({ node: node.from, target: { number, kind: "footnote", pos: node.from } });
         return;
       }
       if (name === "EquationEnvironment" || name === "EquationArrayEnvironment") {
@@ -240,25 +390,28 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const base = env.replace(/\*$/, "");
         const starred = env.endsWith("*");
         const content = node.getChild("Content");
-        const body = content ? read(content.from, content.to) : "";
+        // Commented-out \tag, \label and \nonumber do nothing.
+        const body = stripTexComments(content ? read(content.from, content.to) : "");
         if (name === "EquationEnvironment") {
           let number: string | null = null;
           const tag = /\\tag\*?\s*\{([^}]*)\}/.exec(body);
           if (tag) number = tag[1];
           else if (NUMBERED_EQUATIONS.has(base) && !starred && !/\\(?:nonumber|notag)\b/.test(body)) { step("equation"); number = format("equation"); }
-          entries.push({ pos: node.from, kind: "equation", number, rows: [number] });
+          entries.push({ pos: node.from, kind: "equation", number, rows: [number], tagged: [!!tag] });
           for (const match of body.matchAll(/\\label\s*\{([^}]*)\}/g)) if (number) labels.set(match[1].trim(), { number, kind: "equation", pos: node.from });
         } else {
           const numbered = NUMBERED_ROWS.has(base) && !starred;
-          const rows = splitMathRows(body).map((row) => {
+          const tagged: boolean[] = [];
+          const rows = dropTrailingBreak(base, splitMathRows(body)).map((row) => {
             const tag = /\\tag\*?\s*\{([^}]*)\}/.exec(row);
             let number: string | null = null;
             if (tag) number = tag[1];
             else if (numbered && !/\\(?:nonumber|notag)\b/.test(row)) { step("equation"); number = format("equation"); }
+            tagged.push(!!tag);
             for (const match of row.matchAll(/\\label\s*\{([^}]*)\}/g)) if (number) labels.set(match[1].trim(), { number, kind: "equation", pos: node.from });
             return number;
           });
-          entries.push({ pos: node.from, kind: "equation", number: rows.find((row) => row !== null) ?? null, rows });
+          entries.push({ pos: node.from, kind: "equation", number: rows.find((row) => row !== null) ?? null, rows, tagged });
         }
         return false;
       }
@@ -278,13 +431,23 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const number = format(kind);
           entries.push({ pos: parent.from, kind, number });
           setTarget({ number, kind, pos: parent.from });
-          return false;
+          // A \label inside the caption refers to the figure too.
+          return;
         }
         return false;
       }
       if (name === "Environment") {
         const env = environmentName(node, read) ?? "";
         scopes.push({ node: node.from, target: currentTarget() });
+        if (env === "subequations") {
+          // One equation number for the group, and 3a, 3b for the equations in it; a label right after the \begin is the group's.
+          step("equation");
+          const parent = format("equation");
+          subequations.push({ node: node.from, parent, saved: value("equation") });
+          counters.set("equation", 0);
+          setTarget({ number: parent, kind: "equation", pos: node.from });
+          return;
+        }
         const theorem = defs.theorems.get(env);
         if (theorem) {
           let number: string | null = null;
@@ -300,7 +463,11 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       }
       if (name === "ListEnvironment") {
         const env = environmentName(node, read) ?? "";
-        lists.push({ enumerate: env === "enumerate", count: 0, depth: lists.filter((list) => list.enumerate).length + (env === "enumerate" ? 1 : 0) });
+        const optional = node.getChild("BeginEnv")?.getChild("OptionalArgument");
+        lists.push({
+          enumerate: env === "enumerate", count: 0, depth: lists.filter((list) => list.enumerate).length + (env === "enumerate" ? 1 : 0),
+          template: optional ? read(optional.from + 1, optional.to - 1) : null,
+        });
         scopes.push({ node: node.from, target: currentTarget() });
         return;
       }
@@ -308,9 +475,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const list = lists[lists.length - 1];
         if (list?.enumerate && !node.getChild("OptionalArgument")) {
           list.count++;
-          const style = (["arabic", "alph", "roman", "Alph"] as const)[Math.min(3, list.depth - 1)];
-          const number = formatCounterValue(list.count, style);
-          setTarget({ number, kind: "item", pos: node.from });
+          setTarget(itemTarget(list, node.from));
         }
         return;
       }
@@ -326,14 +491,24 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     },
     leave(ref) {
       const name = ref.name;
-      if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment") {
+      if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment" || name === "FootnoteCommand" || name === "EndnoteCommand") {
         if (scopes.length && scopes[scopes.length - 1].node === ref.from) scopes.pop();
         if (name === "ListEnvironment") lists.pop();
+        const group = subequations[subequations.length - 1];
+        if (name === "Environment" && group?.node === ref.from) { subequations.pop(); counters.set("equation", group.saved); }
       }
     },
-  });
+  };
+  tree.iterate(visitor);
 
-  const fingerprint = hashString(JSON.stringify([entries.map((entry) => [entry.pos, entry.number, entry.rows ?? null]), [...labels].map(([key, target]) => [key, target.number, target.kind])]));
+  // An entry is recorded where its construct starts, which can be before entries already recorded
+  // (a figure's number comes from its caption): lookups search by position.
+  entries.sort((a, b) => a.pos - b.pos);
+  // Everything a widget can show: numbers, titles, kinds, positions.
+  const fingerprint = hashString(JSON.stringify([
+    entries.map((entry) => [entry.pos, entry.kind, entry.number, entry.rows ?? null, entry.tagged ?? null, entry.level ?? null, entry.env ?? null]),
+    [...labels].map(([key, target]) => [key, target.number, target.kind, target.pos, target.env ?? null, target.title ?? null]),
+  ]));
   return { entries, labels, counters: Object.fromEntries(counters), appendix, fingerprint };
 }
 

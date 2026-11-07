@@ -34,6 +34,12 @@ export function fragmentContext(view: EditorView, pos?: number): FragmentContext
   return { defs: visualDefinitions(state), numbering: visualNumbering(state), aux: visualAux(state), bib: bibLookup(state), pos };
 }
 
+/** A fragment context at a widget's own position, so definitions written after it in the body do not apply. */
+function widgetContext(view: EditorView, dom: HTMLElement, offset = 0) {
+  const pos = widgetPos(view, dom);
+  return fragmentContext(view, pos === null ? undefined : pos + offset);
+}
+
 /** The document position a widget's DOM stands at, or null when it is not in the view. */
 function widgetPos(view: EditorView, dom: HTMLElement) {
   try {
@@ -120,7 +126,7 @@ export class MathWidget extends VisualWidget {
         const pos = widgetPos(target, dom);
         if (pos === null) return;
         const entry = numberingEntryAt(visualNumbering(target.state), pos + this.numberOffset, "equation");
-        applyEquationNumbers(dom, entry?.rows ?? []);
+        applyEquationNumbers(dom, entry?.rows ?? [], entry?.tagged);
       });
     }
     dom.addEventListener("mousedown", (event) => {
@@ -149,7 +155,11 @@ export class ChipWidget extends VisualWidget {
   }
   toDOM(view: EditorView) {
     const dom = el("span", `cm-vis-chip cm-vis-${this.kind}`);
-    dom.setAttribute("role", "link");
+    // Only a reference goes somewhere: select it and press Enter (or click) to follow it. Citations and labels are text.
+    if (this.kind === "ref") {
+      dom.setAttribute("role", "link");
+      dom.setAttribute("aria-keyshortcuts", "Enter");
+    }
     const update = (target: EditorView) => {
       dom.textContent = this.text(target);
       if (this.kind === "ref") {
@@ -173,19 +183,21 @@ export class ChipWidget extends VisualWidget {
       const from = widgetPos(view, dom);
       if (from === null) return;
       if (event.altKey) { revealSourceAt(view, from, from + this.length); return; }
-      if (this.kind === "ref") {
-        const target = labelTarget(this.keys[0], visualNumbering(view.state), visualAux(view.state));
-        if (target && target.pos >= 0) {
-          view.dispatch({ selection: { anchor: target.pos }, effects: EditorView.scrollIntoView(target.pos, { y: "center" }) });
-          view.focus();
-          return;
-        }
-      }
+      if (this.kind === "ref" && followReference(view, this.keys[0])) return;
       selectRange(view, from, from + this.length);
     });
     return dom;
   }
   ignoreEvent() { return true; }
+}
+
+/** Moves the cursor to where a label is defined in this file; false when it is elsewhere or unknown. */
+export function followReference(view: EditorView, key: string) {
+  const target = labelTarget(key, visualNumbering(view.state), visualAux(view.state));
+  if (!target || target.pos < 0) return false;
+  view.dispatch({ selection: { anchor: target.pos }, effects: EditorView.scrollIntoView(target.pos, { y: "center" }) });
+  view.focus();
+  return true;
 }
 
 /** `\item`: a bullet, a number or a description label. */
@@ -237,7 +249,7 @@ export class MacroWidget extends VisualWidget {
     const dom = el("span", "cm-vis-macro");
     dom.title = `\\${this.name}: Alt-click or Alt+Enter to edit`;
     const render = (target: EditorView) => {
-      dom.replaceChildren(renderLatexFragment(this.expansion, fragmentContext(target)));
+      dom.replaceChildren(renderLatexFragment(this.expansion, widgetContext(target, dom)));
     };
     render(view);
     // Chips inside an expansion follow numbering changes too.
@@ -266,7 +278,7 @@ export class MacroPieceWidget extends VisualWidget {
 
 /** `\ensuremath`-style macros and `\(…\)` with macros inside: covered by MathWidget. Images outside figures: */
 export class ImageWidget extends VisualWidget {
-  constructor(readonly path: string, readonly length: number) { super(`${path}\u0000${length}`); }
+  constructor(readonly path: string, readonly length: number, readonly base = "") { super(`${path}\u0000${length}\u0000${base}`); }
   toDOM(view: EditorView) {
     const dom = el("span", "cm-vis-image-inline");
     renderImage(dom, view, this.path);
@@ -281,11 +293,28 @@ export class ImageWidget extends VisualWidget {
   ignoreEvent() { return true; }
 }
 
-/** The notebook path of a graphics file named in the document, with the extension LaTeX would find. */
+/** The notebook path of a graphics file named in the document, from the compile root's directory, as TeX finds it. */
 export function resolveGraphicsPath(view: EditorView, name: string) {
+  return graphicsCandidates(view, name)[0] ?? null;
+}
+
+/** Where TeX looks for a graphics file: the compile root's directory, then each `\graphicspath` directory. */
+export function graphicsCandidates(view: EditorView, name: string) {
   const config = view.state.facet(visualConfig);
-  const resolved = resolveRelativeNotebookPath(config.documentPath, name.trim());
-  return resolved;
+  const base = config.rootPath || config.documentPath;
+  const directories = ["", ...visualDefinitions(view.state).graphicsPaths];
+  const found: string[] = [];
+  for (const directory of directories) {
+    const resolved = resolveRelativeNotebookPath(base, `${directory}${name.trim()}`);
+    if (resolved && !found.includes(resolved)) found.push(resolved);
+  }
+  return found;
+}
+
+/** What image widgets resolve against, part of their keys so they redraw when it changes. */
+export function graphicsBase(state: EditorView["state"]) {
+  const config = state.facet(visualConfig);
+  return `${config.rootPath || config.documentPath}`;
 }
 
 const pdfThumbnails = new Map<string, Promise<string | null>>();
@@ -316,13 +345,12 @@ const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "pdf", "svg", "gif", "webp", "ep
 /** Draws a graphics file into `container`: an image, a PDF's first page, or a labelled placeholder. */
 function renderImage(container: HTMLElement, view: EditorView, name: string, className = "cm-vis-image") {
   const config = view.state.facet(visualConfig);
-  const resolved = resolveGraphicsPath(view, name);
+  const resolvedPaths = graphicsCandidates(view, name);
   const placeholder = (message: string) => {
     container.replaceChildren(el("span", "cm-vis-image-placeholder", message));
   };
-  if (!resolved) { placeholder(`${name} (outside the notebook)`); return; }
-  const extension = /\.([a-z0-9]+)$/i.exec(resolved)?.[1]?.toLowerCase();
-  const candidates = extension ? [resolved] : IMAGE_EXTENSIONS.map((ext) => `${resolved}.${ext}`);
+  if (!resolvedPaths.length) { placeholder(`${name} (outside the notebook)`); return; }
+  const candidates = resolvedPaths.flatMap((resolved) => (/\.([a-z0-9]+)$/i.test(resolved) ? [resolved] : IMAGE_EXTENSIONS.map((ext) => `${resolved}.${ext}`)));
   const tryNext = (index: number) => {
     const path = candidates[index];
     if (!path) { placeholder(`${name} (not found)`); return; }
@@ -363,6 +391,10 @@ export type FigureSpec = {
   images: Array<{ path: string; width?: string }>;
   caption: string | null;
   captionPos: number;
+  /** Where the environment started when the widget was built (captionPos is relative to it). */
+  start: number;
+  /** The document's path when the widget was built: images resolve against it, so a moved file redraws. */
+  base?: string;
   kind: "figure" | "table";
   /** Where the environment starts relative to the widget (indentation before it is replaced too). */
   numberOffset: number;
@@ -375,9 +407,10 @@ export type FigureSpec = {
 function captionElement(view: EditorView, spec: FigureSpec) {
   const caption = el("div", "cm-vis-caption");
   const label = el("span", "cm-vis-caption-label");
-  caption.append(label);
-  if (spec.caption !== null) caption.append(renderLatexFragment(spec.caption, fragmentContext(view, spec.captionPos)));
-  return { caption, label };
+  const text = el("span", "cm-vis-caption-text");
+  caption.append(label, text);
+  if (spec.caption !== null) text.append(renderLatexFragment(spec.caption, fragmentContext(view, spec.captionPos)));
+  return { caption, label, text };
 }
 
 /** A figure or table environment: images or grids, and the numbered caption. */
@@ -386,7 +419,7 @@ export class FigureWidget extends VisualWidget {
   toDOM(view: EditorView) {
     const spec = this.spec;
     const dom = el("div", `cm-vis-figure cm-vis-figure-${spec.kind}`);
-    const { caption, label } = captionElement(view, spec);
+    const { caption, label, text } = captionElement(view, spec);
     const body = el("div", "cm-vis-figure-body");
     for (const image of spec.images) {
       const frame = el("span", "cm-vis-figure-image");
@@ -404,6 +437,11 @@ export class FigureWidget extends VisualWidget {
       const pos = widgetPos(target, dom);
       const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos + spec.numberOffset, spec.kind);
       label.textContent = `${spec.kind === "figure" ? "Figure" : "Table"}${entry?.number ? ` ${entry.number}` : ""}: `;
+      // References and citations in the caption follow numbering and the .aux too.
+      if (spec.caption !== null && spec.caption.includes("\\")) {
+        const captionPos = pos === null ? spec.captionPos : pos + spec.numberOffset + (spec.captionPos - spec.start);
+        text.replaceChildren(renderLatexFragment(spec.caption, fragmentContext(target, captionPos)));
+      }
     });
     dom.addEventListener("mousedown", (event) => {
       if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true]")) return;
@@ -425,6 +463,8 @@ export type TableHooks = {
   edit: (view: EditorView, cell: HTMLElement, tableStart: () => number | null, row: number, cell_: number) => void;
   /** Row and column commands for a cell (right-click). */
   menu: (view: EditorView, event: MouseEvent, tableStart: () => number | null, row: number, cell: number) => void;
+  /** A redrawn table: continues a cell edit that was open in the table it replaces. */
+  adopt?: (view: EditorView, table: TableElement) => void;
 };
 let tableHooks: TableHooks | null = null;
 /** Set by table-edit.ts. */
@@ -433,6 +473,11 @@ export function setTableHooks(hooks: TableHooks | null) { tableHooks = hooks; }
 /** A rendered table's start in the document, for finding it again after it is redrawn. */
 export type TableElement = HTMLTableElement & { liberaTableStart?: () => number | null };
 
+/** Whether a cell is open in the cell editor (table-edit.ts sets the attribute). */
+export function isEditingCell(td: HTMLElement) {
+  return td.getAttribute("contenteditable") === "true";
+}
+
 /** A tabular as a grid; cells render their LaTeX, and become editable through table-edit.ts. */
 export function renderTableGrid(view: EditorView, source: string, start: () => number | null) {
   const model = parseTabular(source, 0);
@@ -440,6 +485,8 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   table.liberaTableStart = start;
   if (!model) { table.append(el("caption", "cm-vis-raw", source)); return table; }
   const context = fragmentContext(view);
+  /** Cells whose LaTeX can show numbers, citations or macros, redrawn when those change. */
+  const dynamic: Array<{ td: HTMLElement; text: string; from: number }> = [];
   const aligns = model.columns.map((column) => (column === "c" ? "center" : column === "r" ? "right" : "left"));
   model.rows.forEach((row, rowIndex) => {
     const tr = el("tr", "cm-vis-table-row");
@@ -451,11 +498,12 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       td.style.textAlign = cell.span > 1 ? "center" : aligns[column] ?? "left";
       const text = cell.contentFrom !== undefined ? source.slice(cell.contentFrom, cell.contentTo) : cell.text;
       td.append(renderLatexFragment(text, context));
+      if (text.includes("\\")) dynamic.push({ td, text, from: cell.contentFrom ?? cell.from });
       td.dataset.row = String(rowIndex);
       td.dataset.cell = String(cellIndex);
       if (cell.sourceOnly) td.classList.add("cm-vis-table-source-only");
       td.addEventListener("mousedown", (event) => {
-        if (event.button !== 0 || td.isContentEditable) return;
+        if (event.button !== 0 || isEditingCell(td)) return;
         event.preventDefault();
         event.stopPropagation();
         if (tableHooks && !cell.sourceOnly && !event.altKey && view.state.facet(visualConfig).editable() && !view.state.readOnly) { tableHooks.edit(view, td, start, rowIndex, cellIndex); return; }
@@ -474,7 +522,33 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
     table.append(tr);
   });
   if (model.rulesAfter.length) table.classList.add("cm-vis-table-closed");
+  if (dynamic.length) {
+    refreshable(table, view, (target) => {
+      const base = start();
+      for (const cell of dynamic) {
+        // A cell being edited shows its source; it is redrawn when editing ends.
+        if (isEditingCell(cell.td)) continue;
+        cell.td.replaceChildren(renderLatexFragment(cell.text, fragmentContext(target, base === null ? undefined : base + cell.from)));
+      }
+    });
+  }
+  // A cell that was being edited when the table was redrawn (a co-author's edit) carries on in the new one.
+  queueMicrotask(() => { if (table.isConnected) tableHooks?.adopt?.(view, table); });
   return table;
+}
+
+/** Opens the first editable cell of a table drawn in [from, to] (keyboard entry to the grid); false when there is none. */
+export function editFirstCell(view: EditorView, from: number, to: number) {
+  if (!tableHooks || view.state.readOnly || !view.state.facet(visualConfig).editable()) return false;
+  for (const table of view.contentDOM.querySelectorAll<TableElement>(".cm-vis-table")) {
+    const start = table.liberaTableStart?.();
+    if (start === null || start === undefined || start < from || start >= to) continue;
+    const cell = table.querySelector<HTMLElement>(".cm-vis-table-cell:not(.cm-vis-table-source-only)");
+    if (!cell || !table.liberaTableStart) return false;
+    tableHooks.edit(view, cell, table.liberaTableStart, Number(cell.dataset.row), Number(cell.dataset.cell));
+    return true;
+  }
+  return false;
 }
 
 /** A tabular outside a table environment. */
@@ -487,7 +561,8 @@ export class TableWidget extends VisualWidget {
       return pos === null ? null : pos + this.offset;
     }));
     dom.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
+      // A click in the cell being edited moves its caret.
+      if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true]")) return;
       event.preventDefault();
       const from = widgetPos(view, dom);
       if (from !== null) (event.altKey ? revealSourceAt : selectRange)(view, from, from + this.length);
@@ -509,7 +584,9 @@ export class PreambleWidget extends VisualWidget {
     button.setAttribute("aria-expanded", String(this.open));
     button.textContent = `${this.open ? "▾" : "▸"} Preamble`;
     const summary = el("span", "cm-vis-preamble-summary", this.summary);
-    button.addEventListener("mousedown", (event) => {
+    // Pressing keeps the editor's focus; the click (also from Enter or Space on the button) toggles.
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", (event) => {
       event.preventDefault();
       view.dispatch({ effects: togglePreamble.of(!view.state.field(preambleOpenField, false)) });
     });
@@ -539,7 +616,7 @@ export class TitleWidget extends VisualWidget {
   toDOM(view: EditorView) {
     const dom = el("div", "cm-vis-title-block");
     const render = (target: EditorView) => {
-      const context = fragmentContext(target);
+      const context = widgetContext(target, dom);
       dom.replaceChildren();
       if (this.title !== null) { const title = el("div", "cm-vis-title"); title.append(renderLatexFragment(this.title, context)); dom.append(title); }
       if (this.author !== null) {
@@ -577,7 +654,7 @@ export class EnvironmentHeaderWidget extends VisualWidget {
     const dom = el("span", `cm-vis-env-header cm-vis-env-header-${this.variant}`);
     const render = (target: EditorView) => {
       dom.replaceChildren();
-      const context = fragmentContext(target);
+      const context = widgetContext(target, dom);
       if (this.variant === "user") { dom.append(renderLatexFragment(this.title, context)); return; }
       const head = el("span", "cm-vis-env-title");
       let number = "";
@@ -606,8 +683,11 @@ export class EnvironmentFooterWidget extends VisualWidget {
   constructor(readonly latex: string | null) { super(latex ?? "qed"); }
   toDOM(view: EditorView) {
     const dom = el("span", "cm-vis-env-footer");
-    if (this.latex === null) dom.textContent = "∎";
-    else dom.append(renderLatexFragment(this.latex, fragmentContext(view)));
+    if (this.latex === null) { dom.textContent = "∎"; return dom; }
+    const latex = this.latex;
+    const render = (target: EditorView) => dom.replaceChildren(renderLatexFragment(latex, widgetContext(target, dom)));
+    render(view);
+    refreshable(dom, view, render);
     return dom;
   }
 }

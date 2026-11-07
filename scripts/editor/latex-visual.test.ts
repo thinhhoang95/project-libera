@@ -7,14 +7,21 @@ import fc from "fast-check";
 import { JSDOM } from "jsdom";
 import { history, undo } from "@codemirror/commands";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
-import { Compartment, EditorSelection, EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, Transaction, type Extension } from "@codemirror/state";
+import { dispatchAsOneStep, undoBoundaries } from "../../src/lib/collab/undo-boundary";
+import { canEditInMathLive } from "../../src/lib/latex/codemirror/visual/math-edit";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-language";
-import { latexVisualMode, latexVisualState, setNumberingStart, toggleLatexFormat, visualRevealRanges } from "../../src/lib/latex/codemirror/visual";
+import { latexVisualMode, latexVisualState, setNumberingStart, toggleLatexFormat, visualEntrySelection, visualRevealRanges } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField, LARGE_DOCUMENT } from "../../src/lib/latex/codemirror/visual/structural";
-import { numberingField, setNumbering, visualDefinitions } from "../../src/lib/latex/codemirror/visual/model";
+import { numberingField, preambleOpenField, setNumbering, visualDefinitions } from "../../src/lib/latex/codemirror/visual/model";
 import { computeLatexNumbering } from "../../src/lib/latex/macros/numbering";
-import { refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
+import { macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
+import { transparentPlan } from "../../src/lib/latex/codemirror/visual/transparent";
+import { latexMathPreview } from "../../src/lib/latex/codemirror/preview";
+import { setMacroSources } from "../../src/lib/latex/codemirror/visual/model";
+import { showTooltip } from "@codemirror/view";
+import { graphicsCandidates, isEditingCell, refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
 import { stateReferenceText } from "../../src/lib/latex/codemirror/visual/references";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
@@ -163,6 +170,204 @@ See \cref{tab:notation}.
   assert.equal(numbering.labels.get("tab:notation")?.kind, "table");
   view.dispatch({ effects: setNumbering.of(numbering) });
   assert.equal(stateReferenceText(view.state, "\\cref", ["tab:notation"]), "table 1");
+  view.destroy();
+});
+
+test("a redefined built-in is drawn as the document's macro, not as the built-in", () => {
+  const view = mount("\\renewcommand{\\textbf}[1]{NEVER #1}\n\\providecommand{\\emph}[1]{X}\nSome \\textbf{x} and \\emph{y}.");
+  const list = constructs(view.state);
+  const bold = view.state.doc.toString().indexOf("\\textbf{x}");
+  assert.ok(!list.some((entry) => entry === `style:${bold}:${bold + 10}`), "not drawn as bold");
+  assert.ok(list.some((entry) => entry.startsWith(`macro-args:${bold}:`)), list.join(" "));
+  assert.ok(!view.contentDOM.querySelector(".cm-vis-b"));
+  assert.ok(view.contentDOM.querySelector(".cm-vis-macro-piece")?.textContent?.includes("NEVER"));
+  assert.ok(list.some((entry) => entry.startsWith("style:")), "\\providecommand does not replace \\emph");
+  view.destroy();
+});
+
+test("a user environment's arguments are read after its name, and its body is not eaten", () => {
+  const view = mount("\\newenvironment{note}[1]{\\textbf{#1}}{}\n\\begin{note}{Hello}body\\end{note}");
+  assert.equal(view.contentDOM.querySelector(".cm-vis-env-header")?.textContent, "Hello");
+  const header = constructs(view.state).find((entry) => entry.startsWith("env-header:"))!;
+  assert.equal(view.state.doc.sliceString(Number(header.split(":")[1]), Number(header.split(":")[2])), "\\begin{note}{Hello}");
+  view.destroy();
+});
+
+test("a figure with content the widget does not draw stays source", () => {
+  const drawn = mount("\\begin{figure}[h]\n\\centering\\small\n\\includegraphics[width=.5\\textwidth]{a}\n\\caption{C}\\label{fig:a}\n\\end{figure}");
+  assert.equal(kinds(drawn.state).figure, 1);
+  drawn.destroy();
+  for (const inner of ["Some text \\includegraphics{a}\\caption{C}", "\\includegraphics{a}\\foo\\caption{C}", "\\begin{subfigure}{.5\\textwidth}\\includegraphics{a}\\caption{A}\\end{subfigure}\\caption{C}"]) {
+    const view = mount(`\\begin{figure}\n${inner}\n\\end{figure}`);
+    // (A sub-figure may still be drawn on its own.)
+    assert.ok(!constructs(view.state).some((entry) => entry.startsWith("figure:0:")), inner);
+    view.destroy();
+  }
+});
+
+test("a starred definition's name and body stay source", () => {
+  const view = mount("\\newcommand*{\\a}{\\textbf{definition}}\n\\renewcommand*\\b[1]{\\emph{#1}}\nText \\textbf{real}.");
+  const list = constructs(view.state);
+  const real = view.state.doc.toString().indexOf("\\textbf{real}");
+  assert.deepEqual(list.filter((entry) => entry.startsWith("style:")), [`style:${real}:${real + 13}`]);
+  assert.ok(!list.some((entry) => entry.startsWith("macro")), list.join(" "));
+  view.destroy();
+});
+
+test("definitions follow edits inside a multi-line body and before them", () => {
+  const doc = "\\documentclass{article}\n\\begin{document}\nIntro.\n\\newcommand{\\test}{\n  A}\nUse \\test.\n\\end{document}";
+  const view = mount(doc);
+  const body = doc.indexOf("  A");
+  view.dispatch({ changes: { from: body + 2, to: body + 3, insert: "B" } });
+  assert.equal(macroAt(visualDefinitions(view.state), "test", view.state.doc.length)?.body, "\n  B");
+  // Text typed before the definition moves it: it still applies only from where it is written.
+  const intro = view.state.doc.toString().indexOf("Intro.");
+  view.dispatch({ changes: { from: intro, insert: "x".repeat(200) } });
+  const defs = visualDefinitions(view.state);
+  const at = view.state.doc.toString().indexOf("\\newcommand{\\test}");
+  assert.equal(macroAt(defs, "test", at - 1), null);
+  assert.equal(macroAt(defs, "test", at)?.body, "\n  B");
+  view.destroy();
+});
+
+test("item markers follow \\setcounter, as references do", () => {
+  const view = mount("\\begin{enumerate}\n\\item a\n\\setcounter{enumi}{3}\n\\item b\n\\end{enumerate}");
+  assert.deepEqual([...view.contentDOM.querySelectorAll(".cm-vis-item")].map((item) => item.textContent), ["1.", "4."]);
+  view.destroy();
+});
+
+/* ---- Widgets and their editors --------------------------------------------------- */
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const mouse = (type: string, init: Record<string, unknown> = {}) => new dom.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init });
+
+test("references in captions and table cells follow numbering, and fragments use definitions in force where they are", async () => {
+  const doc = "\\documentclass{article}\n\\begin{document}\n\\section{A}\\label{sec:a}\n\\begin{figure}\n\\includegraphics{a}\n\\caption{See \\ref{sec:a}}\n\\end{figure}\n\\begin{tabular}{ll}\n\\ref{sec:a} & \\x\n\\end{tabular}\n\\newcommand\\x{LATE}\n\\end{document}";
+  const view = mount(doc);
+  await tick();
+  number(view);
+  await tick();
+  assert.match(view.contentDOM.querySelector(".cm-vis-caption-text")?.textContent ?? "", /See 1/);
+  const cells = [...view.contentDOM.querySelectorAll(".cm-vis-tabular .cm-vis-table-cell")].map((cell) => cell.textContent);
+  assert.equal(cells[0], "1");
+  assert.equal(cells[1], "\\x", "a definition written after the table does not apply in it");
+  view.destroy();
+});
+
+test("a cell editor survives a co-author's edit to its table, and clicks in it do not close it", async () => {
+  const doc = "\\begin{tabular}{ll}\na & b \\\\\nc & d\n\\end{tabular}\n";
+  const view = mount(doc);
+  const cellA = () => [...view.contentDOM.querySelectorAll<HTMLElement>(".cm-vis-table-cell")].find((cell) => cell.dataset.row === "0" && cell.dataset.cell === "0")!;
+  cellA().dispatchEvent(mouse("mousedown"));
+  assert.equal(isEditingCell(cellA()), true);
+  const before = view.state.selection.main;
+  cellA().dispatchEvent(mouse("mousedown"));
+  assert.deepEqual([view.state.selection.main.from, view.state.selection.main.to], [before.from, before.to], "the click stays in the cell");
+  cellA().textContent = "draft";
+  cellA().dispatchEvent(new dom.window.Event("input"));
+  const d = view.state.doc.toString().indexOf("d\n");
+  view.dispatch({ changes: { from: d, to: d + 1, insert: "D" }, annotations: Transaction.remote.of(true) });
+  await tick();
+  assert.equal(isEditingCell(cellA()), true, "the redrawn table continues the edit");
+  assert.equal(cellA().textContent, "draft");
+  cellA().dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  assert.equal(view.state.doc.toString(), "\\begin{tabular}{ll}\ndraft & b \\\\\nc & D\n\\end{tabular}\n");
+  view.destroy();
+});
+
+test("cancelling a cell shows the cell's current source, and closing the view closes its editors", async () => {
+  const view = mount("\\begin{tabular}{l}\na\n\\end{tabular}\n$x^2$\n");
+  const cell = view.contentDOM.querySelector<HTMLElement>(".cm-vis-table-cell")!;
+  cell.dispatchEvent(mouse("mousedown"));
+  cell.textContent = "zzz";
+  cell.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.equal(cell.textContent, "a");
+  assert.equal(isEditingCell(cell), false);
+  // (jsdom cannot measure positions, so the formula editor's panel is not opened here; it closes the same way.)
+  cell.dispatchEvent(mouse("mousedown"));
+  cell.dispatchEvent(mouse("contextmenu", { clientX: 5, clientY: 5 }));
+  assert.ok(document.querySelector(".cm-vis-table-menu"));
+  view.destroy();
+  assert.equal(isEditingCell(cell), false, "the cell editor closed with its view");
+  assert.equal(document.querySelector(".cm-vis-table-menu"), null, "and its menu");
+});
+
+test("MathLive gets the macros a formula's macros use, and refuses ones it would change", () => {
+  const view = mount("\\newcommand\\b[1][x]{#1}\\newcommand\\a{\\b}\\newcommand\\c{y}\\newcommand\\d{\\c}\nSee $\\a$ and $\\d$.");
+  const doc = view.state.doc.toString();
+  assert.equal(canEditInMathLive(view, doc.indexOf("$\\a")), false, "\\a uses \\b, which has an optional argument");
+  assert.equal(canEditInMathLive(view, doc.indexOf("$\\d")), true);
+  view.destroy();
+});
+
+test("a widget's edit is its own undo step, in every history", () => {
+  let boundaries = 0;
+  const view = mount("", [undoBoundaries.of(() => { boundaries++; })]);
+  view.dispatch({ changes: { from: 0, insert: "a" }, userEvent: "input.type" });
+  dispatchAsOneStep(view, { changes: { from: 1, insert: "b" }, userEvent: "input.visual.math" });
+  view.dispatch({ changes: { from: 2, insert: "c" }, userEvent: "input.type" });
+  assert.equal(boundaries, 2);
+  undo(view);
+  assert.equal(view.state.doc.toString(), "ab");
+  undo(view);
+  assert.equal(view.state.doc.toString(), "a");
+  view.destroy();
+});
+
+test("buttons and menus work from the keyboard, and Enter on a selected reference follows it", async () => {
+  const view = mount("\\documentclass{article}\n\\begin{document}\n\\section{A}\\label{sec:a}\nSee \\ref{sec:a}.\n\\begin{tabular}{l}\na\n\\end{tabular}\n\\end{document}");
+  view.contentDOM.querySelector<HTMLButtonElement>(".cm-vis-preamble-toggle")!.dispatchEvent(mouse("click"));
+  assert.equal(view.state.field(preambleOpenField), true, "the preamble button toggles on click (Enter and Space make clicks)");
+  number(view);
+  const ref = view.state.doc.toString().indexOf("\\ref");
+  view.dispatch({ selection: EditorSelection.range(ref, ref + "\\ref{sec:a}".length) });
+  assert.ok(runScopeHandlers(view, new dom.window.KeyboardEvent("keydown", { key: "Enter" }), "editor"));
+  assert.equal(view.state.selection.main.head, view.state.doc.toString().indexOf("\\section"));
+  const cell = view.contentDOM.querySelector<HTMLElement>(".cm-vis-table-cell")!;
+  cell.dispatchEvent(mouse("contextmenu", { clientX: 10, clientY: 10 }));
+  const menu = document.querySelector<HTMLElement>(".cm-vis-table-menu")!;
+  assert.equal(document.activeElement?.textContent, "Insert row above", "the menu takes the focus");
+  menu.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  assert.equal(document.activeElement?.textContent, "Insert row below");
+  (document.activeElement as HTMLElement).dispatchEvent(mouse("click"));
+  assert.equal(document.querySelector(".cm-vis-table-menu"), null);
+  assert.match(view.state.doc.toString(), /a \\\\\n/);
+  view.destroy();
+});
+
+test("typing after a hidden command name keeps every cursor", () => {
+  const view = mount("a\\ldots\nb\\ldots\n", [EditorState.allowMultipleSelections.of(true)]);
+  const doc = view.state.doc.toString();
+  const first = doc.indexOf("\n");
+  const second = doc.length - 1;
+  view.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(first), EditorSelection.cursor(second)]) });
+  const handled = view.state.facet(EditorView.inputHandler).some((handler) => handler(view, first, first, "x", () => view.state.update({ changes: { from: first, insert: "x" } })));
+  assert.ok(handled);
+  assert.equal(view.state.doc.toString(), "a\\ldots x\nb\\ldots x\n");
+  assert.equal(view.state.selection.ranges.length, 2);
+  view.destroy();
+});
+
+test("transparent plans and formula previews follow the definitions they depend on", () => {
+  const bold = readLatexDefinitions(String.raw`\newcommand\inner[1]{\textbf{#1}}\newcommand\outer[1]{\inner{#1}}`);
+  const italic = readLatexDefinitions(String.raw`\newcommand\inner[1]{\textit{#1}}\newcommand\outer[1]{\inner{#1}}`);
+  assert.match(transparentPlan(macroAt(bold, "outer", Number.MAX_SAFE_INTEGER)!, bold)!.marks[0].class, /cm-vis-b/);
+  assert.match(transparentPlan(macroAt(italic, "outer", Number.MAX_SAFE_INTEGER)!, italic)!.marks[0].class, /cm-vis-em/);
+  const withRef = readLatexDefinitions(String.raw`\newcommand\seeref[1]{#1 (see \ref{sec:a})}`);
+  assert.equal(transparentPlan(macroAt(withRef, "seeref", Number.MAX_SAFE_INTEGER)!, withRef), null, "a reference in the fixed part needs the refreshing widget");
+  const doc = "Text $\\R$ here.";
+  const state = EditorState.create({ doc, selection: { anchor: doc.indexOf("\\R") + 1 }, extensions: [latexLanguageSupport("main.tex", "tree"), latexMathPreview(), latexVisualState()] });
+  const before = state.facet(showTooltip);
+  const after = state.update({ effects: setMacroSources.of([{ path: "nb/macros.tex", text: "\\newcommand{\\R}{\\mathbb{R}}", version: "1" }]) }).state;
+  assert.notEqual(after.facet(showTooltip)[0], before[0], "the preview is drawn again with the new definition");
+});
+
+test("graphics resolve from the compile root's directory and \\graphicspath, as TeX finds them", () => {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  const doc = "\\graphicspath{{figures/}}\n\\begin{document}\n\\includegraphics{plot}\n\\end{document}";
+  const view = new EditorView({ parent, state: EditorState.create({ doc, extensions: [latexLanguageSupport("main.tex", "tree"), latexVisualState(), latexVisualMode({ documentPath: "nb/chapters/one.tex", rootPath: "nb/main.tex" })] }) });
+  assert.deepEqual(graphicsCandidates(view, "plot"), ["nb/plot", "nb/figures/plot"]);
   view.destroy();
 });
 
@@ -358,6 +563,67 @@ test("long documents are built in pieces, the part at the cursor first", () => {
   view.destroy();
 });
 
+function fillPending(view: EditorView) {
+  ensureSyntaxTree(view.state, view.state.doc.length, 20_000);
+  view.dispatch({});
+  for (let guard = 0; view.state.field(structuralField).pending.length && guard < 400; guard++) {
+    const next = view.state.field(structuralField).pending[0];
+    view.dispatch({ effects: buildPendingEffect.of({ from: next.from, to: Math.min(next.to, next.from + CHUNK) }) });
+  }
+}
+
+test("text the parser has not reached stays pending, even on one long line", () => {
+  const doc = `\\documentclass{article}\n\\begin{document}\n${"Some \\textbf{bold} and $x$ text. ".repeat(8000)}\n\\end{document}`;
+  const visual = new Compartment();
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  const view = new EditorView({ parent, state: EditorState.create({ doc, extensions: [latexLanguageSupport("main.tex", "tree"), latexVisualState(), visual.of([])] }) });
+  ensureSyntaxTree(view.state, 20_000, 50);
+  view.dispatch({ effects: visual.reconfigure(latexVisualMode({ documentPath: "nb/main.tex" })) });
+  const parsed = syntaxTree(view.state).length;
+  assert.ok(parsed < doc.length, "the test needs a partial tree");
+  const pending = view.state.field(structuralField).pending;
+  assert.ok(pending.some((range) => range.from <= parsed && range.to >= doc.length - 20), `unparsed text is pending: ${JSON.stringify(pending)} (parsed ${parsed})`);
+  view.destroy();
+});
+
+test("an edit inside a very long list walks its own lines now and the rest of the list later", () => {
+  const doc = `\\documentclass{article}\n\\begin{document}\n\\begin{enumerate}\n${"\\item Text with $x$ and \\textbf{bold}.\n".repeat(5000)}\\end{enumerate}\nAfter $y$.\n\\end{document}\n`;
+  const view = mount(doc);
+  fillPending(view);
+  const middle = view.state.doc.toString().indexOf("Text with", doc.length / 2);
+  view.dispatch({ changes: { from: middle, insert: "plain " } });
+  const parsed = syntaxTree(view.state).length;
+  assert.ok(view.state.field(structuralField).pending.every((range) => range.from >= parsed), "plain typing needs nothing else (but what the parser has not reached)");
+  view.dispatch({ changes: { from: middle, insert: "\\item new " } });
+  assert.ok(view.state.field(structuralField).pending.some((range) => range.from < middle), "the rest of the list is left for later");
+  ensureSyntaxTree(view.state, view.state.doc.length, 20_000);
+  view.dispatch({});
+  fillPending(view);
+  const fresh = mount(view.state.doc.toString());
+  fillPending(fresh);
+  assert.deepEqual(constructs(view.state), constructs(fresh.state));
+  view.destroy();
+  fresh.destroy();
+});
+
+test("body text on the \\begin{document} line is not folded into the preamble", () => {
+  const doc = "\\documentclass{article}\n\\begin{document}Hello world!\n\\end{document}";
+  const view = mount(doc);
+  assert.match(view.contentDOM.textContent ?? "", /Hello world!/);
+  assert.equal(visualEntrySelection(view.state)?.head, doc.indexOf("Hello"));
+  view.destroy();
+});
+
+test("editing \\title in the body redraws \\maketitle", () => {
+  const view = mount("\\documentclass{article}\n\\begin{document}\n\\title{A}\n\\maketitle\nText.\n\\end{document}");
+  assert.equal(view.contentDOM.querySelector(".cm-vis-title")?.textContent, "A");
+  const at = view.state.doc.toString().indexOf("{A}") + 1;
+  view.dispatch({ changes: { from: at, to: at + 1, insert: "B" } });
+  assert.equal(view.contentDOM.querySelector(".cm-vis-title")?.textContent, "B");
+  view.destroy();
+});
+
 test("a chapter's numbers start where its main file includes it", () => {
   const view = mount("\\subsection{Attention}\\label{sec:att}\n\\begin{equation}x\\label{eq:x}\\end{equation}");
   view.dispatch({ effects: setNumberingStart.of({ counters: { section: 3, equation: 4 }, appendix: false }) });
@@ -388,7 +654,7 @@ test("opening and leaving a cell without typing writes nothing", () => {
   const view = mount(GRID);
   const cell = cellElement(view, "a");
   cell.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
-  assert.equal(cell.contentEditable, "true");
+  assert.equal(isEditingCell(cell), true);
   assert.equal(cell.textContent, " a ");
   cell.dispatchEvent(new dom.window.FocusEvent("blur"));
   assert.equal(view.state.doc.toString(), GRID);
@@ -415,7 +681,7 @@ test("a table menu command is planned against the table as it is when chosen", (
   const menu = document.querySelector(".cm-vis-table-menu")!;
   view.dispatch({ changes: { from: 0, insert: "Moved. " } });
   const insertBelow = [...menu.querySelectorAll("button")].find((button) => button.textContent === "Insert row below")!;
-  insertBelow.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  insertBelow.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
   assert.equal(view.state.doc.toString(), `Moved. ${GRID.replace("Base & 27.3", String.raw`Base & 27.3 \\` + "\n&")}`);
   view.destroy();
 });

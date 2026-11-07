@@ -137,12 +137,48 @@ c & d \\
 \end{tabular}`);
 });
 
+test("a cell edit writes only the characters that changed", () => {
+  const model = parseTabular(TABLE)!;
+  const cell = model.rows[1].cells[1];
+  assert.deepEqual(setCellText(cell, "27.4", "27.3"), { from: cell.from + 3, to: cell.from + 4, insert: "4" });
+  assert.equal(apply(TABLE, [setCellText(cell, "27.4", "27.3")]), TABLE.replace("27.3", "27.4"));
+  const big = model.rows[2].cells[0];
+  assert.deepEqual(setCellText(big, "Bigger", "Big"), { from: big.contentTo!, to: big.contentTo!, insert: "ger" });
+});
+
+test("deleting the first column keeps the rules before a row", () => {
+  const table = String.raw`\begin{tabular}{lc}
+\hline
+a & b \\
+\hline
+c & d
+\end{tabular}`;
+  assert.equal(apply(table, deleteColumn(parseTabular(table)!, 0)!), String.raw`\begin{tabular}{c}
+\hline
+ b \\
+\hline
+ d
+\end{tabular}`);
+});
+
 /* ---- Paste ---------------------------------------------------------------------- */
 
 test("text is escaped and symbols become commands", () => {
   assert.equal(escapeLatexText("50% of $5 & #1_x {ok} ~^\\"), "50\\% of \\$5 \\& \\#1\\_x \\{ok\\} \\textasciitilde{}\\textasciicircum{}\\textbackslash{}");
   assert.equal(escapeLatexText("α ≤ β"), "$\\alpha \\le \\beta$");
   assert.equal(escapeLatexText("“quoted” — and… done"), "``quoted'' --- and\\ldots{} done");
+  assert.equal(escapeLatexText("α x"), "$\\alpha$ x");
+  assert.equal(escapeLatexText("α and β"), "$\\alpha$ and $\\beta$");
+  assert.equal(escapeLatexText("x α "), "x $\\alpha$ ");
+});
+
+test("pasted links, math and code cannot leave the construct they become", () => {
+  const link = htmlToLatex("<p><a href=\"https://x.org/a}\\input{secret}\\href{b%c#d\">t</a></p>")!;
+  assert.equal(link, String.raw`\href{https://x.org/a\%7D\%5Cinput\%7Bsecret\%7D\%5Chref\%7Bb\%c\#d}{t}`);
+  assert.ok(!/\\input\{/.test(link));
+  assert.equal(htmlToLatex("<p><math><semantics><mi>x</mi><annotation encoding=\"application/x-tex\">x$ \\input{secret} $</annotation></semantics></math></p>"), "x");
+  assert.equal(htmlToLatex("<p><math><semantics><mi>x</mi><annotation encoding=\"application/x-tex\">\\begin{pmatrix}a\\end{pmatrix}</annotation></semantics></math></p>"), "$\\begin{pmatrix}a\\end{pmatrix}$");
+  assert.equal(htmlToLatex("<pre>a\n\\end{verbatim}\\input{x}</pre>"), "\\texttt{a}\\\\\n\\texttt{\\textbackslash{}end\\{verbatim\\}\\textbackslash{}input\\{x\\}}");
 });
 
 test("rich text from Word, Google Docs and web pages becomes LaTeX", () => {

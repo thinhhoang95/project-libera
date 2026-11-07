@@ -66,10 +66,29 @@ const WIDEN = new Set([
 ]);
 const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright)$/;
 
-function preambleEndOf(state: EditorState) {
+/** Where the folded preamble ends: the `\begin{document}` line, or the command itself when body text follows it on that line. */
+export function preambleEndOf(state: EditorState) {
   const start = bodyStartIn(state.doc);
   if (start <= 0) return -1;
-  return state.doc.lineAt(start).to;
+  const line = state.doc.lineAt(start);
+  return state.doc.sliceString(start, line.to).trim() ? start : line.to;
+}
+
+const TITLE_PARTS = /\\(?:title|author|date)(?![A-Za-z@])/;
+
+/** The `\maketitle` constructs after an edit to a line with `\title`, `\author` or `\date` (before or after the edit). */
+function titlesAfterEdit(tr: Transaction, extents: RangeSet<ConstructMark>) {
+  let from = -1;
+  tr.changes.iterChanges((fromA, toA, fromB, toB) => {
+    if (from >= 0) return;
+    const before = tr.startState.doc;
+    const after = tr.state.doc;
+    if (TITLE_PARTS.test(before.sliceString(before.lineAt(fromA).from, before.lineAt(toA).to)) || TITLE_PARTS.test(after.sliceString(after.lineAt(fromB).from, after.lineAt(toB).to))) from = fromB;
+  });
+  const titles: PendingRange[] = [];
+  if (from < 0) return titles;
+  extents.between(from, tr.state.doc.length, (start, end, mark) => { if (mark.kind === "title" && start >= from) titles.push({ from: start, to: end }); });
+  return titles;
 }
 
 /** Whether an edit can change the structure beyond its own lines: a `$`, a brace, a backslash, a comment or a line break. */
@@ -219,6 +238,26 @@ const CONTEXT_NODES = new Set([
 /** The tree before an edit and the edit itself, to tell where the old and new parses agree again. */
 export type EditContext = { oldTree: Tree; oldDoc: { sliceDoc: (from: number, to: number) => string }; changes: ChangeDesc };
 
+/**
+ * For an edit inside a container too large to walk now (a long list, an
+ * unclosed `\textbf{`): the edited lines and the old constructs on them.
+ * Plain typing changes nothing else; after a structural edit the rest of the
+ * container is left pending (built in pieces), and the walk forward starts
+ * after the container. Null when the container is small enough.
+ */
+function capEdit(state: EditorState, working: Working, wide: PendingRange, from: number, to: number, structural: boolean) {
+  if (wide.to - wide.from <= SYNC_BUDGET) return null;
+  const lines = lineBounds(state, from, to);
+  const old = overlapping(working.extents, lines.from, lines.to);
+  const narrow = lineBounds(state, old.from, old.to);
+  if (narrow.to - narrow.from >= wide.to - wide.from) return null;
+  if (structural) {
+    working.pending = addPending(working.pending, { from: wide.from, to: narrow.from });
+    working.pending = addPending(working.pending, { from: narrow.to, to: wide.to });
+  }
+  return { range: narrow, followFrom: structural ? wide.to : narrow.to };
+}
+
 /** Rebuilds [from, to] (widened), then follows changes forward until the old and new constructs agree again. */
 function rebuild(state: EditorState, tree: Tree, working: Working, from: number, to: number, preambleEnd: number, preambleOpen: boolean, stabilize: boolean, edit?: EditContext) {
   const available = Math.min(state.doc.length, tree.length);
@@ -233,6 +272,9 @@ function rebuild(state: EditorState, tree: Tree, working: Working, from: number,
     return;
   }
   let range = widen(state, tree, working.extents, from, Math.min(to, available));
+  // The synchronous budget covers an edit's first walk too.
+  const capped = edit ? capEdit(state, working, range, from, Math.min(to, available), stabilize) : null;
+  if (capped) range = capped.range;
   let built = walk(state, tree, range.from, range.to, preambleEnd, preambleOpen);
   // New constructs may run past the range (a new `$` pairs with a later one): walk the whole widened range
   // again, so what the first walk covered (a macro's arguments) is known to the rest.
@@ -245,12 +287,14 @@ function rebuild(state: EditorState, tree: Tree, working: Working, from: number,
     const { ids } = overlapping(working.extents, start, end);
     working.decorations = working.decorations.update({ filter: (_f, _t, value) => !ids.has(value.spec.cid), filterFrom: start, filterTo: end, add: fresh.decorations, sort: true });
     working.extents = working.extents.update({ filter: (_f, _t, value) => !ids.has(value.id), filterFrom: start, filterTo: end, add: fresh.extents, sort: true });
-    working.pending = removePending(working.pending, start, end);
+    // Only what the parser has reached is built: the rest of a long line stays pending.
+    working.pending = removePending(working.pending, start, Math.min(end, available));
+    if (end > available) working.pending = addPending(working.pending, { from: available, to: end });
   };
   apply(range.from, range.to, built);
   if (!stabilize) return;
   // Follow the edit forward while constructs differ, within a budget.
-  let at = range.to;
+  let at = capped ? capped.followFrom : range.to;
   let spent = range.to - range.from;
   while (at < available) {
     if (working.pending.some((pending) => pending.from <= at && pending.to > at)) break;
@@ -398,6 +442,8 @@ export const structuralField = StateField.define<StructuralState>({
         tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => ranges.push([fromB, toB, structuralEdit(tr, fromA, toA, inserted.toString())]));
         // Plain typing only changes its own lines; structural characters are followed forward.
         for (const [from, to, structural] of ranges) rebuild(state, tree, working, from, to, preambleEnd, preambleOpen, structural, edit);
+        // \maketitle shows \title, \author and \date written elsewhere: an edit to them redraws it.
+        for (const title of titlesAfterEdit(tr, working.extents)) rebuild(state, tree, working, title.from, title.to, preambleEnd, preambleOpen, false);
       }
       // The parser caught up: build what it now covers, and check forward from where the old tree
       // stopped, since constructs built before it caught up may have changed shape past that point.

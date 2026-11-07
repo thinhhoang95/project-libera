@@ -1,4 +1,5 @@
 import katex from "katex";
+import { stripTexComments } from "../../macros/numbering";
 
 /* KaTeX for the Visual mode. Formulas arrive with the document's macros
  * already expanded (macros/expand.ts). A formula KaTeX cannot parse is not
@@ -29,9 +30,13 @@ export function renderKatex(latex: string, display: boolean): string | null {
 const NUMBERED_ROWS = new Set(["align", "alignat", "flalign", "gather", "eqnarray"]);
 const UNNUMBERED_DISPLAY = new Set(["displaymath", "math"]);
 
-/** Labels and \tag go: numbers are set by the Visual mode, and KaTeX has no \label. */
+/**
+ * Labels go: KaTeX has no \label. `\tag` stays: KaTeX draws it as written
+ * (`\tag*{A}` without parentheses), also in starred environments, and the
+ * numbering pass numbers only the other rows.
+ */
 function stripNumbering(body: string) {
-  return body.replace(/\\label\s*\{[^}]*\}/g, "").replace(/\\tag\*?\s*\{[^}]*\}/g, "");
+  return body.replace(/\\label\s*\{[^}]*\}/g, "");
 }
 
 export type DisplayMathSource = { latex: string; numbered: boolean; inline: boolean };
@@ -48,7 +53,7 @@ export function katexForEnvironment(env: string, body: string): DisplayMathSourc
   if (base === "math") return { latex: content, numbered: false, inline: true };
   if (UNNUMBERED_DISPLAY.has(base)) return { latex: content, numbered: false, inline: false };
   if (base === "equation") {
-    const numbered = !starred && !/\\(?:nonumber|notag)\b/.test(content);
+    const numbered = !starred && !/\\(?:nonumber|notag)\b/.test(stripTexComments(content));
     return { latex: numbered ? `\\begin{equation}${content}\\end{equation}` : content, numbered, inline: false };
   }
   if (base === "multline") {
@@ -69,10 +74,10 @@ export function katexForEnvironment(env: string, body: string): DisplayMathSourc
   return { latex: `\\begin{${env}}${content}\\end{${env}}`, numbered: false, inline: false };
 }
 
-/** Puts the numbering pass's numbers on KaTeX's number slots, in row order. */
-export function applyEquationNumbers(element: HTMLElement, numbers: Array<string | null>) {
+/** Puts the numbering pass's numbers on KaTeX's number slots, in row order (rows with a `\tag` have their own, drawn by KaTeX). */
+export function applyEquationNumbers(element: HTMLElement, numbers: Array<string | null>, tagged: boolean[] = []) {
   const slots = element.querySelectorAll<HTMLElement>(".eqn-num");
-  const values = numbers.filter((number): number is string => number !== null);
+  const values = numbers.filter((number, index): number is string => number !== null && !tagged[index]);
   slots.forEach((slot, index) => {
     const value = values[index];
     if (value === undefined) slot.removeAttribute("data-vis-num");

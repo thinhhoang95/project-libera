@@ -12,7 +12,7 @@ import {
   LATEX_ENGINE_LABELS, hasDocumentClass, isCompilableLatexPath, readBibEntries, readLatexBibliographyReferences, readLatexLabels,
   readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, type BibEntrySummary, type LatexEngineSetting,
 } from "@/lib/latex/project";
-import { bodyStartOf, readLatexInputs } from "@/lib/latex/macros/definitions";
+import { bodyStartOf, collectLatexDefinitions, readLatexInputs } from "@/lib/latex/macros/definitions";
 import type { NumberingStart } from "@/lib/latex/macros/numbering";
 import { chapterNumberingStart } from "@/lib/latex/macros/project-numbering";
 import type { MacroSource } from "@/lib/latex/codemirror/visual";
@@ -28,6 +28,7 @@ import { latexPdfUrl, requestLatexCompile, useLatexBuild } from "./latex-build-s
 import { LatexCacheDialog } from "./latex-cache-dialog";
 import { latexCompileMenuItems, type LatexCompileTarget } from "./latex-compile-menu";
 import { nativeMenuPointBelow, popupNativeMenu } from "../native-menu";
+import { collectBodyIncludes, collectMacroSources, liveTabText, useDependencyVersion } from "./latex-dependencies";
 import { LatexEditor, type LatexEditorHandle } from "./latex-editor";
 import { registerLatexEditor } from "./latex-editor-registry";
 import { LatexInsertToolbar } from "./latex-insert-toolbar";
@@ -151,8 +152,8 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   const [bibEntries, setBibEntries] = useState<BibEntrySummary[]>([]);
   const splitRef = useRef<HTMLDivElement>(null);
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latest = useRef({ readOpenTabs, engineSetting, onSave, autoCompile, rootPath, canCompile });
-  useEffect(() => { latest.current = { readOpenTabs, engineSetting, onSave, autoCompile, rootPath, canCompile }; });
+  const latest = useRef({ readOpenTabs, engineSetting, onSave, autoCompile, rootPath, canCompile, draftForAnalysis });
+  useEffect(() => { latest.current = { readOpenTabs, engineSetting, onSave, autoCompile, rootPath, canCompile, draftForAnalysis }; });
 
   useEffect(() => registerLatexEditor(tab.id, editorRef), [tab.id]);
 
@@ -269,10 +270,10 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       const entries: BibEntrySummary[] = [];
       for (const path of bibPaths) {
         const openTab = latest.current.readOpenTabs().find((other) => other.file.path === path);
-        const cacheKey = `${fileUpdatedAt.get(path) ?? ""}:${openTab?.draft.length ?? ""}`;
+        const cacheKey = `${fileUpdatedAt.get(path) ?? ""}:${openTab ? liveTabText(openTab).length : ""}`;
         let cached = bibCache.get(path);
         if (!cached || cached.key !== cacheKey) {
-          const content = openTab?.draft ?? (await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => ""));
+          const content = (openTab ? liveTabText(openTab) : null) ?? (await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => ""));
           cached = { key: cacheKey, entries: readBibEntries(content) };
           bibCache.set(path, cached);
         }
@@ -286,73 +287,82 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   }, [bibKey, build.version]);
 
   // Definitions the Visual mode needs from other files: the main file's
-  // preamble (for a chapter), and the macro files and local packages a preamble loads.
+  // preamble (for a chapter), and the macro files and local packages a
+  // preamble loads, and theirs. Read live from open tabs (shared ones from
+  // their Y.Text), and read again when any of them changes.
   const ownPreamble = draftForAnalysis.slice(0, bodyStartOf(draftForAnalysis) || 0);
   const [macroSources, setMacroSources] = useState<MacroSource[]>([]);
-  const macroKey = `${rootPath}|${ownPreamble.length}|${fileUpdatedAt.get(rootPath) ?? ""}|${hashString(ownPreamble)}`;
+  const [macroPaths, setMacroPaths] = useState<string[]>([]);
+  const macroVersion = useDependencyVersion(macroPaths, readOpenTabs, fileUpdatedAt);
+  const readLiveText = useCallback(async (path: string) => {
+    const open = latest.current.readOpenTabs().find((other) => other.file.path === path);
+    if (open) return liveTabText(open);
+    return apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => "");
+  }, []);
+  const knownFiles = useMemo(() => new Set(files.map((file) => file.path)), [files]);
+  const macroKey = `${rootPath}|${ownPreamble.length}|${hashString(ownPreamble)}|${macroVersion}`;
   useEffect(() => {
     if (!isTex) return;
     let cancelled = false;
-    void (async () => {
-      const readText = async (path: string) => latest.current.readOpenTabs().find((other) => other.file.path === path)?.draft
-        ?? (await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => ""));
-      const sources: MacroSource[] = [];
-      let preamble = ownPreamble;
-      let base = filePath;
-      if (rootPath !== filePath) {
-        const rootText = await readText(rootPath);
-        const rootPreamble = rootText.slice(0, bodyStartOf(rootText) || 0);
-        if (rootPreamble) sources.push({ path: rootPath, text: rootPreamble, version: String(fileUpdatedAt.get(rootPath) ?? "") });
-        preamble = rootPreamble;
-        base = rootPath;
-      }
-      const known = new Set(files.map((file) => file.path));
-      const loaded: string[] = [];
-      for (const input of readLatexInputs(preamble)) {
-        const name = /\.(?:tex|sty)$/i.test(input.path) ? input.path : `${input.path}.tex`;
-        const resolved = resolveRelativeNotebookPath(base, name);
-        if (resolved && known.has(resolved)) loaded.push(resolved);
-      }
-      for (const match of preamble.matchAll(/\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
-        for (const name of match[1].split(",")) {
-          const resolved = resolveRelativeNotebookPath(base, `${name.trim()}.sty`);
-          if (resolved && known.has(resolved)) loaded.push(resolved);
-        }
-      }
-      for (const path of loaded.slice(0, 24)) {
-        const text = await readText(path);
-        if (text) sources.push({ path, text, version: String(fileUpdatedAt.get(path) ?? "") });
-      }
-      if (!cancelled) setMacroSources((current) => (JSON.stringify(current) === JSON.stringify(sources) ? current : sources));
-    })();
+    void collectMacroSources({
+      filePath, rootPath, ownPreamble, known: knownFiles, readText: readLiveText, version: (path) => String(fileUpdatedAt.get(path) ?? ""),
+    }).then(({ sources, paths }) => {
+      if (cancelled) return;
+      setMacroSources((current) => (JSON.stringify(current) === JSON.stringify(sources) ? current : sources));
+      setMacroPaths((current) => (current.join("\u0000") === paths.join("\u0000") ? current : paths));
+    });
     return () => { cancelled = true; };
-    // macroKey covers the preambles and file versions involved.
+    // macroKey covers the preambles and the versions of the files read.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [macroKey, isTex, files.length]);
+  }, [macroKey, isTex, knownFiles]);
 
-  // A chapter's counters continue from where its main file includes it.
+  // A chapter's counters continue from where its main file includes it; the
+  // files included before it (and the definitions of theorems and counters)
+  // count, so they are read live too.
   const [chapterStart, setNumberingStartState] = useState<NumberingStart | null>(null);
+  const [chapterPaths, setChapterPaths] = useState<string[]>([]);
+  const chapterVersion = useDependencyVersion(chapterPaths, readOpenTabs, fileUpdatedAt);
   const isChapter = isTex && rootPath !== filePath;
   const numberingStart = isChapter ? chapterStart : null;
   useEffect(() => {
     if (!isChapter) return;
     let cancelled = false;
-    const readText = async (path: string) => latest.current.readOpenTabs().find((other) => other.file.path === path)?.draft
-      ?? (await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => ""));
-    void chapterNumberingStart(filePath, rootPath, readText).then((start) => {
-      if (!cancelled) setNumberingStartState((current) => (JSON.stringify(current) === JSON.stringify(start) ? current : start));
+    const read: string[] = [];
+    const readText = async (path: string) => { read.push(path); return readLiveText(path); };
+    // The main file's definitions in TeX's order, with its macro files, as the editor reads them.
+    const rootSource = macroSources.find((source) => source.path === rootPath);
+    const base = rootSource ? collectLatexDefinitions(macroSources) : undefined;
+    void chapterNumberingStart(filePath, rootPath, readText, base).then((start) => {
+      if (cancelled) return;
+      setNumberingStartState((current) => (JSON.stringify(current) === JSON.stringify(start) ? current : start));
+      setChapterPaths((current) => (current.join("\u0000") === read.join("\u0000") ? current : read));
     }).catch(() => undefined);
     return () => { cancelled = true; };
-    // Recomputed when the main file changes on disk or a compile finishes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath, rootPath, isChapter, fileUpdatedAt.get(rootPath), build.version]);
+  }, [filePath, rootPath, isChapter, chapterVersion, macroSources, readLiveText, build.version]);
+
+  // The files this one includes in its body: their sections, equations and
+  // figures advance this file's numbers (a section after an included chapter).
+  const [numberingIncludes, setNumberingIncludes] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [includePaths, setIncludePaths] = useState<string[]>([]);
+  const includeVersion = useDependencyVersion(includePaths, readOpenTabs, fileUpdatedAt);
+  const bodyInputs = isTex ? readLatexInputs(draftForAnalysis).map((input) => input.path).join("\u0000") : "";
+  useEffect(() => {
+    if (!isTex) return;
+    let cancelled = false;
+    void collectBodyIncludes({ filePath, rootPath, text: latest.current.draftForAnalysis, known: knownFiles, readText: readLiveText }).then(({ includes, paths }) => {
+      if (cancelled) return;
+      setNumberingIncludes((current) => (current.size === includes.size && [...includes].every(([key, text]) => current.get(key) === text) ? current : includes));
+      setIncludePaths((current) => (current.join("\u0000") === paths.join("\u0000") ? current : paths));
+    });
+    return () => { cancelled = true; };
+  }, [bodyInputs, filePath, rootPath, isTex, includeVersion, knownFiles, readLiveText]);
 
   // Refreshed after each compile, which follows edits in any open file.
   const otherLabels = useMemo(() => {
     void build.version;
     return readOpenTabs()
       .filter((other) => other.id !== tab.id && other.file.fileType === "latex" && other.file.notebook === tab.file.notebook)
-      .flatMap((other) => readLatexLabels(other.draft));
+      .flatMap((other) => readLatexLabels(liveTabText(other)));
   }, [build.version, readOpenTabs, tab.file.notebook, tab.id]);
 
   // The notebook's References: `\cite` offers their keys even before any .bib is referenced.
@@ -376,7 +386,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   const missingInMainFile = useCallback(async (packages: string[]) => {
     if (rootPath === filePath) return packages;
     const open = latest.current.readOpenTabs().find((other) => other.file.path === rootPath);
-    const text = open?.draft ?? await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(rootPath)}`).then((payload) => payload.content ?? "").catch(() => null);
+    const text = (open ? liveTabText(open) : null) ?? await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(rootPath)}`).then((payload) => payload.content ?? "").catch(() => null);
     return text === null ? packages : packages.filter((name) => !usesPackage(text, name));
   }, [filePath, rootPath]);
 
@@ -558,6 +568,8 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       macroSources={macroSources}
       auxData={build.aux ?? null}
       numberingStart={numberingStart}
+      numberingIncludes={numberingIncludes}
+      rootPath={rootPath}
     />
   );
 

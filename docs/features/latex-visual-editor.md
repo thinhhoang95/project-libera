@@ -16,12 +16,12 @@ Switch with **Editor Mode → Visual** or **Source** in the file menu (the ⋯ b
 | `\cite` and its natbib/biblatex variants | A chip: `[12]` from the last compile, or author and year from the `.bib` files and References |
 | `\ref`, `\eqref`, `\cref`, `\Cref`, `\autoref`, `\pageref`, `\nameref` | A chip with the number: `2.1`, `(3)`, `eq. (3)`, `Figure 1`, `Section 2`. Click to jump to the label. |
 | `\label` elsewhere | A small grey tag |
-| `figure`, `table`, `\includegraphics` | The image (PNG, JPEG, SVG, or a PDF's first page) and the numbered caption; tables as grids |
+| `figure`, `table`, `\includegraphics` | The image (PNG, JPEG, SVG, or a PDF's first page) and the numbered caption; tables as grids. A figure holding anything else (text, other commands, sub-figures) stays source, with its parts drawn on their own. Images are found from the main file's directory and `\graphicspath`, as TeX finds them. |
 | `tabular`, `tabularx`, `tabular*` | A grid, with `\multicolumn` and rules |
 | `itemize`, `enumerate`, `description` | Bullets and numbers per level (`[(i)]` and enumitem `label=` too); the `\begin` and `\end` lines fold away |
 | Theorems from `\newtheorem`, `proof`, `abstract`, `quote`, `center`, user `\newenvironment`s | Headings such as **Theorem 2.1** (Pythagoras), ∎ at the end of a proof, theorem bodies in their style |
 | `\maketitle` | The title, authors and date |
-| The preamble | A folded block: **Preamble · article · 12 packages · 8 macros · 2 theorem types**. Click it to see the source. |
+| The preamble | A folded block: **Preamble · article · 12 packages · 8 macros · 2 theorem types**. Click it (or press Enter on it) to see the source. Text after `\begin{document}` on the same line stays visible. |
 | `\%`, `\&`, `\ldots`, `--`, `---`, ` `` ''`, `~`, accents such as `\'e`, `\LaTeX`, `\today` | The characters they typeset |
 
 Anything else stays as LaTeX: unknown commands, unclosed braces, environments missing their `\end` or ending with the wrong one, verbatim and code listings, `tikzpicture`, `longtable`, comments. A command with broken braces stays as source, but formulas and formatting inside it still render, so one stray brace does not undo the rest of the page.
@@ -36,34 +36,40 @@ Anything else stays as LaTeX: unknown commands, unclosed braces, environments mi
 
 ### Formulas
 
-Click a formula to edit it in MathLive, a visual equation editor. Enter saves, Escape cancels. Only the parts you changed are written: MathLive's own spellings (`x^{2}` for `x^2`, its spacing) do not leak into the file. The document's macros work in it and are written back by name. If a co-author changed the formula while you were editing, Libera asks before replacing their version.
+Click a formula (or select it and press Enter) to edit it in MathLive, a visual equation editor. Enter saves, Escape cancels, and Tab moves between the field and the buttons. Only the parts you changed are written, as one undo step: MathLive's own spellings (`x^{2}` for `x^2`, its spacing) do not leak into the file. The document's macros work in it, with the macros they use, and are written back by name. If a co-author changed the formula while you were editing, Libera asks before replacing their version; if they deleted it, nothing is written and you can copy your version.
 
-Some formulas open as source instead, because MathLive would change them: formulas over several lines, or with `\label`, `&`, `\\` or a `%` comment, or using a macro with an optional argument. The live KaTeX preview appears under them.
+Some formulas open as source instead, because MathLive would change them: formulas over several lines, or with `\label`, `&`, `\\` or a `%` comment, or using (directly or through another macro) a macro with an optional argument. The live KaTeX preview appears under them.
 
 ### Tables
 
-Click a cell to edit its LaTeX; Enter or Tab saves (Tab moves to the next cell), Escape cancels. Only that cell's text is rewritten. Right-click a cell to insert or delete rows and columns; each command is one undo step and writes the fewest changes (one row, or one `&` per row and one letter in the column specification). Cells with a comment or a line break inside are edited as source.
+Click a cell (or select a table and press Enter) to edit its LaTeX; Enter or Tab saves (Tab moves to the next cell), Escape cancels. Only the characters you changed are written. If a co-author edits the table meanwhile, your cell stays open with what you typed. Right-click a cell to insert or delete rows and columns (the menu works with the arrow keys too); each command is one undo step and writes the fewest changes (one row, or one `&` per row and one letter in the column specification). Cells with a comment or a line break inside are edited as source.
 
 ### Formatting and paste
 
-⌘B, ⌘I, ⌘U, ⌘⇧E and ⌘⇧T, and the toolbar's Bold and Italic, wrap the selection, or remove the wrapper when the cursor is already inside one. Pasting from Word, Google Docs or a web page converts the rich text to LaTeX: headings, lists, tables, links and formatting keep their structure, special characters are escaped, symbols such as α and ≤ become `$\alpha$` and `$\le$`, and anything else is dropped. Plain text pastes as it is.
+⌘B, ⌘I, ⌘U, ⌘⇧E and ⌘⇧T, and the toolbar's Bold and Italic, wrap the selection, or remove the wrapper when the cursor is already inside one. Pasting from Word, Google Docs or a web page converts the rich text to LaTeX: headings, lists, tables, links and formatting keep their structure, special characters are escaped, symbols such as α and ≤ become `$\alpha$` and `$\le$`, and anything else is dropped. Pasted links, formulas and code cannot break out of what they become: a TeX formula that could (or that reads files) pastes as the text it shows. Plain text pastes as it is.
 
 ### Keyboard details
 
 - At the end of a heading the cursor stays before the hidden `}`, so typing stays in the heading; moving right from there goes to the next line.
 - The cursor never lands before a bullet.
-- A letter typed right after a hidden `\ldots` gets a space first, so the command keeps its name.
+- A letter typed right after a hidden `\ldots` gets a space first, so the command keeps its name (at every cursor).
+- Select a reference chip and press Enter to go to its label.
 
 ## Macros, environments and numbering
 
-The Visual mode reads the document's own definitions, as the [Markdown macros](markdown-macros.md) do for notes: from the preamble, from macro files the preamble `\input`s, from local `.sty` packages it loads, and, for a chapter, from its main file's preamble. Definitions in the body apply from where they are written.
+The Visual mode reads the document's own definitions, as the [Markdown macros](markdown-macros.md) do for notes: from the preamble, from macro files the preamble `\input`s (and the files they input), from local `.sty` packages it loads, and, for a chapter, from its main file's preamble, in the order TeX reads them, and again when one of those files changes. Definitions in the body apply from where they are written. Definitions follow TeX's rules:
+
+- A definition inside a group (`{…}`, `\begingroup…\endgroup`, an environment) ends with the group; `\gdef` and `\global` ones do not.
+- Definitions TeX does not run are not read: in comments, `verbatim`, `\verb`, the false branch of `\iffalse`, or inside another definition's body.
+- A definition under a condition the Visual mode cannot decide (`\ifx`, `\ifdefined`, a `\newif` flag) hides the macro's earlier meaning: its uses stay source. So does a redefinition that cannot be rendered.
+- Redefining one of LaTeX's commands (`\renewcommand{\textbf}…`) draws the new definition instead of the built-in one.
 
 - **Math macros** (`\newcommand{\R}{\mathbb{R}}`, `\DeclareMathOperator`, `\def`, optional arguments, `\NewDocumentCommand` with `m`, `o`, `O{…}` and `s` arguments) are substituted into formulas before they are typeset, in the Source mode's preview too.
 - **Text macros** show their expansion, faintly underlined, until the cursor is inside them. A macro whose body uses each argument once, in order, in text (`\newcommand\todo[1]{\textcolor{red}{[[#1]]}}`) keeps its argument editable in place: the fixed parts are drawn around it and the argument takes the body's style.
 - **Theorems** from `\newtheorem` (shared counters, `[section]`, `\theoremstyle`, starred) and **environments** from `\newenvironment` draw their headings.
-- **Numbering** follows the document: sections (letters after `\appendix`), equations (per row of `align`, with `\tag`, `\nonumber`, `\numberwithin`), figures, tables, theorems, footnotes and enumerated items, chapter-prefixed in book and report classes. A chapter continues from where its main file includes it. Labels in other files, page references and numeric citations come from the last compile's `.aux`.
+- **Numbering** follows the document: sections (letters after `\appendix`, `secnumdepth`), equations (per row of `align`, with `\tag`, `\nonumber`, `\numberwithin`, `subequations`), figures, tables, theorems, footnotes (`\footnote[n]`, endnotes) and enumerated items (with `\setcounter{enumi}` and custom labels), chapter-prefixed in book and report classes. A chapter continues from where its main file includes it, and a main file's numbers count the chapters it `\input`s or `\include`s. A custom `\theequation` built from counter commands is followed; one that uses anything else shows "?". Labels in other files, page references and numeric citations come from the last compile's `.aux`.
 
-Forms that cannot be rendered safely (delimited `\def` parameters, `\edef`, other xparse argument types) are listed as not rendered, and their uses stay as source. The preamble block counts a definition with a mistake (a body using `#3` in a two-argument macro) as a problem.
+Forms that cannot be rendered safely (delimited `\def` parameters, `\edef`, other xparse argument types, `\let` to a command whose arguments are unknown) are listed as not rendered, and their uses stay as source. The preamble block counts a definition with a mistake (a body using `#3` in a two-argument macro) as a problem.
 
 ## Collaboration, suggestions and review
 
@@ -80,7 +86,7 @@ Shared tabs need nothing extra: the Visual mode is drawn over the same shared te
   - Editing: `keys.ts`, `math-edit.ts` with `tex-tokens.ts` (MathLive and the token diff), `table-model.ts` and `table-edit.ts`, `html2latex.ts` and `paste.ts`, `transparent.ts`.
   - `model.ts`: definitions, numbering, `.aux` data and the preamble toggle, kept in both modes.
 - `src/lib/latex/macros/`: `definitions.ts`, `expand.ts`, `numbering.ts`, `project-numbering.ts`. `src/lib/latex/aux-file.ts` reads `\newlabel` and `\bibcite`; the compile response carries them (`build.ts`). `src/lib/macros/core.ts` holds the primitives shared with the Markdown macros.
-- `latex-editor.tsx` switches the mode with a compartment; `latex-workspace.tsx` supplies macro sources, `.aux` labels and a chapter's starting counters.
+- `latex-editor.tsx` switches the mode with a compartment; `latex-workspace.tsx` supplies macro sources, the files the body includes, `.aux` labels and a chapter's starting counters, read by `latex-dependencies.ts`. `src/lib/collab/undo-boundary.ts` makes a widget's edit one undo step in every history.
 
 The design and its decisions are in [the plan](../latex-visual-editor-plan.md).
 

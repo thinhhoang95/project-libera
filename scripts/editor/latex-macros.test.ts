@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parser } from "codemirror-lang-latex/src/latex.mjs";
 import { parseLatexAux } from "../../src/lib/latex/aux-file";
-import { bodyStartOf, emptyLatexDefinitions, macroAt, readLatexDefinitions, readLatexInputs } from "../../src/lib/latex/macros/definitions";
+import { bodyStartOf, collectLatexDefinitions, emptyLatexDefinitions, loadKey, macroAt, readLatexDefinitions, readLatexInputs } from "../../src/lib/latex/macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode } from "../../src/lib/latex/macros/expand";
-import { computeLatexNumbering, formatCounterValue, referenceText, splitMathRows } from "../../src/lib/latex/macros/numbering";
+import { computeLatexNumbering, enumerateItemLabel, formatCounterValue, numberingEntryAt, referenceText, splitMathRows } from "../../src/lib/latex/macros/numbering";
+import { katexForEnvironment } from "../../src/lib/latex/codemirror/visual/math-render";
 import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
 import { readGroup, readOptional } from "../../src/lib/macros/core";
 import { readBalancedGroup } from "../../src/lib/latex/project";
@@ -103,6 +104,104 @@ test("definitions from other files apply everywhere, and inputs are listed", () 
   readLatexDefinitions(String.raw`\begin{document}\shared\end{document}`, defs);
   assert.equal(macroAt(defs, "shared", 0)?.pos, -1);
   assert.deepEqual(readLatexInputs("\\input{a}\n% \\input{b}\n\\include{c}").map((input) => input.path), ["a", "c"]);
+});
+
+test("local definitions end with their group, and \\gdef does not", () => {
+  const source = String.raw`\documentclass{article}
+{\newcommand\pre{P}}
+\begin{document}
+{\def\a{A}\a}\a
+\begingroup\newcommand\b{B}\b\endgroup\b
+{\gdef\c{C}}\c
+\begin{center}\renewcommand\pre{Q}\pre\end{center}\pre
+\end{document}`;
+  const defs = defsOf(source);
+  const use = (needle: string) => source.indexOf(needle);
+  assert.equal(macroAt(defs, "a", use("\\a}\\a"))?.body, "A", "inside its group");
+  assert.equal(macroAt(defs, "a", use("\\a}\\a") + 3), null, "after its group");
+  assert.equal(macroAt(defs, "b", use("\\b\\endgroup"))?.body, "B");
+  assert.equal(macroAt(defs, "b", use("\\endgroup\\b") + 9), null);
+  assert.equal(macroAt(defs, "c", use("}\\c") + 1)?.body, "C", "\\gdef is global");
+  assert.equal(macroAt(defs, "pre", use("\\pre\\end{center}"))?.body, "Q");
+  assert.equal(macroAt(defs, "pre", use("\\end{center}\\pre") + 12), null, "a preamble group's definition never reaches the body");
+  assert.equal(macroAt(defs, "late", Number.MAX_SAFE_INTEGER), null);
+});
+
+test("definitions TeX does not run are not read, and ones under an unknown condition hide the earlier meaning", () => {
+  const defs = defsOf(String.raw`\newcommand\z{Z1}
+\begin{verbatim}
+\newcommand\v{V}
+\end{verbatim}
+\verb|\newcommand\w{W}|
+\iffalse\newcommand\x{X}\else\newcommand\y{Y}\fi
+\ifdefined\foo\renewcommand\z{Z2}\fi
+\newif\iffoo
+\newcommand\after{A}
+\newcommand\deferred{\newcommand\inner{I}}
+\begin{document}\end{document}`);
+  assert.equal(macroAt(defs, "v", 0), null, "verbatim");
+  assert.equal(macroAt(defs, "w", 0), null, "\\verb");
+  assert.equal(macroAt(defs, "x", 0), null, "the false branch");
+  assert.equal(macroAt(defs, "y", 0)?.body, "Y", "the \\else branch runs");
+  assert.equal(macroAt(defs, "after", 0)?.body, "A", "\\newif opens no conditional");
+  assert.equal(macroAt(defs, "inner", 0), null, "a definition's body is not run");
+  assert.equal(macroAt(defs, "z", 0)?.unsupported, true);
+  assert.equal(expandLatexMacros("\\z", defs).ok, false, "its uses stay source");
+});
+
+test("an unsupported redefinition hides the earlier definition", () => {
+  const defs = defsOf(String.raw`\newcommand{\a}{A}\edef\a{B}\newcommand{\d}{D}\def\d#1.{#1}`);
+  assert.equal(expandLatexMacros("\\a", defs).ok, false);
+  assert.equal(expandLatexMacros("\\d", defs).ok, false);
+});
+
+test("comments do not count in groups or between arguments", () => {
+  const defs = defsOf("\\newcommand{\\c}{a % }\n b}\n\\newcommand{\\f}[1]{<#1>}");
+  assert.equal(macroAt(defs, "c", 0)?.body, "a % }\n b");
+  assert.equal(expandLatexMacros("\\f% comment\n{x}", defs).text, "<x>");
+  assert.equal(expandLatexMacros("\\f% comment\n\n{x}", defs).ok, false, "a blank line ends the arguments");
+});
+
+test("substitution keeps control words apart from the letters after them", () => {
+  const defs = defsOf(String.raw`\newcommand\f[1]{\alpha#1}\newcommand\g[1]{#1x}\newcommand\h{y}`);
+  assert.equal(expandLatexMacros("\\f{x}", defs).text, "\\alpha x");
+  assert.equal(expandLatexMacros("\\g{\\alpha}", defs).text, "\\alpha x");
+  assert.equal(expandLatexMacros("\\alpha\\h", defs).text, "\\alpha y");
+  assert.equal(expandLatexMacros("\\f{+}", defs).text, "\\alpha+");
+});
+
+test("text expansion expands math inside $…$ and \\ensuremath as math", () => {
+  const defs = defsOf(String.raw`\DeclareMathOperator{\tr}{tr}
+\newcommand\trace{the $\tr x$}
+\newcommand\tracem{\ensuremath{\tr y}}
+\newcommand\bad{\tr z}`);
+  assert.equal(expandLatexMacroUse("\\trace", defs)?.text, "the $\\operatorname{tr} x$");
+  assert.equal(expandLatexMacroUse("\\tracem", defs)?.text, "\\ensuremath{\\operatorname{tr} y}");
+  assert.equal(expandLatexMacroUse("\\bad", defs), null, "outside math it still fails");
+});
+
+test("\\let aliases of commands the reader does not know stay source before arguments", () => {
+  const defs = defsOf(String.raw`\let\b\textbf\let\dots\ldots`);
+  assert.equal(macroAt(defs, "b", 0)?.alias, true);
+  assert.equal(expandLatexMacroUse("\\b{x}", defs), null);
+  assert.equal(expandLatexMacroUse("\\dots and", defs)?.text, "\\ldots");
+  assert.equal(expandLatexMacros("\\b{x}", defs).text, "\\textbf{x}", "in a formula the tokens stay together");
+});
+
+test("other files are read where they are loaded, in TeX's order, through nested inputs", () => {
+  const sources = [
+    { path: "nb/macros.tex", text: String.raw`\renewcommand\x{B}\input{symbols}`, loadedBy: "", key: loadKey("input", "macros") },
+    { path: "nb/symbols.tex", text: String.raw`\newcommand\sym{S}`, loadedBy: "nb/macros.tex", key: loadKey("input", "symbols.tex") },
+    { path: "nb/mine.sty", text: String.raw`\newcommand\pkg{P}`, loadedBy: "", key: loadKey("package", "mine") },
+  ];
+  const before = collectLatexDefinitions(sources, { text: String.raw`\newcommand\x{A}\input{macros}\usepackage{mine}\begin{document}\end{document}` });
+  assert.equal(macroAt(before, "x", 0)?.body, "B", "the input's redefinition comes after the main file's definition");
+  assert.equal(macroAt(before, "sym", 0)?.body, "S");
+  assert.equal(macroAt(before, "pkg", 0)?.body, "P");
+  const after = collectLatexDefinitions(sources, { text: String.raw`\input{macros}\renewcommand\x{A}\begin{document}\end{document}` });
+  assert.equal(macroAt(after, "x", 0)?.body, "A");
+  const unloaded = collectLatexDefinitions(sources, { text: String.raw`\begin{document}\end{document}` });
+  assert.equal(macroAt(unloaded, "sym", 0), null, "a file nothing loads any more does not apply");
 });
 
 /* ---- Expansion --------------------------------------------------------------- */
@@ -214,6 +313,88 @@ test("chapter classes number within chapters, and \\numberwithin is followed", (
   assert.equal(within.labels.get("eq:2")?.number, "2.1");
 });
 
+test("a label in a caption is the figure's, entries stay in position order, and titles count in the fingerprint", () => {
+  const source = String.raw`\documentclass{article}
+\begin{document}
+\section{AAA}\label{sec:a}
+\begin{figure}Text\footnote{n}\caption{Cap\label{fig:x}}\end{figure}
+\end{document}`;
+  const numbering = number(source);
+  assert.deepEqual(numbering.labels.get("fig:x"), { number: "1", kind: "figure", pos: source.indexOf("\\begin{figure}") });
+  assert.deepEqual(numbering.entries.map((entry) => entry.pos), [...numbering.entries.map((entry) => entry.pos)].sort((a, b) => a - b));
+  assert.equal(numberingEntryAt(numbering, source.indexOf("\\begin{figure}"), "figure")?.number, "1");
+  assert.notEqual(number(source.replace("AAA", "BBB")).fingerprint, numbering.fingerprint, "\\nameref shows the title");
+});
+
+test("footnotes: printed alone in books, explicit numbers, labels inside them, and endnotes", () => {
+  const numbering = number(String.raw`\documentclass{book}
+\begin{document}
+\chapter{A}
+Text\footnote{a\label{fn:a}} and\footnote[7]{b}.
+\section{S}\label{sec:s}
+\chapter{B}
+More\footnote{c}\endnote{e}.
+\end{document}`);
+  assert.deepEqual(numbering.entries.filter((entry) => entry.kind === "footnote").map((entry) => entry.number), ["1", "7", "1", "1"]);
+  assert.deepEqual(numbering.labels.get("fn:a")?.kind, "footnote");
+  assert.equal(numbering.labels.get("fn:a")?.number, "1");
+  assert.equal(numbering.labels.get("sec:s")?.number, "1.1", "the label after the footnote is the section's");
+});
+
+test("align rows: a final \\\\ adds no row, and commented numbering commands do nothing", () => {
+  const numbering = number(String.raw`\begin{align}a&=b\\\end{align}
+\begin{equation}c % \nonumber \tag{X}
+\label{eq:c}\end{equation}
+\begin{eqnarray}d\\\end{eqnarray}
+\begin{equation}e\label{eq:e}\end{equation}`);
+  assert.equal(numbering.labels.get("eq:c")?.number, "2");
+  assert.equal(numbering.labels.get("eq:e")?.number, "5", "eqnarray's final \\\\ is a numbered row");
+});
+
+test("explicit tags are KaTeX's to draw, in starred environments too", () => {
+  assert.match(katexForEnvironment("equation*", "x \\tag{A}").latex, /\\tag\{A\}/);
+  assert.match(katexForEnvironment("align", "a \\\\ b \\tag*{B}").latex, /\\tag\*\{B\}/);
+  const numbering = number(String.raw`\begin{align}a\\b\tag{B}\\c\end{align}`);
+  const entry = numbering.entries[0];
+  assert.deepEqual(entry.rows, ["1", "B", "2"]);
+  assert.deepEqual(entry.tagged, [false, true, false]);
+});
+
+test("secnumdepth, custom \\theequation and subequations change the numbers", () => {
+  const depth = number(String.raw`\documentclass{article}
+\setcounter{secnumdepth}{1}
+\begin{document}
+\section{A}\subsection{B}\label{sec:b}
+\end{document}`);
+  assert.deepEqual(depth.entries.map((entry) => entry.number), ["1", null]);
+  const custom = number(String.raw`\documentclass{article}
+\renewcommand{\theequation}{\arabic{section}-\arabic{equation}}
+\begin{document}
+\section{A}\begin{equation}x\label{eq:x}\end{equation}
+\begin{subequations}\label{eq:group}
+\begin{align}a\label{eq:a}\\b\label{eq:b}\end{align}
+\end{subequations}
+\end{document}`);
+  assert.equal(custom.labels.get("eq:x")?.number, "1-1");
+  assert.equal(custom.labels.get("eq:group")?.number, "1-2");
+  assert.equal(custom.labels.get("eq:a")?.number, "1-2a");
+  assert.equal(custom.labels.get("eq:b")?.number, "1-2b");
+  const unknown = number(String.raw`\renewcommand{\theequation}{\fancy{equation}}\begin{equation}x\label{eq:u}\end{equation}`);
+  assert.equal(unknown.labels.get("eq:u")?.number, "?");
+});
+
+test("item numbers follow counter commands, custom labels and nesting", () => {
+  const numbering = number(String.raw`\begin{enumerate}
+\item a\label{i:a}
+\setcounter{enumi}{3}
+\item b\label{i:b}
+\begin{enumerate}\item c\label{i:c}\end{enumerate}
+\end{enumerate}
+\begin{enumerate}[label=(\alph*)]\item d\label{i:d}\end{enumerate}`);
+  assert.deepEqual(["i:a", "i:b", "i:c", "i:d"].map((key) => numbering.labels.get(key)?.number), ["1", "4", "4a", "(a)"]);
+  assert.equal(enumerateItemLabel(2, 1, "leftmargin=*"), "2.", "a template without a label keeps the default");
+});
+
 test("align rows split at \\\\ outside braces and nested environments", () => {
   assert.deepEqual(splitMathRows("a \\\\ \\begin{matrix} 1 \\\\ 2 \\end{matrix} \\\\[2pt] {x \\\\ y} \\\\* z"), ["a ", " \\begin{matrix} 1 \\\\ 2 \\end{matrix} ", " {x \\\\ y} ", " z"]);
 });
@@ -247,6 +428,68 @@ test("a chapter's counters continue from where the main file includes it", async
   const numbering = number(files["nb/chapters/model.tex"], { start });
   assert.deepEqual(numbering.entries.map((entry) => `${entry.kind}:${entry.number}`), ["section:2.1", "equation:2"]);
   assert.equal(await chapterNumberingStart("nb/other.tex", "nb/main.tex", async (path) => files[path] ?? ""), null);
+});
+
+test("a main file's numbers count the chapters it includes", () => {
+  const chapter = String.raw`\section{Background}\begin{equation}x\label{eq:in}\end{equation}`;
+  const main = String.raw`\documentclass{article}
+\begin{document}
+\section{Intro}
+\input{chapters/background}
+\section{Method}\label{sec:method}
+\end{document}`;
+  const tree = parser.parse(chapter);
+  const numbering = computeLatexNumbering(parser.parse(main), (from, to) => main.slice(from, to), defsOf(main), {
+    includes: (name) => (name === "chapters/background" ? { tree, read: (from, to) => chapter.slice(from, to) } : null),
+  });
+  assert.equal(numbering.labels.get("sec:method")?.number, "3");
+  assert.equal(numbering.labels.get("eq:in"), undefined, "labels in the included file are its own (the .aux has them)");
+  assert.deepEqual(numbering.entries.map((entry) => entry.number), ["1", "3"]);
+});
+
+test("a chapter's inputs resolve from the main file's directory, with the theorems its macro files define", async () => {
+  const files: Record<string, string> = {
+    "nb/main.tex": String.raw`\documentclass{article}
+\input{macros}
+\begin{document}
+\input{chapters/one}
+\input{chapters/two}
+\end{document}`,
+    "nb/macros.tex": String.raw`\newtheorem{theorem}{Theorem}`,
+    "nb/chapters/one.tex": String.raw`\section{One}\input{chapters/one-more}`,
+    "nb/chapters/one-more.tex": String.raw`\begin{theorem}a\end{theorem}\begin{theorem}b\end{theorem}`,
+    "nb/chapters/two.tex": String.raw`\begin{theorem}c\end{theorem}`,
+  };
+  const base = collectLatexDefinitions([
+    { path: "nb/main.tex", text: files["nb/main.tex"].slice(0, files["nb/main.tex"].indexOf("\\begin{document}")) },
+    { path: "nb/macros.tex", text: files["nb/macros.tex"], loadedBy: "nb/main.tex", key: loadKey("input", "macros") },
+  ]);
+  const start = await chapterNumberingStart("nb/chapters/two.tex", "nb/main.tex", async (path) => files[path] ?? "", base);
+  assert.equal(start?.counters.theorem, 2);
+});
+
+test("macro sources are found through nested inputs, each marked with what loads it", async () => {
+  const { collectBodyIncludes, collectMacroSources } = await import("../../src/components/libera/latex/latex-dependencies");
+  const files: Record<string, string> = {
+    "nb/macros.tex": String.raw`\newcommand\m{M}\input{defs/symbols}`,
+    "nb/defs/symbols.tex": String.raw`\newcommand\s{S}`,
+    "nb/mine.sty": String.raw`\newcommand\p{P}`,
+    "nb/ch1.tex": String.raw`\input{ch1-part}`,
+    "nb/ch1-part.tex": String.raw`\section{Part}`,
+  };
+  const known = new Set(Object.keys(files));
+  const readText = async (path: string) => files[path] ?? "";
+  const { sources, paths } = await collectMacroSources({
+    filePath: "nb/main.tex", rootPath: "nb/main.tex", ownPreamble: String.raw`\documentclass{article}\input{macros}\usepackage{mine}`, known, readText, version: () => "1",
+  });
+  assert.deepEqual(sources.map((source) => [source.path, source.loadedBy, source.key]), [
+    ["nb/macros.tex", "", "input:macros"], ["nb/mine.sty", "", "package:mine"], ["nb/defs/symbols.tex", "nb/macros.tex", "input:defs/symbols"],
+  ]);
+  assert.deepEqual(paths, ["nb/macros.tex", "nb/mine.sty", "nb/defs/symbols.tex"]);
+  const defs = collectLatexDefinitions(sources, { text: String.raw`\documentclass{article}\input{macros}\usepackage{mine}\begin{document}\end{document}` });
+  assert.equal(macroAt(defs, "s", 0)?.body, "S");
+  const { includes } = await collectBodyIncludes({ filePath: "nb/main.tex", rootPath: "nb/main.tex", text: String.raw`\begin{document}\include{ch1}\end{document}`, known, readText });
+  assert.deepEqual([...includes.keys()], ["input:ch1", "input:ch1-part"]);
 });
 
 /* ---- The compiled .aux -------------------------------------------------------- */

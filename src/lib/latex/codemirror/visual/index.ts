@@ -1,9 +1,9 @@
 import { Compartment, EditorSelection, type EditorState, type Extension } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, ViewPlugin } from "@codemirror/view";
 import { visualKeys } from "./keys";
-import { mathSessionTracker } from "./math-edit";
+import { closeMathSessions, mathSessionTracker } from "./math-edit";
 import { pasteHtmlAsLatex } from "./paste";
-import { installTableEditor } from "./table-edit";
+import { closeTableSessions, installTableEditor } from "./table-edit";
 import { visualConfig, visualStateFields, type VisualConfig } from "./model";
 import { linkClicks, numberingPlugin, pendingFiller, remoteOutlines } from "./plugins";
 import { structuralField } from "./structural";
@@ -15,7 +15,8 @@ import { visualStylePlugin } from "./style";
  * touched. */
 
 export { visualStateFields };
-export { setAuxData, setMacroSources, setNumberingStart, type MacroSource } from "./model";
+export { setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, type MacroSource } from "./model";
+export { rebuildVisualEffect } from "./structural";
 export { visualRevealRanges } from "./structural";
 export { toggleLatexFormat, isFormatActive } from "./keys";
 
@@ -24,9 +25,18 @@ export function latexVisualState(): Extension {
   return visualStateFields;
 }
 
+/** Formula and table editors and menus belong to the view in the Visual mode: they close with it (tab closed, mode switched off). */
+const widgetEditorLifecycle = ViewPlugin.define((view) => ({
+  destroy() {
+    closeMathSessions(view);
+    closeTableSessions(view);
+  },
+}));
+
 export function latexVisualMode(config: Partial<VisualConfig>): Extension {
   return [
     visualConfig.of(config),
+    widgetEditorLifecycle,
     structuralField,
     visualStylePlugin,
     numberingPlugin,
@@ -49,7 +59,10 @@ export function visualEntrySelection(state: EditorState) {
   const head = state.selection.main.head;
   const begin = /\\begin\s*\{document\}/.exec(state.doc.sliceString(0, Math.min(state.doc.length, 400_000)));
   if (!begin) return null;
-  const line = state.doc.lineAt(begin.index + begin[0].length);
-  if (head > line.to) return null;
-  return EditorSelection.cursor(Math.min(state.doc.length, line.to + 1));
+  const bodyStart = begin.index + begin[0].length;
+  const line = state.doc.lineAt(bodyStart);
+  // Body text on the `\begin{document}` line is not folded: the cursor goes before it.
+  const rest = state.doc.sliceString(bodyStart, line.to).trim() ? bodyStart : null;
+  if (head > line.to || (rest !== null && head >= rest)) return null;
+  return EditorSelection.cursor(rest ?? Math.min(state.doc.length, line.to + 1));
 }
