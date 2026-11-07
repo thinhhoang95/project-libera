@@ -136,7 +136,7 @@ test("a transcript in a shared notebook is a companion blob members receive, nev
   });
 });
 
-test("renaming and deleting a shared recording carry its companion transcript and local waveform along", async () => {
+test("shared recording operations carry companion transcripts and preserve ambiguous local waveforms", async () => {
   await withSharedNotebook(async ({ host }) => {
     await writeTranscript("Shared/memos/memo.m4a", TRANSCRIPT);
     const peaks = audioPeaksPath("Shared", ["memos", "memo.m4a"]);
@@ -150,8 +150,8 @@ test("renaming and deleting a shared recording carry its companion transcript an
       ["rename", "memos/memo.m4a.transcript", "memos/standup.m4a.transcript"],
     ]);
     assert.equal((await readTranscript("Shared/memos/standup.m4a")).transcript?.segments[0].text, "The budget is approved.");
-    assert.ok(existsSync(audioPeaksPath("Shared", ["memos", "standup.m4a"])));
-    assert.ok(!existsSync(peaks));
+    assert.ok(!existsSync(audioPeaksPath("Shared", ["memos", "standup.m4a"])));
+    assert.ok(existsSync(peaks), "identity-less waveform bytes remain at their recovery source");
 
     host.ops.length = 0;
     await deleteSharedFile("Shared/memos/standup.m4a");
@@ -160,14 +160,14 @@ test("renaming and deleting a shared recording carry its companion transcript an
   });
 });
 
-test("collaborators' renames and deletions move this computer's sidecars", async () => {
+test("collaborators' path-only events retain identity-less local sidecars", async () => {
   await withSharedNotebook(async () => {
     const peaks = audioPeaksPath("Shared", ["memos", "memo.m4a"]);
     mkdirSync(path.dirname(peaks), { recursive: true });
     writeFileSync(peaks, "{}");
-    assert.equal(await followSharedAudioChanges([{ from: "Shared/memos/memo.m4a", to: "Shared/memo.m4a" }], []), 1);
-    assert.ok(existsSync(audioPeaksPath("Shared", ["memo.m4a"])));
-    assert.equal(await followSharedAudioChanges([], ["Shared/memo.m4a"]), 1);
+    assert.equal(await followSharedAudioChanges([{ from: "Shared/memos/memo.m4a", to: "Shared/memo.m4a" }], []), 0);
+    assert.ok(existsSync(peaks));
+    assert.equal(await followSharedAudioChanges([], ["Shared/memo.m4a"]), 0);
     assert.ok(!existsSync(audioPeaksPath("Shared", ["memo.m4a"])));
     assert.equal(await followSharedAudioChanges([{ from: "Shared/a.md", to: "Shared/b.md" }], []), 0);
   });

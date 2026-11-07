@@ -12,7 +12,7 @@ import path from "node:path";
 
 import type * as Y from "yjs";
 
-import type { FileOpRequest, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
+import type { FileBlobResponse, FileOpRequest, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { roleAtLeast } from "../../../src/lib/collab/protocol/roles";
@@ -241,6 +241,8 @@ export class SharedProject {
     // reconciliations belong to the writer.
     const project = new SharedProject(ctx, info, emptyState());
     if (!project.follower) project.state = await readState(info.root, project.diskGuard());
+    if (project.state.externalAdoptionRequired) ctx.host.store.requireExternalAdoption(info.projectId);
+    if (ctx.host.store.requiresExternalAdoption(info.projectId)) project.state.externalAdoptionRequired = true;
     if (!info.follower) {
       // State/marker can arrive ahead of files through a cloud provider.
       // Absence at startup or takeover is not an observed user deletion.
@@ -411,6 +413,42 @@ export class SharedProject {
     }
   }
 
+  /** Export current binaries even on a follower, before deleting server access. */
+  prepareLocalConversion(): Promise<number> {
+    return this.enqueue(async () => {
+      const hub = this.manifestHub;
+      if (!hub || !this.manifestReady() || !hub.getStatus().connected || hub.pendingCount > 0) {
+        throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
+      }
+      const sequence = this.ctx.host.store.getDocMeta(this.info.manifestDocId)?.lastSeenServerSeq ?? 0;
+      const entries = this.readEntries();
+      const layout = computeLayout(entries.values());
+      const needsRoot = [...entries.values()].some((entry) => entry.kind === "blob");
+      const current = async () => !this.stopped && hub.getStatus().connected && hub.pendingCount === 0 &&
+        this.ctx.host.store.getDocMeta(this.info.manifestDocId)?.lastSeenServerSeq === sequence && (!needsRoot || await this.rootAvailable());
+      const guard: WriteGuard = { root: this.info.root, canCommit: current };
+      for (const entry of entries.values()) {
+        if (entry.kind !== "blob" || !entry.blobHash) continue;
+        const relative = layout.paths.get(entry.fileId);
+        if (!relative) throw new ControlError(409, "conflict", "A shared file has no safe local path.");
+        const bytes = await this.blobBytes(entry.blobHash);
+        if (!bytes || sha256(bytes) !== entry.blobHash) throw new ControlError(503, "offline", `Could not preserve ${relative}. The shared project was kept.`);
+        const target = await resolveInside(this.info.root, relative);
+        const disk = await readIfExists(target);
+        let expected = disk === null ? null : sha256(disk);
+        if (expected !== entry.blobHash) {
+          if (disk && !this.info.album) {
+            await this.archive(relative, contentGuard(target, expected, guard));
+            expected = null;
+          }
+          await writeFileAtomic(target, bytes, contentGuard(target, expected, guard));
+        }
+      }
+      if (!await current()) throw new ControlError(409, "conflict", "The notebook changed during its local export. Retry taking it down.");
+      return sequence;
+    });
+  }
+
   /** Resolves once the queue is empty and no write, scan or manifest pass is pending. */
   async whenIdle(): Promise<void> {
     for (;;) {
@@ -559,7 +597,8 @@ export class SharedProject {
           next[fileId] = { ...record, path: desired, hash: undefined, size: undefined, mtimeMs: undefined };
           continue;
         }
-        const staging = path.join(this.info.root, ...STATE_DIRECTORY, "moving", fileId);
+        // Never reuse an interrupted move's sole recovery artifact.
+        const staging = path.join(this.info.root, ...STATE_DIRECTORY, "moving", `${fileId}-${randomId("move")}`);
         await movePath(source, staging, this.diskGuard());
         staged.push({ fileId, staging, record });
       } catch (error) {
@@ -788,15 +827,14 @@ export class SharedProject {
     }
     const text = runtime.hub.getText("content");
     this.retirePath(record.path, [sha256(encodeText(text))]);
-    let target: string;
-    try { target = await resolveInside(this.info.root, record.path); }
+    try { await resolveInside(this.info.root, record.path); }
     catch (error) { this.refuse(record.path, error); return; }
-    const stats = await statIfExists(target);
-    if (stats && !stats.isFile()) await this.archive(record.path);
-    const disk = stats?.isFile() ? await readIfExists(target) : null;
-    // If disk holds a separate external edit, preserve it under another archive name.
-    if (disk && sha256(disk) !== sha256(encodeText(text)) && sha256(disk) !== record.hash) await this.archive(record.path);
-    await writeFileAtomic(target, encodeText(text), this.diskGuard());
+    // Write CRDT recovery directly to a new archive path. Never replace the
+    // live file during archive IO: an external writer may still be editing it.
+    const archiveRoot = path.join(this.info.root, ARCHIVE_DIRECTORY);
+    const name = await availableName(archiveRoot, path.posix.basename(record.path));
+    const recovery = path.join(archiveRoot, name);
+    await writeFileAtomic(recovery, encodeText(text), contentGuard(recovery, null, this.diskGuard()));
     await this.archive(record.path);
   }
 
@@ -1029,8 +1067,8 @@ export class SharedProject {
         expected = null;
       }
     } else if (record.hash && !this.baselineMissing.has(fileId)) {
-      // Deleted on disk after our last write: that is the user's delete, which
-      // the watcher turns into a manifest operation. Do not resurrect it.
+      // A provider absence may be a rename in progress. Let the next complete
+      // scan pair it with a new path or recover it from shared authority.
       if (!this.missingSince.has(fileId)) this.missingSince.set(fileId, Date.now());
       this.scheduleScan(this.ctx.timings.settleMs);
       return;
@@ -1198,7 +1236,7 @@ export class SharedProject {
   }
 
   /** Keeps `text`: applied to the shared document as the user's edits, then written to disk. */
-  resolveReconciliation(id: string, text: string): Promise<{ docId: string; text: string }> {
+  resolveReconciliation(id: string, text: string, reviewed?: { shared: string; disk: string }): Promise<{ docId: string; text: string }> {
     return this.enqueue(async () => {
       const item = this.state.reconciliations.find((candidate) => candidate.id === id);
       if (!item) throw new ControlError(404, "not-found", "No such reconciliation.");
@@ -1208,7 +1246,12 @@ export class SharedProject {
       if (!runtime || !found) throw new ControlError(409, "conflict", "The document is no longer in this notebook.");
       const target = await resolveInside(this.info.root, found.record.path);
       const observed = await readIfExists(target);
-      this.applyText(runtime.hub, runtime.hub.getText("content"), text, { source: "reconcile" });
+      const shared = runtime.hub.getText("content");
+      if (!reviewed || typeof reviewed.shared !== "string" || typeof reviewed.disk !== "string" ||
+          shared !== reviewed.shared || observed === null || decodeText(observed) !== reviewed.disk) {
+        throw new ControlError(409, "conflict", "The shared text or disk changed since this merge was opened. Reload and review both versions.");
+      }
+      this.applyText(runtime.hub, shared, text, { source: "reconcile" });
       if (!(await this.writeDoc(runtime, found.record, target, text, observed === null ? null : sha256(observed)))) {
         throw new ControlError(409, "conflict", "The disk changed during the merge. The merged shared text is saved; review the new disk version.");
       }
@@ -1296,7 +1339,6 @@ export class SharedProject {
     }
     const now = Date.now();
     const missing: string[] = [];
-    const removedRecords: LayoutRecord[] = [];
     const operations: Array<(files: Y.Map<unknown>, doc: Y.Doc) => void> = [];
     /** Photos this pass adds to an album (its other members hear about them). */
     const addedPhotos: string[] = [];
@@ -1392,6 +1434,9 @@ export class SharedProject {
     const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array; hash: string }> = [];
     for (const [relative, entry] of files) {
       if (known.has(relative)) continue;
+      // A fresh device without bookkeeping cannot distinguish a new file
+      // from a delayed copy of a deleted identity. Explicit file operations
+      // remain available; leave unexplained disk bytes untouched.
       // Judge a file only once it has arrived; the poll comes back to it.
       if (mayStillBeCopying(entry, now)) continue;
       const absolute = await resolveInside(this.info.root, relative).catch(() => null);
@@ -1438,32 +1483,17 @@ export class SharedProject {
       });
     }
 
-    // Still missing after the grace period: deleted.
+    // Absence has no causality: a provider can deliver a deletion days after
+    // a restore. Only explicit host delete operations remove shared entries.
+    // Retain the manifest and recover the working copy on the next pass.
     for (const fileId of missing) {
-      const since = this.missingSince.get(fileId) ?? now;
-      this.missingSince.set(fileId, since);
-      if (now - since < this.ctx.timings.deleteGraceMs) {
-        this.scheduleScan(since + this.ctx.timings.deleteGraceMs - now + 10);
-        continue;
-      }
-      if (!this.canEdit) continue;
-      const record = this.state.layout[fileId];
-      const entry = this.entries.get(fileId);
-      operations.push((map, doc) => {
-        const current = readManifest(doc).get(fileId);
-        if (!current || !entry || current.path !== entry.path || current.kind !== entry.kind ||
-            current.docId !== entry.docId || current.blobHash !== entry.blobHash) return;
-        this.retirePath(record.path, knownHashes(record));
-        map.delete(fileId);
-        touched.add(record.path);
-        if (record.docId) removedRecords.push(record);
-        delete this.state.layout[fileId];
-        this.missingSince.delete(fileId);
-      });
+      this.baselineMissing.add(fileId);
+      this.missingSince.delete(fileId);
     }
-
+    if (missing.length > 0) this.scheduleManifest(0);
     if (this.canEdit) {
       for (const candidate of fresh) {
+        if (this.state.externalAdoptionRequired) continue;
         const created = await this.createFromDisk(candidate.entry, candidate.bytes, candidate.hash, accountId, now);
         if (!created) {
           needsRetry = true;
@@ -1485,7 +1515,7 @@ export class SharedProject {
       }
       for (const [relative, entry] of directories) {
         if (this.info.album) break;
-        if (known.has(relative) || this.pathRetired(relative)) continue;
+        if (known.has(relative) || this.pathRetired(relative) || this.state.externalAdoptionRequired) continue;
         const fileId = randomId("fil");
         const created: ManifestEntry = { fileId, path: relative, kind: "folder", createdBy: accountId, createdAt: now, updatedAt: now };
         operations.push((map, doc) => {
@@ -1507,11 +1537,6 @@ export class SharedProject {
         for (const operation of operations) operation(map, doc);
       }, EXTERNAL);
       if (addedPhotos.length > 0) this.reportAddedPhotos(addedPhotos);
-      for (const record of removedRecords) {
-        this.docs.get(record.docId!)?.hub.markDeleted();
-        try { await this.archiveRemoved(record); }
-        finally { this.releaseDoc(record.docId!); this.dropReconciliations(record.docId!); }
-      }
       for (const [fileId, record] of Object.entries(this.state.layout)) {
         if (record.kind === "doc" && record.docId && !this.docs.has(record.docId)) this.ensureDoc(record.docId, fileId);
       }
@@ -1607,6 +1632,27 @@ export class SharedProject {
 
   // ------------------------------------------------------------ file operations (control API)
 
+  /** Read authoritative blob bytes, including locally acknowledged follower writes. */
+  readBlob(relative: string): Promise<FileBlobResponse> {
+    if (this.stopped) throw new ControlError(503, "offline", "The notebook is stopping.");
+    return this.enqueue(async () => {
+      if (!this.manifestReady()) throw new ControlError(503, "offline", "The notebook's file list has not loaded yet.");
+      const requested = normalizeRelative(relative);
+      const entries = this.readEntries();
+      const selected = entriesUnder(entries.values(), requested);
+      if (!selected.length) return { contentBase64: null };
+      const entry = selected[0];
+      if (selected.length !== 1 || manifestPathKey(computeLayout(entries.values()).paths.get(entry.fileId) ?? "") !== manifestPathKey(requested) || entry.kind !== "blob" || !entry.blobHash) throw new ControlError(409, "conflict", "This path is not a binary file.");
+      const bytes = await this.blobBytes(entry.blobHash);
+      if (!bytes || sha256(bytes) !== entry.blobHash) throw new ControlError(503, "offline", "The shared file's current bytes are unavailable.");
+      const current = this.readEntries();
+      if (current.get(entry.fileId)?.blobHash !== entry.blobHash || computeLayout(current.values()).paths.get(entry.fileId) !== computeLayout(entries.values()).paths.get(entry.fileId)) {
+        throw new ControlError(409, "conflict", "The shared file changed while it was read. Retry the save.");
+      }
+      return { fileId: entry.fileId, blobHash: entry.blobHash, contentBase64: Buffer.from(bytes).toString("base64") };
+    });
+  }
+
   /** create-file, create-folder, write-blob, rename and delete, through the manifest; the disk follows. */
   fileOp(request: FileOpRequest): Promise<{ paths: string[] }> {
     return this.enqueue(async () => {
@@ -1623,6 +1669,12 @@ export class SharedProject {
       }
       const now = Date.now();
       const accountId = await this.ctx.accountId();
+      this.entries = this.readEntries();
+      const selected = entriesUnder(this.entries.values(), relative);
+      if (request.expectedFileId !== undefined && (selected.length !== 1 || selected[0].fileId !== request.expectedFileId) ||
+          request.expectedBlobHash !== undefined && (selected.length !== 1 || selected[0].blobHash !== request.expectedBlobHash)) {
+        throw new ControlError(409, "conflict", "This file changed since it was read. Refresh it before changing it.");
+      }
       const paths: string[] = [];
       const uploaded: string[] = [];
       try {
@@ -1644,8 +1696,12 @@ export class SharedProject {
           case "write-blob": {
             let bytes = request.stagedFile !== undefined ? await this.takeStaged(request.stagedFile) : base64Bytes(request.contentBase64);
             if (this.info.album && !this.keepsLocation()) bytes = stripPhotoMetadata(bytes, albumImageType(relative) ?? "") ?? bytes;
+            this.entries = this.readEntries();
             const key = manifestPathKey(relative);
-            const existing = [...this.entries.values()].find((entry) => manifestPathKey(entry.path) === key);
+            const displayed = computeLayout(this.entries.values()).paths;
+            const existing = [...this.entries.values()].find((entry) => manifestPathKey(displayed.get(entry.fileId) ?? "") === key);
+            if (request.expectedFileId !== undefined && existing?.fileId !== request.expectedFileId) throw new ControlError(409, "conflict", "This file identity changed before the upload began.");
+            if (request.expectedBlobHash !== undefined && existing?.blobHash !== request.expectedBlobHash) throw new ControlError(409, "conflict", "This file changed before the upload began.");
             if (existing && request.createOnly) throw new ControlError(409, "conflict", `${existing.path} already exists.`);
             if (!existing) {
               // A new file: the same as create-file, from bytes.
@@ -1675,7 +1731,7 @@ export class SharedProject {
               map.set(existing.fileId, entryRecord(updated));
               if (this.info.album) this.photoReplaced(doc, existing.fileId, existing.blobHash, hash, accountId, now);
             }, { source: "typing" });
-            paths.push(current.path);
+            paths.push(computeLayout(this.readEntries().values()).paths.get(current.fileId) ?? current.path);
             break;
           }
           case "rename": {
@@ -1684,12 +1740,14 @@ export class SharedProject {
             const moving = entriesUnder(this.entries.values(), relative);
             if (moving.length === 0) throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
             this.assertFree(to, moving.map((entry) => entry.fileId));
+            const displayed = computeLayout(this.entries.values()).paths;
             const depth = relative.split("/").length;
             const updates = moving.map((entry) => {
-              const rest = entry.path.split("/").slice(depth);
+              const visible = displayed.get(entry.fileId)!;
+              const rest = visible.split("/").slice(depth);
               const next = [to, ...rest].join("/");
               if (!isShareablePath(next)) throw new ControlError(400, "bad-request", `${next} is not an allowed path.`);
-              paths.push(entry.path, next);
+              paths.push(visible, next);
               return { ...entry, path: next, updatedAt: now };
             });
             await this.writeManifest((map) => {
@@ -1700,10 +1758,11 @@ export class SharedProject {
           case "delete": {
             const removing = entriesUnder(this.entries.values(), relative);
             if (removing.length === 0) throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            const displayed = computeLayout(this.entries.values()).paths;
             await this.writeManifest((map) => {
               for (const entry of removing) map.delete(entry.fileId);
             }, { source: "typing" });
-            paths.push(...removing.map((entry) => entry.path));
+            paths.push(...removing.map((entry) => displayed.get(entry.fileId)!));
             break;
           }
           default:
@@ -1796,9 +1855,10 @@ export class SharedProject {
   private assertFree(relative: string, except: string[]): void {
     if (!isShareablePath(relative)) throw new ControlError(400, "bad-request", `${relative} is not an allowed path in a shared notebook.`);
     const key = manifestPathKey(relative);
+    const displayed = computeLayout(this.entries.values()).paths;
     for (const entry of this.entries.values()) {
       if (except.includes(entry.fileId)) continue;
-      const entryKey = manifestPathKey(entry.path);
+      const entryKey = manifestPathKey(displayed.get(entry.fileId) ?? entry.path);
       if (entryKey === key || entryKey.startsWith(`${key}/`)) throw new ControlError(409, "conflict", `${entry.path} already exists.`);
       // A file cannot become the parent folder of a new entry.
       if (entry.kind !== "folder" && key.startsWith(`${entryKey}/`)) throw new ControlError(409, "conflict", `${entry.path} is a file.`);

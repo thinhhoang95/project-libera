@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -181,9 +181,9 @@ test("share, join and keep two notebook folders in step", { timeout: 300_000 }, 
       assert.equal(difference, null, difference ?? "");
     });
 
-    await t.test("renames, moves, deletes and new files on disk become manifest operations", async () => {
+    await t.test("external renames, moves and new files sync; explicit deletes remove shared entries", async () => {
       renameSync(path.join(bobRoot, "alpha", "b", "c", "deep.md"), path.join(bobRoot, "alpha", "deep-moved.md"));
-      rmSync(path.join(bobRoot, "notes", "windows.md"));
+      await bob.service.fileOp(projectId, { op: "delete", path: "notes/windows.md" });
       writeFileSync(path.join(bobRoot, "bob-new.md"), "from Bob's editor\n");
       mkdirSync(path.join(bobRoot, "pictures"));
       writeFileSync(path.join(bobRoot, "pictures", "photo.png"), png.subarray(0, 900));
@@ -231,7 +231,7 @@ test("share, join and keep two notebook folders in step", { timeout: 300_000 }, 
       assert.equal(bob.service.localProjects()[0]?.reconcilePending, 1);
 
       const merged = item.shared.replace("article", "report");
-      const resolvedResult = await bob.router.call("POST", ControlRoutes.reconciliation(item.id), { text: merged });
+      const resolvedResult = await bob.router.call("POST", ControlRoutes.reconciliation(item.id), { text: merged, reviewed: { shared: item.shared, disk: item.disk } });
       assert.equal(resolvedResult.status, 200, JSON.stringify(resolvedResult.body));
       assert.equal(readText(bobRoot, relative), merged);
       await until(() => readText(aliceRoot, relative) === merged, "Alice to converge on the merged text");

@@ -45,7 +45,7 @@ import type { CollabHostEvent } from "../core/host";
 import { normalizedServerUrl, sameAuthority } from "../core/authority";
 import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter, type NotebookService } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
+import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, isNotFound, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord } from "./layout";
 import { isPdfDocId, isPdfPath, PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
@@ -1012,8 +1012,11 @@ export class NotebookServiceImpl implements NotebookService {
       if (handle.role !== "owner") throw new ControlError(403, "forbidden", "Only the owner can take down this notebook.");
       // Finish pending materialization before the server closes the documents.
       await handle.runtime?.whenIdle();
+      if (!(await api.version()).guardedProjectDeletion) throw new ControlError(409, "update-required", "Update the collaboration server before taking down this notebook safely.");
+      if (!handle.runtime) throw new ControlError(503, "offline", "Open and sync this notebook before taking it down.");
+      const sequence = await handle.runtime.prepareLocalConversion();
       try {
-        await api.deleteProject(projectId);
+        await api.deleteProject(projectId, sequence);
       } catch (error) {
         // A lost response or a local cleanup failure can be retried safely.
         if (!(error instanceof ApiClientError)) throw error;
@@ -1059,6 +1062,21 @@ export class NotebookServiceImpl implements NotebookService {
    * were copied out of the folder before, so they are not touched.
    */
   private async takeAlbumAway(handle: ProjectHandle): Promise<void> {
+    const originalRoot = await statIfExists(handle.root);
+    const currentRoot = async () => {
+      const current = await statIfExists(handle.root);
+      return !!originalRoot && !!current && current.isDirectory() && !current.isSymbolicLink() &&
+        current.dev === originalRoot.dev && current.ino === originalRoot.ino && current.birthtimeMs === originalRoot.birthtimeMs;
+    };
+    const canRemove = async () => await currentRoot() && this.matchesMarker(handle, await readMarker(handle.root).catch(() => null));
+    const removeOwned = async (name: string) => {
+      const detached = path.join(this.lifecycleDirectory, "album-cleanup", randomId("removed"));
+      await fs.mkdir(path.dirname(detached), { recursive: true });
+      if (!await canRemove()) return;
+      try { await fs.rename(path.join(handle.root, name), detached); }
+      catch (error) { if (isNotFound(error)) return; throw error; }
+      await fs.rm(detached, { recursive: true, force: true });
+    };
     const runtime = handle.runtime;
     const photos = runtime?.albumState().photos ?? [];
     await runtime?.stop();
@@ -1067,18 +1085,20 @@ export class NotebookServiceImpl implements NotebookService {
     if (handle.writer) {
       const accountId = this.cachedAccountId ?? (await this.accountId().catch(() => null));
       const marker = await readMarker(handle.root).catch(() => null);
-      if (marker && this.ownsMarker(marker, handle.projectId)) {
+      if (marker && await canRemove()) {
         for (const photo of photos) {
           if (accountId && photo.addedBy === accountId) continue;
-          await fs.rm(path.join(handle.root, photo.name), { force: true }).catch(() => undefined);
+          if (!await canRemove()) break;
+          await removeOwned(photo.name).catch(() => undefined);
         }
-        await fs.rm(path.join(handle.root, ARCHIVE_DIRECTORY), { recursive: true, force: true }).catch(() => undefined);
-        await fs.rm(path.join(handle.root, ".libera"), { recursive: true, force: true }).catch(() => undefined);
-        await deleteSharePlan(handle.root);
-        await deleteMarker(handle.root);
+        for (const name of [ARCHIVE_DIRECTORY, ".libera", SHARE_PENDING_FILE, ".libera-share-uploaded.jsonl"]) {
+          if (!await canRemove()) break;
+          await removeOwned(name).catch(() => undefined);
+        }
+        if (await canRemove()) await removeOwned(SHARED_MARKER_FILE);
         // Nothing of this account's left: the folder goes too.
         const left = await fs.readdir(handle.root).catch(() => ["?"]);
-        if (left.length === 0) await fs.rmdir(handle.root).catch(() => undefined);
+        if (left.length === 0 && await currentRoot()) await fs.rmdir(handle.root).catch(() => undefined);
       }
     }
     this.deps.host.store.deleteProject(handle.projectId);
@@ -1308,8 +1328,9 @@ export class NotebookServiceImpl implements NotebookService {
       const hash = sha256(bytes);
       const classified = classifyFile(item.relative, bytes);
       if (classified.kind === "doc") {
-        texts.set(item.relative, classified.text);
         const reuse = before?.kind === "doc" && before.docKind === classified.docKind;
+        const initialText = reuse ? before.initialText ?? classified.text : classified.text;
+        texts.set(item.relative, initialText);
         files.push({
           path: item.relative,
           kind: "doc",
@@ -1317,7 +1338,8 @@ export class NotebookServiceImpl implements NotebookService {
           docId: reuse ? before.docId : randomId("doc"),
           docKind: classified.docKind,
           // An uploaded document keeps the hash of the text the server has.
-          blobHash: reuse && before.uploaded ? before.blobHash : hash,
+          blobHash: reuse ? before.blobHash : hash,
+          initialText,
           size: bytes.byteLength,
           uploaded: reuse ? before.uploaded : false,
         });
@@ -1561,6 +1583,7 @@ export class NotebookServiceImpl implements NotebookService {
 
   private async finishJoin(api: ApiClient, project: ProjectSummary): Promise<JoinResult> {
     const accountId = await this.accountId();
+    if (!this.started || this.releasing || this.deps.host.api !== api || this.deps.host.accountId !== accountId) throw new WriteCancelledError();
     const known = this.projects.get(project.id);
     const kind: ProjectKind = project.kind === "album" ? "album" : "notebook";
     if (known && !known.revoked) {
@@ -1571,6 +1594,17 @@ export class NotebookServiceImpl implements NotebookService {
     const base = kind === "album" ? this.galleryRoot : this.deps.libraryRoot;
     const notebook = await this.createFolder(folderNameFor(project.name), base);
     const root = path.join(base, notebook);
+    const originalRoot = await fs.lstat(root);
+    let installedMarker: SharedMarker | null = null;
+    const guard: WriteGuard = { root, canCommit: async () => {
+      if (!this.started || this.releasing || this.deps.host.api !== api || this.deps.host.accountId !== accountId) return false;
+      const current = await statIfExists(root);
+      if (!current?.isDirectory() || current.isSymbolicLink() || current.dev !== originalRoot.dev ||
+          current.ino !== originalRoot.ino || current.birthtimeMs !== originalRoot.birthtimeMs) return false;
+      if (!installedMarker) return await statIfExists(path.join(root, SHARED_MARKER_FILE)) === null;
+      const marker = await readMarker(root);
+      return marker !== null && sameNotebookIdentity(installedMarker, marker) && !marker.revoked;
+    } };
     const folderId = randomId("fld");
     this.pendingRoots.add(root);
     try {
@@ -1584,13 +1618,19 @@ export class NotebookServiceImpl implements NotebookService {
         ...(kind === "album" ? { kind } : {}),
         writer: this.installationId,
         folderId,
-      });
-      const marker = await readMarker(root);
+      }, guard);
+      installedMarker = await readMarker(root);
+      await checkWriteGuard(guard);
+      // This folder was allocated by this explicit join, with a fresh folder
+      // identity. It is not an inherited cloud copy lacking bookkeeping.
+      await writeState(root, emptyState(), guard);
+      const marker = installedMarker;
       if (marker) recordNotebookBinding(this.lifecycleDirectory, root, marker);
       this.deps.host.store.upsertProject({ projectId: project.id, name: project.name, localRoot: root, role: project.role });
     } finally {
       this.pendingRoots.delete(root);
     }
+    await checkWriteGuard(guard);
     if (known) {
       // Joined again after a revocation: the old folder stays as it is.
       this.projects.delete(project.id);
@@ -1675,11 +1715,11 @@ export class NotebookServiceImpl implements NotebookService {
     return found;
   }
 
-  async resolveReconciliation(id: string, text: unknown): Promise<{ docId: string; text: string }> {
+  async resolveReconciliation(id: string, text: unknown, reviewed?: { shared: string; disk: string }): Promise<{ docId: string; text: string }> {
     if (typeof text !== "string") throw new ControlError(400, "bad-request", "The merged text is required.");
     for (const handle of this.projects.values()) {
       if (handle.runtime?.hasReconciliation(id)) {
-        const result = await handle.runtime.resolveReconciliation(id, text);
+        const result = await handle.runtime.resolveReconciliation(id, text, reviewed);
         this.reindex(handle.projectId);
         return result;
       }
@@ -1699,6 +1739,9 @@ export class NotebookServiceImpl implements NotebookService {
           throw toControlError(error);
         }
       };
+    router.add("GET", decodeURIComponent(ControlRoutes.fileBlob(":projectId")), wrap(async (request) => ({
+      body: await this.runningProject(request.params.projectId).readBlob(request.query.get("path") ?? ""),
+    })));
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
     router.add("GET", ControlRoutes.pdfResolve, wrap(async (request) => {
       const relative = request.query.get("path") ?? "";
@@ -1742,7 +1785,8 @@ export class NotebookServiceImpl implements NotebookService {
     router.add(
       "POST",
       "/reconciliations/:id",
-      wrap(async (request) => ({ body: await this.resolveReconciliation(request.params.id, (request.body as { text?: unknown } | undefined)?.text) })),
+      wrap(async (request) => ({ body: await this.resolveReconciliation(request.params.id, (request.body as { text?: unknown } | undefined)?.text,
+        (request.body as { reviewed?: { shared: string; disk: string } } | undefined)?.reviewed) })),
     );
   }
 }

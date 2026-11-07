@@ -24,7 +24,7 @@ import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { StorageError } from "@/lib/storage/errors";
 import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, getFileType, normalizeAssetFileName } from "@/lib/storage/file-types";
 import { copyTranscript, followSharedAudioChanges, transcriptCompanionPath } from "@/lib/storage/transcripts";
-import { deletePdfSidecars, followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
+import { followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
 import { INK_DIR } from "@/lib/storage/constants";
 import { copyInkThroughEdit, inkFolderPath, inkLibraryPath, supportsInk } from "@/lib/storage/ink";
 import { assertDirectoryExists, copyFileIfExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
@@ -48,7 +48,7 @@ import { readLiberaFile } from "@/lib/storage/files";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
-import { CollabHostError, resolveSharedPdf, livePdfSnapshot, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
+import { CollabHostError, resolveSharedPdf, livePdfSnapshot, readProjectBlob, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
 import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
@@ -378,12 +378,24 @@ export async function createSharedFile(liberaPath: string, content: string, opti
   return host(liberaPath, () => fileOp(target.projectId, { op: "create-file", path: target.path, content }, config));
 }
 
+/** The host's latest blob, independent of delayed cloud materialization. */
+export async function readSharedBlob(liberaPath: string, options: SharedWriteOptions = {}): Promise<import("./local-api").FileBlobResponse> {
+  const target = manifestTarget(liberaPath);
+  const config = hostConfig(liberaPath, options);
+  const result = await host(liberaPath, () => readProjectBlob(target.projectId, target.path, config));
+  if (!result || !(result.contentBase64 === null || typeof result.contentBase64 === "string") ||
+      result.contentBase64 !== null && (!result.fileId || !result.blobHash)) {
+    throw new SharedWriteError(503, "unavailable", "The host did not return the shared file's current state. Retry the save.");
+  }
+  return result;
+}
+
 /**
  * Adds a binary file to a shared notebook, or replaces the bytes of an
  * existing one, as a manifest blob. A new text file (.md, .tex, …) becomes a
  * document instead. Returns the Libera paths written.
  */
-export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean; pdfSeed?: import("./protocol/pdf").PdfImportRequest } = {}): Promise<{ paths: string[] }> {
+export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean; expectedFileId?: string; expectedBlobHash?: string; pdfSeed?: import("./protocol/pdf").PdfImportRequest } = {}): Promise<{ paths: string[] }> {
   const target = manifestTarget(liberaPath);
   if (bytes.byteLength > MAX_STAGED_BLOB_BYTES) {
     throw new SharedWriteError(
@@ -393,7 +405,9 @@ export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, opt
     );
   }
   const config = hostConfig(liberaPath, options);
-  const createOnly = { ...(options.createOnly ? { createOnly: true } : {}), ...(options.pdfSeed ? { pdfSeed: options.pdfSeed } : {}) };
+  const createOnly = { ...(options.createOnly ? { createOnly: true } : {}),
+    ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}),
+    ...(options.expectedBlobHash ? { expectedBlobHash: options.expectedBlobHash } : {}), ...(options.pdfSeed ? { pdfSeed: options.pdfSeed } : {}) };
   if (bytes.byteLength <= MAX_SHARED_BLOB_BYTES) {
     const contentBase64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
     return host(liberaPath, () => fileOp(target.projectId, { op: "write-blob", path: target.path, contentBase64, ...createOnly }, config));
@@ -582,7 +596,7 @@ export async function deleteSharedFile(relativePath: string, options: SharedWrit
     await followSharedAudioChanges([], [liberaPath]);
   }
   // This user deleted it, so their own notes on it go too, as in a local notebook.
-  if (getFileType(current.name) === "pdf") await deletePdfSidecars(liberaPath);
+  if (getFileType(current.name) === "pdf") await followSharedPdfChanges([], [liberaPath]);
   if (supportsInk(getFileType(current.name))) await deleteSharedInk(current.notebook, current.pathParts, config);
   await removeFileMetadataPath(liberaPath);
   notifySearchChanges([liberaPath]);

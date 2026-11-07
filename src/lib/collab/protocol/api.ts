@@ -128,6 +128,8 @@ export interface ChangePasswordRequest {
 export interface VersionResponse {
   /** Server supports account-scoped, durable project creation keys. */
   projectCreationKeys?: boolean;
+  /** Project deletion can be fenced against the manifest sequence exported locally. */
+  guardedProjectDeletion?: boolean;
   /** Server makes PDF documents on `open`. Live PDFs need it, and older servers refuse those opens. */
   livePdfs?: boolean;
   protocolVersion: number;

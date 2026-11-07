@@ -21,7 +21,7 @@ export function listReconciliations(): Promise<Reconciliation[]> {
 }
 
 /** Keeps `text` as the document's content; the host applies it as the user's edits and rewrites the file. */
-export function resolveReconciliation(id: string, text: string): Promise<{ docId: string; text: string }> {
-  const body: ResolveReconciliationRequest = { text };
+export function resolveReconciliation(id: string, text: string, reviewed: { shared: string; disk: string }): Promise<{ docId: string; text: string }> {
+  const body: ResolveReconciliationRequest = { text, reviewed };
   return request(ControlRoutes.reconciliation(id), { method: "POST", body: JSON.stringify(body) });
 }

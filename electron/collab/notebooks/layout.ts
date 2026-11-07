@@ -134,11 +134,15 @@ export function computeLayout(entries: Iterable<ManifestEntry>): Layout {
   return { paths, directories, refused };
 }
 
-/** Entries whose manifest path is `relative` or inside it (case-insensitive). */
+/** Entries displayed at `relative` or inside it (case-insensitive). */
 export function entriesUnder(entries: Iterable<ManifestEntry>, relative: string): ManifestEntry[] {
   const key = manifestPathKey(relative);
-  return [...entries].filter((entry) => {
-    const entryKey = manifestPathKey(entry.path);
+  const values = [...entries];
+  const layout = computeLayout(values);
+  return values.filter((entry) => {
+    const displayed = layout.paths.get(entry.fileId);
+    if (!displayed) return false;
+    const entryKey = manifestPathKey(displayed);
     return entryKey === key || entryKey.startsWith(`${key}/`);
   });
 }

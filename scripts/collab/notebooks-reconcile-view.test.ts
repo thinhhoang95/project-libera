@@ -71,13 +71,19 @@ test("ReconcileView compares the three texts and keeps the merged result", async
     await act(async () => fromDisk.click());
     assert.equal(textarea.value, "from disk\n");
 
+    // A background refresh must not relabel the draft's reviewed versions.
+    await act(async () => root.render(createElement(ReconcileView, {
+      reconciliation: { id: "rec_1", docId: "doc_1", path: "Research/main.tex", base: "base line\n", shared: "unseen newer shared\n", disk: "unseen newer disk\n", detectedAt: 1 },
+      onResolved: (result) => resolved.push(result),
+    })));
+    assert.equal(textarea.value, "from disk\n");
     const form = container.querySelector("form") as HTMLFormElement;
     await act(async () => {
       form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
     });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, "/api/collab/reconciliations/rec_1");
-    assert.deepEqual(calls[0].body, { text: "from disk\n" });
+    assert.deepEqual(calls[0].body, { text: "from disk\n", reviewed: { shared: "from shared\n", disk: "from disk\n" } });
     assert.deepEqual(resolved, [{ docId: "doc_1", text: "from disk\n" }]);
   } finally {
     await act(async () => root.unmount());

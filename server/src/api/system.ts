@@ -23,6 +23,7 @@ export function registerSystemRoutes(app: FastifyInstance, context: ServerContex
 
   app.get(ApiRoutes.version, async (): Promise<VersionResponse> => ({
     projectCreationKeys: true,
+    guardedProjectDeletion: true,
     livePdfs: true,
     protocolVersion: PROTOCOL_VERSION,
     minProtocolVersion: minProtocolVersion(context),

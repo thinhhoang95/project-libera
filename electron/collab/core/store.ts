@@ -305,6 +305,11 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (project_id, path, hash)
   );
   `,
+  `
+  CREATE TABLE IF NOT EXISTS project_adoption_fences (
+    project_id TEXT PRIMARY KEY
+  );
+  `,
 ];
 
 export const STORE_SCHEMA_VERSION = MIGRATIONS.length;
@@ -1077,6 +1082,14 @@ export class HostStore {
 
   setDatabaseAuthority(authority: AccountAuthority | null): void {
     this.run(`INSERT INTO database_authority (id, account_id, server_url) VALUES (1, ?, ?)`, authority?.accountId ?? null, authority?.serverUrl ?? null);
+  }
+
+  requireExternalAdoption(projectId: string): void {
+    this.run(`INSERT OR IGNORE INTO project_adoption_fences (project_id) VALUES (?)`, projectId);
+  }
+
+  requiresExternalAdoption(projectId: string): boolean {
+    return !!this.get(`SELECT project_id FROM project_adoption_fences WHERE project_id = ?`, projectId);
   }
 
   retirePath(projectId: string, path: string, hashes: Iterable<string> = []): void {

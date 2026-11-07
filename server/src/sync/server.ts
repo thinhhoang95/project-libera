@@ -69,6 +69,18 @@ function manifestFileIdsAfter(doc: Y.Doc): Set<string> {
   return new Set(doc.getMap<unknown>(ManifestKeys.files).keys());
 }
 
+/** Older servers retained map-key history in Yjs even before SQL tombstones. */
+function retiredManifestFileIds(doc: Y.Doc): Set<string> {
+  const live = manifestFileIdsAfter(doc);
+  const retired = new Set<string>();
+  for (const item of Y.decodeUpdate(Y.encodeStateAsUpdate(doc)).structs) {
+    if (!(item instanceof Y.Item)) continue;
+    const parent: unknown = item.parent;
+    if (parent === ManifestKeys.files && typeof item.parentSub === "string" && !live.has(item.parentSub)) retired.add(item.parentSub);
+  }
+  return retired;
+}
+
 export class SyncServer {
   readonly metrics: SyncMetrics;
   readonly rooms: RoomService;
@@ -337,6 +349,24 @@ export class SyncServer {
         room.discardShadow(subdoc);
         return session.sendReject(message, "invalid-update", violation);
       }
+      const previousFiles = manifestFileIdsAfter(room.live(subdoc));
+      const addedFiles = [...manifestFileIdsAfter(room.shadow(subdoc))].filter((id) => !previousFiles.has(id));
+      if (addedFiles.length) {
+        const retired = retiredManifestFileIds(room.live(subdoc));
+        if (addedFiles.some((id) => retired.has(id))) {
+          room.discardShadow(subdoc);
+          return session.sendReject(message, "invalid-update", "A retired file identity cannot be added back. Create a new file to restore it.");
+        }
+        let deleted;
+        try {
+          deleted = await this.context.db.selectFrom("file_tombstones").select("file_id")
+            .where("project_id", "=", room.projectId).where("file_id", "in", addedFiles).executeTakeFirst();
+        } catch (error) { room.discardShadow(subdoc); throw error; }
+        if (deleted) {
+          room.discardShadow(subdoc);
+          return session.sendReject(message, "invalid-update", "A deleted file identity cannot be added back. Create a new file to restore it.");
+        }
+      }
       // A stale offline rename must not resurrect a document already deleted by another member.
       const previous = manifestDocIds(room.live(subdoc), room.projectId);
       const added = [...manifestDocIds(room.shadow(subdoc), room.projectId)].filter((id) => !previous.has(id));
@@ -420,7 +450,9 @@ export class SyncServer {
           removedDocIds.push(...removedPdfFiles.map((file) => file.id));
         }
       }
-      serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input, removedDocIds, removedPdfFiles });
+      const remainingFiles = subdoc === "manifest" ? manifestFileIdsAfter(room.shadow(subdoc)) : null;
+      const removedFileIds = remainingFiles ? [...manifestFileIdsAfter(room.live(subdoc))].filter((id) => !remainingFiles.has(id)) : [];
+      serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input, removedDocIds, removedPdfFiles, removedFileIds });
     } catch (error) {
       room.discardShadow(subdoc);
       throw error;
