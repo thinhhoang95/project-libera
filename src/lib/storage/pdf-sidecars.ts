@@ -89,8 +89,13 @@ async function setAside(notebook: string, store: KindStore, sidecarPath: string,
 }
 
 /**
- * Moves (or sets aside) a PDF's side-cars after the collab host moved or
- * removed it in a shared notebook. Returns how many paths it handled.
+ * Follows the collab host's moves and removals of PDFs in a shared notebook.
+ * A path-only event proves nothing about which file is which, so nothing is
+ * overwritten or erased: each side-car is copied to the new path only when
+ * the PDF there has the bytes the side-car records, and only into a free
+ * destination; the original stays. Removals leave side-cars in place for
+ * reconcilePdfSidecars, which sets aside or re-attaches them by identity.
+ * Returns how many side-cars it copied.
  */
 export async function followSharedPdfChanges(moves: Array<{ from: string; to: string }>, _removed: string[]) {
   void _removed; // Normal identity reconciliation retains removal recovery.

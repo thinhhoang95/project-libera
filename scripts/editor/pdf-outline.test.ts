@@ -418,22 +418,27 @@ test("side-cars of a PDF renamed outside Libera find it by its bytes; a deleted 
   });
 });
 
-test("a shared notebook's host moves and removals carry the PDF's side-cars", async () => {
+test("a shared notebook's host moves and removals carry the PDF's side-cars without erasing any", async () => {
   await withLibrary(async ({ root }) => {
     await seedOutline(root, "Research/shared.pdf");
     await writePdfAnnotations("Research/shared.pdf", [annotation]);
     await rename(path.join(root, "Research", "shared.pdf"), path.join(root, "Research", "moved.pdf"));
-    assert.equal(await followSharedPdfChanges([{ from: "Research/shared.pdf", to: "Research/moved.pdf" }], []), 1);
+    // Both side-cars (annotations and outline) are copied: the moved PDF has the bytes they record.
+    assert.equal(await followSharedPdfChanges([{ from: "Research/shared.pdf", to: "Research/moved.pdf" }], []), 2);
     assert.equal((await readPdfAnnotations("Research/moved.pdf")).annotations.length, 1);
     assert.ok(await readPdfOutlineFile("Research/moved.pdf"));
+    // A path-only event erases nothing: the originals stay until reconciliation.
+    assert.ok(await stat(outlineSidecar(root, "Research", "shared.pdf")));
 
     const bytes = await readFile(path.join(root, "Research", "moved.pdf"));
     await rm(path.join(root, "Research", "moved.pdf"));
     await followSharedPdfChanges([], ["Research/moved.pdf"]);
-    await assert.rejects(stat(outlineSidecar(root, "Research", "moved.pdf")));
-    // The host restores it: the notes come back on the next refresh.
+    assert.ok(await stat(outlineSidecar(root, "Research", "moved.pdf")), "a removal keeps the side-cars");
+    // The host restores it: the notes are still there, and a refresh keeps them.
     await writeFile(path.join(root, "Research", "moved.pdf"), bytes);
-    assert.equal((await reconcilePdfSidecars("Research", [{ path: "Research/moved.pdf", size: bytes.length }], { now: Date.now() + 10 * 60_000 })).reattached, 2);
     assert.equal((await readPdfAnnotations("Research/moved.pdf")).annotations.length, 1);
+    await reconcilePdfSidecars("Research", [{ path: "Research/moved.pdf", size: bytes.length }], { now: Date.now() + 10 * 60_000 });
+    assert.equal((await readPdfAnnotations("Research/moved.pdf")).annotations.length, 1);
+    assert.ok(await readPdfOutlineFile("Research/moved.pdf"));
   });
 });
