@@ -4,7 +4,7 @@ For a PDF, the **Outline** view of the Outlines panel shows the PDF's table of c
 
 ## The outline
 
-When the PDF has bookmarks of its own, the Outline view shows them as a tree. **Expand to** sets how many levels are open; the chevrons open and close single entries; **Search outline** finds entries in closed branches too. Click an entry to go to its page. Bookmarks that point to a spot on the page scroll to that spot.
+When the PDF has bookmarks of its own, the Outline view shows them as a tree. **Expand to** sets how many levels are open; the chevrons open and close single entries; **Search outline** finds entries in closed branches too. Click an entry to go to its page. Bookmarks that point to a spot on the page scroll to that spot. The entry for the page in view is highlighted.
 
 When the PDF has no bookmarks, the view offers **Generate outline**. Libera opens the AI panel and starts an Agent chat that says "Generate an outline for <path>." with the `generate-pdf-outline` skill loaded. The command palette has **Generate PDF outline** (Regenerate when there is one, unavailable for PDFs with bookmarks) and **Show PDF annotations**.
 
@@ -58,7 +58,7 @@ Annotation side-cars now record the PDF's size and hash when they are saved. Old
 ## Checks
 
 ```
-node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/pdf-outline.test.ts scripts/editor/pdf-outline-panel.test.ts scripts/editor/outline-panel.test.ts
+node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/pdf-outline.test.ts scripts/editor/pdf-outline-panel.test.ts scripts/editor/latex-outline-panel.test.ts scripts/editor/outline-panel.test.ts
 ```
 
 The tests cover numbering, title matching, chunking, table of contents detection, stitching, every verification problem, and amend operations. With a scripted model, they cover a GenerateOutline run: a heading sent back and fixed, a chunk shifted, a chunk that failed and was filled in later, and AmendOutline. They also cover reading bookmarks from a real PDF, the refusals (bookmarks, scans), a PDF renamed or deleted during generation, the side-car following Libera's renames, copies, folder renames and deletes, side-cars re-attached after a rename outside Libera, set aside after a delete, not inherited by a new PDF and restored with the old one, and a shared notebook's moves and removals. The panel tests cover the bookmarks tree and navigation, generating and showing an AI outline, and the contextual tab's rules.

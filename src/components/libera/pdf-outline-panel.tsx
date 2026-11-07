@@ -10,6 +10,7 @@ import {
   PDF_OUTLINE_REQUEST_EVENT,
   PDF_OUTLINE_RUN_FINISHED_EVENT,
   PDF_OUTLINE_UPDATED_EVENT,
+  currentOutlineEntryId,
   outlineErrors,
   visibleOutlineRows,
   type PdfOutlineEntry,
@@ -171,6 +172,7 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
   const showingGenerated = Boolean(generated) && (!embedded.length || preferGenerated);
   const entries = useMemo(() => (showingGenerated ? generated?.entries : embedded) ?? [], [showingGenerated, generated, embedded]);
   const rows = useMemo(() => visibleOutlineRows(entries, { query, expansionLevel, expanded }), [entries, query, expansionLevel, expanded]);
+  const currentEntryId = useMemo(() => currentOutlineEntryId(entries, activeTab.viewState?.pdf?.page), [entries, activeTab.viewState?.pdf?.page]);
   const problems = showingGenerated ? generated?.problems ?? [] : [];
   const errors = outlineErrors(problems);
 
@@ -351,32 +353,38 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
         )
       ) : rows.length ? (
         <div className="space-y-0.5" role="tree" aria-label={`${sourceLabel} of ${activeTab.file.name}`}>
-          {rows.map(({ entry, hasChildren, expanded: isExpanded }) => (
-            <div key={entry.id} role="treeitem" aria-level={entry.level} aria-selected={false} aria-expanded={hasChildren ? isExpanded : undefined} className="flex items-start gap-0.5" style={{ paddingLeft: query ? 0 : `${(entry.level - 1) * 12}px` }}>
-              {hasChildren ? (
-                <button
-                  aria-label={`${isExpanded ? "Collapse" : "Expand"} ${entry.title}`}
-                  className="libera-sidebar-icon-button mt-1 inline-flex h-6 w-5 shrink-0 items-center justify-center rounded"
+          {rows.map(({ entry, hasChildren, expanded: isExpanded }) => {
+            const isCurrent = entry.id === currentEntryId;
+            return (
+              <div key={entry.id} role="treeitem" aria-level={entry.level} aria-selected={isCurrent} aria-expanded={hasChildren ? isExpanded : undefined} className="flex items-start gap-0.5" style={{ paddingLeft: query ? 0 : `${(entry.level - 1) * 12}px` }}>
+                {hasChildren ? (
+                  <button
+                    aria-label={`${isExpanded ? "Collapse" : "Expand"} ${entry.title}`}
+                    aria-expanded={isExpanded}
+                    className="libera-sidebar-icon-button mt-1 inline-flex h-6 w-5 shrink-0 items-center justify-center rounded"
+                    type="button"
+                    onClick={() => setExpanded((current) => ({ ...current, [entry.id]: !isExpanded }))}
+                  >
+                    {isExpanded ? <ChevronDown aria-hidden className="h-3.5 w-3.5" /> : <ChevronRight aria-hidden className="h-3.5 w-3.5" />}
+                  </button>
+                ) : <span aria-hidden className="w-5 shrink-0" />}
+                <SidebarNameTooltipButton
+                  className={`flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${entry.page ? "" : "cursor-default opacity-60"}`}
+                  style={isCurrent ? { backgroundColor: "color-mix(in srgb, var(--accent) 12%, transparent)" } : undefined}
+                  aria-current={isCurrent ? "location" : undefined}
+                  fullName={entry.unverified ? `${entry.title} (not found in the page's text)` : entry.title}
                   type="button"
-                  onClick={() => setExpanded((current) => ({ ...current, [entry.id]: !isExpanded }))}
+                  disabled={!entry.page}
+                  onClick={() => void navigate(entry)}
                 >
-                  {isExpanded ? <ChevronDown aria-hidden className="h-3.5 w-3.5" /> : <ChevronRight aria-hidden className="h-3.5 w-3.5" />}
-                </button>
-              ) : <span aria-hidden className="w-5 shrink-0" />}
-              <SidebarNameTooltipButton
-                className={`flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${entry.page ? "" : "cursor-default opacity-60"}`}
-                fullName={entry.unverified ? `${entry.title} (not found in the page's text)` : entry.title}
-                type="button"
-                disabled={!entry.page}
-                onClick={() => void navigate(entry)}
-              >
-                <span className={`min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] ${entry.level === 1 ? "font-medium" : ""} ${entry.unverified ? "italic text-muted-foreground" : ""}`}>{entry.title}</span>
-                {entry.page ? (
-                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">p. {entry.page}</span>
-                ) : null}
-              </SidebarNameTooltipButton>
-            </div>
-          ))}
+                  <span className={`min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] ${entry.level === 1 ? "font-medium" : ""} ${entry.unverified ? "italic text-muted-foreground" : ""}`}>{entry.title}</span>
+                  {entry.page ? (
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">p. {entry.page}</span>
+                  ) : null}
+                </SidebarNameTooltipButton>
+              </div>
+            );
+          })}
           {showingGenerated && generated?.generatedAt ? (
             <p className="px-1 pt-2 text-[11px] text-muted-foreground">
               Generated {new Date(generated.generatedAt).toLocaleString()}{generated.model ? ` with ${generated.model}` : ""}{generated.updatedAt ? `, amended ${new Date(generated.updatedAt).toLocaleString()}` : ""}

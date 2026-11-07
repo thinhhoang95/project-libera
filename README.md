@@ -651,3 +651,9 @@ Click a photo to open the viewer. Zoom with the scroll wheel, pinch, double-clic
 Press E (or **Edit**) to rotate, flip, and crop (Free, Original, Square, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16), adjust brightness, contrast, saturation, warmth, tint, and vignette, or apply a filter preset. **Save** (Cmd/Ctrl+S) replaces the photo and keeps the original, so **Revert to original** in the info panel can undo it; **Save as copy** adds a new photo beside the original, in the same albums. The saved photo uses the same calculations as the preview. SVG images cannot be edited.
 
 To view a photo next to notes and PDFs, right-click it (or select one photo, or use the viewer's button) and choose **Open in tab**, **Open to the right**, or **Open below**. Gallery photos open as read-only image tabs and work with split right and split down.
+
+## Highlights
+
+- **Local LLMs.** Run AI features on your own machine with Ollama, LM Studio, llama-server or any OpenAI-compatible server, alongside cloud models. Give an endpoint an alias in **Preferences → Local LLMs** and use `local/alias` wherever a model is chosen. See [Model Pool and local models](#model-pool-and-local-models) and [docs/features/local-llms.md](docs/features/local-llms.md).
+- **Ink.** Draw freehand on PDFs with the pen tool, with ink colors and stroke widths you can change from the toolbar or the command palette. Ink marks are saved with the PDF's other annotations and are shared live in notebooks with live PDFs. See [PDF outlines and annotations](#pdf-outlines-and-annotations).
+- **Real-time collaboration on every text file.** In a shared notebook, Markdown, LaTeX and other text files are edited together live, with presence, comments and suggestions. With live PDFs on, PDFs are annotated together in real time too. See [Collaboration](#collaboration) and [Live PDFs](docs/features/live-pdfs.md).
