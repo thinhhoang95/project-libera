@@ -6,6 +6,14 @@ import path from "node:path";
 
 const exists = (file: string) => access(file).then(() => true, () => false);
 
+test("builds stay out of a temp folder named with a tilde, which TeX cannot use", async () => {
+  const { latexBuildRootFor } = await import("../../src/lib/latex/build");
+  assert.equal(latexBuildRootFor(path.join("C:", "Temp"), path.join("C:", "Users", "me")), path.join("C:", "Temp", "libera-latex"));
+  assert.equal(latexBuildRootFor(path.join("D:", "my~temp"), path.join("C:", "Users", "me")), path.join("C:", "Users", "me", ".libera-latex"));
+  // With nowhere better, the temp folder stays and TeX reports the problem.
+  assert.equal(latexBuildRootFor(path.join("D:", "my~temp"), path.join("C:", "Users", "me~you")), path.join("D:", "my~temp", "libera-latex"));
+});
+
 test("build cache lists generated files and clears only the chosen ones inside the work folder", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-latex-cache-test-"));
   const previous = process.env.LIBERA_DATA_DIR;

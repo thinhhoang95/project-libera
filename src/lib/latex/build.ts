@@ -64,18 +64,25 @@ export type LatexSnapshotMeta = {
   overrides: string[];
 };
 
-function realTemporaryDirectory() {
+function realFolder(folder: string) {
   try {
     // On macOS the temp folder is reached through the /var -> /private/var link.
-    // On Windows only the native call expands 8.3 short names (C:\Users\NAME~1),
-    // whose "~" makes TeX fail to open the input file.
-    return realpathSync.native(os.tmpdir());
+    // On Windows only the native call expands 8.3 short names (C:\Users\NAME~1).
+    return realpathSync.native(folder);
   } catch {
-    return os.tmpdir();
+    return folder;
   }
 }
 
-const BUILD_ROOT = joinPath(realTemporaryDirectory(), "libera-latex");
+/**
+ * Where builds go. TeX cannot open a path with "~" in it and latexmk refuses
+ * one, so a temp folder really named that way gives way to the home folder.
+ */
+export function latexBuildRootFor(temporary: string, home: string) {
+  return temporary.includes("~") && !home.includes("~") ? joinPath(home, ".libera-latex") : joinPath(temporary, "libera-latex");
+}
+
+const BUILD_ROOT = latexBuildRootFor(realFolder(os.tmpdir()), realFolder(homeDirectory()));
 
 /* Built through functions so the Next.js file tracer cannot read these as paths
  * and glob the project folder at build time (see runtime-path.ts). */

@@ -52,6 +52,7 @@ async function main() {
     // Both directories are generated from this unique temporary data root.
     const key = require("node:crypto").createHash("sha256").update(path.join(directory, "users/admin/Smoke/main.tex")).digest("hex").slice(0, 24);
     await fs.rm(path.join(require("node:fs").realpathSync.native(os.tmpdir()), "libera-latex", key), { recursive: true, force: true });
+    await fs.rm(path.join(require("node:fs").realpathSync.native(os.homedir()), ".libera-latex", key), { recursive: true, force: true });
     await fs.rm(directory, { recursive: true, force: true });
   }
 }
