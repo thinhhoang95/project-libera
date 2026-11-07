@@ -103,7 +103,9 @@ function tooltipFor(state: EditorState): Tooltip | null {
 const previewTooltip = StateField.define<Tooltip | null>({
   create: tooltipFor,
   update(value, tr) {
-    const changed = tr.startState.field(previewField) !== tr.state.field(previewField) || tr.startState.field(dismissedAt) !== tr.state.field(dismissedAt);
+    // The document's macros (its own, and other files' as they load) change what the preview shows.
+    const changed = tr.startState.field(previewField) !== tr.state.field(previewField) || tr.startState.field(dismissedAt) !== tr.state.field(dismissedAt)
+      || tr.startState.field(definitionsField, false)?.fingerprint !== tr.state.field(definitionsField, false)?.fingerprint;
     if (!changed) return value && tr.docChanged ? { ...value, pos: tr.changes.mapPos(value.pos) } : value;
     return tooltipFor(tr.state);
   },

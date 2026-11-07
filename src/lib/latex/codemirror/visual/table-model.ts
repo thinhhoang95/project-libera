@@ -226,10 +226,20 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
 
 export type TableChange = { from: number; to: number; insert: string };
 
-/** The change that sets one cell's text (a \multicolumn cell keeps its wrapper). */
-export function setCellText(cell: TableCell, text: string): TableChange {
-  if (cell.contentFrom !== undefined && cell.contentTo !== undefined) return { from: cell.contentFrom, to: cell.contentTo, insert: text };
-  return { from: cell.from, to: cell.to, insert: text };
+/**
+ * The change that sets one cell's text (a \multicolumn cell keeps its
+ * wrapper). With the cell's `current` text, only the part that differs is
+ * replaced (one typed character is a one-character change).
+ */
+export function setCellText(cell: TableCell, text: string, current?: string): TableChange {
+  const from = cell.contentFrom !== undefined && cell.contentTo !== undefined ? cell.contentFrom : cell.from;
+  const to = cell.contentFrom !== undefined && cell.contentTo !== undefined ? cell.contentTo : cell.to;
+  if (current === undefined || current.length !== to - from) return { from, to, insert: text };
+  let start = 0;
+  while (start < current.length && start < text.length && current[start] === text[start]) start++;
+  let end = 0;
+  while (end < current.length - start && end < text.length - start && current[current.length - 1 - end] === text[text.length - 1 - end]) end++;
+  return { from: from + start, to: to - end, insert: text.slice(start, text.length - end) };
 }
 
 /** Indentation of the line a position is on, for inserted rows. */
@@ -323,8 +333,9 @@ export function deleteColumn(model: TableModel, index: number): TableChange[] | 
       if (column === index) {
         if (cell.span !== 1) return null;
         // Remove the cell and the separator after it (or before it, for the last cell).
+        // A row's first cell starts after the row's rules (\hline) and line break: those stay.
         const next = row.cells[c + 1];
-        if (next) changes.push({ from: cell.outerFrom, to: next.outerFrom, insert: "" });
+        if (next) changes.push({ from: c === 0 ? cell.from : cell.outerFrom, to: next.outerFrom, insert: "" });
         else if (c > 0) changes.push({ from: row.cells[c - 1].to, to: cell.to, insert: "" });
         else changes.push({ from: cell.from, to: cell.to, insert: "" });
         break;

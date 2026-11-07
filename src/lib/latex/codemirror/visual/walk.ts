@@ -837,6 +837,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState): FigureSp
     images,
     caption: captionRange ? state.doc.sliceString(captionRange.from, captionRange.to) : null,
     captionPos: captionRange?.from ?? node.from,
+    start: node.from,
     kind: node.name === "TableEnvironment" ? "table" : "figure",
     numberOffset: 0,
     length: node.to - node.from,

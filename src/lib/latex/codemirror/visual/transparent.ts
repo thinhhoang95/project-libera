@@ -57,8 +57,9 @@ function styleAround(node: Node, root: Node) {
 
 /** How to draw a macro's uses with editable arguments, or null when it cannot be. */
 export function transparentPlan(macro: LatexMacro, defs: LatexDefinitions): TransparentPlan | null {
-  if (macro.arity < 1 || macro.arity > 4 || macro.optional !== undefined || macro.spec || macro.mathOnly) return null;
-  const key = `${macro.fingerprint}`;
+  if (macro.arity < 1 || macro.arity > 4 || macro.optional !== undefined || macro.spec || macro.mathOnly || macro.unsupported) return null;
+  // The plan renders the body, with the macros it uses: it depends on all the definitions, not only this one.
+  const key = `${macro.fingerprint}\u0000${defs.fingerprint}`;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
   const plan = computePlan(macro, defs);
@@ -75,6 +76,8 @@ function computePlan(macro: LatexMacro, defs: LatexDefinitions): TransparentPlan
   const substituted = macro.body.replace(/##|#([1-9])/g, (whole, n: string | undefined) => (n ? PLACEHOLDER(Number(n)) : "#"));
   const container = document.createElement("span");
   container.append(renderLatexFragment(substituted, { defs, numbering: EMPTY_NUMBERING, aux: EMPTY_AUX, bib: () => null }));
+  // Fixed parts that show numbers or citations would be drawn once, against no numbering: such a macro is drawn whole (MacroWidget refreshes).
+  if (container.querySelector(".cm-vis-chip")) return null;
   const found = placeholderNodes(container, macro.arity);
   if (found.some((item) => !item)) return null;
   const marks: TransparentPlan["marks"] = [];
@@ -118,6 +121,8 @@ export function argumentGroups(text: string, offset: number, start: number, coun
     let close = -1;
     for (let i = index; i < text.length; i++) {
       if (text[i] === "\\") { i++; continue; }
+      // A comment can hide a brace; such an argument is not drawn transparently.
+      if (text[i] === "%") return null;
       if (text[i] === "{") depth++;
       else if (text[i] === "}" && --depth === 0) { close = i; break; }
       else if (text[i] === "\n" && text[i + 1] === "\n") return null;

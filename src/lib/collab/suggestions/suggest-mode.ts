@@ -30,6 +30,7 @@
 import { Annotation, ChangeSet, EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction, type ChangeSpec, type Extension, type Text, type TransactionSpec } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
 import { ySyncAnnotation, ySyncFacet } from "y-codemirror.next";
+import { undoBoundaries } from "../undo-boundary";
 import * as Y from "yjs";
 import { actorAccountId, type Actor } from "../protocol/actor";
 import type { SuggestionRecord } from "../protocol/schema";
@@ -365,6 +366,8 @@ export function suggestMode(options: SuggestModeOptions): SuggestMode {
       filter,
       writer,
       undoKeys,
+      // A widget's edit (Visual mode) is its own undo step here too.
+      undoBoundaries.of(() => undoManager.stopCapturing()),
       inlineReplacementEditing.compute([enabledField, forcedField], (state) => active(state)),
       collabSuggestOnly.compute([forcedField], (state) => state.field(forcedField)),
       EditorView.editorAttributes.compute([enabledField, forcedField], (state) => (active(state) ? { class: "cm-collab-suggesting" } : ({} as Record<string, string>))),

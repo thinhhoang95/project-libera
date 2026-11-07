@@ -5,7 +5,7 @@ import type { SyntaxNode } from "@lezer/common";
 import { wrapSelection } from "../editing";
 import { argumentInner } from "./render-fragment";
 import { constructAt, forceRevealEffect, structuralField } from "./structural";
-import { revealSourceAt, setMathOpener, type MathOpener } from "./widgets";
+import { editFirstCell, followReference, revealSourceAt, setMathOpener, type MathOpener } from "./widgets";
 
 /* Keyboard behaviour of the Visual mode (docs/latex-visual-editor-plan.md
  * §6.5–6.6). Every command here either moves the selection or writes the
@@ -104,13 +104,22 @@ export function registerMathOpener(opener: MathOpener | null) {
   setMathOpener(opener);
 }
 
-/** Enter on a selected formula opens its editor; on another selected widget, shows its source. */
+/**
+ * Enter on a selected formula opens its editor; on a selected reference,
+ * goes to its label; on a selected table, edits its first cell (Tab moves on);
+ * on another selected widget, shows its source.
+ */
 const openSelected: Command = (view) => {
   const range = view.state.selection.main;
   if (range.empty) return false;
   const construct = constructAt(view.state, range.from + 1);
   if (!construct || construct.from !== range.from || construct.to !== range.to || !SELECT_FIRST.has(construct.kind)) return false;
   if (construct.kind === "math" && mathOpener?.(view, construct.from, construct.to)) return true;
+  if (construct.kind === "ref") {
+    const key = /\{([^},]*)/.exec(view.state.sliceDoc(construct.from, construct.to))?.[1]?.trim();
+    if (key && followReference(view, key)) return true;
+  }
+  if ((construct.kind === "table" || construct.kind === "figure") && editFirstCell(view, construct.from, construct.to)) return true;
   revealSourceAt(view, construct.from, construct.to);
   return true;
 };
@@ -167,12 +176,20 @@ const spaceAfterControlWord = EditorView.inputHandler.of((view, from, to, text) 
   if (from !== to || !/^[A-Za-z@]$/.test(text)) return false;
   const shown = view.state.field(structuralField, false)?.shown;
   if (!shown) return false;
-  let hidden = false;
-  shown.between(from, from, (start, end, decoration) => {
-    if (end === from && start < end && decoration.spec.widget && /\\[A-Za-z@]+$/.test(view.state.sliceDoc(start, end))) hidden = true;
-  });
-  if (!hidden) return false;
-  view.dispatch({ changes: { from, insert: ` ${text}` }, selection: { anchor: from + 1 + text.length }, userEvent: "input.type" });
+  const hiddenBefore = (pos: number) => {
+    let hidden = false;
+    shown.between(pos, pos, (start, end, decoration) => {
+      if (end === pos && start < end && decoration.spec.widget && /\\[A-Za-z@]+$/.test(view.state.sliceDoc(start, end))) hidden = true;
+    });
+    return hidden;
+  };
+  // Only typing at the selection, where the other cursors type the same letter.
+  const main = view.state.selection.main;
+  if (main.from !== from || main.to !== to || !hiddenBefore(from)) return false;
+  view.dispatch(view.state.changeByRange((range) => {
+    const insert = range.empty && hiddenBefore(range.from) ? ` ${text}` : text;
+    return { changes: { from: range.from, to: range.to, insert }, range: EditorSelection.cursor(range.from + insert.length) };
+  }), { userEvent: "input.type" });
   return true;
 });
 

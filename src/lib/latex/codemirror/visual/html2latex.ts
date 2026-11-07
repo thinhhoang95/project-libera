@@ -42,12 +42,50 @@ export function escapeLatexText(text: string) {
       continue;
     }
     if (math && char === " ") { math += " "; continue; }
-    if (math) { math = math.trimEnd(); flushMath(); }
+    if (math) {
+      // Spaces after the symbols separate them from the text: they go after the formula, not into it.
+      const spaces = /\s*$/.exec(math)![0];
+      math = math.trimEnd();
+      flushMath();
+      out += spaces;
+    }
     out += ESCAPES[char] ?? TEXT_SYMBOLS[char] ?? char;
   }
+  const spaces = /\s*$/.exec(math)![0];
   math = math.trimEnd();
   flushMath();
-  return out;
+  return out + spaces;
+}
+
+/** A URL as an `\href`/`\url` argument: characters that would end or change the argument are percent-encoded, `%` and `#` escaped. */
+export function latexUrl(href: string) {
+  const encoded = href.replace(/[\\{}\s^`"<>|]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+  return encoded.replace(/[%#]/g, (char) => `\\${char}`);
+}
+
+/**
+ * Whether TeX from a clipboard's math annotation stays inside the formula it
+ * is pasted as: balanced braces, no math delimiters, comments, paragraph
+ * breaks or `\end{…}` that could close it, and nothing that reads files or
+ * changes how TeX reads (`\input`, `\catcode`, `\def`…).
+ */
+export function isSafeMathTex(tex: string) {
+  if (/[$%]|\n\s*\n|\\[()[\]]|\\(?:begin|end)\s*\{\s*document\s*\}/.test(tex.replace(/\\[$%]/g, ""))) return false;
+  if (/\\(?:input|include|InputIfFileExists|openin|openout|read|readline|write|immediate|special|catcode|uccode|lccode|mathcode|def|gdef|edef|xdef|let|futurelet|csname|newcommand|renewcommand|providecommand|DeclareRobustCommand|usepackage|RequirePackage|documentclass|directlua|latelua|ShellEscape|write18|verb|makeatletter|endinput)(?![A-Za-z@])/.test(tex)) return false;
+  let depth = 0;
+  for (let i = 0; i < tex.length; i++) {
+    if (tex[i] === "\\") { i++; continue; }
+    if (tex[i] === "{") depth++;
+    else if (tex[i] === "}" && --depth < 0) return false;
+  }
+  if (depth !== 0) return false;
+  // Environments inside (matrices, cases) must close what they open, in order.
+  const open: string[] = [];
+  for (const match of tex.matchAll(/\\(begin|end)\s*\{([^}]*)\}/g)) {
+    if (match[1] === "begin") open.push(match[2].trim());
+    else if (open.pop() !== match[2].trim()) return false;
+  }
+  return open.length === 0;
 }
 
 /** HTML that only wraps plain source text (code editors' clipboards): paste its text/plain instead. */
@@ -82,7 +120,13 @@ function inline(node: Node, context: Context): string {
   if (SKIP.has(tag)) return "";
   if (tag === "MATH" || element.classList.contains("katex") || element.classList.contains("MathJax")) {
     const tex = texAnnotation(element) ?? element.getAttribute("data-latex") ?? element.getAttribute("alttext");
-    if (tex) return element.getAttribute("display") === "block" ? `\n\\[\n${tex}\n\\]\n` : `$${tex}$`;
+    if (tex && isSafeMathTex(tex)) return element.getAttribute("display") === "block" ? `\n\\[\n${tex}\n\\]\n` : `$${tex}$`;
+    // TeX that could leave its formula (or read files) is pasted as the text it shows.
+    if (tex) {
+      const shown = element.cloneNode(true) as HTMLElement;
+      for (const hidden of Array.from(shown.querySelectorAll("annotation, annotation-xml, .katex-mathml"))) hidden.remove();
+      return escapeLatexText((shown.textContent ?? "").replace(/[ \t\r\n]+/g, " "));
+    }
   }
   if (tag === "BR") return context.pre ? "\n" : "\\\\\n";
   const children = () => Array.from(element.childNodes).map((child) => inline(child, context)).join("");
@@ -99,7 +143,7 @@ function inline(node: Node, context: Context): string {
       const href = element.getAttribute("href") ?? "";
       const text = children();
       if (/^(?:https?:|mailto:)/i.test(href)) {
-        const url = href.replace(/[%#]/g, (char) => `\\${char}`);
+        const url = latexUrl(href);
         content = text.trim() && (element.textContent ?? "").trim() !== href ? `\\href{${url}}{${text}}` : `\\url{${url}}`;
       } else content = text;
       break;
@@ -126,7 +170,12 @@ function block(element: HTMLElement, context: Context): string[] {
     case "H3": return [wrap("subsubsection", inline(element, context).trim())];
     case "H4": case "H5": case "H6": return [wrap("paragraph", inline(element, context).trim())];
     case "HR": return [];
-    case "PRE": return [`\\begin{verbatim}\n${(element.textContent ?? "").replace(/\n$/, "")}\n\\end{verbatim}`];
+    case "PRE": {
+      const code = (element.textContent ?? "").replace(/\n$/, "");
+      // Text that would end the verbatim block early is pasted as escaped lines instead.
+      if (!/\\end\s*\{verbatim\}/.test(code)) return [`\\begin{verbatim}\n${code}\n\\end{verbatim}`];
+      return [code.split("\n").map((line) => `\\texttt{${escapeLatexText(line)}}`).join("\\\\\n")];
+    }
     case "BLOCKQUOTE": {
       const inner = blocks(element, context).join("\n\n");
       return inner.trim() ? [`\\begin{quote}\n${inner}\n\\end{quote}`] : [];
