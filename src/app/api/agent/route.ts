@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { NextRequest } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
-import { getAiChatCustomInstruction, getAiChatModels, getAiFunctionOptions } from "@/lib/ai-preferences";
+import { getAiChatModels, getAiCustomInstruction, getAiFunctionOptions, getDefinitionsOptions } from "@/lib/ai-preferences";
 import { isChatReasoningEffort, validateChatMessages } from "@/lib/document-chat";
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
 import { isCollabEnabled, listProjects } from "@/lib/collab/host-client";
@@ -16,6 +16,7 @@ import { buildAgentEnvironment, buildAgentSystemPrompt } from "@/lib/agent/promp
 import { DEFAULT_RUN_LIMITS, runAgent } from "@/lib/agent/runner";
 import { RunSnapshots } from "@/lib/agent/snapshots";
 import { AGENT_SKILLS } from "@/lib/agent/skills";
+import { DEFINITIONS_SKILL } from "@/lib/agent/skills/extract-definitions";
 import { toolsForPermission, type ToolContext } from "@/lib/agent/tools";
 import { isAgentPermission, type AgentEvent } from "@/lib/agent/types";
 
@@ -120,7 +121,9 @@ export async function POST(request: NextRequest) {
   const preloadedSkill = AGENT_SKILLS.find((skill) => skill.name === body.skill);
 
   const options = getAiFunctionOptions("chat");
-  const model = body.model === undefined ? options.model : body.model;
+  // Preferences → AI → Generate Definitions, when set, wins over the AI panel's choice.
+  const definitions = preloadedSkill?.name === DEFINITIONS_SKILL ? getDefinitionsOptions() : null;
+  const model = definitions?.model || (body.model === undefined ? options.model : body.model);
   if (typeof model !== "string" || !getAiChatModels().includes(model)) return jsonError("Invalid chat model.", 400);
 
   const permission = body.permission;
@@ -169,7 +172,7 @@ export async function POST(request: NextRequest) {
   const system = buildAgentSystemPrompt({
     permission,
     mathInstruction: mathMarkerSystemInstruction(getConfiguredMarkdownPreferences()),
-    customInstruction: getAiChatCustomInstruction(),
+    customInstruction: getAiCustomInstruction("chat"),
     skills: AGENT_SKILLS,
   });
   const loadedSkills = new Set<string>();
@@ -185,17 +188,21 @@ ${unavailable}
 </skill>`;
     else {
       loadedSkills.add(preloadedSkill.name);
+      const skillInstruction = definitions ? getAiCustomInstruction("definitions").trim() : "";
       newest = `${environment}
 
 <skill name="${preloadedSkill.name}" loaded="true">
 The user started this request from a button that loaded this skill. Follow it; its tools are available.
 
-${preloadedSkill.instructions.trim()}
+${preloadedSkill.instructions.trim()}${skillInstruction ? `
+
+User-configured custom instructions for this skill:
+${skillInstruction}` : ""}
 </skill>`;
     }
   }
   const conversation = agentConversation(body.messages, newest, (filePath) => fileExists.get(filePath) === true);
-  const reasoningEffort = body.reasoningEffort ?? options.reasoning.effort;
+  const reasoningEffort = definitions?.reasoningEffort || (body.reasoningEffort ?? options.reasoning.effort);
   const sessionId = body.sessionId as string | undefined;
   const runId = randomUUID();
 

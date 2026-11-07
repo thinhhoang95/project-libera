@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
-import { getAiFunctionOptions } from "@/lib/ai-preferences";
+import { getAiFunctionOptions, withAiCustomInstruction } from "@/lib/ai-preferences";
 import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
 import { getMarkdownImageAssetBySource, toStorageError } from "@/lib/storage";
 
@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
     const markdown = await createOpenRouterMarkdownCompletion([
       {
         role: "system",
-        content: await readSystemPrompt(),
+        content: withAiCustomInstruction(await readSystemPrompt(), "imageToMarkdown"),
       },
       {
         role: "user",

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { AiReasoningEffort } from "@/lib/ai-preferences";
 import { extractFigurePlaceholders, type MarkdownHeading } from "@/lib/document-ocr/markdown-pages";
 import { mathMarkerSystemInstruction, type MathMarkerSettings } from "@/lib/math-markers";
+import { withAiCustomInstruction } from "@/lib/ai-preferences";
 import { createOpenRouterCompletion, getOpenRouterApiKey, normalizeMarkdownOutput } from "@/lib/openrouter";
 import { getOpenRouterRouting } from "@/lib/openrouter-routing";
 
@@ -84,7 +85,7 @@ export async function readPageWithOpenRouter(
     signal?.throwIfAborted();
     try {
       const result = await createOpenRouterCompletion([
-        { role: "system", content: pageSystemPrompt(mathMarkers) },
+        { role: "system", content: withAiCustomInstruction(pageSystemPrompt(mathMarkers), "pdfToMarkdown") },
         { role: "user", content: [{ type: "text", text: `Transcribe page ${page.pageNumber}.` }, attachment] },
       ], { model: settings.model, reasoning: { effort: settings.reasoningEffort }, provider: getOpenRouterRouting("pdfToMarkdown"), maxTokens: 16_000, signal });
       const markdown = normalizeMarkdownOutput(result.content.trim()).replace(/\[\^PAGE-/g, `[^${page.pageNumber}-`);

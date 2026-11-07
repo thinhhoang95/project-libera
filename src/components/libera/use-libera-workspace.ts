@@ -90,6 +90,7 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 // Snips are read at the model's own page scale (up to four 512 px tiles across).
 const SNIP_MAX_EDGE = 2048;
 import { readIncludeDocumentContext } from "./ai-document-context-preference";
+import { aiTaskRequestOptions } from "./ai-model-picker";
 import { aiEditThreadFor, recordAiEditTurn, type AiEditThreadResult } from "./ai-edit-thread";
 import { latexDocumentTemplate } from "@/lib/latex/project";
 import type { AiFeature, Provenance } from "@/lib/collab/protocol/actor";
@@ -2580,7 +2581,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const payload = await apiRequest<{ formattedText: string }>("/api/ai-format", {
         method: "POST",
         signal: controller.signal,
-        body: JSON.stringify({ text: selectedText }),
+        body: JSON.stringify({ text: selectedText, ...aiTaskRequestOptions("formatting") }),
       });
       if (controller.signal.aborted) return;
       const nextDraft = `${draft.slice(0, selection.start)}${payload.formattedText}${draft.slice(
@@ -2646,6 +2647,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         method: "POST",
         signal: controller.signal,
         body: JSON.stringify({
+          ...aiTaskRequestOptions("rewrite"),
           text: selectedText,
           prompt,
           ...(includeDocument
@@ -2711,6 +2713,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         method: "POST",
         signal: controller.signal,
         body: JSON.stringify({
+          ...aiTaskRequestOptions("write"),
           prompt,
           ...(includeDocument ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
           thread,

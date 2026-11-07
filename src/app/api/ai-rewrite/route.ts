@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as { prompt?: string; text?: string; before?: string; after?: string; format?: string; thread?: unknown };
+    const body = (await request.json()) as { prompt?: string; text?: string; before?: string; after?: string; format?: string; thread?: unknown; model?: unknown; reasoningEffort?: unknown };
     const text = body.text ?? "";
     const prompt = body.prompt?.trim() ?? "";
 

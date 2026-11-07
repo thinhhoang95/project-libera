@@ -24,6 +24,7 @@ import { agentReviewStore } from "@/lib/agent-review/store";
 import { AiPanelGlow } from "./ai-activity-ui";
 import { combinedMacroScope, macroScopeKey, type MarkdownMacroScope } from "@/lib/markdown-macros";
 import { PythonSetupStatus } from "./python-setup-status";
+import { ChatReasoningSelect } from "./chat-reasoning-select";
 import { ChatTokenUsage } from "./chat-token-usage";
 import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
@@ -34,7 +35,7 @@ import { popupReferenceMenu, type ReferenceMenuItem } from "./references/native-
 import { filterGalleryChatPhotos, galleryPhotoIdFromSource } from "@/lib/document-chat";
 import { agentWriteOverlap, agentWriteScope, type AgentWriteScope } from "./agent-write-scope";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
-import { CHAT_QUOTE_EVENT, CHAT_REASONING_EFFORTS, chatHasPhotoSource, type ChatQuoteDetail, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, normalizeChatResponseMarkdown, sentDocumentExcerpts, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
+import { CHAT_QUOTE_EVENT, chatHasPhotoSource, type ChatQuoteDetail, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, normalizeChatResponseMarkdown, sentDocumentExcerpts, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 import { documentExcerpt, documentPageCount, documentWindowSent, pagesForDrag, pagesPosition, wordAt, wordStarts, type ReaderPosition } from "@/lib/document-excerpt";
 import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentReviewRevertResult, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
 import { useIsSharedNotebook } from "@/lib/collab/ui/shared-notebook-hook";
@@ -1659,12 +1660,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }), false)}
             commentTargets={commentTargets} onAttachComments={attachComments}
             onSend={() => void send()} onAttachFile={(file) => attachFile(file)} />
-          <div className="libera-chat-composer-actions flex items-center justify-end"><div className="flex w-full items-center gap-1"><select
-            aria-label="Reasoning effort" title="Reasoning effort"
-            className="w-auto max-w-24 cursor-pointer appearance-none border-0 bg-transparent px-1 py-2 text-xs text-muted-foreground shadow-none outline-none focus-visible:underline"
-            value={chat?.reasoningEffort ?? defaultReasoningEffort} disabled={!chat}
-            onChange={(event) => { const effort = event.target.value; if (chat && isChatReasoningEffort(effort)) updateChat(chat.id, (current) => ({ ...current, reasoningEffort: effort })); }}
-          >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || pending} aria-haspopup="menu" onClick={(event) => void openAttachMenu(event.currentTarget)}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => { if (chat) requestsRef.current.get(chat.id)?.abort(); }}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length && !pendingPhoto)}><ArrowUp size={18} /></button>}</div></div>
+          <div className="libera-chat-composer-actions flex items-center justify-end"><div className="flex w-full items-center gap-1"><ChatReasoningSelect value={chat?.reasoningEffort ?? defaultReasoningEffort} disabled={!chat} onChange={(effort) => { if (chat) updateChat(chat.id, (current) => ({ ...current, reasoningEffort: effort })); }} /><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || pending} aria-haspopup="menu" onClick={(event) => void openAttachMenu(event.currentTarget)}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => { if (chat) requestsRef.current.get(chat.id)?.abort(); }}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length && !pendingPhoto)}><ArrowUp size={18} /></button>}</div></div>
           </div>
           {chat && <ChatTokenUsage chat={chat} model={model} models={models} onModelChange={changeModel} />}
         </form>

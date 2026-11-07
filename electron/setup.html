@@ -7,7 +7,7 @@
       content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Set Up Libera for Vy Tran</title>
+    <title>Set Up Libera Editor</title>
     <script>
       document.documentElement.dataset.presentation =
         new URLSearchParams(window.location.search).get("presentation") || "window";
@@ -107,6 +107,8 @@
         min-height: 0;
         overflow-y: auto;
         padding: 24px 28px;
+        /* Holds .visually-hidden labels, which would otherwise make the whole window scroll. */
+        position: relative;
       }
 
       .settings-section h2 {
@@ -397,6 +399,73 @@
         .ai-routing-all { align-items: stretch; flex-direction: column; }
         .routing-body { padding: 0 16px 16px; }
       }
+      /* Preferences → AI: the jump bar, the Model Pool and custom system prompts */
+      .ai-jump { background: var(--dialog-surface, #fff); display: flex; flex-wrap: wrap; gap: 2px; margin: 0 -4px 12px; padding: 4px; position: sticky; top: -20px; z-index: 5; }
+      .libera-dialog .ai-jump button { background: none; border: 0; border-radius: 999px; color: var(--muted-foreground, #71717a); cursor: pointer; font-size: 12px; font-weight: 600; padding: 4px 10px; }
+      .libera-dialog .ai-jump button:hover { background: var(--muted, #f4f4f5); color: var(--foreground, #18181b); }
+      .ai-part { border-top: 1px solid var(--border, #e4e4e7); margin-top: 28px; padding-top: 20px; scroll-margin-top: 44px; }
+      .settings-section .ai-part h3 { font-size: 15px; margin: 0 0 2px; }
+      .ai-part .field-help { margin: 0 0 4px; }
+      .ai-part + .ai-group-title { margin-top: 14px !important; }
+      .ai-part + .ai-overview { margin-top: 14px; }
+      .ai-group-title { scroll-margin-top: 44px; }
+      .model-pool { background: var(--dialog-surface, #fff); border: 1px solid var(--border, #e4e4e7); border-radius: 14px; padding: 16px; scroll-margin-top: 44px; }
+      .model-pool .ai-panel-head { margin-bottom: 12px; }
+      .model-pool-count { background: var(--muted, #f4f4f5); border-radius: 999px; color: var(--muted-foreground, #71717a); font-size: 11px; font-weight: 600; margin-left: 6px; padding: 1px 7px; }
+      .model-pool-list { border: 1px solid var(--border, #e4e4e7); border-radius: 10px; list-style: none; margin: 0; max-height: 300px; overflow-y: auto; padding: 0; scrollbar-width: thin; }
+      .model-pool-row { align-items: center; display: grid; gap: 1px 10px; grid-template-columns: minmax(0, 1fr) auto auto; min-height: 44px; padding: 6px 6px 6px 12px; }
+      .model-pool-row + .model-pool-row { border-top: 1px solid var(--border, #e4e4e7); }
+      .model-pool-name { align-items: center; display: flex; gap: 6px; grid-column: 1; min-width: 0; }
+      .model-pool-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .model-pool-badge { background: color-mix(in srgb, #16a34a 14%, transparent); border-radius: 999px; color: #15803d; flex: 0 0 auto; font-size: 10px; font-weight: 700; letter-spacing: 0.02em; padding: 1px 6px; }
+      :root[data-theme="dark"] .model-pool-badge { color: #86efac; }
+      .model-pool-meta { color: var(--muted-foreground, #71717a); font-size: 11px; grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .model-pool-meta[data-warning="true"] { color: #b45309; }
+      :root[data-theme="dark"] .model-pool-meta[data-warning="true"] { color: #fbbf24; }
+      .model-pool-uses { display: flex; flex-wrap: wrap; gap: 3px; grid-column: 2; grid-row: 1 / span 2; justify-content: flex-end; max-width: 190px; }
+      .model-pool-use { background: color-mix(in srgb, var(--accent, #2563eb) 11%, transparent); border-radius: 999px; color: var(--accent, #2563eb); font-size: 10.5px; font-weight: 600; padding: 1px 7px; white-space: nowrap; }
+      .libera-dialog .model-pool-remove { align-items: center; background: none; border: 0; border-radius: 8px; color: var(--muted-foreground, #71717a); cursor: pointer; display: inline-flex; grid-column: 3; grid-row: 1 / span 2; height: 28px; justify-content: center; padding: 0; width: 28px; }
+      .libera-dialog .model-pool-remove:hover:not(:disabled) { background: var(--muted, #f4f4f5); color: #dc2626; }
+      .libera-dialog .model-pool-remove:disabled { cursor: default; opacity: 0.35; }
+      .model-pool-empty { color: var(--muted-foreground, #71717a); font-size: 12px; padding: 14px; text-align: center; }
+      .model-pool-add { margin-top: 10px; }
+      .model-pool-add input { font-size: 13px; padding: 8px 10px; }
+      .model-pool .model-catalog-status { margin-top: 10px; }
+      .ai-card-grid-pool { grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr)); }
+      .ai-prompt-state { background: color-mix(in srgb, var(--accent, #2563eb) 12%, transparent); border-radius: 999px; color: var(--accent, #2563eb); font-size: 10.5px; font-weight: 700; margin-left: 6px; padding: 1px 7px; }
+      .ai-prompt-state[hidden] { display: none; }
+      .ai-system-prompt textarea { font-size: 13px; min-height: 84px; }
+      .ai-system-prompt .textarea-actions { margin-top: 8px; }
+      /* Preferences → Local LLMs */
+      .nav-subitem { font-size: 12.5px; margin-left: 12px; padding-bottom: 7px; padding-top: 7px; width: calc(100% - 12px); }
+      .local-llm-toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+      .local-llm-list { display: grid; gap: 12px; }
+      .local-llm-header { align-items: center; display: flex; gap: 9px; margin-bottom: 12px; }
+      .quick-prompt-slash.local-llm-prefix { flex: 0 0 auto; font-size: 12.5px; padding: 0 10px; }
+      .local-llm-state { background: var(--muted, #f4f4f5); border-radius: 999px; color: var(--muted-foreground, #71717a); flex: 0 0 auto; font-size: 11px; font-weight: 600; padding: 2px 9px; white-space: nowrap; }
+      .local-llm-state[data-state="ok"] { background: color-mix(in srgb, #16a34a 14%, transparent); color: #15803d; }
+      .local-llm-state[data-state="error"] { background: #fef2f2; color: #b91c1c; }
+      :root[data-theme="dark"] .local-llm-state[data-state="ok"] { color: #86efac; }
+      :root[data-theme="dark"] .local-llm-state[data-state="error"] { background: color-mix(in srgb, #ef4444 16%, transparent); color: #fca5a5; }
+      .local-llm-presets { background: var(--muted, #f4f4f5); border-radius: 10px; display: grid; gap: 3px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; padding: 3px; }
+      .libera-dialog .local-llm-presets button { background: transparent; border: 0; border-radius: 8px; color: var(--muted-foreground, #71717a); cursor: pointer; font-size: 12.5px; font-weight: 600; min-width: 0; overflow: hidden; padding: 6px 4px; text-overflow: ellipsis; white-space: nowrap; }
+      .libera-dialog .local-llm-presets button[aria-checked="true"] { background: var(--dialog-surface, #fff); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); color: var(--foreground, #18181b); }
+      .local-llm-presets button:focus-visible { outline: 2px solid var(--ring, #2563eb); outline-offset: 2px; }
+      .local-llm-optional { color: var(--muted-foreground, #71717a); font-weight: 400; }
+      .local-llm-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+      .local-llm-actions button { padding: 7px 12px; }
+      .local-llm-result { border-radius: 8px; font-size: 12px; line-height: 1.45; margin: 10px 0 0; padding: 8px 10px; }
+      .local-llm-result[hidden] { display: none; }
+      .local-llm-result[data-state="ok"] { background: color-mix(in srgb, #16a34a 10%, transparent); }
+      .local-llm-result[data-state="error"] { background: #fef2f2; color: #b91c1c; }
+      .local-llm-result[data-state="testing"] { background: var(--muted, #f4f4f5); }
+      :root[data-theme="dark"] .local-llm-result[data-state="error"] { background: color-mix(in srgb, #ef4444 16%, transparent); color: #fca5a5; }
+      .local-llm-notes { color: var(--muted-foreground, #71717a); font-size: 12px; line-height: 1.5; margin: 14px 0 0; padding-left: 18px; }
+      .local-llm-notes li + li { margin-top: 3px; }
+      @media (max-width: 600px) {
+        .ai-card-grid-pool, .local-llm-presets { grid-template-columns: 1fr; }
+        .model-pool-uses { display: none; }
+      }
       .quick-prompts-settings { border-top: 1px solid var(--border, #e4e4e7); margin-top: 26px; padding-top: 24px; }
       .quick-prompts-header { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
       .quick-prompts-heading { align-items: center; display: flex; gap: 9px; }
@@ -593,9 +662,9 @@
       <form id="setup-form" class="libera-dialog" aria-labelledby="form-title">
         <div class="dialog-header libera-dialog-header">
           <div>
-            <h1 id="form-title" class="libera-dialog-title">Set Up Libera for Vy Tran</h1>
+            <h1 id="form-title" class="libera-dialog-title">Set Up Libera Editor</h1>
             <p id="form-description" class="libera-dialog-description">
-              Choose the fixed Libera for Vy Tran Master directory, enter the required API key,
+              Choose the fixed Libera Editor Master directory, enter the required API key,
               and create the master password used by the app login screen.
             </p>
           </div>
@@ -619,6 +688,7 @@
               aria-selected="false"
             ><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg><span>Markdown</span></button>
             <button class="nav-item" data-section-button="ai" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg><span>AI</span></button>
+            <button class="nav-item nav-subitem" data-section-button="local-llms" type="button" aria-selected="false"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></svg><span>Local LLMs</span></button>
             <button class="nav-item" data-section-button="search" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span>Search</span></button>
             <button class="nav-item" data-section-button="speech" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg><span>Speech</span></button>
             <button class="nav-item" data-section-button="read-aloud" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></svg><span>Read Aloud</span></button>
@@ -694,7 +764,7 @@
                     <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></span>
                     <div class="ai-card-title"><h4>Master directory</h4><p>Where your notebooks live.</p></div>
                   </header>
-                  <label for="data-dir">Libera for Vy Tran Master directory</label>
+                  <label for="data-dir">Libera Editor Master directory</label>
                   <div class="directory-row">
                     <input id="data-dir" autocomplete="off" readonly />
                     <button id="browse-button" class="secondary" type="button">Choose</button>
@@ -719,7 +789,7 @@
                     <div class="ai-field"><label for="password-confirmation">Confirm master password</label><input id="password-confirmation" autocomplete="new-password" type="password" /></div>
                   </div>
                   <div id="password-locked" class="password-locked-row hidden">
-                    <div class="locked">A master password is already configured. The login screen will ask for it every time Libera for Vy Tran starts.</div>
+                    <div class="locked">A master password is already configured. The login screen will ask for it every time Libera Editor starts.</div>
                     <button id="change-password-button" class="secondary" type="button">Change password</button>
                   </div>
                   <div id="change-password-fields" class="hidden">
@@ -728,7 +798,7 @@
                       <div class="ai-field"><label for="new-password">New master password</label><input id="new-password" autocomplete="new-password" type="password" /></div>
                       <div class="ai-field"><label for="new-password-confirmation">Confirm new master password</label><input id="new-password-confirmation" autocomplete="new-password" type="password" /></div>
                     </div>
-                    <p class="field-help">Password changes are applied after restarting Libera for Vy Tran.</p>
+                    <p class="field-help">Password changes are applied after restarting Libera Editor.</p>
                   </div>
                 </article>
               </div>
@@ -736,57 +806,38 @@
 
             <section class="settings-section hidden ai-settings card-settings" data-section="ai">
               <h2>AI</h2>
-              <p class="settings-section-description">Choose a model, reasoning effort, prompt caching and OpenRouter routing for each function. Settings are saved across app restarts.</p>
+              <p class="settings-section-description">Build one pool of models, then choose what each feature starts with, how hard it reasons and what it is told. Settings are saved across app restarts.</p>
 
-              <div class="ai-overview">
-                <div class="ai-panel" id="ai-all-models-settings">
-                  <div class="ai-panel-head">
-                    <span class="ai-panel-icon" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></span>
-                    <div>
-                      <h3>Apply to every function</h3>
-                      <p class="field-help">Set one model or one routing strategy everywhere, then fine-tune any function below.</p>
-                    </div>
-                  </div>
-                  <label for="ai-all-models">Model</label>
-                  <div class="model-apply-row">
-                    <input id="ai-all-models" type="text" autocomplete="off" spellcheck="false" placeholder="Search OpenRouter models…" />
-                    <button id="ai-all-models-apply" class="secondary" type="button">Use for all</button>
-                  </div>
-                  <p id="ai-all-models-help" class="field-help" aria-live="polite">Fills in the fallback model and every model below, including References and Where Was I. AI Chat’s alternative models stay as they are. Change any one afterwards, then save preferences.</p>
-                  <div class="ai-routing-all">
-                    <div class="ai-routing-all-text">
-                      <span class="ai-field-label">OpenRouter routing</span>
-                      <p id="ai-routing-summary" class="field-help" aria-live="polite">Cheapest provider for every function.</p>
-                    </div>
-                    <button id="ai-routing-all" class="secondary routing-all-button" type="button" aria-haspopup="dialog">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
-                      Routing for all…
-                    </button>
+              <nav class="ai-jump" aria-label="AI settings">
+                <button type="button" data-ai-jump="#ai-model-pool">Model Pool</button>
+                <button type="button" data-ai-jump="#ai-pool-features">Pool features</button>
+                <button type="button" data-ai-jump="#ai-other-features">Other features</button>
+                <button type="button" data-ai-jump="#ai-all-functions">All functions</button>
+                <button type="button" data-ai-jump="#ai-quick-prompts">Quick Prompts</button>
+              </nav>
+
+              <section class="model-pool" id="ai-model-pool" aria-labelledby="model-pool-title">
+                <div class="ai-panel-head">
+                  <span class="ai-panel-icon" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></span>
+                  <div>
+                    <h3 id="model-pool-title">Model Pool<span id="model-pool-count" class="model-pool-count"></span></h3>
+                    <p class="field-help">One shared list for AI Formatting, AI Rewrite, Write with AI, AI Chat and the Agent, Agentic Review and Generate Definitions. Each one picks its default below, and you can switch to any model here from the chat panel or an editor’s right-click menu.</p>
                   </div>
                 </div>
-
-                <div class="ai-panel ai-panel-compact">
-                  <label for="openrouter-model">Fallback OpenRouter model</label>
-                  <input id="openrouter-model" autocomplete="off" spellcheck="false" type="text" />
-                  <p class="field-help">Used only when a non-LaTeX function-specific model is unavailable. LaTeX/PDF keeps its own fallback.</p>
-                  <div class="model-catalog-status">
-                    <p id="model-catalog-status" class="field-help" aria-live="polite">Model suggestions are loaded from OpenRouter and cached for a day.</p>
-                    <button id="model-catalog-refresh" class="model-catalog-refresh" type="button">Refresh model list</button>
-                  </div>
-                  <details class="ai-note">
-                    <summary>About prompt caching</summary>
-                    <p class="field-help">Enabled routes only to caching-capable providers and adds explicit cache breakpoints where supported, including Gemini. Cache writes may cost extra and expire; repeated context is needed for savings. Disabled removes cache breakpoints and routing restrictions, but providers may still cache automatically. With caching on, routing still applies among the caching providers.</p>
-                  </details>
+                <ul id="model-pool-list" class="model-pool-list"></ul>
+                <div class="model-pool-add">
+                  <input id="model-pool-picker" type="text" autocomplete="off" spellcheck="false" aria-label="Add a model to the pool" placeholder="Add a model: search OpenRouter, or type local/alias…" />
                 </div>
-
-                <div class="spending-card" id="spending-card">
-                  <span class="spending-card-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 13H7"/><path d="M19 9h-4"/><path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="15" y="5" width="4" height="12" rx="1"/><rect x="7" y="8" width="4" height="9" rx="1"/></svg></span>
-                  <div class="spending-card-text">
-                    <strong>Spending</strong>
-                    <p class="field-help">Token use and cost of every OpenRouter request Libera makes, by period, model, and input, output, or cache.</p>
-                  </div>
-                  <button id="open-spending" class="secondary" type="button">View spending</button>
+                <div class="model-catalog-status">
+                  <p id="model-catalog-status" class="field-help" aria-live="polite">Model suggestions are loaded from OpenRouter and cached for a day.</p>
+                  <button id="model-catalog-refresh" class="model-catalog-refresh" type="button">Refresh model list</button>
+                  <button id="model-pool-local-link" class="model-catalog-refresh" type="button">Set up local LLMs</button>
                 </div>
+              </section>
+
+              <div class="ai-part" id="ai-pool-features">
+                <h3>Pool features</h3>
+                <p class="field-help">Choose what each feature starts with. The list follows the Model Pool above.</p>
               </div>
 
               <h3 class="ai-group-title">Writing and editing</h3>
@@ -796,8 +847,8 @@
                     <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span>
                     <div class="ai-card-title"><h4>AI Formatting</h4><p>Tidies the formatting of selected Markdown or LaTeX.</p></div>
                   </header>
-                  <div class="ai-card-grid">
-                    <div class="ai-field ai-field-wide"><label for="ai-formatting-model">Model</label><input id="ai-formatting-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                  <div class="ai-card-grid ai-card-grid-pool">
+                    <div class="ai-field"><label for="ai-formatting-model">Default model</label><select id="ai-formatting-model"></select></div>
                     <div class="ai-field"><label for="ai-formatting-effort">Reasoning effort</label>
                       <select id="ai-formatting-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
                     <div class="ai-field"><label for="ai-formatting-caching">Prompt caching</label>
@@ -810,31 +861,22 @@
                     <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.38 3.62a1 1 0 0 1 3 3L7.37 18.64a2 2 0 0 1-.86.5l-2.87.84a.5.5 0 0 1-.62-.62l.84-2.87a2 2 0 0 1 .5-.86z"/></svg></span>
                     <div class="ai-card-title"><h4>AI Rewrite</h4><p>Rewrites a selection the way you ask.</p></div>
                   </header>
-                  <div class="ai-card-grid">
-                    <div class="ai-field ai-field-wide"><label for="ai-rewrite-model">Model</label><input id="ai-rewrite-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                  <div class="ai-card-grid ai-card-grid-pool">
+                    <div class="ai-field"><label for="ai-rewrite-model">Default model</label><select id="ai-rewrite-model"></select></div>
                     <div class="ai-field"><label for="ai-rewrite-effort">Reasoning effort</label>
                       <select id="ai-rewrite-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
                     <div class="ai-field"><label for="ai-rewrite-caching">Prompt caching</label>
                       <select id="ai-rewrite-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
                   </div>
-                  <details class="ai-card-more">
-                    <summary>Custom instruction</summary>
-                    <label class="visually-hidden" for="ai-rewrite-custom-instruction">Custom instruction</label>
-                    <textarea id="ai-rewrite-custom-instruction" autocomplete="off" placeholder="Add instructions that should apply to every AI Rewrite and Write with AI request." spellcheck="true"></textarea>
-                    <div class="textarea-actions">
-                      <p id="ai-rewrite-instruction-help" class="field-help">Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.</p>
-                      <button id="load-ai-rewrite-instruction-button" class="secondary" type="button">Load from file</button>
-                    </div>
-                  </details>
                 </article>
 
                 <article class="ai-card" data-ai-function="write">
                   <header class="ai-card-header">
                     <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.94 14.06 2 22"/><path d="m18 2 4 4-9.5 9.5a2 2 0 0 1-1.42.59H8v-3.08a2 2 0 0 1 .59-1.42Z"/><path d="M14 6l4 4"/></svg></span>
-                    <div class="ai-card-title"><h4>Write with AI</h4><p>Writes new text from a prompt. Uses AI Rewrite’s custom instruction.</p></div>
+                    <div class="ai-card-title"><h4>Write with AI</h4><p>Writes new text from a prompt.</p></div>
                   </header>
-                  <div class="ai-card-grid">
-                    <div class="ai-field ai-field-wide"><label for="ai-write-model">Model</label><input id="ai-write-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                  <div class="ai-card-grid ai-card-grid-pool">
+                    <div class="ai-field"><label for="ai-write-model">Default model</label><select id="ai-write-model"></select></div>
                     <div class="ai-field"><label for="ai-write-effort">Reasoning effort</label>
                       <select id="ai-write-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
                     <div class="ai-field"><label for="ai-write-caching">Prompt caching</label>
@@ -843,37 +885,21 @@
                 </article>
               </div>
 
-              <h3 class="ai-group-title">Chat and review</h3>
+              <h3 class="ai-group-title">Chat, review and definitions</h3>
               <div class="ai-cards">
                 <article class="ai-card" data-ai-function="chat">
                   <header class="ai-card-header">
                     <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
-                    <div class="ai-card-title"><h4>AI Chat and AI Agent</h4><p>Answers questions about your documents and works on them as an agent. Both share this model and its alternatives.</p></div>
+                    <div class="ai-card-title"><h4>AI Chat and AI Agent</h4><p>Answers questions about your documents and works on them as an agent. The chat panel can switch to any pool model.</p></div>
                   </header>
-                  <div class="ai-card-grid">
-                    <div class="ai-field ai-field-wide"><label for="ai-chat-model">Model</label><input id="ai-chat-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                  <div class="ai-card-grid ai-card-grid-pool">
+                    <div class="ai-field"><label for="ai-chat-model">Default model</label><select id="ai-chat-model"></select></div>
                     <div class="ai-field"><label for="ai-chat-effort">Reasoning effort</label>
                       <select id="ai-chat-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
                     <div class="ai-field"><label for="ai-chat-caching">Prompt caching</label>
                       <select id="ai-chat-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
                   </div>
                   <p class="field-help">A chat’s own reasoning selection wins over the effort here.</p>
-                  <details class="ai-card-more">
-                    <summary>Alternative models</summary>
-                    <label class="visually-hidden" for="ai-chat-alternative-models">Alternative models</label>
-                    <textarea id="ai-chat-alternative-models" autocomplete="off" placeholder="anthropic/claude-sonnet-4.5&#10;google/gemini-3.5-pro" rows="3" spellcheck="false"></textarea>
-                    <input id="ai-chat-alternative-model-picker" class="model-picker-row" type="text" autocomplete="off" spellcheck="false" aria-label="Add an alternative model" placeholder="Search OpenRouter models to add…" />
-                    <p class="field-help">Optional. Offered in the chat panel’s model menu. Enter one OpenRouter model identifier per line, or search above to add one. Duplicate entries and the default AI Chat model are ignored.</p>
-                  </details>
-                  <details class="ai-card-more">
-                    <summary>Custom instruction</summary>
-                    <label class="visually-hidden" for="ai-chat-custom-instruction">Custom instruction</label>
-                    <textarea id="ai-chat-custom-instruction" autocomplete="off" placeholder="Add instructions that should apply to every AI Chat conversation." spellcheck="true"></textarea>
-                    <div class="textarea-actions">
-                      <p id="ai-chat-instruction-help" class="field-help">Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.</p>
-                      <button id="load-ai-chat-instruction-button" class="secondary" type="button">Load from file</button>
-                    </div>
-                  </details>
                 </article>
 
                 <article class="ai-card" data-ai-function="review">
@@ -881,14 +907,31 @@
                     <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="m9 10 2 2 4-4"/></svg></span>
                     <div class="ai-card-title"><h4>Agentic Review</h4><p>Plans and drafts changes that address a document’s comments.</p></div>
                   </header>
-                  <div class="ai-card-grid">
-                    <div class="ai-field ai-field-wide"><label for="ai-review-model">Model</label><input id="ai-review-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                  <div class="ai-card-grid ai-card-grid-pool">
+                    <div class="ai-field"><label for="ai-review-model">Default model</label><select id="ai-review-model"></select></div>
                     <div class="ai-field"><label for="ai-review-effort">Reasoning effort</label>
                       <select id="ai-review-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
                     <div class="ai-field"><label for="ai-review-caching">Prompt caching</label>
                       <select id="ai-review-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
                   </div>
                 </article>
+
+                <article class="ai-card" data-ai-card="definitions" id="definitions-settings">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg></span>
+                    <div class="ai-card-title"><h4>Generate Definitions</h4><p>The Agent run behind Generate definitions in the Definitions tab. It uses AI Chat’s routing. Changes apply without restarting.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="ai-definitions-model">Default model</label><select id="ai-definitions-model"></select></div>
+                    <div class="ai-field"><label for="ai-definitions-effort">Reasoning effort</label>
+                      <select id="ai-definitions-effort"><option value="">Same as the AI panel</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                  </div>
+                </article>
+              </div>
+
+              <div class="ai-part" id="ai-other-features">
+                <h3>Other features</h3>
+                <p class="field-help">These name their own model, outside the pool.</p>
               </div>
 
               <h3 class="ai-group-title">Conversion</h3>
@@ -1022,7 +1065,59 @@
                 </article>
               </div>
 
-              <div class="quick-prompts-settings" aria-labelledby="quick-prompts-title">
+              <div class="ai-part" id="ai-all-functions">
+                <h3>All functions</h3>
+                <p class="field-help">Settings that reach across every feature above.</p>
+              </div>
+
+              <div class="ai-overview">
+                <div class="ai-panel" id="ai-all-models-settings">
+                  <div class="ai-panel-head">
+                    <span class="ai-panel-icon" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></span>
+                    <div>
+                      <h3>Apply to every function</h3>
+                      <p class="field-help">Set one model or one routing strategy everywhere, then fine-tune any function above.</p>
+                    </div>
+                  </div>
+                  <label for="ai-all-models">Model</label>
+                  <div class="model-apply-row">
+                    <input id="ai-all-models" type="text" autocomplete="off" spellcheck="false" placeholder="Search OpenRouter models…" />
+                    <button id="ai-all-models-apply" class="secondary" type="button">Use for all</button>
+                  </div>
+                  <p id="ai-all-models-help" class="field-help" aria-live="polite">Fills in the fallback model and every model above, including References and Where Was I, and adds it to the Model Pool. Change any one afterwards, then save preferences.</p>
+                  <div class="ai-routing-all">
+                    <div class="ai-routing-all-text">
+                      <span class="ai-field-label">OpenRouter routing</span>
+                      <p id="ai-routing-summary" class="field-help" aria-live="polite">Cheapest provider for every function.</p>
+                    </div>
+                    <button id="ai-routing-all" class="secondary routing-all-button" type="button" aria-haspopup="dialog">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+                      Routing for all…
+                    </button>
+                  </div>
+                </div>
+
+                <div class="ai-panel ai-panel-compact">
+                  <label for="openrouter-model">Fallback OpenRouter model</label>
+                  <input id="openrouter-model" autocomplete="off" spellcheck="false" type="text" />
+                  <p class="field-help">Used only when a non-LaTeX function-specific model is unavailable. LaTeX/PDF keeps its own fallback.</p>
+                  <details class="ai-note">
+                    <summary>About prompt caching</summary>
+                    <p class="field-help">Enabled routes only to caching-capable providers and adds explicit cache breakpoints where supported, including Gemini. Cache writes may cost extra and expire; repeated context is needed for savings. Disabled removes cache breakpoints and routing restrictions, but providers may still cache automatically. With caching on, routing still applies among the caching providers.</p>
+                  </details>
+                </div>
+
+                <div class="spending-card" id="spending-card">
+                  <span class="spending-card-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 13H7"/><path d="M19 9h-4"/><path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="15" y="5" width="4" height="12" rx="1"/><rect x="7" y="8" width="4" height="9" rx="1"/></svg></span>
+                  <div class="spending-card-text">
+                    <strong>Spending</strong>
+                    <p class="field-help">Token use and cost of every OpenRouter request Libera makes, by period, model, and input, output, or cache.</p>
+                  </div>
+                  <button id="open-spending" class="secondary" type="button">View spending</button>
+                </div>
+              </div>
+
+              <div class="quick-prompts-settings" id="ai-quick-prompts" aria-labelledby="quick-prompts-title">
                 <div class="quick-prompts-header">
                   <div class="quick-prompts-heading">
                     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.6 4.4L6 9l4.4 1.6L12 15l1.6-4.4L18 9l-4.4-1.6L12 3Z"/><path d="m5 16-.9 2.1L2 19l2.1.9L5 22l.9-2.1L8 19l-2.1-.9L5 16Z"/><path d="m19 14-.7 1.3L17 16l1.3.7L19 18l.7-1.3L21 16l-1.3-.7L19 14Z"/></svg>
@@ -1054,6 +1149,56 @@
                     <span>Prompt template</span>
                     <textarea class="quick-prompt-text" maxlength="20000" placeholder="Summarize $1 in three concise bullet points." spellcheck="true" required></textarea>
                   </label>
+                </article>
+              </template>
+            </section>
+
+            <section class="settings-section hidden card-settings" data-section="local-llms">
+              <h2>Local LLMs</h2>
+              <p class="settings-section-description">Use models on this computer or your network through any OpenAI-compatible server. Give each one an alias, and <strong>local/alias</strong> works wherever a model is chosen, like an OpenRouter slug. Changes apply without restarting.</p>
+              <div class="local-llm-toolbar">
+                <button id="add-local-llm" class="secondary quick-prompts-add" type="button">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                  Add endpoint
+                </button>
+              </div>
+              <div id="local-llm-list" class="local-llm-list"></div>
+              <p id="local-llm-empty" class="quick-prompts-empty field-help">No local models yet. Add an endpoint to use Ollama, LM Studio, llama-server or any other OpenAI-compatible server.</p>
+              <ul class="local-llm-notes">
+                <li>Replies stream as they are written in AI Chat and the Agent. AI Format, AI Rewrite and Write with AI show the result when it is complete.</li>
+                <li>Reasoning effort, prompt caching and OpenRouter routing do not apply to local models.</li>
+                <li>Web search and Convert PDF to Markdown need an OpenRouter model, and Agent mode needs a model that can call tools.</li>
+              </ul>
+
+              <template id="local-llm-template">
+                <article class="ai-card local-llm-card">
+                  <header class="local-llm-header">
+                    <label class="quick-prompt-identifier-label">
+                      <span class="visually-hidden">Alias</span>
+                      <span class="quick-prompt-slash local-llm-prefix" aria-hidden="true">local/</span>
+                      <input class="local-llm-alias" type="text" autocomplete="off" spellcheck="false" maxlength="64" placeholder="myllm" />
+                    </label>
+                    <span class="local-llm-state" data-state="idle">Not tested</span>
+                    <button class="secondary quick-prompt-delete local-llm-delete" type="button" title="Remove endpoint" aria-label="Remove endpoint">
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 10v6M14 10v6" /></svg>
+                    </button>
+                  </header>
+                  <div class="local-llm-presets" role="radiogroup" aria-label="Server">
+                    <button type="button" role="radio" data-preset="ollama">Ollama</button>
+                    <button type="button" role="radio" data-preset="lmstudio">LM Studio</button>
+                    <button type="button" role="radio" data-preset="llamaserver">llama-server</button>
+                    <button type="button" role="radio" data-preset="custom">Custom</button>
+                  </div>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label class="local-llm-url-label">Base URL</label><input class="local-llm-url" type="url" autocomplete="off" spellcheck="false" placeholder="http://localhost:11434/v1" /></div>
+                    <div class="ai-field"><label class="local-llm-model-label">Model</label><input class="local-llm-model" type="text" autocomplete="off" spellcheck="false" placeholder="Choose or type a model" /></div>
+                    <div class="ai-field"><label class="local-llm-key-label">API key <span class="local-llm-optional">(optional)</span></label><input class="local-llm-key" type="password" autocomplete="off" spellcheck="false" /></div>
+                  </div>
+                  <div class="local-llm-actions">
+                    <button class="secondary local-llm-test" type="button">Test connection</button>
+                    <button class="secondary local-llm-pool" type="button">Add to Model Pool</button>
+                  </div>
+                  <p class="local-llm-result" role="status" hidden></p>
                 </article>
               </template>
             </section>
@@ -1486,7 +1631,7 @@
 
         <div class="libera-dialog-footer">
           <button id="close-button" class="secondary hidden" type="button">Close</button>
-          <button id="save-button" class="libera-dialog-primary" type="submit">Start Libera for Vy Tran</button>
+          <button id="save-button" class="libera-dialog-primary" type="submit">Start Libera Editor</button>
         </div>
       </form>
 
@@ -2201,13 +2346,10 @@
         concurrency: document.querySelector("#pdf-to-markdown-concurrency"),
         cleanup: document.querySelector("#pdf-to-markdown-cleanup"),
       };
-      const aiChatCustomInstructionInput = document.querySelector("#ai-chat-custom-instruction");
-      const aiChatAlternativeModelsInput = document.querySelector("#ai-chat-alternative-models");
-      const loadAiChatInstructionButton = document.querySelector("#load-ai-chat-instruction-button");
-      const aiChatInstructionHelp = document.querySelector("#ai-chat-instruction-help");
-      const aiRewriteCustomInstructionInput = document.querySelector("#ai-rewrite-custom-instruction");
-      const loadAiRewriteInstructionButton = document.querySelector("#load-ai-rewrite-instruction-button");
-      const aiRewriteInstructionHelp = document.querySelector("#ai-rewrite-instruction-help");
+      const definitionsInputs = {
+        model: document.querySelector("#ai-definitions-model"),
+        effort: document.querySelector("#ai-definitions-effort"),
+      };
       const quickPromptsList = document.querySelector("#quick-prompts-list");
       const quickPromptsEmpty = document.querySelector("#quick-prompts-empty");
       const quickPromptTemplate = document.querySelector("#quick-prompt-template");
@@ -2288,10 +2430,10 @@
       const configurationMode = setupMode === "configuration";
 
       if (configurationMode) {
-        document.title = "Libera for Vy Tran Preferences";
+        document.title = "Libera Editor Preferences";
         formTitle.textContent = "Preferences";
         formDescription.textContent =
-          "Change Libera for Vy Tran settings. Theme changes apply immediately when saved. Other changes apply after restarting Libera for Vy Tran.";
+          "Change Libera Editor settings. Theme changes apply immediately when saved. Other changes apply after restarting Libera Editor.";
         closeButton.classList.remove("hidden");
         headerCloseButton.classList.remove("hidden");
         document.querySelectorAll("[data-section-button].configuration-only").forEach((element) => {
@@ -2369,7 +2511,6 @@
 
       const modelCatalogStatus = document.querySelector("#model-catalog-status");
       const modelCatalogRefreshButton = document.querySelector("#model-catalog-refresh");
-      const aiChatAlternativeModelPicker = document.querySelector("#ai-chat-alternative-model-picker");
       let openRouterModels = [];
       let openRouterModelsPromise = null;
       let activeModelCombobox = null;
@@ -2412,6 +2553,7 @@
           .finally(() => {
             modelCatalogRefreshButton.disabled = false;
             activeModelCombobox?.render();
+            renderModelPool();
           });
         return openRouterModelsPromise;
       }
@@ -2468,7 +2610,7 @@
         return openRouterSpeechModelsPromise;
       }
 
-      function attachModelCombobox(input, { visionOnly = false, transcription = false, speech = false, onPick = null } = {}) {
+      function attachModelCombobox(input, { visionOnly = false, transcription = false, speech = false, onPick = null, source = null, onOpen = null, emptyText = "", localModels = true } = {}) {
         const list = document.createElement("ul");
         list.className = "model-suggestions";
         list.id = `${input.id}-suggestions`;
@@ -2487,11 +2629,13 @@
         function matches() {
           const query = showAll ? "" : input.value.trim().toLowerCase();
           const terms = query.split(/\s+/).filter(Boolean);
-          const pool = speech
+          const pool = source
+            ? source()
+            : speech
             ? openRouterSpeechModels
             : transcription
             ? openRouterTranscriptionModels
-            : visionOnly ? openRouterModels.filter((model) => model.vision) : openRouterModels;
+            : [...(localModels ? localModelSuggestions() : []), ...(visionOnly ? openRouterModels.filter((model) => model.vision) : openRouterModels)];
           const rank = (model) => {
             const id = model.id.toLowerCase();
             if (id === query) return 0;
@@ -2566,7 +2710,7 @@
           if (!found.length) {
             const empty = document.createElement("li");
             empty.className = "model-suggestions-empty";
-            empty.textContent = openRouterModels.length
+            empty.textContent = emptyText ? emptyText() : openRouterModels.length
               ? "No matching OpenRouter models. The typed ID will be used as entered."
               : openRouterModelsPromise ? "Loading OpenRouter models…" : "No model suggestions are available.";
             list.append(empty);
@@ -2582,7 +2726,8 @@
           list.hidden = false;
           input.setAttribute("aria-expanded", "true");
           render();
-          if (speech) loadOpenRouterSpeechModels();
+          if (onOpen) onOpen();
+          else if (speech) loadOpenRouterSpeechModels();
           else if (transcription) loadOpenRouterTranscriptionModels();
           else loadOpenRouterModels();
         }
@@ -2649,7 +2794,7 @@
           }
         });
 
-        const api = { close, render, position };
+        const api = { close, render, position, destroy() { close(); list.remove(); } };
         return api;
       }
 
@@ -2665,10 +2810,14 @@
           return;
         }
         const inputs = [openRouterModelInput, ...aiFunctionNames.map((name) => aiFunctionInputs[name].model), referenceInputs.model, whereWasIInputs.model, pdfToMarkdownInputs.model];
-        for (const input of inputs) input.value = model;
+        if (definitionsInputs.model.value) inputs.push(definitionsInputs.model);
+        for (const input of inputs) setModelValue(input, model);
+        renderModelPool();
+        updateLocalModelSettings();
         allModelsHelp.textContent = `Every model is now ${model}. Save preferences to keep it.`;
       });
-      for (const name of aiFunctionNames) {
+      // The pool's functions choose from a list; the rest name their own model.
+      for (const name of aiFunctionNames.filter((item) => aiFunctionInputs[item].model.tagName === "INPUT")) {
         attachModelCombobox(aiFunctionInputs[name].model, { visionOnly: name === "imageToMarkdown" });
       }
       attachModelCombobox(referenceInputs.model);
@@ -2678,11 +2827,12 @@
         whereWasIInputs.summarize.disabled = !whereWasIInputs.enabled.checked;
         const aiOff = !whereWasIInputs.enabled.checked || !whereWasIInputs.summarize.checked;
         whereWasIInputs.model.disabled = aiOff;
-        whereWasIInputs.effort.disabled = aiOff;
+        whereWasIInputs.effort.disabled = aiOff || isLocalSlug(whereWasIInputs.model.value.trim());
       }
       whereWasIInputs.enabled.addEventListener("change", updateWhereWasIInputs);
       whereWasIInputs.summarize.addEventListener("change", updateWhereWasIInputs);
-      attachModelCombobox(pdfToMarkdownInputs.model, { visionOnly: true });
+      // Pages go out as PDF files, which local servers cannot read.
+      attachModelCombobox(pdfToMarkdownInputs.model, { visionOnly: true, localModels: false });
       // The model settings only apply to the OpenRouter engine.
       function updatePdfToMarkdownInputs() {
         const local = pdfToMarkdownInputs.engine.value !== "openrouter";
@@ -2821,14 +2971,16 @@
         for (const [name, button] of Object.entries(routingButtons)) {
           const routing = routingByFunction[name];
           const summary = routingSummary(routing);
-          button.querySelector("span").textContent = routingPresetById[routingPresetOf(routing)].short;
-          button.dataset.custom = String(routingHasProviderRules(routing));
-          button.title = `Routing: ${summary}`;
+          const local = isLocalSlug(routingModel(name));
+          button.querySelector("span").textContent = local ? "Local" : routingPresetById[routingPresetOf(routing)].short;
+          button.dataset.custom = String(!local && routingHasProviderRules(routing));
+          button.title = local ? "Local models do not go through OpenRouter." : `Routing: ${summary}`;
           button.setAttribute("aria-label", `OpenRouter routing for ${routingLabels[name]}: ${summary}`);
         }
         // Routing only matters while the function sends requests to OpenRouter.
+        for (const [name, button] of Object.entries(routingButtons)) button.disabled = isLocalSlug(routingModel(name));
         routingButtons.pdfToMarkdown.disabled = pdfToMarkdownInputs.engine.value !== "openrouter";
-        routingButtons.whereWasI.disabled = whereWasIInputs.model.disabled;
+        routingButtons.whereWasI.disabled ||= whereWasIInputs.model.disabled;
         const counts = new Map();
         for (const [name] of routingFunctions) {
           const id = routingPresetOf(routingByFunction[name]);
@@ -3092,15 +3244,436 @@
       attachModelCombobox(transcriptionInputs.openRouterModel, { transcription: true });
       attachModelCombobox(dictationInputs.openRouterModel, { transcription: true });
       attachModelCombobox(ttsInputs.openRouterModel, { speech: true });
-      attachModelCombobox(aiChatAlternativeModelPicker, {
+
+      // Preferences → AI → Model Pool: the list the pool's functions and
+      // Generate Definitions choose from (see electron/ai-preferences.cjs).
+      const modelPoolList = document.querySelector("#model-pool-list");
+      const modelPoolCount = document.querySelector("#model-pool-count");
+      const modelPoolPicker = document.querySelector("#model-pool-picker");
+      const poolFunctionLabels = { formatting: "Format", rewrite: "Rewrite", write: "Write", chat: "Chat", review: "Review" };
+      const poolSelects = [...Object.keys(poolFunctionLabels).map((name) => aiFunctionInputs[name].model), definitionsInputs.model];
+      const removeModelIcon = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
+      let modelPool = [];
+
+      function isLocalSlug(model) {
+        return model.startsWith("local/");
+      }
+
+      /** Every field that can name a model, for checks and renames. */
+      function modelFields() {
+        return [
+          ...aiFunctionNames.map((name) => [routingLabels[name], aiFunctionInputs[name].model]),
+          ["Generate Definitions", definitionsInputs.model],
+          ["References", referenceInputs.model],
+          ["Where Was I", whereWasIInputs.model],
+          ["Convert PDF to Markdown", pdfToMarkdownInputs.model],
+          ["the fallback model", openRouterModelInput],
+        ];
+      }
+
+      function poolUsers(model) {
+        return [
+          ...Object.entries(poolFunctionLabels).filter(([name]) => aiFunctionInputs[name].model.value === model).map(([, label]) => label),
+          ...(definitionsInputs.model.value === model ? ["Definitions"] : []),
+        ];
+      }
+
+      function renderPoolSelects() {
+        for (const select of poolSelects) {
+          const value = select.value;
+          const definitions = select === definitionsInputs.model;
+          const options = modelPool.map((model) => new Option(model, model));
+          if (definitions) options.unshift(new Option("Same as the AI panel", ""));
+          select.replaceChildren(...options);
+          select.value = definitions || modelPool.includes(value) ? value : modelPool[0] ?? "";
+        }
+      }
+
+      function modelPoolMeta(model) {
+        if (isLocalSlug(model)) {
+          const endpoint = localLlmCards().map(readLocalLlm).find((item) => `local/${item.alias}` === model);
+          return endpoint
+            ? { text: [localLlmPresets[endpoint.preset].label, endpoint.model].filter(Boolean).join(" · ") }
+            : { text: "Not set up yet. Add this alias in Local LLMs.", warning: true };
+        }
+        const entry = openRouterModels.find((item) => item.id === model);
+        if (!entry) return { text: openRouterModels.length ? "Not in OpenRouter’s list; check the name." : "" , warning: openRouterModels.length > 0 };
+        return { text: [entry.name, formatContextLength(entry.contextLength), entry.vision ? "image input" : "", entry.price ? `${formatPrice(entry.price.prompt)} in, ${formatPrice(entry.price.completion)} out` : ""].filter(Boolean).join(" · ") };
+      }
+
+      function modelPoolRow(model) {
+        const row = document.createElement("li");
+        row.className = "model-pool-row";
+        const name = document.createElement("div");
+        name.className = "model-pool-name";
+        const id = document.createElement("span");
+        id.className = "model-pool-id";
+        id.textContent = model;
+        id.title = model;
+        name.append(id);
+        if (isLocalSlug(model)) {
+          const badge = document.createElement("span");
+          badge.className = "model-pool-badge";
+          badge.textContent = "Local";
+          name.append(badge);
+        }
+        const { text, warning } = modelPoolMeta(model);
+        const meta = document.createElement("span");
+        meta.className = "model-pool-meta";
+        meta.dataset.warning = String(!!warning);
+        meta.textContent = text;
+        meta.title = text;
+        const users = poolUsers(model);
+        const uses = document.createElement("div");
+        uses.className = "model-pool-uses";
+        uses.replaceChildren(...users.map((label) => {
+          const chip = document.createElement("span");
+          chip.className = "model-pool-use";
+          chip.textContent = label;
+          return chip;
+        }));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "model-pool-remove";
+        remove.innerHTML = removeModelIcon;
+        remove.disabled = users.length > 0;
+        remove.title = users.length ? `The default for ${users.join(", ")}. Choose another model there to remove it.` : "Remove from the pool";
+        remove.setAttribute("aria-label", `Remove ${model} from the pool`);
+        remove.addEventListener("click", () => {
+          modelPool = modelPool.filter((item) => item !== model);
+          renderModelPool();
+        });
+        row.append(name, ...(text ? [meta] : []), uses, remove);
+        return row;
+      }
+
+      function renderModelPool() {
+        renderPoolSelects();
+        modelPoolCount.textContent = String(modelPool.length);
+        if (modelPool.length) {
+          modelPoolList.replaceChildren(...modelPool.map(modelPoolRow));
+        } else {
+          const empty = document.createElement("li");
+          empty.className = "model-pool-empty";
+          empty.textContent = "The pool is empty. Add a model below.";
+          modelPoolList.replaceChildren(empty);
+        }
+        updateLocalLlmPoolButtons();
+      }
+
+      function addToModelPool(model) {
+        const slug = model.trim();
+        if (!slug || /\s/.test(slug) || modelPool.includes(slug)) return;
+        modelPool = [...modelPool, slug];
+        renderModelPool();
+      }
+
+      /** Pool selects only hold pool models, so a model set on one joins the pool. */
+      function setModelValue(input, value) {
+        if (input.tagName === "SELECT" && value) addToModelPool(value);
+        input.value = value;
+      }
+
+      /** Local models take no reasoning effort, prompt caching or routing. */
+      function updateLocalModelSettings() {
+        for (const name of aiFunctionNames) {
+          const local = isLocalSlug(aiFunctionInputs[name].model.value.trim());
+          aiFunctionInputs[name].effort.disabled = local;
+          aiFunctionInputs[name].caching.disabled = local;
+        }
+        const referencesLocal = isLocalSlug(referenceInputs.model.value.trim() || aiFunctionInputs.formatting.model.value.trim());
+        referenceInputs.effort.disabled = referencesLocal;
+        referenceInputs.caching.disabled = referencesLocal;
+        definitionsInputs.effort.disabled = isLocalSlug(definitionsInputs.model.value);
+        updateWhereWasIInputs();
+        updateRoutingButtons();
+      }
+
+      for (const select of poolSelects) {
+        select.addEventListener("change", () => {
+          renderModelPool();
+          updateLocalModelSettings();
+        });
+      }
+      for (const [, input] of modelFields()) {
+        if (input.tagName === "INPUT") input.addEventListener("change", updateLocalModelSettings);
+      }
+      attachModelCombobox(modelPoolPicker, {
         onPick(modelId) {
-          const models = aiChatAlternativeModelsInput.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-          if (!models.includes(modelId) && modelId !== aiFunctionInputs.chat.model.value.trim()) {
-            aiChatAlternativeModelsInput.value = [...models, modelId].join("\n");
-          }
-          aiChatAlternativeModelPicker.value = "";
+          addToModelPool(modelId);
+          modelPoolPicker.value = "";
         },
       });
+      document.querySelector("#model-pool-local-link").addEventListener("click", () => setActiveSection("local-llms"));
+      document.querySelectorAll("[data-ai-jump]").forEach((button) => {
+        button.addEventListener("click", () => document.querySelector(button.dataset.aiJump)?.scrollIntoView({ block: "start" }));
+      });
+
+      // Preferences → AI: a custom system prompt on every function's card.
+      // Libera adds it after its own instructions, which still set the output format.
+      const aiPromptFields = [
+        ["formatting", "AI Format", "Added to every AI Format request, for example: Use sentence case for headings."],
+        ["rewrite", "AI Rewrite", "Added to every AI Rewrite request, for example: Keep the author’s voice."],
+        ["write", "Write with AI", "Leave empty to use AI Rewrite’s."],
+        ["chat", "AI Chat and the Agent", "Added to every AI Chat and Agent conversation."],
+        ["review", "Agentic Review", "Added to every review plan and proposed change."],
+        ["definitions", "Generate Definitions", "Added to the Agent’s instructions when it generates definitions, for example: Skip standard notation such as ℝ and ℕ."],
+        ["imageToMarkdown", "AI Image to Markdown", "Added to every image conversion."],
+        ["pdfToMarkdown", "Convert PDF to Markdown", "Added to the instructions for reading each page."],
+        ["latex", "Convert Markdown to LaTeX/PDF", "Added to every LaTeX conversion."],
+        ["recordingRecap", "Recording Live Recap", "Added to every recap update."],
+        ["references", "References", "Added to every metadata request."],
+        ["whereWasI", "Where Was I", "Added to every session summary."],
+      ];
+      const aiPromptInputs = Object.fromEntries(aiPromptFields.map(([name, label, placeholder]) => {
+        const details = document.createElement("details");
+        details.className = "ai-card-more ai-system-prompt";
+        const summary = document.createElement("summary");
+        summary.textContent = "Custom system prompt";
+        const state = document.createElement("span");
+        state.className = "ai-prompt-state";
+        state.textContent = "Set";
+        state.hidden = true;
+        summary.append(state);
+        const fieldLabel = document.createElement("label");
+        fieldLabel.className = "visually-hidden";
+        fieldLabel.htmlFor = `ai-${name}-custom-instruction`;
+        fieldLabel.textContent = `Custom system prompt for ${label}`;
+        const textarea = document.createElement("textarea");
+        textarea.id = `ai-${name}-custom-instruction`;
+        textarea.autocomplete = "off";
+        textarea.placeholder = placeholder;
+        textarea.spellcheck = true;
+        const actions = document.createElement("div");
+        actions.className = "textarea-actions";
+        const help = document.createElement("p");
+        help.className = "field-help";
+        help.textContent = `Added after Libera’s own instructions for ${label}, which still set the output format.`;
+        const load = document.createElement("button");
+        load.type = "button";
+        load.className = "secondary";
+        load.textContent = "Load from file";
+        actions.append(help, load);
+        details.append(summary, fieldLabel, textarea, actions);
+        document.querySelector(`[data-ai-function="${name}"], [data-ai-card="${name}"]`).append(details);
+        const update = () => { state.hidden = !textarea.value.trim(); };
+        textarea.addEventListener("input", update);
+        load.addEventListener("click", async () => {
+          clearError();
+          load.disabled = true;
+          load.textContent = "Loading…";
+          try {
+            const result = await window.liberaSetup.loadAiSystemPromptFile();
+            if (!result.canceled) {
+              textarea.value = result.content || "";
+              update();
+              help.textContent = "File loaded. Save preferences to keep this prompt.";
+              textarea.focus();
+            }
+          } catch (error) {
+            showError(error.message || "Unable to load the file.");
+          } finally {
+            load.disabled = false;
+            load.textContent = "Load from file";
+          }
+        });
+        return [name, { textarea, update }];
+      }));
+
+      // Preferences → Local LLMs: OpenAI-compatible endpoints under an alias
+      // (see electron/local-llms.cjs). The main process makes the requests.
+      const localLlmPresets = {
+        ollama: { label: "Ollama", baseUrl: "http://localhost:11434/v1" },
+        lmstudio: { label: "LM Studio", baseUrl: "http://localhost:1234/v1" },
+        llamaserver: { label: "llama-server", baseUrl: "http://localhost:8080/v1" },
+        custom: { label: "Custom server", baseUrl: "" },
+      };
+      const localLlmAlias = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+      const localLlmList = document.querySelector("#local-llm-list");
+      const localLlmEmpty = document.querySelector("#local-llm-empty");
+      const localLlmTemplate = document.querySelector("#local-llm-template");
+      let localLlmCount = 0;
+
+      function localLlmCards() {
+        return Array.from(localLlmList.querySelectorAll(".local-llm-card"));
+      }
+
+      function readLocalLlm(card) {
+        return {
+          alias: card.querySelector(".local-llm-alias").value.trim(),
+          preset: card.dataset.preset,
+          baseUrl: card.querySelector(".local-llm-url").value.trim(),
+          apiKey: card.querySelector(".local-llm-key").value.trim(),
+          model: card.querySelector(".local-llm-model").value.trim(),
+        };
+      }
+
+      function localModelSuggestions() {
+        return localLlmCards().map(readLocalLlm).filter((endpoint) => localLlmAlias.test(endpoint.alias)).map((endpoint) => ({
+          id: `local/${endpoint.alias}`,
+          name: [localLlmPresets[endpoint.preset].label, endpoint.model].filter(Boolean).join(" · "),
+          contextLength: 0,
+          vision: true,
+        }));
+      }
+
+      function updateLocalLlmPoolButtons() {
+        for (const card of localLlmCards()) {
+          const { alias } = readLocalLlm(card);
+          const button = card.querySelector(".local-llm-pool");
+          const inPool = modelPool.includes(`local/${alias}`);
+          button.disabled = inPool || !localLlmAlias.test(alias);
+          button.textContent = inPool ? "In the Model Pool" : "Add to Model Pool";
+        }
+      }
+
+      function updateLocalLlmEmpty() {
+        localLlmEmpty.classList.toggle("hidden", localLlmCards().length > 0);
+      }
+
+      function firstFreeLocalAlias() {
+        const taken = new Set(localLlmCards().map((card) => readLocalLlm(card).alias.toLowerCase()));
+        if (!taken.has("myllm")) return "myllm";
+        let number = 2;
+        while (taken.has(`myllm${number}`)) number += 1;
+        return `myllm${number}`;
+      }
+
+      function addLocalLlm(endpoint = {}, { focus = false } = {}) {
+        const card = localLlmTemplate.content.firstElementChild.cloneNode(true);
+        const id = `local-llm-${++localLlmCount}`;
+        const alias = card.querySelector(".local-llm-alias");
+        const url = card.querySelector(".local-llm-url");
+        const key = card.querySelector(".local-llm-key");
+        const model = card.querySelector(".local-llm-model");
+        const state = card.querySelector(".local-llm-state");
+        const result = card.querySelector(".local-llm-result");
+        const testButton = card.querySelector(".local-llm-test");
+        const presetButtons = Array.from(card.querySelectorAll("[data-preset]"));
+        for (const [field, suffix, label] of [[url, "url", ".local-llm-url-label"], [model, "model", ".local-llm-model-label"], [key, "key", ".local-llm-key-label"]]) {
+          field.id = `${id}-${suffix}`;
+          card.querySelector(label).htmlFor = field.id;
+        }
+        alias.setAttribute("aria-label", "Alias");
+        alias.value = endpoint.alias ?? firstFreeLocalAlias();
+        url.value = endpoint.baseUrl ?? localLlmPresets.ollama.baseUrl;
+        key.value = endpoint.apiKey ?? "";
+        model.value = endpoint.model ?? "";
+        let serverModels = [];
+        let listingModels = false;
+
+        function showResult(next, message = "") {
+          const labels = { idle: "Not tested", testing: "Testing…", ok: "Connected", error: "Failed" };
+          state.dataset.state = next;
+          state.textContent = labels[next];
+          result.dataset.state = next;
+          result.textContent = message;
+          result.hidden = !message;
+        }
+
+        function selectPreset(preset) {
+          card.dataset.preset = preset;
+          for (const button of presetButtons) button.setAttribute("aria-checked", String(button.dataset.preset === preset));
+        }
+
+        const combobox = attachModelCombobox(model, {
+          source: () => serverModels.map((name) => ({ id: name, name: "", contextLength: 0 })),
+          localModels: false,
+          emptyText: () => listingModels ? "Asking the server for its models…" : "No models listed. Type the name, or use Test connection.",
+          onOpen: async () => {
+            listingModels = true;
+            combobox.render();
+            const listed = await window.liberaSetup?.listLocalLlmModels?.(readLocalLlm(card));
+            if (listed?.ok) serverModels = listed.models;
+            listingModels = false;
+            combobox.render();
+          },
+        });
+
+        for (const button of presetButtons) {
+          button.addEventListener("click", () => {
+            selectPreset(button.dataset.preset);
+            const { baseUrl } = localLlmPresets[button.dataset.preset];
+            if (baseUrl) url.value = baseUrl;
+            serverModels = [];
+            showResult("idle");
+            renderModelPool();
+          });
+        }
+        url.addEventListener("input", () => {
+          const matching = Object.entries(localLlmPresets).find(([, preset]) => preset.baseUrl && preset.baseUrl === url.value.trim().replace(/\/+$/, ""));
+          selectPreset(matching?.[0] ?? "custom");
+          serverModels = [];
+          showResult("idle");
+        });
+        for (const field of [key, model]) field.addEventListener("input", () => showResult("idle"));
+        model.addEventListener("change", () => { showResult("idle"); renderModelPool(); });
+        alias.addEventListener("input", updateLocalLlmPoolButtons);
+        // A rename carries over to wherever the old name was chosen.
+        alias.addEventListener("change", () => {
+          const before = `local/${card.dataset.alias}`;
+          const after = `local/${alias.value.trim()}`;
+          if (card.dataset.alias && localLlmAlias.test(alias.value.trim()) && before !== after) {
+            const values = modelFields().map(([, input]) => input.value);
+            modelPool = modelPool.map((item) => item === before ? after : item);
+            renderModelPool();
+            modelFields().forEach(([, input], index) => { if (values[index] === before) setModelValue(input, after); });
+            renderModelPool();
+          }
+          if (localLlmAlias.test(alias.value.trim())) card.dataset.alias = alias.value.trim();
+        });
+        testButton.addEventListener("click", async () => {
+          testButton.disabled = true;
+          showResult("testing", "Asking the server. A model that has to load first can take a minute…");
+          try {
+            const tested = await window.liberaSetup.testLocalLlm(readLocalLlm(card));
+            if (tested.models) serverModels = tested.models;
+            showResult(tested.ok ? "ok" : "error", tested.message);
+          } catch (error) {
+            showResult("error", error.message || "The test could not run.");
+          } finally {
+            testButton.disabled = false;
+          }
+        });
+        card.querySelector(".local-llm-pool").addEventListener("click", () => addToModelPool(`local/${readLocalLlm(card).alias}`));
+        card.querySelector(".local-llm-delete").addEventListener("click", () => {
+          const name = `local/${readLocalLlm(card).alias}`;
+          const users = modelFields().filter(([, input]) => input.value.trim() === name).map(([label]) => label);
+          if (users.length) {
+            showResult("error", `${name} is in use by ${users.join(", ")}. Choose another model there first.`);
+            return;
+          }
+          combobox.destroy();
+          card.remove();
+          modelPool = modelPool.filter((item) => item !== name);
+          updateLocalLlmEmpty();
+          renderModelPool();
+          document.querySelector("#add-local-llm").focus();
+        });
+
+        selectPreset(endpoint.preset ?? "ollama");
+        card.dataset.alias = alias.value.trim();
+        localLlmList.append(card);
+        updateLocalLlmEmpty();
+        updateLocalLlmPoolButtons();
+        if (focus) alias.select();
+      }
+
+      /** Why the endpoints cannot be saved, if they cannot. */
+      function localLlmProblem() {
+        const seen = new Set();
+        for (const endpoint of localLlmCards().map(readLocalLlm)) {
+          const name = endpoint.alias ? `local/${endpoint.alias}` : "An endpoint";
+          if (!localLlmAlias.test(endpoint.alias)) return `${name}: an alias uses letters, numbers, dots, dashes and underscores, and starts with a letter or number.`;
+          if (seen.has(endpoint.alias.toLowerCase())) return `The alias ${endpoint.alias} is used twice.`;
+          seen.add(endpoint.alias.toLowerCase());
+          if (!/^https?:\/\/\S+$/i.test(endpoint.baseUrl)) return `${name} needs a base URL such as http://localhost:11434/v1.`;
+          if (!endpoint.model) return `${name} needs a model name.`;
+        }
+        return "";
+      }
+
+      document.querySelector("#add-local-llm").addEventListener("click", () => addLocalLlm({}, { focus: true }));
 
       async function loadState() {
         const state = await window.liberaSetup.getState();
@@ -3115,19 +3688,26 @@
         window.liberaIllustrationPreferences?.load(state.notebookIllustrationBuiltIns, state.notebookIllustrations);
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "openai/gpt-6-luna";
+        modelPool = Array.isArray(state.aiFunctions?.modelPool) ? [...state.aiFunctions.modelPool] : [];
+        localLlmList.replaceChildren();
+        (Array.isArray(state.aiFunctions?.localLlms) ? state.aiFunctions.localLlms : []).forEach((endpoint) => addLocalLlm(endpoint));
+        updateLocalLlmEmpty();
+        renderModelPool();
         for (const name of aiFunctionNames) {
           const parent = aiFunctionInputs[aiFunctionParents[name]];
           const lowEffort = name === "latex" || name === "recordingRecap";
           aiFunctionInputs[name].caching.value = String(typeof state.aiFunctions?.[name]?.promptCaching === "boolean" ? state.aiFunctions[name].promptCaching : parent && name !== "recordingRecap" ? parent.caching.value === "true" : ["chat", "rewrite"].includes(name));
-          aiFunctionInputs[name].model.value = state.aiFunctions?.[name]?.model || parent?.model.value || (name === "latex" ? "openai/gpt-5.6-luna" : openRouterModelInput.value);
+          setModelValue(aiFunctionInputs[name].model, state.aiFunctions?.[name]?.model || parent?.model.value || (name === "latex" ? "openai/gpt-5.6-luna" : openRouterModelInput.value));
           aiFunctionInputs[name].effort.value = state.aiFunctions?.[name]?.reasoningEffort || (lowEffort ? "low" : parent?.effort.value || "medium");
         }
         allModelsInput.value = "";
-        aiChatCustomInstructionInput.value = state.aiFunctions?.chat?.customInstruction || "";
-        aiChatAlternativeModelsInput.value = Array.isArray(state.aiFunctions?.chat?.alternativeModels)
-          ? state.aiFunctions.chat.alternativeModels.join("\n")
-          : "";
-        aiRewriteCustomInstructionInput.value = state.aiFunctions?.rewrite?.customInstruction || "";
+        for (const [name, { textarea, update }] of Object.entries(aiPromptInputs)) {
+          textarea.value = state.aiFunctions?.[name]?.customInstruction || "";
+          update();
+        }
+        const definitions = state.aiFunctions?.definitions || {};
+        setModelValue(definitionsInputs.model, typeof definitions.model === "string" ? definitions.model : "");
+        definitionsInputs.effort.value = definitions.reasoningEffort || "";
         const references = state.aiFunctions?.references || {};
         referenceInputs.model.value = typeof references.model === "string" ? references.model : "";
         referenceInputs.effort.value = references.reasoningEffort || "low";
@@ -3152,11 +3732,8 @@
         updatePdfToMarkdownInputs();
         routingByFunction = Object.fromEntries(routingFunctions.map(([name]) => [name, normalizeRouting(state.aiFunctions?.routing?.[name])]));
         routingPending = false;
-        updateRoutingButtons();
-        // Open the optional extras that hold something, so nothing set is hidden.
-        for (const input of [aiChatCustomInstructionInput, aiChatAlternativeModelsInput, aiRewriteCustomInstructionInput]) {
-          input.closest("details").open = input.value.trim() !== "";
-        }
+        renderModelPool();
+        updateLocalModelSettings();
         quickPromptsList.replaceChildren();
         (Array.isArray(state.quickPrompts) ? state.quickPrompts : []).forEach((quickPrompt) => addQuickPrompt(quickPrompt));
         refreshQuickPromptList();
@@ -3483,48 +4060,6 @@
 
       if (configurationMode) void loadUsers();
 
-      loadAiChatInstructionButton.addEventListener("click", async () => {
-        clearError();
-        loadAiChatInstructionButton.disabled = true;
-        loadAiChatInstructionButton.textContent = "Loading…";
-
-        try {
-          const result = await window.liberaSetup.loadAiChatCustomInstructionFile();
-
-          if (!result.canceled) {
-            aiChatCustomInstructionInput.value = result.content || "";
-            aiChatInstructionHelp.textContent = "File loaded. Save preferences to keep this instruction across app restarts.";
-            aiChatCustomInstructionInput.focus();
-          }
-        } catch (error) {
-          showError(error.message || "Unable to load the custom instruction file.");
-        } finally {
-          loadAiChatInstructionButton.disabled = false;
-          loadAiChatInstructionButton.textContent = "Load from file";
-        }
-      });
-
-      loadAiRewriteInstructionButton.addEventListener("click", async () => {
-        clearError();
-        loadAiRewriteInstructionButton.disabled = true;
-        loadAiRewriteInstructionButton.textContent = "Loading…";
-
-        try {
-          const result = await window.liberaSetup.loadAiRewriteCustomInstructionFile();
-
-          if (!result.canceled) {
-            aiRewriteCustomInstructionInput.value = result.content || "";
-            aiRewriteInstructionHelp.textContent = "File loaded. Save preferences to keep this instruction across app restarts.";
-            aiRewriteCustomInstructionInput.focus();
-          }
-        } catch (error) {
-          showError(error.message || "Unable to load the custom instruction file.");
-        } finally {
-          loadAiRewriteInstructionButton.disabled = false;
-          loadAiRewriteInstructionButton.textContent = "Load from file";
-        }
-      });
-
       // Opens the Spending page in the workspace; unsaved changes here are left, as Close does.
       const spendingCard = document.querySelector("#spending-card");
       const openSpendingButton = document.querySelector("#open-spending");
@@ -3778,6 +4313,12 @@
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         clearError();
+        const localProblem = localLlmProblem();
+        if (localProblem) {
+          setActiveSection("local-llms");
+          showError(localProblem);
+          return;
+        }
         saveButton.disabled = true;
 
         try {
@@ -3804,12 +4345,12 @@
               model: aiFunctionInputs[name].model.value,
               reasoningEffort: aiFunctionInputs[name].effort.value,
               promptCaching: aiFunctionInputs[name].caching.value === "true",
-              ...(name === "chat" ? {
-                customInstruction: aiChatCustomInstructionInput.value,
-                alternativeModels: aiChatAlternativeModelsInput.value.split(/\r?\n/),
-              } : {}),
-              ...(name === "rewrite" ? { customInstruction: aiRewriteCustomInstructionInput.value } : {}),
-            }]).concat([["references", {
+              customInstruction: aiPromptInputs[name].textarea.value,
+            }]).concat([["modelPool", modelPool], ["localLlms", localLlmCards().map(readLocalLlm)], ["definitions", {
+              model: definitionsInputs.model.value,
+              reasoningEffort: definitionsInputs.effort.value,
+              customInstruction: aiPromptInputs.definitions.textarea.value,
+            }], ["references", {
               model: referenceInputs.model.value.trim(),
               reasoningEffort: referenceInputs.effort.value,
               promptCaching: referenceInputs.caching.value === "true",
@@ -3818,17 +4359,20 @@
               webSearch: referenceInputs.webSearch.checked,
               autoCreateForPdfs: referenceInputs.autoCreateForPdfs.checked,
               contactEmail: referenceInputs.contactEmail.value.trim(),
+              customInstruction: aiPromptInputs.references.textarea.value,
             }], ["whereWasI", {
               enabled: whereWasIInputs.enabled.checked,
               summarize: whereWasIInputs.summarize.checked,
               model: whereWasIInputs.model.value.trim(),
               reasoningEffort: whereWasIInputs.effort.value,
+              customInstruction: aiPromptInputs.whereWasI.textarea.value,
             }], ["pdfToMarkdown", {
               engine: pdfToMarkdownInputs.engine.value,
               model: pdfToMarkdownInputs.model.value.trim(),
               reasoningEffort: pdfToMarkdownInputs.effort.value,
               concurrency: Number(pdfToMarkdownInputs.concurrency.value),
               cleanup: pdfToMarkdownInputs.cleanup.checked,
+              customInstruction: aiPromptInputs.pdfToMarkdown.textarea.value,
             }], ["routing", routingByFunction]])),
             search: {
               textWeights: searchTextWeightsInput.value,

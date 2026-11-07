@@ -1,6 +1,6 @@
 {
   "appId": "com.libera.notes",
-  "productName": "Libera for Vy Tran",
+  "productName": "Libera Editor",
   "asar": false,
   "npmRebuild": false,
   "afterPack": "scripts/after-pack.cjs",

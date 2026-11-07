@@ -1,5 +1,5 @@
-import { getAiFunctionOptions } from "@/lib/ai-preferences";
-import { createOpenRouterCompletion, getOpenRouterApiKey, type OpenRouterMessage, type WebCitation } from "@/lib/openrouter";
+import { getAiFunctionOptions, withAiCustomInstruction } from "@/lib/ai-preferences";
+import { createOpenRouterCompletion, modelAvailable, type OpenRouterMessage, type WebCitation } from "@/lib/openrouter";
 import { normalizeArxivId, normalizeDoi, normalizeIsbn } from "../identifiers";
 import { parseName } from "../names";
 import { normalizeEntryInput, parseDateText } from "../normalize";
@@ -33,7 +33,7 @@ const MAX_OUTPUT_TOKENS = 2_000;
 const MAX_INPUT_CHARS = 6_000;
 
 export function aiConfigured() {
-  return !!getOpenRouterApiKey();
+  return modelAvailable(getAiFunctionOptions("references").model);
 }
 
 /** The JSON object in a model reply: fences and surrounding prose removed. */
@@ -141,7 +141,7 @@ async function completeJson<T>(system: string, user: string, validate: (value: u
   const { ctx } = options;
   const complete = options.complete ?? createOpenRouterCompletion;
   const modelOptions = getAiFunctionOptions("references");
-  const messages: OpenRouterMessage[] = [{ role: "system", content: system }, { role: "user", content: user }];
+  const messages: OpenRouterMessage[] = [{ role: "system", content: withAiCustomInstruction(system, "references") }, { role: "user", content: user }];
   let diagnostic = "";
   for (let attempt = 0; attempt <= MAX_REPAIRS; attempt += 1) {
     const request: OpenRouterMessage[] = diagnostic

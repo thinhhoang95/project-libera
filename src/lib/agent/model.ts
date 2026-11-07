@@ -1,3 +1,4 @@
+import { LOCAL_CONTEXT_LENGTH, isLocalModel, localStreamFailure, LocalLlmError, openLocalStream } from "@/lib/local-llm";
 import { getOpenRouterApiKey } from "@/lib/openrouter";
 import { getOpenRouterRouting } from "@/lib/openrouter-routing";
 import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint } from "@/lib/openrouter-prompt-cache";
@@ -6,8 +7,8 @@ import { recordOpenRouterUsage } from "@/lib/storage/usage-ledger";
 import { readSseData } from "@/lib/text-stream";
 
 // OpenAI-compatible chat completions with tool calls, streamed from
-// OpenRouter. One message format for every model; provider differences
-// (caching markers, reasoning passthrough) are handled here.
+// OpenRouter or a local server. One message format for every model; provider
+// differences (caching markers, reasoning passthrough) are handled here.
 
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -54,6 +55,8 @@ type Endpoint = { tag?: unknown; context_length?: unknown; supported_parameters?
 
 /** Capabilities from OpenRouter's endpoint list; never from a hard-coded model list. */
 export async function getModelProfile(model: string, signal?: AbortSignal): Promise<ModelProfile> {
+  // Whether a local model can call tools shows only when it is asked to.
+  if (isLocalModel(model)) return { contextLength: LOCAL_CONTEXT_LENGTH, supportsTools: true, known: false };
   const cached = profiles.get(model);
   if (cached && cached.expires > Date.now()) return cached.profile;
   const apiKey = getOpenRouterApiKey();
@@ -178,7 +181,16 @@ export type CallModelOptions = {
   onTextDelta?: (text: string) => void;
 };
 
+async function openLocalModelStream(options: CallModelOptions) {
+  try {
+    return await openLocalStream({ model: options.model, messages: options.messages, tools: options.tools, signal: options.signal });
+  } catch (error) {
+    throw error instanceof LocalLlmError ? new ModelRequestError(error.message, error.retryable) : error;
+  }
+}
+
 async function openStream(options: CallModelOptions) {
+  if (isLocalModel(options.model)) return openLocalModelStream(options);
   const apiKey = getOpenRouterApiKey();
   if (!apiKey) throw new ModelRequestError("Configure an OpenRouter API key in Preferences to use Agent mode.", false);
   const caching = options.promptCaching ? await getPromptCacheRouting(options.model, apiKey, options.signal) : undefined;
@@ -267,6 +279,7 @@ async function readReply(body: ReadableStream<Uint8Array>, options: CallModelOpt
     };
     try { payload = JSON.parse(data); }
     catch { continue; }
+    if (payload.error && isLocalModel(options.model)) throw localStreamFailure(options.model, payload);
     if (payload.error) throw new ModelRequestError(payload.error.message || "The model stream failed.", !content && (payload.error.code === undefined || payload.error.code === 429 || payload.error.code >= 500));
     const reported = parseOpenRouterUsage(payload.usage);
     if (reported) {

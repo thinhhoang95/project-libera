@@ -17,12 +17,12 @@ const profile = { contextLength: 200_000, supportsTools: true, known: true };
 
 async function withEnvironment(run: (root: string) => Promise<void>) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-web-search-"));
-  const saved = { data: process.env.LIBERA_DATA_DIR, key: process.env.OPENROUTER_API_KEY, model: process.env.LIBERA_OPENROUTER_MODEL, alternatives: process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS };
+  const saved = { data: process.env.LIBERA_DATA_DIR, key: process.env.OPENROUTER_API_KEY, model: process.env.LIBERA_OPENROUTER_MODEL, alternatives: process.env.LIBERA_AI_MODEL_POOL };
   const originalFetch = globalThis.fetch;
   process.env.LIBERA_DATA_DIR = directory;
   process.env.OPENROUTER_API_KEY = "test-key";
   process.env.LIBERA_OPENROUTER_MODEL = "test/default-model";
-  process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS = JSON.stringify(["test/run-model"]);
+  process.env.LIBERA_AI_MODEL_POOL = JSON.stringify(["test/run-model"]);
   const root = path.join(directory, "users", "admin");
   try {
     await mkdir(path.join(root, "Research"), { recursive: true });
@@ -30,7 +30,7 @@ async function withEnvironment(run: (root: string) => Promise<void>) {
     await run(root);
   } finally {
     globalThis.fetch = originalFetch;
-    for (const [name, value] of Object.entries({ LIBERA_DATA_DIR: saved.data, OPENROUTER_API_KEY: saved.key, LIBERA_OPENROUTER_MODEL: saved.model, LIBERA_AI_CHAT_ALTERNATIVE_MODELS: saved.alternatives })) {
+    for (const [name, value] of Object.entries({ LIBERA_DATA_DIR: saved.data, OPENROUTER_API_KEY: saved.key, LIBERA_OPENROUTER_MODEL: saved.model, LIBERA_AI_MODEL_POOL: saved.alternatives })) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
     await rm(directory, { recursive: true, force: true });

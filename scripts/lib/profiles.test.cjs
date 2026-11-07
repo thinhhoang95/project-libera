@@ -80,7 +80,7 @@ function mainHarness() {
   vm.runInContext(mainSource.slice(mainSource.indexOf("async function writeConfig("), mainSource.indexOf("function normalizedImportedPreferences(")), scope);
   vm.runInContext(mainSource.slice(mainSource.indexOf("async function importPreferences("), mainSource.indexOf("function getConfigStatus(")), scope);
   vm.runInContext("function readConfig() { return readProfileConfig(getRunningProfileId()); }", scope);
-  vm.runInContext(mainSource.slice(mainSource.indexOf("    // Users: only Preferences"), mainSource.indexOf('    ipcMain.handle("setup:load-ai-chat-custom-instruction-file"')), scope);
+  vm.runInContext(mainSource.slice(mainSource.indexOf("    // Users: only Preferences"), mainSource.indexOf('    ipcMain.handle("setup:load-ai-system-prompt-file"')), scope);
   vm.runInContext(mainSource.slice(mainSource.indexOf("  function assertProfilesSender("), mainSource.indexOf('  ipcMain.handle("window:minimize"')), scope);
   vm.runInContext(mainSource.slice(mainSource.indexOf('    ipcMain.handle("setup:save"'), mainSource.indexOf('    setupHost.on("closed"')), scope);
   const config = { dataDir: path.join(userData, "..", `${path.basename(userData)}-notes`), yourName: "Vy", openaiApiKey: "key", passwordHash: scope.createPasswordHash("vy password"), sessionSecret: "running-secret" };

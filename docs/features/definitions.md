@@ -4,7 +4,7 @@ Math papers and notes introduce many symbols and terms before the interesting pa
 
 ## Generating the cards
 
-Open a Markdown note, a LaTeX file or a PDF, choose **Outlines** in the left rail, switch the panel from **Outline** to **Definitions**, and click **Generate definitions**. Libera opens the AI panel, starts a new Agent chat (it reuses the open chat if that one is still empty) and sends "Extract the definitions and notation in <path>." with the `extract-definitions` skill already loaded. The agent uses the chat's model, reasoning effort and permission mode.
+Open a Markdown note, a LaTeX file or a PDF, choose **Outlines** in the left rail, switch the panel from **Outline** to **Definitions**, and click **Generate definitions**. Libera opens the AI panel, starts a new Agent chat (it reuses the open chat if that one is still empty) and sends "Extract the definitions and notation in <path>." with the `extract-definitions` skill already loaded. The agent uses the model and reasoning effort set in Preferences → AI → Generate Definitions, or the AI panel's when those are on **Same as the AI panel** (see [Model Pool](model-pool.md)), and the chat's permission mode.
 
 The agent reads the whole document, unsaved changes included: a text file window by window, a PDF 20 pages at a time from its extracted text. It saves cards as it goes, so they appear in the tab while it works. You can follow its steps in the AI panel. The document itself never changes, so this works in every permission mode, Read Only included.
 

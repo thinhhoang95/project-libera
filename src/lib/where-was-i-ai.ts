@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { AiReasoningEffort } from "@/lib/ai-preferences";
-import { createOpenRouterCompletion, getOpenRouterApiKey } from "@/lib/openrouter";
+import { withAiCustomInstruction } from "@/lib/ai-preferences";
+import { createOpenRouterCompletion, modelAvailable } from "@/lib/openrouter";
 import { getOpenRouterRouting } from "@/lib/openrouter-routing";
 import { parseRecapBullets, type RecapSession } from "@/lib/where-was-i";
 
@@ -37,7 +38,7 @@ export function getWhereWasISettings(): WhereWasISettings {
 
 export function whereWasISummariesAvailable() {
   const settings = getWhereWasISettings();
-  return settings.enabled && settings.summarize && !!getOpenRouterApiKey();
+  return settings.enabled && settings.summarize && modelAvailable(settings.model);
 }
 
 const SYSTEM_PROMPT = [
@@ -71,7 +72,7 @@ function describeSession(notebook: string, session: RecapSession) {
 export async function summarizeRecapSession(notebook: string, session: RecapSession, signal?: AbortSignal) {
   const settings = getWhereWasISettings();
   const { content } = await createOpenRouterCompletion([
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: withAiCustomInstruction(SYSTEM_PROMPT, "whereWasI") },
     { role: "user", content: describeSession(notebook, session) },
   ], {
     model: settings.model,

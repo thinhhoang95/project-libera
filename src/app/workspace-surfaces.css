@@ -187,7 +187,7 @@ html.dark .libera-agent-review-removed { color: #f87171; }
 .libera-context-chip-add .libera-context-chip-icon { background: var(--muted); }
 .libera-context-chip-add:hover { background: var(--muted); color: var(--foreground); }
 @keyframes libera-context-chip-in { from { opacity: 0; transform: scale(.94); } }
-.libera-chat-composer-actions select { order: 1; margin-left: auto; border: 1px solid var(--border); border-radius: 8px; min-width: 65px; padding: 6px 8px; text-align: center; }
+.libera-chat-composer-actions select { order: 1; margin-left: auto; border: 0; border-radius: 8px; min-width: 65px; padding: 6px 8px; text-align: center; }
 .libera-chat-composer-actions .libera-chat-attach { order: 0; }
 .libera-chat-composer-actions .libera-chat-send { order: 2; margin-left: 5px; }
 .libera-chat-panel .libera-chat-send { color: white; background: linear-gradient(135deg, #7b9ef8, #9b8ce9); border-radius: 10px; }

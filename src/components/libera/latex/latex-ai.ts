@@ -4,6 +4,7 @@ import type { EditorView } from "@codemirror/view";
 import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
 import { apiRequest } from "@/components/libera/api-client";
 import { readIncludeDocumentContext } from "@/components/libera/ai-document-context-preference";
+import { aiTaskRequestOptions } from "@/components/libera/ai-model-picker";
 import { aiEditThreadFor, recordAiEditTurn, type AiEditThreadResult } from "@/components/libera/ai-edit-thread";
 import { applyAiProposal, pendingAiField, setPendingAiRequest, type AiChangeSource } from "@/lib/latex/codemirror/review";
 import { aiSuggestionNotice, sharedSuggester } from "@/lib/collab/client/suggestions-ai";
@@ -58,13 +59,13 @@ export async function runLatexAi(view: EditorView, action: Exclude<AiChangeSourc
     const init = { method: "POST", signal: controller.signal };
     let text: string;
     if (action === "format") {
-      text = (await apiRequest<{ formattedText: string }>("/api/ai-format", { ...init, body: JSON.stringify({ text: original, format: "latex" }) })).formattedText;
+      text = (await apiRequest<{ formattedText: string }>("/api/ai-format", { ...init, body: JSON.stringify({ text: original, format: "latex", ...aiTaskRequestOptions("formatting") }) })).formattedText;
     } else if (action === "rewrite") {
-      const result = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", { ...init, body: JSON.stringify({ text: original, prompt, format: "latex", ...context, thread }) });
+      const result = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", { ...init, body: JSON.stringify({ text: original, prompt, format: "latex", ...context, thread, ...aiTaskRequestOptions("rewrite") }) });
       if (!controller.signal.aborted) recordAiEditTurn(documentPath, includeDocument, thread, result.thread);
       text = result.rewrittenText;
     } else {
-      const result = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", { ...init, body: JSON.stringify({ prompt, format: "latex", ...context, thread }) });
+      const result = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", { ...init, body: JSON.stringify({ prompt, format: "latex", ...context, thread, ...aiTaskRequestOptions("write") }) });
       if (!controller.signal.aborted) recordAiEditTurn(documentPath, includeDocument, thread, result.thread);
       text = result.markdown;
     }

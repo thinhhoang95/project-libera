@@ -24,7 +24,8 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
+const { normalizeAiPreferences, aiPreferencesEnvironment, aiPreferencesNeedingRestart } = require("./ai-preferences.cjs");
+const { listLocalLlmModels, testLocalLlm } = require("./local-llms.cjs");
 const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
 const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
 const { publishPowerState } = require("./power-state.cjs");
@@ -73,7 +74,9 @@ const {
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
-const APP_DISPLAY_NAME = "Libera for Vy Tran";
+const APP_DISPLAY_NAME = "Libera Editor";
+/** The app's name before it became Libera Editor, which named its data folder. */
+const LEGACY_USER_DATA_FOLDER = "Libera for Vy Tran";
 const ADMIN_USER = "admin";
 const MARKDOWN_ASSETS_DIR = "_assets";
 const THEME_PREFERENCES = new Set(["light", "dark", "system"]);
@@ -100,6 +103,11 @@ function applyApplicationIdentity() {
 }
 
 applyApplicationIdentity();
+
+// Electron names the data folder after the app. An install from before the
+// rename keeps its folder, which holds its config, password and users.
+const legacyUserData = path.join(app.getPath("appData"), LEGACY_USER_DATA_FOLDER);
+if (fs.existsSync(legacyUserData)) app.setPath("userData", legacyUserData);
 
 let activeSetupPromise = null;
 let activeSetupWindow = null;
@@ -890,29 +898,9 @@ async function selectDataDir(parentWindow) {
   return result.canceled ? "" : result.filePaths[0] ?? "";
 }
 
-async function loadAiChatCustomInstructionFile(parentWindow) {
+async function loadAiSystemPromptFile(parentWindow) {
   const result = await dialog.showOpenDialog(parentWindow, {
-    title: "Load AI Chat custom instruction",
-    properties: ["openFile"],
-    filters: [
-      { name: "Text files", extensions: ["txt", "md", "markdown"] },
-      { name: "All files", extensions: ["*"] },
-    ],
-  });
-
-  if (result.canceled || !result.filePaths[0]) {
-    return { canceled: true };
-  }
-
-  return {
-    canceled: false,
-    content: await fsp.readFile(result.filePaths[0], "utf8"),
-  };
-}
-
-async function loadAiRewriteCustomInstructionFile(parentWindow) {
-  const result = await dialog.showOpenDialog(parentWindow, {
-    title: "Load AI Rewrite custom instruction",
+    title: "Load custom system prompt",
     properties: ["openFile"],
     filters: [
       { name: "Text files", extensions: ["txt", "md", "markdown"] },
@@ -1291,13 +1279,10 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       return switchToProfile(id);
     });
 
-    ipcMain.handle("setup:load-ai-chat-custom-instruction-file", () =>
-      loadAiChatCustomInstructionFile(setupWindow),
-    );
-
-    ipcMain.handle("setup:load-ai-rewrite-custom-instruction-file", () =>
-      loadAiRewriteCustomInstructionFile(setupWindow),
-    );
+    ipcMain.handle("setup:load-ai-system-prompt-file", () => loadAiSystemPromptFile(setupWindow));
+    // Here rather than in the page, which cross-origin rules keep from local servers.
+    ipcMain.handle("setup:list-local-llm-models", (_event, endpoint) => listLocalLlmModels(endpoint));
+    ipcMain.handle("setup:test-local-llm", (_event, endpoint) => testLocalLlm(endpoint));
 
     ipcMain.handle("setup:save", (_event, input) => queueProfileMutation(async () => {
       const existingConfig = readConfig();
@@ -1381,8 +1366,9 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       ipcMain.removeHandler("setup:rename-profile");
       ipcMain.removeHandler("setup:remove-profile");
       ipcMain.removeHandler("setup:switch-profile");
-      ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
-      ipcMain.removeHandler("setup:load-ai-rewrite-custom-instruction-file");
+      ipcMain.removeHandler("setup:load-ai-system-prompt-file");
+      ipcMain.removeHandler("setup:list-local-llm-models");
+      ipcMain.removeHandler("setup:test-local-llm");
       ipcMain.removeHandler("setup:save");
       activeSetupPromise = null;
       activeSetupWindow = null;
@@ -1635,8 +1621,7 @@ async function openConfigurationWindow(section = "") {
     // The server reads Search preferences while it runs; they need no restart.
     const requiresRestart = Object.keys(updatedConfig).some(
       (key) => key !== "themePreference" && key !== "search" && key !== "markdownEditorThemes" && (key === "aiFunctions"
-        // The server reads Where Was I, PDF to Markdown and routing from the config file on each request.
-        ? JSON.stringify({ ...updatedConfig.aiFunctions, whereWasI: undefined, pdfToMarkdown: undefined, routing: undefined }) !== JSON.stringify({ ...normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)), whereWasI: undefined, pdfToMarkdown: undefined, routing: undefined })
+        ? JSON.stringify(aiPreferencesNeedingRestart(updatedConfig.aiFunctions)) !== JSON.stringify(aiPreferencesNeedingRestart(normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel))))
         : key === "quickPrompts"
           ? JSON.stringify(updatedConfig.quickPrompts) !== JSON.stringify(normalizeQuickPrompts(previousConfig.quickPrompts))
         : key === "latexSnippets"

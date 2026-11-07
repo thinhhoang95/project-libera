@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { getAiFunctionOptions } from "@/lib/ai-preferences";
+import { getAiFunctionOptions, withAiCustomInstruction } from "@/lib/ai-preferences";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { createMarkdownFileLinkDestination } from "@/lib/markdown-file-links";
 import { createOpenRouterCompletion } from "@/lib/openrouter";
@@ -554,7 +554,7 @@ function updateRecap(runtime: Runtime, { force = false } = {}): Promise<void> {
       const read = runtime.recap.wordsRead;
       const fresh = words.slice(read, read + RECAP_MAX_NEW_WORDS);
       const reply = await createOpenRouterCompletion([
-        { role: "system", content: RECAP_SYSTEM_PROMPT },
+        { role: "system", content: withAiCustomInstruction(RECAP_SYSTEM_PROMPT, "recordingRecap") },
         { role: "user", content: recapUserMessage(runtime.recap.bullets, words.slice(0, read), fresh) },
       ], getAiFunctionOptions("recordingRecap"));
       // Bullets the reader wrote or corrected are theirs; changes to them are dropped.

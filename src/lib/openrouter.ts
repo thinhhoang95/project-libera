@@ -2,6 +2,7 @@ import { readSseData } from "./text-stream";
 import { parseOpenRouterUsage, type TokenUsage } from "./chat-token-usage";
 import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint, withPromptCacheBreakpoints } from "./openrouter-prompt-cache";
 import { DEFAULT_ROUTING, toOpenRouterProvider, type OpenRouterProviderPreferences } from "./openrouter-routing";
+import { createLocalCompletion, isLocalModel, streamLocalCompletion } from "./local-llm";
 import { recordOpenRouterUsage } from "./storage/usage-ledger";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL =
@@ -85,6 +86,11 @@ export function getOpenRouterApiKey() {
 
 export function getOpenRouterModel() {
   return process.env.LIBERA_OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
+}
+
+/** Whether a request to this model can go ahead: local models need no OpenRouter key. */
+export function modelAvailable(model: string) {
+  return isLocalModel(model) || !!getOpenRouterApiKey();
 }
 
 function extractMessageContent(content: OpenRouterMessageContent | undefined) {
@@ -196,6 +202,8 @@ async function requestOpenRouterCompletion(
 }
 
 export async function createOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}): Promise<{ content: string; finishReason?: string; usage?: TokenUsage; webCitations?: WebCitation[]; generation?: OpenRouterGeneration }> {
+  const model = options.model ?? getOpenRouterModel();
+  if (isLocalModel(model)) return createLocalCompletion(messages, { ...options, model });
   const response = await requestOpenRouterCompletion(messages, options);
   const payload = (await response.json()) as OpenRouterResponse;
   if (payload.error) throw new Error(payload.error.message || "OpenRouter request failed.");
@@ -219,6 +227,11 @@ export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMes
 }
 
 export async function* streamOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}) {
+  const model = options.model ?? getOpenRouterModel();
+  if (isLocalModel(model)) {
+    yield* streamLocalCompletion(messages, { ...options, model });
+    return;
+  }
   const response = await requestOpenRouterCompletion(messages, options, true);
   if (!response.body) throw new Error("The model returned no response stream.");
   const generation: OpenRouterGeneration = {};

@@ -1,5 +1,5 @@
 export const appMetadata = {
-  name: "Libera for Vy Tran",
+  name: "Libera Editor",
   version: "8.2.0-beta",
   author: "Thinh Hoang",
   releaseDate: "Oct 31, 2026",

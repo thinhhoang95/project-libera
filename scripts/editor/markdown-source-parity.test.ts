@@ -423,7 +423,7 @@ for (const kind of ["textarea", "CodeMirror"] as const) {
       let menu = await editor.menu(0, editor.text.length);
       await settle(25);
       assert.equal(menu.style.left, "728px");
-      assert.equal(menu.style.top, "242px");
+      assert.equal(menu.style.top, "182px");
       assert.equal(button(menu, "Indent Headings").disabled, false);
       assert.equal(button(menu, "Unindent Headings").disabled, false);
       assert.ok(button(menu, "AI Image to Markdown"));

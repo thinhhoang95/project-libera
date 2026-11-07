@@ -1,6 +1,6 @@
 {
   "name": "project-libera",
-  "productName": "Libera for Vy Tran",
+  "productName": "Libera Editor",
   "version": "8.2.0-beta",
   "private": true,
   "main": "electron/main.cjs",

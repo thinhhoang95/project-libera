@@ -40,12 +40,12 @@ const endpoints = (parameters = ["tools", "reasoning", "temperature"]) => Respon
 
 async function withLibrary(run: (root: string) => Promise<void>) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-agent-route-"));
-  const saved = { data: process.env.LIBERA_DATA_DIR, key: process.env.OPENROUTER_API_KEY, model: process.env.LIBERA_OPENROUTER_MODEL, alternatives: process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS, instruction: process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION };
+  const saved = { data: process.env.LIBERA_DATA_DIR, key: process.env.OPENROUTER_API_KEY, model: process.env.LIBERA_OPENROUTER_MODEL, alternatives: process.env.LIBERA_AI_MODEL_POOL, instruction: process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION };
   const originalFetch = globalThis.fetch;
   process.env.LIBERA_DATA_DIR = directory;
   process.env.OPENROUTER_API_KEY = "test-key";
   process.env.LIBERA_OPENROUTER_MODEL = "test/agent-model";
-  process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS = JSON.stringify(["test/no-tools"]);
+  process.env.LIBERA_AI_MODEL_POOL = JSON.stringify(["test/no-tools"]);
   process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION = "Answer in British English.";
   const root = path.join(directory, "users", "admin");
   try {
@@ -57,7 +57,7 @@ async function withLibrary(run: (root: string) => Promise<void>) {
     await run(root);
   } finally {
     globalThis.fetch = originalFetch;
-    for (const [name, value] of Object.entries({ LIBERA_DATA_DIR: saved.data, OPENROUTER_API_KEY: saved.key, LIBERA_OPENROUTER_MODEL: saved.model, LIBERA_AI_CHAT_ALTERNATIVE_MODELS: saved.alternatives, LIBERA_AI_CHAT_CUSTOM_INSTRUCTION: saved.instruction })) {
+    for (const [name, value] of Object.entries({ LIBERA_DATA_DIR: saved.data, OPENROUTER_API_KEY: saved.key, LIBERA_OPENROUTER_MODEL: saved.model, LIBERA_AI_MODEL_POOL: saved.alternatives, LIBERA_AI_CHAT_CUSTOM_INSTRUCTION: saved.instruction })) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
     await rm(directory, { recursive: true, force: true });

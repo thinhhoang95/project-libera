@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getAiFunctionOptions } from "./ai-preferences";
+import { getAiFunctionOptions, withAiCustomInstruction } from "./ai-preferences";
 import { createOpenRouterCompletion, type OpenRouterMessage } from "./openrouter";
 import { DEFAULT_LATEX_OPTIONS, latexLayoutPrompt, type LatexOptions } from "./latex-options";
 import { assertLatexImagesIncluded, latexImagesPrompt, type LatexImage } from "./latex-images";
@@ -323,7 +323,7 @@ export async function convertMarkdownToLatex(markdown: string, signal: AbortSign
   const plan = planLatexChunks(markdown, chunkCharacters);
   const total = plan.chunks.length;
   progress(`Split document into ${total} LaTeX chunk${total === 1 ? "" : "s"}…`);
-  const thread = new LatexThread(buildLatexPrompt(options, images, { citations: Boolean(citations), biblatex: Boolean(citations?.biblatex) }), signal, progress, complete);
+  const thread = new LatexThread(withAiCustomInstruction(buildLatexPrompt(options, images, { citations: Boolean(citations), biblatex: Boolean(citations?.biblatex) }), "latex"), signal, progress, complete);
   let pieces: LatexPieces = { opening: await thread.produce(openingTask(plan), "Preparing shared LaTeX preamble", parseOpening), bodies: [] };
   // biblatex citations: Libera loads biblatex and the export's .bib itself.
   if (citations?.biblatex) pieces = { ...pieces, opening: addBiblatexPreamble(pieces.opening, biblatexPreamble(citations.biblatex.style, citations.biblatex.bibFileName)) };

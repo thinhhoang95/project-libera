@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { getAiFunctionOptions, getAiRewriteCustomInstruction } from "@/lib/ai-preferences";
+import { AiTaskChoiceError, getAiCustomInstruction, getAiTaskOptions } from "@/lib/ai-preferences";
 import { AI_EDIT_THREAD_RULES, formatDocumentContext, INSERTION_MARKER, MAX_AI_EDIT_TURNS, readDocumentContext, SELECTION_END_MARKER, SELECTION_START_MARKER, type AiDocumentContext } from "@/lib/ai-document-context";
 import { createOpenRouterCompletion, normalizeMarkdownOutput, type OpenRouterMessage } from "@/lib/openrouter";
 import { latexEditPrompt, normalizeLatexOutput } from "@/lib/latex/ai-prompts";
@@ -102,14 +102,16 @@ function userMessage(action: AiEditAction, language: string, prompt: string, tex
 }
 
 /** `signal` is the incoming request's, so a cancelled edit stops the model call too (even while it is still reasoning). */
-export async function runAiEdit(action: AiEditAction, body: { prompt?: string; text?: string; before?: string; after?: string; format?: string; thread?: unknown }, signal?: AbortSignal) {
+export async function runAiEdit(action: AiEditAction, body: { prompt?: string; text?: string; before?: string; after?: string; format?: string; thread?: unknown; model?: unknown; reasoningEffort?: unknown }, signal?: AbortSignal) {
   const latex = body.format === "latex";
   const language = latex ? "LaTeX" : "Markdown";
   const thread = readThread(body.thread);
-  const options = getAiFunctionOptions(action);
+  let options: ReturnType<typeof getAiTaskOptions>;
+  try { options = getAiTaskOptions(action, body); }
+  catch (error) { throw error instanceof AiTaskChoiceError ? new AiEditRequestError(error.message, 400) : error; }
   // Without prompt caching a thread only resends history at full price.
   const turns = options.promptCaching ? thread?.turns ?? [] : [];
-  const customInstruction = getAiRewriteCustomInstruction().trim();
+  const customInstruction = getAiCustomInstruction(action).trim();
   const user = userMessage(action, language, body.prompt?.trim() ?? "", body.text ?? "", readDocumentContext(body), turns.length > 0);
   const messages: OpenRouterMessage[] = [
     { role: "system", content: latex ? latexEditPrompt(customInstruction) : await markdownEditPrompt(customInstruction) },

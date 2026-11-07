@@ -2,12 +2,13 @@
 
 import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
 import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, MessageSquarePlus, PenLine, Rows3, Sparkles, Volume2 } from "lucide-react";
 import { speakMarkdown } from "@/lib/tts/player";
+import { AiModelPicker, aiTaskRequestOptions } from "./ai-model-picker";
 import { apiRequest } from "./api-client";
 import { QuickPromptInput } from "./quick-prompt-input";
 import { readIncludeDocumentContext } from "./ai-document-context-preference";
@@ -121,7 +122,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
       } else setSuggestText("");
       setPopup({ from, to, image, tableCell,
         x: Math.max(8, Math.min(point.left, window.innerWidth - 296)),
-        y: Math.max(8, Math.min(point.top, window.innerHeight - 420)),
+        y: Math.max(8, Math.min(point.top, window.innerHeight - 480)),
       });
     }
     const dom = editor.view.dom;
@@ -132,6 +133,13 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
       dom.removeEventListener("keydown", openContextMenu);
     };
   }, [editor]);
+
+  // What the menu holds varies, so its place in the window comes from its real height.
+  useLayoutEffect(() => {
+    if (!popup || !menuRef.current) return;
+    const y = Math.max(8, Math.min(popup.y, window.innerHeight - menuRef.current.offsetHeight - 8));
+    if (y !== popup.y) setPopup({ ...popup, y });
+  }, [popup]);
 
   useEffect(() => {
     if (!popup) return;
@@ -230,19 +238,19 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
         markdown = result.markdown;
       } else if (action === "write") {
         const result = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", {
-          ...init, body: JSON.stringify({ prompt: writePrompt.trim(), ...context, thread }),
+          ...init, body: JSON.stringify({ prompt: writePrompt.trim(), ...context, thread, ...aiTaskRequestOptions("write") }),
         });
         if (!controller.signal.aborted) recordAiEditTurn(documentPath, includeDocument, thread, result.thread);
         markdown = result.markdown;
       } else if (action === "rewrite") {
         const result = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", {
-          ...init, body: JSON.stringify({ text, prompt: prompt.trim(), ...context, thread }),
+          ...init, body: JSON.stringify({ text, prompt: prompt.trim(), ...context, thread, ...aiTaskRequestOptions("rewrite") }),
         });
         if (!controller.signal.aborted) recordAiEditTurn(documentPath, includeDocument, thread, result.thread);
         markdown = result.rewrittenText;
       } else {
         const result = await apiRequest<{ formattedText: string }>("/api/ai-format", {
-          ...init, body: JSON.stringify({ text }),
+          ...init, body: JSON.stringify({ text, ...aiTaskRequestOptions("formatting") }),
         });
         markdown = result.formattedText;
       }
@@ -303,6 +311,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
       <QuickPromptInput id="visual-ai-write" placeholder="What should AI write? Type / for prompts" value={writePrompt} disabled={!!working} onChange={setWritePrompt} onSubmit={() => void runAi("write")} />
       <button type="submit" aria-label="Write new text with AI" title="Write new text with AI" disabled={!!working || !writePrompt.trim()} className="h-8 shrink-0 rounded-md bg-primary px-2 text-primary-foreground disabled:opacity-50"><PenLine aria-hidden className="h-4 w-4" /></button>
     </div>
+    <AiModelPicker task="write" disabled={!!working} className="mt-1" />
     <AiEditOptions id="visual-ai-document-context" documentPath={documentPath} />
   </form>;
 
@@ -335,6 +344,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
         {!writeOnly ? <>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => { speakMarkdown(getTiptapSelectionMarkdown(editor, popup), { label: "Selection" }); setPopup(null); }}><Volume2 aria-hidden className="h-4 w-4" />Read Out Loud</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!!working || !hasText} onClick={() => void runAi("format")}><Sparkles aria-hidden className="h-4 w-4" />AI Format</button>
+          <AiModelPicker task="formatting" disabled={!!working} className="-mt-1.5 mb-0.5 pl-[34px] pr-2" />
           <button type="button" role="menuitem" className={menuItemClass} disabled={!canIndent} onClick={() => { changeTiptapHeadingLevels(editor, popup, "indent"); setPopup(null); editor.commands.focus(); }}><ListIndentIncrease aria-hidden className="h-4 w-4" />Indent Headings</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!canUnindent} onClick={() => { changeTiptapHeadingLevels(editor, popup, "unindent"); setPopup(null); editor.commands.focus(); }}><ListIndentDecrease aria-hidden className="h-4 w-4" />Unindent Headings</button>
         </> : null}
@@ -355,6 +365,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
               <QuickPromptInput id="visual-ai-rewrite" value={prompt} disabled={!!working || !hasText} onChange={setPrompt} onSubmit={() => void runAi("rewrite")} />
               <button type="submit" aria-label="Rewrite selected text" disabled={!!working || !hasText || !prompt.trim()} className="h-8 rounded-md bg-primary px-2 text-primary-foreground disabled:opacity-50"><Sparkles aria-hidden className="h-4 w-4" /></button>
             </div>
+            <AiModelPicker task="rewrite" disabled={!!working} className="mt-1" />
           </form>
           {writeForm}
         </> : null}

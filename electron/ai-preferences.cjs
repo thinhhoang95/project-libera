@@ -1,3 +1,5 @@
+const { normalizeLocalLlms } = require("./local-llms.cjs");
+
 const DEFAULT_AI_MODEL = "openai/gpt-6-luna";
 const AI_FUNCTIONS = ["formatting", "rewrite", "write", "chat", "review", "recordingRecap", "imageToMarkdown", "latex"];
 const AI_FUNCTION_ENV_NAMES = {
@@ -17,20 +19,51 @@ const AI_FUNCTION_ENV_NAMES = {
  */
 const AI_FUNCTION_PARENTS = { write: "rewrite", review: "chat", recordingRecap: "formatting" };
 const REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-const MAX_ALTERNATIVE_MODELS = 50;
+/** The functions that choose their model from the Model Pool; the rest name their own. */
+const POOL_FUNCTIONS = ["formatting", "rewrite", "write", "chat", "review"];
+const MAX_MODEL_POOL = 50;
 
-function normalizeAlternativeModels(input, defaultModel = "") {
+function isModelSlug(value) {
+  return !!value && value.length <= 200 && !/[\u0000-\u001f\u007f\s]/.test(value);
+}
+
+function customInstruction(input) {
+  return typeof input?.customInstruction === "string" ? input.customInstruction : "";
+}
+
+/**
+ * Preferences → AI → Model Pool: the models AI Formatting, AI Rewrite, Write
+ * with AI, AI Chat and the Agent, Agentic Review and Generate Definitions
+ * choose from. `required` are the models those functions are set to: they
+ * always stay in the pool, and are never the ones cut at the limit.
+ */
+function normalizeModelPool(input, required = []) {
   const values = Array.isArray(input)
     ? input
     : typeof input === "string"
       ? input.split(/\r?\n/)
       : [];
-  const normalizedDefault = typeof defaultModel === "string" ? defaultModel.trim() : "";
-
-  return Array.from(new Set(values
+  const listed = Array.from(new Set(values
     .map((value) => typeof value === "string" ? value.trim() : "")
-    .filter((value) => value && value !== normalizedDefault && value.length <= 200 && !/[\u0000-\u001f\u007f\s]/.test(value))))
-    .slice(0, MAX_ALTERNATIVE_MODELS);
+    .filter(isModelSlug)));
+  const kept = new Set(required.filter(isModelSlug));
+  const room = Math.max(0, MAX_MODEL_POOL - kept.size);
+  let extra = 0;
+  const pool = listed.filter((model) => kept.has(model) || extra++ < room);
+  return [...pool, ...[...kept].filter((model) => !pool.includes(model))];
+}
+
+/**
+ * Preferences → AI → Generate Definitions: what the Agent starts with when
+ * the Definitions tab asks it for cards. Empty means "same as the AI panel".
+ */
+function normalizeDefinitionsPreferences(input) {
+  const model = typeof input?.model === "string" ? input.model.trim() : "";
+  return {
+    model: isModelSlug(model) ? model : "",
+    reasoningEffort: REASONING_EFFORTS.includes(input?.reasoningEffort) ? input.reasoningEffort : "",
+    customInstruction: customInstruction(input),
+  };
 }
 
 const REFERENCE_EMAIL = /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/;
@@ -52,6 +85,7 @@ function normalizeReferencePreferences(input) {
     webSearch: typeof input?.webSearch === "boolean" ? input.webSearch : false,
     contactEmail: contactEmail.length <= 254 && REFERENCE_EMAIL.test(contactEmail) ? contactEmail : "",
     autoCreateForPdfs: typeof input?.autoCreateForPdfs === "boolean" ? input.autoCreateForPdfs : false,
+    customInstruction: customInstruction(input),
   };
 }
 
@@ -70,6 +104,7 @@ function normalizeWhereWasIPreferences(input) {
     summarize: typeof input?.summarize === "boolean" ? input.summarize : true,
     model: model && model.length <= 200 && !/[\u0000-\u001f\u007f\s]/.test(model) ? model : DEFAULT_WHERE_WAS_I_MODEL,
     reasoningEffort: REASONING_EFFORTS.includes(input?.reasoningEffort) ? input.reasoningEffort : "low",
+    customInstruction: customInstruction(input),
   };
 }
 
@@ -91,6 +126,7 @@ function normalizePdfToMarkdownPreferences(input) {
     reasoningEffort: REASONING_EFFORTS.includes(input?.reasoningEffort) ? input.reasoningEffort : "low",
     concurrency: Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 16 ? concurrency : 6,
     cleanup: typeof input?.cleanup === "boolean" ? input.cleanup : true,
+    customInstruction: customInstruction(input),
   };
 }
 
@@ -134,13 +170,31 @@ function normalizeAiRouting(input) {
 }
 
 function normalizeAiPreferences(input, defaultModel = DEFAULT_AI_MODEL) {
+  const functions = normalizeAiFunctionPreferences(input, defaultModel);
+  const definitions = normalizeDefinitionsPreferences(input?.definitions);
   return {
-    ...normalizeAiFunctionPreferences(input, defaultModel),
+    ...functions,
     references: normalizeReferencePreferences(input?.references),
     whereWasI: normalizeWhereWasIPreferences(input?.whereWasI),
     pdfToMarkdown: normalizePdfToMarkdownPreferences(input?.pdfToMarkdown),
+    definitions,
+    // AI Chat's alternative models became the pool; configs from before it still hold them there.
+    modelPool: normalizeModelPool(input?.modelPool ?? input?.chat?.alternativeModels, [...POOL_FUNCTIONS.map((name) => functions[name].model), definitions.model]),
+    localLlms: normalizeLocalLlms(input?.localLlms),
     routing: normalizeAiRouting(input?.routing),
   };
+}
+
+/**
+ * The AI settings the server takes from its environment when it starts.
+ * Everything else, custom system prompts included, is read from the config
+ * file on each request, so changing it needs no restart.
+ */
+function aiPreferencesNeedingRestart(preferences) {
+  const live = new Set(["whereWasI", "pdfToMarkdown", "routing", "definitions", "modelPool", "localLlms"]);
+  return Object.fromEntries(Object.entries(preferences)
+    .filter(([name]) => !live.has(name))
+    .map(([name, value]) => [name, { ...value, customInstruction: undefined }]));
 }
 
 function normalizeAiFunctionPreferences(input, defaultModel) {
@@ -156,12 +210,7 @@ function normalizeAiFunctionPreferences(input, defaultModel) {
       model: model || parent?.model || (name === "latex" ? "openai/gpt-5.6-luna" : defaultModel),
       promptCaching: typeof value?.promptCaching === "boolean" ? value.promptCaching : inherited ? inherited.promptCaching : ["chat", "rewrite"].includes(name),
       reasoningEffort: REASONING_EFFORTS.includes(value?.reasoningEffort) ? value.reasoningEffort : inherited ? inherited.reasoningEffort : name === "latex" ? "low" : "medium",
-      ...(["rewrite", "chat"].includes(name) ? {
-        customInstruction: typeof value?.customInstruction === "string" ? value.customInstruction : "",
-      } : {}),
-      ...(name === "chat" ? {
-        alternativeModels: normalizeAlternativeModels(value?.alternativeModels, model || defaultModel),
-      } : {}),
+      customInstruction: customInstruction(value),
     };
   }
   return normalized;
@@ -190,6 +239,9 @@ function aiPreferencesEnvironment(preferences, defaultModel) {
     LIBERA_AI_PDF_TO_MARKDOWN_REASONING_EFFORT: normalized.pdfToMarkdown.reasoningEffort,
     LIBERA_PDF_TO_MARKDOWN_CONCURRENCY: String(normalized.pdfToMarkdown.concurrency),
     LIBERA_PDF_TO_MARKDOWN_CLEANUP: String(normalized.pdfToMarkdown.cleanup),
+    LIBERA_AI_DEFINITIONS_MODEL: normalized.definitions.model,
+    LIBERA_AI_DEFINITIONS_REASONING_EFFORT: normalized.definitions.reasoningEffort,
+    LIBERA_AI_MODEL_POOL: JSON.stringify(normalized.modelPool),
     LIBERA_AI_ROUTING: JSON.stringify(normalized.routing),
   };
 }
@@ -199,7 +251,6 @@ function aiFunctionEnvironment(normalized) {
     [`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_MODEL`, value.model],
     [`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_PROMPT_CACHING`, String(value.promptCaching)],
     [`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_REASONING_EFFORT`, value.reasoningEffort],
-    ...(name === "chat" ? [[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_ALTERNATIVE_MODELS`, JSON.stringify(value.alternativeModels)]] : []),
   ]));
 }
-module.exports = { DEFAULT_AI_MODEL, AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, AI_FUNCTION_PARENTS, REASONING_EFFORTS, ROUTING_FUNCTIONS, DEFAULT_WHERE_WAS_I_MODEL, DEFAULT_PDF_TO_MARKDOWN_MODEL, normalizeAlternativeModels, normalizeAiPreferences, normalizeReferencePreferences, normalizeWhereWasIPreferences, normalizePdfToMarkdownPreferences, normalizeRoutingPreferences, aiPreferencesEnvironment };
+module.exports = { DEFAULT_AI_MODEL, AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, AI_FUNCTION_PARENTS, POOL_FUNCTIONS, REASONING_EFFORTS, ROUTING_FUNCTIONS, DEFAULT_WHERE_WAS_I_MODEL, DEFAULT_PDF_TO_MARKDOWN_MODEL, normalizeModelPool, normalizeAiPreferences, normalizeDefinitionsPreferences, normalizeReferencePreferences, normalizeWhereWasIPreferences, normalizePdfToMarkdownPreferences, normalizeRoutingPreferences, aiPreferencesEnvironment, aiPreferencesNeedingRestart };

@@ -14,17 +14,16 @@ test("chat authenticates, validates input, and uses the configured Preferences m
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENROUTER_API_KEY;
   const originalModel = process.env.LIBERA_OPENROUTER_MODEL;
-  const originalAlternativeModels = process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS;
+  const originalAlternativeModels = process.env.LIBERA_AI_MODEL_POOL;
   const originalInstruction = process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION;
   const originalConfigPath = process.env.LIBERA_CONFIG_PATH;
   const originalInlineMarkers = process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS;
   const originalBlockMarkers = process.env.LIBERA_MARKDOWN_BLOCK_MATH_MARKERS;
   const configDirectory = mkdtempSync(path.join(os.tmpdir(), "libera-chat-route-"));
   const configPath = path.join(configDirectory, "libera-electron-config.json");
-  writeFileSync(configPath, JSON.stringify({ aiFunctions: { chat: { customInstruction: "Use a two-sentence maximum." } } }));
+  writeFileSync(configPath, JSON.stringify({ aiFunctions: { chat: { customInstruction: "Use a two-sentence maximum." }, modelPool: ["test/alternative-model", "test/preferences-model"] } }));
   process.env.OPENROUTER_API_KEY = "test-key";
   process.env.LIBERA_OPENROUTER_MODEL = "test/preferences-model";
-  process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS = JSON.stringify(["test/alternative-model", "test/preferences-model"]);
   delete process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION;
   process.env.LIBERA_CONFIG_PATH = configPath;
   process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS = "@@ @@\n\\( \\)";
@@ -68,7 +67,7 @@ test("chat authenticates, validates input, and uses the configured Preferences m
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = originalKey;
     if (originalModel === undefined) delete process.env.LIBERA_OPENROUTER_MODEL; else process.env.LIBERA_OPENROUTER_MODEL = originalModel;
-    if (originalAlternativeModels === undefined) delete process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS; else process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS = originalAlternativeModels;
+    if (originalAlternativeModels === undefined) delete process.env.LIBERA_AI_MODEL_POOL; else process.env.LIBERA_AI_MODEL_POOL = originalAlternativeModels;
     if (originalInstruction === undefined) delete process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION; else process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION = originalInstruction;
     if (originalConfigPath === undefined) delete process.env.LIBERA_CONFIG_PATH; else process.env.LIBERA_CONFIG_PATH = originalConfigPath;
     if (originalInlineMarkers === undefined) delete process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS; else process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS = originalInlineMarkers;
@@ -83,7 +82,7 @@ test("selected Gemini model keeps a stable implicit-cache prefix across streamed
     OPENROUTER_API_KEY: "test-key",
     LIBERA_CONFIG_PATH: "",
     LIBERA_AI_CHAT_MODEL: "test/default-chat-model",
-    LIBERA_AI_CHAT_ALTERNATIVE_MODELS: JSON.stringify(["google/gemini-3.8-flash"]),
+    LIBERA_AI_MODEL_POOL: JSON.stringify(["google/gemini-3.8-flash"]),
     LIBERA_AI_CHAT_PROMPT_CACHING: "true",
     LIBERA_AI_CHAT_CUSTOM_INSTRUCTION: "Use concise answers.",
   };

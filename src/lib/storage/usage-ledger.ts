@@ -36,8 +36,8 @@ export function appendUsageEntry(entry: UsageEntry) {
  * response: losing a line of spending history is better than failing a request.
  */
 export function recordOpenRouterUsage(model: string, usage: unknown, provider?: string) {
-  // Off in tests, whose OpenRouter responses are stubs.
-  if (process.env.LIBERA_USAGE_LEDGER === "off") return;
+  // Off in tests, whose OpenRouter responses are stubs. Local models cost nothing to track.
+  if (process.env.LIBERA_USAGE_LEDGER === "off" || model.startsWith("local/")) return;
   try {
     const entry = usageEntryFromOpenRouter(model, usage, Date.now(), provider);
     if (entry) void appendUsageEntry(entry).catch(() => undefined);

@@ -233,7 +233,7 @@ A run stops after 50 model turns, 20 minutes or 5 million input tokens (child ru
 
 ## Models
 
-Agent mode uses the chat model picker and reasoning effort. The model must support tool calling on OpenRouter; Libera checks the model's providers, routes only to providers that accept every parameter sent (tools included), and sends `temperature` or `reasoning` only where those providers accept them. Prompt caching follows the chat setting, with cache markers on the latest tool results for providers that need them.
+Agent mode uses the chat model picker and reasoning effort. Drag sideways on the composer's reasoning effort to step through the levels, or click it for the list. The model must support tool calling on OpenRouter; Libera checks the model's providers, routes only to providers that accept every parameter sent (tools included), and sends `temperature` or `reasoning` only where those providers accept them. Prompt caching follows the chat setting, with cache markers on the latest tool results for providers that need them.
 
 ## Implementation
 

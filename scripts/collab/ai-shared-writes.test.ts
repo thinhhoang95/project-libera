@@ -281,7 +281,7 @@ interface Fixture {
   disk(relative: string): string;
 }
 
-const ENV_KEYS = ["LIBERA_DATA_DIR", "LIBERA_COLLAB_HOST_URL", "LIBERA_COLLAB_HOST_TOKEN", "OPENROUTER_API_KEY", "LIBERA_OPENROUTER_MODEL", "LIBERA_AI_CHAT_ALTERNATIVE_MODELS", "LIBERA_AI_CHAT_CUSTOM_INSTRUCTION"] as const;
+const ENV_KEYS = ["LIBERA_DATA_DIR", "LIBERA_COLLAB_HOST_URL", "LIBERA_COLLAB_HOST_TOKEN", "OPENROUTER_API_KEY", "LIBERA_OPENROUTER_MODEL", "LIBERA_AI_MODEL_POOL", "LIBERA_AI_CHAT_CUSTOM_INSTRUCTION"] as const;
 
 /** A library with a shared notebook "Shared" (served by the fake host) and an ordinary notebook "Local". */
 async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<void> {
@@ -318,7 +318,7 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<vo
   process.env.LIBERA_COLLAB_HOST_TOKEN = host.token;
   process.env.OPENROUTER_API_KEY = "test-key";
   process.env.LIBERA_OPENROUTER_MODEL = "test/agent-model";
-  process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS = JSON.stringify([]);
+  process.env.LIBERA_AI_MODEL_POOL = JSON.stringify([]);
   delete process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION;
   try {
     await run({ root, host, disk: (relative) => readFileSync(path.join(root, ...relative.split("/")), "utf8") });

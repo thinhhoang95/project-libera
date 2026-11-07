@@ -48,10 +48,9 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   removeProfile: (id, password) => ipcRenderer.invoke("setup:remove-profile", id, password),
   switchProfile: (id) => ipcRenderer.invoke("setup:switch-profile", id),
   openPage: (page) => ipcRenderer.invoke("setup:open-page", page),
-  loadAiChatCustomInstructionFile: () =>
-    ipcRenderer.invoke("setup:load-ai-chat-custom-instruction-file"),
-  loadAiRewriteCustomInstructionFile: () =>
-    ipcRenderer.invoke("setup:load-ai-rewrite-custom-instruction-file"),
+  loadAiSystemPromptFile: () => ipcRenderer.invoke("setup:load-ai-system-prompt-file"),
+  listLocalLlmModels: (endpoint) => ipcRenderer.invoke("setup:list-local-llm-models", endpoint),
+  testLocalLlm: (endpoint) => ipcRenderer.invoke("setup:test-local-llm", endpoint),
 });
 
 contextBridge.exposeInMainWorld("liberaExport", {

@@ -7,6 +7,7 @@ import { speakMarkdown } from "@/lib/tts/player";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AiEditOptions } from "@/components/libera/ai-edit-thread";
+import { AiModelPicker } from "@/components/libera/ai-model-picker";
 import { QuickPromptInput } from "@/components/libera/quick-prompt-input";
 import { isLatexAiWorking, runLatexAi } from "./latex-ai";
 
@@ -107,6 +108,7 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
             {working ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Wand2 aria-hidden className="h-4 w-4" />}
             AI Format as LaTeX
           </button>
+          <AiModelPicker task="formatting" disabled={working} className="-mt-0.5 mb-0.5 pl-[34px] pr-2" />
           <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); run("rewrite", rewritePrompt); }}>
             <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="latex-ai-rewrite"><Sparkles aria-hidden className="h-3.5 w-3.5" />AI Rewrite</label>
             <div className="mt-1 flex items-start gap-2">
@@ -115,6 +117,7 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
                 <Sparkles aria-hidden className="h-4 w-4" />
               </button>
             </div>
+            <AiModelPicker task="rewrite" disabled={working} className="mt-1" />
           </form>
         </>
       ) : null}
@@ -126,6 +129,7 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
             <PenLine aria-hidden className="h-4 w-4" />
           </button>
         </div>
+        <AiModelPicker task="write" disabled={working} className="mt-1" />
         <AiEditOptions id="latex-ai-document-context" documentPath={documentPath} />
       </form>
       <div className="mt-1 border-t border-border pt-1">

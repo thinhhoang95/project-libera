@@ -4,6 +4,7 @@ import { ImageIcon, ListIndentDecrease, ListIndentIncrease, Loader2, PenLine, Sp
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
 import { AiEditOptions } from "../ai-edit-thread";
+import { AiModelPicker } from "../ai-model-picker";
 import { QuickPromptInput } from "../quick-prompt-input";
 import { PasteMenuItems, type MenuPasteMode } from "../paste-menu-items";
 import { changeSelectedHeadingLevels, findMarkdownImageInText } from "@/lib/markdown-source";
@@ -25,7 +26,7 @@ const MENU_WIDTH = 288;
 
 /** Where the menu opens: at the pointer, kept inside the window. */
 export function sourceContextMenuPosition(clientX: number, clientY: number, hasText: boolean, hasImage: boolean) {
-  const height = (hasText ? 384 : 114) + 90 + (hasImage ? 44 : 0);
+  const height = (hasText ? 444 : 136) + 90 + (hasImage ? 44 : 0);
   return {
     x: Math.max(8, Math.min(clientX, window.innerWidth - MENU_WIDTH - 8)),
     y: Math.max(8, Math.min(clientY, window.innerHeight - height - 8)),
@@ -159,6 +160,7 @@ export function MarkdownSourceContextMenu({
             {formatting ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Sparkles aria-hidden className="h-4 w-4" />}
             {formatting ? "Formatting..." : "AI Format"}
           </button>
+          <AiModelPicker task="formatting" disabled={aiWorking} className="-mt-1.5 mb-0.5 pl-[34px] pr-2" />
           <button className={ITEM_CLASS} type="button" role="menuitem" disabled={!canIndent} onClick={() => onHeadingLevels("indent")}>
             <ListIndentIncrease aria-hidden className="h-4 w-4" />
             Indent Headings
@@ -183,6 +185,7 @@ export function MarkdownSourceContextMenu({
                 {formatting ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Sparkles aria-hidden className="h-4 w-4" />}
               </button>
             </div>
+            <AiModelPicker task="rewrite" disabled={aiWorking} className="mt-1" />
           </form>
         </>
       ) : null}
@@ -206,6 +209,7 @@ export function MarkdownSourceContextMenu({
             <PenLine aria-hidden className="h-4 w-4" />
           </button>
         </div>
+        <AiModelPicker task="write" disabled={aiWorking} className="mt-1" />
         <AiEditOptions id="ai-document-context" documentPath={documentPath} />
       </form>
       {menu.image ? (

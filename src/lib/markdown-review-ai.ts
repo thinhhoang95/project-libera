@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { getAiFunctionOptions } from "./ai-preferences";
+import { getAiFunctionOptions, withAiCustomInstruction } from "./ai-preferences";
+import { isLocalModel } from "./local-llm";
 import { createOpenRouterCompletion, getOpenRouterApiKey } from "./openrouter";
 import { applyReviewEdits, commentsKey, parseReviewJson, reviewBlocks, validatePlan, validateSuggestions, type ReviewDocument, type ReviewSession, type ReviewThread } from "./markdown-review";
 import type { ChatContext } from "./document-chat";
@@ -20,6 +21,8 @@ Separate independently useful changes. Put edits that MUST be accepted together 
 Report inability to complete a requested change in summary instead of inventing content. For revision, replace ONLY the requested suggestion, using the latest draft and decision history; never reintroduce rejected or already accepted changes. A revised suggestion must preserve its original comment coverage.`;
 
 async function preflight(messages: { role: "system" | "user"; content: string }[], model: string, signal: AbortSignal) {
+  // Local servers do not list their context window; they refuse what does not fit.
+  if (isLocalModel(model)) return 8192;
   const response = await fetch("https://openrouter.ai/api/v1/models", { signal, headers: { Authorization: `Bearer ${getOpenRouterApiKey()}` } });
   if (!response.ok) throw new Error("Could not check model context capacity. Retry before sending the full review.");
   const payload = await response.json() as { data?: { id: string; context_length: number; top_provider?: { max_completion_tokens?: number | null } }[] };
@@ -66,7 +69,7 @@ export async function generateReview(doc: ReviewDocument, prompt: string, ids: s
   }
   const options = getAiFunctionOptions("review");
   const context = { target: { name: doc.key, markdown: doc.snapshot, blocks: reviewBlocks(doc.snapshot) }, comments: commentsForModel(selected), references, previousPlan: previous?.plan, history: previous?.messages, decisions: previous?.suggestions, reviseOnly: targetSuggestion, userRequest: prompt };
-  const messages: { role: "system" | "user"; content: string }[] = [{ role: "system", content: stage === "plan" ? REVIEW_PLAN_PROMPT : REVIEW_CHANGES_PROMPT }, { role: "user", content: JSON.stringify(context) }];
+  const messages: { role: "system" | "user"; content: string }[] = [{ role: "system", content: withAiCustomInstruction(stage === "plan" ? REVIEW_PLAN_PROMPT : REVIEW_CHANGES_PROMPT, "review") }, { role: "user", content: JSON.stringify(context) }];
   const outputBudget = await preflight(messages, options.model, signal);
   let diagnostic = "";
   for (let attempt = 0; attempt < 3; attempt++) {
