@@ -74,7 +74,7 @@ test("remaining sync transition boundaries", { timeout: 180_000 }, async (t) => 
       const gate = new Promise((resolve) => { release = resolve; });
       const external = "external input during delete archive\n";
       fs.writeFile = async (target, ...args) => {
-        if (!held && path.dirname(String(target)) === root && path.basename(String(target)).startsWith(".libera-tmp-")) {
+        if (!held && String(target).startsWith(`${root}${path.sep}`) && path.basename(String(target)).startsWith(".libera-tmp-")) {
           held = true; await gate;
         }
         return write(target, ...args);
@@ -138,21 +138,14 @@ test("remaining sync transition boundaries", { timeout: 180_000 }, async (t) => 
       const root = path.join(member.library, `Join-${replacement}`);
       const token = await invite(server, ownerAuth, shared.projectId, memberAuth.account.email, "editor");
       const write = fs.writeFile;
-      const mkdir = fs.mkdir;
       let held = false;
       let release = () => {};
       const gate = new Promise((resolve) => { release = resolve; });
       fs.writeFile = async (target, ...args) => {
-        if (replacement === "foreign" && !held && path.dirname(String(target)) === root && path.basename(String(target)).startsWith(".libera-tmp-")) {
+        if (!held && path.dirname(String(target)) === root && path.basename(String(target)).startsWith(".libera-tmp-")) {
           held = true; await gate;
         }
         return write(target, ...args);
-      };
-      fs.mkdir = async (target, ...args) => {
-        if (replacement === "missing" && !held && target === root && args[0]?.recursive) {
-          held = true; await gate;
-        }
-        return mkdir(target, ...args);
       };
       const joining = resultOf(member.service.join({ invitation: token }));
       try {
@@ -181,7 +174,7 @@ test("remaining sync transition boundaries", { timeout: 180_000 }, async (t) => 
           joiningAccountId: memberAuth.account.id, foreignProjectAccessForInviter: foreignAccess.status, disclosed });
         if (replacement === "missing") assert.equal(existsSync(root), false, "a suspended join must not recreate the removed root");
         else assert.equal(marker, foreignMarker, "a suspended join must retain the newly delivered project's marker");
-      } finally { release(); fs.writeFile = write; fs.mkdir = mkdir; await joining; }
+      } finally { release(); fs.writeFile = write; await joining; }
     });
 
     await scenario("control: account changes cancel a pending invitation response", async (peer) => {
@@ -287,7 +280,7 @@ test("remaining sync transition boundaries", { timeout: 180_000 }, async (t) => 
       let release = () => {};
       const gate = new Promise((resolve) => { release = resolve; });
       fs.rm = async (target, ...args) => {
-        if (!held && target === path.join(root, "common.png")) { held = true; await gate; }
+        if (!held && (target === path.join(root, "common.png") || String(target).includes(`${path.sep}album-cleanup${path.sep}`))) { held = true; await gate; }
         return remove(target, ...args);
       };
       try {

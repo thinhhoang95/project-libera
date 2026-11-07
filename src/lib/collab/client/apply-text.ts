@@ -113,6 +113,13 @@ export function applyTextToSession(session: SharedDocSession, nextText: string, 
   return edits.length ? { applied: true, edits } : { applied: false, reason: "unchanged" };
 }
 
+/** Preserve any attachment draft the role or connection cannot adopt. */
+export function adoptPendingSharedDraft(session: SharedDocSession, draft: string, base: string, recover: (text: string) => void): ApplySharedResult {
+  const result = applyTextToSession(session, draft, { source: "typing" }, base);
+  if (!result.applied && result.reason !== "unchanged") recover(draft);
+  return result;
+}
+
 /**
  * `setTabDraft` for shared tabs: applies `nextText` to the tab's shared
  * document as minimal edits with `provenance`. `base` is the draft the caller

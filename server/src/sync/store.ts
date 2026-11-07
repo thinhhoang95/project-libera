@@ -110,6 +110,8 @@ export interface PersistInput {
   update: Uint8Array;
   /** File documents removed by this manifest update, tombstoned in the same transaction. */
   removedDocIds?: string[];
+  /** Every removed stable identity, including ordinary blobs and folders. */
+  removedFileIds?: string[];
   removedPdfFiles?: Array<{ id: string; fileId: string }>;
   /** Client updates are validated for this role; lock it through commit. */
   requiredAccess?: { projectId: string; role: Role };
@@ -162,6 +164,11 @@ export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promis
         size: input.update.length,
       })
       .execute();
+    if (input.subdoc === "manifest" && input.removedFileIds?.length) {
+      await trx.insertInto("file_tombstones").values(input.removedFileIds.map((fileId) => ({
+        project_id: row.project_id, file_id: fileId,
+      }))).onConflict((conflict) => conflict.columns(["project_id", "file_id"]).doNothing()).execute();
+    }
     if (input.subdoc === "manifest" && input.removedPdfFiles?.length) {
       await trx.insertInto("documents").values(input.removedPdfFiles.map(({ id, fileId }) => ({
         id, file_id: fileId, project_id: row.project_id, kind: "pdf" as const, created_by: input.accountId, deleted_at: new Date(),

@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { requireProjectAction } from "../auth/access.js";
+import { lockProjectAction, requireProjectAction } from "../auth/access.js";
 import { getBlobStore, isBlobHash } from "../blobs/index.js";
 import type { ServerContext } from "../context.js";
 import type { BlobsTable } from "../db/types.js";
@@ -84,12 +84,16 @@ export function registerBlobRoutes(app: FastifyInstance, context: ServerContext)
       if (!existing || !(await store.has(hash))) await store.put(hash, body, mimeOf(request.headers["content-type"]));
       if (existing) return reply.status(200).send(blobInfo(existing));
 
-      const row = await db
-        .insertInto("blobs")
-        .values({ project_id: projectId, hash, size: body.byteLength, mime: mimeOf(request.headers["content-type"]), created_by: accountId })
-        .onConflict((conflict) => conflict.columns(["project_id", "hash"]).doNothing())
-        .returningAll()
-        .executeTakeFirst();
+      // Access is checked again as the row commits: the body took time to arrive.
+      const row = await db.transaction().execute(async (trx) => {
+        await lockProjectAction(trx, projectId, accountId, "manage-files");
+        return trx
+          .insertInto("blobs")
+          .values({ project_id: projectId, hash, size: body.byteLength, mime: mimeOf(request.headers["content-type"]), created_by: accountId })
+          .onConflict((conflict) => conflict.columns(["project_id", "hash"]).doNothing())
+          .returningAll()
+          .executeTakeFirst();
+      });
       if (row) return reply.status(201).send(blobInfo(row));
       const raced = await db
         .selectFrom("blobs")

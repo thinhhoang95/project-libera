@@ -3,7 +3,7 @@
 // gallery. The collab host is a stub HTTP server here.
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -12,7 +12,7 @@ import path from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 
-import type { LocalAlbum } from "../../src/lib/collab/local-api";
+import type { FileOpRequest, LocalAlbum } from "../../src/lib/collab/local-api";
 import { parsePhotoEdits } from "../../src/lib/photo-edits";
 import {
   archivePhotos, createAlbum, deleteAlbum, deletePhotos, editPhoto, getGallery, getGalleryRoot, renameAlbum, revertPhoto,
@@ -61,8 +61,42 @@ class HostStub {
         return reply(200, { original: "shared-original.png" });
       }
       if (request.method === "POST" && /^\/albums\/[^/]+$/.test(url)) return reply(200, this.albums[0]);
+      const files = /^\/projects\/([^/]+)\/files$/.exec(url);
+      if (request.method === "POST" && files) return this.fileOp(decodeURIComponent(files[1]), body as FileOpRequest, reply);
       reply(404, { error: { code: "not-found", message: "No route." } });
     });
+  }
+
+  /**
+   * The host's file operations on an album, as it makes them: shared photo
+   * changes go through the host (review finding R17), which checks the
+   * expected identity and bytes, changes the folder and lists the result.
+   */
+  private async fileOp(projectId: string, op: FileOpRequest, reply: (status: number, value: unknown) => void) {
+    const target = this.albums.find((entry) => entry.projectId === projectId);
+    if (!target) return reply(404, { error: { code: "not-found", message: "No such project." } });
+    const folder = path.join(getGalleryRoot(), target.folder);
+    const file = path.join(folder, op.path);
+    const listed = target.photos.find((photo) => photo.name.toLowerCase() === op.path.toLowerCase());
+    const current = await readFile(file).catch(() => null);
+    const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+    const conflict = (message: string) => reply(409, { error: { code: "conflict", message } });
+    if (op.expectedFileId !== undefined && listed?.fileId !== op.expectedFileId) return conflict("This file identity changed.");
+    if (op.expectedBlobHash !== undefined && (!current || hash(current) !== op.expectedBlobHash)) return conflict("This file changed.");
+    if (op.op === "write-blob") {
+      if (op.createOnly && current) return conflict(`${op.path} already exists.`);
+      const bytes = op.stagedFile ? await readFile(path.join(folder, ".libera", "collab", "incoming", op.stagedFile)) : Buffer.from(op.contentBase64 ?? "", "base64");
+      await writeFile(file, bytes);
+      if (!listed) target.photos.push({ fileId: `fil_${randomUUID()}`, name: op.path, edited: false, addedBy: "acc_me", downloaded: true, updatedAt: Date.now() });
+      return reply(200, { paths: [`${target.folder}/${op.path}`] });
+    }
+    if (op.op === "delete") {
+      if (!listed) return reply(404, { error: { code: "not-found", message: `${op.path} is not in this album.` } });
+      await rm(file, { force: true });
+      target.photos = target.photos.filter((photo) => photo !== listed);
+      return reply(200, { paths: [`${target.folder}/${op.path}`] });
+    }
+    reply(400, { error: { code: "bad-request", message: "Unsupported operation." } });
   }
 
   setAlbums(albums: LocalAlbum[]) {

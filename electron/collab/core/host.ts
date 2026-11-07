@@ -191,7 +191,7 @@ export class CollabHost {
       }
       this.events.emit({ source: "commands", event });
     });
-    this.outcomesInstance = new CommandOutcomes(this.commandsInstance, () => this.clock.now());
+    this.outcomesInstance = new CommandOutcomes(this.commandsInstance, () => this.clock.now(), store);
     this.runLedger = openRunLedger(this.options.dbPath, () => this.clock.now());
     if (this.runLedger.previousRunUnclean) {
       this.journal.noteHostRestart();

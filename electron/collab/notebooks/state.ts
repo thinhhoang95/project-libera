@@ -101,13 +101,16 @@ export function isStaleCopy(record: LayoutRecord, hash: string, mtimeMs: number)
 
 /** Older unexplained bytes (including equal/coarse mtimes) need user intent. */
 export function isUncertainCopy(record: LayoutRecord, hash: string, mtimeMs: number): boolean {
-  return record.hash !== undefined && hash !== record.hash && record.mtimeMs !== undefined && mtimeMs <= record.mtimeMs;
+  return record.hash !== undefined && hash !== record.hash &&
+    (record.previous?.some((item) => item.hash === hash) === true || record.mtimeMs !== undefined && mtimeMs <= record.mtimeMs);
 }
 
 export interface ProjectState {
   version: 1;
   layout: Record<string, LayoutRecord>;
   reconciliations: Reconciliation[];
+  /** Missing bookkeeping cannot authorize automatic adoption of unexplained files. */
+  externalAdoptionRequired?: boolean;
 }
 
 function stateDirectory(root: string): string {
@@ -150,7 +153,7 @@ export function emptyState(): ProjectState {
 export async function readState(root: string, guard?: WriteGuard): Promise<ProjectState> {
   const file = path.join(stateDirectory(root), "state.json");
   const bytes = await readIfExists(file);
-  if (!bytes) return emptyState();
+  if (!bytes) return { ...emptyState(), externalAdoptionRequired: true };
   let value: unknown;
   try { value = JSON.parse(bytes.toString("utf8")); } catch { /* Preserve the unreadable input below. */ }
   if (validState(value)) return value;
@@ -162,7 +165,7 @@ export async function readState(root: string, guard?: WriteGuard): Promise<Proje
       if (error.code !== "EEXIST") throw error;
     });
   }
-  return emptyState();
+  return { ...emptyState(), externalAdoptionRequired: true };
 }
 
 const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -219,6 +222,8 @@ export interface PlannedFile {
   blobHash?: string;
   size?: number;
   mime?: string;
+  /** Immutable document payload saved before its first creation attempt. */
+  initialText?: string;
   /** Uploaded (document created or blob stored) on the server. */
   uploaded?: boolean;
 }

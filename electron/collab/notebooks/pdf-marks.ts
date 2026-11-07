@@ -105,6 +105,9 @@ export class PdfMarksRuntime {
   private stopped = false;
 
   private sidecarTimer: ReturnType<typeof setInterval> | null = null;
+  /** Looks again for sidecars of PDFs nobody has opened (they can arrive any time). */
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private discovering = false;
   /** The notebook's marker says live PDFs are on, for when the host cannot be asked. */
   private markerRecorded = false;
 
@@ -175,10 +178,25 @@ export class PdfMarksRuntime {
     }
   }
 
-  /** Opens the PDFs with work to merge and those others have marked. */
+  /**
+   * Opens the PDFs with work to merge and those others have marked. A sidecar
+   * can arrive long after its PDF (a cloud provider delivering a folder, a
+   * device back online), so unopened PDFs are checked again periodically:
+   * one missing-file check each, until their sidecar appears.
+   */
   private async discover(): Promise<void> {
     await this.refreshServerDocuments();
     await this.openWithSidecars([...this.entries.keys()]);
+    if (this.stopped || this.discoveryTimer) return;
+    this.discoveryTimer = setInterval(() => {
+      if (this.discovering || !this.enabled) return;
+      this.discovering = true;
+      const unopened = [...this.entries.keys()].filter((fileId) => !this.docs.has(fileId));
+      void this.openWithSidecars(unopened, 0)
+        .catch((error) => this.ctx.logger.warn(`Shared notebook ${this.ctx.notebook}: could not look for PDF annotations`, error))
+        .finally(() => { this.discovering = false; });
+    }, this.ctx.writeMs);
+    this.discoveryTimer.unref?.();
   }
 
   private async openWithSidecars(fileIds: string[], retries = 2): Promise<void> {
@@ -278,6 +296,7 @@ export class PdfMarksRuntime {
       // Only a PDF with no sidecar of its own can have an older one to merge.
       const bytes = current ?? await readIfExists(await this.sidecarToRead(doc.path));
       const sidecar = bytes ? JSON.parse(bytes.toString("utf8")) as Sidecar : null;
+      if (bytes && sidecar && !await this.keepRejected(doc, bytes.toString("utf8"))) return;
       const annotations = Array.isArray(sidecar?.annotations) ? sidecar.annotations.filter(validAnnotation) : [];
       // Server threads in a sidecar are copies of what the server holds. Only
       // comments written locally are new: importing a copy would duplicate a
@@ -362,6 +381,7 @@ export class PdfMarksRuntime {
     const bytes = Buffer.from(`${JSON.stringify(copy, null, 2)}\n`, "utf8");
     const hash = sha256(bytes);
     if (hash === expected) return;
+    if (observed && expected !== doc.observedHash && !await this.keepRejected(doc, observed.toString("utf8"), options.local === true || options.final === true)) return;
     const base = this.ctx.guard(options.local === true || options.final === true);
     const guard: WriteGuard = { root: base.root, canCommit: async () => {
       if (doc.path !== relative || !(await base.canCommit())) return false;
@@ -385,13 +405,13 @@ export class PdfMarksRuntime {
     return Promise.race([threads, late]).finally(() => clearTimeout(timer));
   }
 
-  /** Work the server refused stays in the notebook's state folder, for recovery. */
-  private async keepRejected(doc: PdfDoc, text: string): Promise<boolean> {
-    if (!this.ctx.canWriteDisk()) return false;
-    const target = path.join(this.ctx.root, ".libera", "collab", "rejected-pdf", `${doc.fileId}-${Date.now()}.json`);
+  /** Exact unreviewed local input stays in the notebook's state folder for recovery. */
+  private async keepRejected(doc: PdfDoc, text: string, finalizing = false): Promise<boolean> {
+    if (!finalizing && !this.ctx.canWriteDisk()) return false;
+    const target = path.join(this.ctx.root, ".libera", "collab", "rejected-pdf", `${doc.fileId}-${sha256(Buffer.from(text, "utf8"))}.json`);
     try {
-      await ensureDirectory(path.dirname(target), this.ctx.guard());
-      await writeFileAtomic(target, Buffer.from(text, "utf8"), this.ctx.guard());
+      await ensureDirectory(path.dirname(target), this.ctx.guard(finalizing));
+      await writeFileAtomic(target, Buffer.from(text, "utf8"), this.ctx.guard(finalizing));
       return true;
     } catch (error) {
       this.ctx.logger.warn(`Shared notebook ${this.ctx.notebook}: could not keep refused annotations`, error);
@@ -417,6 +437,8 @@ export class PdfMarksRuntime {
     this.stopped = true;
     if (this.sidecarTimer) clearInterval(this.sidecarTimer);
     this.sidecarTimer = null;
+    if (this.discoveryTimer) clearInterval(this.discoveryTimer);
+    this.discoveryTimer = null;
     // Only a copy still waiting for its delay has anything new to write.
     await Promise.all([...this.docs.values()].map((doc) => this.close(doc, doc.timer !== null || options.local === true, { ...options, final: true })));
   }

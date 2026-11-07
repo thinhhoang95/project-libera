@@ -6,6 +6,7 @@ import { Gauge, type Registry } from "prom-client";
 import type { ServerContext } from "../context.js";
 import { reportError } from "../observability/reporter.js";
 import { storageMetricsJob } from "../observability/storage-metrics.js";
+import { blobGcJob } from "./blob-gc.js";
 import { checkpointJob } from "./checkpoints.js";
 import { compactionJob } from "./compaction.js";
 import { digestJob } from "./digest.js";
@@ -24,7 +25,7 @@ export interface JobRunner {
   stop(): void;
 }
 
-export const jobs: Job[] = [compactionJob, checkpointJob, digestJob, storageMetricsJob];
+export const jobs: Job[] = [compactionJob, checkpointJob, digestJob, storageMetricsJob, blobGcJob];
 
 const lastSuccess = new WeakMap<Registry, Gauge<"name">>();
 

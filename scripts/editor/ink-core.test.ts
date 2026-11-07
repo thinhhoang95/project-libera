@@ -23,7 +23,7 @@ import {
 } from "../../src/lib/ink/frame";
 import { hitTestSamples, inflateRect, pathLength, simplifySamples, splitSamplesByCircle, strokeOutline, strokeReach } from "../../src/lib/ink/geometry";
 import { InkHistory } from "../../src/lib/ink/history";
-import { applyInkOps, compactInkAuthorFile, mergeInkFiles } from "../../src/lib/ink/merge";
+import { MAX_ORPHAN_TOMBSTONES, applyInkOps, compactInkAuthorFile, mergeInkFiles } from "../../src/lib/ink/merge";
 import { InkSpatialIndex } from "../../src/lib/ink/spatial-index";
 import { inkToSvg } from "../../src/lib/ink/svg";
 import { normalizeInkPresets } from "../../src/lib/ink/tools";
@@ -208,7 +208,7 @@ test("any sequence of adds and erases by several authors shows exactly what was 
   }));
 });
 
-test("tombstones go once the erased stroke is gone from every file", () => {
+test("tombstones outlive the erased stroke, but only the most recent ones stay", () => {
   const drawn = stroke(line(0, 40));
   let alice = author("aaaaaa");
   let bob = applyInkOps(author("bbbbbb"), { add: [drawn] });
@@ -220,15 +220,36 @@ test("tombstones go once the erased stroke is gone from every file", () => {
   // Bob's next write drops the stroke Alice erased…
   bob = compactInkAuthorFile(bob, [alice]);
   assert.deepEqual(bob.strokes, []);
-  // …and then Alice's tombstone is no longer needed.
+  // …but an absent stroke does not prove its author dropped it (their file
+  // may only be missing for now), so Alice keeps the tombstone a while.
   alice = compactInkAuthorFile(alice, [bob]);
-  assert.deepEqual(alice.erased, []);
+  assert.deepEqual(alice.erased, [drawn.id]);
 
-  // Erasing your own stroke leaves no tombstone at all.
+  // Erasing your own stroke removes it; its tombstone is a bounded orphan too.
   const own = stroke(line(0, 5));
   let carol = applyInkOps(author("cccccc"), { add: [own] });
   carol = applyInkOps(carol, { erase: [own.id] }, [alice, bob]);
-  assert.deepEqual([carol.strokes, carol.erased], [[], []]);
+  assert.deepEqual([carol.strokes, carol.erased], [[], [own.id]]);
+  // Retrying the same erase changes nothing.
+  assert.equal(applyInkOps(carol, { erase: [own.id] }, [alice, bob]), carol);
+
+  // Only the newest orphans stay; a tombstone someone still needs always stays.
+  const held = stroke(line(0, 9));
+  const dave = applyInkOps(author("dddddd"), { add: [held] });
+  const ids = Array.from({ length: MAX_ORPHAN_TOMBSTONES + 10 }, (_, index) => `orphan${index}`);
+  const crowded = compactInkAuthorFile({ ...author("eeeeee"), erased: [held.id, ...ids] }, [dave]);
+  assert.equal(crowded.erased.length, MAX_ORPHAN_TOMBSTONES + 1);
+  assert.deepEqual(crowded.erased.slice(0, 2), [held.id, "orphan10"]);
+  assert.equal(crowded.erased.at(-1), ids.at(-1));
+});
+
+test("an erase saved while the stroke's author file is missing still hides the stroke when that file returns", () => {
+  const drawn = stroke(line(0, 40));
+  const bob = applyInkOps(author("bbbbbb"), { add: [drawn] });
+  // Alice saw Bob's stroke, but his file is not on disk when her erase is saved.
+  const alice = applyInkOps(author("aaaaaa"), { erase: [drawn.id] }, []);
+  assert.deepEqual(alice.erased, [drawn.id]);
+  assert.deepEqual(visibleIds([alice, bob]), []);
 });
 
 test("undoing an erase of someone else's stroke brings it back even after its author dropped it", () => {

@@ -8,7 +8,13 @@ import type { PdfAnnotationRect, PdfCommentAnchor, PdfCommentMessage, PdfComment
 
 export const MAX_PDF_COMMENT_CHARS = 20_000;
 const MAX_THREADS = 2_000;
-const MAX_MESSAGES = 500;
+/**
+ * Messages kept per thread. Live PDF threads have no smaller limit on the
+ * server, and a sidecar copy of one (exported when a notebook stops being
+ * shared) must read back whole: reading never drops later replies, and a
+ * reply past this is refused rather than lost on the next write.
+ */
+export const MAX_PDF_COMMENT_MESSAGES = 10_000;
 const MAX_SEGMENTS = 50;
 const MAX_RECTS = 200;
 const MAX_QUOTE_CHARS = 4_000;
@@ -64,7 +70,7 @@ export function normalizePdfCommentThreads(input: unknown, makeId: () => string,
     if (!raw || typeof raw !== "object") continue;
     const thread = raw as Partial<PdfCommentThread>;
     const anchor = normalizePdfCommentAnchor(thread.anchor);
-    const messages = (Array.isArray(thread.messages) ? thread.messages.slice(0, MAX_MESSAGES) : [])
+    const messages = (Array.isArray(thread.messages) ? thread.messages.slice(0, MAX_PDF_COMMENT_MESSAGES) : [])
       .map((message) => normalizeMessage(message, makeId, now))
       .filter((message): message is PdfCommentMessage => !!message);
     if (!anchor || !messages.length) continue;

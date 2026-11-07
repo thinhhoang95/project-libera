@@ -58,20 +58,21 @@ export function ReconcileView({
   onResolved?: (result: { docId: string; text: string }) => void;
   onCancel?: () => void;
 }) {
+  const [reviewed] = useState(reconciliation);
   const [pair, setPair] = useState<Pair>("both");
-  const [merged, setMerged] = useState(reconciliation.shared);
+  const [merged, setMerged] = useState(reviewed.shared);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const mergedId = useId();
   const descriptionId = useId();
   const current = PAIRS.find((candidate) => candidate.id === pair) ?? PAIRS[2];
-  const texts: Texts = reconciliation;
+  const texts: Texts = reviewed;
 
   async function keep(text: string) {
     setSubmitting(true);
     setError("");
     try {
-      const result = await resolveReconciliation(reconciliation.id, text);
+      const result = await resolveReconciliation(reviewed.id, text, { shared: reviewed.shared, disk: reviewed.disk });
       onResolved?.(result);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "The merged text could not be saved.");
@@ -125,10 +126,10 @@ export function ReconcileView({
             Merged result
           </label>
           <div className="flex flex-wrap gap-2">
-            <button type="button" className={buttonClass} onClick={() => setMerged(reconciliation.disk)}>
+            <button type="button" className={buttonClass} onClick={() => setMerged(reviewed.disk)}>
               Start from the file on disk
             </button>
-            <button type="button" className={buttonClass} onClick={() => setMerged(reconciliation.shared)}>
+            <button type="button" className={buttonClass} onClick={() => setMerged(reviewed.shared)}>
               Start from the shared document
             </button>
           </div>

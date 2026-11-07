@@ -13,7 +13,7 @@
 // answer is a few seconds old. Folder mtimes can be coarse, so they cannot
 // reliably tell us when a takedown removed the marker.
 
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
@@ -144,6 +144,21 @@ export function assertNotSharedPath(liberaPath: string): void {
 }
 
 /** The guard for storage functions that work with a notebook name and path segments. */
+/** Guard an absolute writer target, including an existing symlink's destination. */
+export function assertNotSharedAbsolutePath(absolute: string): void {
+  const candidates = new Set([path.resolve(absolute)]);
+  try { candidates.add(realpathSync(absolute)); } catch { /* A new file uses its real parent. */ }
+  try { candidates.add(path.join(realpathSync(path.dirname(absolute)), path.basename(absolute))); } catch { /* The writer will report the missing parent. */ }
+  const roots = new Set([path.resolve(getAdminRoot())]);
+  try { roots.add(realpathSync(getAdminRoot())); } catch { /* Root may be unavailable. */ }
+  for (const candidate of candidates) for (const root of roots) {
+    const relative = path.relative(root, candidate);
+    if (relative && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) {
+      assertNotSharedPath(relative.split(path.sep).join("/"));
+    }
+  }
+}
+
 export function assertNotSharedItem(notebook: string, pathParts: readonly string[] = []): void {
   assertNotSharedPath([notebook, ...pathParts].join("/"));
 }

@@ -10,7 +10,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { Kysely, Selectable } from "kysely";
 import { z } from "zod";
 
-import { requireDocumentAction, type DocAccess } from "../auth/access.js";
+import { lockProjectAction, requireDocumentAction, type DocAccess } from "../auth/access.js";
 import type { ServerContext } from "../context.js";
 import type { DB, MessagesTable, ThreadsTable } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
@@ -215,6 +215,7 @@ export async function createThread(context: ServerContext, accountId: string, do
   const mentioned = await memberMentions(db, access.projectId, body.mentions, accountId);
   try {
     await db.transaction().execute(async (trx) => {
+      await lockProjectAction(trx, access.projectId, accountId, "comment", actor);
       const now = new Date();
       await trx
         .insertInto("threads")
@@ -300,6 +301,7 @@ export async function addMessage(context: ServerContext, accountId: string, thre
   let row: MessageRow;
   try {
     row = await db.transaction().execute(async (trx) => {
+      await lockProjectAction(trx, access.projectId, accountId, "comment", actor);
       const inserted = await trx
         .insertInto("messages")
         .values({

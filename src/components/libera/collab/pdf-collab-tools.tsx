@@ -31,7 +31,10 @@ const SETTLE_MS = 5_000;
 async function settled({ session }: Shared): Promise<void> {
   const { replica } = session;
   replica.flush();
-  const synced = () => replica.getSnapshot().status?.pending === 0;
+  // "Nothing pending" counts only once the server has acknowledged something
+  // since the last update this window sent; an older status may still be on
+  // its way from before the hub received that update.
+  const synced = () => replica.syncedSinceLastSend();
   if (synced()) return;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {

@@ -118,6 +118,12 @@ export interface RevisionsTable {
   created_at: CreatedAt;
 }
 
+/** Blob objects no project references; blob-gc deletes them after a grace period. */
+export interface BlobOrphansTable {
+  hash: string;
+  orphaned_at: CreatedAt;
+}
+
 export interface BlobsTable {
   project_id: string;
   hash: string;
@@ -295,10 +301,12 @@ export interface DB {
   memberships: MembershipsTable;
   invitations: InvitationsTable;
   documents: DocumentsTable;
+  file_tombstones: { project_id: string; file_id: string; deleted_at: CreatedAt };
   doc_updates: DocUpdatesTable;
   doc_snapshots: DocSnapshotsTable;
   revisions: RevisionsTable;
   blobs: BlobsTable;
+  blob_orphans: BlobOrphansTable;
   threads: ThreadsTable;
   messages: MessagesTable;
   suggestions: SuggestionsTable;

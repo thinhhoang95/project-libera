@@ -1,3 +1,4 @@
+import { assertNotSharedAbsolutePath } from "@/lib/collab/shared-notebook";
 import { createHash, randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import { chmod, link, lstat, open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
@@ -269,7 +270,9 @@ async function currentHash(absolute: string) {
 
 /** Replace the file atomically, through a symlink, keeping its permissions. */
 async function writeTetherFile(absolute: string, text: string, mode: number | null, expectedHash: string | null) {
+  assertNotSharedAbsolutePath(absolute);
   const target = await realBibPath(absolute);
+  assertNotSharedAbsolutePath(target);
   if (Buffer.byteLength(text, "utf8") > BIB_TETHER_MAX_BYTES) throw new TetherError("The merged .bib file exceeds the 16 MB sync limit.", 413);
   // ".libera…" names are ignored by the collaboration host's folder scan.
   const temporary = path.join(path.dirname(target), `.libera-${path.basename(target)}.${randomUUID()}.tmp`);
@@ -288,6 +291,8 @@ async function writeTetherFile(absolute: string, text: string, mode: number | nu
       if (await realBibPath(absolute) !== target || await currentHash(absolute) !== expectedHash) {
         throw new TetherError(`${path.basename(absolute)} changed before it could be saved.`, 409, true);
       }
+      assertNotSharedAbsolutePath(absolute);
+      assertNotSharedAbsolutePath(target);
       try {
         if (expectedHash === null) {
           try { await link(temporary, target); } catch (error) {

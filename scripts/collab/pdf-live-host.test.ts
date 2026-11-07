@@ -835,3 +835,28 @@ test("live PDFs cannot be turned on against a server that would refuse their ope
     await setup.cleanup();
   }
 });
+
+test("R16: existing-ID sidecar edits and comment changes survive import in exact recovery bytes", { timeout: 60_000 }, async () => {
+  const setup = await pair("libera-pdf-existing-sidecar-", { "paper.pdf": PDF }, "editor", undefined, 60_000);
+  try {
+    await enable(setup);
+    const resolved = setup.owner.service.resolvePdf("Papers/paper.pdf")!;
+    const hub = setup.owner.host.acquire(resolved.docId);
+    try {
+      await until(() => hub.getStatus().state === "saved-remote", "PDF server state loaded");
+      const runtime = setup.owner.service.project(setup.projectId)!.pdfs as unknown as { docs: Map<string, { importing: boolean; imported: boolean }>; writeCopy(doc: unknown): Promise<void> };
+      await until(() => runtime.docs.get(resolved.fileId)?.imported === true && !runtime.docs.get(resolved.fileId)?.importing, "initial sidecar observation completes");
+      change(hub, setup.owner.auth.account.id, () => [note("existing-mark", "shared version")]);
+      await until(() => hub.pendingCount === 0, "shared mark acknowledged");
+      await until(() => runtime.docs.get(resolved.fileId)?.imported === true && !runtime.docs.get(resolved.fileId)?.importing, "sidecar importer is idle before external edit");
+      const local = { annotations: [note("existing-mark", "unmerged sidecar edit")], comments: [{ id: "thr_existing", resolved: true, messages: [{ id: "msg_old", text: "unmerged local reply" }] }] };
+      writeSidecar(setup.ownerRoot, "paper.pdf", local.annotations, { comments: local.comments });
+      const exact = readFileSync(sidecarPath(setup.ownerRoot, "paper.pdf"));
+      await runtime.writeCopy(runtime.docs.get(resolved.fileId));
+      const { readdirSync } = await import("node:fs");
+      const recovery = path.join(setup.ownerRoot, ".libera", "collab", "rejected-pdf");
+      assert.ok(readdirSync(recovery).some((name) => readFileSync(path.join(recovery, name)).equals(exact)), "the skipped existing IDs retain every original byte");
+      assert.equal(marksIn(hub)[0].type === "text" && (marksIn(hub)[0] as PdfTextAnnotation).text, "shared version", "ambiguous sidecar fields do not overwrite shared work");
+    } finally { setup.owner.host.release(resolved.docId); }
+  } finally { await setup.cleanup(); }
+});
