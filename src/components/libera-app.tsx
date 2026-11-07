@@ -774,6 +774,8 @@ export function LiberaApp({
               workspace.setActiveTabViewState({ markdown: { editorMode: mode } });
               setActivePreviewTabId(null);
             }}
+            latexEditorMode={workspace.activeTab?.viewState?.latex?.editorMode ?? "source"}
+            onLatexEditorModeChange={(mode) => workspace.setActiveTabViewState({ latex: { editorMode: mode } })}
             activeTab={workspace.activeTab}
             activeTabId={workspace.activeTabId}
             notebookColors={notebookColors}

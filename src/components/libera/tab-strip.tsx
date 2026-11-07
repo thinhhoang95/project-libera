@@ -4,7 +4,8 @@ import { ReviewToggle } from "./markdown-review-ui";
 import { useState } from "react";
 import type { MouseEvent } from "react";
 import { MoreHorizontal, Plus, Sparkles, X } from "lucide-react";
-import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
+import type { LatexTabViewState, MarkdownEditorMode, OpenTab } from "@/components/libera/types";
+
 import { TAB_DRAG_MIME } from "@/lib/canvas-layout";
 import { FileTypeIcon } from "./file-type";
 import { isGalleryTab } from "./gallery-tabs";
@@ -13,10 +14,13 @@ import { isRecordingTab } from "./recording/recording-tabs";
 import { isPageTab, PAGES } from "./page-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
+import { isCompilableLatexPath } from "@/lib/latex/project";
 import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
 import { RequestReviewButton } from "./collab/reviews";
 import { pendingSaves, usePendingSavesVersion } from "./pending-saves";
 import { useAppMenuFileActions, useAppMenuItems, withMenuActions } from "./app-menu";
+
+type LatexEditorMode = NonNullable<LatexTabViewState["editorMode"]>;
 
 type TabStripProps = {
   chatOpen: boolean;
@@ -24,6 +28,9 @@ type TabStripProps = {
   onCreateUntitled: () => void;
   markdownEditorMode: MarkdownEditorMode;
   onMarkdownEditorModeChange: (mode: MarkdownEditorMode) => void;
+  /** The active .tex tab's editor mode (LaTeX opens in Source). */
+  latexEditorMode: LatexEditorMode;
+  onLatexEditorModeChange: (mode: LatexEditorMode) => void;
   activeTab?: OpenTab;
   activeTabId: string;
   notebookColors: Record<string, string>;
@@ -66,6 +73,8 @@ type ActiveFileActionsProps = Pick<
   | "activeTab"
   | "markdownEditorMode"
   | "onMarkdownEditorModeChange"
+  | "latexEditorMode"
+  | "onLatexEditorModeChange"
   | "onDeleteFile"
   | "onDownloadAnnotatedPdf"
   | "onDownloadFile"
@@ -136,6 +145,8 @@ export function TabStrip({
   onCreateUntitled,
   markdownEditorMode,
   onMarkdownEditorModeChange,
+  latexEditorMode,
+  onLatexEditorModeChange,
   activeTab,
   activeTabId,
   tabs,
@@ -393,6 +404,8 @@ export function TabStrip({
         <ActiveFileActions
           markdownEditorMode={markdownEditorMode}
           onMarkdownEditorModeChange={onMarkdownEditorModeChange}
+          latexEditorMode={latexEditorMode}
+          onLatexEditorModeChange={onLatexEditorModeChange}
           activeTab={activeTab}
           onDeleteFile={onDeleteFile}
           onDownloadAnnotatedPdf={onDownloadAnnotatedPdf}
@@ -427,6 +440,8 @@ export function TabStrip({
 function ActiveFileActions({
   markdownEditorMode,
   onMarkdownEditorModeChange,
+  latexEditorMode,
+  onLatexEditorModeChange,
   activeTab,
   onDeleteFile,
   onDownloadAnnotatedPdf,
@@ -452,6 +467,8 @@ function ActiveFileActions({
   // Gallery photos are renamed, moved and deleted from the gallery itself.
   const isGalleryPhoto = fileTab ? isGalleryTab(fileTab) : false;
   const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(fileTab?.file.path ?? "");
+  // Visual mode is for .tex files; .bib, .sty and .cls files stay source.
+  const supportsLatexEditorMode = isLatex && isCompilableLatexPath(fileTab?.file.path ?? "");
 
   // The macOS menu bar's File menu lists the same actions as this button's menu.
   useAppMenuFileActions(async () => fileTab
@@ -539,6 +556,19 @@ function ActiveFileActions({
           ]
         : isLatex || isText
           ? [
+              ...(supportsLatexEditorMode
+                ? [
+                    {
+                      id: "latex-editor-mode",
+                      label: "Editor Mode",
+                      submenu: [
+                        { id: "latex-editor-visual", label: "Visual", type: "radio" as const, checked: latexEditorMode === "visual" },
+                        { id: "latex-editor-source", label: "Source", type: "radio" as const, checked: latexEditorMode === "source" },
+                      ],
+                    },
+                    { type: "separator" as const },
+                  ]
+                : []),
               {
                 id: "save",
                 label: "Save",
@@ -592,6 +622,10 @@ function ActiveFileActions({
       onMarkdownEditorModeChange("visual");
     } else if (selectedItemId === "editor-source") {
       onMarkdownEditorModeChange("source");
+    } else if (selectedItemId === "latex-editor-visual") {
+      onLatexEditorModeChange("visual");
+    } else if (selectedItemId === "latex-editor-source") {
+      onLatexEditorModeChange("source");
     } else if (selectedItemId === "save") {
       await onSave();
     } else if (selectedItemId === "download-markdown") {

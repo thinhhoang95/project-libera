@@ -357,7 +357,7 @@ The two engines have different semantics (Markdown bodies, hex colours, list and
 
 ### 11. Interface
 
-- A **Source | Visual** switch in the LaTeX toolbar, for `.tex` files only, also in the command palette. The choice is stored per tab in `LatexTabViewState.editorMode`, like Markdown's `MarkdownTabViewState.editorMode`.
+- An **Editor Mode** submenu (Visual, Source) in the file menu, the ⋯ button at the end of the tab strip that the macOS File menu mirrors, for `.tex` files only, as for Markdown. The choice is stored per tab in `LatexTabViewState.editorMode`, like Markdown's `MarkdownTabViewState.editorMode`.
 - Default: Source while the mode is in beta, then a Preferences → LaTeX setting ([decision 2](#decisions)).
 - Typography from CSS variables in `globals.css`, next to the existing `.libera-latex-editor` rules: a reading font (serif by default, following the editor font preference), a heading scale, smaller blank lines between paragraphs, an optional centred measure of about 72 characters, and light and dark tokens for chips, outlines and theorem headers.
 - Accessibility: formula widgets carry their TeX as `aria-label`, chips say what they point to ("Reference to Section 2.1"), every widget can be opened from the keyboard, and MathLive brings its own speech support.
@@ -488,6 +488,7 @@ Decided:
 - `readPreviewMacros` stays as the formula preview's fallback when the Visual state is not installed; with it, the preview expands macros with the new engine.
 - Clipboard HTML that only wraps text in `div` and `span` (code editors) pastes as plain text.
 - The mode effect compares with the view's compartment, not with the last mode it applied, so a recreated view (hot reload) follows the switch.
+- The mode is chosen from the file menu's **Editor Mode** submenu, as for Markdown, not from a toolbar switch.
 - Installing packages with npm unlinks the `.platform-deps` native bindings on Windows; `npm run deps:setup` restores them.
 
 **Not done.**

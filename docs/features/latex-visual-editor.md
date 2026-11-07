@@ -2,7 +2,7 @@
 
 A `.tex` file can be read and edited as formatted text: headings, bold and italic text, lists, formulas, figures, tables, theorems and references drawn as they will look in the PDF. The file stays plain LaTeX. Visual mode is a layer drawn over the same editor and the same text: it hides markup and draws widgets, and where the cursor is, the LaTeX comes back. Nothing is converted back and forth, so the Visual mode never reformats the file; switching modes, moving the cursor or a collaborator's edit changes no byte of it.
 
-Switch with **Source | Visual** in the LaTeX toolbar. The choice is kept per tab, and Source is the default.
+Switch with **Editor Mode → Visual** or **Source** in the file menu (the ⋯ button at the end of the tab strip, also the File menu on macOS), as for Markdown files. The choice is kept per tab, and Source is the default.
 
 ## What is drawn
 

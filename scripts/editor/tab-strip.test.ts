@@ -45,6 +45,7 @@ test("file actions use one native menu between comments and the AI panel", async
   let menuAction: string | null = "editor-source";
   let capturedMenu: MenuInput | null = null;
   let editorMode = "";
+  let latexMode = "";
   let saved = 0;
   let addedToChat: OpenTab | null = null;
   const pdfDownloads: string[] = [];
@@ -95,6 +96,10 @@ test("file actions use one native menu between comments and the AI panel", async
     onDuplicateMarkdown: () => undefined,
     onMarkdownEditorModeChange: (mode) => {
       editorMode = mode;
+    },
+    latexEditorMode: "source",
+    onLatexEditorModeChange: (mode) => {
+      latexMode = mode;
     },
     onMoveFile: async () => undefined,
     onRenameFile: async () => undefined,
@@ -193,6 +198,32 @@ test("file actions use one native menu between comments and the AI panel", async
       [["download-pdf-annotated", "PDF with Annotations"], ["download-original", "Original PDF"]],
     );
     assert.deepEqual(pdfDownloads, ["annotated:Paper.pdf", "original:Paper.pdf"]);
+
+    // A .tex file chooses Visual or Source from the same menu (the toolbar has no switch).
+    const texTab = {
+      ...tab,
+      id: "paper-tex",
+      file: { ...tab.file, name: "paper.tex", path: "Notes/paper.tex", fileType: "latex" as const },
+    } satisfies OpenTab;
+    await act(async () => root.render(createElement(TabStrip, { ...tabStripProps, activeTab: texTab, activeTabId: texTab.id, tabs: [texTab] })));
+    menuAction = "latex-editor-visual";
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="File actions"]')!.click());
+    assert.equal(latexMode, "visual");
+    assert.equal(editorMode, "source", "the Markdown mode is not touched");
+    const latexEditorItem = (capturedMenu as MenuInput | null)!.items.find(
+      (item): item is Exclude<MenuItem, { type: "separator" }> => item.type !== "separator" && item.id === "latex-editor-mode",
+    );
+    assert.deepEqual(
+      latexEditorItem?.submenu?.map((item) => (item.type === "separator" ? "separator" : [item.id, item.checked])),
+      [["latex-editor-visual", false], ["latex-editor-source", true]],
+    );
+
+    // A .bib file has no Visual mode.
+    const bibTab = { ...texTab, id: "refs", file: { ...texTab.file, name: "refs.bib", path: "Notes/refs.bib" } } satisfies OpenTab;
+    await act(async () => root.render(createElement(TabStrip, { ...tabStripProps, activeTab: bibTab, activeTabId: bibTab.id, tabs: [bibTab] })));
+    menuAction = null;
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="File actions"]')!.click());
+    assert.ok(!(capturedMenu as MenuInput | null)!.items.some((item) => item.type !== "separator" && item.id === "latex-editor-mode"));
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

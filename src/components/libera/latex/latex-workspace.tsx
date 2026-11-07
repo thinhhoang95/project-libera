@@ -618,22 +618,6 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               </button>
             </div>
             <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
-            <div className="libera-latex-mode flex shrink-0 items-center rounded-lg border border-border p-0.5" role="radiogroup" aria-label="Editor mode">
-              {(["source", "visual"] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  role="radio"
-                  aria-checked={editorMode === mode}
-                  className={`rounded-md px-2 py-0.5 text-xs font-medium ${editorMode === mode ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  title={mode === "visual" ? "Visual: formatted text, formulas and figures over the same LaTeX (the file is never rewritten)" : "Source: the LaTeX as written"}
-                  onClick={() => { if (editorMode !== mode) onSetViewState({ editorMode: mode }); }}
-                >
-                  {mode === "visual" ? "Visual" : "Source"}
-                </button>
-              ))}
-            </div>
-            <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
             <LatexInsertToolbar
               editorRef={editorRef}
               projectFiles={projectFiles}
