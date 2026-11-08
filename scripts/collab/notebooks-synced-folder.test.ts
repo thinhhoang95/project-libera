@@ -77,9 +77,13 @@ test("a synced notebook folder survives stale copies, other writers and takedown
       assert.equal(sharedText(alice, "Research/note.md"), "version three\n");
     });
 
-    await t.test("the same text saved again by a person is an edit", async () => {
+    await t.test("historical text saved again requires an explicit reconciliation", async () => {
       writeFileSync(path.join(root, "note.md"), "version two\n");
-      await until(() => sharedText(alice, "Research/note.md") === "version two\n", "the person's edit to be taken in");
+      await until(() => alice.service.project(projectId)!.reconcilePending > 0, "historical content requires review");
+      assert.equal(sharedText(alice, "Research/note.md"), "version three\n");
+      const item = (await alice.service.reconciliations())[0];
+      await alice.service.resolveReconciliation(item.id, item.disk, { shared: item.shared, disk: item.disk });
+      assert.equal(sharedText(alice, "Research/note.md"), "version two\n");
     });
 
     await t.test("a legacy marker is claimed by the host that loads it", async () => {

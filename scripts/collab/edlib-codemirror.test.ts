@@ -211,3 +211,24 @@ test("awareness: user state, remote users, sections, quiet mode and follow mode"
   follow.stop();
   assert.deepEqual(stops, ["user-action"]);
 });
+
+test("R01: CRLF and mixed endings retain identical CodeMirror and Y.Text offsets", () => {
+  const seed = new Y.Doc();
+  seed.getText("source").insert(0, "a\r\nb\r\nc\nlast");
+  const alice = peer(seed), bob = peer(seed);
+  connect(alice, bob);
+  const a = editor(alice), b = editor(bob);
+  assert.equal(a.view.state.doc.toString(), alice.ytext.toString(), "attachment preserves every CR");
+  const at = a.view.state.doc.toString().indexOf("c");
+  a.view.dispatch({ changes: { from: at, insert: "X" }, selection: { anchor: at + 1 } });
+  assert.equal(alice.ytext.toString(), "a\r\nb\r\nXc\nlast");
+  assert.equal(a.view.state.doc.toString(), alice.ytext.toString());
+  assert.equal(b.view.state.doc.toString(), bob.ytext.toString());
+  assert.equal(a.view.state.selection.main.head, at + 1);
+  b.view.dispatch({ changes: { from: 0, to: 3, insert: "remote\r\n" } });
+  assert.equal(a.view.state.doc.toString(), alice.ytext.toString());
+  a.binding.undoManager.undo();
+  assert.equal(alice.ytext.toString(), "remote\r\nb\r\nc\nlast");
+  assert.equal(b.view.state.doc.toString(), alice.ytext.toString());
+  seed.destroy();
+});

@@ -105,6 +105,7 @@ export class CollabReplica {
   private readonly docListeners = new Map<Subdoc, () => void>();
   private queue: QueuedUpdate[] = [];
   private flushScheduled = false;
+  private sentAt = 0;
   private readonly schedule: (flush: () => void) => void;
   private readonly defaultProvenance: Provenance;
   private snapshot: ReplicaSnapshot = { attached: false, meta: null, status: null, rejection: null, closed: null, error: null, generation: 0 };
@@ -228,6 +229,24 @@ export class CollabReplica {
     this.schedule(() => this.flush());
   }
 
+  /**
+   * When this replica last sent the hub a local update (0: never). A status
+   * whose last server acknowledgement is older may predate that update: the
+   * hub's "nothing pending" can still be in flight from before it.
+   */
+  get lastSentAt(): number {
+    return this.sentAt;
+  }
+
+  /**
+   * The hub has nothing pending, and the server acknowledged something after
+   * this replica's last update: what this window sent has reached the server.
+   */
+  syncedSinceLastSend(): boolean {
+    const status = this.snapshot.status;
+    return status?.pending === 0 && (this.sentAt === 0 || (status.lastAckAt ?? 0) >= this.sentAt);
+  }
+
   /** Sends every queued local update now (also called on pagehide and before detach). */
   flush(): void {
     this.flushScheduled = false;
@@ -250,6 +269,7 @@ export class CollabReplica {
         next += 1;
       }
       const update = group.length === 1 ? group[0] : Y.mergeUpdates(group);
+      this.sentAt = Date.now();
       this.post({ t: "update", docId: this.docId, subdoc: first.subdoc, update, ...(first.provenance ? { provenance: first.provenance } : {}) });
       index = next;
     }

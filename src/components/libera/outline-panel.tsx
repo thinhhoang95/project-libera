@@ -455,7 +455,16 @@ export function OutlinePanel({
             onSetDraft={onSetDraft}
           />
         ) : activeTab?.file.fileType === "latex" ? (
-          <LatexOutline key={activeTab.id} activeTab={activeTab} onOpenFile={onOpenFile} />
+          <LatexOutline
+            key={activeTab.id}
+            activeTab={activeTab}
+            expansionLevel={outlineExpansionLevel}
+            onExpansionLevelChange={(level) => {
+              updatePreferences({ outlineExpansionLevel: level });
+              flushPreferences();
+            }}
+            onOpenFile={onOpenFile}
+          />
         ) : activeTab?.file.fileType === "pdf" && !activeTab.gallery ? (
           <PdfDocumentOutline
             key={activeTab.file.path}

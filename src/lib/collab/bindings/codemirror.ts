@@ -298,6 +298,10 @@ export function collabExtension(options: CollabExtensionOptions): CollabBinding 
   });
 
   const extension: Extension = [
+    // Y.Text offsets count every byte-level character, including CR. Split
+    // only on LF so CodeMirror retains CR instead of normalizing CRLF away.
+    // This also preserves mixed line endings when the working copy is saved.
+    Prec.highest(EditorState.lineSeparator.of("\n")),
     provenancePlugin,
     undoKeymap(undoManager),
     yCollab(ytext, awareness, { undoManager }),

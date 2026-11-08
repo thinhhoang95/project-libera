@@ -38,6 +38,33 @@ export function isIgnoredName(name: string): boolean {
   return /(\.tmp|\.swp|\.swx|\.crdownload|\.part|~)$/i.test(name);
 }
 
+/**
+ * Build products of LaTeX and its tools, written next to the sources by an
+ * external build (latexmk, TeXShop, VS Code): rebuilt on every compile, so
+ * importing them would upload a new version each time. Libera's own builds
+ * put them outside the notebook.
+ */
+const GENERATED_EXTENSIONS = new Set([
+  "aux", "log", "out", "toc", "lof", "lot", "loa", "lol", "fls", "fdb_latexmk", "synctex", "xdv", "dvi",
+  "bbl", "blg", "bcf", "nav", "snm", "vrb", "idx", "ilg", "ind", "glo", "gls", "glg", "ist", "acn", "acr", "alg",
+  "thm", "figlist", "auxlock", "ptc", "tdo", "brf", "spl", "soc", "run.xml", "synctex.gz", "synctex(busy)",
+]);
+
+/**
+ * Whether a new file found on disk is a generated build product (above) or
+ * lives in one's output folder (`_minted-*`). The scan does not share these
+ * on its own; one added explicitly through Libera, or already shared, stays.
+ */
+export function isGeneratedPath(relative: string): boolean {
+  const segments = relative.split("/");
+  if (segments.slice(0, -1).some((segment) => /^_minted/i.test(segment))) return true;
+  const name = segments[segments.length - 1].toLowerCase();
+  for (let dot = name.indexOf("."); dot > 0; dot = name.indexOf(".", dot + 1)) {
+    if (GENERATED_EXTENSIONS.has(name.slice(dot + 1))) return true;
+  }
+  return false;
+}
+
 /** Whether a manifest-style relative path ("a/b.md") may be shared from this notebook. */
 export function isShareablePath(relative: string): boolean {
   if (manifestPathError(relative) !== null) return false;
@@ -234,6 +261,43 @@ export interface WalkEntry {
   mtimeMs: number;
   ctimeMs?: number;
   birthtimeMs?: number;
+  /** An online-only placeholder (see isDataless): reading it downloads it. */
+  dataless?: boolean;
+}
+
+/**
+ * Whether a file is an online-only placeholder of a cloud provider (OneDrive
+ * Files On-Demand, iCloud "Optimize Storage"): bytes it claims, none on disk.
+ * Reading one waits for a download. Not judged on Windows, where Node reports
+ * no block counts.
+ */
+export function isDataless(stats: { size: number; blocks?: number }): boolean {
+  return process.platform !== "win32" && stats.size > 0 && stats.blocks === 0;
+}
+
+/** readWithin's answer when the read did not finish in time (a download, a stalled provider). */
+export const SLOW_READ = Symbol("slow-read");
+
+/**
+ * readIfExists that stops waiting after `ms`. The read itself cannot be
+ * cancelled; it carries on (and the provider keeps downloading), so a later
+ * attempt usually finds the bytes local. Callers retry rather than hold a
+ * queue that other work, stopping, and lease changes wait on.
+ */
+export async function readWithin(absolute: string, ms: number): Promise<Buffer | null | typeof SLOW_READ> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const slow = new Promise<typeof SLOW_READ>((resolve) => {
+    timer = setTimeout(() => resolve(SLOW_READ), ms);
+    timer.unref?.();
+  });
+  const read = readIfExists(absolute);
+  // A read given up on must not surface later as an unhandled rejection.
+  read.catch(() => undefined);
+  try {
+    return await Promise.race([read, slow]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -296,7 +360,7 @@ export async function walkNotebook(root: string, limit = 50_000): Promise<Notebo
         entries.push({ relative, kind: "folder", size: 0, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs });
         await visit(absolute, relative);
       } else if (stats.isFile()) {
-        entries.push({ relative, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs, birthtimeMs: stats.birthtimeMs });
+        entries.push({ relative, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs, birthtimeMs: stats.birthtimeMs, ...(isDataless(stats) ? { dataless: true } : {}) });
       }
     }
   };

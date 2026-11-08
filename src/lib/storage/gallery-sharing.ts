@@ -16,6 +16,7 @@ import path from "node:path";
 
 import type { LocalAlbum } from "@/lib/collab/local-api";
 import { CollabHostError, isCollabEnabled, listSharedAlbums } from "@/lib/collab/host-client";
+import { MAX_MARKER_BYTES, parseNotebookMarker, readNotebookBinding, readNotebookLifecycle, type NotebookMarker } from "@/lib/collab/local-notebook-state";
 import type { GalleryAlbumSharing, GalleryContents, GallerySharingRole } from "@/lib/image-generation";
 import { canChangeSharedPhotos } from "@/lib/image-generation";
 import { StorageError } from "@/lib/storage/errors";
@@ -24,34 +25,72 @@ import { StorageError } from "@/lib/storage/errors";
 const SHARED_MARKER_FILE = ".libera-shared.json";
 const MARKER_MAX_AGE_MS = 2000;
 
-type Marker = { projectId: string; manifestDocId: string; kind?: string; revoked?: boolean };
+type Marker = { projectId: string; manifestDocId: string; kind?: string; revoked?: boolean; folderId?: string; unavailable?: boolean };
+
+/**
+ * A folder that is, or may be, a shared album whose identity cannot be read
+ * right now: its marker is unreadable, or missing while this installation
+ * still has the folder bound to a live album. Nothing may change it.
+ */
+const UNAVAILABLE: Marker = { projectId: "", manifestDocId: "", kind: "album", unavailable: true };
 
 const markerCache = new Map<string, { identity: string; checkedAt: number; marker: Marker | null }>();
 
-/** The marker of a gallery folder that is a shared album, or null. */
+function sameAlbum(binding: NotebookMarker, marker: Marker): boolean {
+  if (binding.projectId !== marker.projectId || binding.manifestDocId !== marker.manifestDocId) return false;
+  return !binding.folderId || !marker.folderId || binding.folderId === marker.folderId;
+}
+
+/**
+ * Like the notebook guard (src/lib/collab/shared-notebook.ts), fail closed:
+ * a marker that is partly delivered, damaged or removed by the cloud provider
+ * does not turn a bound shared album back into a local one. Only the host's
+ * recorded outcome (left, revoked, taken down) does.
+ */
+function effectiveAlbumMarker(root: string, marker: Marker | null): Marker | null {
+  const directory = process.env.LIBERA_COLLAB_LIFECYCLE_DIR;
+  const binding = readNotebookBinding(directory, root);
+  if (binding?.kind === "album" && readNotebookLifecycle(directory, binding) === null && (!marker?.projectId || !sameAlbum(binding, marker))) return UNAVAILABLE;
+  if (!marker || marker.unavailable) return marker;
+  if (marker.kind !== "album" || marker.revoked) return null;
+  const strict = parseNotebookMarker(marker);
+  if (strict && readNotebookLifecycle(directory, strict) !== null) return null;
+  return marker;
+}
+
+/**
+ * The marker of a gallery folder that is a shared album, or null. A folder
+ * whose sharing cannot be established gets a marker with `unavailable`, and
+ * an empty project id, so callers refuse changes to it.
+ */
 export function sharedAlbumMarker(galleryRoot: string, folder: string): Marker | null {
   if (!folder || folder.startsWith(".") || /[\\/\0]/.test(folder)) return null;
-  const file = path.join(galleryRoot, folder, SHARED_MARKER_FILE);
+  const root = path.join(galleryRoot, folder);
+  const file = path.join(root, SHARED_MARKER_FILE);
   let identity: string;
   try {
     const stats = statSync(file);
-    identity = `${stats.ino}:${stats.mtimeMs}:${stats.size}`;
-  } catch {
+    if (!stats.isFile() || stats.size > MAX_MARKER_BYTES) return effectiveAlbumMarker(root, UNAVAILABLE);
+    identity = `${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
+  } catch (error) {
     markerCache.delete(file);
-    return null;
+    const code = (error as NodeJS.ErrnoException).code;
+    return effectiveAlbumMarker(root, code === "ENOENT" || code === "ENOTDIR" ? null : UNAVAILABLE);
   }
   const now = Date.now();
   const cached = markerCache.get(file);
-  if (cached && cached.identity === identity && now - cached.checkedAt < MARKER_MAX_AGE_MS) return cached.marker;
-  let marker: Marker | null = null;
+  if (cached && cached.identity === identity && now - cached.checkedAt < MARKER_MAX_AGE_MS) return effectiveAlbumMarker(root, cached.marker);
+  let marker: Marker | null;
   try {
     const value = JSON.parse(readFileSync(file, "utf8")) as Marker;
-    marker = value && typeof value.projectId === "string" && value.kind === "album" && !value.revoked ? value : null;
+    if (!value || typeof value !== "object" || typeof value.projectId !== "string" || !value.projectId) marker = UNAVAILABLE;
+    else marker = value;
   } catch {
-    marker = null;
+    // Present but unreadable (often still arriving): guarded, as for notebooks.
+    marker = UNAVAILABLE;
   }
   markerCache.set(file, { identity, checkedAt: now, marker });
-  return marker;
+  return effectiveAlbumMarker(root, marker);
 }
 
 let albumsCache: Promise<LocalAlbum[]> | null = null;
@@ -92,7 +131,12 @@ const ROLE_MESSAGES: Record<string, string> = {
 export async function assertCanChangeFolder(galleryRoot: string, folder: string) {
   const shared = await sharedFolder(galleryRoot, folder);
   if (shared && !canChangeSharedPhotos(shared)) {
-    throw new StorageError(shared.album ? ROLE_MESSAGES.change : "The collaboration service is not running, so this shared album cannot be changed right now.", 403);
+    throw new StorageError(
+      shared.album ? ROLE_MESSAGES.change
+        : !shared.projectId ? "This shared album's sharing details are missing or still arriving, so it cannot be changed right now."
+          : "The collaboration service is not running, so this shared album cannot be changed right now.",
+      403,
+    );
   }
   return shared;
 }

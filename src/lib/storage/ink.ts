@@ -277,6 +277,14 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
     const files = (await readInkFolder(folder, new Set([chunk]))).get(chunk) ?? [];
     const others = files.filter((file) => file.author.key !== author.key);
     let own = files.find((file) => file.author.key === author.key);
+    // A follower's disk file may lag every successful save. Merge against
+    // the host's acknowledged blob and fence the replacement by its identity.
+    const inkPath = inkLibraryPath(notebook, pathParts, fileName);
+    const authority = shared ? await (await import("@/lib/collab/shared-writes")).readSharedBlob(inkPath) : null;
+    if (authority) {
+      own = authority.contentBase64 === null ? undefined : normalizeInkAuthorFile(JSON.parse(Buffer.from(authority.contentBase64, "base64").toString("utf8"))) ?? undefined;
+      if (authority.contentBase64 !== null && (!own || own.author.key !== author.key)) throw new StorageError("The shared ink author file is invalid; it was kept unchanged.", 409);
+    }
     if (own && !canWriteInkFile(own)) throw new StorageError("This ink was saved by a newer version of Libera. Update Libera to change it.", 409);
     if (!own) {
       const first = frame ?? others[0]?.frame;
@@ -289,7 +297,7 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
     const resized = chunk.startsWith("block-") && frame && frame.width === next.frame.width && frame.height !== next.frame.height;
     if (resized) next = { ...next, frame: { ...next.frame, height: frame.height }, revision: next === own ? next.revision + 1 : next.revision };
     const changed = next !== own;
-    let current = changed ? [...others, next] : files;
+    let current = [...others, next];
 
     if (changed) {
       if (next.strokes.length > MAX_STROKES_PER_FILE) throw new StorageError("This page holds too much ink.", 413);
@@ -303,7 +311,9 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
         // Shared notebooks are written through the host, which syncs the file.
         // Imported here: shared-writes reaches back into storage.
         const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
-        await writeSharedBlob(inkLibraryPath(notebook, pathParts, fileName), new Uint8Array(bytes));
+        await writeSharedBlob(inkPath, new Uint8Array(bytes), authority?.fileId
+          ? { expectedFileId: authority.fileId, expectedBlobHash: authority.blobHash }
+          : { createOnly: true });
       } else {
         await mkdir(folder, { recursive: true });
         await publishInkFile(target, written);

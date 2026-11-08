@@ -20,7 +20,7 @@ const pdfTab: OpenTab = {
   file: { kind: "file", name: "book.pdf", path: "Notebook/book.pdf", notebook: "Notebook", fileType: "pdf", createdAt: "", updatedAt: "", size: 0 },
 };
 
-async function mount(payloads: PdfOutlinePayload[], run: (host: HTMLElement, opened: Array<NonNullable<OpenTab["viewState"]>["pdf"]>) => Promise<void>) {
+async function mount(payloads: PdfOutlinePayload[], run: (host: HTMLElement, opened: Array<NonNullable<OpenTab["viewState"]>["pdf"]>) => Promise<void>, activeTab: OpenTab = pdfTab) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -30,7 +30,7 @@ async function mount(payloads: PdfOutlinePayload[], run: (host: HTMLElement, ope
   const opened: Array<NonNullable<OpenTab["viewState"]>["pdf"]> = [];
   try {
     await act(async () => root.render(createElement(PdfDocumentOutline, {
-      activeTab: pdfTab,
+      activeTab,
       expansionLevel: 2,
       onExpansionLevelChange: () => undefined,
       onOpenFile: async (_file, options) => { opened.push(options?.viewState?.pdf); },
@@ -67,6 +67,15 @@ test("a PDF's bookmarks show as a collapsible tree that opens their page and spo
     // No page, nothing to open; no AI actions for bookmarks.
     assert.equal(host.querySelector('button[aria-label="Regenerate outline"]'), null);
   });
+});
+
+test("the entry for the page in view is highlighted", async () => {
+  await mount([{
+    path: pdfTab.file.path, stale: false, generated: null,
+    embedded: [{ id: "b1", title: "One", level: 1, page: 1 }, { id: "b2", title: "Two", level: 1, page: 5 }, { id: "b3", title: "Three", level: 1, page: 9 }],
+  }], async (host) => {
+    assert.match(host.querySelector('[aria-current="location"]')?.textContent ?? "", /Two/);
+  }, { ...pdfTab, viewState: { pdf: { page: 7 } } });
 });
 
 test("without bookmarks the tab offers to generate an outline, then shows it with what verification left", async () => {

@@ -580,16 +580,16 @@ export function describeOutlineEntry(entry: PdfOutlineEntry) {
   return `${entry.id} · L${entry.level} · p. ${entry.page ?? "?"} · ${"  ".repeat(Math.max(0, entry.level - 1))}${entry.title}${entry.unverified ? " (title not found on the page)" : ""}`;
 }
 
-export type OutlineRow = { entry: PdfOutlineEntry; hasChildren: boolean; expanded: boolean };
+export type OutlineRow<Entry = PdfOutlineEntry> = { entry: Entry; hasChildren: boolean; expanded: boolean };
 
 /**
  * The rows the Outlines tab shows: everything when searching, otherwise the
  * entries whose ancestors are all expanded. `expanded` overrides the default
  * (expanded above `expansionLevel`) per entry id.
  */
-export function visibleOutlineRows(entries: PdfOutlineEntry[], { query = "", expansionLevel = 2, expanded = {} }: { query?: string; expansionLevel?: number; expanded?: Record<string, boolean> } = {}): OutlineRow[] {
+export function visibleOutlineRows<Entry extends Pick<PdfOutlineEntry, "id" | "title" | "level" | "page">>(entries: Entry[], { query = "", expansionLevel = 2, expanded = {} }: { query?: string; expansionLevel?: number; expanded?: Record<string, boolean> } = {}): OutlineRow<Entry>[] {
   const needle = compactOutlineText(query);
-  const rows: OutlineRow[] = [];
+  const rows: OutlineRow<Entry>[] = [];
   let collapsedLevel: number | null = null;
   entries.forEach((entry, index) => {
     const hasChildren = (entries[index + 1]?.level ?? 0) > entry.level;

@@ -57,5 +57,8 @@ export function createDiskBlobStore(directory: string): BlobStore {
     async has(hash) {
       return exists(pathFor(hash));
     },
+    async delete(hash) {
+      await rm(pathFor(hash), { force: true });
+    },
   };
 }

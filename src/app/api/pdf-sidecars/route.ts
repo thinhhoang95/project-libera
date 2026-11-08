@@ -14,8 +14,9 @@ const libraryPath = (value: unknown): value is string =>
  * The collab host moved or removed PDFs of a shared notebook (a collaborator
  * renamed or deleted one, or this user did through the host). The windows
  * forward its tree-changed events here, so the PDFs' side-cars on this
- * computer (annotations, outline, definitions, text cache) follow them; a
- * removed PDF's side-cars are set aside until it comes back.
+ * computer (annotations, outline, definitions) are copied to the new path
+ * when its bytes match, never overwriting or erasing; a removed PDF's
+ * side-cars stay for identity reconciliation (src/lib/storage/pdf-sidecars.ts).
  */
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);

@@ -124,6 +124,31 @@ export async function requireProjectAction(
   return role;
 }
 
+/**
+ * Inside a write transaction: checks again that the account may take
+ * `action` in the project, and holds its membership row (FOR SHARE) until the
+ * transaction ends, so a removal or demotion either waits for this write or
+ * refuses it. The REST counterpart of persistUpdate's fence (sync/store.ts):
+ * a permission checked before a body arrived can be stale by commit time.
+ */
+export async function lockProjectAction(
+  trx: Kysely<DB>,
+  projectId: string,
+  accountId: string,
+  action: Action,
+  actor?: Actor,
+): Promise<Role> {
+  const member = await trx.selectFrom("memberships").select("role")
+    .where("project_id", "=", projectId)
+    .where("account_id", "=", accountId)
+    .forShare()
+    .executeTakeFirst();
+  const project = member ? await trx.selectFrom("projects").select("id").where("id", "=", projectId).where("deleted_at", "is", null).executeTakeFirst() : null;
+  if (!member || !project) throw new HttpError("forbidden", "Your notebook access changed before this change could be saved.");
+  if (!can(member.role, action, actor)) throw new HttpError("forbidden", `Your role (${member.role}) cannot ${action}.`);
+  return member.role;
+}
+
 export async function requireDocumentAction(
   db: Kysely<DB>,
   docId: string,

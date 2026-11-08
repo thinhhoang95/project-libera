@@ -329,6 +329,9 @@ export class DocHub implements CompactionTarget {
 
   get hasOpened(): boolean { return this.opened; }
 
+  /** Holds state from this device's store or the server, rather than being empty because it was never loaded. */
+  get hasState(): boolean { return this.hasData; }
+
   getStatus(): SyncStatus {
     return this.status.current();
   }

@@ -22,6 +22,7 @@ function AgentChip({ title }: { title: string }) {
 function MessageMeta({ message, now }: { message: PdfCommentMessage; now: number }) {
   return <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
     {message.author === "agent" ? <AgentChip title="Replied by the AI agent" /> : <span>{message.own === false ? message.authorName : "You"}{message.pending ? " · pending" : ""}</span>}
+    {message.notSent && <span className="text-destructive" title={message.notSent}>· not sent: {message.notSent}</span>}
     <span title={new Date(message.createdAt).toLocaleString()}>{timeAgo(now - Date.parse(message.createdAt))}</span>
     {message.editedAt && <span>· edited</span>}
   </span>;
