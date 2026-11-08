@@ -7,11 +7,12 @@ import { parseLatexAux } from "../../src/lib/latex/aux-file";
 import { bodyStartOf, collectLatexDefinitions, emptyLatexDefinitions, loadKey, macroAt, readLatexDefinitions, readLatexInputs } from "../../src/lib/latex/macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode } from "../../src/lib/latex/macros/expand";
 import { computeLatexNumbering, enumerateItemLabel, formatCounterValue, numberingEntryAt, referenceText, splitMathRows } from "../../src/lib/latex/macros/numbering";
-import { katexForEnvironment } from "../../src/lib/latex/codemirror/visual/math-render";
+import { countedRows, forKatex, katexForEnvironment } from "../../src/lib/latex/codemirror/visual/math-render";
 import { cssColor } from "../../src/lib/latex/codemirror/visual/symbols";
 import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
 import { readGroup, readOptional } from "../../src/lib/macros/core";
 import { readBalancedGroup } from "../../src/lib/latex/project";
+import { disabledRegions, discardingMacros } from "../../src/lib/latex/macros/structure";
 
 function defsOf(source: string) {
   return readLatexDefinitions(source);
@@ -582,6 +583,60 @@ test("a package restyling LaTeX's own commands and environments does not change 
   }
   // A command that names itself is never expanded, wherever it is defined.
   assert.ok(!defsOf(String.raw`\def\normalsize{\@setfontsize\normalsize\@xpt\@xipt}`).macros.has("normalsize"));
+});
+
+test("rows numbered by hand (VAE's \\eqnr) count, and are drawn as numbered rows", () => {
+  const numbering = number(String.raw`\newcommand{\eqnr}{\addtocounter{equation}{1}\tag{\theequation}}
+\begin{document}
+\begin{equation}a\label{a}\end{equation}
+\begin{align*} x \eqnr\label{b}\\ y \\ z \addtocounter{equation}{1}\tag{\theequation}\label{c}\end{align*}
+\begin{equation}d\label{d}\end{equation}
+\begin{align*} w \tag{A}\label{e}\end{align*}`);
+  assert.deepEqual(["a", "b", "c", "d", "e"].map((key) => numbering.labels.get(key)?.number), ["1", "2", "3", "4", "A"]);
+  // A hand-numbered row has a number slot (not KaTeX's own tag); an explicit \tag is KaTeX's.
+  const rows = numbering.entries.filter((entry) => entry.kind === "equation").map((entry) => [entry.rows, entry.tagged]);
+  assert.deepEqual(rows[1], [["2", null, "3"], [false, false, false]]);
+  assert.deepEqual(rows[3], [["A"], [true]]);
+  // Drawn: counter commands go, the align* becomes align with the other rows \nonumber.
+  assert.deepEqual(countedRows(String.raw`\begin{align*} x \addtocounter{equation}{1}\tag{\theequation}\\ y\end{align*}`), { latex: String.raw`\begin{align} x \\ y\nonumber\end{align}`, numbered: true });
+  assert.deepEqual(countedRows(String.raw`x \stepcounter{equation}`), { latex: "x ", numbered: false });
+  assert.equal(countedRows(String.raw`\begin{align} x\end{align}`), null);
+  // What KaTeX lacks, written as what it draws.
+  assert.equal(forKatex(String.raw`\widehat\mathrm{x}_i + \hat\mathbf{y}`), String.raw`\widehat{\mathrm{x}}_i + \hat{\mathbf{y}}`);
+  assert.equal(katexForEnvironment("flalign*", "a &= b & c").latex, String.raw`\begin{align*}a &= b & c\end{align*}`);
+});
+
+test("a delimited \\def\\bea#1\\eea is a pair; macros that discard their argument and decided conditionals leave text out", () => {
+  const defs = defsOf(String.raw`\def\bea#1\eea{\begin{align}#1\end{align}}
+\def\twice#1\stop{#1#1}
+\newcommand{\cut}[1]{}
+\newcommand{\eat}[1]{\ignorespaces}
+\newcommand{\keep}[1]{#1}
+\begin{document}`);
+  assert.deepEqual([defs.macros.get("bea")?.[0].body, defs.macros.get("eea")?.[0].body], [String.raw`\begin{align}`, String.raw`\end{align}`]);
+  // A body using the argument twice is not a pair: still left as source.
+  assert.ok(defs.macros.get("twice")?.[0].unsupported);
+  assert.deepEqual([...discardingMacros(defs)], [["cut", 1], ["eat", 1]]);
+  const text = String.raw`A \cut{gone {nested} % }
+still gone} B \ifx 1 0 hidden\fi C \ifx 1 1 shown\fi D \ifnum 2<1 hidden\else shown\fi E \ifx\a\b decided later\fi`;
+  const regions = disabledRegions(text, discardingMacros(defs)).map((region) => text.slice(region.from, region.to));
+  assert.deepEqual(regions, [String.raw`\cut{gone {nested} % }
+still gone}`, String.raw`\ifx 1 0 hidden\fi`, String.raw`\ifnum 2<1 hidden\else`]);
+});
+
+test("the subfigure and subfig packages' \\subfigure[…]{…} and \\subfloat[…]{…} are lettered in their float", () => {
+  const body = String.raw`\begin{document}
+\begin{figure}
+\subfigure[A]{\includegraphics{a}\label{a}}
+\subfigure{\includegraphics{b}\label{b}}
+\subfigure[C]{\includegraphics{c}\label{c}}
+\caption{Both.}\label{f}
+\end{figure}`;
+  // The subfigure package refers to a panel as "1(a)"; subfig as "1a". One without a caption is not lettered, and its label refers to nothing.
+  const subfigure = number(String.raw`\usepackage{subfigure}` + "\n" + body);
+  assert.deepEqual(["a", "b", "c", "f"].map((key) => subfigure.labels.get(key)?.number), ["1(a)", undefined, "1(b)", "1"]);
+  const subfig = number(String.raw`\usepackage{subfig}` + "\n" + body.replace(/\\subfigure/g, "\\subfloat"));
+  assert.deepEqual(["a", "c"].map((key) => subfig.labels.get(key)?.number), ["1a", "1b"]);
 });
 
 test("package options and the document's colours are read with the definitions", () => {

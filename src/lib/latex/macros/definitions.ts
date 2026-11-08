@@ -362,6 +362,8 @@ const DRAWN_BUILTINS = new Set([
   "textbf", "textit", "textsl", "textsc", "texttt", "textsf", "textrm", "textup", "textmd", "textnormal", "emph", "underline", "textsuperscript", "textsubscript",
   "tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge",
   "rm", "bf", "it", "sl", "sc", "tt", "sf", "em", "includegraphics", "href", "url", "item",
+  // stackengine's stacks, drawn as stacked lines, and relsize's sizes, drawn by KaTeX (their definitions are box arithmetic).
+  "stackanchor", "stackon", "stackunder", "mathlarger", "mathsmaller",
 ]);
 const PACKAGE_FILE = /\.(?:sty|cls)$/i;
 
@@ -370,6 +372,9 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // which expanding cannot follow: LaTeX's own meaning is drawn instead.
   if (!macro.alias && selfReferent(macro.name, macro.body)) return null;
   if (context.file !== undefined && PACKAGE_FILE.test(context.file) && DRAWN_BUILTINS.has(macro.name)) return null;
+  // The same restyling written in the document (Mask R-CNN's `\renewcommand\paragraph{\@startsection{paragraph}…}`):
+  // the kernel's page machinery, not something to draw.
+  if (DRAWN_BUILTINS.has(macro.name) && /\\@(?:startsection|setfontsize|setsize|dottedtocline|xpt|ixpt)(?![A-Za-z@])/.test(macro.body)) return null;
   const existing = context.defs.macros.get(macro.name);
   if (mode === "provide" && existing?.length) return null;
   const fingerprint = hashString(JSON.stringify([macro.name, macro.arity, macro.optional ?? null, macro.spec ?? null, macro.body, !!macro.mathOnly, !!macro.unsupported, !!macro.alias, mode === "provide"]));
@@ -452,7 +457,15 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       if (!body) { note(defs.problems, name.name, `\\${name.name} has no {…} body`); broken = true; }
       else {
         end = body.end;
-        if (command === "edef" || command === "xdef") shadow(name.name, `\\${command} is expanded when it is defined`);
+        // `\def\bea#1\eea{\begin{align}#1\end{align}}`: one argument up to a closing command, used once in the
+        // body. That is an opening and a closing macro (`\bea` the body before #1, `\eea` the rest), as TeX reads a use.
+        const pair = /^\s*#1\s*\\([A-Za-z@]+)\s*$/.exec(parameters);
+        const halves = pair && !uncertain && command !== "edef" && command !== "xdef" ? body.content.split("#1") : null;
+        if (pair && halves?.length === 2 && !halves.join("").includes("#") && pair[1] !== name.name) {
+          added = addMacro(context, { name: name.name, arity: 0, body: halves[0], pos, file: context.file }, "renew");
+          const closing = addMacro(context, { name: pair[1], arity: 0, body: halves[1], pos, file: context.file }, "renew");
+          if (closing && !global) (scanner.innermost()?.locals ?? []).push(closing);
+        } else if (command === "edef" || command === "xdef") shadow(name.name, `\\${command} is expanded when it is defined`);
         else if (!/^\s*(?:#[1-9]\s*)*$/.test(parameters)) shadow(name.name, `\\${name.name} has delimited parameters`);
         else if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
         else added = addMacro(context, { name: name.name, arity: (parameters.match(/#/g) ?? []).length, body: body.content, pos, file: context.file }, "renew");

@@ -15,6 +15,8 @@ export const SYMBOL_COMMANDS: Record<string, string> = {
   "\\ldots": "…", "\\dots": "…", "\\textellipsis": "…", "\\textendash": "–", "\\textemdash": "—",
   "\\textbullet": "•", "\\textperiodcentered": "·", "\\S": "§", "\\P": "¶", "\\copyright": "©", "\\textcopyright": "©",
   "\\textregistered": "®", "\\texttrademark": "™", "\\dag": "†", "\\ddag": "‡", "\\textdagger": "†", "\\textdaggerdbl": "‡",
+  // amssymb's tick, in text (results tables).
+  "\\checkmark": "✓",
   "\\textbackslash": "\\", "\\textasciitilde": "~", "\\textasciicircum": "^", "\\textbar": "|", "\\textless": "<", "\\textgreater": ">",
   "\\textquoteleft": "‘", "\\textquoteright": "’", "\\textquotedblleft": "“", "\\textquotedblright": "”", "\\guillemotleft": "«", "\\guillemotright": "»",
   "\\pounds": "£", "\\euro": "€", "\\textdegree": "°", "\\textmu": "µ", "\\i": "ı", "\\j": "ȷ", "\\ss": "ß", "\\ae": "æ", "\\AE": "Æ",

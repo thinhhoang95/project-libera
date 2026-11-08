@@ -768,6 +768,390 @@ test("edits around bibliographies, algorithm2e bodies and colour switches build 
   }), { numRuns: 40 });
 });
 
+/* ---- Real papers, fourth batch (the audit against VAE, Batch Normalization, Bahdanau et al.) ---- */
+
+const PAPER4 = String.raw`\documentclass{article}
+\usepackage{amsmath,algorithmic,stackengine,ulem}
+\newcommand{\eqnr}{\addtocounter{equation}{1}\tag{\theequation}}
+\newcommand{\vxhat}{\widehat\mathrm{x}}
+\newcommand{\norig}{\text{\sl N}}
+\newcommand{\comt}{// }
+\begin{document}
+\section{Method}
+\begin{equation}a = b\label{eq:first}\end{equation}
+\begin{align*}
+\log p(x) &\geq \mathcal{L}
+\eqnr\label{eq:bound}\\
+&= c
+\end{align*}
+Here $\vxhat$ is $\norig$, and $\left[ \mbox{UNK} \right]$, as in \uline{to carry out}, {\tt {\small hairy $\rightarrow$ [MASK]}}.
+\begin{quote}
+    \it
+Un privil\`ege d'admission.
+\end{quote}
+{    \it Ce genre d'exp\'erience.}
+\begin{flalign*}
+  \mu &\leftarrow \frac{1}{m} &\text{\comt mean}&
+\end{flalign*}
+
+\begin{algorithm}
+\caption{Batch Normalizing Transform}\label{alg:bn}
+\begin{algorithmic}
+\ENSURE $y_i$
+\begin{flalign*}
+  \mu &\leftarrow \frac{1}{m}\sum_i x_i &\text{\comt mean}&
+\end{flalign*}
+\STATE $\norig\leftarrow \norig$ \quad \COMMENT Training BN network
+\end{algorithmic}
+\end{algorithm}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+{\bf type} & {\bf \stackanchor{patch size/}{stride}} \\
+\sl BN-x5 & 73.0 \\
+\end{tabular}
+\caption{Inception.}\label{tab:inception}
+\end{table}
+\end{document}
+`;
+/** stackengine.sty's definitions are box arithmetic: the editor draws its stacks itself. */
+const PAPER4_PACKAGE = { path: "nb/stackengine.sty", text: String.raw`\newcommand*\stackanchor[3][\stackgap]{%
+  \setlength{\stack@tmplength}{#1}%
+  \stackengine{\stack@tmplength}{#2}{#3}{O}{c}{F}{T}{S}}`, loadedBy: "", key: "package:stackengine", version: "1" };
+
+test("fourth batch: rows numbered by hand (\\addtocounter … \\tag{\\theequation}) are numbered as LaTeX numbers them", async () => {
+  const view = mount(PAPER4);
+  try {
+    number(view);
+    assert.deepEqual(["eq:first", "eq:bound"].map((key) => stateReferenceText(view.state, "\\ref", [key])), ["1", "2"]);
+    await scrollTo(view, "\\begin{align*}");
+    // The align* is drawn, its hand-numbered row with a number slot filled by the numbering pass, the other row without.
+    const formula = [...view.contentDOM.querySelectorAll(".cm-vis-math-display")].find((element) => element.getAttribute("aria-label")?.includes("eqnr"))!;
+    assert.ok(formula, "the align* with \\eqnr is drawn");
+    assert.deepEqual([...formula.querySelectorAll(".eqn-num")].map((slot) => slot.getAttribute("data-vis-num")), ["2"]);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("fourth batch: KaTeX-only gaps, font switches in environments, ulem, stacks, flalign and unbraced \\COMMENT", async () => {
+  const view = mount(PAPER4);
+  try {
+    view.dispatch({ effects: setMacroSources.of([PAPER4_PACKAGE]) });
+    number(view);
+    const content = view.contentDOM;
+    const clean = (text: string | null | undefined) => (text ?? "").replace(/[​⁣]/g, "").replace(/\s+/g, " ").trim();
+    await scrollTo(view, "Here $");
+    const line = [...content.querySelectorAll(".cm-line")].find((element) => element.textContent?.startsWith("Here"))!;
+    // `\widehat\mathrm{x}` (an accent's unbraced argument), `\text{\sl N}` and `\mbox` in a formula are drawn; so is
+    // one in `{\tt {\small …}}`, where the parser makes the inner group the switch's argument (BERT).
+    assert.equal(line.querySelectorAll(".cm-vis-math").length, 4);
+    assert.ok(line.querySelector(".cm-vis-tt .cm-vis-math"));
+    assert.equal(line.querySelector(".cm-vis-u")?.textContent, "to carry out");
+    // A font switch alone in an environment styles the rest of it; one after spaces in a group styles the group.
+    const italic = [...content.querySelectorAll(".cm-vis-i")].map((element) => clean(element.textContent));
+    assert.ok(italic.includes("Un privilège d'admission."), JSON.stringify(italic));
+    assert.ok(italic.includes("Ce genre d'expérience."), JSON.stringify(italic));
+    // flalign, which KaTeX lacks, is drawn as align.
+    assert.ok(kinds(view.state).math >= 6);
+    await scrollTo(view, "\\begin{algorithm}");
+    const algorithm = content.querySelector(".cm-vis-figure-algorithm")!;
+    const lines = [...algorithm.querySelectorAll(".cm-vis-algorithm-line")];
+    // A displayed formula in a statement is drawn; `\COMMENT text` without braces is the line's comment.
+    assert.ok(lines[0].querySelector(".cm-vis-fragment-display .katex"));
+    assert.ok(!algorithm.querySelector(".cm-vis-raw"));
+    assert.equal(clean(lines[1].querySelector(".cm-vis-algorithm-comment")?.textContent), "▷ Training BN network");
+    await scrollTo(view, "\\begin{table}");
+    const table = content.querySelector(".cm-vis-figure-table")!;
+    // stackengine's stack is its two lines, whatever the package defines; `\sl` at a cell's start styles the cell.
+    assert.deepEqual([...table.querySelectorAll(".cm-vis-stack-line")].map((part) => clean(part.textContent)), ["patch size/", "stride"]);
+    assert.ok(!table.querySelector(".cm-vis-raw"));
+    assert.equal(clean(table.querySelectorAll("td")[2].querySelector(".cm-vis-i")?.textContent), "BN-x5");
+  } finally {
+    view.destroy();
+  }
+});
+
+test("edits around hand-numbered rows, font switches in environments and stacks build the same constructs as a fresh build", () => {
+  const pieces = ["\\eqnr", "\\\\", "\\it ", "{", "}", "\\end{quote}", "\\begin{quote}", "\\uline{x}", "\\COMMENT x", "\\begin{flalign*}", "&", "$", "\n\n"];
+  const start = PAPER4.indexOf("\\begin{document}") + 17;
+  fc.assert(fc.property(fc.array(fc.record({ at: fc.nat(), remove: fc.nat({ max: 5 }), insert: fc.constantFrom(...pieces) }), { maxLength: 5 }), (edits) => {
+    const view = mount(PAPER4);
+    try {
+      for (const edit of edits) {
+        const length = view.state.doc.length;
+        const from = start + (edit.at % Math.max(1, length - start - 16));
+        const to = Math.min(length - 16, from + edit.remove);
+        view.dispatch({ changes: { from, to: Math.max(from, to), insert: edit.insert } });
+        ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+        view.dispatch({});
+      }
+      assert.deepEqual(constructs(view.state), constructs(stateFor(view.state.doc.toString())));
+    } finally {
+      view.destroy();
+    }
+  }), { numRuns: 40 });
+});
+
+/* ---- Real papers, fifth batch (the audit against DQN, YOLO, Layer Normalization) ---- */
+
+const PAPER5 = String.raw`\documentclass{article}
+\usepackage{subfigure,tabulary,colortbl,relsize,bbm}
+\def\bea#1\eea{\begin{align}#1\end{align}}
+\newcommand{\cut}[1]{}
+\DeclareMathOperator{\vecop}{vec}
+\begin{document}
+\section{Background}
+\bea
+y &= \vecop(x) \label{eq:vec}
+\eea
+\cut{
+\section{Old related work}\label{sec:old}
+Some $x$ text.
+}
+\section{Experiments}\label{sec:exp}
+The loss is $\mathlarger{\mathbbm{1}}_{ij}$.
+\begin{small}
+Smaller text.
+\end{small}
+
+\begin{figure}
+  \centering
+  \mbox{
+    \subfigure[Recall@1]{\includegraphics[width=0.33\columnwidth]{r1}}%\quad
+    \subfigure[Recall@5]{\includegraphics[width=0.33\columnwidth]{r5}\label{fig:r5}}
+  }
+  \caption{Recall curves.}\label{fig:recall}
+\end{figure}
+
+\begin{table}[h]
+\definecolor{Gray}{gray}{0.85}
+\centering
+\begin{tabulary}{\linewidth}{L|C}
+\hline
+{\small \textbf{Sarsa}} & $996$ \\
+\rowcolor{Gray} YOLO & \cellcolor{red} 63.4 \\
+\end{tabulary}
+\caption{Results.}\label{timing}
+\end{table}
+
+\ifx 1 0
+\begin{table}\caption{Old timing.}\label{timing}\end{table}
+\fi
+\end{document}
+`;
+
+test("fifth batch: \\def\\bea#1\\eea pairs, discarding macros, \\ifx 1 0, and the subfigure package's commands, numbered as LaTeX does", () => {
+  const view = mount(PAPER5);
+  try {
+    number(view);
+    const ref = (key: string) => stateReferenceText(view.state, "\\ref", [key]);
+    // `\bea … \eea` is an align: its row is equation 1. What \cut and `\ifx 1 0` leave out is not numbered:
+    // Experiments is section 2, and the second `timing` label (in the false branch) does not replace the first.
+    assert.deepEqual(["eq:vec", "sec:exp", "fig:r5", "fig:recall", "timing"].map(ref), ["1", "2", "1(b)", "1", "1"]);
+    assert.ok(!view.state.field(numberingField).labels.has("sec:old"));
+    const kindsAt = (needle: string) => { const pos = at(view, needle); const out: string[] = []; view.state.field(structuralField).extents.between(pos, pos + 1, (_from, _to, mark) => { out.push(mark.kind); }); return out; };
+    // The use in the body (not the definition in the preamble) is drawn as the align it writes.
+    assert.ok(kindsAt("\\bea\ny").includes("macro-env") || kindsAt("\\bea\ny").includes("math"), JSON.stringify(kindsAt("\\bea\ny")));
+    assert.deepEqual(kindsAt("\\section{Old"), ["disabled"]);
+    assert.deepEqual(kindsAt("\\begin{table}\\caption{Old"), ["disabled"]);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("fifth batch draws: sub-figure commands as panels, tabulary, colortbl fills, rules before a grouped cell, relsize and size environments", async () => {
+  const view = mount(PAPER5);
+  try {
+    number(view);
+    const content = view.contentDOM;
+    const clean = (text: string | null | undefined) => (text ?? "").replace(/[​⁣]/g, "").replace(/\s+/g, " ").trim();
+    await scrollTo(view, "The loss");
+    const line = [...content.querySelectorAll(".cm-line")].find((element) => element.textContent?.startsWith("The loss"))!;
+    assert.ok(line.querySelector(".cm-vis-math"), "\\mathlarger is drawn");
+    assert.ok([...content.querySelectorAll(".cm-line")].some((element) => element.classList.contains("cm-vis-sized") && element.textContent === "Smaller text."));
+    await scrollTo(view, "\\begin{figure}");
+    const figure = content.querySelector(".cm-vis-figure-figure")!;
+    assert.deepEqual([...figure.querySelectorAll(".cm-vis-figure-panel")].map((panel) => clean(panel.querySelector(".cm-vis-caption")?.textContent)), ["(a) Recall@1", "(b) Recall@5"]);
+    assert.equal(clean(figure.lastElementChild?.textContent), "Figure 1: Recall curves.");
+    await scrollTo(view, "\\begin{table}[h]");
+    const table = content.querySelector(".cm-vis-figure-table")!;
+    // The group after `\hline` is the first cell, whole; `C` centres; `\rowcolor` and `\cellcolor` fill.
+    const cells = [...table.querySelectorAll("td")];
+    assert.deepEqual(cells.map((td) => clean(td.textContent)), ["Sarsa", "996", "YOLO", "63.4"]);
+    assert.equal((cells[1] as HTMLElement).style.textAlign, "center");
+    assert.ok(cells[2].parentElement!.hasAttribute("data-fill"));
+    assert.ok(cells[3].hasAttribute("data-fill"));
+    assert.ok(!table.querySelector(".cm-vis-raw"));
+  } finally {
+    view.destroy();
+  }
+});
+
+test("edits around delimited pairs, discarding macros, false conditionals and sub-figure commands build the same constructs as a fresh build", () => {
+  const pieces = ["\\bea", "\\eea", "\\cut{", "}", "{", "\\ifx 1 0", "\\fi", "\\subfigure[a]{x}", "\\hline", "\\rowcolor{red}", "&", "\\\\", "\n\n"];
+  const start = PAPER5.indexOf("\\begin{document}") + 17;
+  fc.assert(fc.property(fc.array(fc.record({ at: fc.nat(), remove: fc.nat({ max: 5 }), insert: fc.constantFrom(...pieces) }), { maxLength: 5 }), (edits) => {
+    const view = mount(PAPER5);
+    try {
+      for (const edit of edits) {
+        const length = view.state.doc.length;
+        const from = start + (edit.at % Math.max(1, length - start - 16));
+        const to = Math.min(length - 16, from + edit.remove);
+        view.dispatch({ changes: { from, to: Math.max(from, to), insert: edit.insert } });
+        ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+        view.dispatch({});
+      }
+      assert.deepEqual(constructs(view.state), constructs(stateFor(view.state.doc.toString())));
+    } finally {
+      view.destroy();
+    }
+  }), { numRuns: 40 });
+});
+
+/* ---- Real papers, sixth batch (the audit against Seq2seq, U-Net, DCGAN, Mask R-CNN, Distillation) ---- */
+
+const PAPER6 = String.raw`\documentclass{article}
+\usepackage{subfig,overpic,amssymb}
+\newcommand{\app}{\raise.17ex\hbox{$\scriptstyle\sim$}}
+\newlength\savewidth\newcommand\shline{\noalign{\global\savewidth\arrayrulewidth
+  \global\arrayrulewidth 1pt}\hline\noalign{\global\arrayrulewidth\savewidth}}
+\newcommand{\tablestyle}[2]{\setlength{\tabcolsep}{#1}\renewcommand{\arraystretch}{#2}\centering\footnotesize}
+\makeatletter\renewcommand\paragraph{\@startsection{paragraph}{4}{\z@}
+  {.5em \@plus1ex \@minus.2ex}{-.5em}{\normalfont\normalsize\bfseries}}\makeatother
+\begin{document}
+\paragraph{Training:} An RoI gives $\app$5 masks, \app 2 in text, as \checkmark{} says.
+
+\begin{table}[t]
+\tablestyle{3.5pt}{1.1}
+\begin{tabular}{l|c}
+ & AP \\
+\shline
+MNC & 24.6 \\
+\end{tabular}
+\caption{Instance segmentation.}\label{tab:final_mask}
+\end{table}
+
+\begin{table*}[t]
+\subfloat[\textbf{Backbone}.\label{tab:ablation:backbone}]{
+\tablestyle{2.5pt}{1.05}\begin{tabular}{c|c}
+ & AP \\
+\shline
+R-50 & 30.3 \\
+\end{tabular}}\hspace{2em}
+\subfloat[\textbf{Masks}.\label{tab:ablation:sigmoid}]{
+\tablestyle{4.8pt}{1.05}\begin{tabular}{c|c}
+ & AP \\
+\shline
+softmax & 24.8 \\
+\end{tabular}}
+\caption{Ablations.}\label{tab:ablations}
+\end{table*}
+
+\begin{table}[t]
+\resizebox{\columnwidth}{!}{\tablestyle{2pt}{1.1}\begin{tabular}{l|c}
+ & AP \\
+\shline
+FCIS & 29.2 \\
+\end{tabular}}
+\caption{Keypoints.}\label{tab:keypoints}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\begin{overpic}[width=1.0\linewidth]{ai/head}
+\put(33,29){\tiny Faster R-CNN}
+\end{overpic}
+\caption{Head architecture.}\label{fig:head}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\begin{small}
+\begin{tabular}{|c|c|}
+\hline
+{\bf Method} & {\bf BLEU} \\ \hline
+Baseline & 33.30 \\ \hline
+\end{tabular}
+\end{small}
+\caption{WMT'14.}\label{tab:wmt}
+\end{table}
+
+\begin{figure}[h!]
+\centerline{
+\includegraphics[width=1.\textwidth]{good2.eps} }
+\caption{Sentence length.}\label{fig:length}
+\end{figure}
+
+Text with \tablestyle{2pt}{1.1} in it.
+\end{document}
+`;
+
+test("sixth batch: subfig's panels number with their float, and a document's \\@startsection restyle keeps \\paragraph LaTeX's own", () => {
+  const view = mount(PAPER6);
+  try {
+    number(view);
+    const ref = (key: string) => stateReferenceText(view.state, "\\ref", [key]);
+    // The sub-tables come before their table's caption: 2a, 2b, as subfig numbers them.
+    assert.deepEqual(["tab:final_mask", "tab:ablation:backbone", "tab:ablation:sigmoid", "tab:ablations", "tab:keypoints", "tab:wmt", "fig:head", "fig:length"].map(ref), ["1", "2a", "2b", "2", "3", "4", "1", "2"]);
+    assert.ok(!visualDefinitions(view.state).macros.has("paragraph"));
+    assert.ok(kinds(view.state).heading >= 1, "\\paragraph is drawn as LaTeX's run-in heading");
+  } finally {
+    view.destroy();
+  }
+});
+
+test("sixth batch draws: \\raise in formulas and text, rule and layout macros in tables, overpic, size environments and \\centerline in floats", async () => {
+  const view = mount(PAPER6);
+  try {
+    number(view);
+    const content = view.contentDOM;
+    const clean = (text: string | null | undefined) => (text ?? "").replace(/[\u200b\u2063]/g, "").replace(/\s+/g, " ").trim();
+    await scrollTo(view, "\\paragraph{Training");
+    const line = [...content.querySelectorAll(".cm-line")].find((element) => element.textContent?.includes("RoI gives"))!;
+    assert.equal(line.querySelectorAll(".cm-vis-math").length, 1, "$\\app$ is drawn");
+    assert.ok(!line.querySelector(".cm-vis-raw"));
+    assert.match(clean(line.textContent), /∼ ?2 in text, as ✓ says\./);
+    // Every float is drawn: `\tablestyle` and `\begin{small}` are layout, `\shline` a thick rule, overpic its image.
+    assert.deepEqual(kinds(view.state).figure, 6);
+    await scrollTo(view, "\\begin{table}[t]\n\\tablestyle");
+    const table = content.querySelector(".cm-vis-figure-table")!;
+    assert.deepEqual([...table.querySelectorAll("td")].map((td) => clean(td.textContent)), ["", "AP", "MNC", "24.6"]);
+    assert.ok(table.querySelector(".cm-vis-rule-heavy"), "\\shline is a thick rule");
+    assert.ok(!content.querySelector(".cm-vis-figure .cm-vis-raw"));
+    await scrollTo(view, "\\begin{table*}");
+    assert.deepEqual([...content.querySelectorAll(".cm-vis-figure-panel .cm-vis-caption")].map((caption) => clean(caption.textContent)), ["(a) Backbone.", "(b) Masks."]);
+    // In running text, a layout macro stays as written.
+    await scrollTo(view, "Text with");
+    const text = [...content.querySelectorAll(".cm-line")].find((element) => element.textContent?.startsWith("Text with"))!;
+    assert.equal(text.textContent, String.raw`Text with \tablestyle{2pt}{1.1} in it.`);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("edits around rule and layout macros, sub-floats and overpic build the same constructs as a fresh build", () => {
+  const pieces = ["\\shline", "\\tablestyle{1pt}{1}", "\\subfloat[a]{x}", "\\begin{overpic}{f}", "\\end{overpic}", "\\begin{small}", "\\end{small}", "\\app", "&", "\\\\", "{", "}", "\n\n"];
+  const start = PAPER6.indexOf("\\begin{document}") + 17;
+  fc.assert(fc.property(fc.array(fc.record({ at: fc.nat(), remove: fc.nat({ max: 5 }), insert: fc.constantFrom(...pieces) }), { maxLength: 5 }), (edits) => {
+    const view = mount(PAPER6);
+    try {
+      for (const edit of edits) {
+        const length = view.state.doc.length;
+        const from = start + (edit.at % Math.max(1, length - start - 16));
+        const to = Math.min(length - 16, from + edit.remove);
+        view.dispatch({ changes: { from, to: Math.max(from, to), insert: edit.insert } });
+        ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+        view.dispatch({});
+      }
+      assert.deepEqual(constructs(view.state), constructs(stateFor(view.state.doc.toString())));
+    } finally {
+      view.destroy();
+    }
+  }), { numRuns: 40 });
+});
+
 test("clicking a citation or label chip opens its source, with the cursor after its keys", () => {
   const doc = "\\documentclass{article}\n\\begin{document}\nAs in \\cite{alpha,beta}.\\label{sec:x}\n\\end{document}\n";
   for (const [selector, end] of [[".cm-vis-cite", "beta}"], [".cm-vis-label", "sec:x}"]] as const) {

@@ -4,7 +4,7 @@ import type { LatexAuxData } from "../../aux-file";
 import type { LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros } from "../../macros/expand";
 import type { LatexNumbering } from "../../macros/numbering";
-import { renderKatex } from "./math-render";
+import { katexForEnvironment, RAISE, renderKatex } from "./math-render";
 import { citationText, referenceChipText, type BibLookup } from "./references";
 import { circledText, CONTROL_SYMBOLS, cssColor, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 
@@ -67,6 +67,9 @@ const STYLE_TAGS: Record<string, [string, string?]> = {
   TextMediumCommand: ["span", "cm-vis-md"], StrikeOutCommand: ["s"], TextSuperscriptCommand: ["sup"], TextSubscriptCommand: ["sub"],
 };
 
+/** stackengine's stacks: which argument goes on top (`\stackon{anchor}{stacked}` puts the second above the first). */
+const STACKS: Record<string, "anchor" | "on" | "under"> = { "\\stackanchor": "anchor", "\\stackon": "on", "\\stackunder": "under" };
+
 function element(tag: string, className?: string) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -125,7 +128,8 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   const expansion = expandLatexMacros(latex, context.defs, { mode: "text", pos: context.pos });
   // Accents (`\'e`) span a command and the letter after it; typeset them before parsing.
   // A control space at the very end (`… \ ` in a cell, trimmed) is a space.
-  const source = withoutConditionals(expansion.text).replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
+  // `\raise.17ex\hbox{…}`: the box, in place.
+  const source = withoutConditionals(expansion.text).replace(RAISE, "").replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
   const tree = parser.parse(source);
   const read = (from: number, to: number) => source.slice(from, to);
 
@@ -247,6 +251,26 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
     if (name === "OptionalArgument" || name === "OpenBracket" || name === "CloseBracket") { parent.appendChild(document.createTextNode(typesetText(read(node.from, node.to)))); return; }
     // A tabular inside a cell (`\begin{tabular}{@{}c@{}}LOC \\ method\end{tabular}`): a small grid.
     if (name === "TabularEnvironment" && context.tabular) { parent.appendChild(context.tabular(read(node.from, node.to))); return; }
+    // `\hbox{…}` (the grammar's own node): its content, as the other boxes.
+    if (name === "Hbox") {
+      const argument = commandArguments(node).filter((arg) => !arg.optional).at(-1);
+      if (argument) renderArgument(parent, argument.node);
+      else parent.appendChild(raw(read(node.from, node.to)));
+      return;
+    }
+    // A displayed formula in a caption or an algorithm's statement (`\ENSURE … \begin{flalign*}…\end{flalign*}`).
+    if (name === "EquationEnvironment" || name === "EquationArrayEnvironment") {
+      const env = /^\\begin\s*\{([^}]*)\}/.exec(read(node.from, node.to))?.[1];
+      const begin = node.getChild("BeginEnv");
+      const end = node.getChild("EndEnv");
+      const html = env && begin && end ? renderKatex(katexForEnvironment(env, read(begin.to, end.from)).latex, true) : null;
+      if (html) {
+        const span = element("span", "cm-vis-fragment-math cm-vis-fragment-display");
+        span.innerHTML = html;
+        parent.appendChild(span);
+      } else parent.appendChild(raw(read(node.from, node.to)));
+      return;
+    }
     if (name === "KnownEnvironment") { renderRange(parent, node.from, node.to, node); return; }
     // `\multicolumn{2}{c}{…}` outside a table cell: its text.
     if (name === "MultiColumn") {
@@ -316,6 +340,38 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         }
       }
       if (SIZE_COMMAND.test(text) && !commandArguments(node).length) return;
+      // ulem's underlines and strike-out.
+      if (/^\\(?:uline|uuline|uwave|dashuline|dotuline|xout)$/.test(text)) {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) {
+          const styled = element(text === "\\xout" ? "s" : "u");
+          renderArgument(styled, argument.node);
+          parent.appendChild(styled);
+          return;
+        }
+      }
+      // stackengine's stacks (`\stackanchor{patch size/}{stride}` in a table head): their parts, one above the other.
+      if (text in STACKS) {
+        const parts = commandArguments(node).filter((arg) => !arg.optional);
+        if (parts.length >= 2) {
+          const stack = element("span", "cm-vis-stack");
+          const order = STACKS[text] === "on" ? [parts[1], parts[0]] : [parts[0], parts[1]];
+          for (const part of order) {
+            const line = element("span", "cm-vis-stack-line");
+            renderArgument(line, part.node);
+            stack.appendChild(line);
+          }
+          parent.appendChild(stack);
+          return;
+        }
+      }
+      // algorithmic's `\COMMENT{…}`, or `\COMMENT text` without braces (in a statement's tabular): ▷ and the comment.
+      if (text === "\\COMMENT" || text === "\\Comment") {
+        parent.appendChild(element("span", "cm-vis-algorithm-comment-mark")).textContent = "▷ ";
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) renderArgument(parent, argument.node);
+        return;
+      }
       // `\rule{0pt}{2ex}` (a strut, for row height) draws nothing; a rule with a width is a bar.
       if (text === "\\rule") {
         const [width, height] = commandArguments(node).filter((arg) => !arg.optional).map((arg) => { const inner = argumentInner(arg.node); return inner ? read(inner.from, inner.to) : ""; });

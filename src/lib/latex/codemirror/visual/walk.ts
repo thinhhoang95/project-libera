@@ -6,9 +6,9 @@ import { definitionExtentAround, definitionExtentAt, macroAt, type LatexDefiniti
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
-import { isPairMacro, itemMacroNames, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
+import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
-import { katexForEnvironment, renderKatex } from "./math-render";
+import { countedRows, katexForEnvironment, renderKatex } from "./math-render";
 import { disabledField } from "./model";
 import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
@@ -83,13 +83,15 @@ const OVERRIDABLE = new Set([
 /** Built-in environments drawn by the walk, which `\renewenvironment` may change. */
 const ENVIRONMENT_NODES = new Set(["FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "EquationEnvironment", "EquationArrayEnvironment"]);
 /** What may be in a figure or table besides its images, tables, caption and label, and still be drawn as one. */
-const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline|fontsize|selectfont|newcolumntype|arraybackslash|[;,:!])$/;
+const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|definecolor|colorlet|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline|fontsize|selectfont|newcolumntype|arraybackslash|[;,:!])$/;
 /** Definitions the grammar parses as unknown commands. */
 const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname)$/;
 const SECTION_CLASSES: Record<string, string> = {
   Book: "cm-vis-hpart", Part: "cm-vis-hpart", Chapter: "cm-vis-h0", Section: "cm-vis-h1", SubSection: "cm-vis-h2",
   SubSubSection: "cm-vis-h3", Paragraph: "cm-vis-h4", SubParagraph: "cm-vis-h4",
 };
+/** ulem's commands (the grammar knows its `\sout`): underlines and strike-out. */
+const ULEM_STYLES: Record<string, string> = { "\\uline": "cm-vis-u", "\\uuline": "cm-vis-u", "\\uwave": "cm-vis-u", "\\dashuline": "cm-vis-u", "\\dotuline": "cm-vis-u", "\\xout": "cm-vis-s" };
 const INLINE_STYLES: Record<string, string> = {
   TextBoldCommand: "cm-vis-b", TextItalicCommand: "cm-vis-i", EmphasisCommand: "cm-vis-em", UnderlineCommand: "cm-vis-u",
   TextTeletypeCommand: "cm-vis-tt", TextSmallCapsCommand: "cm-vis-sc", TextSansSerifCommand: "cm-vis-sf", TextMediumCommand: "cm-vis-md",
@@ -106,6 +108,8 @@ const TEXT_BLOCKS: Record<string, string> = {
   flushright: "cm-vis-flushright", abstract: "cm-vis-abstract",
   // The appendix package's environment: its lines fold away, its sections are lettered (numbering.ts).
   appendices: "cm-vis-appendices",
+  // `\begin{small} … \end{small}`: a size, which draws nothing; its lines fold away.
+  ...Object.fromEntries(["tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge"].map((size) => [size, "cm-vis-sized"])),
 };
 /** Node types the walk does something with; it only goes inside the others. */
 const HANDLED = new Set([
@@ -349,7 +353,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (!close || close.name !== "CloseBrace" || hasDirectError(group)) return null;
     // A group, or a command's argument (`\newblock {\em CoRR}`).
     let first: SyntaxNode | null = (group.getChild("Text") ?? group.getChild("LongArg"))?.firstChild ?? null;
-    while (first && (first.name === "Whitespace" || first.name === "NewLine")) first = first.nextSibling;
+    while (first && (first.name === "Whitespace" || first.name === "NewLine" || (first.name === "Normal" && !readNode(first.from, first.to).trim()))) first = first.nextSibling;
     const command = first?.name === "Command" ? first.firstChild : null;
     const ctrl = command?.name === "UnknownCommand" ? command.firstChild : null;
     if (!ctrl || ctrl.name !== "CtrlSeq") return null;
@@ -667,13 +671,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const body = read(state, formed.content.from, formed.content.to);
           const source = katexForEnvironment(formed.name, body);
           const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: node.from });
-          const html = expanded.ok ? renderKatex(withReferences(expanded.text), !source.inline) : null;
+          // Rows numbered by hand (`\addtocounter{equation}{1}\tag{\theequation}`) are numbered rows.
+          const counted = expanded.ok ? countedRows(expanded.text) : null;
+          const latex = counted?.latex ?? expanded.text;
+          const html = expanded.ok ? renderKatex(withReferences(latex), !source.inline) : null;
           if (!html) return false;
           const span = source.inline ? null : aloneOnLines(doc, node.from, node.to);
           const range = span ?? { from: node.from, to: node.to };
           emit({
             kind: "math", from: range.from, to: range.to, reveal: "strict",
-            replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, !source.inline, !!span, read(state, node.from, node.to), source.numbered, node.from - range.from, range.to - range.from, referenced(expanded.text)) }],
+            replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, !source.inline, !!span, read(state, node.from, node.to), source.numbered || !!counted?.numbered, node.from - range.from, range.to - range.from, referenced(latex)) }],
           });
           return false;
         }
@@ -947,19 +954,37 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (structural) emit({ kind: "symbol", from: node.from, to: textFrom, reveal: "touch", replaces: [{ from: node.from, to: textFrom }] });
       return undefined;
     }
-    // `\color{red}` colours the rest of its group or environment (a `{\color{red} …}` group is drawn as a whole, above).
-    if (text === "\\color") {
-      const color = colorSwitch(node);
-      const container = color ? switchEnd(node) : null;
-      if (color && container && container.text > color.end) {
-        let textFrom = color.end;
+    // `\color{red}` and font switches (`\begin{quote} \it …`) style the rest of their group or environment
+    // (a group they open, `{\it …}`, is drawn as a whole, above).
+    // (The parser may give the switch the group after it as an argument: `{\tt {\small …}}`. Its control
+    // sequence tells whether a group it opens drew it, and what follows it is walked as usual.)
+    if ((text === "\\color" || FONT_SWITCHES[text]) && !isConsumed(ctrl)) {
+      const color = text === "\\color" ? colorSwitch(node) : null;
+      const after = color ? color.end : ctrl.to;
+      const container = color || text !== "\\color" ? switchEnd(node) : null;
+      if (container && container.text > after) {
+        let textFrom = after;
         while (textFrom < container.text && / |\t/.test(read(state, textFrom, textFrom + 1))) textFrom++;
         emit({
           kind: "style", from: node.from, to: container.end, reveal: "touch",
           replaces: structural ? [{ from: node.from, to: textFrom }] : [],
-          marks: [{ from: textFrom, to: container.text, class: "cm-vis-color", attributes: { style: `color: ${color.css}` } }],
+          marks: [{ from: textFrom, to: container.text, class: color ? "cm-vis-color" : FONT_SWITCHES[text], attributes: color ? { style: `color: ${color.css}` } : undefined }],
         });
-        return false;
+        consumed.push([node.from, textFrom]);
+        return undefined;
+      }
+    }
+    // ulem's underlines and strike-out: `\uline{…}` as `\underline`.
+    if (ULEM_STYLES[text]) {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      const inner = argument && argumentInner(argument.node);
+      if (inner && !hasDirectError(node)) {
+        emit({
+          kind: "style", from: node.from, to: argument.node.to, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: inner.from }, { from: inner.to, to: argument.node.to }] : [],
+          marks: [{ from: inner.from, to: inner.to, class: ULEM_STYLES[text] }],
+        });
+        return undefined;
       }
     }
     if (!structural) {
@@ -1083,7 +1108,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const region = macroEnvironmentRegionAt(macroRegionsFor(doc, defs), node.from);
     if (region) {
       if (!structural) return false;
-      const expanded = expandLatexMacros(read(state, region.from, region.to), defs, { mode: "text", pos: region.from });
+      // An `align` opened by `\bea` is a formula: math-only macros (`\DeclareMathOperator{\vecop}`) expand in it.
+      const expanded = expandLatexMacros(read(state, region.from, region.to), defs, { mode: MATH_ENVIRONMENT.test(region.env) ? "math" : "text", pos: region.from });
       if (!expanded.ok || !expandedEnvironment(region.from, region.to, expanded.text)) return null;
       consumed.push([region.from, region.to]);
       return false;
@@ -1152,9 +1178,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (env.name === "EquationEnvironment" || env.name === "EquationArrayEnvironment") {
       const source = katexForEnvironment(envName, body);
       const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: from });
-      const html = expanded.ok ? renderKatex(withReferences(expanded.text), !source.inline) : null;
+      const counted = expanded.ok ? countedRows(expanded.text) : null;
+      const latex = counted?.latex ?? expanded.text;
+      const html = expanded.ok ? renderKatex(withReferences(latex), !source.inline) : null;
       if (!html) return false;
-      emit({ kind: "math", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, !source.inline, !!span, read(state, from, to), source.numbered, from - range.from, range.to - range.from, referenced(expanded.text)) }] });
+      emit({ kind: "math", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, !source.inline, !!span, read(state, from, to), source.numbered || !!counted?.numbered, from - range.from, range.to - range.from, referenced(latex)) }] });
       return true;
     }
     let spec: ExpandedEnvironmentSpec;
@@ -1214,7 +1242,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return undefined;
     }
     const use = expandLatexMacroUse(source, defs, { mode: "text", pos: node.from });
-    if (!use) return undefined;
+    // A macro that only sets layout (`\tablestyle{2pt}{1.1}`) stays as written, as layout commands do.
+    if (!use || (use.text.trim() && layoutOnly(use.text))) return undefined;
     const to = node.from + use.length;
     const fingerprint = use.used.join(",");
     const ensure = /^\s*\\ensuremath\s*\{([\s\S]*)\}\s*$/.exec(use.text);
@@ -1255,6 +1284,9 @@ const PANEL_ENVIRONMENTS = new Set(["minipage", "algorithm", "algorithm*", "subf
 /** subcaption's sub-floats (the grammar parses `subfigure` as a figure): panels whose captions are lettered, "(a)". */
 const SUB_FLOATS = new Set(["subfigure", "subtable"]);
 const isSubFloat = (node: SyntaxNode, read: (from: number, to: number) => string) => (node.name === "FigureEnvironment" || node.name === "Environment") && SUB_FLOATS.has(environmentName(node, read) ?? "");
+/** The subfigure and subfig packages' panels, written as commands: `\subfigure[caption]{…}`, `\subfloat[caption]{…}`. */
+const isSubFloatCommand = (node: SyntaxNode, read: (from: number, to: number) => string) =>
+  node.name === "UnknownCommand" && !!node.firstChild && /^\\(?:subfigure|subfloat)$/.test(read(node.firstChild.from, node.firstChild.to)) && !!node.getChild("TextArgument");
 
 /**
  * Whether the figure widget would show everything in a float: its images,
@@ -1281,8 +1313,8 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     // A panel has one caption; the float itself may have several (two tables in one float, drawn as parts).
     if (count > 1 && container !== node.from) covered = false;
   };
-  /** Sub-floats in a wrapper (`\scalebox{1}{\begin{subfigure}…}`): panels, checked as the float's content is. */
-  const panel = (sub: SyntaxNode) => { sub.cursor().iterate(visit); return covered; };
+  /** Sub-floats in a wrapper (`\scalebox{1}{\begin{subfigure}…}`): panels, checked as the float's content is; a `\subfigure[…]{…}` by its group. */
+  const panel = (sub: SyntaxNode) => { (sub.name === "UnknownCommand" ? sub.getChildren("TextArgument").at(-1) ?? sub : sub).cursor().iterate(visit); return covered; };
   const visit = (ref: SyntaxNodeRef): boolean | undefined => {
     if (!covered) return false;
     const name = ref.name;
@@ -1297,11 +1329,14 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       const ctrl = ref.node.firstChild;
       const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
       if (command === "\\includestandalone") return false;
+      // `\subfigure[caption]{…}`: a panel, its caption in brackets and its content checked as the float's.
+      if (isSubFloatCommand(ref.node, readState)) { panel(ref.node); return false; }
       // caption's `\captionof{table}{…}`, and a macro that writes the caption (`\mycap{…}`), are captions.
       if (command === "\\captionof" || captionMacro(ref.node) !== null) { caption(ref.node); return false; }
       // `\resizebox{\linewidth}{!}{\input{fig}}`: a drawing, scaled.
-      if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel)) covered = false; return false; }
-      if (!FIGURE_LAYOUT.test(command) && !SIZE_COMMAND.test(command)) covered = false;
+      if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel, defs)) covered = false; return false; }
+      if (FIGURE_LAYOUT.test(command) || SIZE_COMMAND.test(command)) return false;
+      if (!layoutMacro(ref.node, state, defs)) covered = false;
       return false;
     }
     // `\begin{center}`, minipages and sub-figures: their markup is layout, their content is checked. A TikZ picture
@@ -1311,12 +1346,16 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { covered = false; return false; }
       if (env === "tikzpicture" || TABULAR_NAMES.test(env)) return false;
       if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state)) covered = false; return false; }
-      if (env !== "center" && !PANEL_ENVIRONMENTS.has(env)) covered = false;
+      // overpic: an image with text put over it, drawn without the overlay.
+      if (env === "overpic") return false;
+      if (env !== "center" && !SIZE_ENVIRONMENTS.has(env) && !PANEL_ENVIRONMENTS.has(env)) covered = false;
       return undefined;
     }
     if (name === "BeginEnv" || name === "EndEnv") return false;
-    // `{\small \begin{tabular}…}`: a group around the content, for its size.
-    if (name === "Group" || name === "NonEmptyGroup" || name === "OpenBrace" || name === "CloseBrace") return undefined;
+    // `\mbox{\subfigure[…]{…} \subfigure[…]{…}}`: a box around the content.
+    if (name === "MathTextCommand") { if (!drawingOnly(ref.node, state, panel, defs)) covered = false; return false; }
+    // `{\small \begin{tabular}…}`: a group around the content, for its size; a panel command's group.
+    if (name === "Group" || name === "NonEmptyGroup" || name === "OpenBrace" || name === "CloseBrace" || name === "TextArgument" || name === "LongArg") return undefined;
     // `\\` between images (a `KnownCtrlSym` holding a `LineBreak`) is layout.
     if (name === "Content" || name === "Text" || name === "Command" || name === "KnownCommand" || name === "KnownCtrlSym" || name === "KnownEnvironment") return undefined;
     covered = false;
@@ -1397,7 +1436,8 @@ function rowMacroNames(defs: LatexDefinitions) {
     changed = false;
     for (const [name, list] of defs.macros) {
       if (names.has(name)) continue;
-      const writesRows = list.some((macro) => /&|\\\\/.test(macro.body) || [...macro.body.matchAll(/\\([A-Za-z@]+)/g)].some((use) => names!.has(use[1])));
+      // Cells, row ends, or rules (Mask R-CNN's thick `\shline`, `\noalign{…}\hline\noalign{…}`).
+      const writesRows = list.some((macro) => /&|\\\\|\\(?:hline|toprule|midrule|bottomrule|cline|cmidrule|noalign)(?![A-Za-z@])/.test(macro.body) || [...macro.body.matchAll(/\\([A-Za-z@]+)/g)].some((use) => names!.has(use[1])));
       if (writesRows) { names.add(name); changed = true; }
     }
   }
@@ -1406,13 +1446,35 @@ function rowMacroNames(defs: LatexDefinitions) {
 }
 
 /** Commands that scale or turn what their last argument draws. */
-const DRAWING_WRAPPERS = /^\\(?:resizebox\*?|scalebox|rotatebox|reflectbox|raisebox|adjustbox)$/;
+const DRAWING_WRAPPERS = /^\\(?:resizebox\*?|scalebox|rotatebox|reflectbox|raisebox|adjustbox|centerline)$/;
+/** A use of a document macro that only sets layout (Mask R-CNN's `\tablestyle{4pt}{1.05}`: a column gap, row stretch and size). */
+function layoutMacro(node: SyntaxNode, state: EditorState, defs: LatexDefinitions) {
+  const ctrl = node.firstChild;
+  const name = ctrl ? /^\\([A-Za-z@]+)$/.exec(read(state, ctrl.from, ctrl.to))?.[1] : undefined;
+  if (!name || !macroAt(defs, name, node.from)) return false;
+  const use = expandLatexMacroUse(read(state, node.from, Math.min(state.doc.length, node.from + 400)), defs, { mode: "text", pos: node.from });
+  return !!use && layoutOnly(use.text);
+}
+
+/** Whether LaTeX is only layout a float may hold: lengths, `\renewcommand{\arraystretch}{…}`, sizes, `\centering`, space. */
+function layoutOnly(text: string) {
+  return !text
+    .replace(/%[^\n]*/g, "")
+    .replace(/\\(?:setlength|addtolength)\s*\{[^{}]*\}\s*\{[^{}]*\}/g, "")
+    .replace(/\\(?:renewcommand\s*\{?\s*\\arraystretch\s*\}?|def\s*\\arraystretch)\s*\{[^{}]*\}/g, "")
+    .replace(/\\(?:fontsize\s*\{[^{}]*\}\s*\{[^{}]*\}|[hv]space\*?\s*\{[^{}]*\})/g, "")
+    .replace(/\\([A-Za-z@]+)(?![A-Za-z@])/g, (whole, name: string) => (FIGURE_LAYOUT.test(`\\${name}`) || SIZE_COMMAND.test(`\\${name}`) ? "" : whole))
+    .trim();
+}
+
+/** `\begin{small} \begin{tabular}…` in a float: a size, around the content. */
+const SIZE_ENVIRONMENTS = new Set(["tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge"]);
 
 /**
  * A wrapper's last argument holds only what a float draws: drawings (`\input`, `\includestandalone`,
  * `\includegraphics`, a TikZ picture), tabulars (`\resizebox{\linewidth}{!}{\begin{tabular}…}`), and layout.
  */
-function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: SyntaxNode) => boolean) {
+function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: SyntaxNode) => boolean, defs?: LatexDefinitions) {
   const argument = command.getChildren("TextArgument").at(-1);
   const inner = argument && argumentInner(argument);
   if (!argument || !inner) return false;
@@ -1429,7 +1491,11 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
       const ctrl = ref.node.firstChild;
       const text = ctrl ? read(state, ctrl.from, ctrl.to) : "";
       if (text === "\\includestandalone" || FIGURE_LAYOUT.test(text) || SIZE_COMMAND.test(text)) return false;
-      if (DRAWING_WRAPPERS.test(text)) { if (!drawingOnly(ref.node, state, panel)) only = false; return false; }
+      if (DRAWING_WRAPPERS.test(text)) { if (!drawingOnly(ref.node, state, panel, defs)) only = false; return false; }
+      // A document macro that only sets layout (`\tablestyle{2pt}{1.1}` before the tabular).
+      if (defs && layoutMacro(ref.node, state, defs)) return false;
+      // `\subfigure[…]{…}` in a float's wrapper: a panel, checked by the float.
+      if (panel && isSubFloatCommand(ref.node, readState)) { if (!panel(ref.node)) only = false; return false; }
       only = false;
       return false;
     }
@@ -1438,7 +1504,7 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
     if (name === "Environment" || name === "KnownEnvironment") {
       const env = environmentName(ref.node, readState);
       if (env === "tikzpicture") return false;
-      if (env === "center") return undefined;
+      if (env === "center" || SIZE_ENVIRONMENTS.has(env ?? "")) return undefined;
       only = false;
       return false;
     }
@@ -1496,7 +1562,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
   if (!figureCovered(node, state, defs, captionMacro)) return null;
   const readState = (from: number, to: number) => read(state, from, to);
   const algorithm2e = algorithm2eSpec(node, state, defs);
-  const isPanel = (candidate: SyntaxNode) => (candidate.name === "Environment" && environmentName(candidate, readState) === "minipage") || isSubFloat(candidate, readState);
+  const isPanel = (candidate: SyntaxNode) => (candidate.name === "Environment" && environmentName(candidate, readState) === "minipage") || isSubFloat(candidate, readState) || isSubFloatCommand(candidate, readState);
   let valid = true;
 
   /** The content of a float or panel at `root`, leaving out the panels inside it (`skipPanels`). */
@@ -1511,6 +1577,15 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     if (isSubFloat(root, readState)) {
       content.sub = true;
       content.kind = environmentName(root, readState) === "subtable" ? "table" : "figure";
+    }
+    // `\subfigure[caption]{…}`: the caption is in brackets (below the content); none without them.
+    const subCommand = isSubFloatCommand(root, readState);
+    if (subCommand) {
+      content.sub = true;
+      content.kind = defaultKind === "table" ? "table" : "figure";
+      const bracket = root.getChild("OptionalArgument");
+      const inner = bracket && argumentInner(bracket);
+      if (bracket) { content.caption = inner ? read(state, inner.from, inner.to) : ""; content.captionPos = inner?.from ?? bracket.from; }
     }
     const found = (at: number) => { content.firstContent = Math.min(content.firstContent, at); };
     root.cursor().iterate((ref) => {
@@ -1557,6 +1632,16 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       if ((name === "Environment" || name === "KnownEnvironment") && !isTabular(ref.node, readState)) {
         const envName = environmentName(ref.node, readState) ?? "";
         if (envName === "tikzpicture") { content.drawings!.push(""); content.places.drawings.push(ref.from); found(ref.from); return false; }
+        // overpic's `\begin{overpic}[width=…]{file}`: the image (what it puts over it is drawn in the PDF).
+        if (envName === "overpic") {
+          const head = /^\\begin\s*\{overpic\}\s*(?:\[([^\]]*)\])?\s*\{([^{}]*)\}/.exec(read(state, ref.from, Math.min(ref.to, ref.from + 500)));
+          if (head) {
+            content.images.push({ path: imagePath(head[2], state.doc), width: graphicsWidth(head[1] ?? null) });
+            content.places.images.push(ref.from);
+          } else valid = false;
+          found(ref.from);
+          return false;
+        }
         if (envName === "algorithmic") {
           const algorithm = algorithmicSpec(ref.node, state);
           if (algorithm) content.algorithm = algorithm; else valid = false;
@@ -1611,7 +1696,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       return undefined;
     });
     content.numberOffset = numberAt - node.from;
-    content.captionAbove = content.caption !== null && content.captionPos < content.firstContent;
+    content.captionAbove = !subCommand && content.caption !== null && content.captionPos < content.firstContent;
     // algorithm2e sets its caption on top in the ruled styles and below otherwise, wherever it is written.
     if (algorithm2e && root === node) {
       content.algorithm = algorithm2e.algorithm;

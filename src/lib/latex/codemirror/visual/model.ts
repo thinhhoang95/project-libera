@@ -2,7 +2,7 @@ import { Facet, StateEffect, StateField, type EditorState, type Text, type Trans
 import { EMPTY_AUX, type LatexAuxData } from "../../aux-file";
 import { bodyStartOf, collectLatexDefinitions, definitionsFingerprint, emptyLatexDefinitions, mapLatexDefinitions, type DefinitionSource, type LatexDefinitions } from "../../macros/definitions";
 import { EMPTY_NUMBERING, type LatexNumbering, type NumberingStart } from "../../macros/numbering";
-import { disabledRegions } from "../../macros/structure";
+import { disabledRegions, discardingMacros } from "../../macros/structure";
 
 /* State shared by the Visual mode's layers (docs/latex-visual-editor-plan.md).
  * Nothing here changes the document. */
@@ -100,12 +100,29 @@ function touchesConditionals(tr: Transaction) {
   return touched;
 }
 
-/** What `\iffalse … \fi` leaves out of the document (structure.ts `disabledRegions`): kept in step with edits. */
+/** Whether an edit could change what a discarding macro's use leaves out: it adds or removes a brace, backslash or `%`, or is next to a command. */
+function touchesGroups(tr: Transaction) {
+  let touched = false;
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+    if (touched) return;
+    const near = tr.state.doc.sliceString(Math.max(0, fromB - 40), Math.min(tr.state.doc.length, toB + 2));
+    if (/[{}\\%]/.test(inserted.toString()) || /[{}\\%]/.test(tr.startState.doc.sliceString(fromA, toA)) || /\\[A-Za-z@]*$/.test(near.slice(0, fromB - Math.max(0, fromB - 40)))) touched = true;
+  });
+  return touched;
+}
+
+/** The document's macros that discard their arguments, by name: a change to them changes what is left out. */
+const discardingKey = (state: EditorState) => [...discardingMacros(visualDefinitions(state)).keys()].join(",");
+
+/** What `\iffalse … \fi` and uses of macros that discard their arguments leave out (structure.ts `disabledRegions`): kept in step with edits. */
 export const disabledField = StateField.define<Array<{ from: number; to: number }>>({
-  create: (state) => disabledRegions(state.doc.toString()),
+  create: (state) => disabledRegions(state.doc.toString(), discardingMacros(visualDefinitions(state))),
   update(value, tr) {
+    const discarding = discardingMacros(visualDefinitions(tr.state));
+    const recompute = () => disabledRegions(tr.state.doc.toString(), discarding);
+    if (discardingKey(tr.startState) !== discardingKey(tr.state)) return recompute();
     if (!tr.docChanged) return value;
-    if (touchesConditionals(tr)) return disabledRegions(tr.state.doc.toString());
+    if (touchesConditionals(tr) || (discarding.size && touchesGroups(tr))) return recompute();
     if (!value.length) return value;
     return value.map((region) => ({ from: tr.changes.mapPos(region.from, 1), to: tr.changes.mapPos(region.to, -1) })).filter((region) => region.to > region.from);
   },

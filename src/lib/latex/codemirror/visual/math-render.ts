@@ -1,5 +1,5 @@
 import katex from "katex";
-import { stripTexComments } from "../../macros/numbering";
+import { splitMathRows, stripTexComments } from "../../macros/numbering";
 
 /* KaTeX for the Visual mode. Formulas arrive with the document's macros
  * already expanded (macros/expand.ts). A formula KaTeX cannot parse is not
@@ -19,12 +19,53 @@ export const KATEX_MACROS: Record<string, string> = {
   "\\mathbbm": "\\mathbb{#1}",
   "\\mathds": "\\mathbb{#1}",
   "\\bbm": "\\mathbb{#1}",
+  // LaTeX's text box and old slanted switch in formulas (`$\left[ \mbox{UNK} \right]$`, `$\text{\sl N}$`).
+  "\\mbox": "\\text{#1}",
+  "\\sl": "\\it",
+  // relsize's one-step larger and smaller formulas (YOLO's `\mathlarger{\mathbbm{1}}`).
+  "\\mathlarger": "{\\large #1}",
+  "\\mathsmaller": "{\\small #1}",
 };
 
-/** LaTeX KaTeX lacks, written as what it can draw: `\textsc{Base}` as `\text{B{\small ASE}}` (small capitals). */
+const COUNTER_COMMANDS = /\\(?:addtocounter|setcounter)\s*\{[^{}]*\}\s*\{[^{}]*\}|\\(?:stepcounter|refstepcounter)\s*\{[^{}]*\}/g;
+const COUNTED_TAG = /\\tag\*?\s*\{\s*\\theequation\s*\}/;
+
+/**
+ * Rows numbered by hand (`\addtocounter{equation}{1}\tag{\theequation}`, VAE's `\eqnr` in `align*`): the counter
+ * commands draw nothing, and such rows get number slots, which the numbering pass fills as other rows'; the
+ * environment's other rows are `\nonumber`. Null when the formula has none of this.
+ */
+export function countedRows(latex: string): { latex: string; numbered: boolean } | null {
+  if (!/\\(?:addtocounter|setcounter|stepcounter|refstepcounter|theequation)(?![A-Za-z@])/.test(latex)) return null;
+  const text = latex.replace(COUNTER_COMMANDS, "");
+  if (!COUNTED_TAG.test(text)) return { latex: text, numbered: false };
+  const untagged = (row: string) => row.replace(new RegExp(COUNTED_TAG.source, "g"), "");
+  const env = /^\s*\\begin\{(align|alignat|flalign|gather|equation|multline)\*\}([\s\S]*)\\end\{\1\*\}\s*$/.exec(text);
+  if (env && (env[1] === "equation" || env[1] === "multline")) return { latex: `\\begin{${env[1]}}${untagged(env[2])}\\end{${env[1]}}`, numbered: true };
+  if (env) {
+    const rows = splitMathRows(env[2]).map((row) => (COUNTED_TAG.test(row) ? untagged(row) : `${row}\\nonumber`));
+    return { latex: `\\begin{${env[1]}}${rows.join("\\\\")}\\end{${env[1]}}`, numbered: true };
+  }
+  // `equation*`, drawn without its environment: a numbered equation.
+  return { latex: `\\begin{equation}${untagged(text)}\\end{equation}`, numbered: true };
+}
+
+/** TeX's `\raise<dimen>` and `\lower<dimen>` before a box. */
+export const RAISE = /\\(?:raise|lower)\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:ex|em|pt|mm|cm|in|bp|mu)\s*/g;
+
+/** An accent or font whose argument is a command with its own group (`\widehat\mathrm{x}`): TeX reads it, KaTeX does not. */
+const UNBRACED_ARGUMENT = /\\(hat|widehat|tilde|widetilde|bar|overline|underline|vec|dot|ddot|check|breve|acute|grave|mathring|overrightarrow|overleftarrow|boldsymbol|bm|sqrt)\s*(\\(?:math[a-z]+|text[a-z]*|operatorname|boldsymbol|bm)\s*\{(?:[^{}]|\{[^{}]*\})*\})/g;
+
+/**
+ * LaTeX KaTeX lacks, written as what it can draw: `\textsc{Base}` as `\text{B{\small ASE}}` (small capitals),
+ * and Batch Norm's `\widehat\mathrm{x}` as `\widehat{\mathrm{x}}`.
+ */
 export function forKatex(latex: string) {
-  if (!latex.includes("\\textsc")) return latex;
-  return latex.replace(/\\textsc\s*\{([^{}]*)\}/g, (_, text: string) => `\\text{${text.replace(/[a-z]+/g, (run) => `{\\small ${run.toUpperCase()}}`)}}`);
+  // `\raise.17ex\hbox{…}` (Mask R-CNN's `\app`, a raised ∼): KaTeX has no \raise or \lower; the box is drawn in place.
+  let out = latex.includes("\\raise") || latex.includes("\\lower") ? latex.replace(RAISE, "") : latex;
+  if (out.includes("\\textsc")) out = out.replace(/\\textsc\s*\{([^{}]*)\}/g, (_, text: string) => `\\text{${text.replace(/[a-z]+/g, (run) => `{\\small ${run.toUpperCase()}}`)}}`);
+  if (/\\[a-z]+\s*\\(?:math|text|operatorname|boldsymbol|bm)/.test(out)) out = out.replace(UNBRACED_ARGUMENT, "\\$1{$2}");
+  return out;
 }
 
 export function renderKatex(latex: string, display: boolean): string | null {
@@ -83,7 +124,9 @@ export function katexForEnvironment(env: string, body: string): DisplayMathSourc
   if (NUMBERED_ROWS.has(base)) {
     const args = base === "alignat" ? /^\s*\{[^}]*\}/.exec(content)?.[0] ?? "" : "";
     const rest = content.slice(args.length);
-    return { latex: `\\begin{${base}${starred ? "*" : ""}}${args}${rest}\\end{${base}${starred ? "*" : ""}}`, numbered: !starred, inline: false };
+    // KaTeX has no flalign: its align takes as many column pairs, centred rather than flush.
+    const name = `${base === "flalign" ? "align" : base}${starred ? "*" : ""}`;
+    return { latex: `\\begin{${name}}${args}${rest}\\end{${name}}`, numbered: !starred, inline: false };
   }
   // Inner environments used on their own (matrix, cases) and anything else: as they are.
   return { latex: `\\begin{${env}}${content}\\end{${env}}`, numbered: false, inline: false };

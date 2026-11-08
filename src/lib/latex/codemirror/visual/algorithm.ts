@@ -108,6 +108,14 @@ export function parseAlgorithmic(body: string, options: string | null): Algorith
     if (commentAt) {
       const group = readGroup(rest, commentAt.index + commentAt[0].length - 1);
       if (group) { comment = group.content.trim(); rest = rest.slice(0, commentAt.index) + rest.slice(group.end); }
+    } else {
+      // `\COMMENT Training BN network`, without braces: the rest of the statement (not one inside a tabular there).
+      const bare = /\\(?:Comment|COMMENT)(?![A-Za-z@])\s*/.exec(rest);
+      const before = bare ? rest.slice(0, bare.index) : "";
+      if (bare && (before.match(/\\begin\s*\{/g) ?? []).length === (before.match(/\\end\s*\{/g) ?? []).length) {
+        comment = rest.slice(bare.index + bare[0].length).trim();
+        rest = before;
+      }
     }
     // algorithmic takes `\IF{c}` and `\STATE text`; an optional argument (`\STATE[label]`) is dropped.
     const optional = readOptional(rest.trimStart(), 0);

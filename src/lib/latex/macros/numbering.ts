@@ -3,7 +3,7 @@ import { latexParser as parser } from "../codemirror/latex-parser";
 import { hashString } from "../../macros/core";
 import { definitionExtentAt, macroAt, type LatexDefinitions } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse } from "./expand";
-import { disabledRegions, isPairMacro, macroEnvironmentRegionAt, macroEnvironmentRegions, regionContaining, structureMacroNames, usesStructureMacro } from "./structure";
+import { disabledRegions, discardingMacros, isPairMacro, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, regionContaining, structureMacroNames, usesStructureMacro } from "./structure";
 
 /** Definitions whose body is not run where it is written: nothing in it is counted. */
 const DEFINITION_START = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|[gex]?def|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment)(?![A-Za-z@])/;
@@ -355,7 +355,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   /** Entries and targets an expansion numbers at a construct of the document (its figure): not moved to the macro use. */
   const fixed = new WeakSet<object>();
   /** The floats being read, innermost last: their number once captioned, and sub-figure labels waiting for it. */
-  const floats: Array<{ from: number; number: string | null; count: number; waiting: Array<{ target: LabelTarget; letter: string }> }> = [];
+  const floats: Array<{ from: number; kind: "figure" | "table" | "algorithm"; number: string | null; count: number; waiting: Array<{ target: LabelTarget; letter: string }> }> = [];
   /** Steps a float's counter for its caption, numbering the float (or its panel) at `at`. */
   const numberCaption = (kind: "figure" | "table" | "algorithm", at: SyntaxNode, outer: boolean) => {
     const keep = <T extends object>(value: T) => { if (outer) fixed.add(value); return value; };
@@ -372,19 +372,19 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     }
   };
   /** subcaption's `subfigure` caption: a letter in its float, after the float's number ("3a"), which may come later. */
-  const numberSubCaption = (kind: "figure" | "table", at: SyntaxNode) => {
+  const numberSubCaption = (kind: "figure" | "table", at: SyntaxNode, refLetter: (letter: string) => string = (letter) => letter) => {
     const float = floats[floats.length - 1];
     if (!float) return;
     float.count++;
     const letter = alph(float.count);
-    const target: LabelTarget = { number: float.number === null ? "?" : `${float.number}${letter}`, kind, pos: at.from };
-    if (float.number === null) float.waiting.push({ target, letter });
+    const target: LabelTarget = { number: float.number === null ? "?" : `${float.number}${refLetter(letter)}`, kind, pos: at.from };
+    if (float.number === null) float.waiting.push({ target, letter: refLetter(letter) });
     setTarget(target);
     // The panel shows its letter: "(a)".
     entries.push({ pos: at.from, kind, number: letter });
   };
-  /** What `\iffalse … \fi` leaves out of the document: not numbered. */
-  const disabled = includeDepth ? [] : disabledRegions(mainRead(0, tree.length));
+  /** What `\iffalse … \fi` and macros that discard their arguments (`\cut{…}`) leave out of the document: not numbered. */
+  const disabled = includeDepth ? [] : disabledRegions(mainRead(0, tree.length), discardingMacros(defs));
   /** Nodes entered (for what follows the `\fi` inside them) but not counted themselves: by name and start. */
   const passive = new Set<string>();
   const numberExpansion = (host: SyntaxNode, text: string) => {
@@ -414,7 +414,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     if (macroHost || includeDepth || !structureNames.has(command.slice(1)) || !macroAt(defs, command.slice(1), node.from)) return false;
     const region = macroEnvironmentRegionAt(regions, node.from);
     if (region) {
-      const expanded = expandLatexMacros(read(region.from, region.to), defs, { mode: "text", pos: region.from });
+      // An `align` opened by `\bea` is a formula: math-only macros (`\DeclareMathOperator`) expand in it.
+      const expanded = expandLatexMacros(read(region.from, region.to), defs, { mode: MATH_ENVIRONMENT.test(region.env) ? "math" : "text", pos: region.from });
       if (expanded.ok) numberExpansion(node, expanded.text);
       skipUntil = region.to;
       return true;
@@ -447,7 +448,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const extent = definitionExtentAt(defs, ref.from);
         if (extent && ref.to <= extent.to && DEFINITION_START.test(read(ref.from, ref.from + 40))) { skipUntil = extent.to; return false; }
       }
-      if ((name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment") && floatKind(node, read)) floats.push({ from: ref.from, number: null, count: 0, waiting: [] });
+      const kindOfFloat = name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" ? floatKind(node, read) : null;
+      if (kindOfFloat) floats.push({ from: ref.from, kind: kindOfFloat, number: null, count: 0, waiting: [] });
       if (name === "Comment" || name === "VerbatimEnvironment" || name === "TikzPictureEnvironment") return false;
       if (name === "Input" || name === "Include") { numberIncluded(node); return false; }
       if (name in SECTION_LEVELS) {
@@ -482,6 +484,16 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             numberCaption(kind, ...at);
           }
           return false;
+        }
+        // The subfigure and subfig packages' `\subfigure[caption]{…}` and `\subfloat[caption]{…}`: a captioned one is
+        // lettered in its float ("1a"; the subfigure package refers to it as "1(a)"), and a \label in it is its.
+        if ((command === "\\subfigure" || command === "\\subfloat") && floats.length) {
+          scopes.push({ node: node.from, target: null });
+          if (node.getChild("OptionalArgument")) {
+            const kind = floats[floats.length - 1].kind === "table" ? "table" : "figure";
+            numberSubCaption(kind, node, defs.packages.includes("subfigure") ? (letter) => `(${letter})` : undefined);
+          }
+          return;
         }
         if (command === "\\appendix") {
           appendix = true;
@@ -539,12 +551,27 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const expanded = expandLatexMacros(body, defs, { mode: "math", pos: node.from });
           if (expanded.ok) body = stripTexComments(expanded.text);
         }
+        /**
+         * Counter commands in a formula row step the counter (`\addtocounter{equation}{1}`), and a `\tag{\theequation}`
+         * after them is the counter's number: a row numbered by hand (VAE's `\eqnr` in `align*`), drawn with a number slot.
+         */
+        const rowTag = (row: string) => {
+          for (const match of row.matchAll(/\\(addtocounter|setcounter|stepcounter|refstepcounter)\s*\{\s*([A-Za-z@]+)\s*\}(?:\s*\{\s*(-?\d+)\s*\})?/g)) {
+            const [, command, counter, amount] = match;
+            if (command === "stepcounter" || command === "refstepcounter") step(counter);
+            else if (amount !== undefined) counters.set(counter, command === "setcounter" ? Number(amount) : value(counter) + Number(amount));
+          }
+          const tag = /\\tag\*?\s*\{([^}]*)\}/.exec(row);
+          if (!tag) return null;
+          const counted = /^\s*\\theequation\s*$/.test(tag[1]);
+          return { number: counted ? format("equation") : tag[1], tagged: !counted };
+        };
         if (name === "EquationEnvironment") {
           let number: string | null = null;
-          const tag = /\\tag\*?\s*\{([^}]*)\}/.exec(body);
-          if (tag) number = tag[1];
+          const tag = rowTag(body);
+          if (tag) number = tag.number;
           else if (NUMBERED_EQUATIONS.has(base) && !starred && !/\\(?:nonumber|notag)\b/.test(body)) { step("equation"); number = format("equation"); }
-          entries.push({ pos: node.from, kind: "equation", number, rows: [number], tagged: [!!tag] });
+          entries.push({ pos: node.from, kind: "equation", number, rows: [number], tagged: [!!tag?.tagged] });
           for (const match of body.matchAll(/\\label\s*\{([^}]*)\}/g)) if (number) labels.set(match[1].trim(), { number, kind: "equation", pos: node.from });
         } else {
           const numbered = NUMBERED_ROWS.has(base) && !starred;
@@ -552,11 +579,11 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           // amsmath keeps a \label in a \nonumber row for the next numbered row.
           let waiting: string[] = [];
           const rows = dropTrailingBreak(base, splitMathRows(body)).map((row) => {
-            const tag = /\\tag\*?\s*\{([^}]*)\}/.exec(row);
+            const tag = rowTag(row);
             let number: string | null = null;
-            if (tag) number = tag[1];
+            if (tag) number = tag.number;
             else if (numbered && !/\\(?:nonumber|notag)\b/.test(row)) { step("equation"); number = format("equation"); }
-            tagged.push(!!tag);
+            tagged.push(!!tag?.tagged);
             waiting.push(...[...row.matchAll(/\\label\s*\{([^}]*)\}/g)].map((match) => match[1].trim()));
             if (number) {
               for (const key of waiting) labels.set(key, { number, kind: "equation", pos: node.from });
@@ -673,7 +700,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       const name = ref.name;
       if (passive.size && passive.delete(`${name}@${ref.from}`)) return;
       if (floats.length && floats[floats.length - 1].from === ref.from && (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment")) floats.pop();
-      if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment" || name === "FootnoteCommand" || name === "EndnoteCommand" || name === "TabularEnvironment") {
+      if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment" || name === "FootnoteCommand" || name === "EndnoteCommand" || name === "TabularEnvironment" || name === "UnknownCommand") {
         if (scopes.length && scopes[scopes.length - 1].node === ref.from) scopes.pop();
         if (name === "ListEnvironment") lists.pop();
         const group = subequations[subequations.length - 1];

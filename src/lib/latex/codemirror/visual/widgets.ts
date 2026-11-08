@@ -9,6 +9,7 @@ import { applyEquationNumbers, renderKatex } from "./math-render";
 import { preambleOpenField, togglePreamble, visualAux, visualConfig, visualDefinitions, visualNumbering } from "./model";
 import { bibLookup, citationText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
 import { renderLatexFragment, type FragmentContext } from "./render-fragment";
+import { cssColor } from "./symbols";
 import { parseTabular } from "./table-model";
 import type { AlgorithmSpec } from "./algorithm";
 
@@ -733,15 +734,17 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   /** Cells whose LaTeX can show numbers, citations or macros, redrawn when those change. */
   const dynamic: Array<{ td: HTMLElement; text: string; from: number }> = [];
   // `\newcolumntype` letters align as their definition does.
-  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" ? "center" : column === "r" ? "right" : "left"));
+  // tabulary's `C` and `R` align as `c` and `r` (unless the document defines them).
+  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" || column === "C" ? "center" : column === "r" || column === "R" ? "right" : "left"));
   /** Columns a `\multirow` above still covers, and for how many more rows. */
   const rowsCovered = new Map<number, number>();
   model.rows.forEach((row, rowIndex) => {
     const tr = el("tr", "cm-vis-table-row");
-    // `\addlinespace` is space, not a line.
-    const lines = row.rulesBefore.filter((rule) => !/^\\addlinespace/.test(rule));
-    if (lines.length) tr.classList.add(lines.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
-    if (lines.length < row.rulesBefore.length) tr.classList.add("cm-vis-row-spaced");
+    // `\addlinespace` is space, not a line; `\noalign{…}` sets up the line after it (a thicker one: Mask R-CNN's `\shline`).
+    const lines = row.rulesBefore.filter((rule) => !/^\\(?:addlinespace|noalign)/.test(rule));
+    const thick = row.rulesBefore.some((rule) => /^\\noalign\s*\{[^}]*\\arrayrulewidth\s*[\d.]+\s*pt/.test(rule));
+    if (lines.length) tr.classList.add(thick || lines.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
+    if (row.rulesBefore.some((rule) => /^\\addlinespace/.test(rule))) tr.classList.add("cm-vis-row-spaced");
     let column = 0;
     row.cells.forEach((cell, cellIndex) => {
       // An empty cell under a `\multirow` above is part of it.
@@ -753,7 +756,15 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       const td = el("td", "cm-vis-table-cell") as HTMLTableCellElement;
       if (cell.span > 1) td.colSpan = cell.span;
       td.style.textAlign = cell.span > 1 ? "center" : aligns[column] ?? "left";
-      const text = cell.contentFrom !== undefined ? source.slice(cell.contentFrom, cell.contentTo) : cell.text;
+      let text = cell.contentFrom !== undefined ? source.slice(cell.contentFrom, cell.contentTo) : cell.text;
+      // colortbl: `\rowcolor{Gray}` at a row's start fills the row, `\cellcolor{…}` its cell (faintly, under the text).
+      const fill = /^\s*\\(rowcolor|cellcolor)\s*(?:\[([^\]]*)\]\s*)?\{([^{}]*)\}/.exec(text);
+      if (fill) {
+        const css = cssColor(fill[2] ?? null, fill[3], context.defs.colors);
+        const filled = fill[1] === "rowcolor" ? tr : td;
+        if (css) { filled.style.setProperty("--vis-fill", css); filled.dataset.fill = ""; }
+        text = text.slice(fill[0].length);
+      }
       // `\multirow{3}{*}{…}`: the cell spans the rows below it; so does a macro that writes one (`\blocka{64}{3}`).
       const lead = text.trimStart();
       const written = /^\\(?!multirow\b)[A-Za-z@]/.test(lead) && context.defs.macros.size ? expandLatexMacroUse(lead, context.defs, { mode: "text", pos: context.pos })?.text.trimStart() : undefined;

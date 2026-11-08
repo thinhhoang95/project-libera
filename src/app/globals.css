@@ -3234,6 +3234,12 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-table-row.cm-vis-rule > td { border-top: 1px solid currentColor; }
 .cm-vis-table-row.cm-vis-rule-heavy > td { border-top: 1.5px solid currentColor; }
 .cm-vis-table-row.cm-vis-row-spaced > td { padding-top: .5em; }
+/* colortbl's `\rowcolor` and `\cellcolor`: a faint fill of the colour, so text stays readable in every theme. */
+.cm-vis-table-row[data-fill] > td, .cm-vis-table-cell[data-fill] { background: color-mix(in srgb, var(--vis-fill) 35%, transparent); }
+/* stackengine's `\stackanchor{a}{b}`: its parts one above the other. */
+.cm-vis-stack { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1.15; }
+/* A displayed formula inside a caption or an algorithm's statement. */
+.cm-vis-fragment-math.cm-vis-fragment-display { display: block; margin: .3em 0; text-align: center; }
 /* `\rule{2em}{0.4pt}`: a bar (a zero-width strut draws nothing). */
 .cm-vis-rule-bar { display: inline-block; max-width: 100%; background: currentColor; vertical-align: baseline; }
 .cm-vis-table.cm-vis-table-closed { border-bottom: 1.5px solid currentColor; }

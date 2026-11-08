@@ -50,7 +50,11 @@ export type TableModel = {
 export type ColumnTypes = ReadonlyMap<string, { arity: number }>;
 
 const TABULAR_NEWLINE = /^\\tabularnewline(?![A-Za-z@])/;
-const RULE = /^\\(hline|toprule|midrule|bottomrule|cmidrule|cline|specialrule|addlinespace)\b(\s*\([^)]*\))?(\s*\{[^}]*\})?(\s*\[[^\]]*\])?/;
+/**
+ * A rule and its own arguments: `\hline`, booktabs' `\toprule[w]` and `\addlinespace[l]` take no group, so a group
+ * after them (`\hline` then `{\small Random} & …` on the next line) is the next row's first cell.
+ */
+const RULE = /^\\(?:noalign(?![A-Za-z@])\s*\{[^}]*\}|(?:hline|toprule|midrule|bottomrule|addlinespace)(?![A-Za-z@])(\s*\[[^\]]*\])?|(?:cmidrule|cline)(?![A-Za-z@])(\s*\([^)]*\))?(\s*\[[^\]]*\])?(\s*\{[^}]*\})?|specialrule(?![A-Za-z@])(\s*\{[^}]*\}){0,3})/;
 
 /** The column letters of a specification, without rules, `@{…}`, `>{…}`, `p{…}` widths and repeats expanded. */
 export function parseColumnSpec(spec: string, types?: ColumnTypes) {
@@ -152,11 +156,11 @@ export function parseTabular(source: string, offset = 0, types?: ColumnTypes): T
   if (!begin) return null;
   const env = begin[1];
   let index = begin[0].length;
-  // tabular* and tabularx take a width first; an optional [pos] may come before the spec.
+  // tabular*, tabularx and tabulary take a width first; an optional [pos] may come before the spec.
   const skipSpace = () => { while (/\s/.test(source[index] ?? "")) index++; };
   skipSpace();
   if (source[index] === "[") { const close = source.indexOf("]", index); if (close < 0) return null; index = close + 1; skipSpace(); }
-  if (env === "tabular*" || env === "tabularx" || env === "xltabular") {
+  if (env === "tabular*" || env === "tabularx" || env === "tabulary" || env === "xltabular") {
     const end = matchingBrace(source, index);
     if (end < 0) return null;
     index = end + 1;
@@ -394,7 +398,8 @@ export function macroBuiltTabular(source: string, expand: (text: string) => stri
   const built = parseTabular(reading, 0, types);
   if (!built) return null;
   const own = parseTabular(source, 0, types);
-  const shape = (model: TableModel) => model.rows.map((row) => row.cells.reduce((count, cell) => count + cell.span, 0)).join(",");
+  // Cells per row, and rules: a macro may write a rule (`\shline` for `\noalign{…}\hline\noalign{…}`).
+  const shape = (model: TableModel) => model.rows.map((row) => `${row.rulesBefore.length}/${row.cells.reduce((count, cell) => count + cell.span, 0)}`).join(",");
   return own && shape(own) === shape(built) ? null : reading;
 }
 
