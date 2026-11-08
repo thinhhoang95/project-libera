@@ -2,6 +2,7 @@ import { normalizeArxivId, normalizeDoi, normalizePmcid, normalizePmid } from ".
 import { parseDateText } from "../normalize";
 import { parseName } from "../names";
 import type { CslItem, CslItemType, CslName, ReferenceIdentifiers, ReferenceVersionLink } from "../types";
+import { describeWait, HttpError, isAbortError, isBudgetExhausted } from "./http";
 import { SOURCE_CONFIDENCE, type ResolveContext, type SourceRecord } from "./record";
 
 // OpenAlex (https://api.openalex.org): works by DOI, arXiv DOI or PMID, and
@@ -150,12 +151,43 @@ function withCommonParams(url: URL, ctx: ResolveContext) {
   return url.toString();
 }
 
+/**
+ * OpenAlex only adds to what Crossref and arXiv give (abstracts, preprint
+ * links, a second search), so it never holds a lookup longer than this,
+ * however slow it is or however many retries a request would take.
+ */
+export const OPENALEX_DEADLINE_MS = 10_000;
+
+/**
+ * Runs one OpenAlex request with the API key (if any) and the deadline.
+ * Cancelling the lookup still propagates as an AbortError; the deadline and
+ * a used-up daily quota become HttpErrors, which the lookups report as
+ * warnings and move on.
+ */
+async function requestOpenAlex<T>(url: string, ctx: ResolveContext, deadlineMs = OPENALEX_DEADLINE_MS): Promise<T | null> {
+  const deadline = AbortSignal.timeout(deadlineMs);
+  const signal = ctx.signal ? AbortSignal.any([ctx.signal, deadline]) : deadline;
+  const headers = ctx.openAlexApiKey ? { Authorization: `Bearer ${ctx.openAlexApiKey}` } : undefined;
+  try {
+    return await ctx.network(() => ctx.http.getJson<T>(url, { signal, ...(headers ? { headers } : {}) }));
+  } catch (error) {
+    if (ctx.signal?.aborted) throw error;
+    if (deadline.aborted && isAbortError(error)) throw new HttpError(`it did not answer within ${Math.round(deadlineMs / 1000)} seconds.`, 504, url);
+    if (isBudgetExhausted(error)) {
+      const wait = describeWait(error.retryInMs);
+      throw new HttpError(ctx.openAlexApiKey
+        ? `the daily quota of your OpenAlex API key is used up; it resets in about ${wait}.`
+        : `its free daily quota is used up; it resets in about ${wait}. A free OpenAlex API key (Preferences → AI → References) gives ten times more.`, 429, url, error.retryAt, error.retryInMs);
+    }
+    throw error;
+  }
+}
+
 /** One work by DOI, arXiv ID (through its arXiv DOI) or PMID; null when OpenAlex does not have it. */
 export async function fetchOpenAlexWork(key: { doi?: string; arxiv?: string; pmid?: string }, ctx: ResolveContext): Promise<SourceRecord | null> {
   const lookup = key.doi ? `doi:${key.doi}` : key.arxiv ? `doi:10.48550/arxiv.${key.arxiv}` : key.pmid ? `pmid:${key.pmid}` : undefined;
   if (!lookup) return null;
-  const url = withCommonParams(new URL(`${API}/works/${lookup}`), ctx);
-  const work = await ctx.network(() => ctx.http.getJson<OpenAlexWork>(url, { signal: ctx.signal }));
+  const work = await requestOpenAlex<OpenAlexWork>(withCommonParams(new URL(`${API}/works/${lookup}`), ctx), ctx);
   return work ? mapOpenAlexWork(work, ctx.now().toISOString()) : null;
 }
 
@@ -165,7 +197,7 @@ export async function searchOpenAlex(query: string, ctx: ResolveContext, perPage
   // Commas and colons have meaning in OpenAlex filters; plain words search best.
   url.searchParams.set("search", query.replace(/[,:;|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500));
   url.searchParams.set("per-page", String(perPage));
-  const payload = await ctx.network(() => ctx.http.getJson<{ results?: OpenAlexWork[] }>(withCommonParams(url, ctx), { signal: ctx.signal }));
+  const payload = await requestOpenAlex<{ results?: OpenAlexWork[] }>(withCommonParams(url, ctx), ctx);
   const retrievedAt = ctx.now().toISOString();
   return (payload?.results ?? []).map((work) => mapOpenAlexWork(work, retrievedAt)).filter((record): record is SourceRecord => !!record);
 }

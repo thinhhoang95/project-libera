@@ -3,7 +3,7 @@ import test from "node:test";
 import { parseArxivFeed, fetchArxivRecord } from "../../src/lib/references/resolve/arxiv";
 import { fetchCrossrefWork, mapCrossrefWork, searchCrossref } from "../../src/lib/references/resolve/crossref";
 import { fetchDataciteRecord } from "../../src/lib/references/resolve/datacite";
-import { HttpClient, HttpError, LIBERA_USER_AGENT, isAbortError } from "../../src/lib/references/resolve/http";
+import { HttpClient, HttpError, LIBERA_USER_AGENT, isAbortError, isBudgetExhausted } from "../../src/lib/references/resolve/http";
 import { MATCH_THRESHOLD, scoreMatch, scoreReferenceText, titleAppearsInText, titleScore, titleSimilarityInText } from "../../src/lib/references/resolve/match";
 import { abstractFromInvertedIndex, fetchOpenAlexWork, searchOpenAlex } from "../../src/lib/references/resolve/openalex";
 import { fetchOpenLibraryRecord } from "../../src/lib/references/resolve/openlibrary";
@@ -245,7 +245,7 @@ function clockedClient(responses: (Response | Error)[], options: { intervalMs?: 
       return next;
     },
   });
-  return { client, starts, sleeps };
+  return { client, starts, sleeps, advance: (ms: number) => { now += ms; } };
 }
 
 test("the HTTP client spaces requests per host, backs off on 429 and 5xx, and caches", async () => {
@@ -286,6 +286,35 @@ test("the HTTP client spaces requests per host, backs off on 429 and 5xx, and ca
   await assert.rejects(large.client.getText("https://a.example/big", { maxBytes: 1_000 }), (error: unknown) => error instanceof HttpError && error.status === 413);
 });
 
+test("a 429 that says the quota is used up fails at once, and the host is skipped until it resets", async () => {
+  const spent = () => new Response("", { status: 429, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "7200" } });
+  const exhausted = clockedClient([spent(), new Response(JSON.stringify({ ok: true }))], { intervalMs: 0 });
+  await assert.rejects(exhausted.client.getJson("https://a.example/1"), (error: unknown) => isBudgetExhausted(error) && /about 2 hours/.test(error.message));
+  assert.equal(exhausted.starts.length, 1, "no retries");
+  assert.ok(exhausted.sleeps.every((ms) => ms === 0), "no waiting");
+  await assert.rejects(exhausted.client.getJson("https://a.example/2"), (error: unknown) => isBudgetExhausted(error));
+  assert.equal(exhausted.starts.length, 1, "the host is not asked again before the reset");
+  assert.deepEqual(await exhausted.client.getJson("https://b.example/1"), { ok: true }, "other hosts are unaffected");
+
+  const keyed = clockedClient([spent(), new Response(JSON.stringify({ keyed: true }))], { intervalMs: 0 });
+  await assert.rejects(keyed.client.getJson("https://a.example/1"), (error: unknown) => isBudgetExhausted(error));
+  assert.deepEqual(await keyed.client.getJson("https://a.example/1", { headers: { Authorization: "Bearer k" } }), { keyed: true }, "a key has its own quota");
+  assert.equal(keyed.starts.length, 2);
+
+  // The clock passes the reset: the host is asked again.
+  const reset = clockedClient([spent(), new Response(JSON.stringify({ again: true }))], { intervalMs: 0 });
+  await assert.rejects(reset.client.getJson("https://a.example/1"));
+  reset.advance(7_201_000);
+  assert.deepEqual(await reset.client.getJson("https://a.example/1"), { again: true });
+
+  const longWait = clockedClient([new Response("", { status: 429, headers: { "retry-after": "3600" } })], { intervalMs: 0 });
+  await assert.rejects(longWait.client.getJson("https://a.example/1"), (error: unknown) => isBudgetExhausted(error) && /about 1 hour/.test(error.message));
+  assert.equal(longWait.starts.length, 1, "a Retry-After longer than we would wait is not retried");
+
+  const perSecond = clockedClient([new Response("", { status: 429, headers: { "x-ratelimit-remaining": "40" } }), new Response(JSON.stringify({ ok: 1 }))], { intervalMs: 0 });
+  assert.deepEqual(await perSecond.client.getJson("https://a.example/1"), { ok: 1 }, "a per-second 429 with quota left is still retried");
+});
+
 test("cancelling aborts waiting and in-flight requests", async () => {
   const waiting = clockedClient([]);
   const controller = new AbortController();
@@ -315,21 +344,21 @@ test("reference preferences come from the config file, else the environment; the
   const path = await import("node:path");
   const { getReferenceResolveSettings, DEFAULT_REFERENCE_SETTINGS } = await import("../../src/lib/references/resolve/settings");
   const { getAiFunctionOptions } = await import("../../src/lib/ai-preferences");
-  const keys = ["LIBERA_CONFIG_PATH", "LIBERA_REFERENCES_LOOKUP_ONLINE", "LIBERA_REFERENCES_USE_AI", "LIBERA_REFERENCES_WEB_SEARCH", "LIBERA_REFERENCES_CONTACT_EMAIL", "LIBERA_REFERENCES_AUTO_CREATE_PDFS", "LIBERA_AI_FORMATTING_MODEL", "LIBERA_AI_REFERENCES_MODEL", "LIBERA_AI_REFERENCES_REASONING_EFFORT"];
+  const keys = ["LIBERA_CONFIG_PATH", "LIBERA_REFERENCES_LOOKUP_ONLINE", "LIBERA_REFERENCES_USE_AI", "LIBERA_REFERENCES_WEB_SEARCH", "LIBERA_REFERENCES_CONTACT_EMAIL", "LIBERA_REFERENCES_OPENALEX_API_KEY", "LIBERA_REFERENCES_AUTO_CREATE_PDFS", "LIBERA_AI_FORMATTING_MODEL", "LIBERA_AI_REFERENCES_MODEL", "LIBERA_AI_REFERENCES_REASONING_EFFORT"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-reference-settings-"));
   try {
     for (const key of keys) delete process.env[key];
     assert.deepEqual(getReferenceResolveSettings(), DEFAULT_REFERENCE_SETTINGS);
-    assert.deepEqual(DEFAULT_REFERENCE_SETTINGS, { lookupOnline: true, useAi: true, webSearchDefault: false, contactEmail: "", autoCreateForPdfs: false });
+    assert.deepEqual(DEFAULT_REFERENCE_SETTINGS, { lookupOnline: true, useAi: true, webSearchDefault: false, contactEmail: "", openAlexApiKey: "", autoCreateForPdfs: false });
     process.env.LIBERA_REFERENCES_LOOKUP_ONLINE = "false";
     process.env.LIBERA_REFERENCES_WEB_SEARCH = "true";
     process.env.LIBERA_REFERENCES_CONTACT_EMAIL = "not-an-email";
     assert.deepEqual(getReferenceResolveSettings(), { ...DEFAULT_REFERENCE_SETTINGS, lookupOnline: false, webSearchDefault: true });
     const configPath = path.join(directory, "config.json");
-    await writeFile(configPath, JSON.stringify({ aiFunctions: { references: { useAi: false, contactEmail: "me@example.org", autoCreateForPdfs: true } } }));
+    await writeFile(configPath, JSON.stringify({ aiFunctions: { references: { useAi: false, contactEmail: "me@example.org", openAlexApiKey: "key-123", autoCreateForPdfs: true } } }));
     process.env.LIBERA_CONFIG_PATH = configPath;
-    assert.deepEqual(getReferenceResolveSettings(), { lookupOnline: true, useAi: false, webSearchDefault: false, contactEmail: "me@example.org", autoCreateForPdfs: true });
+    assert.deepEqual(getReferenceResolveSettings(), { lookupOnline: true, useAi: false, webSearchDefault: false, contactEmail: "me@example.org", openAlexApiKey: "key-123", autoCreateForPdfs: true });
 
     process.env.LIBERA_AI_FORMATTING_MODEL = "provider/formatting";
     process.env.LIBERA_AI_REFERENCES_MODEL = "";

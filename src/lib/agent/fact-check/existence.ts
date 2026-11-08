@@ -61,6 +61,7 @@ function resolveContext(options: ExistenceOptions, settings: ReferenceResolveSet
     http: options.http ?? getReferenceHttpClient(),
     signal: options.signal,
     contactEmail: settings.contactEmail || undefined,
+    openAlexApiKey: settings.openAlexApiKey || undefined,
     now: options.now ?? (() => new Date()),
     network: (task) => task(),
     llm: (task) => task(),

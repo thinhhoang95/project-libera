@@ -23,6 +23,8 @@ export type ResolveContext = {
   signal?: AbortSignal;
   /** Sent as `mailto` to Crossref and OpenAlex only when the user set one in Preferences. */
   contactEmail?: string;
+  /** Sent to OpenAlex as a bearer token when the user set one in Preferences (a larger daily quota). */
+  openAlexApiKey?: string;
   now: () => Date;
   /** Runs one network lookup; the jobs runner limits how many run at once. */
   network: <T>(task: () => Promise<T>) => Promise<T>;

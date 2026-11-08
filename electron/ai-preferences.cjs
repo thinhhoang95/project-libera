@@ -76,6 +76,7 @@ const REFERENCE_EMAIL = /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/;
 function normalizeReferencePreferences(input) {
   const model = typeof input?.model === "string" ? input.model.trim() : "";
   const contactEmail = typeof input?.contactEmail === "string" ? input.contactEmail.trim() : "";
+  const openAlexApiKey = typeof input?.openAlexApiKey === "string" ? input.openAlexApiKey.trim() : "";
   return {
     model: model.length <= 200 && !/[\u0000-\u001f\u007f\s]/.test(model) ? model : "",
     promptCaching: typeof input?.promptCaching === "boolean" ? input.promptCaching : false,
@@ -84,6 +85,7 @@ function normalizeReferencePreferences(input) {
     useAi: typeof input?.useAi === "boolean" ? input.useAi : true,
     webSearch: typeof input?.webSearch === "boolean" ? input.webSearch : false,
     contactEmail: contactEmail.length <= 254 && REFERENCE_EMAIL.test(contactEmail) ? contactEmail : "",
+    openAlexApiKey: openAlexApiKey.length <= 200 && /^[!-~]+$/.test(openAlexApiKey) ? openAlexApiKey : "",
     autoCreateForPdfs: typeof input?.autoCreateForPdfs === "boolean" ? input.autoCreateForPdfs : false,
     customInstruction: customInstruction(input),
   };
@@ -229,6 +231,7 @@ function aiPreferencesEnvironment(preferences, defaultModel) {
     LIBERA_REFERENCES_USE_AI: String(references.useAi),
     LIBERA_REFERENCES_WEB_SEARCH: String(references.webSearch),
     LIBERA_REFERENCES_CONTACT_EMAIL: references.contactEmail,
+    LIBERA_REFERENCES_OPENALEX_API_KEY: references.openAlexApiKey,
     LIBERA_REFERENCES_AUTO_CREATE_PDFS: String(references.autoCreateForPdfs),
     LIBERA_WHERE_WAS_I_ENABLED: String(normalized.whereWasI.enabled),
     LIBERA_WHERE_WAS_I_SUMMARIZE: String(normalized.whereWasI.summarize),

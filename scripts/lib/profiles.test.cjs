@@ -72,6 +72,7 @@ function mainHarness() {
     ...require("../../electron/notebook-illustrations.cjs"), ...require("../../electron/notebook-illustration-store.cjs"),
     nativeImage: { createFromBuffer: () => ({ isEmpty: () => false }) }, ADMIN_USER: "admin",
     normalizedImportedPreferences: (input) => input, parsePreferencesBackup: (input) => input,
+    readPreferencesBackup: async (input) => input, isEncryptedPreferencesBackup: () => false, pendingPreferencesImport: null,
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     isSameOrigin: (a, b) => new URL(a).origin === new URL(b).origin,
   });

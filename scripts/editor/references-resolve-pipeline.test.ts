@@ -376,3 +376,32 @@ test("an arXiv preprint without a published version stays a preprint, whatever D
   assert.equal(candidate.versions, undefined, "a preprint does not link to itself");
   assert.equal(candidate.provenance?.title?.source, "arxiv");
 });
+
+test("a used-up OpenAlex quota leaves the Crossref result, says why, and OpenAlex is not asked again", async () => {
+  const log: FetchLog = [];
+  const spent: Route = { match: (url) => url.host === "api.openalex.org", respond: () => new Response("", { status: 429, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "30000" } }) };
+  const options = testOptions({ log, routes: [spent] });
+  const first = await resolveInput("10.1016/j.neunet.2014.09.003", options);
+  assert.equal(first.candidates[0].csl.title, "Deep learning in neural networks: An overview", "Crossref's record is the candidate");
+  assert.equal(first.candidates[0].identifiers?.openalex, undefined);
+  assert.ok(first.warnings.some((warning) => /^OpenAlex could not be reached: its free daily quota is used up; it resets in about 8 hours\. A free OpenAlex API key/.test(warning)), first.warnings.join(" | "));
+  const openAlexCalls = () => log.filter((entry) => entry.url.includes("api.openalex.org")).length;
+  assert.equal(openAlexCalls(), 1, "no retries");
+  await resolveInput("Schmidhuber. Deep learning in neural networks: An overview. Neural Networks, 2015.", options);
+  assert.equal(openAlexCalls(), 1, "skipped until the reset");
+
+  const keyed = testOptions({ log, settings: testSettings({ useAi: false, openAlexApiKey: "key-123" }), http: options.http });
+  await resolveInput("10.1016/j.neunet.2014.09.003", keyed);
+  const sent = log.filter((entry) => entry.url.includes("api.openalex.org")).at(-1);
+  assert.equal(new Headers(sent?.init?.headers).get("authorization"), "Bearer key-123", "the key is sent as a bearer token, not in the URL");
+  assert.ok(!sent?.url.includes("key-123"));
+});
+
+test("items of one pasted list that resolve to the same work become one candidate", async () => {
+  const pasted = "Schmidhuber, Jürgen (2015). “Deep learning in neural networks: An overview”.\nNeural Networks 61, pp. 85–117. doi: 10.1016/j.neunet.2014.09.003.";
+  const { candidates, warnings } = await resolveInput(pasted, testOptions());
+  assert.equal(candidates.length, 1, candidates.map((candidate) => candidate.csl.title).join(" | "));
+  assert.equal(candidates[0].identifiers?.doi, "10.1016/j.neunet.2014.09.003");
+  assert.equal(candidates[0].status, "needs-review");
+  assert.ok(warnings.some((warning) => warning === "2 pasted items were the same work, “Deep learning in neural networks: An overview”, and were merged into one."), warnings.join(" | "));
+});

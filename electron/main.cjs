@@ -33,7 +33,12 @@ const { INDEX_FILE_NAME, MODEL_FOLDERS, defaultModelsDirectory, defaultSearchInd
 const { normalizeTranscriptionPreferences } = require("./transcription-preferences.cjs");
 const { inspectKokoroFolder, normalizeTtsPreferences } = require("./tts-preferences.cjs");
 const { inspectDetectionFolder, normalizeDetectionPreferences } = require("./detection-preferences.cjs");
-const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
+const {
+  createPreferencesBackup,
+  encryptPreferencesBackup,
+  isEncryptedPreferencesBackup,
+  readPreferencesBackup,
+} = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
 const { OPENROUTER_SPEECH_MODELS_URL, OPENROUTER_TRANSCRIPTION_MODELS_URL, createOpenRouterModelCatalog } = require("./openrouter-models.cjs");
@@ -658,7 +663,14 @@ function normalizedImportedPreferences(input) {
   };
 }
 
-async function exportPreferences(parentWindow) {
+// The backup is encrypted with the master password (preferences-io.cjs), which
+// must match this profile's so the verifier inside opens with it after a load.
+async function exportPreferences(parentWindow, password) {
+  const config = readConfig();
+  if (typeof password !== "string" || !password || !verifyPasswordHash(password, config.passwordHash)) {
+    throw new Error("The master password is incorrect.");
+  }
+
   const date = new Date().toISOString().slice(0, 10);
   const result = await dialog.showSaveDialog(parentWindow, {
     title: "Export Libera Preferences",
@@ -668,7 +680,7 @@ async function exportPreferences(parentWindow) {
 
   if (result.canceled || !result.filePath) return { canceled: true };
 
-  const backup = createPreferencesBackup(readConfig());
+  const backup = await encryptPreferencesBackup(createPreferencesBackup(config), password);
   await fsp.writeFile(result.filePath, `${JSON.stringify(backup, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
@@ -720,32 +732,62 @@ async function importEditorThemes(parentWindow) {
   return { canceled: false, fileName: path.basename(filePath), themes: parseEditorThemesFile(parsed) };
 }
 
-async function importPreferences(parentWindow) {
-  const result = await dialog.showOpenDialog(parentWindow, {
-    title: "Load Libera Preferences",
-    properties: ["openFile"],
-    filters: [{ name: "JSON files", extensions: ["json"] }],
-  });
+// An encrypted backup picked in Preferences, waiting for its master password.
+// Kept in this process so a mistyped password does not mean picking the file again.
+let pendingPreferencesImport = null;
 
-  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+// Called without a password to pick a file. An encrypted file answers
+// { needsPassword: true }; the page then calls again with the password.
+async function importPreferences(parentWindow, password) {
+  let filePath;
+  let parsed;
 
-  const filePath = result.filePaths[0];
-  const fileInfo = await fsp.stat(filePath);
-  if (fileInfo.size > 5 * 1024 * 1024) {
-    throw new Error("The selected preferences backup is too large.");
+  if (typeof password === "string" && pendingPreferencesImport) {
+    ({ filePath, parsed } = pendingPreferencesImport);
+  } else {
+    pendingPreferencesImport = null;
+    const result = await dialog.showOpenDialog(parentWindow, {
+      title: "Load Libera Preferences",
+      properties: ["openFile"],
+      filters: [{ name: "JSON files", extensions: ["json"] }],
+    });
+
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+
+    filePath = result.filePaths[0];
+    const fileInfo = await fsp.stat(filePath);
+    if (fileInfo.size > 5 * 1024 * 1024) {
+      throw new Error("The selected preferences backup is too large.");
+    }
+
+    try {
+      parsed = JSON.parse(await fsp.readFile(filePath, "utf8"));
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error("The selected file is not valid JSON.");
+      throw error;
+    }
+
+    if (isEncryptedPreferencesBackup(parsed)) {
+      pendingPreferencesImport = { filePath, parsed };
+      return { canceled: false, needsPassword: true, fileName: path.basename(filePath) };
+    }
   }
 
-  let parsed;
+  const encrypted = isEncryptedPreferencesBackup(parsed);
+  let importedPreferences;
   try {
-    parsed = JSON.parse(await fsp.readFile(filePath, "utf8"));
+    importedPreferences = normalizedImportedPreferences(await readPreferencesBackup(parsed, password));
   } catch (error) {
-    if (error instanceof SyntaxError) throw new Error("The selected file is not valid JSON.");
+    // Keep the file for another try only when the password was the problem.
+    if (error?.code !== "wrong-password") pendingPreferencesImport = null;
     throw error;
   }
+  pendingPreferencesImport = null;
 
-  const importedPreferences = normalizedImportedPreferences(
-    parsePreferencesBackup(parsed),
-  );
+  // The backup's verifier becomes this profile's; it must accept the password that opened it.
+  if (encrypted && !verifyPasswordHash(password, importedPreferences.passwordHash)) {
+    throw new Error("The backup's master password verifier does not match the password that opened it.");
+  }
   const confirmation = await showMessageBox(parentWindow, {
     type: "warning",
     buttons: ["Load Settings", "Cancel"],
@@ -1198,7 +1240,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
 
     ipcMain.handle("setup:reveal-search-index", (_event, filePath) => revealSearchIndex(filePath));
 
-    ipcMain.handle("setup:export-preferences", () => exportPreferences(setupWindow));
+    ipcMain.handle("setup:export-preferences", (_event, password) => exportPreferences(setupWindow, password));
 
     ipcMain.handle("setup:export-editor-themes", (_event, themes) => exportEditorThemes(setupWindow, themes));
 
@@ -1240,9 +1282,10 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       }
     });
 
-    ipcMain.handle("setup:import-preferences", async () => {
-      const result = await importPreferences(setupWindow);
+    ipcMain.handle("setup:import-preferences", async (_event, password) => {
+      const result = await importPreferences(setupWindow, password);
 
+      if (result.needsPassword) return { canceled: false, needsPassword: true, fileName: result.fileName };
       if (!result.canceled) savedConfig = result.config;
 
       return { canceled: result.canceled, fileName: result.fileName };
@@ -1346,6 +1389,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
     }));
 
     setupHost.on("closed", () => {
+      pendingPreferencesImport = null;
       ipcMain.removeHandler("setup:close");
       ipcMain.removeHandler("setup:open-page");
       ipcMain.removeHandler("setup:get-state");

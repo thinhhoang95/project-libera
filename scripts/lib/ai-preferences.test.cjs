@@ -25,8 +25,10 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   assert.equal(normalizeAiPreferences({ rewrite: { model: 'own/rewrite' }, write: { model: 'own/write' } }).write.model, 'own/write');
   assert.equal(normalizeAiPreferences(undefined).formatting.model, 'openai/gpt-6-luna');
   assert.deepEqual(legacy.latex, { model: 'openai/gpt-5.6-luna', reasoningEffort: 'low', promptCaching: false, customInstruction: '' });
-  assert.deepEqual(legacy.references, { model: '', reasoningEffort: 'low', promptCaching: false, lookupOnline: true, useAi: true, webSearch: false, contactEmail: '', autoCreateForPdfs: false, customInstruction: '' });
+  assert.deepEqual(legacy.references, { model: '', reasoningEffort: 'low', promptCaching: false, lookupOnline: true, useAi: true, webSearch: false, contactEmail: '', openAlexApiKey: '', autoCreateForPdfs: false, customInstruction: '' });
   assert.equal(normalizeAiPreferences({ references: { contactEmail: 'not an email', model: 'bad model' } }).references.contactEmail, '');
+  assert.equal(normalizeAiPreferences({ references: { openAlexApiKey: ' key-123 ' } }).references.openAlexApiKey, 'key-123');
+  assert.equal(normalizeAiPreferences({ references: { openAlexApiKey: 'two words' } }).references.openAlexApiKey, '', 'a key with spaces is dropped, not sent');
   assert.equal(normalizeAiPreferences({ references: { model: 'bad model' } }).references.model, '');
   assert.deepEqual(legacy.whereWasI, { enabled: true, summarize: true, model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'low', customInstruction: '' });
   assert.equal(normalizeAiPreferences({ whereWasI: { model: 'bad model', reasoningEffort: 'huge' } }).whereWasI.model, 'deepseek/deepseek-v4.1-flash');
@@ -42,7 +44,7 @@ test('AI preferences migrate legacy models and survive a config file round trip'
     promptCaching: name !== "chat",
     customInstruction: ['rewrite', 'chat'].includes(name) ? `Instructions for ${name}.` : '',
   }]));
-  aiFunctions.references = { model: 'provider/references', reasoningEffort: 'high', promptCaching: true, lookupOnline: false, useAi: true, webSearch: true, contactEmail: 'me@example.org', autoCreateForPdfs: true, customInstruction: 'Prefer the published version.' };
+  aiFunctions.references = { model: 'provider/references', reasoningEffort: 'high', promptCaching: true, lookupOnline: false, useAi: true, webSearch: true, contactEmail: 'me@example.org', openAlexApiKey: 'key-123', autoCreateForPdfs: true, customInstruction: 'Prefer the published version.' };
   aiFunctions.whereWasI = { enabled: false, summarize: false, model: 'provider/recap', reasoningEffort: 'medium', customInstruction: '' };
   aiFunctions.pdfToMarkdown = { engine: 'openrouter', model: 'provider/pdf', reasoningEffort: 'medium', concurrency: 3, cleanup: false, customInstruction: '' };
   aiFunctions.definitions = { model: 'anthropic/claude-sonnet-4.5', reasoningEffort: 'high', customInstruction: 'Skip standard notation.' };
@@ -145,6 +147,7 @@ test('Preferences UI loads and saves every function setting', async () => {
   const loadedPrompts = ['Rewrite instruction loaded from a file.', 'Instruction loaded from a file.'];
   let saved;
   let exportRequests = 0;
+  let exportPassword;
   let importRequests = 0;
   const dom = new JSDOM(readFileSync(path.join(__dirname, '../../electron/setup.html'), 'utf8'), {
     url: 'http://localhost/?mode=configuration', runScripts: 'dangerously',
@@ -153,7 +156,7 @@ test('Preferences UI loads and saves every function setting', async () => {
       window.liberaSetup = {
         getState: async () => ({ aiFunctions, quickPrompts, hasApiKey: true, hasPasswordHash: true, dataDir: '/tmp/notebooks' }),
         save: async (input) => { saved = JSON.parse(JSON.stringify(input)); },
-        exportPreferences: async () => { exportRequests += 1; return { canceled: false, fileName: 'libera-preferences.json' }; },
+        exportPreferences: async (password) => { exportRequests += 1; exportPassword = password; return { canceled: false, fileName: 'libera-preferences.json' }; },
         importPreferences: async () => { importRequests += 1; return { canceled: true }; },
         loadAiSystemPromptFile: async () => ({ canceled: false, content: loadedPrompts.shift() }),
       };
@@ -175,8 +178,16 @@ test('Preferences UI loads and saves every function setting', async () => {
     assert.ok(document.querySelector('#import-preferences-button svg'));
     document.querySelector('#export-preferences-button').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    // The backup is encrypted: nothing is exported until the master password is given.
+    assert.equal(exportRequests, 0);
+    assert.equal(document.querySelector('#backup-password-dialog').open, true);
+    document.querySelector('#backup-password-input').value = 'master secret';
+    document.querySelector('#backup-password-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(exportRequests, 1);
-    assert.equal(document.querySelector('#io-status').textContent, 'Exported libera-preferences.json.');
+    assert.equal(exportPassword, 'master secret');
+    assert.equal(document.querySelector('#backup-password-dialog').open, false);
+    assert.equal(document.querySelector('#io-status').textContent, 'Exported libera-preferences.json (encrypted).');
     document.querySelector('#import-preferences-button').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(importRequests, 1);
@@ -274,7 +285,7 @@ test('Preferences UI loads and saves every function setting', async () => {
       customInstruction: { chat: 'Instruction loaded from a file.', rewrite: 'Rewrite instruction loaded from a file.', latex: 'Use the article class.' }[name] ?? '',
     });
     assert.deepEqual(saved.aiFunctions.references, {
-      model: 'custom/references', reasoningEffort: 'low', promptCaching: false, lookupOnline: false, useAi: true, webSearch: true, autoCreateForPdfs: true, contactEmail: 'me@example.org', customInstruction: '',
+      model: 'custom/references', reasoningEffort: 'low', promptCaching: false, lookupOnline: false, useAi: true, webSearch: true, autoCreateForPdfs: true, contactEmail: 'me@example.org', openAlexApiKey: '', customInstruction: '',
     });
     assert.deepEqual(saved.aiFunctions.whereWasI, { enabled: false, summarize: false, model: 'custom/recap', reasoningEffort: 'low', customInstruction: '' });
     // Every function gets a routing button; unset, each routes to the cheapest provider.

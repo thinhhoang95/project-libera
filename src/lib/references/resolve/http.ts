@@ -40,12 +40,32 @@ const MAX_CACHE_ENTRIES = 500;
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
 const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
 
+/** Without a reset time, a host whose budget ran out is skipped this long. */
+const DEFAULT_BUDGET_BLOCK_MS = 15 * 60 * 1000;
+
 /** A response the caller cannot use: an HTTP error after retries, or a body over the size limit. */
 export class HttpError extends Error {
-  constructor(message: string, readonly status: number, readonly url: string) {
+  /**
+   * `retryAt` (on the client's clock) and `retryInMs` are set on a 429 whose
+   * quota is used up: when the host can be asked again.
+   */
+  constructor(message: string, readonly status: number, readonly url: string, readonly retryAt?: number, readonly retryInMs?: number) {
     super(message);
     this.name = "HttpError";
   }
+}
+
+/** Whether `error` is a 429 meaning the host's quota is used up (not a per-second limit), so waiting minutes would not help. */
+export function isBudgetExhausted(error: unknown): error is HttpError & { retryAt: number; retryInMs: number } {
+  return error instanceof HttpError && error.status === 429 && typeof error.retryAt === "number";
+}
+
+/** "12 minutes", "8 hours". */
+export function describeWait(ms: number) {
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.round(minutes / 60);
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
 export function abortError(signal?: AbortSignal) {
@@ -145,6 +165,8 @@ export type HttpRequestOptions = {
   maxBytes?: number;
   /** false skips the response cache (for pages that change). */
   cache?: boolean;
+  /** Extra request headers, e.g. an API key. A quota that runs out is tracked per host and Authorization value. */
+  headers?: Record<string, string>;
 };
 
 export type HttpTextResponse = { status: number; url: string; contentType: string; text: string };
@@ -191,6 +213,8 @@ async function readLimited(response: Response, maxBytes: number, url: string) {
 export class HttpClient {
   private limiters = new Map<string, HostLimiter>();
   private cache = new Map<string, CacheEntry>();
+  /** Hosts (per credential) whose quota ran out → when to ask again. */
+  private exhausted = new Map<string, number>();
   private fetchImpl: FetchLike;
   private now: () => number;
   private sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -231,6 +255,29 @@ export class HttpClient {
 
   clearCache() {
     this.cache.clear();
+    this.exhausted.clear();
+  }
+
+  private budgetError(host: string, url: string, retryAt: number) {
+    const wait = Math.max(0, retryAt - this.now());
+    return new HttpError(`${host} has used up its request quota; it can be asked again in about ${describeWait(wait)}.`, 429, url, retryAt, wait);
+  }
+
+  /**
+   * A 429 that more retries cannot fix: the response says nothing is left
+   * (`X-RateLimit-Remaining: 0`, as OpenAlex sends when the daily budget is
+   * spent) or asks for a wait longer than we would ever sleep. Returns when
+   * to ask again, else undefined (a short per-second limit, worth retrying).
+   */
+  private exhaustedUntil(response: Response, retryAfter: number | undefined) {
+    const remaining = response.headers.get("x-ratelimit-remaining");
+    const spent = remaining !== null && remaining.trim() !== "" && Number(remaining) <= 0;
+    if (!spent && !(retryAfter !== undefined && retryAfter > MAX_RETRY_AFTER_MS)) return undefined;
+    const reset = Number(response.headers.get("x-ratelimit-reset"));
+    // X-RateLimit-Reset is seconds until the reset for OpenAlex; a Unix time from other hosts.
+    const resetMs = Number.isFinite(reset) && reset > 0 ? (reset > 1e9 ? reset * 1000 - this.now() : reset * 1000) : undefined;
+    const wait = retryAfter ?? resetMs ?? DEFAULT_BUDGET_BLOCK_MS;
+    return this.now() + Math.max(wait, 1_000);
   }
 
   /** The response, or null for 404/410. */
@@ -241,6 +288,12 @@ export class HttpClient {
       if (hit) return hit.status === 200 ? hit : null;
     }
     const host = new URL(url).host;
+    const budgetKey = `${host} ${options.headers?.Authorization ?? ""}`;
+    const blockedUntil = this.exhausted.get(budgetKey);
+    if (blockedUntil !== undefined) {
+      if (blockedUntil > this.now()) throw this.budgetError(host, url, blockedUntil);
+      this.exhausted.delete(budgetKey);
+    }
     const limiter = this.limiter(host);
     const retries = this.options.retries ?? DEFAULT_RETRIES;
     let lastError: unknown;
@@ -252,7 +305,7 @@ export class HttpClient {
         const timeout = AbortSignal.timeout(this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
         const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
         const response = await this.fetchImpl(url, {
-          headers: { "User-Agent": this.options.userAgent ?? LIBERA_USER_AGENT, Accept: options.accept ?? "application/json" },
+          headers: { ...options.headers, "User-Agent": this.options.userAgent ?? LIBERA_USER_AGENT, Accept: options.accept ?? "application/json" },
           redirect: "follow",
           signal,
         });
@@ -271,9 +324,18 @@ export class HttpClient {
         lastError = new HttpError(`${host} answered ${response.status}.`, response.status, url);
         if (!RETRY_STATUSES.has(response.status)) throw lastError;
         retryAfter = parseRetryAfter(response.headers.get("retry-after"), this.now());
-        if (response.status === 429) limiter.pause(Math.min(retryAfter ?? BASE_BACKOFF_MS * 2 ** attempt, MAX_RETRY_AFTER_MS));
+        if (response.status === 429) {
+          const until = this.exhaustedUntil(response, retryAfter);
+          if (until !== undefined) {
+            // Retrying would only keep the lookup waiting: fail now, and skip the host until it resets.
+            this.exhausted.set(budgetKey, until);
+            throw this.budgetError(host, url, until);
+          }
+          limiter.pause(Math.min(retryAfter ?? BASE_BACKOFF_MS * 2 ** attempt, MAX_RETRY_AFTER_MS));
+        }
       } catch (error) {
         if (options.signal?.aborted) throw abortError(options.signal);
+        if (isBudgetExhausted(error)) throw error;
         if (error instanceof HttpError && !RETRY_STATUSES.has(error.status)) throw error;
         // Network failures and timeouts are retried like 5xx.
         lastError = error instanceof HttpError ? error : new HttpError(`${host} could not be reached.`, 0, url);

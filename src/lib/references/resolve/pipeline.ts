@@ -73,6 +73,7 @@ export function createResolveEnvironment(options: ResolveOptions = {}): ResolveE
     http: options.http ?? getReferenceHttpClient(),
     signal: options.signal,
     contactEmail: settings.contactEmail || undefined,
+    openAlexApiKey: settings.openAlexApiKey || undefined,
     now: options.now ?? (() => new Date()),
     network: options.limits?.network ?? unlimited,
     llm: options.limits?.llm ?? unlimited,
@@ -277,6 +278,52 @@ export function findCandidateDuplicates(candidates: ReferenceEntryInput[], libra
   return duplicates;
 }
 
+const STATUS_RANK: Record<string, number> = { confirmed: 2, "needs-review": 1, unresolved: 0 };
+
+/**
+ * Items of one pasted list that resolved to the same work become one
+ * candidate. A reference copied from a PDF can wrap so that its title and
+ * its DOI land in different items, and both then resolve to the same
+ * paper. Works count as the same only when they share an identifier (DOI,
+ * arXiv, PMID, PMCID or ISBN); the first item keeps its place, and the
+ * others fill its gaps.
+ */
+export function mergeSameWork(candidates: ReferenceEntryInput[], env: ResolveEnvironment): ReferenceEntryInput[] {
+  type Group = { members: ReferenceEntryInput[]; keys: Set<string> };
+  const groups: Group[] = [];
+  for (const candidate of candidates) {
+    const ids = quickIdentifiers(candidate);
+    const keys = [
+      ...(["doi", "arxiv", "pmid", "pmcid"] as const).filter((field) => ids[field]).map((field) => `${field}:${String(ids[field]).toLowerCase()}`),
+      ...(ids.isbn ?? []).map((isbn) => `isbn:${isbn}`),
+    ];
+    const matching = groups.filter((group) => keys.some((key) => group.keys.has(key)));
+    if (!matching.length) {
+      groups.push({ members: [candidate], keys: new Set(keys) });
+      continue;
+    }
+    // A candidate can join two groups (one shares its DOI, another its arXiv ID): they become one.
+    const [target, ...rest] = matching;
+    target.members.push(candidate);
+    for (const key of keys) target.keys.add(key);
+    for (const group of rest) {
+      target.members.push(...group.members);
+      for (const key of group.keys) target.keys.add(key);
+      groups.splice(groups.indexOf(group), 1);
+    }
+  }
+  if (groups.length === candidates.length) return candidates;
+  return groups.map(({ members }) => {
+    if (members.length === 1) return members[0];
+    const [first, ...others] = members;
+    const status = members.map((member) => member.status ?? "needs-review").sort((a, b) => (STATUS_RANK[b] ?? 0) - (STATUS_RANK[a] ?? 0))[0];
+    const merged = compactInput({ ...combineInputs(first, others, { conflicts: false }), status });
+    const title = typeof merged.csl.title === "string" ? `“${merged.csl.title}”` : "one work";
+    env.warnings.push(`${members.length} pasted items were the same work, ${title}, and were merged into one.`);
+    return merged;
+  });
+}
+
 /**
  * The last guard of "every field has a source": a field the producers left
  * without provenance takes that of the candidate's own source (its item
@@ -328,7 +375,7 @@ export async function resolveInput(text: string, options: ResolveOptions = {}): 
       candidates = await resolveStructured(kind, text, env, !!options.enrich);
       break;
     case "bibliography":
-      candidates = await mapWithConcurrency(splitBibliography(text), BIBLIOGRAPHY_CONCURRENCY, (item) => resolveReferenceText(item, env));
+      candidates = mergeSameWork(await mapWithConcurrency(splitBibliography(text), BIBLIOGRAPHY_CONCURRENCY, (item) => resolveReferenceText(item, env)), env);
       break;
     default:
       candidates = text.trim() ? [await resolveReferenceText(text.trim(), env)] : [];

@@ -14,6 +14,8 @@ export type ReferenceResolveSettings = {
   webSearchDefault: boolean;
   /** Sent as `mailto` to Crossref and OpenAlex (their polite pools). Empty by default; never filled in by Libera. */
   contactEmail: string;
+  /** Sent to OpenAlex as a bearer token for a larger daily quota. Empty by default. */
+  openAlexApiKey: string;
   /** Create entries for PDFs added to a notebook. Default off; a notebook's `autoCreateForPdfs` setting overrides it. */
   autoCreateForPdfs: boolean;
 };
@@ -23,6 +25,7 @@ export const DEFAULT_REFERENCE_SETTINGS: ReferenceResolveSettings = {
   useAi: true,
   webSearchDefault: false,
   contactEmail: "",
+  openAlexApiKey: "",
   autoCreateForPdfs: false,
 };
 
@@ -32,6 +35,7 @@ export const REFERENCE_SETTINGS_ENV = {
   useAi: "LIBERA_REFERENCES_USE_AI",
   webSearchDefault: "LIBERA_REFERENCES_WEB_SEARCH",
   contactEmail: "LIBERA_REFERENCES_CONTACT_EMAIL",
+  openAlexApiKey: "LIBERA_REFERENCES_OPENALEX_API_KEY",
   autoCreateForPdfs: "LIBERA_REFERENCES_AUTO_CREATE_PDFS",
 } as const;
 
@@ -40,6 +44,12 @@ const EMAIL = /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/;
 export function normalizeContactEmail(value: unknown) {
   const text = typeof value === "string" ? value.trim() : "";
   return text.length <= 254 && EMAIL.test(text) ? text : "";
+}
+
+/** An API key is one token of printable ASCII; anything else is dropped rather than sent. */
+export function normalizeApiKey(value: unknown) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length <= 200 && /^[!-~]+$/.test(text) ? text : "";
 }
 
 function flag(value: unknown, fallback: boolean) {
@@ -56,6 +66,7 @@ export function normalizeReferenceSettings(input: Record<string, unknown> | unde
     useAi: flag(input?.useAi, DEFAULT_REFERENCE_SETTINGS.useAi),
     webSearchDefault: flag(input?.webSearch, DEFAULT_REFERENCE_SETTINGS.webSearchDefault),
     contactEmail: normalizeContactEmail(input?.contactEmail),
+    openAlexApiKey: normalizeApiKey(input?.openAlexApiKey),
     autoCreateForPdfs: flag(input?.autoCreateForPdfs, DEFAULT_REFERENCE_SETTINGS.autoCreateForPdfs),
   };
 }
@@ -66,6 +77,7 @@ function fromEnvironment() {
     useAi: process.env[REFERENCE_SETTINGS_ENV.useAi],
     webSearch: process.env[REFERENCE_SETTINGS_ENV.webSearchDefault],
     contactEmail: process.env[REFERENCE_SETTINGS_ENV.contactEmail],
+    openAlexApiKey: process.env[REFERENCE_SETTINGS_ENV.openAlexApiKey],
     autoCreateForPdfs: process.env[REFERENCE_SETTINGS_ENV.autoCreateForPdfs],
   });
 }
