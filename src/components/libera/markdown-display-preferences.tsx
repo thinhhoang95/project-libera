@@ -32,8 +32,7 @@ export function MarkdownDisplayPreferencesProvider({ initialPreferences = {}, ch
 
   const updatePreferences = useCallback((patch: Partial<MarkdownDisplayPreferences>) => {
     const next = normalizeMarkdownDisplayPreferences({ ...latest.current, ...patch });
-    if (next.textWidth === latest.current.textWidth && next.textScale === latest.current.textScale &&
-        next.outlineExpansionLevel === latest.current.outlineExpansionLevel) return;
+    if ((Object.keys(next) as (keyof MarkdownDisplayPreferences)[]).every((key) => next[key] === latest.current[key])) return;
     latest.current = next;
     setPreferences(next);
     writer.schedule(next);

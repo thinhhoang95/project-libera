@@ -2,19 +2,21 @@
 
 import { useEffect, type RefObject } from "react";
 import { MarkdownTextWidth } from "./markdown-text-width";
+import type { TextWidthKind } from "@/lib/markdown-display-preferences";
 
 /** The class a CodeMirror editor's wrapper takes while its text column follows the width ruler. */
 export const CODEMIRROR_TEXT_WIDTH_CLASS = "libera-cm-text-width";
 
 /**
  * The page-width triangle of the Markdown editors, for a CodeMirror editor
- * whose lines wrap. It shares their saved width. The wrapper must carry
+ * whose lines wrap. Each editor family (`kind`) keeps its own saved width. The wrapper must carry
  * `CODEMIRROR_TEXT_WIDTH_CLASS` while `enabled`, so the column is measured the
  * same way as the ruler.
  */
-export function CodeMirrorTextWidth({ wrapperRef, enabled }: {
+export function CodeMirrorTextWidth({ wrapperRef, enabled, kind }: {
   wrapperRef: RefObject<HTMLElement | null>;
   enabled: boolean;
+  kind: TextWidthKind;
 }) {
   useEffect(() => {
     // The column centres beside the gutters (line numbers, folds, lint), so the
@@ -33,5 +35,5 @@ export function CodeMirrorTextWidth({ wrapperRef, enabled }: {
     return () => observer.disconnect();
   }, [enabled, wrapperRef]);
 
-  return enabled ? <MarkdownTextWidth canvasRef={wrapperRef} /> : null;
+  return enabled ? <MarkdownTextWidth canvasRef={wrapperRef} kind={kind} /> : null;
 }

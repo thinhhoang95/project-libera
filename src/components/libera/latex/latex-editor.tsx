@@ -655,7 +655,7 @@ export function LatexEditor({
       style={{ "--latex-editor-font": fontFamily, "--latex-editor-font-size": `${fontSizePx}px`, "--latex-editor-line-height": String(lineHeight), ...(visualFontFamily ? { "--latex-visual-font": visualFontFamily } : {}) } as CSSProperties}
     >
       <div ref={hostRef} className="absolute inset-0" />
-      <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled />
+      <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled kind="latex" />
       {view && menu ? (
         <LatexAiMenu
           view={view}

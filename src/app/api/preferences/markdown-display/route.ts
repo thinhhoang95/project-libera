@@ -8,10 +8,11 @@ export async function PUT(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   const body = await request.json().catch(() => null);
-  if (!body || typeof body.textWidth !== "number" || !Number.isFinite(body.textWidth) ||
-      typeof body.textScale !== "number" || !Number.isFinite(body.textScale) ||
-      (body.outlineExpansionLevel !== undefined &&
-        (typeof body.outlineExpansionLevel !== "number" || !Number.isFinite(body.outlineExpansionLevel)))) {
+  const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+  const optionalFinite = (value: unknown) => value === undefined || finite(value);
+  if (!body || !finite(body.textWidth) || !finite(body.textScale) ||
+      !optionalFinite(body.outlineExpansionLevel) || !optionalFinite(body.latexTextWidth) ||
+      !optionalFinite(body.codeTextWidth)) {
     return jsonError("Display settings must be finite numbers.", 400);
   }
   try {

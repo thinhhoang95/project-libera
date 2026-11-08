@@ -2,14 +2,20 @@
 
 import { memo, useEffect, useRef, type RefObject } from "react";
 import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
+import { TEXT_WIDTH_PREFERENCE_KEY, type TextWidthKind } from "@/lib/markdown-display-preferences";
 
 /** Native dragging/keyboard input updates only CSS, never document React state. */
 export const MarkdownTextWidth = memo(function MarkdownTextWidth({
   canvasRef,
+  kind = "markdown",
 }: {
   canvasRef: RefObject<HTMLElement | null>;
+  /** The editor family whose own saved width this triangle shows and sets. */
+  kind?: TextWidthKind;
 }) {
-  const { preferences: { textWidth }, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
+  const { preferences, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
+  const preferenceKey = TEXT_WIDTH_PREFERENCE_KEY[kind];
+  const textWidth = preferences[preferenceKey];
   const inputRef = useRef<HTMLInputElement>(null);
   const frameRef = useRef<number | null>(null);
   const pendingRef = useRef(textWidth);
@@ -24,7 +30,7 @@ export const MarkdownTextWidth = memo(function MarkdownTextWidth({
   function commitWidth() {
     if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
     applyWidth();
-    updatePreferences({ textWidth: pendingRef.current });
+    updatePreferences({ [preferenceKey]: pendingRef.current });
     flushPreferences();
   }
 

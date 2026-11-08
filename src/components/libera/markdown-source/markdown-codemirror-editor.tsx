@@ -721,7 +721,7 @@ export function MarkdownCodeMirrorEditor({
       } as CSSProperties}
     >
       <div ref={hostRef} className="absolute inset-0" />
-      <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled />
+      <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled kind="markdown" />
       {view && agentHunks.length ? <LatexChangeBar view={view} hunks={agentHunks} /> : null}
 
       {find.open ? (

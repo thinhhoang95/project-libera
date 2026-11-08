@@ -22,17 +22,23 @@ test("display preferences persist independently of browser origins and reject un
     assert.equal((await PUT(request({ textWidth: 0, textScale: 135 }, false))).status, 401);
     assert.equal((await PUT(request({ textWidth: "wide", textScale: 135 }))).status, 400);
     assert.equal((await PUT(request({ textWidth: 0, textScale: 135 }))).status, 200);
-    assert.deepEqual(await readMarkdownDisplayPreferences(), { textWidth: 0, textScale: 135, outlineExpansionLevel: 6 });
+    // Settings saved before the widths were split: LaTeX and plain text start from the Markdown width.
+    assert.deepEqual(await readMarkdownDisplayPreferences(), { textWidth: 0, latexTextWidth: 0, codeTextWidth: 0, textScale: 135, outlineExpansionLevel: 6 });
     const target = path.join(getAdminRoot(), ".libera", "markdown-display.json");
-    assert.deepEqual(JSON.parse(await readFile(target, "utf8")), { textWidth: 0, textScale: 135, outlineExpansionLevel: 6 });
+    assert.deepEqual(JSON.parse(await readFile(target, "utf8")), { textWidth: 0, latexTextWidth: 0, codeTextWidth: 0, textScale: 135, outlineExpansionLevel: 6 });
     assert.deepEqual(await readdir(path.dirname(target)), ["markdown-display.json"], "Atomic saves leave no temporary files");
     assert.equal((await PUT(request({ textWidth: 75, textScale: 100, outlineExpansionLevel: "deep" }))).status, 400);
-    await writeMarkdownDisplayPreferences({ textWidth: 120, textScale: 20, outlineExpansionLevel: 0 });
-    assert.deepEqual(await readMarkdownDisplayPreferences(), { textWidth: 100, textScale: 75, outlineExpansionLevel: 1 });
-    await writeMarkdownDisplayPreferences({ textWidth: 75, textScale: 100, outlineExpansionLevel: 4 });
-    assert.deepEqual(await readMarkdownDisplayPreferences(), { textWidth: 75, textScale: 100, outlineExpansionLevel: 4 });
+    assert.equal((await PUT(request({ textWidth: 75, latexTextWidth: "wide", textScale: 100 }))).status, 400);
+    assert.equal((await PUT(request({ textWidth: 75, codeTextWidth: null, textScale: 100 }))).status, 400);
+    // Each editor family keeps its own width.
+    assert.equal((await PUT(request({ textWidth: 60, latexTextWidth: 40, codeTextWidth: 100, textScale: 100 }))).status, 200);
+    assert.deepEqual(await readMarkdownDisplayPreferences(), { textWidth: 60, latexTextWidth: 40, codeTextWidth: 100, textScale: 100, outlineExpansionLevel: 6 });
+    await writeMarkdownDisplayPreferences({ textWidth: 120, latexTextWidth: -5, codeTextWidth: 101, textScale: 20, outlineExpansionLevel: 0 });
+    assert.deepEqual(await readMarkdownDisplayPreferences(), { textWidth: 100, latexTextWidth: 0, codeTextWidth: 100, textScale: 75, outlineExpansionLevel: 1 });
+    await writeMarkdownDisplayPreferences({ textWidth: 75, latexTextWidth: 50, codeTextWidth: 90, textScale: 100, outlineExpansionLevel: 4 });
+    assert.deepEqual(await readMarkdownDisplayPreferences(), { textWidth: 75, latexTextWidth: 50, codeTextWidth: 90, textScale: 100, outlineExpansionLevel: 4 });
     await writeFile(target, "broken JSON");
-    assert.deepEqual(normalizeMarkdownDisplayPreferences(await readMarkdownDisplayPreferences()), { textWidth: 75, textScale: 100, outlineExpansionLevel: 6 });
+    assert.deepEqual(normalizeMarkdownDisplayPreferences(await readMarkdownDisplayPreferences()), { textWidth: 75, latexTextWidth: 75, codeTextWidth: 75, textScale: 100, outlineExpansionLevel: 6 });
   } finally {
     if (before === undefined) delete process.env.LIBERA_DATA_DIR;
     else process.env.LIBERA_DATA_DIR = before;

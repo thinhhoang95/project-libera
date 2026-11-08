@@ -297,7 +297,7 @@ export function CodeEditor({
         style={{ "--latex-editor-font": fontFamily, "--latex-editor-font-size": `${fontSizePx}px`, "--latex-editor-line-height": String(lineHeight) } as CSSProperties}
       >
         <div ref={hostRef} className="absolute inset-0" />
-        <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled={wraps} />
+        <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled={wraps} kind="code" />
         {view && agentHunks.length ? <LatexChangeBar view={view} hunks={agentHunks} /> : null}
       </div>
       {menu ? <CodeEditorMenu view={menu.view} menu={menu} onClose={() => setMenu(null)} /> : null}
