@@ -2,7 +2,7 @@
 
 import { toggleComment } from "@codemirror/commands";
 import type { EditorView } from "@codemirror/view";
-import { BookmarkPlus, ClipboardPaste, Copy, FileSearch, Loader2, MessageSquareText, PenLine, Scissors, Sparkles, Volume2, Wand2 } from "lucide-react";
+import { BookmarkPlus, ClipboardPaste, Copy, FileDown, FileSearch, Loader2, MessageSquareText, PenLine, Replace, Scissors, Sparkles, Volume2, Wand2 } from "lucide-react";
 import { speakMarkdown } from "@/lib/tts/player";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -16,7 +16,7 @@ export type LatexAiMenuState = { from: number; to: number; x: number; y: number 
 const itemClass = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 const MENU_WIDTH = 296;
 
-export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForwardSync, onAddSnippet }: {
+export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForwardSync, onAddSnippet, onPasteMarkdown, onConvertMarkdown }: {
   view: EditorView;
   menu: LatexAiMenuState;
   documentPath: string;
@@ -24,6 +24,10 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
   onError: (message: string) => void;
   onForwardSync: (pos: number) => void;
   onAddSnippet: (range: { from: number; to: number }) => void;
+  /** Paste Markdown as LaTeX…: the clipboard's text through the conversion dialog. */
+  onPasteMarkdown?: () => void;
+  /** Convert Markdown to LaTeX…: the selected text through the conversion dialog. */
+  onConvertMarkdown?: (range: { from: number; to: number }) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const rewriteRef = useRef<HTMLTextAreaElement>(null);
@@ -152,6 +156,17 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
         <button type="button" role="menuitem" className={itemClass} disabled={!hasText} onClick={() => void clipboard("cut")}><Scissors aria-hidden className="h-4 w-4" />Cut</button>
         <button type="button" role="menuitem" className={itemClass} disabled={!hasText} onClick={() => void clipboard("copy")}><Copy aria-hidden className="h-4 w-4" />Copy</button>
         <button type="button" role="menuitem" className={itemClass} onClick={() => void clipboard("paste")}><ClipboardPaste aria-hidden className="h-4 w-4" />Paste</button>
+        {isTex && onPasteMarkdown ? (
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { onClose(); view.focus(); onPasteMarkdown(); }} title="Convert the Markdown on the clipboard to LaTeX, choosing how headings and tables are written">
+            <FileDown aria-hidden className="h-4 w-4" />Paste Markdown as LaTeX…
+            <kbd className="ml-auto text-xs font-normal text-muted-foreground">⌥⌘V</kbd>
+          </button>
+        ) : null}
+        {isTex && hasText && onConvertMarkdown ? (
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { onClose(); onConvertMarkdown({ from: menu.from, to: menu.to }); }} title="Convert the selected Markdown to LaTeX in place">
+            <Replace aria-hidden className="h-4 w-4" />Convert Markdown to LaTeX…
+          </button>
+        ) : null}
       </div>
     </div>,
     document.body,

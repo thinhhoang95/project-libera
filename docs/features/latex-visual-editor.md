@@ -47,7 +47,7 @@ Click a cell (or select a table and press Enter) to edit its LaTeX; Enter or Tab
 
 ### Formatting and paste
 
-⌘B, ⌘I, ⌘U, ⌘⇧E and ⌘⇧T, and the toolbar's Bold and Italic, wrap the selection, or remove the wrapper when the cursor is already inside one. Pasting from Word, Google Docs or a web page converts the rich text to LaTeX: headings, lists, tables, links and formatting keep their structure, special characters are escaped, symbols such as α and ≤ become `$\alpha$` and `$\le$`, and anything else is dropped. Pasted links, formulas and code cannot break out of what they become: a TeX formula that could (or that reads files) pastes as the text it shows. Plain text pastes as it is.
+⌘B, ⌘I, ⌘U, ⌘⇧E and ⌘⇧T, and the toolbar's Bold and Italic, wrap the selection, or remove the wrapper when the cursor is already inside one. Pasting from Word, Google Docs or a web page converts the rich text to LaTeX: headings, lists, tables, links and formatting keep their structure, special characters are escaped, symbols such as α and ≤ become `$\alpha$` and `$\le$`, and anything else is dropped. Rich text goes through the same converter, settings and dialog as [pasted Markdown](latex-editor.md#pasting-markdown): with headings or tables, the dialog asks how to write them; otherwise a notice offers the plain text instead. Pasted links, formulas and code cannot break out of what they become: a TeX formula that could (or that reads files) pastes as text. Plain text pastes as it is, unless it is Markdown.
 
 ### Keyboard details
 

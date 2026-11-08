@@ -1870,6 +1870,7 @@ function WorkspacePanelContent({
           onSave={onSave}
           onSetViewState={updateLatexViewState}
           onOpenFile={onOpenFile}
+          mathMarkers={markdownPreferences}
         />
       ) : activeTab.file.fileType === "text" ? (
         <CodeEditor

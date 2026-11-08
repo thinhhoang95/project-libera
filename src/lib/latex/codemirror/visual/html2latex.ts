@@ -3,90 +3,9 @@
  * escaped, symbols become commands, structure that has a LaTeX equivalent
  * keeps it, and anything else is dropped. */
 
-const ESCAPES: Record<string, string> = {
-  "\\": "\\textbackslash{}", "{": "\\{", "}": "\\}", "$": "\\$", "&": "\\&", "#": "\\#", "%": "\\%", "_": "\\_",
-  "~": "\\textasciitilde{}", "^": "\\textasciicircum{}",
-};
+import { escapeLatexText, isSafeMathTex, latexUrl } from "../../latex-text";
 
-/** Characters that LaTeX writes in math. */
-const MATH_SYMBOLS: Record<string, string> = {
-  "α": "\\alpha", "β": "\\beta", "γ": "\\gamma", "δ": "\\delta", "ε": "\\epsilon", "ζ": "\\zeta", "η": "\\eta", "θ": "\\theta",
-  "ι": "\\iota", "κ": "\\kappa", "λ": "\\lambda", "μ": "\\mu", "ν": "\\nu", "ξ": "\\xi", "π": "\\pi", "ρ": "\\rho", "σ": "\\sigma",
-  "τ": "\\tau", "υ": "\\upsilon", "φ": "\\phi", "χ": "\\chi", "ψ": "\\psi", "ω": "\\omega", "Γ": "\\Gamma", "Δ": "\\Delta",
-  "Θ": "\\Theta", "Λ": "\\Lambda", "Ξ": "\\Xi", "Π": "\\Pi", "Σ": "\\Sigma", "Φ": "\\Phi", "Ψ": "\\Psi", "Ω": "\\Omega",
-  "≤": "\\le", "≥": "\\ge", "≠": "\\neq", "±": "\\pm", "∓": "\\mp", "×": "\\times", "÷": "\\div", "→": "\\rightarrow", "←": "\\leftarrow",
-  "↔": "\\leftrightarrow", "⇒": "\\Rightarrow", "⇐": "\\Leftarrow", "⇔": "\\Leftrightarrow", "∞": "\\infty", "∑": "\\sum", "∏": "\\prod",
-  "∫": "\\int", "≈": "\\approx", "≡": "\\equiv", "∼": "\\sim", "∝": "\\propto", "∈": "\\in", "∉": "\\notin", "⊂": "\\subset",
-  "⊆": "\\subseteq", "⊃": "\\supset", "⊇": "\\supseteq", "∪": "\\cup", "∩": "\\cap", "∅": "\\emptyset", "∀": "\\forall",
-  "∃": "\\exists", "∂": "\\partial", "∇": "\\nabla", "·": "\\cdot", "∘": "\\circ", "√": "\\surd", "°": "^\\circ", "′": "'",
-  "ℝ": "\\mathbb{R}", "ℕ": "\\mathbb{N}", "ℤ": "\\mathbb{Z}", "ℚ": "\\mathbb{Q}", "ℂ": "\\mathbb{C}", "⋅": "\\cdot", "∗": "\\ast",
-  "−": "-", "⟨": "\\langle", "⟩": "\\rangle", "‖": "\\|",
-};
-
-/** Characters with a text-mode spelling. */
-const TEXT_SYMBOLS: Record<string, string> = {
-  "“": "``", "”": "''", "‘": "`", "’": "'", "–": "--", "—": "---", "…": "\\ldots{}", "\u00a0": "~", "©": "\\copyright{}",
-  "§": "\\S{}", "¶": "\\P{}", "†": "\\dag{}", "‡": "\\ddag{}", "•": "\\textbullet{}", "®": "\\textregistered{}", "™": "\\texttrademark{}",
-  "\u200b": "", "\ufeff": "",
-};
-
-export function escapeLatexText(text: string) {
-  let out = "";
-  let math = "";
-  const flushMath = () => { if (math) { out += `$${math}$`; math = ""; } };
-  for (const char of text) {
-    const symbol = MATH_SYMBOLS[char];
-    if (symbol !== undefined) {
-      // Neighbouring math symbols share one formula: `$\alpha \le \beta$`.
-      math += math && /[A-Za-z]$/.test(math) && /^\\?[A-Za-z]/.test(symbol) ? ` ${symbol}` : symbol;
-      continue;
-    }
-    if (math && char === " ") { math += " "; continue; }
-    if (math) {
-      // Spaces after the symbols separate them from the text: they go after the formula, not into it.
-      const spaces = /\s*$/.exec(math)![0];
-      math = math.trimEnd();
-      flushMath();
-      out += spaces;
-    }
-    out += ESCAPES[char] ?? TEXT_SYMBOLS[char] ?? char;
-  }
-  const spaces = /\s*$/.exec(math)![0];
-  math = math.trimEnd();
-  flushMath();
-  return out + spaces;
-}
-
-/** A URL as an `\href`/`\url` argument: characters that would end or change the argument are percent-encoded, `%` and `#` escaped. */
-export function latexUrl(href: string) {
-  const encoded = href.replace(/[\\{}\s^`"<>|]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
-  return encoded.replace(/[%#]/g, (char) => `\\${char}`);
-}
-
-/**
- * Whether TeX from a clipboard's math annotation stays inside the formula it
- * is pasted as: balanced braces, no math delimiters, comments, paragraph
- * breaks or `\end{…}` that could close it, and nothing that reads files or
- * changes how TeX reads (`\input`, `\catcode`, `\def`…).
- */
-export function isSafeMathTex(tex: string) {
-  if (/[$%]|\n\s*\n|\\[()[\]]|\\(?:begin|end)\s*\{\s*document\s*\}/.test(tex.replace(/\\[$%]/g, ""))) return false;
-  if (/\\(?:input|include|InputIfFileExists|openin|openout|read|readline|write|immediate|special|catcode|uccode|lccode|mathcode|def|gdef|edef|xdef|let|futurelet|csname|newcommand|renewcommand|providecommand|DeclareRobustCommand|usepackage|RequirePackage|documentclass|directlua|latelua|ShellEscape|write18|verb|makeatletter|endinput)(?![A-Za-z@])/.test(tex)) return false;
-  let depth = 0;
-  for (let i = 0; i < tex.length; i++) {
-    if (tex[i] === "\\") { i++; continue; }
-    if (tex[i] === "{") depth++;
-    else if (tex[i] === "}" && --depth < 0) return false;
-  }
-  if (depth !== 0) return false;
-  // Environments inside (matrices, cases) must close what they open, in order.
-  const open: string[] = [];
-  for (const match of tex.matchAll(/\\(begin|end)\s*\{([^}]*)\}/g)) {
-    if (match[1] === "begin") open.push(match[2].trim());
-    else if (open.pop() !== match[2].trim()) return false;
-  }
-  return open.length === 0;
-}
+export { escapeLatexText, isSafeMathTex, latexUrl };
 
 /** HTML that only wraps plain source text (code editors' clipboards): paste its text/plain instead. */
 export function isSourceWrapperHtml(body: HTMLElement) {

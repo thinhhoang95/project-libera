@@ -3,6 +3,7 @@
 import { AlertCircle, AlertTriangle, ChevronDown, Info, Loader2, PanelRightClose, PanelRightOpen, PictureInPicture2, Play, ScrollText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { LatexTabViewState, OpenTab, OpenTabViewState } from "@/components/libera/types";
 import type { LatexDiagnostic } from "@/lib/latex/build";
 import { latexLibraryEntries, type LatexProjectData, type LatexProjectFile } from "@/lib/latex/codemirror/editing";
@@ -52,6 +53,8 @@ type LatexWorkspaceProps = {
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   /** Shared tab: the editor binds the shared Y.Text and never publishes drafts. */
   collab?: SharedCodeMirrorSource;
+  /** The user's math markers (Preferences → Markdown), for Markdown pasted into the editor. */
+  mathMarkers?: MathMarkerSettings;
 };
 
 const AUTO_COMPILE_DELAY_MS = 1200;
@@ -94,7 +97,7 @@ function stagedDraft(other: OpenTab): string | null {
   return other.draft === other.saved ? null : other.draft;
 }
 
-export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab }: LatexWorkspaceProps) {
+export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab, mathMarkers }: LatexWorkspaceProps) {
   const filePath = tab.file.path;
   const notebook = tab.file.notebook;
   const viewState = tab.viewState?.latex;
@@ -573,6 +576,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       numberingStart={numberingStart}
       numberingIncludes={numberingIncludes}
       rootPath={rootPath}
+      mathMarkers={mathMarkers}
+      engine={engineSetting}
     />
   );
 

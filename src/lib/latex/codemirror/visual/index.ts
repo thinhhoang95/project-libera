@@ -54,6 +54,12 @@ export function latexVisualMode(config: Partial<VisualConfig>): Extension {
 
 export const visualCompartment = new Compartment();
 
+/** Whether the Visual mode is switched on in this state. */
+export function isVisualModeOn(state: EditorState) {
+  const current = visualCompartment.get(state);
+  return Array.isArray(current) ? current.length > 0 : !!current;
+}
+
 /** Where the cursor goes when Visual mode starts: out of the folded preamble. */
 export function visualEntrySelection(state: EditorState) {
   const head = state.selection.main.head;

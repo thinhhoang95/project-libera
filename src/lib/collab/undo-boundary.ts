@@ -11,7 +11,8 @@ import { ySyncFacet } from "y-codemirror.next";
 /** Other undo managers that must not merge across a widget edit (suggest mode's). */
 export const undoBoundaries = Facet.define<() => void>();
 
-function stopCapturing(view: EditorView) {
+/** Ends the current undo step in every undo manager, so the next edit starts one of its own. */
+export function stopCapturing(view: EditorView) {
   const sync = view.state.facet(ySyncFacet) as unknown as { undoManager?: { stopCapturing?: () => void } } | undefined;
   sync?.undoManager?.stopCapturing?.();
   for (const stop of view.state.facet(undoBoundaries)) stop();

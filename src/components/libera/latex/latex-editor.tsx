@@ -11,14 +11,24 @@ import {
   EditorView, crosshairCursor, drawSelection, dropCursor, highlightActiveLine, highlightActiveLineGutter,
   highlightSpecialChars, keymap, lineNumbers, rectangularSelection,
 } from "@codemirror/view";
-import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import {
+  convertSelectionCommand, insertLatexAt, insertPlainAt, isViewAlive, latexMarkdownPaste, latexPasteContextAt, markdownPasteKeymap, pasteMarkdownCommand,
+  preambleInsertPoint, replaceInsertedLatex, trackRange, type MarkdownPasteRequest, type TrackedRange,
+} from "@/lib/latex/codemirror/markdown-paste";
+import type { MarkdownPasteChoices, MarkdownPasteOptions } from "@/lib/latex/markdown-paste/options";
+import type { LatexEngineSetting } from "@/lib/latex/project";
+import type { MarkdownPasteDialogRequest } from "./latex-markdown-paste-dialog";
+import { getMarkdownPasteOptions, loadMarkdownPasteOptions, saveMarkdownPasteOptions } from "./latex-paste-options-store";
+import { LatexPasteNotice } from "./latex-paste-notice";
 import type { LatexDiagnostic } from "@/lib/latex/build";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import { locateTextHint, type SynctexTextHint } from "@/lib/latex/synctex-text";
 import { latexCompletionSource, latexFormattingKeymap, latexInputHandler, latexProjectField, setLatexProject, syncEnvironmentNames, type LatexProjectData } from "@/lib/latex/codemirror/editing";
 import { latexLanguageSupport } from "@/lib/latex/codemirror/latex-language";
 import { latexMathPreview } from "@/lib/latex/codemirror/preview";
 import {
-  latexVisualMode, latexVisualState, rebuildVisualEffect, setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, visualCompartment, visualEntrySelection,
+  isVisualModeOn, latexVisualMode, latexVisualState, rebuildVisualEffect, setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, visualCompartment, visualEntrySelection,
   visualRevealRanges, type MacroSource,
 } from "@/lib/latex/codemirror/visual";
 import { EMPTY_AUX, type LatexAuxData } from "@/lib/latex/aux-file";
@@ -99,12 +109,22 @@ type LatexEditorProps = {
   numberingIncludes?: ReadonlyMap<string, string>;
   /** The file TeX compiles (a chapter's main file): figures resolve from its directory. */
   rootPath?: string;
+  /** The user's math markers (Preferences → Markdown): pasted Markdown's formulas are read with them. */
+  mathMarkers?: MathMarkerSettings;
+  /** The engine chosen for the build: pasted text keeps Unicode and emoji under XeLaTeX and LuaLaTeX. */
+  engine?: LatexEngineSetting;
 };
 
 export type LatexEditorMode = "source" | "visual";
 
 const DRAFT_DELAY_MS = 250;
 const lineNumbersCompartment = new Compartment();
+/** The Markdown paste dialog and its converter load on the first Markdown paste. */
+const LatexMarkdownPasteDialog = lazy(() => import("./latex-markdown-paste-dialog"));
+
+type PasteDialogState = MarkdownPasteDialogRequest & { id: number; request: MarkdownPasteRequest };
+/** A notice after a paste that skipped the dialog: what was inserted, so it is replaced only while unchanged. */
+type PasteNoticeState = { id: number; range: TrackedRange; inserted: string; markdown: string; html?: string; missing: string[]; warnings: string[] };
 
 function visualExtensions(documentPath: string, rootPath: string) {
   return latexVisualMode({
@@ -146,7 +166,7 @@ function toEditorDiagnostics(state: EditorState, diagnostics: LatexDiagnostic[])
 export function LatexEditor({
   documentPath, fileName, value, fontFamily, visualFontFamily, fontSizePx, lineHeight, initialViewState, diagnostics, project, editorRef,
   onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet, collab,
-  editorMode = "source", macroSources, auxData, numberingStart, numberingIncludes, rootPath,
+  editorMode = "source", macroSources, auxData, numberingStart, numberingIncludes, rootPath, mathMarkers, engine,
 }: LatexEditorProps) {
   const compileRoot = rootPath ?? documentPath;
   const hostRef = useRef<HTMLDivElement>(null);
@@ -160,12 +180,161 @@ export function LatexEditor({
   const viewStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelRestoreRef = useRef<(() => void) | null>(null);
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
+  const [pasteDialog, setPasteDialog] = useState<PasteDialogState | null>(null);
+  const [pasteNotice, setPasteNotice] = useState<PasteNoticeState | null>(null);
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
   const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath, editorMode, compileRoot });
   /** The paths the installed Visual mode resolves against, to reconfigure it when the tab is renamed or moved. */
   const visualPathsRef = useRef<string | null>(null);
   const shared = !!collab;
+  const documentPathRef = useRef(documentPath);
+  const aiErrorRef = useRef(onAiError);
+  const mathMarkersRef = useRef(mathMarkers);
+  useLayoutEffect(() => { documentPathRef.current = documentPath; aiErrorRef.current = onAiError; mathMarkersRef.current = mathMarkers; });
+
+  /* ---- Markdown pasted as LaTeX (docs/latex-markdown-paste-plan.md) ---- */
+
+  const engineRef = useRef(engine);
+  const compileRootRef = useRef(rootPath ?? documentPath);
+  useLayoutEffect(() => { engineRef.current = engine; compileRootRef.current = rootPath ?? documentPath; });
+  const pasteContext = useCallback((state: EditorState, pos: number) => latexPasteContextAt(state, pos, {
+    documentPath: documentPathRef.current, rootPath: compileRootRef.current, engine: engineRef.current ?? "auto",
+  }), []);
+
+  const pasteNoticeRef = useRef<PasteNoticeState | null>(null);
+  /** Shows (or with null, hides) the notice; the range of the one it replaces is released unless `keep`. */
+  const showPasteNotice = useCallback((next: PasteNoticeState | null, keep = false) => {
+    if (!keep) pasteNoticeRef.current?.range.release();
+    pasteNoticeRef.current = next;
+    setPasteNotice(next);
+  }, []);
+
+  /** Requests run one at a time: a second paste waits until the first is inserted or its dialog closed. */
+  const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const dialogDoneRef = useRef<(() => void) | null>(null);
+  const nextDialogIdRef = useRef(1);
+
+  const runMarkdownPaste = useCallback(async (request: MarkdownPasteRequest) => {
+    const { range } = request;
+    const target = range.view;
+    if (!range.current()) { range.release(); return; }
+    if (pasteNoticeRef.current && pasteNoticeRef.current.range !== range) showPasteNotice(null);
+    try {
+      const [options, converter] = await Promise.all([loadMarkdownPasteOptions(), import("@/lib/latex/markdown-paste")]);
+      const at = range.current();
+      // The editor was closed meanwhile: nothing is inserted anywhere.
+      if (!at || !isViewAlive(target)) { range.release(); return; }
+      // The settings loaded after the paste was caught say not to convert Markdown: it goes in as written.
+      if (request.origin === "paste" && !request.html && options.ask === "off") { insertPlainAt(range, request.text); return; }
+      // Options… on a notice: only while what was inserted is still there unchanged.
+      if (request.expected !== undefined && target.state.sliceDoc(at.from, at.to) !== request.expected) {
+        range.release();
+        aiErrorRef.current("The pasted LaTeX was edited since, so it was left as it is.");
+        return;
+      }
+      const prepared = request.html ? converter.prepareHtmlPaste(request.html) : converter.prepareMarkdownPaste(request.text, mathMarkersRef.current);
+      // Nothing to convert after all: the text goes in as it was.
+      if (!prepared || (request.origin === "paste" && !request.html && !prepared.analysis.markdown)) { insertPlainAt(range, request.text); return; }
+      const context = pasteContext(target.state, at.from);
+      const ask = request.origin !== "paste" || options.ask === "always" || (options.ask === "structure" && prepared.analysis.structural);
+      if (ask && !context.inlineOnly) {
+        const preamble = preambleInsertPoint(target.state);
+        const done = new Promise<void>((resolve) => { dialogDoneRef.current = resolve; });
+        setPasteDialog({ id: nextDialogIdRef.current++, request, prepared, context, options, origin: request.origin, rich: !!request.html, canAddPackages: preamble !== null && preamble <= at.from });
+        await done;
+        return;
+      }
+      const result = converter.convertPreparedMarkdown(prepared, converter.resolveChoices(options, prepared.analysis, context), context);
+      const inserted = insertLatexAt(range, { latex: result.latex, block: result.block });
+      target.focus();
+      // No notice when nothing went into the document (suggest mode made it a suggestion).
+      if (inserted && inserted.to > inserted.from) {
+        showPasteNotice({ id: nextDialogIdRef.current++, range: trackRange(target, inserted.from, inserted.to), inserted: inserted.text, markdown: request.text, html: request.html, missing: result.missing.map((pkg) => pkg.line), warnings: result.warnings.map((warning) => warning.message) });
+      }
+    } catch {
+      // The conversion failed: a paste still goes in, as the text it was.
+      if (request.origin === "paste") insertPlainAt(range, request.text);
+      else range.release();
+      aiErrorRef.current("The Markdown could not be converted to LaTeX.");
+    }
+  }, [pasteContext, showPasteNotice]);
+  const handleMarkdownPaste = useCallback((request: MarkdownPasteRequest) => {
+    const run = pasteQueueRef.current.then(() => runMarkdownPaste(request));
+    pasteQueueRef.current = run.catch(() => undefined);
+    return run;
+  }, [runMarkdownPaste]);
+  const pasteRequestRef = useRef(handleMarkdownPaste);
+  useLayoutEffect(() => { pasteRequestRef.current = handleMarkdownPaste; });
+  useEffect(() => {
+    void loadMarkdownPasteOptions();
+    // The converter loads while the editor is idle, so the first paste does not wait for it.
+    const idle = typeof window.requestIdleCallback === "function"
+      ? window.requestIdleCallback(() => { void import("@/lib/latex/markdown-paste"); }, { timeout: 5000 })
+      : window.setTimeout(() => { void import("@/lib/latex/markdown-paste"); }, 2000);
+    return () => { if (typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(idle); else window.clearTimeout(idle); };
+  }, []);
+
+  const pasteDialogRef = useRef<PasteDialogState | null>(null);
+  useLayoutEffect(() => { pasteDialogRef.current = pasteDialog; });
+  const finishPasteDialog = useCallback(async (action: { kind: "paste"; choices: MarkdownPasteChoices; options: MarkdownPasteOptions } | { kind: "plain" } | { kind: "cancel" }) => {
+    const current = pasteDialogRef.current;
+    pasteDialogRef.current = null;
+    setPasteDialog(null);
+    const done = dialogDoneRef.current;
+    dialogDoneRef.current = null;
+    try {
+      if (!current) return;
+      const { request, prepared } = current;
+      const view = request.range.view;
+      if (action.kind === "paste") {
+        void saveMarkdownPasteOptions(action.options);
+        const at = request.range.current();
+        if (!at || !isViewAlive(view)) { request.range.release(); return; }
+        if (request.expected !== undefined && view.state.sliceDoc(at.from, at.to) !== request.expected) {
+          request.range.release();
+          aiErrorRef.current("The pasted LaTeX was edited while the dialog was open, so it was left as it is.");
+          return;
+        }
+        // Converted again for the document as it is now: a collaborator may have added a label or a package meanwhile.
+        const converter = await import("@/lib/latex/markdown-paste");
+        const context = pasteContext(view.state, at.from);
+        const result = converter.convertPreparedMarkdown(prepared, action.choices, context);
+        const packages = action.choices.addPackages ? result.missing.map((pkg) => pkg.line) : [];
+        insertLatexAt(request.range, { latex: result.latex, block: result.block, packages });
+      } else if (action.kind === "plain" && request.origin !== "selection") {
+        const at = request.range.current();
+        if (at && (request.expected === undefined || view.state.sliceDoc(at.from, at.to) === request.expected)) insertPlainAt(request.range, request.text);
+        else request.range.release();
+      } else request.range.release();
+      if (isViewAlive(view)) view.focus();
+    } finally {
+      done?.();
+    }
+  }, [pasteContext]);
+
+  /** The notice's "Paste as plain text instead": the converted LaTeX goes back to the Markdown as written, if it is still there unchanged. */
+  const revertPasteNotice = useCallback(() => {
+    const notice = pasteNoticeRef.current;
+    showPasteNotice(null, true);
+    if (notice && !replaceInsertedLatex(notice.range, notice.inserted, notice.markdown)) {
+      aiErrorRef.current("The pasted LaTeX was edited since, so it was left as it is.");
+    }
+  }, [showPasteNotice]);
+
+  /** The notice's "Options…": the dialog for the same Markdown, replacing what was inserted (while it is unchanged). */
+  const reopenPasteNotice = useCallback(() => {
+    const notice = pasteNoticeRef.current;
+    showPasteNotice(null, true);
+    if (notice) void handleMarkdownPaste({ text: notice.markdown, html: notice.html, range: notice.range, origin: "command", expected: notice.inserted });
+  }, [handleMarkdownPaste, showPasteNotice]);
+
+  // Closing the editor releases what the dialog and the notice hold, and lets queued pastes finish (they insert nothing).
+  useEffect(() => () => {
+    pasteNoticeRef.current?.range.release();
+    pasteDialogRef.current?.request.range.release();
+    dialogDoneRef.current?.();
+  }, []);
 
   const publishDraft = useCallback(() => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
@@ -246,6 +415,16 @@ export function LatexEditor({
         latexLanguageSupport(name),
         Prec.high(latexInputHandler),
         Prec.high(keymap.of(latexFormattingKeymap)),
+        // Markdown pasted into a .tex file becomes LaTeX, in both modes (latex-markdown-paste-plan.md).
+        ...(isTex ? [
+          latexMarkdownPaste(() => ({
+            onRequest: (request) => { void pasteRequestRef.current(request); },
+            detect: () => getMarkdownPasteOptions().ask !== "off",
+            visual: isVisualModeOn,
+            mathMarkers: () => mathMarkersRef.current,
+          })),
+          Prec.high(markdownPasteKeymap(() => (request) => { void pasteRequestRef.current(request); }, (message) => aiErrorRef.current(message))),
+        ] : []),
         syncEnvironmentNames,
         latexProjectField,
         latexReviewExtension(),
@@ -486,6 +665,36 @@ export function LatexEditor({
           onError={onAiError}
           onForwardSync={(pos) => onForwardSync(compiledLocationForPosition(view.state, pos))}
           onAddSnippet={({ from, to }) => onAddSnippet(snippetBodyFromSelection(view.state.sliceDoc(from, to), /^[ \t]*/.exec(view.state.doc.lineAt(from).text)![0]))}
+          onPasteMarkdown={() => {
+            pasteMarkdownCommand(view, (request) => { void pasteRequestRef.current(request); })
+              .catch(() => onAiError("The clipboard is not available here. Use Ctrl+V or ⌘V instead."));
+          }}
+          onConvertMarkdown={({ from, to }) => {
+            view.dispatch({ selection: { anchor: from, head: to } });
+            convertSelectionCommand(view, (request) => { void pasteRequestRef.current(request); });
+          }}
+        />
+      ) : null}
+      {pasteDialog ? (
+        <Suspense fallback={null}>
+          <LatexMarkdownPasteDialog
+            key={pasteDialog.id}
+            request={pasteDialog}
+            onPaste={(choices, options) => void finishPasteDialog({ kind: "paste", choices, options })}
+            onPlain={() => void finishPasteDialog({ kind: "plain" })}
+            onCancel={() => void finishPasteDialog({ kind: "cancel" })}
+          />
+        </Suspense>
+      ) : null}
+      {pasteNotice ? (
+        <LatexPasteNotice
+          key={pasteNotice.id}
+          rich={!!pasteNotice.html}
+          missing={pasteNotice.missing}
+          warnings={pasteNotice.warnings}
+          onPlain={revertPasteNotice}
+          onOptions={reopenPasteNotice}
+          onClose={() => showPasteNotice(null)}
         />
       ) : null}
       {view && hunks.length ? <LatexChangeBar view={view} hunks={hunks} /> : null}
