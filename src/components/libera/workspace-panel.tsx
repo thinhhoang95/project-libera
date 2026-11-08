@@ -746,6 +746,7 @@ function WorkspacePanelContent({
     source: markdownEditorFontFamily,
     latex: latexEditorFontFamily,
     visual: wysiwygEditorFontFamily,
+    latexVisual: latexVisualFontFamily,
     rendered: renderedMarkdownFontFamily,
   } = useMemo(() => editorThemeFontStacks(editorThemes), [editorThemes]);
   // ```chart and ```html live blocks render in the note's preview, as in slides.
@@ -1861,7 +1862,7 @@ function WorkspacePanelContent({
           collab={sharedCodeMirror ?? undefined}
           files={files}
           fontFamily={latexEditorFontFamily}
-          visualFontFamily={wysiwygEditorFontFamily}
+          visualFontFamily={latexVisualFontFamily}
           fontSizePx={markdownFontSizePx}
           lineHeight={markdownPreferences.baseLineHeight}
           readOpenTabs={readOpenTabs}

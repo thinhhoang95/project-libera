@@ -19,11 +19,16 @@ export function useResolvedEditorThemes() {
   return useContext(EditorThemesContext);
 }
 
-/** Font stacks from each editor's theme; previews and PDF export take the visual editor's text font. */
+/**
+ * Font stacks from each editor's theme; previews and PDF export take the
+ * visual editor's text font. LaTeX Visual mode takes the LaTeX theme's text
+ * font, or the visual editor's when the LaTeX theme leaves it to the system.
+ */
 export function editorThemeFontStacks(themes: ResolvedEditorThemes) {
   const textFont = themes.visual?.textFont || DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY;
   return {
     visual: getWysiwygEditorFontStack(textFont),
+    latexVisual: getWysiwygEditorFontStack(themes.latex?.textFont || textFont),
     rendered: getRenderedMarkdownFontStack(textFont),
     source: getMarkdownEditorFontStack(themes.source?.codeFont || DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY),
     latex: getMarkdownEditorFontStack(themes.latex?.codeFont || DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY),

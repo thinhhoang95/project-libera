@@ -4,10 +4,11 @@
 // with its own set for the light and the dark app theme, and two typefaces: a
 // text font (the visual editor, rendered previews and PDF export) and a code
 // font (the Markdown source, LaTeX and code editors); "" is the system font.
-// The visual editor, the Markdown source editors and the LaTeX editor each
-// pick a theme, or "default" to keep the app colors, plain headings and system
-// fonts; rendered previews take the visual editor's heading colors and text
-// font. The editors derive their borders,
+// The visual editor, the source editors (Markdown source, classic Markdown and
+// the code editor for other text files) and the LaTeX editor (Source and
+// Visual modes) each pick a theme, or "default" to keep the app colors, plain
+// headings and system fonts; rendered previews take the visual editor's
+// heading colors and text font, and LaTeX Visual mode the LaTeX theme's. The editors derive their borders,
 // gutters and muted fills from the page colors (globals.css,
 // [data-editor-theme-*]). Built-in themes are fixed; the user's own are
 // stored with the preferences.

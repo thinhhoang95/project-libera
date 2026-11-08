@@ -1528,7 +1528,7 @@
                   </header>
                   <div class="editor-theme-scopes" role="tablist" aria-label="Editor">
                     <button type="button" role="tab" data-scope="visual" aria-selected="true"><span>Visual editor</span><small data-scope-choice></small></button>
-                    <button type="button" role="tab" data-scope="source" aria-selected="false"><span>Markdown source</span><small data-scope-choice></small></button>
+                    <button type="button" role="tab" data-scope="source" aria-selected="false"><span>Source &amp; code</span><small data-scope-choice></small></button>
                     <button type="button" role="tab" data-scope="latex" aria-selected="false"><span>LaTeX</span><small data-scope-choice></small></button>
                   </div>
                   <div id="editor-theme-band" class="editor-theme-band" role="radiogroup"></div>
@@ -1776,7 +1776,7 @@
       // Editor themes (electron/editor-themes.cjs). The built-in themes come
       // with the state; the user's own are edited here and kept on Save.
       const editorThemeScopes = ["visual", "source", "latex"];
-      const editorThemeScopeNames = { visual: "the visual editor", source: "Markdown source", latex: "the LaTeX editor" };
+      const editorThemeScopeNames = { visual: "the visual editor", source: "the Markdown source and code editors", latex: "the LaTeX editor" };
       const editorThemeColorFields = [
         ["background", "Page"], ["text", "Text"], ["h1", "Heading 1"], ["h2", "Heading 2"],
         ["h3", "Heading 3"], ["h4", "Heading 4"], ["h5", "Heading 5+"], ["lists", "Bullets, lead-ins"],

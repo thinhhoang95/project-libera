@@ -2508,12 +2508,23 @@ button.border[class*="border-white"]:hover {
   li:not(blockquote[data-box-color] *)::marker { color: var(--libera-heading-accent); }
 :root[data-editor-theme-visual] .libera-visual-page { --libera-page-bg: var(--libera-editor-visual-light-background); --libera-page-text: var(--libera-editor-visual-light-text); }
 :root.dark[data-editor-theme-visual] .libera-visual-page { --libera-page-bg: var(--libera-editor-visual-dark-background); --libera-page-text: var(--libera-editor-visual-dark-text); }
-:root[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source) { --libera-page-bg: var(--libera-editor-source-light-background); --libera-page-text: var(--libera-editor-source-light-text); --markdown-editor-heading-1: var(--libera-editor-source-light-h1); --markdown-editor-heading-2: var(--libera-editor-source-light-h2); --markdown-editor-heading-3: var(--libera-editor-source-light-h3); --markdown-editor-heading-4: var(--libera-editor-source-light-h4); }
-:root.dark[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source) { --libera-page-bg: var(--libera-editor-source-dark-background); --libera-page-text: var(--libera-editor-source-dark-text); --markdown-editor-heading-1: var(--libera-editor-source-dark-h1); --markdown-editor-heading-2: var(--libera-editor-source-dark-h2); --markdown-editor-heading-3: var(--libera-editor-source-dark-h3); --markdown-editor-heading-4: var(--libera-editor-source-dark-h4); }
+:root[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source, .libera-code-editor, .libera-code-editor-status) { --libera-page-bg: var(--libera-editor-source-light-background); --libera-page-text: var(--libera-editor-source-light-text); --latex-heading: var(--libera-editor-source-light-h1); --markdown-editor-heading-1: var(--libera-editor-source-light-h1); --markdown-editor-heading-2: var(--libera-editor-source-light-h2); --markdown-editor-heading-3: var(--libera-editor-source-light-h3); --markdown-editor-heading-4: var(--libera-editor-source-light-h4); }
+:root.dark[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source, .libera-code-editor, .libera-code-editor-status) { --libera-page-bg: var(--libera-editor-source-dark-background); --libera-page-text: var(--libera-editor-source-dark-text); --latex-heading: var(--libera-editor-source-dark-h1); --markdown-editor-heading-1: var(--libera-editor-source-dark-h1); --markdown-editor-heading-2: var(--libera-editor-source-dark-h2); --markdown-editor-heading-3: var(--libera-editor-source-dark-h3); --markdown-editor-heading-4: var(--libera-editor-source-dark-h4); }
 :root[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) { --libera-page-bg: var(--libera-editor-latex-light-background); --libera-page-text: var(--libera-editor-latex-light-text); --latex-heading: var(--libera-editor-latex-light-h1); }
 :root.dark[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) { --libera-page-bg: var(--libera-editor-latex-dark-background); --libera-page-text: var(--libera-editor-latex-dark-text); --latex-heading: var(--libera-editor-latex-dark-h1); }
+/* LaTeX Visual mode takes the LaTeX theme's colors level by level, as the
+   visual editor does: part, chapter and section are H1, then down to
+   (sub)paragraph at H4, and list numbers and bullets take its list color. */
+:root[data-editor-theme-latex] .libera-latex-visual { --libera-latex-theme-h1: var(--libera-editor-latex-light-h1); --libera-latex-theme-h2: var(--libera-editor-latex-light-h2); --libera-latex-theme-h3: var(--libera-editor-latex-light-h3); --libera-latex-theme-h4: var(--libera-editor-latex-light-h4); --libera-latex-theme-lists: var(--libera-editor-latex-light-lists); }
+:root.dark[data-editor-theme-latex] .libera-latex-visual { --libera-latex-theme-h1: var(--libera-editor-latex-dark-h1); --libera-latex-theme-h2: var(--libera-editor-latex-dark-h2); --libera-latex-theme-h3: var(--libera-editor-latex-dark-h3); --libera-latex-theme-h4: var(--libera-editor-latex-dark-h4); --libera-latex-theme-lists: var(--libera-editor-latex-dark-lists); }
+:root[data-editor-theme-latex] .libera-latex-visual .cm-line:is(.cm-vis-hpart, .cm-vis-h0, .cm-vis-h1) { --latex-heading: var(--libera-latex-theme-h1); color: var(--libera-latex-theme-h1); }
+:root[data-editor-theme-latex] .libera-latex-visual .cm-line.cm-vis-h2 { --latex-heading: var(--libera-latex-theme-h2); color: var(--libera-latex-theme-h2); }
+:root[data-editor-theme-latex] .libera-latex-visual .cm-line.cm-vis-h3 { --latex-heading: var(--libera-latex-theme-h3); color: var(--libera-latex-theme-h3); }
+:root[data-editor-theme-latex] .libera-latex-visual .cm-line.cm-vis-h4 { --latex-heading: var(--libera-latex-theme-h4); color: var(--libera-latex-theme-h4); }
+:root[data-editor-theme-latex] .libera-latex-visual .cm-vis-heading-number { color: inherit; opacity: .7; }
+:root[data-editor-theme-latex] .libera-latex-visual .cm-vis-item:not(.cm-vis-item-description) { color: var(--libera-latex-theme-lists); }
 :root[data-editor-theme-visual] .libera-visual-page,
-:root[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source),
+:root[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source, .libera-code-editor, .libera-code-editor-status),
 :root[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) {
   --card: var(--libera-page-bg);
   --card-foreground: var(--libera-page-text);
@@ -3118,7 +3129,7 @@ html.dark .libera-workspace-region[data-ai-active="true"] .libera-ai-glow { opac
   --latex-visual-cite-text: #15803d;
 }
 .dark .libera-latex-visual { --latex-visual-cite-text: #4ade80; }
-/* The text settings of the TipTap editor: the visual theme's typeface, the Markdown size and line height. */
+/* The text settings of the TipTap editor: the LaTeX theme's text font (else the visual theme's), the Markdown size and line height. */
 .libera-latex-visual .cm-editor { font-size: var(--latex-editor-font-size, 16px); }
 .libera-latex-visual .cm-scroller { font-family: var(--latex-visual-font, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Charter, Georgia, serif); line-height: var(--latex-editor-line-height, 1.65); }
 .libera-latex-visual .cm-content { padding-inline: 0; }
