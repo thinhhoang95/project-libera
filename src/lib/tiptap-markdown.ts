@@ -8,7 +8,7 @@ import Underline from "@tiptap/extension-underline";
 import Image from "@tiptap/extension-image";
 import { TextStyle, FontSize, LineHeight, Color } from "@tiptap/extension-text-style";
 import { TableKit } from "@tiptap/extension-table";
-import { ListItem, TaskList, TaskItem } from "@tiptap/extension-list";
+import { ListItem, OrderedList, TaskList, TaskItem } from "@tiptap/extension-list";
 import Link from "@tiptap/extension-link";
 import { MARKDOWN_HIGHLIGHT_COLORS } from "./markdown-colors";
 import { markdownTextStyleAttributes } from "./markdown-text-styles";
@@ -174,6 +174,41 @@ const LiberaListItem = ListItem.extend({
   },
 });
 
+type ListToken = { type: string; raw?: string; items?: ListToken[]; tokens?: ListToken[] };
+type BlockLexer = { blockTokens(src: string, tokens?: unknown[]): ListToken[] };
+
+/** Re-reads each item's opening paragraph as blocks when it holds display math.
+ * Tiptap's ordered-list tokenizer gathers an item's lines up to the first blank
+ * line into one inline paragraph, breaking it only for blocks it knows (`$$`,
+ * fences, headings, lists), so `1. Text:\n   \[\n   x\n   \]` lost its math to
+ * Markdown escapes and emphasis. Bullet lists use marked's own list tokenizer,
+ * which lets block extensions such as Libera's math interrupt a paragraph. */
+function splitItemDisplayMath(items: ListToken[], lexer: BlockLexer) {
+  for (const item of items) {
+    if (item.type !== "list_item" || !item.tokens) continue;
+    item.tokens = item.tokens.flatMap((token) => {
+      if (token.type === "list" && token.items) splitItemDisplayMath(token.items, lexer);
+      if (token.type !== "paragraph" || !token.raw) return [token];
+      // The paragraph has no blank lines, so its lines' indentation means nothing
+      // (no indented code); Tiptap also leaves one space too many under `1. `.
+      const blocks = lexer.blockTokens(token.raw.replace(/\n[ \t]+/g, "\n"), []);
+      return blocks.some((block) => block.type === "blockMath") ? blocks : [token];
+    });
+  }
+}
+
+const orderedListTokenizer = OrderedList.config.markdownTokenizer!;
+const LiberaOrderedList = OrderedList.extend({
+  markdownTokenizer: {
+    ...orderedListTokenizer,
+    tokenize(src, tokens, lexer) {
+      const token = orderedListTokenizer.tokenize(src, tokens, lexer) as ListToken | undefined;
+      if (token?.items) splitItemDisplayMath(token.items, lexer as unknown as BlockLexer);
+      return token as ReturnType<typeof orderedListTokenizer.tokenize>;
+    },
+  },
+});
+
 // Typing ```libera-macro (or any language with a hyphen or digit) starts a code block.
 const LiberaCodeBlock = CodeBlock.extend({
   addInputRules() {
@@ -196,12 +231,13 @@ export type MarkdownExtensionOptions = {
 
 export function createMarkdownExtensions(documentPath: string, options: MarkdownExtensionOptions = {}) {
   return [
-    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false, code: false, codeBlock: false, listItem: false }),
+    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false, code: false, codeBlock: false, listItem: false, orderedList: false }),
     // Markdown nests inline code in bold, italics, links and strikethrough, and loading a
     // note keeps those marks; Tiptap's code mark excludes all others, so pasting the same
     // Markdown failed the schema check and fell back to the browser's plain-text paste.
     Code.extend({ excludes: "" }),
     LiberaListItem,
+    LiberaOrderedList,
     // The language attribute keeps the whole info string (`html live`), so it round-trips.
     LiberaCodeBlock.extend(options.codeBlockNodeView ? { addNodeView: () => options.codeBlockNodeView! } : {}),
     LiberaLink.configure({ openOnClick: false }),

@@ -7,6 +7,19 @@ import { macroLatexAt, onMacrosChange } from './tiptap-macros';
 import { highlightMarkdownOpening } from './tiptap-markdown';
 import { mathMarkerPairs, matchMath, escapedAt, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from './math-markers';
 
+/** Display math at the start of `source`, which may be indented by up to three
+ * spaces like any Markdown block (four is an indented code block). The preview's
+ * micromark parser allows the same, so a chat reply that indents `\[` under a
+ * list item renders as math there and must paste as math here. The body's lines
+ * lose the opener's indentation, as a list item's lines lose the item's. */
+export function matchBlockMath(source: string, pairs: MathMarkerPair[]) {
+  const indent = /^ {0,3}/.exec(source)![0];
+  const match = matchMath(source.slice(indent.length), pairs, true);
+  if (!match) return;
+  const latex = indent ? match.latex.replace(new RegExp(`\\n {0,${indent.length}}`, 'g'), '\n') : match.latex;
+  return { ...match, raw: indent + match.raw, latex };
+}
+
 /** Turns literal, delimited math in text (outside code) into math nodes. */
 export function convertLiteralMath(fragment: Fragment, schema: Schema, pairs: MathMarkerPair[]): Fragment {
   const result: ProseMirrorNode[] = [];
@@ -26,7 +39,8 @@ export function convertLiteralMath(fragment: Fragment, schema: Schema, pairs: Ma
       }
       if (start < text.length) result.push(schema.text(text.slice(start), node.marks));
     } else if (node.type.name === 'paragraph' && node.content.content.every(child => child.isText || child.type.name === 'hardBreak')) {
-      const text = node.textBetween(0, node.content.size, '', '\n');
+      // Rich text has no indented code blocks, so any leading whitespace may go.
+      const text = node.textBetween(0, node.content.size, '', '\n').replace(/^[ \t ]+/, '');
       const block = matchMath(text, pairs, true);
       if (block && block.raw.length === text.trimEnd().length) {
         result.push(schema.nodes.blockMath.create({ latex: block.latex, mathOpen: block.open, mathClose: block.close }));
@@ -113,15 +127,17 @@ export function createMathExtensions(settings: MathMarkerSettings = {}) {
       },
       markdownTokenizer: {
         name, level: display ? 'block' : 'inline',
+        // A display block starts at a line start, before any indentation, so
+        // the paragraph above is cut there rather than swallowing the block.
         start(source) {
           for (let i = 0; i < source.length; i++) {
             if (display && i > 0 && source[i - 1] !== '\n') continue;
-            if (matchMath(source.slice(i), pairs, display)) return i;
+            if (display ? matchBlockMath(source.slice(i), pairs) : matchMath(source.slice(i), pairs, false)) return i;
           }
           return -1;
         },
         tokenize(source) {
-          const match = matchMath(source, pairs, display);
+          const match = display ? matchBlockMath(source, pairs) : matchMath(source, pairs, false);
           if (match) return { type: name, ...match };
         },
       },

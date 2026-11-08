@@ -104,6 +104,47 @@ test('display math accepts trailing whitespace but not trailing prose', () => {
   assert.equal(nodes(renderTree('\\[x\\] trailing prose'), 'math').length, 0);
 });
 
+test('indented display math parses in the visual editor as it does in the preview', () => {
+  // An AI Chat reply pasted as Markdown: the visual editor took `\[` with leading
+  // spaces for a paragraph, so `\[` `\;` lost their backslashes and `_…_` italicised.
+  const prefs = normalizeMarkdownPreferences();
+  const visual = new MarkdownManager({ extensions: [...createMarkdownExtensions(''), ...createMathExtensions(prefs)] });
+  const formula = String.raw`\Delta R_r(z) = \underbrace{\sum_{f \in \mathcal{V}_r(z)} \xi_f}_{\text{+1 entrants}} \;-\; \underbrace{\sum_{f \in \mathcal{W}_r(z)} \xi_f}_{\text{-1 exiters}}.`;
+  const indented = (indent: string, opener = indent) => `${opener}\\[\n${indent}${formula}\n${indent}\\]`;
+  const cases: [string, string][] = [
+    ['flush, straight after a paragraph line', `Variables:\n${indented('')}\nwhere`],
+    ['three spaces', `Variables:\n\n${indented('   ')}\n\nwhere`],
+    ['two spaces, straight after a paragraph line', `Variables:\n${indented('  ')}\nwhere`],
+    ['only the opener indented', `Variables:\n\n${indented('', '  ')}\n\nwhere`],
+    ['over-indented under a bullet', `- Variables:\n    \\[\n    ${formula}\n    \\]\n- Next`],
+    ['under a number', `1. Variables:\n   \\[\n   ${formula}\n   \\]\n2. Next`],
+    ['over-indented under a number', `1. Variables:\n     \\[\n     ${formula}\n     \\]\n2. Next`],
+    ['three spaces over-indented under a number', `1. Variables:\n      \\[\n      ${formula}\n      \\]\n2. Next`],
+    ['nested under a number', `1. Outer\n   1. Variables:\n      \\[\n      ${formula}\n      \\]`],
+    ['under a task', `- [ ] Variables:\n  \\[\n  ${formula}\n  \\]\n- [ ] Next`],
+    ['under-indented under a bullet', `- Variables:\n \\[\n ${formula}\n \\]\n- Next`],
+    ['indented in a blockquote', `>   \\[\n>   ${formula}\n>   \\]`],
+    ['CRLF line endings', `Variables:\r\n\r\n  \\[\r\n  ${formula}\r\n  \\]\r\n`],
+  ];
+  for (const [label, source] of cases) {
+    const preview = unified().use(remarkParse).use(remarkGfm).use(remarkMathMarkers, prefs).parse(source);
+    assert.equal(nodes(preview, 'math').length, 1, `preview: ${label}`);
+    const json = visual.parse(source);
+    const blocks = nodes(json, 'blockMath');
+    assert.equal(blocks.length, 1, `visual editor: ${label}`);
+    assert.equal(blocks[0].attrs.latex, formula, `latex without indentation: ${label}`);
+    assert.equal(nodes(json, 'text').some(node => node.marks?.some(mark => mark.type === 'italic')), false, label);
+    assert.deepEqual(visual.parse(visual.serialize(json)), json, `save/reopen: ${label}`);
+  }
+  // Indentation stays in multi-line bodies only beyond the opener's own.
+  assert.equal(nodes(visual.parse('  \\[\n  a \\\\\n    b\n  \\]'), 'blockMath')[0].attrs.latex, 'a \\\\\n  b');
+  // Four spaces is an indented code block in both editors.
+  const code = 'Text\n\n    \\[\n    x\n    \\]';
+  assert.equal(nodes(visual.parse(code), 'blockMath').length, 0);
+  assert.equal(nodes(visual.parse(code), 'codeBlock').length, 1);
+  assert.equal(nodes(unified().use(remarkParse).use(remarkMathMarkers, prefs).parse(code), 'math').length, 0);
+});
+
 test('typing and rich HTML paste recognize custom markers without changing code', async () => {
   const dom = new JSDOM('<!doctype html><body></body>');
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
@@ -129,6 +170,9 @@ test('typing and rich HTML paste recognize custom markers without changing code'
     editor.commands.setContent('<p></p>');
     editor.view.pasteHTML('<p>\\[<br>y<br>\\]</p>');
     assert.equal(nodes(editor.getJSON(), 'blockMath').length, 1);
+    editor.commands.setContent('<p></p>');
+    editor.view.pasteHTML('<p>&nbsp;&nbsp;\\[<br>y<br>\\]</p>');
+    assert.equal(nodes(editor.getJSON(), 'blockMath')[0]?.attrs.latex, 'y');
   } finally { editor.destroy(); dom.window.close(); }
 });
 
