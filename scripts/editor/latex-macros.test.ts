@@ -8,6 +8,7 @@ import { bodyStartOf, collectLatexDefinitions, emptyLatexDefinitions, loadKey, m
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode } from "../../src/lib/latex/macros/expand";
 import { computeLatexNumbering, enumerateItemLabel, formatCounterValue, numberingEntryAt, referenceText, splitMathRows } from "../../src/lib/latex/macros/numbering";
 import { katexForEnvironment } from "../../src/lib/latex/codemirror/visual/math-render";
+import { cssColor } from "../../src/lib/latex/codemirror/visual/symbols";
 import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
 import { readGroup, readOptional } from "../../src/lib/macros/core";
 import { readBalancedGroup } from "../../src/lib/latex/project";
@@ -581,4 +582,23 @@ test("a package restyling LaTeX's own commands and environments does not change 
   }
   // A command that names itself is never expanded, wherever it is defined.
   assert.ok(!defsOf(String.raw`\def\normalsize{\@setfontsize\normalsize\@xpt\@xipt}`).macros.has("normalsize"));
+});
+
+test("package options and the document's colours are read with the definitions", () => {
+  const defs = defsOf(String.raw`\usepackage[ruled,vlined, % style
+linesnumbered]{algorithm2e}
+\usepackage{xcolor}
+\definecolor{myred1}{RGB}{89, 10, 10}
+\colorlet{accent}{myred1!60}
+\begin{document}`);
+  assert.deepEqual(defs.packageOptions.get("algorithm2e"), ["ruled", "vlined", "linesnumbered"]);
+  assert.equal(defs.packageOptions.has("xcolor"), false);
+  assert.deepEqual([...defs.colors], [["myred1", { model: "RGB", value: "89, 10, 10" }], ["accent", { model: "", value: "myred1!60" }]]);
+  // Colours are drawn through what they name, in the models xcolor reads.
+  assert.equal(cssColor(null, "accent", defs.colors), "rgb(89,10,10)");
+  assert.equal(cssColor("gray", "0.5"), "rgb(128,128,128)");
+  assert.equal(cssColor("cmyk", "0,1,1,0"), "rgb(255,0,0)");
+  assert.equal(cssColor(null, "nonesuch", defs.colors), null);
+  // A changed colour or option changes the fingerprint, so drawings follow it.
+  assert.notEqual(defs.fingerprint, defsOf(String.raw`\usepackage[ruled]{algorithm2e}\definecolor{myred1}{RGB}{89, 10, 10}\colorlet{accent}{myred1!60}\begin{document}`).fingerprint);
 });

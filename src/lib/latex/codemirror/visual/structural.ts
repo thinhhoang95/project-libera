@@ -3,7 +3,7 @@ import { Facet, RangeSet, RangeValue, StateEffect, StateField, type ChangeDesc, 
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
 import { macroAt } from "../../macros/definitions";
-import { environmentName } from "../../macros/numbering";
+import { environmentName, FLOAT_KINDS } from "../../macros/numbering";
 import { bodyStartIn, disabledField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
 import { macroRegionsFor, walkConstructs, type Construct, type RevealPolicy } from "./walk";
 import { preambleSummary } from "./widgets";
@@ -65,7 +65,8 @@ const WIDEN = new Set([
   "EquationEnvironment", "EquationArrayEnvironment", "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment",
   "TabularEnvironment", "ListEnvironment", "Maketitle", "IncludeGraphics", "SectioningCommand", "UnknownCommand",
 ]);
-const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices)$/;
+const TABULAR_ENVIRONMENTS = /^(?:tabular\*?|tabularx|tabulary|longtable\*?|xltabular)$/;
+const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices|thebibliography)$/;
 
 /** Where the folded preamble ends: the `\begin{document}` line, or the command itself when body text follows it on that line. */
 export function preambleEndOf(state: EditorState) {
@@ -167,7 +168,8 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
         if (!rendered && node.name === "Environment") {
           const name = environmentName(node, (start, end) => state.doc.sliceString(start, end));
           const defs = visualDefinitions(state);
-          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name));
+          // Floats and tabulars the grammar does not name (`algorithm`, `table*`, `tabular*`) are drawn whole too.
+          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name));
         }
         // A use of the document's macros is drawn from its arguments: an edit in one (a brace that now closes it) redraws it.
         if (!rendered && node.name === "UnknownCommand") {

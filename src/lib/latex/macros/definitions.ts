@@ -85,12 +85,16 @@ export type LatexDefinitions = {
   crefNames: Map<string, { singular: string; plural: string; capital?: boolean }>;
   documentClass: string | null;
   packages: string[];
+  /** The options a package was loaded with (`\usepackage[ruled,vlined]{algorithm2e}`), by package name. */
+  packageOptions: Map<string, string[]>;
   /** `\setcounter{secnumdepth}{n}` before the body. */
   secnumdepth?: number;
   /** `\graphicspath{{dir/}…}` directories, in order. */
   graphicsPaths: string[];
   /** array's `\newcolumntype{L}[1]{>{\raggedright}p{#1}}`: its arguments and how it aligns. */
   columnTypes: Map<string, LatexColumnType>;
+  /** xcolor's `\definecolor{name}{model}{value}`, and `\colorlet{name}{color}` (model "", value the colour it names). */
+  colors: Map<string, { model: string; value: string }>;
   /** Where the open file's definitions are (absolute ranges, in order), so edits inside one re-read them. */
   extents: Array<{ from: number; to: number }>;
   /** Definitions that are wrong (a body using `#3` with two arguments). */
@@ -104,11 +108,11 @@ export type LatexDefinitions = {
 export function emptyLatexDefinitions(): LatexDefinitions {
   return {
     macros: new Map(), environments: new Map(), theorems: new Map(), counterWithin: new Map(), counterPrefix: new Map(), crefNames: new Map(),
-    documentClass: null, packages: [], graphicsPaths: [], columnTypes: new Map(), extents: [], problems: [], unsupported: [], fingerprint: "",
+    documentClass: null, packages: [], packageOptions: new Map(), graphicsPaths: [], columnTypes: new Map(), colors: new Map(), extents: [], problems: [], unsupported: [], fingerprint: "",
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -588,6 +592,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           const trimmed = name.replace(/%[^\n]*/g, "").trim();
           if (!trimmed) continue;
           defs.packages.push(trimmed);
+          if (packageOptions) defs.packageOptions.set(trimmed, packageOptions.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean));
           options.load?.(loadKey("package", trimmed), start);
         }
       }
@@ -614,6 +619,15 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         const arity = count ? Number(count.content.trim()) : 0;
         defs.columnTypes.set(letter.content.trim(), { arity: Number.isInteger(arity) && arity >= 0 && arity <= 9 ? arity : 0, align: columnTypeAlign(body.content) });
       }
+    } else if (command === "definecolor" || command === "colorlet") {
+      // `\definecolor{myred}{RGB}{89,10,10}`, `\colorlet{accent}{red!60}`: names `\textcolor` and `\color` draw.
+      const name = readGroupAt(source, index);
+      const model = name && command === "definecolor" ? readGroupAt(source, name.end) : null;
+      const value = name ? readGroupAt(source, model?.end ?? name.end) : null;
+      if (name && value && (model || command === "colorlet")) {
+        end = value.end;
+        defs.colors.set(name.content.trim(), { model: model ? model.content.trim() : "", value: value.content.trim() });
+      }
     }
 
     if (added && !global) (scanner.innermost()?.locals ?? []).push(added);
@@ -639,6 +653,8 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [counter, within] of defs.counterPrefix) parts.push(`${counter}<<${within}`);
   for (const [key, names] of defs.crefNames) parts.push(`${key}=${names.singular}/${names.plural}`);
   parts.push(defs.documentClass ?? "", String(defs.secnumdepth ?? ""), defs.graphicsPaths.join("|"));
+  for (const [name, list] of defs.packageOptions) parts.push(`pkg:${name}:${list.join(",")}`);
+  for (const [name, color] of defs.colors) parts.push(`color:${name}:${color.model}:${color.value}`);
   for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}`);
   return hashString(parts.join("\u0000"));
 }

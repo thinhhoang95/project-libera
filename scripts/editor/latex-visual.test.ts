@@ -24,7 +24,7 @@ import { showTooltip } from "@codemirror/view";
 import { graphicsCandidates, isEditingCell, refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
 import { citationText, plainTexText, stateReferenceText } from "../../src/lib/latex/codemirror/visual/references";
 import { latexParser } from "../../src/lib/latex/codemirror/latex-parser";
-import { parseAlgorithmic } from "../../src/lib/latex/codemirror/visual/algorithm";
+import { parseAlgorithm2e, parseAlgorithmic } from "../../src/lib/latex/codemirror/visual/algorithm";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -601,6 +601,167 @@ test("edits around sub-figures, references in formulas and \\multirow cells buil
       }
       const reference = stateFor(view.state.doc.toString()).update({ effects: setMacroSources.of([PAPER2_PACKAGE]) }).state;
       assert.deepEqual(constructs(view.state), constructs(reference));
+    } finally {
+      view.destroy();
+    }
+  }), { numRuns: 40 });
+});
+
+/* ---- Real papers, third batch (the audit against Attention Is All You Need, GCN, LoRA) ---- */
+
+const PAPER3 = String.raw`\documentclass{article}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage{subcaption,makecell,xcolor}
+\definecolor{myred1}{RGB}{89, 10, 10}
+\colorlet{accent}{myred1}
+\begin{document}
+\begin{center}
+    \color{red}
+    Provided proper attribution is provided.
+\end{center}
+\section{Model}
+\begin{algorithm}[H]
+\SetKwFunction{Hash}{hash}
+\KwIn{Initial coloring $h^{(0)}$}
+\KwOut{Final coloring $h^{(T)}$}
+t $\leftarrow$ 0\;
+\Repeat{stable node coloring is reached}{
+  \For{$v_i \in \mathcal{V}$}{
+    $h_i \leftarrow$ \Hash{$h_j$}\; \tcp*{neighbours}
+  }
+  \eIf{$t > 9$}{\KwRet{$h$}\;}{$t \leftarrow t+1$\;}
+}
+\caption{{\bf WL-1 algorithm} \label{alg:wl1}}
+\end{algorithm}
+
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}[b]{0.45\textwidth}
+\includegraphics[width=\textwidth]{citeseer.pdf}
+\label{fig:depth-a}
+\end{subfigure}
+\caption{Depth.}\label{fig:depth}
+\end{figure}
+
+\begin{table}[h]
+\footnotesize
+\addtolength{\tabcolsep}{-1pt}
+\centering
+\begin{tabular}{lll}
+\rule{0pt}{2.0ex}Model & BLEU & Cost \\
+\multirow{2}{*}{\makecell{RoBERTa base \\ LoRA}} \
+& \textcolor{myred1}{+2.2\%} & \boldmath$3.3\cdot 10^{18}$ \\
+\end{tabular}
+\caption{Results.}\label{tab:results}
+\end{table}
+
+\begin{thebibliography}{10}
+
+\bibitem{layernorm2016}
+Jimmy~Lei Ba, Jamie~Ryan Kiros, and Geoffrey~E Hinton.
+\newblock Layer normalization.
+\newblock {\em arXiv preprint arXiv:1607.06450}, 2016.
+
+% \bibitem{hidden}
+\bibitem[BZ]{britz2017}
+Denny Britz.
+\newblock {\em CoRR}, abs/1703.03906, 2017.
+
+\bibitem{cho2014}
+Kyunghyun Cho.
+\end{thebibliography}
+\end{document}
+`;
+
+test("algorithm2e bodies are read into lines: blocks as arguments, statements ending with \\;, the document's keywords", () => {
+  const spec = parseAlgorithm2e(String.raw`\SetKwFunction{FMain}{Main}\SetKwProg{Fn}{Function}{:}{end}\SetKwInOut{Input}{input}
+\Input{$G$}
+\Fn{\FMain{$x$}}{
+  \uIf{$x > 0$}{\Return{$x$}\;}
+  \Else{\lFor{$i$}{skip}}
+}
+t $\leftarrow$ 0\; \tcc{counter}
+\BlankLine
+\While{$t < 3$}{$t \gets t + 1$\;}`, { numbered: false, ends: true })!;
+  assert.deepEqual(spec.lines.map((line) => [line.depth, line.lead ?? "", line.text, line.trail ?? "", line.comment ?? "", line.numbered]), [
+    [0, "input:", "$G$", "", "", false],
+    [0, "Function", String.raw`\textsc{Main}($x$):`, "", "", true],
+    [1, "if", "$x > 0$", "then", "", true],
+    [2, "", String.raw`\textbf{return} $x$`, "", "", true],
+    [1, "else", "", "", "", true],
+    [2, "for", String.raw`$i$ \textbf{do} skip`, "", "", true],
+    [1, "end", "", "", "", true],
+    [0, "end", "", "", "", true],
+    // `\tcc{…}` is a comment line of its own; `\tcp*{…}` (below) is a side comment.
+    [0, "", String.raw`t $\leftarrow$ 0`, "", "", true],
+    [0, "", "", "", "counter", true],
+    [0, "while", "$t < 3$", "do", "", true],
+    [1, "", String.raw`$t \gets t + 1$`, "", "", true],
+    [0, "end", "", "", "", true],
+  ]);
+  assert.equal(spec.numberEvery, 0);
+  // algpseudocode's statements, or anything else it does not know, leave it as source.
+  assert.equal(parseAlgorithm2e(String.raw`\State x`, { numbered: false, ends: true }), null);
+  assert.equal(parseAlgorithm2e(String.raw`\For{a}{b`, { numbered: false, ends: true }), null);
+});
+
+test("third batch: an algorithm2e float, a bibliography, colours, struts and a caption-less sub-figure label", async () => {
+  const view = mount(PAPER3);
+  try {
+    number(view);
+    // A label in a sub-figure without a caption refers to nothing, as in LaTeX ("??"); the others as usual.
+    const labels = view.state.field(numberingField).labels;
+    assert.ok(!labels.has("fig:depth-a"));
+    assert.deepEqual(["alg:wl1", "fig:depth", "tab:results"].map((key) => stateReferenceText(view.state, "\\ref", [key])), ["1", "1", "1"]);
+    const content = view.contentDOM;
+    const clean = (text: string | null | undefined) => (text ?? "").replace(/[​⁣]/g, "").replace(/\s+/g, " ").trim();
+    // `\color{red}` colours the rest of its environment.
+    await scrollTo(view, "\\begin{center}");
+    const colored = [...content.querySelectorAll<HTMLElement>(".cm-vis-color")].find((element) => element.textContent?.includes("Provided"));
+    assert.ok(colored && /color/.test(colored.getAttribute("style") ?? ""));
+    // algorithm2e: ruled, so the caption is on top; lines numbered (linesnumbered), vlined, so no "end".
+    await scrollTo(view, "\\begin{algorithm}");
+    const algorithm = content.querySelector(".cm-vis-figure-algorithm")!;
+    assert.equal(clean(algorithm.querySelector(".cm-vis-caption")?.textContent), "Algorithm 1 WL-1 algorithm");
+    assert.ok(algorithm.firstElementChild?.classList.contains("cm-vis-caption"));
+    assert.deepEqual([...algorithm.querySelectorAll(".cm-vis-algorithm-line")].map((line) => clean(line.textContent)), [
+      "Input: Initial coloring h(0)", "Output: Final coloring h(T)", "1:t ← 0", "2:repeat", "3:for vi∈V do", "4:hi← hash(hj)▷ neighbours",
+      "5:if t>9 then", "6:return h", "7:else", "8:t←t+1", "9:until stable node coloring is reached",
+    ]);
+    // Struts draw nothing, document colours colour, a control space at a cell's end is a space, \boldmath is bold.
+    await scrollTo(view, "\\begin{table}");
+    const table = content.querySelector(".cm-vis-figure-table")!;
+    assert.ok(!table.querySelector(".cm-vis-raw"));
+    assert.deepEqual([...table.querySelectorAll("td")].map((td) => clean(td.textContent)), ["Model", "BLEU", "Cost", "RoBERTa base LoRA", "+2.2%", "3.3⋅1018"]);
+    assert.match(table.querySelector<HTMLElement>(".cm-vis-color")?.getAttribute("style") ?? "", /rgb\(89, ?10, ?10\)/);
+    assert.ok(table.querySelector("td .cm-vis-b .katex"));
+    // The bibliography: a heading, [n] markers (a comment's \bibitem is not counted), labels it gives, styled parts.
+    await scrollTo(view, "\\begin{thebibliography}");
+    assert.ok([...content.querySelectorAll(".cm-line.cm-vis-heading")].some((line) => clean(line.textContent) === "References"));
+    assert.deepEqual([...content.querySelectorAll(".cm-vis-bibliography .cm-vis-item")].map((marker) => marker.textContent), ["[1]", "[BZ]", "[3]"]);
+    const entry = [...content.querySelectorAll(".cm-line")].find((line) => line.textContent?.includes("arXiv preprint"))!;
+    assert.equal(clean(entry.textContent), "arXiv preprint arXiv:1607.06450, 2016.");
+    assert.equal(entry.querySelector(".cm-vis-em")?.textContent, "arXiv preprint arXiv:1607.06450");
+  } finally {
+    view.destroy();
+  }
+});
+
+test("edits around bibliographies, algorithm2e bodies and colour switches build the same constructs as a fresh build", () => {
+  const pieces = ["\\bibitem{k}", "\\bibitem[L]{k}", "\\newblock ", "{\\em x}", "%", "\\;", "\\For{a}{", "}", "{", "\\color{red}", "\\KwIn{x}", "\\end{thebibliography}", "\n\n"];
+  const start = PAPER3.indexOf("\\begin{document}") + 17;
+  fc.assert(fc.property(fc.array(fc.record({ at: fc.nat(), remove: fc.nat({ max: 5 }), insert: fc.constantFrom(...pieces) }), { maxLength: 5 }), (edits) => {
+    const view = mount(PAPER3);
+    try {
+      for (const edit of edits) {
+        const length = view.state.doc.length;
+        const from = start + (edit.at % Math.max(1, length - start - 16));
+        const to = Math.min(length - 16, from + edit.remove);
+        view.dispatch({ changes: { from, to: Math.max(from, to), insert: edit.insert } });
+        ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+        view.dispatch({});
+      }
+      assert.deepEqual(constructs(view.state), constructs(stateFor(view.state.doc.toString())));
     } finally {
       view.destroy();
     }

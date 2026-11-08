@@ -124,7 +124,8 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   const fragment = document.createDocumentFragment();
   const expansion = expandLatexMacros(latex, context.defs, { mode: "text", pos: context.pos });
   // Accents (`\'e`) span a command and the letter after it; typeset them before parsing.
-  const source = withoutConditionals(expansion.text).replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
+  // A control space at the very end (`… \ ` in a cell, trimmed) is a space.
+  const source = withoutConditionals(expansion.text).replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
   const tree = parser.parse(source);
   const read = (from: number, to: number) => source.slice(from, to);
 
@@ -214,9 +215,9 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       const model = args.find((arg) => arg.optional);
       const mandatory = args.filter((arg) => !arg.optional);
       const colorRange = mandatory[0] ? argumentInner(mandatory[0].node) : null;
-      const color = colorRange ? cssColor(model ? read(argumentInner(model.node)!.from, argumentInner(model.node)!.to) : null, read(colorRange.from, colorRange.to)) : null;
+      const color = colorRange ? cssColor(model ? read(argumentInner(model.node)!.from, argumentInner(model.node)!.to) : null, read(colorRange.from, colorRange.to), context.defs.colors) : null;
       if (!color || !mandatory[1]) { parent.appendChild(raw(read(node.from, node.to))); return; }
-      const span = element("span", name === "ColorBoxCommand" ? "cm-vis-colorbox" : undefined);
+      const span = element("span", name === "ColorBoxCommand" ? "cm-vis-colorbox" : "cm-vis-color");
       if (name === "ColorBoxCommand") span.style.backgroundColor = color; else span.style.color = color;
       renderArgument(span, mandatory[1].node);
       parent.appendChild(span);
@@ -315,6 +316,21 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         }
       }
       if (SIZE_COMMAND.test(text) && !commandArguments(node).length) return;
+      // `\rule{0pt}{2ex}` (a strut, for row height) draws nothing; a rule with a width is a bar.
+      if (text === "\\rule") {
+        const [width, height] = commandArguments(node).filter((arg) => !arg.optional).map((arg) => { const inner = argumentInner(arg.node); return inner ? read(inner.from, inner.to) : ""; });
+        if (width !== undefined && height !== undefined) {
+          const css = graphicsWidthCss(`width=${width.trim()}`);
+          const thick = graphicsWidthCss(`width=${height.trim()}`);
+          if (css && !/^0*\.?0*[a-z%]*$/.test(css)) {
+            const bar = element("span", "cm-vis-rule-bar");
+            bar.style.width = css;
+            bar.style.height = thick ?? "0.4pt";
+            parent.appendChild(bar);
+          }
+          return;
+        }
+      }
       if (text === "\\textcircled") {
         const arg = commandArguments(node)[0];
         const inner = arg && !arg.optional ? argumentInner(arg.node) : null;

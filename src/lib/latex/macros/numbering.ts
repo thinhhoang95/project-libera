@@ -570,8 +570,9 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       }
       if (name === "DollarMath" || name === "BracketMath" || name === "ParenMath") return false;
       if (name === "FigureEnvironment" || name === "TableEnvironment") {
-        // The number is stepped by \caption (below), so a \label before it refers to the section.
-        scopes.push({ node: node.from, target: currentTarget() });
+        // The number is stepped by \caption (below), so a \label before it refers to the section. In a
+        // sub-figure it refers to nothing until its caption (the caption package's "??").
+        scopes.push({ node: node.from, target: /^sub/.test(environmentName(node, read) ?? "") ? null : currentTarget() });
         return;
       }
       if (name === "TabularEnvironment" && isLongTable(node, read)) {
@@ -610,7 +611,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       }
       if (name === "Environment") {
         const env = environmentName(node, read) ?? "";
-        scopes.push({ node: node.from, target: currentTarget() });
+        scopes.push({ node: node.from, target: env === "subtable" ? null : currentTarget() });
         // The appendix package's `appendices` environment letters its sections, as `\appendix` does.
         if (env === "appendices") {
           appendix = true;

@@ -3181,6 +3181,9 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .libera-latex-visual .cm-line.cm-vis-list-d3 { padding-left: 5.3em; }
 .libera-latex-visual .cm-line.cm-vis-list-d4 { padding-left: 7em; }
 .libera-latex-visual .cm-line.cm-vis-list-d5, .libera-latex-visual .cm-line.cm-vis-list-d6 { padding-left: 8.7em; }
+/* thebibliography: each reference hangs from its [n] marker. */
+.libera-latex-visual .cm-line.cm-vis-bibliography { padding-left: 2.8em; }
+.libera-latex-visual .cm-line.cm-vis-bibliography .cm-vis-item { min-width: 2.2em; margin-left: -2.8em; padding-right: .6em; }
 .cm-vis-env-header { font-weight: 700; }
 .cm-vis-env-header-proof .cm-vis-env-title { font-style: italic; font-weight: 400; }
 .cm-vis-env-header-abstract { display: inline-block; width: 100%; text-align: center; font-size: .92em; }
@@ -3231,6 +3234,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-table-row.cm-vis-rule > td { border-top: 1px solid currentColor; }
 .cm-vis-table-row.cm-vis-rule-heavy > td { border-top: 1.5px solid currentColor; }
 .cm-vis-table-row.cm-vis-row-spaced > td { padding-top: .5em; }
+/* `\rule{2em}{0.4pt}`: a bar (a zero-width strut draws nothing). */
+.cm-vis-rule-bar { display: inline-block; max-width: 100%; background: currentColor; vertical-align: baseline; }
 .cm-vis-table.cm-vis-table-closed { border-bottom: 1.5px solid currentColor; }
 .cm-vis-table-cell:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .cm-vis-table-cell[contenteditable="true"] { outline: 2px solid var(--ring); outline-offset: -2px; background: var(--background); font-family: var(--font-mono); font-size: .86em; white-space: pre-wrap; cursor: text; }

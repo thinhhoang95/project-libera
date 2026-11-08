@@ -5,7 +5,7 @@ import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind } from "../../macros/numbering";
-import { parseAlgorithmic } from "./algorithm";
+import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
 import { katexForEnvironment, renderKatex } from "./math-render";
@@ -83,7 +83,7 @@ const OVERRIDABLE = new Set([
 /** Built-in environments drawn by the walk, which `\renewenvironment` may change. */
 const ENVIRONMENT_NODES = new Set(["FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "EquationEnvironment", "EquationArrayEnvironment"]);
 /** What may be in a figure or table besides its images, tables, caption and label, and still be drawn as one. */
-const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline|fontsize|selectfont|newcolumntype|arraybackslash|[;,:!])$/;
+const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline|fontsize|selectfont|newcolumntype|arraybackslash|[;,:!])$/;
 /** Definitions the grammar parses as unknown commands. */
 const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname)$/;
 const SECTION_CLASSES: Record<string, string> = {
@@ -347,18 +347,52 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   const groupSwitch = (group: SyntaxNode) => {
     const close = group.lastChild;
     if (!close || close.name !== "CloseBrace" || hasDirectError(group)) return null;
-    let first: SyntaxNode | null = group.getChild("Text")?.firstChild ?? null;
+    // A group, or a command's argument (`\newblock {\em CoRR}`).
+    let first: SyntaxNode | null = (group.getChild("Text") ?? group.getChild("LongArg"))?.firstChild ?? null;
     while (first && (first.name === "Whitespace" || first.name === "NewLine")) first = first.nextSibling;
     const command = first?.name === "Command" ? first.firstChild : null;
     const ctrl = command?.name === "UnknownCommand" ? command.firstChild : null;
     if (!ctrl || ctrl.name !== "CtrlSeq") return null;
     const text = readNode(ctrl.from, ctrl.to);
-    const className = FONT_SWITCHES[text] ?? (SIZE_COMMAND.test(text) ? "" : undefined);
+    // `{\color{red} text}`: the colour's argument is part of the switch.
+    const color = text === "\\color" ? colorSwitch(command!) : null;
+    const className = color ? "cm-vis-color" : FONT_SWITCHES[text] ?? (SIZE_COMMAND.test(text) ? "" : undefined);
     if (className === undefined) return null;
     // TeX skips the spaces after a control word.
-    let textFrom = ctrl.to;
+    let textFrom = color ? color.end : ctrl.to;
     while (textFrom < close.from && /\s/.test(readNode(textFrom, textFrom + 1))) textFrom++;
-    return { className, textFrom, close };
+    return { className, textFrom, close, style: color ? `color: ${color.css}` : undefined };
+  };
+
+  /** `\color[model]{name}`: its CSS colour and where its argument ends; null for a colour it cannot draw. */
+  const colorSwitch = (command: SyntaxNode) => {
+    const args = commandArguments(command);
+    const model = args.find((arg) => arg.optional);
+    const name = args.find((arg) => !arg.optional);
+    const nameRange = name && argumentInner(name.node);
+    const modelRange = model && argumentInner(model.node);
+    if (!name || !nameRange || hasDirectError(command)) return null;
+    const css = cssColor(modelRange ? readNode(modelRange.from, modelRange.to) : null, readNode(nameRange.from, nameRange.to), defs.colors);
+    return css ? { css, end: name.node.to } : null;
+  };
+
+  /**
+   * Where a switch (`\color{red}`) stops applying (`text`: the end of its group or environment's content) and
+   * where its container closes (`end`: an edit to the `}` or `\end` changes it); null at the document's top
+   * level, where it would colour everything after it.
+   */
+  const switchEnd = (node: SyntaxNode) => {
+    for (let parent = node.parent; parent; parent = parent.parent) {
+      if (parent.name === "Group" || parent.name === "NonEmptyGroup" || parent.name === "TextArgument" || parent.name === "ShortTextArgument") {
+        const close = parent.lastChild;
+        return close?.name === "CloseBrace" ? { text: close.from, end: close.to } : null;
+      }
+      if (parent.name === "Content") {
+        const env = parent.parent;
+        return env && env.name !== "DocumentEnvironment" && /Environment$/.test(env.name) ? { text: parent.to, end: env.to } : null;
+      }
+    }
+    return null;
   };
 
   /** A tabular (or a longtable), drawn as a grid when its cells can be read. */
@@ -557,7 +591,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         emit({
           kind: "style", from: node.from, to: node.to, reveal: "touch",
           replaces: [{ from: node.from, to: switched.textFrom }, { from: switched.close.from, to: node.to }],
-          marks: switched.className ? [{ from: switched.textFrom, to: switched.close.from, class: switched.className }] : undefined,
+          marks: switched.className ? [{ from: switched.textFrom, to: switched.close.from, class: switched.className, attributes: switched.style ? { style: switched.style } : undefined }] : undefined,
         });
         return;
       }
@@ -571,7 +605,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const textRange = mandatory[1] && argumentInner(mandatory[1].node);
           if (!colorRange || !textRange || textRange.to <= textRange.from || hasDirectError(node)) return;
           const modelRange = model && argumentInner(model.node);
-          const color = cssColor(modelRange ? read(state, modelRange.from, modelRange.to) : null, read(state, colorRange.from, colorRange.to));
+          const color = cssColor(modelRange ? read(state, modelRange.from, modelRange.to) : null, read(state, colorRange.from, colorRange.to), defs.colors);
           if (!color) return;
           emit({
             kind: "style", from: node.from, to: node.to, reveal: "touch",
@@ -763,10 +797,41 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     },
   });
 
+  /**
+   * `thebibliography` (a `.bbl` written into the file): a References heading for its `\begin` line and
+   * its widest-label argument, its lines hanging from their `[n]` markers (see `\bibitem`).
+   */
+  function bibliography(node: SyntaxNode, formed: NonNullable<ReturnType<typeof wellFormedEnvironment>>): false | undefined {
+    const begin = formed.begin;
+    const nameEnd = begin.getChild("EnvNameGroup")?.to ?? begin.to;
+    const after = read(state, nameEnd, Math.min(doc.length, nameEnd + 200));
+    const spaces = /^\s*/.exec(after)![0].length;
+    const widest = after[spaces] === "{" ? readGroup(after, spaces) : null;
+    const headerEnd = Math.max(begin.to, widest ? nameEnd + widest.end : begin.to);
+    consumed.push([begin.from, headerEnd]);
+    const book = /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
+    const span = aloneOnLines(doc, begin.from, headerEnd);
+    const from = span?.from ?? begin.from;
+    // As for a heading: the widget in the structural layer, the line style in both.
+    emit({
+      kind: "heading", from, to: headerEnd, reveal: "line", wholeLine: true,
+      replaces: structural ? [{ from, to: headerEnd, widget: new MacroHeadingWidget(book ? "Bibliography" : "References", headerEnd - from) }] : [],
+      lines: [{ from, to: headerEnd, class: `cm-vis-heading ${book ? "cm-vis-h0" : "cm-vis-h1"}` }],
+    });
+    if (structural) collapseLine(formed.end, "env-end");
+    if (formed.content) {
+      const first = doc.lineAt(Math.min(doc.length, headerEnd + 1)).number + 1;
+      const last = doc.lineAt(formed.end.from).number - 1;
+      if (last >= first) emit({ kind: "list-body", from: node.from, to: node.to, reveal: "never", replaces: [], lines: [{ from: doc.line(first).from, to: doc.line(last).to, class: "cm-vis-bibliography" }] });
+    }
+    return undefined;
+  }
+
   function environment(node: SyntaxNode): false | undefined {
     const formed = wellFormedEnvironment(node, state);
     if (!formed) return undefined;
     const name = formed.name;
+    if (name === "thebibliography") return bibliography(node, formed);
     const theorem = defs.theorems.get(name);
     const user = defs.environments.get(name);
     const block = TEXT_BLOCKS[name];
@@ -863,6 +928,40 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return undefined;
       }
     }
+    // `\newblock` between a reference's parts: a space, as the default style sets it. A group the parser
+    // read as its argument (`\newblock {\em CoRR}, 2017`) is the reference's text, styled by its switch.
+    if (text === "\\newblock") {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      let textFrom = ctrl.to;
+      while (textFrom < doc.length && / |\t/.test(read(state, textFrom, textFrom + 1))) textFrom++;
+      const switched = argument && argument.node.from === textFrom ? groupSwitch(argument.node) : null;
+      if (switched) {
+        consumed.push([node.from, switched.textFrom]);
+        emit({
+          kind: "style", from: node.from, to: argument!.node.to, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: switched.textFrom }, { from: switched.close.from, to: argument!.node.to }] : [],
+          marks: switched.className ? [{ from: switched.textFrom, to: switched.close.from, class: switched.className, attributes: switched.style ? { style: switched.style } : undefined }] : undefined,
+        });
+        return undefined;
+      }
+      if (structural) emit({ kind: "symbol", from: node.from, to: textFrom, reveal: "touch", replaces: [{ from: node.from, to: textFrom }] });
+      return undefined;
+    }
+    // `\color{red}` colours the rest of its group or environment (a `{\color{red} …}` group is drawn as a whole, above).
+    if (text === "\\color") {
+      const color = colorSwitch(node);
+      const container = color ? switchEnd(node) : null;
+      if (color && container && container.text > color.end) {
+        let textFrom = color.end;
+        while (textFrom < container.text && / |\t/.test(read(state, textFrom, textFrom + 1))) textFrom++;
+        emit({
+          kind: "style", from: node.from, to: container.end, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: textFrom }] : [],
+          marks: [{ from: textFrom, to: container.text, class: "cm-vis-color", attributes: { style: `color: ${color.css}` } }],
+        });
+        return false;
+      }
+    }
     if (!structural) {
       // The style layer only needs the arguments of macros drawn with editable arguments.
       if (ctrl.name === "CtrlSeq" && macroAt(defs, text.slice(1), node.from)) return macroUse(node, text.slice(1));
@@ -898,6 +997,22 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (DEFINITION_COMMANDS.test(text)) return skipDefinition(node);
     const macro = macroAt(defs, name, node.from);
     if (macro) return macroUse(node, name);
+    // `\bibitem[label]{key}` in `thebibliography`: its marker, `[n]` in order or the label it gives.
+    if (text === "\\bibitem") {
+      const keyArgument = args.find((arg) => !arg.optional);
+      let env: SyntaxNode | null = node.parent;
+      while (env && !(env.name === "Environment" && environmentName(env, readNode) === "thebibliography")) env = env.parent;
+      if (env && keyArgument && !hasDirectError(node)) {
+        const optional = args.find((arg) => arg.optional && arg.node.to <= keyArgument.node.from);
+        const range = optional && argumentInner(optional.node);
+        const given = range ? read(state, range.from, range.to).trim().replace(/^\{([\s\S]*)\}$/, "$1") : null;
+        // natbib's author–year labels (`[{Ba et~al.(2016)Ba, Kiros, and Hinton}]`) are not printed in the list.
+        const label = given === null ? `[${bibitemNumber(doc, env.from, node.from)}]` : /\(\s*\d{4}[a-z]?\s*\)/.test(given) ? "" : `[${given}]`;
+        const to = keyArgument.node.to;
+        emit({ kind: "item", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ItemMarkerWidget(label, "number", 1) }] });
+        return false;
+      }
+    }
     // ACL's `\newcite{key}` and other styles' citation commands: chips, cited as the natbib command they act like.
     if (CITE_ALIASES[text]) {
       const keysArgument = args.find((arg) => !arg.optional);
@@ -1147,9 +1262,11 @@ const isSubFloat = (node: SyntaxNode, read: (from: number, to: number) => string
  * labels, comments and layout commands. Text, other commands and sub-figures
  * are not drawn by it, so such a float stays source (its parts render on their own).
  */
-function figureCovered(node: SyntaxNode, state: EditorState, captionMacro: (use: SyntaxNode) => string | null) {
+function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefinitions, captionMacro: (use: SyntaxNode) => string | null) {
   const content = node.getChild("Content");
   if (!content) return true;
+  // algorithm2e's statements are the float's body: covered when they can be read.
+  if (algorithm2eSpec(node, state, defs)) return true;
   const readState = (from: number, to: number) => read(state, from, to);
   let covered = true;
   /** Captions per container (the float, or the panel the caption is in). */
@@ -1209,12 +1326,47 @@ function figureCovered(node: SyntaxNode, state: EditorState, captionMacro: (use:
   return covered;
 }
 
+/**
+ * algorithm2e's `algorithm` (the document loads algorithm2e, and the float holds no `algorithmic`): its lines,
+ * read from the float's body, and whether its caption is on top (the `ruled` styles); null when they cannot be read.
+ */
+function algorithm2eSpec(node: SyntaxNode, state: EditorState, defs: LatexDefinitions) {
+  if (node.name !== "Environment" || !defs.packages.includes("algorithm2e")) return null;
+  const env = environmentName(node, (from, to) => read(state, from, to));
+  const content = node.getChild("Content");
+  if ((env !== "algorithm" && env !== "algorithm*") || !content) return null;
+  const body = read(state, content.from, content.to);
+  if (/\\begin\s*\{algorithmic\}/.test(body)) return null;
+  const options = defs.packageOptions.get("algorithm2e") ?? [];
+  const algorithm = parseAlgorithm2e(body, { numbered: options.includes("linesnumbered"), ends: !options.some((option) => option === "vlined" || option === "noend") });
+  return algorithm && { algorithm, ruled: options.some((option) => option === "ruled" || option === "algoruled") };
+}
+
 /** An `algorithmic` environment's lines, or null when they cannot be read. */
 function algorithmicSpec(node: SyntaxNode, state: EditorState) {
   const content = node.getChild("Content");
   const options = node.getChild("BeginEnv")?.getChild("OptionalArgument");
   const range = options && argumentInner(options);
   return content ? parseAlgorithmic(read(state, content.from, content.to), range ? read(state, range.from, range.to) : null) : null;
+}
+
+/** Where each `\bibitem` of the `thebibliography` at `envFrom` is (outside comments), per document version. */
+const bibitemCache = new WeakMap<Text, Map<number, number[]>>();
+/** The number of the `\bibitem` at `at` in the `thebibliography` at `envFrom`: its place in the list. */
+function bibitemNumber(doc: Text, envFrom: number, at: number) {
+  let byEnvironment = bibitemCache.get(doc);
+  if (!byEnvironment) bibitemCache.set(doc, byEnvironment = new Map());
+  let starts = byEnvironment.get(envFrom);
+  if (!starts) {
+    const text = doc.sliceString(envFrom);
+    const end = text.search(/\\end\s*\{thebibliography\}/);
+    const body = (end < 0 ? text : text.slice(0, end)).replace(/(^|[^\\])%[^\n]*/g, (comment, before: string) => before + " ".repeat(comment.length - before.length));
+    starts = [...body.matchAll(/\\bibitem(?![A-Za-z@])/g)].map((match) => envFrom + match.index);
+    byEnvironment.set(envFrom, starts);
+  }
+  let count = 0;
+  for (const start of starts) { if (start > at) break; count++; }
+  return count;
 }
 
 /** etoolbox toggles as the document sets them (`\togglefalse{hq}`), per document version: unset is false. */
@@ -1341,8 +1493,9 @@ function captionSegments(own: Collected, floatFrom: number): FigureContent[] {
  * algorithm, or at a `\captionof` outside a panel.
  */
 function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: LatexDefinitions, expand: (text: string) => string | null, captionMacro: (use: SyntaxNode) => string | null, kind: FigureContent["kind"]): FigureSpec | null {
-  if (!figureCovered(node, state, captionMacro)) return null;
+  if (!figureCovered(node, state, defs, captionMacro)) return null;
   const readState = (from: number, to: number) => read(state, from, to);
+  const algorithm2e = algorithm2eSpec(node, state, defs);
   const isPanel = (candidate: SyntaxNode) => (candidate.name === "Environment" && environmentName(candidate, readState) === "minipage") || isSubFloat(candidate, readState);
   let valid = true;
 
@@ -1459,6 +1612,12 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     });
     content.numberOffset = numberAt - node.from;
     content.captionAbove = content.caption !== null && content.captionPos < content.firstContent;
+    // algorithm2e sets its caption on top in the ruled styles and below otherwise, wherever it is written.
+    if (algorithm2e && root === node) {
+      content.algorithm = algorithm2e.algorithm;
+      content.kind = "algorithm";
+      content.captionAbove = content.caption !== null && algorithm2e.ruled;
+    }
     if (!content.tabulars!.length) content.tabulars = undefined;
     if (!content.drawings!.length) content.drawings = undefined;
     return content;

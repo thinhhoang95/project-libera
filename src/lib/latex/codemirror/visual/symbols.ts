@@ -45,6 +45,8 @@ export const FONT_SWITCHES: Record<string, string> = {
   "\\em": "cm-vis-em", "\\tt": "cm-vis-tt", "\\ttfamily": "cm-vis-tt", "\\sc": "cm-vis-sc", "\\scshape": "cm-vis-sc",
   "\\sf": "cm-vis-sf", "\\sffamily": "cm-vis-sf", "\\mdseries": "cm-vis-md",
   "\\rm": "cm-vis-rm", "\\rmfamily": "cm-vis-rm", "\\upshape": "cm-vis-rm", "\\normalfont": "cm-vis-rm",
+  // Bold formulas (`\boldmath$3.3\cdot 10^{18}$` in a results table).
+  "\\boldmath": "cm-vis-b",
 };
 
 /** Font size switches (`{\small 1}`): the editor keeps one size, so they draw nothing. */
@@ -68,10 +70,22 @@ export function todayText() {
   return new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 }
 
-/** xcolor's base names, and the `HTML` and `rgb` models, as a CSS colour; null for anything else. */
-export function cssColor(model: string | null, value: string): string | null {
+/**
+ * xcolor's base names, the document's own (`\definecolor`, `\colorlet`, in `colors`), and the `HTML`, `rgb`,
+ * `RGB`, `gray` and `cmyk` models, as a CSS colour; null for anything else.
+ */
+export function cssColor(model: string | null, value: string, colors?: ReadonlyMap<string, { model: string; value: string }>, depth = 0): string | null {
   const trimmed = value.trim();
   if (model === "HTML" && /^[0-9A-Fa-f]{6}$/.test(trimmed)) return `#${trimmed}`;
+  if (model === "gray") {
+    const level = Number(trimmed);
+    return trimmed && level >= 0 && level <= 1 ? `rgb(${Array(3).fill(Math.round(level * 255)).join(",")})` : null;
+  }
+  if (model === "cmyk") {
+    const [c, m, y, k] = trimmed.split(",").map(Number);
+    if ([c, m, y, k].some((part) => !(part >= 0 && part <= 1))) return null;
+    return `rgb(${[c, m, y].map((part) => Math.round(255 * (1 - part) * (1 - k))).join(",")})`;
+  }
   if (model === "rgb") {
     const parts = trimmed.split(",").map(Number);
     if (parts.length === 3 && parts.every((part) => part >= 0 && part <= 1)) return `rgb(${parts.map((part) => Math.round(part * 255)).join(",")})`;
@@ -89,6 +103,8 @@ export function cssColor(model: string | null, value: string): string | null {
     orange: "#ea580c", pink: "#db2777", purple: "#7e22ce", teal: "#0d9488", violet: "#7c3aed",
   };
   // `red!50` and other mixes are drawn as their base colour.
-  const base = /^([a-z]+)(?:!\d+(?:![a-z]+)?)?$/.exec(trimmed)?.[1];
+  const base = /^([A-Za-z][\w.-]*)(?:!\d+(?:![A-Za-z][\w.-]*)?)?$/.exec(trimmed)?.[1];
+  const own = base ? colors?.get(base) : undefined;
+  if (own && depth < 8) return cssColor(own.model || null, own.value, colors, depth + 1);
   return base && named[base] ? named[base] : null;
 }
