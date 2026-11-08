@@ -333,7 +333,7 @@ The two engines have different semantics (Markdown bodies, hex colours, list and
 - **Trees that grow on their own.** CodeMirror parses large documents in time slices and later updates the tree without a document change. The field compares `syntaxTree(tr.startState)` with `syntaxTree(tr.state)` and builds the newly parsed range.
 - **Long documents load in pieces.** Over about 60,000 characters, the first build covers the viewport and 12,000 characters around it (with `ensureSyntaxTree` and a time budget); the rest is built 12,000 characters at a time, outward from the viewport, in `requestIdleCallback`. Each piece is an effect, not a document change. A region not yet built shows source, and scrolling into one builds it first.
 - **Formulas render once.** KaTeX output is cached by (LaTeX after expansion, display mode), and a formula widget is redrawn only when its own source or a macro it uses changes.
-- **Budgets**, checked by `npm run bench:latex-visual` on a 500 KB thesis: under 1 ms median and 4 ms at the 95th percentile per keystroke for decoration work; under 30 ms for the first viewport; no idle piece over 8 ms.
+- **Budgets**, checked by `npm run bench:latex-visual` on a 500 KB thesis: under 1 ms median and 4 ms at the 95th percentile per keystroke for decoration work; under 30 ms for the first viewport; no idle piece over 12 ms.
 
 ### 9. Collaboration, suggestions and review
 

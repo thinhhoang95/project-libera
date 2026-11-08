@@ -2,9 +2,10 @@ import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { Facet, RangeSet, RangeValue, StateEffect, StateField, type ChangeDesc, type EditorState, type Range, type Transaction } from "@codemirror/state";
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
+import { macroAt } from "../../macros/definitions";
 import { environmentName } from "../../macros/numbering";
 import { bodyStartIn, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
-import { walkConstructs, type Construct, type RevealPolicy } from "./walk";
+import { macroRegionsFor, walkConstructs, type Construct, type RevealPolicy } from "./walk";
 import { preambleSummary } from "./widgets";
 
 /* The structural layer (docs/latex-visual-editor-plan.md §4–5, §8): hidden
@@ -167,8 +168,18 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
           const defs = visualDefinitions(state);
           rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name));
         }
+        // A use of the document's macros is drawn from its arguments: an edit in one (a brace that now closes it) redraws it.
+        if (!rendered && node.name === "UnknownCommand") {
+          const ctrl = node.firstChild;
+          rendered = !!ctrl && ctrl.name === "CtrlSeq" && !!macroAt(visualDefinitions(state), state.doc.sliceString(ctrl.from + 1, ctrl.to), node.from);
+        }
         if (rendered) { low = Math.min(low, node.from); high = Math.max(high, node.to); }
       }
+    }
+    // An environment opened and closed by macros (`\beq … \eeq`) is drawn whole: so is it rebuilt.
+    for (const region of macroRegionsFor(state.doc, visualDefinitions(state))) {
+      if (region.from >= high) break;
+      if (region.to > low) { low = Math.min(low, region.from); high = Math.max(high, region.to); }
     }
     const next = lineBounds(state, low, high);
     if (next.from === range.from && next.to === range.to) break;

@@ -37,6 +37,18 @@ export function readAccent(text: string): { char: string; length: number } | nul
   return { char: (base + mark).normalize("NFC"), length: match[0].length };
 }
 
+/** Font size switches (`{\small 1}`): the editor keeps one size, so they draw nothing. */
+export const SIZE_COMMAND = /^\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;
+
+/** `\textcircled{1}` as ①: digits 0–20 and letters; null for anything else. Size switches inside are ignored. */
+export function circledText(inner: string): string | null {
+  const text = inner.replace(/\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)(?![A-Za-z])/g, "").replace(/[{}\s]/g, "");
+  if (/^(?:1\d|20|\d)$/.test(text)) return text === "0" ? "⓪" : String.fromCodePoint(0x2460 + Number(text) - 1);
+  if (/^[a-z]$/.test(text)) return String.fromCodePoint(0x24d0 + text.charCodeAt(0) - 97);
+  if (/^[A-Z]$/.test(text)) return String.fromCodePoint(0x24b6 + text.charCodeAt(0) - 65);
+  return null;
+}
+
 /** Dashes and TeX quotes in running text, with the characters they typeset. */
 export const TEXT_LIGATURES = /---|--|``|''/g;
 export const LIGATURE_CHARS: Record<string, string> = { "---": "—", "--": "–", "``": "“", "''": "”" };

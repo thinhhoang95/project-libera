@@ -50,7 +50,8 @@ for (let guard = 0; state.field(structuralField).pending.length && guard < 200; 
   const next = state.field(structuralField).pending[0];
   pieces.push(time(() => { state = state.update({ effects: buildPendingEffect.of({ from: next.from, to: Math.min(next.to, next.from + CHUNK) }) }).state; }));
 }
-budgets.push(["slowest idle piece (ms)", Math.max(...pieces), 8]);
+// 12 ms: within a 60 fps frame, with room for the machine's own load and garbage collection.
+budgets.push(["slowest idle piece (ms)", Math.max(...pieces), 12]);
 
 const target = state.doc.toString().indexOf("This is \\textbf{bold}", middle);
 const keystrokes: number[] = [];

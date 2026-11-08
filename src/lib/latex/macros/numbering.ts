@@ -1,6 +1,12 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
+import { parser } from "codemirror-lang-latex/src/latex.mjs";
 import { hashString } from "../../macros/core";
-import { macroAt, type LatexDefinitions } from "./definitions";
+import { definitionExtentAt, macroAt, type LatexDefinitions } from "./definitions";
+import { expandLatexMacros, expandLatexMacroUse } from "./expand";
+import { isPairMacro, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, usesStructureMacro } from "./structure";
+
+/** Definitions whose body is not run where it is written: nothing in it is counted. */
+const DEFINITION_START = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|[gex]?def|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment)(?![A-Za-z@])/;
 
 /* Numbers as the PDF will show them (docs/latex-visual-editor-plan.md §7.7):
  * one pass over the headings, equations, figures, tables, theorems,
@@ -74,6 +80,11 @@ export function environmentName(node: SyntaxNode, read: Read) {
   const group = begin?.getChild("EnvNameGroup");
   if (!group) return null;
   return read(group.from + 1, group.to - 1).trim();
+}
+
+/** `longtable` and `xltabular`: tables that are their own float, with a caption and head and foot rows. */
+export function isLongTable(node: SyntaxNode, read: Read) {
+  return /^(?:longtable|xltabular)\*?$/.test(environmentName(node, read) ?? "");
 }
 
 /** Splits an align-like body into rows at `\\` outside braces and nested environments. */
@@ -313,10 +324,73 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     }
   };
 
+  // Macros that write structure (`\mysec{…}` for `\section{…}`, `\beq … \eeq`): their expansion is
+  // parsed and numbered where the macro is used. Nothing here runs for a document without them.
+  const structureNames = structureMacroNames(defs);
+  const mainRead = read;
+  const regions = structureNames.size ? macroEnvironmentRegions(() => mainRead(0, tree.length), defs) : [];
+  /** The macro use whose expansion is being numbered: its expansion's constructs sit inside the use's ancestors. */
+  let macroHost: SyntaxNode | null = null;
+  /** Nodes starting before this are already numbered (a macro's arguments, a macro environment, a definition). */
+  let skipUntil = -1;
+  /** A node's ancestors, continuing past an expansion's root into the macro use's. */
+  function* ancestors(node: SyntaxNode): Generator<[SyntaxNode, boolean]> {
+    for (let parent = node.parent; parent; parent = parent.parent) yield [parent, false];
+    if (macroHost) for (let parent = macroHost.parent; parent; parent = parent.parent) yield [parent, true];
+  }
+  /** Entries and targets an expansion numbers at a construct of the document (its figure): not moved to the macro use. */
+  const fixed = new WeakSet<object>();
+  const numberExpansion = (host: SyntaxNode, text: string) => {
+    const entryCount = entries.length;
+    const labelsBefore = new Map(labels);
+    const targetBefore = globalTarget;
+    const scopeTargets = scopes.map((scope) => scope.target);
+    const savedRead = read;
+    read = (from, to) => text.slice(from, to);
+    macroHost = host;
+    skipUntil = -1;
+    try {
+      parser.parse(text).iterate(visitor);
+    } finally {
+      read = savedRead;
+      macroHost = null;
+      // What the expansion numbered is at the macro use.
+      const moved = <T extends { pos: number }>(value: T) => (fixed.has(value) ? value : { ...value, pos: host.from });
+      for (let i = entryCount; i < entries.length; i++) entries[i] = moved(entries[i]);
+      for (const [key, target] of labels) if (labelsBefore.get(key) !== target) labels.set(key, moved(target));
+      if (globalTarget && globalTarget !== targetBefore) globalTarget = moved(globalTarget);
+      scopes.forEach((scope, index) => { if (scope.target && scope.target !== scopeTargets[index]) scope.target = moved(scope.target); });
+    }
+  };
+  /** Numbers a use of a macro that writes structure; false when `node` is not one. */
+  const numberMacroUse = (node: SyntaxNode, command: string) => {
+    if (macroHost || includeDepth || !structureNames.has(command.slice(1)) || !macroAt(defs, command.slice(1), node.from)) return false;
+    const region = macroEnvironmentRegionAt(regions, node.from);
+    if (region) {
+      const expanded = expandLatexMacros(read(region.from, region.to), defs, { mode: "text", pos: region.from });
+      if (expanded.ok) numberExpansion(node, expanded.text);
+      skipUntil = region.to;
+      return true;
+    }
+    // Half of a pair without the other half: an environment that is never closed is not numbered.
+    if (isPairMacro(defs, command.slice(1))) return true;
+    const use = expandLatexMacroUse(read(node.from, node.from + 4000), defs, { mode: "text", pos: node.from });
+    if (!use) return false;
+    numberExpansion(node, use.text);
+    skipUntil = node.from + use.length;
+    return true;
+  };
+
   const visitor: Parameters<Tree["iterate"]>[0] = {
     enter(ref) {
+      if (ref.from < skipUntil) return false;
       const name = ref.name;
       const node = ref.node;
+      // A definition's body is not run where it is written: `\newcommand{\fn}[1]{\footnote{#1}}` is no footnote.
+      if (!macroHost && !includeDepth && ref.from >= 0) {
+        const extent = definitionExtentAt(defs, ref.from);
+        if (extent && ref.to <= extent.to && DEFINITION_START.test(read(ref.from, ref.from + 40))) { skipUntil = extent.to; return false; }
+      }
       if (name === "Comment" || name === "VerbatimEnvironment" || name === "TikzPictureEnvironment") return false;
       if (name === "Input" || name === "Include") { numberIncluded(node); return false; }
       if (name in SECTION_LEVELS) {
@@ -341,6 +415,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const ctrl = node.firstChild;
         if (!ctrl || ctrl.name !== "CtrlSeq") return;
         const command = read(ctrl.from, ctrl.to);
+        if (structureNames.size && numberMacroUse(node, command)) return false;
         if (command === "\\appendix") {
           appendix = true;
           const top = chapters ? "chapter" : "section";
@@ -391,7 +466,12 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const starred = env.endsWith("*");
         const content = node.getChild("Content");
         // Commented-out \tag, \label and \nonumber do nothing.
-        const body = stripTexComments(content ? read(content.from, content.to) : "");
+        let body = stripTexComments(content ? read(content.from, content.to) : "");
+        // Row breaks, labels and tags written through macros (`\newcommand{\nl}{\\}`) count as written.
+        if (structureNames.size && usesStructureMacro(body, defs)) {
+          const expanded = expandLatexMacros(body, defs, { mode: "math", pos: node.from });
+          if (expanded.ok) body = stripTexComments(expanded.text);
+        }
         if (name === "EquationEnvironment") {
           let number: string | null = null;
           const tag = /\\tag\*?\s*\{([^}]*)\}/.exec(body);
@@ -421,16 +501,32 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         scopes.push({ node: node.from, target: currentTarget() });
         return;
       }
+      if (name === "TabularEnvironment" && isLongTable(node, read)) {
+        // A longtable's \caption numbers it as a table; its \label refers to it.
+        scopes.push({ node: node.from, target: currentTarget() });
+        return;
+      }
       if (name === "Caption") {
-        for (let parent = node.parent; parent; parent = parent.parent) {
+        // Through `ancestors`, a caption a macro writes belongs to the figure the macro is used in.
+        for (const [parent, outer] of ancestors(node)) {
+          // A figure around the macro use is in the document: read there, and its number stays at it.
+          const readParent = outer ? mainRead : read;
+          const keep = <T extends object>(value: T) => { if (outer) fixed.add(value); return value; };
+          if (parent.name === "TabularEnvironment" && isLongTable(parent, readParent)) {
+            step("table");
+            const number = format("table");
+            entries.push(keep({ pos: parent.from, kind: "table", number }));
+            setTarget(keep({ number, kind: "table", pos: parent.from }));
+            return;
+          }
           if (parent.name !== "FigureEnvironment" && parent.name !== "TableEnvironment") continue;
-          const env = environmentName(parent, read) ?? "";
+          const env = environmentName(parent, readParent) ?? "";
           if (env === "subfigure" || env === "subtable") return false;
           const kind: NumberingKind = parent.name === "FigureEnvironment" ? "figure" : "table";
           step(kind);
           const number = format(kind);
-          entries.push({ pos: parent.from, kind, number });
-          setTarget({ number, kind, pos: parent.from });
+          entries.push(keep({ pos: parent.from, kind, number }));
+          setTarget(keep({ number, kind, pos: parent.from }));
           // A \label inside the caption refers to the figure too.
           return;
         }
@@ -491,7 +587,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     },
     leave(ref) {
       const name = ref.name;
-      if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment" || name === "FootnoteCommand" || name === "EndnoteCommand") {
+      if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment" || name === "FootnoteCommand" || name === "EndnoteCommand" || name === "TabularEnvironment") {
         if (scopes.length && scopes[scopes.length - 1].node === ref.from) scopes.pop();
         if (name === "ListEnvironment") lists.pop();
         const group = subequations[subequations.length - 1];

@@ -6,7 +6,7 @@ import { expandLatexMacros } from "../../macros/expand";
 import type { LatexNumbering } from "../../macros/numbering";
 import { renderKatex } from "./math-render";
 import { citationText, referenceChipText, type BibLookup } from "./references";
-import { CONTROL_SYMBOLS, cssColor, LIGATURE_CHARS, readAccent, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
+import { circledText, CONTROL_SYMBOLS, cssColor, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 
 /* A static renderer for short LaTeX: captions, macro expansions, theorem
  * names, table cells and the title block (docs/latex-visual-editor-plan.md
@@ -207,6 +207,13 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         return;
       }
       if (text === "\\today") { parent.appendChild(document.createTextNode(todayText())); return; }
+      if (SIZE_COMMAND.test(text) && !commandArguments(node).length) return;
+      if (text === "\\textcircled") {
+        const arg = commandArguments(node)[0];
+        const inner = arg && !arg.optional ? argumentInner(arg.node) : null;
+        const char = inner ? circledText(read(inner.from, inner.to)) : null;
+        if (char) { parent.appendChild(document.createTextNode(char)); return; }
+      }
       if (text === "\\and" || text === "\\And" || text === "\\AND") { parent.appendChild(element("span", "cm-vis-author-sep")); return; }
       if (text === "\\thanks") { parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" })); return; }
       if (text === "\\footnotemark") { parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" })); return; }

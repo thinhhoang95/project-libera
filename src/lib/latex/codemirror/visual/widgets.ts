@@ -273,6 +273,126 @@ export class MacroWidget extends VisualWidget {
   ignoreEvent() { return true; }
 }
 
+/** A heading written by one of the document's macros (`\mysec{Title}` for `\section{Title}`): its number and title. */
+export class MacroHeadingWidget extends VisualWidget {
+  constructor(readonly title: string, readonly length: number) { super(`${title}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-macro-heading");
+    const number = el("span", "cm-vis-heading-number");
+    const title = el("span");
+    dom.append(number, title);
+    const render = (target: EditorView) => {
+      const pos = widgetPos(target, dom);
+      const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "section");
+      number.textContent = entry?.number ? `${entry.number} ` : "";
+      title.replaceChildren(renderLatexFragment(this.title, widgetContext(target, dom)));
+    };
+    render(view);
+    refreshable(dom, view, render);
+    revealOnClick(view, dom, this.length);
+    return dom;
+  }
+  ignoreEvent() { return true; }
+}
+
+/** A footnote written by one of the document's macros (`\fn{text}`): its number and its text. */
+export class MacroFootnoteWidget extends VisualWidget {
+  constructor(readonly text: string, readonly length: number) { super(`${text}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-macro-footnote");
+    const mark = el("sup", "cm-vis-footnote-mark");
+    const text = el("span", "cm-vis-footnote");
+    dom.append(mark, text);
+    const render = (target: EditorView) => {
+      const pos = widgetPos(target, dom);
+      const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "footnote");
+      mark.textContent = entry?.number ?? "*";
+      text.replaceChildren(renderLatexFragment(this.text, widgetContext(target, dom)));
+    };
+    render(view);
+    refreshable(dom, view, render);
+    revealOnClick(view, dom, this.length);
+    return dom;
+  }
+  ignoreEvent() { return true; }
+}
+
+/** What an environment written through the document's macros shows (see `ExpandedEnvironmentWidget`). */
+export type ExpandedEnvironmentSpec = {
+  /** A header as the environment's own: a theorem's "Theorem 2", "Proof", or a user environment's begin code. */
+  header: { variant: "theorem" | "proof" | "abstract" | "user"; title: string; note: string | null; numbered: boolean } | null;
+  /** The body's LaTeX, or a list's items. */
+  body: string;
+  items: { ordered: boolean; items: string[] } | null;
+  /** The body's style class (a theorem style, a quote). */
+  className: string | null;
+  length: number;
+};
+
+/**
+ * An environment written through the document's macros (`\thm{…}` for
+ * `\begin{theorem}…\end{theorem}`, or `\bl … \el` around a list), drawn
+ * from its expansion. It is not edited in place: a click shows its source.
+ */
+export class ExpandedEnvironmentWidget extends VisualWidget {
+  constructor(readonly spec: ExpandedEnvironmentSpec) { super(JSON.stringify(spec)); }
+  toDOM(view: EditorView) {
+    const spec = this.spec;
+    const dom = el("div", "cm-vis-macro-env");
+    const render = (target: EditorView) => {
+      const context = widgetContext(target, dom);
+      dom.replaceChildren();
+      const body = el("div", `cm-vis-macro-env-body${spec.className ? ` ${spec.className}` : ""}`);
+      if (spec.header) {
+        // As EnvironmentHeaderWidget draws it, numbered from this widget's position.
+        const { variant, title, note, numbered } = spec.header;
+        const header = el("span", `cm-vis-env-header cm-vis-env-header-${variant}`);
+        if (variant === "user") header.append(renderLatexFragment(title, context));
+        else {
+          const pos = numbered ? widgetPos(target, dom) : null;
+          const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "theorem");
+          const head = el("span", "cm-vis-env-title");
+          head.append(renderLatexFragment(title, context), document.createTextNode(entry?.number ? ` ${entry.number}` : ""));
+          header.append(head);
+          if (note !== null) {
+            const noteElement = el("span", "cm-vis-env-note");
+            noteElement.append(document.createTextNode(" ("), renderLatexFragment(note, context), document.createTextNode(")"));
+            header.append(noteElement);
+          }
+          if (variant !== "abstract") header.append(document.createTextNode(". "));
+        }
+        body.append(header);
+      }
+      if (spec.items) {
+        const list = el(spec.items.ordered ? "ol" : "ul", "cm-vis-macro-env-list");
+        for (const item of spec.items.items) {
+          const li = el("li");
+          li.append(renderLatexFragment(item, context));
+          list.append(li);
+        }
+        body.append(list);
+      } else body.append(renderLatexFragment(spec.body, context));
+      dom.append(body);
+    };
+    render(view);
+    refreshable(dom, view, render);
+    revealOnClick(view, dom, spec.length);
+    return dom;
+  }
+  ignoreEvent() { return true; }
+  get estimatedHeight() { return 60; }
+}
+
+/** A click on a widget drawn from a macro's expansion shows the macro's source. */
+function revealOnClick(view: EditorView, dom: HTMLElement, length: number) {
+  dom.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const from = widgetPos(view, dom);
+    if (from !== null) revealSourceAt(view, from, from + length);
+  });
+}
+
 /** A fixed part of a macro whose arguments stay editable ("[[" and "]]" of `\todo{…}`). */
 export class MacroPieceWidget extends VisualWidget {
   constructor(readonly html: string, readonly name: string) { super(`${name}\u0000${html}`); }
@@ -407,9 +527,12 @@ export type FigureSpec = {
   /** Where the environment starts relative to the widget (indentation before it is replaced too). */
   numberOffset: number;
   length: number;
-  /** For tables: the tabular sources inside, with their offsets relative to the widget. */
-  tabulars?: Array<{ source: string; offset: number }>;
+  /** For tables: the tabular sources inside, with their offsets relative to the widget.
+   * `readOnly`: drawn from a reading of the source (a longtable's rows), not cell by cell from it. */
+  tabulars?: Array<{ source: string; offset: number; readOnly?: boolean }>;
   captionAbove?: boolean;
+  /** Drawings the editor does not draw (TikZ, `\input` files): their file name, or "" for an inline picture. */
+  drawings?: string[];
 };
 
 function captionElement(view: EditorView, spec: FigureSpec) {
@@ -435,10 +558,17 @@ export class FigureWidget extends VisualWidget {
       renderImage(frame, view, image.path);
       body.append(frame);
     }
+    for (const drawing of spec.drawings ?? []) {
+      // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is.
+      const placeholder = el("span", "cm-vis-figure-drawing");
+      placeholder.append(el("span", "cm-vis-figure-drawing-name", drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
+      placeholder.append(el("span", "cm-vis-figure-drawing-note", "Drawn in the PDF"));
+      body.append(placeholder);
+    }
     for (const tabular of spec.tabulars ?? []) body.append(renderTableGrid(view, tabular.source, () => {
       const pos = widgetPos(view, dom);
       return pos === null ? null : pos + tabular.offset;
-    }));
+    }, tabular.readOnly ? spec.length - tabular.offset : undefined));
     if (spec.caption !== null && spec.captionAbove) dom.append(caption, body); else dom.append(body);
     if (spec.caption !== null && !spec.captionAbove) dom.append(caption);
     refreshable(dom, view, (target) => {
@@ -487,10 +617,18 @@ export function isEditingCell(td: HTMLElement) {
 }
 
 /** A tabular as a grid; cells render their LaTeX, and become editable through table-edit.ts. */
-export function renderTableGrid(view: EditorView, source: string, start: () => number | null) {
+/**
+ * The grid of a tabular. With `readOnlyLength`, the source is a reading of the
+ * document rather than a slice of it (a longtable's rows): cells are not
+ * edited, and a click shows the source of the `readOnlyLength` characters
+ * from `start`.
+ */
+export function renderTableGrid(view: EditorView, source: string, start: () => number | null, readOnlyLength?: number) {
   const model = parseTabular(source, 0);
   const table = el("table", "cm-vis-table") as TableElement;
-  table.liberaTableStart = start;
+  const readOnly = readOnlyLength !== undefined;
+  if (readOnly) table.dataset.readonly = "true";
+  else table.liberaTableStart = start;
   if (!model) { table.append(el("caption", "cm-vis-raw", source)); return table; }
   const context = fragmentContext(view);
   /** Cells whose LaTeX can show numbers, citations or macros, redrawn when those change. */
@@ -498,7 +636,10 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   const aligns = model.columns.map((column) => (column === "c" ? "center" : column === "r" ? "right" : "left"));
   model.rows.forEach((row, rowIndex) => {
     const tr = el("tr", "cm-vis-table-row");
-    if (row.rulesBefore.length) tr.classList.add(row.rulesBefore.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
+    // `\addlinespace` is space, not a line.
+    const lines = row.rulesBefore.filter((rule) => !/^\\addlinespace/.test(rule));
+    if (lines.length) tr.classList.add(lines.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
+    if (lines.length < row.rulesBefore.length) tr.classList.add("cm-vis-row-spaced");
     let column = 0;
     row.cells.forEach((cell, cellIndex) => {
       const td = el("td", "cm-vis-table-cell") as HTMLTableCellElement;
@@ -514,12 +655,17 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
         if (event.button !== 0 || isEditingCell(td)) return;
         event.preventDefault();
         event.stopPropagation();
+        if (readOnly) {
+          const base = start();
+          if (base !== null) revealSourceAt(view, base, base + readOnlyLength);
+          return;
+        }
         if (tableHooks && !cell.sourceOnly && !event.altKey && view.state.facet(visualConfig).editable() && !view.state.readOnly) { tableHooks.edit(view, td, start, rowIndex, cellIndex); return; }
         const base = start();
         if (base !== null) revealSourceAt(view, base + cell.from, base + cell.to + 1);
       });
       td.addEventListener("contextmenu", (event) => {
-        if (!tableHooks || view.state.readOnly || !view.state.facet(visualConfig).editable()) return;
+        if (readOnly || !tableHooks || view.state.readOnly || !view.state.facet(visualConfig).editable()) return;
         event.preventDefault();
         event.stopPropagation();
         tableHooks.menu(view, event, start, rowIndex, cellIndex);
@@ -541,7 +687,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
     });
   }
   // A cell that was being edited when the table was redrawn (a co-author's edit) carries on in the new one.
-  queueMicrotask(() => { if (table.isConnected) tableHooks?.adopt?.(view, table); });
+  if (!readOnly) queueMicrotask(() => { if (table.isConnected) tableHooks?.adopt?.(view, table); });
   return table;
 }
 
@@ -561,13 +707,16 @@ export function editFirstCell(view: EditorView, from: number, to: number) {
 
 /** A tabular outside a table environment. */
 export class TableWidget extends VisualWidget {
-  constructor(readonly source: string, readonly offset: number, readonly length: number) { super(`${offset}\u0000${source}`); }
+  /** `readOnly`: the source is a reading of the document (rows written through its macros), not a slice of it. */
+  constructor(readonly source: string, readonly offset: number, readonly length: number, readonly readOnly = false) {
+    super(`${offset}\u0000${readOnly ? 1 : 0}\u0000${source}`);
+  }
   toDOM(view: EditorView) {
     const dom = el("div", "cm-vis-tabular");
     dom.append(renderTableGrid(view, this.source, () => {
       const pos = widgetPos(view, dom);
       return pos === null ? null : pos + this.offset;
-    }));
+    }, this.readOnly ? this.length - this.offset : undefined));
     dom.addEventListener("mousedown", (event) => {
       // A click in the cell being edited moves its caret.
       if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true]")) return;

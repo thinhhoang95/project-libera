@@ -29,7 +29,8 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "Element", 
 for (const key of ["getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const) Object.defineProperty(globalThis, key, { value: (dom.window[key] as (...args: never[]) => unknown).bind(dom.window), configurable: true });
 after(() => dom.window.close());
 
-const SAMPLE = readFileSync(path.join(__dirname, "fixtures/latex/visual-sample.tex"), "utf8");
+// LF, as the editor holds it: a Windows checkout may have written the fixture with CRLF.
+const SAMPLE = readFileSync(path.join(__dirname, "fixtures/latex/visual-sample.tex"), "utf8").replace(/\r\n/g, "\n");
 
 function extensions(extra: Extension[] = []) {
   return [history(), latexLanguageSupport("main.tex", "tree"), latexVisualState(), latexVisualMode({ documentPath: "nb/main.tex" }), ...extra];
@@ -128,6 +129,100 @@ Extending the work of \cite{fearing2011evaluating}, and \citep{other}.
   view.destroy();
   const aux = { labels: {}, citations: { fearing2011evaluating: { label: "Fearing et al., 2011", authors: "Fearing et al.", year: "2011" } } };
   assert.equal(citationText({ command: "\\textcite", keys: ["fearing2011evaluating"] }, aux, () => null), "Fearing et al. (2011)");
+});
+
+test("a longtable is drawn as a numbered table: first head, body and last foot, with rows written through macros expanded", async () => {
+  const doc = String.raw`\documentclass{article}
+\begin{document}
+\newcommand{\nrow}[2]{#1 & #2\\[4pt]%
+}
+\newcommand{\nsection}[1]{\addlinespace[5pt]\midrule\multicolumn{2}{@{}l}{\textit{#1}}\\*\addlinespace[4pt]}
+\begin{longtable}{@{}p{0.2\linewidth}@{\hspace{10pt}}>{\raggedright\arraybackslash}p{0.7\linewidth}@{}}
+  \caption{Notation.}\label{tab:notation}\\
+  \toprule
+  Symbol & Description\\
+  \midrule
+  \endfirsthead
+  \multicolumn{2}{c}{(continued)}\\
+  \endhead
+  \multicolumn{2}{r}{Continued on next page}\\
+  \endfoot
+  \bottomrule
+  \endlastfoot
+  \nsection{Sets}
+  \nrow{$F$}{Flights.}
+  \nrow{$R$}
+    {Windows.}
+\end{longtable}
+See Table~\ref{tab:notation}.
+\end{document}
+`;
+  const view = mount(doc);
+  number(view);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(kinds(view.state).table, 1);
+  const figure = view.contentDOM.querySelector(".cm-vis-figure-table")!;
+  assert.equal(figure.querySelector(".cm-vis-caption")?.textContent, "Table 1: Notation.");
+  const rows = [...figure.querySelectorAll("tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent?.trim()));
+  // The repeated head and the page foot are not drawn; the section row spans both columns.
+  assert.deepEqual(rows, [["Symbol", "Description"], ["Sets"], ["F", "Flights."], ["R", "Windows."]]);
+  assert.equal(figure.querySelector("table")?.dataset.readonly, "true");
+  // \addlinespace is space, not a rule; the \midrule before the section is a rule.
+  const sectionRow = figure.querySelectorAll("tr")[1];
+  assert.ok(sectionRow.classList.contains("cm-vis-rule") && sectionRow.classList.contains("cm-vis-row-spaced"));
+  assert.ok(!figure.querySelectorAll("tr")[2].classList.contains("cm-vis-rule"), "\\addlinespace draws no line");
+  assert.equal(stateReferenceText(view.state, "\\ref", ["tab:notation"]), "1");
+  // A click on a cell shows the longtable's source.
+  figure.querySelectorAll("td")[2].dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  assert.ok(revealedKinds(view.state).includes("table"));
+  view.destroy();
+});
+
+test("a tabularx is a grid; with rows written through macros it is drawn from their expansion", () => {
+  const doc = String.raw`\documentclass{article}
+\begin{document}
+\newcommand{\trow}[2]{#1 & #2\\}
+\begin{tabularx}{\linewidth}{lX}
+Name & Description \\
+a & first \\
+\end{tabularx}
+
+\begin{tabularx}{\linewidth}{lX}
+\trow{$b$}{second}
+\trow{$c$}{third}
+\end{tabularx}
+\end{document}
+`;
+  const view = mount(doc);
+  const tables = [...view.contentDOM.querySelectorAll(".cm-vis-tabular table")] as HTMLElement[];
+  assert.equal(tables.length, 2);
+  assert.equal(tables[0].dataset.readonly, undefined, "its own cells are edited in place");
+  assert.equal(tables[1].dataset.readonly, "true");
+  assert.deepEqual([...tables[1].querySelectorAll("tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent?.trim())), [["b", "second"], ["c", "third"]]);
+  view.destroy();
+});
+
+test("a figure that draws another file (\\resizebox{…}{\\input{fig}}) shows its caption and a placeholder; \\textcircled is circled", () => {
+  const doc = String.raw`\documentclass{article}
+\begin{document}
+\begin{figure}[t]
+  \centering
+  \resizebox{\linewidth}{!}{\input{fig_co_setting}}
+  \caption{The CO scheme. \textcircled{\small 1} Commit. \textcircled{\small 2} Jitter.}
+  \label{fig:co}
+\end{figure}
+Steps \textcircled{3} and {\small small} text.
+\end{document}
+`;
+  const view = mount(doc);
+  const figure = view.contentDOM.querySelector(".cm-vis-figure-figure")!;
+  assert.ok(figure, "the figure is drawn");
+  assert.equal(figure.querySelector(".cm-vis-figure-drawing-name")?.textContent, "fig_co_setting.tex");
+  assert.match(figure.querySelector(".cm-vis-caption-text")?.textContent ?? "", /The CO scheme\. ① Commit\. ② Jitter\./);
+  const line = [...view.contentDOM.querySelectorAll(".cm-line")].find((element) => element.textContent?.startsWith("Steps"))!;
+  // The size switch is hidden; the group's braces stay, as for any group.
+  assert.equal(line.textContent, "Steps ③ and { small} text.");
+  view.destroy();
 });
 
 test("clicking a citation or label chip opens its source, with the cursor after its keys", () => {
@@ -489,6 +584,124 @@ test("the cursor stays before a heading's hidden brace", () => {
 });
 
 /* ---- Speed and correctness of incremental updates ----------------------------------- */
+
+/* ---- Structure written through macros ------------------------------------------------- */
+
+const STRUCTURE_MACROS = String.raw`\documentclass{article}
+\newtheorem{theorem}{Theorem}
+\newcommand{\mysec}[1]{\section{#1}}
+\newcommand{\step}{\item}
+\newcommand{\nl}{\\}
+\newcommand{\mycap}[1]{\caption{#1}}
+\newcommand{\seclabel}[1]{\label{sec:#1}}
+\newcommand{\fn}[1]{\footnote{#1}}
+\newcommand{\beq}{\begin{equation}}
+\newcommand{\eeq}{\end{equation}}
+\newcommand{\bl}{\begin{itemize}}
+\newcommand{\el}{\end{itemize}}
+\newcommand{\thm}[1]{\begin{theorem}#1\end{theorem}}
+\begin{document}
+\section{First}
+\mysec{Second}\seclabel{second}
+\section{Third}\label{sec:third}
+
+\begin{enumerate}
+\item One
+\step Two\label{it:two}
+\item Three
+\end{enumerate}
+
+\begin{align}
+a &= b \nl
+c &= d \label{eq:row}
+\end{align}
+
+\beq x = 1 \label{eq:x} \eeq
+
+\begin{figure}
+\centering
+\includegraphics{x.png}
+\mycap{A figure.}\label{fig:a}
+\end{figure}
+
+Text\fn{one} and\footnote{two}.
+
+\thm{Statement.}
+
+\bl
+\item A
+\el
+\end{document}
+`;
+
+test("numbering counts structure written through macros where they are used", () => {
+  const view = mount(STRUCTURE_MACROS);
+  number(view);
+  const numbering = view.state.field(numberingField);
+  const at = (needle: string) => STRUCTURE_MACROS.indexOf(needle);
+  const entry = (needle: string, kind: string) => numbering.entries.find((item) => item.pos === at(needle) && item.kind === kind);
+  assert.equal(entry("\\mysec{Second}", "section")?.number, "2");
+  assert.equal(entry("\\section{Third}", "section")?.number, "3");
+  assert.deepEqual(entry("\\begin{align}", "equation")?.rows, ["1", "2"]);
+  assert.equal(entry("\\beq x", "equation")?.number, "3");
+  assert.equal(entry("\\begin{figure}", "figure")?.number, "1");
+  assert.equal(entry("\\thm{", "theorem")?.number, "1");
+  // The footnote in \fn's definition is not one: \fn{one} is footnote 1.
+  assert.deepEqual(numbering.entries.filter((item) => item.kind === "footnote").map((item) => [item.pos, item.number]), [[at("\\fn{one}"), "1"], [at("\\footnote{two}"), "2"]]);
+  const ref = (key: string) => stateReferenceText(view.state, "\\ref", [key]);
+  assert.deepEqual([ref("sec:second"), ref("sec:third"), ref("it:two"), ref("eq:row"), ref("eq:x"), ref("fig:a")], ["2", "3", "2", "2", "3", "1"]);
+  view.destroy();
+});
+
+test("structure written through macros is drawn as what it writes", async () => {
+  const view = mount(STRUCTURE_MACROS);
+  number(view);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const content = view.contentDOM;
+  assert.equal(content.querySelector(".cm-vis-macro-heading")?.textContent, "2 Second");
+  assert.ok(content.querySelector(".cm-vis-macro-heading")?.closest(".cm-line")?.classList.contains("cm-vis-h1"), "a heading line");
+  assert.deepEqual([...content.querySelectorAll(".cm-vis-item")].map((item) => item.textContent).slice(0, 3), ["1.", "2.", "3."]);
+  assert.ok([...content.querySelectorAll(".cm-vis-label")].some((chip) => chip.textContent === "sec:second"), "\\seclabel is a label chip");
+  // jsdom draws the first screen only: scroll to the rest.
+  const scrollTo = async (needle: string) => {
+    view.dispatch({ effects: EditorView.scrollIntoView(at(view, needle), { y: "start" }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  await scrollTo("\\begin{figure}");
+  assert.equal(content.querySelector(".cm-vis-figure-figure .cm-vis-caption")?.textContent, "Figure 1: A figure.");
+  await scrollTo("Text\\fn");
+  assert.equal(content.querySelector(".cm-vis-macro-footnote .cm-vis-footnote-mark")?.textContent, "1");
+  const environments = [...content.querySelectorAll(".cm-vis-macro-env")].map((element) => element.textContent?.trim());
+  assert.deepEqual(environments, ["Theorem 1. Statement.", "A"]);
+  assert.equal(content.querySelector(".cm-vis-macro-env-list li")?.textContent, "A");
+  assert.ok(kinds(view.state).math >= 2, "the align and the \\beq … \\eeq equation are formulas");
+  // A click on a drawn expansion shows the macro's source.
+  await scrollTo("\\section{First}");
+  content.querySelector(".cm-vis-macro-heading")!.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  assert.ok(revealedKinds(view.state).includes("heading"));
+  view.destroy();
+});
+
+test("edits around environments opened and closed by macros build the same constructs as a fresh build", () => {
+  const pieces = ["\\beq", "\\eeq", " x = 1 ", "\\mysec{S}", "\\step", "\\fn{n}", "\\thm{T}", "\n\n", "}", "{", "\\bl", "\\el", "\\item a"];
+  const start = STRUCTURE_MACROS.indexOf("\\begin{document}") + 17;
+  fc.assert(fc.property(fc.array(fc.record({ at: fc.nat(), remove: fc.nat({ max: 5 }), insert: fc.constantFrom(...pieces) }), { maxLength: 5 }), (edits) => {
+    const view = mount(STRUCTURE_MACROS);
+    try {
+      for (const edit of edits) {
+        const length = view.state.doc.length;
+        const from = start + (edit.at % Math.max(1, length - start - 16));
+        const to = Math.min(length - 16, from + edit.remove);
+        view.dispatch({ changes: { from, to: Math.max(from, to), insert: edit.insert } });
+        ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+        view.dispatch({});
+      }
+      assert.deepEqual(constructs(view.state), constructs(stateFor(view.state.doc.toString())));
+    } finally {
+      view.destroy();
+    }
+  }), { numRuns: 40 });
+});
 
 test("incremental updates build the same constructs as a fresh build", () => {
   const pieces = ["$", "$x$", "\\textbf{", "}", "{", "\\cite{a}", "\\begin{itemize}\\item x\\end{itemize}", "\n\n", "\\section{S}", " text ", "\\ref{sec:intro}", "\\%", "--", "\\todo{t}", "\\eg"];

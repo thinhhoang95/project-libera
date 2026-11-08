@@ -192,7 +192,8 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
       }
     }
     const cell: TableCell = { from: offset + from, to: offset + to, outerFrom: offset + cellStart, outerTo: offset + end, text, span: 1, sourceOnly };
-    const multi = /^\\multicolumn\s*\{\s*(\d+)\s*\}\s*\{[^{}]*\}\s*\{/.exec(text);
+    // The spec may hold one level of groups: `{@{}l}`.
+    const multi = /^\\multicolumn\s*\{\s*(\d+)\s*\}\s*\{(?:[^{}]|\{[^{}]*\})*\}\s*\{/.exec(text);
     if (multi) {
       const open = from + multi[0].length - 1;
       const close = matchingBrace(source, open);
@@ -275,6 +276,110 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
   } else rulesAfter.push(...rules);
 
   return { specFrom: offset + specFrom, specTo: offset + specEnd, spec, columns: spans.map((column) => column.letter), rows, rulesAfter, bodyFrom: offset + bodyFrom, bodyTo: offset + bodyTo };
+}
+
+/** A longtable read for display: its caption and label, and a plain tabular of the rows it prints first. */
+export type LongTableDisplay = { caption: string | null; captionAt: number; label: string | null; tabular: string };
+
+const LONGTABLE_MARKERS = /^\\(endfirsthead|endhead|endfoot|endlastfoot)(?![A-Za-z])/;
+
+/**
+ * A `longtable` (or `xltabular`) as the page shows it where it starts: the
+ * first head (`\endfirsthead`, else `\endhead`), the body and the last foot
+ * (`\endlastfoot`, else `\endfoot`), without the repeated head and foot. The
+ * caption and label leave the rows. Rows written through the document's own
+ * macros come out of `expand` (null when it cannot), so this is drawn, not
+ * edited cell by cell. Null for a source it cannot read.
+ */
+export function readLongTable(source: string, expand: (text: string) => string | null): LongTableDisplay | null {
+  const begin = /^\\begin\s*\{((?:longtable|xltabular)\*?)\}/.exec(source);
+  if (!begin) return null;
+  const env = begin[1];
+  let index = begin[0].length;
+  const skipSpace = () => { while (/\s/.test(source[index] ?? "")) index++; };
+  skipSpace();
+  if (source[index] === "[") { const close = source.indexOf("]", index); if (close < 0) return null; index = close + 1; skipSpace(); }
+  if (env.startsWith("xltabular")) { const end = matchingBrace(source, index); if (end < 0) return null; index = end + 1; skipSpace(); }
+  const specEnd = matchingBrace(source, index);
+  if (specEnd < 0) return null;
+  const spec = source.slice(index + 1, specEnd);
+  const endMatch = new RegExp(`\\\\end\\s*\\{${env.replace("*", "\\*")}\\}\\s*$`).exec(source);
+  if (!endMatch) return null;
+  const bodyFrom = specEnd + 1;
+  const body = source.slice(bodyFrom, endMatch.index);
+
+  // Split at the head and foot markers, at brace depth zero and outside comments.
+  const parts: Record<string, { text: string; from: number }> = {};
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (char === "%") { const end = body.indexOf("\n", i); i = end < 0 ? body.length : end; continue; }
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "\\") {
+      const marker = depth === 0 ? LONGTABLE_MARKERS.exec(body.slice(i)) : null;
+      if (marker) {
+        parts[marker[1]] = { text: body.slice(start, i), from: start };
+        start = i + marker[0].length;
+        i = start - 1;
+      } else i++;
+    }
+  }
+  const main = { text: body.slice(start), from: start };
+  const head = parts.endfirsthead ?? parts.endhead ?? null;
+  const foot = parts.endlastfoot ?? parts.endfoot ?? null;
+
+  // The caption row: `\caption[…]{…}` and `\label{…}`, and the `\\` that ends them when nothing else is on the row.
+  let caption: string | null = null;
+  let captionAt = -1;
+  let label: string | null = null;
+  const withoutCaption = (part: { text: string; from: number }) => {
+    const text = part.text;
+    const command = /\\caption\*?\s*(?:\[[^\]]*\]\s*)?\{/.exec(text);
+    if (!command) return text;
+    const open = command.index + command[0].length - 1;
+    const close = matchingBrace(text, open);
+    if (close < 0) return text;
+    caption = text.slice(open + 1, close);
+    captionAt = bodyFrom + part.from + open + 1;
+    let rest = text.slice(close + 1);
+    const labelMatch = /^\s*\\label\s*\{([^}]*)\}/.exec(rest);
+    if (labelMatch) { label = labelMatch[1].trim(); rest = rest.slice(labelMatch[0].length); }
+    const lineEnd = /^\s*\\\\\*?(?:\s*\[[^\]]*\])?/.exec(rest);
+    if (lineEnd) rest = rest.slice(lineEnd[0].length);
+    return text.slice(0, command.index) + rest;
+  };
+  const sections = [head, main, foot].filter((part): part is { text: string; from: number } => !!part);
+  const texts = sections.map((part) => (caption === null ? withoutCaption(part) : part.text));
+
+  // Rows built by macros (`\row{a}{b}` → `a & b \\`): expand, then drop comments, which only end macro lines.
+  const expanded = expand(texts.join("\n"));
+  if (expanded === null) return null;
+  const tabular = `\\begin{tabular}{${spec}}${withoutComments(expanded)}\\end{tabular}`;
+  return parseTabular(tabular, 0) ? { caption, captionAt, label, tabular } : null;
+}
+
+/** Drops `%` comments (keeping `\%`): after expansion they only end the lines of macro bodies. */
+function withoutComments(text: string) {
+  return text.replace(/(^|[^\\])%[^\n]*/g, "$1");
+}
+
+/**
+ * A tabular whose rows or cells are written through the document's macros
+ * (`\row{a}{b}` for `a & b \\`): its expanded reading, to draw (not edit)
+ * when expanding changes the grid. Null when the tabular's own `&` and `\\`
+ * already give its cells, or the expansion cannot be read.
+ */
+export function macroBuiltTabular(source: string, expand: (text: string) => string | null): string | null {
+  const expanded = expand(source);
+  if (expanded === null || expanded === source) return null;
+  const reading = withoutComments(expanded);
+  const built = parseTabular(reading, 0);
+  if (!built) return null;
+  const own = parseTabular(source, 0);
+  const shape = (model: TableModel) => model.rows.map((row) => row.cells.reduce((count, cell) => count + cell.span, 0)).join(",");
+  return own && shape(own) === shape(built) ? null : reading;
 }
 
 export type TableChange = { from: number; to: number; insert: string };
