@@ -1861,6 +1861,7 @@ function WorkspacePanelContent({
           collab={sharedCodeMirror ?? undefined}
           files={files}
           fontFamily={latexEditorFontFamily}
+          visualFontFamily={wysiwygEditorFontFamily}
           fontSizePx={markdownFontSizePx}
           lineHeight={markdownPreferences.baseLineHeight}
           readOpenTabs={readOpenTabs}

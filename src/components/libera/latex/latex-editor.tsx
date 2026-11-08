@@ -43,6 +43,7 @@ import { LatexAiMenu, type LatexAiMenuState } from "./latex-ai-menu";
 import { LatexChangeBar } from "./latex-change-bar";
 import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
 import { getLatexSnippets } from "./latex-snippets-store";
+import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "../codemirror-text-width";
 
 export type LatexEditorHandle = {
   view: EditorView;
@@ -62,6 +63,8 @@ type LatexEditorProps = {
   fileName: string;
   value: string;
   fontFamily: string;
+  /** Visual mode's typeface (the visual editors' theme font); a serif book face when absent. */
+  visualFontFamily?: string;
   fontSizePx: number;
   lineHeight: number;
   initialViewState?: LatexTabViewState;
@@ -141,7 +144,7 @@ function toEditorDiagnostics(state: EditorState, diagnostics: LatexDiagnostic[])
 }
 
 export function LatexEditor({
-  documentPath, fileName, value, fontFamily, fontSizePx, lineHeight, initialViewState, diagnostics, project, editorRef,
+  documentPath, fileName, value, fontFamily, visualFontFamily, fontSizePx, lineHeight, initialViewState, diagnostics, project, editorRef,
   onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet, collab,
   editorMode = "source", macroSources, auxData, numberingStart, numberingIncludes, rootPath,
 }: LatexEditorProps) {
@@ -467,12 +470,13 @@ export function LatexEditor({
 
   return (
     <div
-      className={`libera-latex-editor relative min-h-0 min-w-0 overflow-hidden bg-card${visualActive ? " libera-latex-visual" : ""}`}
+      className={`libera-latex-editor ${CODEMIRROR_TEXT_WIDTH_CLASS} relative min-h-0 min-w-0 overflow-hidden bg-card${visualActive ? " libera-latex-visual" : ""}`}
       data-libera-code-editor
       ref={wrapperRef}
-      style={{ "--latex-editor-font": fontFamily, "--latex-editor-font-size": `${fontSizePx}px`, "--latex-editor-line-height": String(lineHeight) } as CSSProperties}
+      style={{ "--latex-editor-font": fontFamily, "--latex-editor-font-size": `${fontSizePx}px`, "--latex-editor-line-height": String(lineHeight), ...(visualFontFamily ? { "--latex-visual-font": visualFontFamily } : {}) } as CSSProperties}
     >
       <div ref={hostRef} className="absolute inset-0" />
+      <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled />
       {view && menu ? (
         <LatexAiMenu
           view={view}

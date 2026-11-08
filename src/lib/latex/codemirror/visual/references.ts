@@ -4,6 +4,7 @@ import type { LatexDefinitions } from "../../macros/definitions";
 import { referenceText, type LabelTarget, type LatexNumbering } from "../../macros/numbering";
 import { latexProjectField } from "../editing";
 import { visualAux, visualDefinitions, visualNumbering } from "./model";
+import { CONTROL_SYMBOLS, readAccent, SYMBOL_COMMANDS } from "./symbols";
 
 /* What citation and reference chips say (docs/latex-visual-editor-plan.md §3). */
 
@@ -16,6 +17,25 @@ export function bibLookup(state: EditorState): BibLookup {
       ?? project?.libraryEntries?.find((candidate) => candidate.key === key || candidate.aliases.includes(key));
     return entry ? { author: entry.author, year: entry.year, title: entry.title } : null;
   };
+}
+
+/** BibTeX or `.aux` text as it prints: accents (`Boli\'c`, `{\"o}`), escapes and symbols decoded, braces dropped. */
+export function plainTexText(text: string) {
+  let out = "";
+  for (let i = 0; i < text.length;) {
+    const char = text[i];
+    if (char === "{" || char === "}") { i++; continue; }
+    if (char === "~") { out += " "; i++; continue; }
+    if (char !== "\\") { out += char; i++; continue; }
+    const accent = readAccent(text.slice(i, i + 12));
+    if (accent) { out += accent.char; i += accent.length; continue; }
+    const command = /^\\(?:[A-Za-z]+ ?|.)/.exec(text.slice(i))?.[0] ?? "\\";
+    const name = command.trimEnd();
+    const symbol = CONTROL_SYMBOLS[name] ?? SYMBOL_COMMANDS[name];
+    out += symbol ?? name;
+    i += command.length;
+  }
+  return out;
 }
 
 /** "Vaswani et al.", "Vaswani and Shazeer", "Vaswani" from a BibTeX author list. */
@@ -42,7 +62,8 @@ export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLo
   const items = parts.keys.map((key) => {
     const compiled = aux.citations[key];
     const entry = bib(key);
-    const authors = compiled?.authors ?? shortAuthors(entry?.author) ?? null;
+    const rawAuthors = compiled?.authors ?? shortAuthors(entry?.author) ?? null;
+    const authors = rawAuthors && plainTexText(rawAuthors);
     const year = compiled?.year ?? entry?.year ?? null;
     const numeric = compiled && /^\d+[a-z]?$/.test(compiled.label) ? compiled.label : null;
     return { key, authors, year, numeric };

@@ -23,6 +23,7 @@ import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemir
 import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
 import { reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
 import { LatexChangeBar } from "@/components/libera/latex/latex-change-bar";
+import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "@/components/libera/codemirror-text-width";
 
 type CodeEditorProps = {
   fileName: string;
@@ -49,6 +50,12 @@ type CodeEditorProps = {
 const DRAFT_DELAY_MS = 250;
 const VIEW_STATE_DELAY_MS = 300;
 
+/** Prose-like files wrap; code keeps its lines. */
+function wrapsLines(fileName: string) {
+  const description = findCodeLanguage(fileName);
+  return !description || description.name === "Markdown";
+}
+
 /** A CodeMirror editor for plain-text and code files, highlighted by file name. */
 export function CodeEditor({
   fileName, documentPath, value, fontFamily, fontSizePx, lineHeight, initialViewState, saving,
@@ -66,6 +73,8 @@ export function CodeEditor({
   const cancelRestoreRef = useRef<(() => void) | null>(null);
   const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath });
   const shared = !!collab;
+  // Prose-like files wrap (and get the page-width ruler); code keeps its lines.
+  const [wraps] = useState(() => wrapsLines(fileName));
   const [cursor, setCursor] = useState({ line: 1, column: 1, selected: 0 });
   const [menu, setMenu] = useState<CodeEditorMenuState | null>(null);
   const [view, setView] = useState<EditorView | null>(null);
@@ -110,9 +119,7 @@ export function CodeEditor({
     const binding = initialRef.current.collab?.create() ?? null;
     const initialValue = binding ? binding.initialText : initialRef.current.value;
     const language = new Compartment();
-    // Prose-like files wrap; code keeps its lines.
-    const description = findCodeLanguage(name);
-    const wrap = !description || description.name === "Markdown";
+    const wrap = wrapsLines(name);
 
     const state = EditorState.create({
       doc: initialValue,
@@ -284,12 +291,13 @@ export function CodeEditor({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div
-        className="libera-latex-editor libera-code-editor relative min-h-0 min-w-0 flex-1 overflow-hidden bg-card"
+        className={`libera-latex-editor libera-code-editor${wraps ? ` ${CODEMIRROR_TEXT_WIDTH_CLASS}` : ""} relative min-h-0 min-w-0 flex-1 overflow-hidden bg-card`}
         data-libera-code-editor
         ref={wrapperRef}
         style={{ "--latex-editor-font": fontFamily, "--latex-editor-font-size": `${fontSizePx}px`, "--latex-editor-line-height": String(lineHeight) } as CSSProperties}
       >
         <div ref={hostRef} className="absolute inset-0" />
+        <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled={wraps} />
         {view && agentHunks.length ? <LatexChangeBar view={view} hunks={agentHunks} /> : null}
       </div>
       {menu ? <CodeEditorMenu view={menu.view} menu={menu} onClose={() => setMenu(null)} /> : null}

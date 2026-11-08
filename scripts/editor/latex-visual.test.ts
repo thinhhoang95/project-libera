@@ -22,7 +22,7 @@ import { latexMathPreview } from "../../src/lib/latex/codemirror/preview";
 import { setMacroSources } from "../../src/lib/latex/codemirror/visual/model";
 import { showTooltip } from "@codemirror/view";
 import { graphicsCandidates, isEditingCell, refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
-import { stateReferenceText } from "../../src/lib/latex/codemirror/visual/references";
+import { citationText, plainTexText, stateReferenceText } from "../../src/lib/latex/codemirror/visual/references";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -112,6 +112,53 @@ test("chips and numbers follow the numbering", async () => {
     view.dispatch({ effects: EditorView.scrollIntoView(at(view, needle), { y: "start" }) });
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  view.destroy();
+});
+
+test("a \\let alias of a citation command is drawn as a citation, the way its target cites", () => {
+  const doc = String.raw`\documentclass{article}
+\let\cite\textcite
+\begin{document}
+Extending the work of \cite{fearing2011evaluating}, and \citep{other}.
+\end{document}
+`;
+  const view = mount(doc);
+  assert.equal(kinds(view.state).cite, 2);
+  assert.equal(view.contentDOM.querySelectorAll(".cm-vis-cite").length, 2);
+  view.destroy();
+  const aux = { labels: {}, citations: { fearing2011evaluating: { label: "Fearing et al., 2011", authors: "Fearing et al.", year: "2011" } } };
+  assert.equal(citationText({ command: "\\textcite", keys: ["fearing2011evaluating"] }, aux, () => null), "Fearing et al. (2011)");
+});
+
+test("clicking a citation or label chip opens its source, with the cursor after its keys", () => {
+  const doc = "\\documentclass{article}\n\\begin{document}\nAs in \\cite{alpha,beta}.\\label{sec:x}\n\\end{document}\n";
+  for (const [selector, end] of [[".cm-vis-cite", "beta}"], [".cm-vis-label", "sec:x}"]] as const) {
+    const view = mount(doc, [], 0);
+    const chip = view.contentDOM.querySelector(selector)!;
+    chip.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    assert.equal(view.state.selection.main.head, at(view, end, end.length - 1));
+    assert.ok(revealedKinds(view.state).includes(selector === ".cm-vis-cite" ? "cite" : "label"), `${selector} shows its source`);
+    view.destroy();
+  }
+});
+
+test("citation chips print TeX accents and escapes in author names", () => {
+  assert.equal(plainTexText(String.raw`Boli\'c et al.`), "Bolić et al.");
+  assert.equal(plainTexText(String.raw`M{\"u}ller and {\v{S}}koda \& Co.`), "Müller and Škoda & Co.");
+  assert.equal(plainTexText(String.raw`{\o}rsted~Gau\ss`), "ørsted Gauß");
+  const aux = { labels: {}, citations: { b: { label: "Bolić et al., 2021", authors: String.raw`Boli\'c et al.`, year: "2021" } } };
+  assert.equal(citationText({ command: "\\citet", keys: ["b"] }, aux, () => null), "Bolić et al. (2021)");
+  assert.equal(citationText({ command: "\\citep", keys: ["k"] }, { labels: {}, citations: {} }, () => ({ author: String.raw`Boli{\'c}, Tatjana and Castelli, Lorenzo`, year: "2021" })), "[Bolić and Castelli 2021]");
+});
+
+test("an accent shows its source while the cursor touches it, so typing \\c before a word is not drawn as a cedilla", () => {
+  const doc = "\\documentclass{article}\n\\begin{document}\nHere I try to type \\c This line.\n\\end{document}\n";
+  const typing = doc.indexOf("\\c This") + 2;
+  const view = mount(doc, [], typing);
+  assert.ok(revealedKinds(view.state).includes("symbol"), "the cursor right after \\c shows the source");
+  view.dispatch({ selection: { anchor: doc.indexOf("line.") } });
+  assert.ok(!revealedKinds(view.state).includes("symbol"));
+  assert.ok([...view.contentDOM.querySelectorAll(".cm-vis-symbol")].some((element) => element.textContent === "Ţ"), "away from the cursor, \\c T is Ţ");
   view.destroy();
 });
 

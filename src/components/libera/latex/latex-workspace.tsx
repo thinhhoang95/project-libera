@@ -40,6 +40,8 @@ type LatexWorkspaceProps = {
   tab: OpenTab;
   files: LiberaFileNode[];
   fontFamily: string;
+  /** Visual mode's typeface: the visual editors' theme font (Preferences → Markdown → Themes), as in the TipTap editor. */
+  visualFontFamily?: string;
   fontSizePx: number;
   lineHeight: number;
   readOpenTabs: () => OpenTab[];
@@ -92,7 +94,7 @@ function stagedDraft(other: OpenTab): string | null {
   return other.draft === other.saved ? null : other.draft;
 }
 
-export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab }: LatexWorkspaceProps) {
+export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab }: LatexWorkspaceProps) {
   const filePath = tab.file.path;
   const notebook = tab.file.notebook;
   const viewState = tab.viewState?.latex;
@@ -549,6 +551,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       fileName={tab.file.name}
       value={tab.draft}
       fontFamily={fontFamily}
+      visualFontFamily={visualFontFamily}
       fontSizePx={fontSizePx}
       lineHeight={lineHeight}
       initialViewState={viewState}

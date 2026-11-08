@@ -83,6 +83,7 @@ import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "@/compo
 import { quoteBlockInsertion, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import { registerTextareaHighlightLayer } from "@/lib/markdown-source-scroll";
 import { keepScrollOnReflow, textareaReflowAdapter } from "@/lib/reflow-scroll-anchor";
+import { MarkdownTextWidth } from "@/components/libera/markdown-text-width";
 
 type MarkdownEditorProps = Omit<MarkdownSourceEditorProps, "extensions" | "documentSource" | "onViewChange">;
 
@@ -301,6 +302,7 @@ export function MarkdownEditor({
   const [fileLinkPopup, setFileLinkPopup] = useState<FileLinkPopupContext | null>(null);
   const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
   const highlightLayerRef = useRef<HTMLPreElement>(null);
+  const sourceRef = useRef<HTMLDivElement>(null);
   const editorValueRef = useRef(value);
   const highlightedLinesRef = useRef<HighlightChunk[][]>([]);
   const highlightIndexRef = useRef<ReturnType<typeof createMarkdownEditorLineIndex> | null>(null);
@@ -1082,6 +1084,19 @@ export function MarkdownEditor({
     }, SELECTION_CHANGE_DEBOUNCE_MS);
   }
 
+  // The text column is centred in the room the scrollbar and border leave (globals.css, .markdown-editor-source).
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    const source = sourceRef.current;
+    if (!textarea || !source) return;
+    const measure = () => source.style.setProperty("--markdown-source-sb", `${textarea.offsetWidth - textarea.clientWidth}px`);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [textareaRef]);
+
   function syncHighlightLayerScroll(textarea: HTMLTextAreaElement) {
     const highlightLayer = highlightLayerRef.current;
 
@@ -1098,7 +1113,11 @@ export function MarkdownEditor({
   }
 
   return (
-    <div className="markdown-editor-source relative min-h-0 min-w-0 overflow-hidden bg-card">
+    <div ref={sourceRef} className="markdown-editor-source relative min-h-0 min-w-0 overflow-hidden bg-card">
+      {/* The page-width triangle of the other editors; the font makes its `ch`-based gutter match the text's. */}
+      <div className="markdown-editor-ruler" style={{ fontFamily, fontSize: `${fontSizePx}px` }}>
+        <MarkdownTextWidth canvasRef={sourceRef} />
+      </div>
       <pre
         ref={highlightLayerRef}
         aria-hidden="true"
@@ -1107,7 +1126,8 @@ export function MarkdownEditor({
           fontFamily,
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
-          paddingLeft: "var(--markdown-line-text-start)",
+          paddingLeft: "calc(var(--markdown-line-text-start) + var(--markdown-source-shift, 0px))",
+          paddingRight: "calc(1.25rem + var(--markdown-source-shift, 0px))",
           paddingBlock: SOURCE_PANE_PADDING,
           tabSize: SOURCE_TAB_SIZE,
         }}
@@ -1121,7 +1141,8 @@ export function MarkdownEditor({
           fontFamily,
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
-          paddingLeft: "var(--markdown-line-text-start)",
+          paddingLeft: "calc(var(--markdown-line-text-start) + var(--markdown-source-shift, 0px))",
+          paddingRight: "calc(1.25rem + var(--markdown-source-shift, 0px))",
           paddingBlock: SOURCE_PANE_PADDING,
           tabSize: SOURCE_TAB_SIZE,
         }}

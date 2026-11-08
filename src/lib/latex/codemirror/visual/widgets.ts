@@ -87,6 +87,12 @@ export function selectRange(view: EditorView, from: number, to: number) {
   view.focus();
 }
 
+/** Puts the cursor before a chip's closing brace, inside it: its source shows, ready to edit the keys. */
+function editKeysAt(view: EditorView, pos: number) {
+  view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+  view.focus();
+}
+
 /** Puts the cursor strictly inside a construct, which shows its source. */
 export function revealSourceAt(view: EditorView, from: number, to: number) {
   const inside = Math.min(to - 1, from + 1);
@@ -155,7 +161,8 @@ export class ChipWidget extends VisualWidget {
   }
   toDOM(view: EditorView) {
     const dom = el("span", `cm-vis-chip cm-vis-${this.kind}`);
-    // Only a reference goes somewhere: select it and press Enter (or click) to follow it. Citations and labels are text.
+    // Only a reference goes somewhere: click it (or select it and press Enter) to follow it, Alt-click to edit it.
+    // Citations and labels open their source on a click, with the cursor after their keys.
     if (this.kind === "ref") {
       dom.setAttribute("role", "link");
       dom.setAttribute("aria-keyshortcuts", "Enter");
@@ -182,8 +189,9 @@ export class ChipWidget extends VisualWidget {
       event.preventDefault();
       const from = widgetPos(view, dom);
       if (from === null) return;
+      if (this.kind !== "ref") { editKeysAt(view, from + this.length - 1); return; }
       if (event.altKey) { revealSourceAt(view, from, from + this.length); return; }
-      if (this.kind === "ref" && followReference(view, this.keys[0])) return;
+      if (followReference(view, this.keys[0])) return;
       selectRange(view, from, from + this.length);
     });
     return dom;

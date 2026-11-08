@@ -21,6 +21,12 @@ import {
  * cursor reveals its source. Anything not recognised, or with broken
  * delimiters, is left alone: it stays as source. */
 
+/** Targets of a `\let` alias that keep a command drawn as its kind (a citation stays a citation). */
+const ALIAS_FAMILIES: Record<string, RegExp> = {
+  Cite: /^\\[A-Za-z]*cite[A-Za-z]*$/i,
+  Ref: /^\\(?:[A-Za-z]*ref|autoref|nameref)$/i,
+};
+
 export type RevealPolicy = "touch" | "strict" | "line" | "never" | "toggle";
 
 export type Replace = { from: number; to: number; widget?: WidgetType; block?: boolean; side?: number };
@@ -235,6 +241,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const command = node.getChild("SectioningCommand") ?? node;
     const name = /^\\([A-Za-z@]+)/.exec(read(state, command.from, Math.min(doc.length, command.from + 64)));
     const macro = name ? macroAt(defs, name[1], command.from) : null;
+    // `\let\cite\textcite`: another command of the same kind, still drawn as one (with the target's name).
+    if (macro?.alias && ALIAS_FAMILIES[node.name]?.test(macro.body)) return null;
     // `\providecommand` does nothing for a command LaTeX already has.
     return name && macro && !macro.provided ? { node: command, name: name[1] } : null;
   };
@@ -419,6 +427,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const ctrl = node.firstChild!;
           let command = read(state, ctrl.from, ctrl.to);
           if (read(state, ctrl.to, ctrl.to + 1) === "*" && !command.endsWith("*")) command += "*";
+          // `\let\cite\textcite` cites the way its target does.
+          const alias = macroAt(defs, command.replace(/^\\|\*$/g, ""), node.from);
+          if (alias?.alias && ALIAS_FAMILIES[name].test(alias.body)) command = alias.body + (command.endsWith("*") ? "*" : "");
           const optionals = node.getChildren("OptionalArgument").map((arg) => { const range = argumentInner(arg); return range ? read(state, range.from, range.to) : ""; });
           const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
           emit({
@@ -644,11 +655,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (ctrl.name === "CtrlSeq" && macroAt(defs, text.slice(1), node.from)) return macroUse(node, text.slice(1));
       return undefined;
     }
+    // Accents show their source while the cursor touches them: `\c` typed before `This` is
+    // already `\c T` (Ţ), but the writer is usually on the way to `\cite`.
     if (ctrl.name === "CtrlSym") {
       const accent = readAccent(read(state, node.from, Math.min(doc.length, node.from + 8)));
       if (accent) {
         symbolsUntil = node.from + accent.length;
-        emit({ kind: "symbol", from: node.from, to: node.from + accent.length, reveal: "never", replaces: [{ from: node.from, to: node.from + accent.length, widget: new SymbolWidget(accent.char, read(state, node.from, node.from + accent.length)) }] });
+        emit({ kind: "symbol", from: node.from, to: node.from + accent.length, reveal: "touch", replaces: [{ from: node.from, to: node.from + accent.length, widget: new SymbolWidget(accent.char, read(state, node.from, node.from + accent.length)) }] });
         return false;
       }
       const symbol = CONTROL_SYMBOLS[text];
@@ -665,7 +678,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const accent = readAccent(read(state, node.from, Math.min(doc.length, node.from + 8)));
     if (accent && /^\\[uvHckrdb]$/.test(text)) {
       symbolsUntil = node.from + accent.length;
-      emit({ kind: "symbol", from: node.from, to: node.from + accent.length, reveal: "never", replaces: [{ from: node.from, to: node.from + accent.length, widget: new SymbolWidget(accent.char, read(state, node.from, node.from + accent.length)) }] });
+      emit({ kind: "symbol", from: node.from, to: node.from + accent.length, reveal: "touch", replaces: [{ from: node.from, to: node.from + accent.length, widget: new SymbolWidget(accent.char, read(state, node.from, node.from + accent.length)) }] });
       return false;
     }
     const name = text.slice(1);

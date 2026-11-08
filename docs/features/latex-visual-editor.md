@@ -13,7 +13,7 @@ Switch with **Editor Mode → Visual** or **Source** in the file menu (the ⋯ b
 | `\href`, `\url` | A link; ⌘/Ctrl-click opens it |
 | `\footnote{…}` | A superscript number and the footnote in small grey text |
 | `$…$`, `\(…\)`, `$$…$$`, `\[…\]`, `equation`, `align`, `gather`, `multline`, `alignat`, `flalign`, `eqnarray` | The formula, typeset by KaTeX, with its equation numbers |
-| `\cite` and its natbib/biblatex variants | A chip: `[12]` from the last compile, or author and year from the `.bib` files and References |
+| `\cite` and its natbib/biblatex variants | A chip: `[12]` from the last compile, or author and year from the `.bib` files and References, with accents decoded (`Boli\'c` is Bolić). A `\let\cite\textcite` in the preamble cites the way its target does. Click it to edit its keys. |
 | `\ref`, `\eqref`, `\cref`, `\Cref`, `\autoref`, `\pageref`, `\nameref` | A chip with the number: `2.1`, `(3)`, `eq. (3)`, `Figure 1`, `Section 2`. Click to jump to the label. |
 | `\label` elsewhere | A small grey tag |
 | `figure`, `table`, `\includegraphics` | The image (PNG, JPEG, SVG, or a PDF's first page) and the numbered caption; tables as grids. A figure holding anything else (text, other commands, sub-figures) stays source, with its parts drawn on their own. Images are found from the main file's directory and `\graphicspath`, as TeX finds them. |
@@ -22,7 +22,7 @@ Switch with **Editor Mode → Visual** or **Source** in the file menu (the ⋯ b
 | Theorems from `\newtheorem`, `proof`, `abstract`, `quote`, `center`, user `\newenvironment`s | Headings such as **Theorem 2.1** (Pythagoras), ∎ at the end of a proof, theorem bodies in their style |
 | `\maketitle` | The title, authors and date |
 | The preamble | A folded block: **Preamble · article · 12 packages · 8 macros · 2 theorem types**. Click it (or press Enter on it) to see the source. Text after `\begin{document}` on the same line stays visible. |
-| `\%`, `\&`, `\ldots`, `--`, `---`, ` `` ''`, `~`, accents such as `\'e`, `\LaTeX`, `\today` | The characters they typeset |
+| `\%`, `\&`, `\ldots`, `--`, `---`, ` `` ''`, `~`, accents such as `\'e`, `\LaTeX`, `\today` | The characters they typeset. An accent shows its source while the cursor touches it, so `\c` typed on the way to `\cite` is not drawn as a cedilla. |
 
 Anything else stays as LaTeX: unknown commands, unclosed braces, environments missing their `\end` or ending with the wrong one, verbatim and code listings, `tikzpicture`, `longtable`, comments. A command with broken braces stays as source, but formulas and formatting inside it still render, so one stray brace does not undo the rest of the page.
 
@@ -32,6 +32,7 @@ Anything else stays as LaTeX: unknown commands, unclosed braces, environments mi
 - **Headings** are edited in place with their markup hidden. Put the cursor at the start of the line (Home) to see `\section{…}`.
 - **Formulas, chips, figures and tables** stay drawn with the cursor at their edge, and move, select and delete as one block. Backspace next to one selects it first; a second Backspace deletes it.
 - **Alt+Enter** shows the source of whatever is at the cursor (a bullet, a symbol) until the cursor leaves it. Alt-click does the same on a widget.
+- **Text** uses the visual editors' settings, as the TipTap editor does: the typeface of the visual theme (Preferences → Markdown → Themes) and the Markdown text size and line height. The triangle above the text sets the page width, shared with the Markdown editors.
 - Typing is ordinary LaTeX editing: autocompletion, snippets, environment renaming and bracket closing work as in Source mode.
 
 ### Formulas

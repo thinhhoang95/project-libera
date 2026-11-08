@@ -54,6 +54,7 @@ import { detectMarkdownHeadingNumbering } from "@/lib/markdown-heading-numbering
 import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll-anchor";
 import { useHeadingNumbering } from "../heading-numbering-state";
 import { readClipboardText, type MenuPasteMode } from "../paste-menu-items";
+import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "../codemirror-text-width";
 
 /* The Markdown Source editor on CodeMirror 6 (decision D8). It keeps the
  * textarea editor's props, keyboard shortcuts, menus and draft flow, and
@@ -711,7 +712,7 @@ export function MarkdownCodeMirrorEditor({
   return (
     <div
       ref={wrapperRef}
-      className="libera-latex-editor libera-markdown-codemirror relative min-h-0 min-w-0 overflow-hidden border-b border-border bg-card lg:border-b-0 lg:border-r"
+      className={`libera-latex-editor libera-markdown-codemirror ${CODEMIRROR_TEXT_WIDTH_CLASS} relative min-h-0 min-w-0 overflow-hidden border-b border-border bg-card lg:border-b-0 lg:border-r`}
       data-libera-code-editor
       style={{
         "--latex-editor-font": fontFamily,
@@ -720,6 +721,7 @@ export function MarkdownCodeMirrorEditor({
       } as CSSProperties}
     >
       <div ref={hostRef} className="absolute inset-0" />
+      <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled />
       {view && agentHunks.length ? <LatexChangeBar view={view} hunks={agentHunks} /> : null}
 
       {find.open ? (
