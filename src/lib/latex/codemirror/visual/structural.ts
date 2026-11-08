@@ -4,7 +4,7 @@ import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
 import { macroAt } from "../../macros/definitions";
 import { environmentName } from "../../macros/numbering";
-import { bodyStartIn, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
+import { bodyStartIn, disabledField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
 import { macroRegionsFor, walkConstructs, type Construct, type RevealPolicy } from "./walk";
 import { preambleSummary } from "./widgets";
 
@@ -65,7 +65,7 @@ const WIDEN = new Set([
   "EquationEnvironment", "EquationArrayEnvironment", "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment",
   "TabularEnvironment", "ListEnvironment", "Maketitle", "IncludeGraphics", "SectioningCommand", "UnknownCommand",
 ]);
-const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright)$/;
+const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices)$/;
 
 /** Where the folded preamble ends: the `\begin{document}` line, or the command itself when body text follows it on that line. */
 export function preambleEndOf(state: EditorState) {
@@ -111,7 +111,8 @@ function lineBounds(state: EditorState, from: number, to: number) {
 type Built = { decorations: Range<Decoration>[]; extents: Range<ConstructMark>[]; signatures: string[]; maxTo: number };
 
 function toRanges(state: EditorState, construct: Construct, built: Built) {
-  if (!construct.replaces.length && !construct.hiddenLines?.length) return;
+  // A disabled region (`\iffalse … \fi`) draws nothing here, but its extent is kept: an edit that ends it rebuilds it whole.
+  if (!construct.replaces.length && !construct.hiddenLines?.length && construct.kind !== "disabled") return;
   const id = nextConstructId++;
   for (const replace of construct.replaces) {
     if (replace.from === replace.to) {
@@ -178,6 +179,11 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
     }
     // An environment opened and closed by macros (`\beq … \eeq`) is drawn whole: so is it rebuilt.
     for (const region of macroRegionsFor(state.doc, visualDefinitions(state))) {
+      if (region.from >= high) break;
+      if (region.to > low) { low = Math.min(low, region.from); high = Math.max(high, region.to); }
+    }
+    // So is what `\iffalse … \fi` leaves out, drawn faded as a whole.
+    for (const region of state.field(disabledField, false) ?? []) {
       if (region.from >= high) break;
       if (region.to > low) { low = Math.min(low, region.from); high = Math.max(high, region.to); }
     }

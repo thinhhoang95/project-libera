@@ -94,4 +94,8 @@ export interface NotebookService {
    * revoked, pending reconciliations). Optional so test doubles can omit it.
    */
   localProjects?(): LocalProject[];
+  /** The computer switched between battery and mains power; folders are checked less often on battery. */
+  powerChanged?(onBattery: boolean): void;
+  /** The computer woke from sleep: check every folder now (fs.watch can miss what changed meanwhile). */
+  resumed?(): void;
 }

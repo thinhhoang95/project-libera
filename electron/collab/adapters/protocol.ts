@@ -27,6 +27,8 @@ export type MainToHost =
   | { t: "nudge" }
   | { t: "suspend" }
   | { t: "resume" }
+  /** Sent after start and whenever the power source changes; shared folders are checked less often on battery. */
+  | { t: "power"; onBattery: boolean }
   /** Flush and stop; the host answers shutdown-done and exits. */
   | { t: "shutdown"; id: number }
   /** A renderer replica; the MessagePortMain arrives in the event's ports. */

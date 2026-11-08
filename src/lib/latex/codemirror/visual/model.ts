@@ -2,6 +2,7 @@ import { Facet, StateEffect, StateField, type EditorState, type Text, type Trans
 import { EMPTY_AUX, type LatexAuxData } from "../../aux-file";
 import { bodyStartOf, collectLatexDefinitions, definitionsFingerprint, emptyLatexDefinitions, mapLatexDefinitions, type DefinitionSource, type LatexDefinitions } from "../../macros/definitions";
 import { EMPTY_NUMBERING, type LatexNumbering, type NumberingStart } from "../../macros/numbering";
+import { disabledRegions } from "../../macros/structure";
 
 /* State shared by the Visual mode's layers (docs/latex-visual-editor-plan.md).
  * Nothing here changes the document. */
@@ -85,6 +86,28 @@ export const numberingField = StateField.define<LatexNumbering>({
   update(value, tr) {
     for (const effect of tr.effects) if (effect.is(setNumbering)) value = effect.value;
     return value;
+  },
+});
+
+/** Whether an edit could change what `\iffalse … \fi` leaves out: it is near a conditional's `\if…`, `\else` or `\fi`. */
+function touchesConditionals(tr: Transaction) {
+  let touched = false;
+  tr.changes.iterChanges((fromA, toA, fromB, toB) => {
+    if (touched) return;
+    const near = (doc: Text, from: number, to: number) => doc.sliceString(Math.max(0, from - 12), Math.min(doc.length, to + 12));
+    if (/\\(?:if|fi|else)/.test(near(tr.startState.doc, fromA, toA)) || /\\(?:if|fi|else)/.test(near(tr.state.doc, fromB, toB))) touched = true;
+  });
+  return touched;
+}
+
+/** What `\iffalse … \fi` leaves out of the document (structure.ts `disabledRegions`): kept in step with edits. */
+export const disabledField = StateField.define<Array<{ from: number; to: number }>>({
+  create: (state) => disabledRegions(state.doc.toString()),
+  update(value, tr) {
+    if (!tr.docChanged) return value;
+    if (touchesConditionals(tr)) return disabledRegions(tr.state.doc.toString());
+    if (!value.length) return value;
+    return value.map((region) => ({ from: tr.changes.mapPos(region.from, 1), to: tr.changes.mapPos(region.to, -1) })).filter((region) => region.to > region.from);
   },
 });
 
@@ -195,4 +218,4 @@ export function visualAux(state: EditorState) {
   return state.field(auxField, false) ?? EMPTY_AUX;
 }
 
-export const visualStateFields = [macroSourcesField, auxField, numberingField, numberingStartField, numberingIncludesField, preambleOpenField, definitionsField];
+export const visualStateFields = [macroSourcesField, auxField, numberingField, numberingStartField, numberingIncludesField, preambleOpenField, definitionsField, disabledField];

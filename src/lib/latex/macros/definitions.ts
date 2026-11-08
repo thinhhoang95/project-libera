@@ -61,6 +61,18 @@ export type LatexTheoremDefinition = {
 
 export type LatexDefinitionNote = { pos: number; file?: string; name: string; message: string };
 
+export type LatexColumnType = { arity: number; align: "left" | "center" | "right" };
+
+/** How a `\newcolumntype` body aligns: `>{\centering}`, `>{\raggedleft}`, or its base column (`c`, `r`). */
+function columnTypeAlign(body: string): LatexColumnType["align"] {
+  if (/\\centering(?![A-Za-z@])/.test(body)) return "center";
+  if (/\\raggedleft(?![A-Za-z@])/.test(body)) return "right";
+  if (/\\raggedright(?![A-Za-z@])/.test(body)) return "left";
+  // Without its `>{…}`, `<{…}` and `@{…}` parts, the base column's letter.
+  const base = body.replace(/[<>@!]\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, "").replace(/\{(?:[^{}]|\{[^{}]*\})*\}/g, "").replace(/[\s|]/g, "");
+  return base[0] === "c" ? "center" : base[0] === "r" ? "right" : "left";
+}
+
 export type LatexDefinitions = {
   /** Every definition of each name, in reading order (later ones win from where they are). */
   macros: Map<string, LatexMacro[]>;
@@ -77,6 +89,8 @@ export type LatexDefinitions = {
   secnumdepth?: number;
   /** `\graphicspath{{dir/}…}` directories, in order. */
   graphicsPaths: string[];
+  /** array's `\newcolumntype{L}[1]{>{\raggedright}p{#1}}`: its arguments and how it aligns. */
+  columnTypes: Map<string, LatexColumnType>;
   /** Where the open file's definitions are (absolute ranges, in order), so edits inside one re-read them. */
   extents: Array<{ from: number; to: number }>;
   /** Definitions that are wrong (a body using `#3` with two arguments). */
@@ -90,11 +104,11 @@ export type LatexDefinitions = {
 export function emptyLatexDefinitions(): LatexDefinitions {
   return {
     macros: new Map(), environments: new Map(), theorems: new Map(), counterWithin: new Map(), counterPrefix: new Map(), crefNames: new Map(),
-    documentClass: null, packages: [], graphicsPaths: [], extents: [], problems: [], unsupported: [], fingerprint: "",
+    documentClass: null, packages: [], graphicsPaths: [], columnTypes: new Map(), extents: [], problems: [], unsupported: [], fingerprint: "",
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -327,7 +341,31 @@ function effectivePos(context: ReadContext, index: number) {
   return index < context.bodyStart ? -1 : context.offset + index;
 }
 
+/** Whether a body uses the command it defines (`\def\small{\@setsize\small{10pt}\ixpt\@ixpt}`). */
+function selfReferent(name: string, body: string) {
+  if (!body.includes(`\\${name}`)) return false;
+  return new RegExp(`\\\\${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z@])`).test(body);
+}
+
+/**
+ * LaTeX's commands the Visual mode draws itself. A package or class restyles them for the page
+ * (neurips_2020.sty's `\section` is `\@startsection{section}{1}{\z@}…`, its `\small` a font size):
+ * that does not change what they show. The document's own redefinitions do.
+ */
+const DRAWN_BUILTINS = new Set([
+  "part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph", "appendix",
+  "title", "author", "date", "thanks", "and", "maketitle", "caption", "label", "ref", "eqref", "cite", "footnote", "footnotemark", "footnotetext",
+  "textbf", "textit", "textsl", "textsc", "texttt", "textsf", "textrm", "textup", "textmd", "textnormal", "emph", "underline", "textsuperscript", "textsubscript",
+  "tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge",
+  "rm", "bf", "it", "sl", "sc", "tt", "sf", "em", "includegraphics", "href", "url", "item",
+]);
+const PACKAGE_FILE = /\.(?:sty|cls)$/i;
+
 function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, mode: "new" | "renew" | "provide"): LatexMacro | null {
+  // A class's or package's font machinery (naaclhlt2019.sty's `\small`) passes the command itself as a token,
+  // which expanding cannot follow: LaTeX's own meaning is drawn instead.
+  if (!macro.alias && selfReferent(macro.name, macro.body)) return null;
+  if (context.file !== undefined && PACKAGE_FILE.test(context.file) && DRAWN_BUILTINS.has(macro.name)) return null;
   const existing = context.defs.macros.get(macro.name);
   if (mode === "provide" && existing?.length) return null;
   const fingerprint = hashString(JSON.stringify([macro.name, macro.arity, macro.optional ?? null, macro.spec ?? null, macro.body, !!macro.mathOnly, !!macro.unsupported, !!macro.alias, mode === "provide"]));
@@ -482,10 +520,14 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       if (!begin || !endCode) { note(defs.problems, name, `${name} needs begin and end code`); broken = true; }
       else {
         end = endCode.end;
-        // An environment that cannot be rendered is left out; one under a condition too.
-        if (uncertain) { note(defs.unsupported, name, `${name} is defined under a condition`); defs.environments.delete(name); }
-        else if (supported) defs.environments.set(name, { name, arity, optional, spec, begin: begin.content, end: endCode.content, pos });
-        else defs.environments.delete(name);
+        // An environment that cannot be rendered is left out; one under a condition too. A package or class that
+        // restyles an existing one (neurips_2020.sty's `table`, for its caption skips) does not change what it shows.
+        const restyled = /^[Rr]enew/.test(command) && context.file !== undefined && PACKAGE_FILE.test(context.file);
+        if (!restyled) {
+          if (uncertain) { note(defs.unsupported, name, `${name} is defined under a condition`); defs.environments.delete(name); }
+          else if (supported) defs.environments.set(name, { name, arity, optional, spec, begin: begin.content, end: endCode.content, pos });
+          else defs.environments.delete(name);
+        }
       }
     } else if (command === "theoremstyle") {
       const style = readGroupAt(source, index);
@@ -562,6 +604,16 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         end = group.end;
         defs.graphicsPaths = [...group.content.matchAll(/\{([^{}]*)\}/g)].map((path) => path[1].trim()).filter(Boolean);
       }
+    } else if (command === "newcolumntype") {
+      // `\newcolumntype{L}[1]{…}`: a column letter, its arguments and its body.
+      const letter = readGroupAt(source, index);
+      const count = letter ? readOptionalAt(source, letter.end) : null;
+      const body = letter ? readGroupAt(source, count?.end ?? letter.end) : null;
+      if (letter && body && /^\s*[A-Za-z]\s*$/.test(letter.content)) {
+        end = body.end;
+        const arity = count ? Number(count.content.trim()) : 0;
+        defs.columnTypes.set(letter.content.trim(), { arity: Number.isInteger(arity) && arity >= 0 && arity <= 9 ? arity : 0, align: columnTypeAlign(body.content) });
+      }
     }
 
     if (added && !global) (scanner.innermost()?.locals ?? []).push(added);
@@ -587,6 +639,7 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [counter, within] of defs.counterPrefix) parts.push(`${counter}<<${within}`);
   for (const [key, names] of defs.crefNames) parts.push(`${key}=${names.singular}/${names.plural}`);
   parts.push(defs.documentClass ?? "", String(defs.secnumdepth ?? ""), defs.graphicsPaths.join("|"));
+  for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}`);
   return hashString(parts.join("\u0000"));
 }
 

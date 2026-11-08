@@ -4,6 +4,7 @@ import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view"
 import { findMathRegion, readPreviewMacros, type MathRegion } from "./math";
 import { expandLatexMacros } from "../macros/expand";
 import { definitionsField } from "./visual/model";
+import { forKatex, KATEX_MACROS } from "./visual/math-render";
 
 /* While the cursor is inside math, a rendered preview of that formula floats
  * below it. Escape hides it until the cursor leaves the formula. */
@@ -82,12 +83,12 @@ function tooltipFor(state: EditorState): Tooltip | null {
         const defs = state.field(definitionsField, false);
         const tex = texForRegion(preview.region, preview.source);
         const expanded = defs ? expandLatexMacros(tex, defs, { mode: "math", pos: preview.region.from }) : null;
-        katex.render(expanded?.ok ? expanded.text : tex, dom, {
+        katex.render(forKatex(expanded?.ok ? expanded.text : tex), dom, {
           displayMode: preview.region.display,
           throwOnError: false,
           strict: "ignore",
           trust: false,
-          macros: expanded?.ok ? {} : { ...previewMacros(state) },
+          macros: expanded?.ok ? { ...KATEX_MACROS } : { ...KATEX_MACROS, ...previewMacros(state) },
           maxExpand: 500,
           output: "html",
         });

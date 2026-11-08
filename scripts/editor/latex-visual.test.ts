@@ -23,6 +23,8 @@ import { setMacroSources } from "../../src/lib/latex/codemirror/visual/model";
 import { showTooltip } from "@codemirror/view";
 import { graphicsCandidates, isEditingCell, refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
 import { citationText, plainTexText, stateReferenceText } from "../../src/lib/latex/codemirror/visual/references";
+import { latexParser } from "../../src/lib/latex/codemirror/latex-parser";
+import { parseAlgorithmic } from "../../src/lib/latex/codemirror/visual/algorithm";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -220,9 +222,389 @@ Steps \textcircled{3} and {\small small} text.
   assert.equal(figure.querySelector(".cm-vis-figure-drawing-name")?.textContent, "fig_co_setting.tex");
   assert.match(figure.querySelector(".cm-vis-caption-text")?.textContent ?? "", /The CO scheme\. ① Commit\. ② Jitter\./);
   const line = [...view.contentDOM.querySelectorAll(".cm-line")].find((element) => element.textContent?.startsWith("Steps"))!;
-  // The size switch is hidden; the group's braces stay, as for any group.
-  assert.equal(line.textContent, "Steps ③ and { small} text.");
+  // A group opened by a size switch is drawn as its text: one size here.
+  assert.equal(line.textContent, "Steps ③ and small text.");
   view.destroy();
+});
+
+/* ---- Real papers: floats, algorithms and older LaTeX (the audit against GAN, BERT, DDPM) ---- */
+
+const PAPER = String.raw`\documentclass{article}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand{\bx}{\mathbf{x}}
+\newcommand\bert{BERT\xspace}
+\newtoggle{hq}
+\togglefalse{hq}
+\begin{document}
+\section{Intro}
+\begin{table*}[t]
+\caption{Wide.}\label{tab:wide}
+\begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}c}
+A & {\bf 1} \tabularnewline
+\end{tabular*}
+\end{table*}
+
+\begin{figure}[t]
+\begin{minipage}[t]{0.5\textwidth}
+\begin{algorithm}[H]
+\caption{Training}\label{alg:training}
+\begin{algorithmic}[1]
+\Repeat
+\State $\bx_0 \sim q$
+\Until{converged}
+\end{algorithmic}
+\end{algorithm}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.45\textwidth}
+\captionof{table}{Results.}\label{tab:results}
+\begin{tabular}{lL{2cm}}
+\bert & \rlap{$^*$}x \\
+\end{tabular}
+\end{minipage}
+\end{figure}
+
+\begin{table}[t]
+\begin{center}{\small
+\begin{tabular}{lc}
+a & b \\
+\end{tabular}}
+\end{center}
+\caption{Grouped.}\label{tab:grouped}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.75\textwidth]{\iftoggle{hq}{hq/x.pdf}{lq/x.png}}
+\caption{\small{Toggled.} $\textsc{Base}$}\label{fig:toggled}
+\end{figure}
+
+\iffalse
+\begin{figure}\caption{Hidden.}\label{fig:hidden}\end{figure}
+\fi
+
+\begin{align}
+\label{eq:late} a &= b \nonumber \\
+c &= \hat\bx_0
+\end{align}
+
+{\tt [CLS]} and {\bf bold}, as \newcite{devlin}.\footnotemark\footnotetext{Note.}
+
+\begin{ack}
+Thanks.
+\end{ack}
+\end{document}
+`;
+
+test("numbering follows starred floats, algorithms, \\captionof panels, \\iffalse and labels in \\nonumber rows", () => {
+  const view = mount(PAPER);
+  number(view);
+  const ref = (key: string) => stateReferenceText(view.state, "\\ref", [key]);
+  // table* is Table 1; the algorithm in a minipage is Algorithm 1; \captionof{table} in the other minipage is Table 2;
+  // the hidden figure in \iffalse is not counted, so the toggled one is Figure 1; the label in a \nonumber row is the next row's.
+  assert.deepEqual([ref("tab:wide"), ref("alg:training"), ref("tab:results"), ref("tab:grouped"), ref("fig:toggled"), ref("eq:late")], ["1", "1", "2", "3", "1", "1"]);
+  assert.equal(stateReferenceText(view.state, "\\cref", ["alg:training"]), "algorithm 1");
+  assert.ok(!view.state.field(numberingField).labels.has("fig:hidden"));
+  view.destroy();
+});
+
+test("floats of real papers are drawn: table*, minipage panels with algorithms and \\captionof, grouped tables, toggled images", async () => {
+  const view = mount(PAPER);
+  number(view);
+  const content = view.contentDOM;
+  const scrollTo = async (needle: string) => {
+    view.dispatch({ effects: EditorView.scrollIntoView(at(view, needle), { y: "start" }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  await scrollTo("\\begin{table*}");
+  const wide = content.querySelector(".cm-vis-figure-table")!;
+  assert.equal(wide.querySelector(".cm-vis-caption")?.textContent, "Table 1: Wide.");
+  // `\tabularnewline` ends the row; `{\bf 1}` is bold.
+  assert.deepEqual([...wide.querySelectorAll("td")].map((td) => td.textContent?.trim()), ["A", "1"]);
+  assert.ok(wide.querySelector("td .cm-vis-b"));
+  await scrollTo("\\begin{figure}[t]");
+  const panels = [...content.querySelectorAll(".cm-vis-figure-panel")];
+  assert.equal(panels.length, 2);
+  assert.equal(panels[0].querySelector(".cm-vis-caption")?.textContent, "Algorithm 1 Training");
+  assert.deepEqual([...panels[0].querySelectorAll(".cm-vis-algorithm-line")].map((line) => line.textContent?.replace(/\s+/g, " ").trim()), ["1:repeat", "2:x0\u200b\u223cq", "3:until converged"]);
+  assert.equal(panels[1].querySelector(".cm-vis-caption")?.textContent, "Table 2: Results.");
+  // \xspace draws nothing; \rlap draws its content.
+  assert.deepEqual([...panels[1].querySelectorAll("td")].map((td) => td.textContent?.trim()), ["BERT", "∗x"]);
+  assert.ok(!panels[1].querySelector(".cm-vis-raw"));
+  await scrollTo("\\begin{table}[t]");
+  assert.ok([...content.querySelectorAll(".cm-vis-caption")].some((caption) => caption.textContent === "Table 3: Grouped."), "a tabular in {\\small …} is drawn");
+  await scrollTo("\\begin{figure}[h]");
+  const toggled = [...content.querySelectorAll(".cm-vis-figure-figure")].find((figure) => figure.textContent?.includes("Toggled"))!;
+  assert.match(toggled.querySelector(".cm-vis-caption")?.textContent ?? "", /^Figure 1: Toggled\. /);
+  assert.ok(!toggled.querySelector(".cm-vis-raw"), "\\small{…} and \\textsc in math draw");
+  view.destroy();
+});
+
+test("\\iffalse … \\fi is faded source with nothing in it drawn; old font switches, \\newcite, \\footnotetext and ack draw", async () => {
+  const view = mount(PAPER);
+  const kindsAt = (needle: string) => { const pos = at(view, needle); const out: string[] = []; view.state.field(structuralField).extents.between(pos, pos + 1, (_from, _to, mark) => { out.push(mark.kind); }); return out; };
+  // Nothing in it is drawn (no figure), and its lines are faded.
+  assert.deepEqual(kindsAt("\\caption{Hidden.}"), ["disabled"]);
+  view.dispatch({ effects: EditorView.scrollIntoView(at(view, "\\iffalse"), { y: "center" }) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const hidden = [...view.contentDOM.querySelectorAll(".cm-line")].find((element) => element.textContent?.includes("Hidden."))!;
+  assert.ok(hidden.classList.contains("cm-vis-disabled"));
+  view.dispatch({ effects: EditorView.scrollIntoView(at(view, "{\\tt [CLS]}"), { y: "center" }) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const line = [...view.contentDOM.querySelectorAll(".cm-line")].find((element) => element.textContent?.includes("[CLS]"))!;
+  assert.equal(line.querySelector(".cm-vis-tt")?.textContent, "[CLS]");
+  assert.equal(line.querySelector(".cm-vis-b")?.textContent, "bold");
+  assert.ok(line.querySelector(".cm-vis-cite"), "\\newcite is a citation chip");
+  assert.equal(line.querySelector(".cm-vis-footnote")?.textContent, "Note.");
+  assert.ok([...view.contentDOM.querySelectorAll(".cm-vis-env-title")].some((title) => title.textContent === "Acknowledgments"));
+  // `\hat\bx_0` is a formula: the macro's expansion is the accent's argument.
+  assert.ok(kindsAt("\\begin{align}").includes("math"));
+  view.destroy();
+});
+
+test("edits around \\iffalse, font switches and floats build the same constructs as a fresh build", () => {
+  const pieces = ["\\iffalse", "\\fi", "\\else", "{\\bf x}", "{\\tt [A]}", "{", "}", "\\begin{table*}", "\\end{table*}", "\\caption{c}", "\n\n", "\\State x", "\\begin{minipage}{1cm}", "\\end{minipage}"];
+  const start = PAPER.indexOf("\\begin{document}") + 17;
+  fc.assert(fc.property(fc.array(fc.record({ at: fc.nat(), remove: fc.nat({ max: 5 }), insert: fc.constantFrom(...pieces) }), { maxLength: 5 }), (edits) => {
+    const view = mount(PAPER);
+    try {
+      for (const edit of edits) {
+        const length = view.state.doc.length;
+        const from = start + (edit.at % Math.max(1, length - start - 16));
+        const to = Math.min(length - 16, from + edit.remove);
+        view.dispatch({ changes: { from, to: Math.max(from, to), insert: edit.insert } });
+        ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+        view.dispatch({});
+      }
+      assert.deepEqual(constructs(view.state), constructs(stateFor(view.state.doc.toString())));
+    } finally {
+      view.destroy();
+    }
+  }), { numRuns: 40 });
+});
+
+test("algorithmic bodies of both packages are read into indented, numbered lines", () => {
+  const caps = parseAlgorithmic(String.raw`
+\REQUIRE data
+\FOR{each $x$}
+  \IF{$x > 0$} \STATE keep \COMMENT{positive}
+  \ELSE \STATE drop
+  \ENDIF
+\ENDFOR
+\RETURN $y$`, "1")!;
+  assert.deepEqual(caps.lines.map((line) => [line.depth, line.lead ?? "", line.text, line.trail ?? "", line.comment ?? "", line.numbered]), [
+    [0, "Require:", "data", "", "", false],
+    [0, "for", "each $x$", "do", "", true],
+    [1, "if", "$x > 0$", "then", "", true],
+    [2, "", "keep", "", "positive", true],
+    [1, "else", "", "", "", true],
+    [2, "", "drop", "", "", true],
+    [1, "end if", "", "", "", true],
+    [0, "end for", "", "", "", true],
+    [0, "return", "$y$", "", "", true],
+  ]);
+  const pseudo = parseAlgorithmic(String.raw`\label{alg} \vspace{1pt} \Function{Train}{$D$} \State \Return $m$ \EndFunction`, null)!;
+  assert.deepEqual(pseudo.lines.map((line) => [line.depth, line.lead, line.text]), [[0, "function", String.raw`\textsc{Train}($D$)`], [1, "return", "$m$"], [0, "end function", ""]]);
+  assert.equal(pseudo.numberEvery, 0);
+  // algorithm2e is not read: left as source.
+  assert.equal(parseAlgorithmic(String.raw`\KwIn{x} \eIf{a}{b}{c}`, null), null);
+});
+
+test("the parser reads a file path argument with groups (\\iftoggle) as one argument", () => {
+  const tree = latexParser.parse(String.raw`\begin{figure}\includegraphics{\iftoggle{hq}{a.pdf}{b.pdf}}\caption{C}\end{figure}`);
+  let caption: string | null = null;
+  tree.iterate({ enter: (ref) => { if (ref.name === "Caption") { for (let parent = ref.node.parent; parent; parent = parent.parent) if (parent.name === "FigureEnvironment") caption = "inside"; } } });
+  assert.equal(caption, "inside");
+  // A path being typed (an unclosed group) ends at the first `}`, as before: it does not swallow the file.
+  const typing = latexParser.parse(String.raw`\includegraphics{a{b}` + "\n\nText \\textbf{x}");
+  let bold = false;
+  typing.iterate({ enter: (ref) => { if (ref.name === "TextBoldCommand") bold = true; } });
+  assert.ok(bold);
+});
+
+/* ---- Real papers, second batch (the audit against ResNet, Neural ODE, ViT) ---- */
+
+const PAPER2 = String.raw`\documentclass{article}
+\usepackage{cvpr}
+\newcommand{\tr}{\textnormal{tr}}
+\newcommand{\blocka}[2]{\multirow{2}{*}{$\left[\text{3$\times$3, #1}\right]$$\times$#2}}
+\newcommand{\nfwidth}{0.3\linewidth}
+\begin{document}
+\section{Method}\label{sec:method}
+\begin{align}
+\frac{\partial z}{\partial t} &= -\tr\left(\frac{\partial f}{\partial z}\right) \textnormal{ if $t > 0$} \label{eq:trace}
+\end{align}
+with $\nicefrac{\partial L}{\partial z}$ and $\mathcal{L}_{\ref{eq:trace}}$, \eg here.
+
+\begin{figure}[t]
+\centering
+\begin{subfigure}{0.3\linewidth}
+\includegraphics[width=\linewidth]{a.png}
+\caption{Left.}\label{fig:left}
+\end{subfigure}
+\begin{subfigure}{0.3\linewidth}
+\includegraphics[width=\linewidth]{b.png}
+\caption*{}
+\end{subfigure}
+\begin{subfigure}{\nfwidth}
+\includegraphics[width=\linewidth]{c.png}
+\caption{Right.}\label{fig:right}
+\end{subfigure}
+\caption{Both.}\label{fig:both}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\resizebox{0.7\linewidth}{!}{
+\begin{tabular}{c|c}
+% the stages
+layer & output \\
+\hline
+conv2 & \blocka{64}{2} \\
+ & \\
+\end{tabular}
+}
+\caption{Architectures.}\label{tab:arch}
+\vspace{1em}
+\begin{tabular}{lc}
+\raisebox{0.5pt}{\tikz\fill[blue] (0,0) circle (.5ex);} Natural\vspace{2pt} & \begin{tabular}{c}a\\b\end{tabular} \\
+\end{tabular}
+\caption{Transfer.}\label{tab:transfer}
+\end{table}
+
+\begin{appendices}
+\section{Proofs}\label{app:proofs}
+\begin{equation}\label{eq:app}x\end{equation}
+\end{appendices}
+\end{document}
+`;
+const PAPER2_PACKAGE = { path: "nb/cvpr.sty", text: String.raw`\DeclareRobustCommand\onedot{\futurelet\@let@token\@onedot}
+\def\@onedot{\ifx\@let@token.\else.\null\fi\xspace}
+\def\eg{\emph{e.g}\onedot}`, loadedBy: "", key: "package:cvpr", version: "1" };
+
+function mountPaper2() {
+  const view = mount(PAPER2);
+  view.dispatch({ effects: setMacroSources.of([PAPER2_PACKAGE]) });
+  return view;
+}
+const scrollTo = async (view: EditorView, needle: string) => {
+  view.dispatch({ effects: EditorView.scrollIntoView(at(view, needle), { y: "start" }) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
+test("numbering follows subcaption's sub-figures (letters, \\caption* skipped), two tables in one float and appendices", () => {
+  const view = mountPaper2();
+  number(view);
+  const ref = (key: string) => stateReferenceText(view.state, "\\ref", [key]);
+  // The sub-figures are captioned before their figure: 1a, then 1b (the \caption* one has no letter).
+  // The second caption in one table is Table 2. `appendices` letters its sections; equations go on (article).
+  assert.deepEqual(["fig:left", "fig:right", "fig:both", "tab:arch", "tab:transfer", "app:proofs", "eq:app"].map(ref), ["1a", "1b", "1", "1", "2", "A", "2"]);
+  view.destroy();
+});
+
+test("floats of the second batch draw: sub-figure panels, tables in \\resizebox, \\multirow through a macro, stacked captions, nested tabulars", async () => {
+  const view = mountPaper2();
+  number(view);
+  const content = view.contentDOM;
+  await scrollTo(view, "\\begin{figure}");
+  const figure = content.querySelector(".cm-vis-figure-figure")!;
+  // Each sub-figure is a panel with its letter; `\caption*{}` shows nothing; the figure's own caption is below them.
+  assert.deepEqual([...figure.querySelectorAll(".cm-vis-figure-panel")].map((panel) => panel.querySelector(".cm-vis-caption")?.textContent ?? null), ["(a) Left.", null, "(b) Right."]);
+  assert.equal(figure.querySelectorAll(".cm-vis-figure-image").length, 3);
+  assert.equal(figure.lastElementChild?.textContent, "Figure 1: Both.");
+  await scrollTo(view, "\\begin{table}");
+  const table = content.querySelector(".cm-vis-figure-table")!;
+  // Two captions without minipages: two parts, one above the other.
+  assert.ok(table.querySelector(".cm-vis-figure-panels-stacked"));
+  assert.deepEqual([...table.querySelectorAll(".cm-vis-caption")].map((caption) => caption.textContent), ["Table 1: Architectures.", "Table 2: Transfer."]);
+  const cells = [...table.querySelectorAll("td")].map((td) => [td.textContent?.replace(/[\u200b\u2063]/g, "").replace(/\s+/g, " ").trim(), (td as HTMLTableCellElement).rowSpan]);
+  // The comment line before the first row is not a cell; `\blocka` writes a \multirow, which covers the empty cell below;
+  // `\vspace` in a cell draws nothing, a TikZ swatch is a square; a tabular in a cell is a grid in it.
+  assert.deepEqual(cells, [["layer", 1], ["output", 1], ["conv2", 1], ["[3×3, 64]×2", 2], ["", 1], ["■ Natural", 1], ["ab", 1], ["a", 1], ["b", 1]]);
+  assert.equal(table.querySelectorAll(".cm-vis-table-nested").length, 1);
+  assert.ok(!table.querySelector(".cm-vis-raw"));
+  view.destroy();
+});
+
+test("formulas of the second batch: \\textnormal with $ inside align, \\nicefrac, and \\ref in math following numbering; cvpr's \\eg", async () => {
+  // The `$` inside \textnormal does not end the align: the parser reads its argument as text.
+  const tree = latexParser.parse(String.raw`\begin{align}a &= b \textnormal{ if $t > 0$} \\ c &= d\end{align}`);
+  let errors = 0;
+  let mathText = 0;
+  tree.iterate({ enter: (node) => { if (node.type.isError) errors++; if (node.name === "MathTextCommand") mathText++; } });
+  assert.deepEqual([errors, mathText], [0, 1]);
+  const view = mountPaper2();
+  assert.equal(kinds(view.state).math, 4, "the align, two inline formulas and the appendix's equation");
+  await scrollTo(view, "with $");
+  const line = () => [...view.contentDOM.querySelectorAll(".cm-line")].find((element) => element.textContent?.startsWith("with"))!;
+  // Before numbering, the reference is unknown; once numbered, the formula is drawn again with its number.
+  assert.match(line().textContent ?? "", /L\?/);
+  number(view);
+  assert.equal(line().textContent?.replace(/\u200b/g, ""), "with ∂L/∂z and L1, e.g. here.");
+  view.destroy();
+});
+
+test("heading numbers stay right when scrolling reuses a heading's drawing for another heading", async () => {
+  const view = mountPaper2();
+  try {
+    number(view);
+    // A heading's line: its number, title and label chip.
+    const heading = (title: string) => [...view.contentDOM.querySelectorAll(".cm-line")].map((line) => line.textContent ?? "").find((text) => text.includes(title));
+    await scrollTo(view, "\\section{Method}");
+    assert.match(heading("Method") ?? "", /^1\sMethod/);
+    await scrollTo(view, "\\begin{appendices}");
+    assert.match(heading("Proofs") ?? "", /^A\sProofs/);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("a package's font machinery (\\def\\small{…\\small…}) is LaTeX's own command; \\xspace spaces before a word, not before punctuation", async () => {
+  const doc = String.raw`\documentclass{article}
+\usepackage{naacl}
+\newcommand\bertbase{BERT$_{\small \textsc{BASE}}$\xspace}
+\begin{document}
+Using the \bertbase architecture, as \bertbase.
+
+\begin{tabular}{l}
+\bertbase (Single) \\
+\end{tabular}
+\end{document}
+`;
+  const view = mount(doc);
+  try {
+    view.dispatch({ effects: setMacroSources.of([{ path: "nb/naacl.sty", text: String.raw`\def\small{\@setsize\small{10pt}\ixpt\@ixpt}`, loadedBy: "", key: "package:naacl", version: "1" }]) });
+    assert.ok(!visualDefinitions(view.state).macros.has("small"));
+    await scrollTo(view, "Using");
+    const clean = (text: string | null | undefined) => (text ?? "").replace(/[​⁣]/g, "").replace(/\s+/g, " ").trim();
+    const line = [...view.contentDOM.querySelectorAll(".cm-line")].find((element) => element.textContent?.startsWith("Using"))!;
+    assert.equal(clean(line.textContent), "Using the BERTBASE architecture, as BERTBASE.");
+    assert.ok(!view.contentDOM.querySelector(".cm-vis-raw"));
+    assert.equal(clean(view.contentDOM.querySelector("td")?.textContent), "BERTBASE (Single)");
+  } finally {
+    view.destroy();
+  }
+});
+
+test("edits around sub-figures, references in formulas and \\multirow cells build the same constructs as a fresh build", () => {
+  const pieces = ["\\begin{subfigure}{1cm}", "\\end{subfigure}", "\\caption*{}", "\\caption{c}", "$\\ref{eq:trace}$", "$", "\\multirow{2}{*}{x}", " & ", "\\\\", "\\textnormal{ $t$}", "{", "}", "\n\n"];
+  const start = PAPER2.indexOf("\\begin{document}") + 17;
+  fc.assert(fc.property(fc.array(fc.record({ at: fc.nat(), remove: fc.nat({ max: 5 }), insert: fc.constantFrom(...pieces) }), { maxLength: 5 }), (edits) => {
+    const view = mountPaper2();
+    try {
+      for (const edit of edits) {
+        const length = view.state.doc.length;
+        const from = start + (edit.at % Math.max(1, length - start - 16));
+        const to = Math.min(length - 16, from + edit.remove);
+        view.dispatch({ changes: { from, to: Math.max(from, to), insert: edit.insert } });
+        ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+        view.dispatch({});
+      }
+      const reference = stateFor(view.state.doc.toString()).update({ effects: setMacroSources.of([PAPER2_PACKAGE]) }).state;
+      assert.deepEqual(constructs(view.state), constructs(reference));
+    } finally {
+      view.destroy();
+    }
+  }), { numRuns: 40 });
 });
 
 test("clicking a citation or label chip opens its source, with the cursor after its keys", () => {
@@ -339,7 +721,11 @@ test("a figure with content the widget does not draw stays source", () => {
   const drawn = mount("\\begin{figure}[h]\n\\centering\\small\n\\includegraphics[width=.5\\textwidth]{a}\n\\caption{C}\\label{fig:a}\n\\end{figure}");
   assert.equal(kinds(drawn.state).figure, 1);
   drawn.destroy();
-  for (const inner of ["Some text \\includegraphics{a}\\caption{C}", "\\includegraphics{a}\\foo\\caption{C}", "\\begin{subfigure}{.5\\textwidth}\\includegraphics{a}\\caption{A}\\end{subfigure}\\caption{C}"]) {
+  // Sub-figures of images (one above the other, with `\\`) are panels of their figure; one holding text keeps the figure source.
+  const panels = mount("\\begin{figure}\n\\begin{subfigure}{.5\\textwidth}\\includegraphics{a}\\\\\n\\includegraphics{b}\\caption{A}\\end{subfigure}\\caption{C}\n\\end{figure}");
+  assert.ok(constructs(panels.state).some((entry) => entry.startsWith("figure:0:")));
+  panels.destroy();
+  for (const inner of ["Some text \\includegraphics{a}\\caption{C}", "\\includegraphics{a}\\foo\\caption{C}", "\\begin{subfigure}{.5\\textwidth}K=2 \\includegraphics{a}\\caption{A}\\end{subfigure}\\caption{C}"]) {
     const view = mount(`\\begin{figure}\n${inner}\n\\end{figure}`);
     // (A sub-figure may still be drawn on its own.)
     assert.ok(!constructs(view.state).some((entry) => entry.startsWith("figure:0:")), inner);

@@ -1,7 +1,8 @@
 import "./setup.cjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parser } from "codemirror-lang-latex/src/latex.mjs";
+// The parser Libera uses: the package's, with nested groups in file paths (latex-parser.ts).
+import { latexParser as parser } from "../../src/lib/latex/codemirror/latex-parser";
 import { parseLatexAux } from "../../src/lib/latex/aux-file";
 import { bodyStartOf, collectLatexDefinitions, emptyLatexDefinitions, loadKey, macroAt, readLatexDefinitions, readLatexInputs } from "../../src/lib/latex/macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode } from "../../src/lib/latex/macros/expand";
@@ -21,6 +22,33 @@ function number(source: string, options: Parameters<typeof computeLatexNumbering
 }
 
 /* ---- Shared primitives -------------------------------------------------------- */
+
+test("a math macro used as a one-token argument expands in braces, as TeX reads it", () => {
+  const defs = defsOf(String.raw`\newcommand{\bx}{\mathbf{x}}\newcommand{\by}{\mathbf{y}}\newcommand{\defeq}{\coloneqq}\newcommand{\E}{\mathbb{E}}`);
+  const math = (text: string) => expandLatexMacros(text, defs, { mode: "math" }).text;
+  assert.equal(math(String.raw`\hat\bx_0`), String.raw`\hat{\mathbf{x}}_0`);
+  assert.equal(math(String.raw`\frac\bx\by`), String.raw`\frac{\mathbf{x}}{\mathbf{y}}`);
+  assert.equal(math(String.raw`x^\bx`), String.raw`x^{\mathbf{x}}`);
+  // Not an argument: written as it is, so a relation stays a relation.
+  assert.equal(math(String.raw`a \defeq b`), String.raw`a \coloneqq b`);
+  assert.equal(math(String.raw`\E[\bx]`), String.raw`\mathbb{E}[\mathbf{x}]`);
+  // In text, nothing changes.
+  assert.equal(expandLatexMacros(String.raw`see \bx`, defs, { mode: "text" }).text, String.raw`see \mathbf{x}`);
+});
+
+test("numbering skips \\iffalse … \\fi, but counts what follows an \\else", () => {
+  const numbering = number(String.raw`\documentclass{article}\begin{document}
+\section{A}
+\iffalse
+\section{Hidden}
+\ifx\a\b \section{Nested} \fi
+\else
+\section{B}\label{sec:b}
+\fi
+\section{C}\label{sec:c}
+\end{document}`);
+  assert.deepEqual([numbering.labels.get("sec:b")?.number, numbering.labels.get("sec:c")?.number], ["2", "3"]);
+});
 
 test("the shared group readers handle nesting, escapes and optional arguments", () => {
   assert.deepEqual(readGroup("{a{b}\\}c}d", 0), { content: "a{b}\\}c", end: 9 });
@@ -229,8 +257,10 @@ test("math macros expand with arguments, defaults and undelimited arguments", ()
 });
 
 test("expansion stops at recursion, depth and size limits", () => {
-  const recursive = defsOf(String.raw`\newcommand{\loop}{\loop x}`);
-  assert.equal(expandLatexMacros("\\loop", recursive).ok, false);
+  // A command naming itself is not read as a macro (it stays source); two naming each other stop at the limit.
+  assert.ok(!defsOf(String.raw`\newcommand{\loop}{\loop x}`).macros.has("loop"));
+  const recursive = defsOf(String.raw`\newcommand{\ping}{\pong x}\newcommand{\pong}{\ping y}`);
+  assert.equal(expandLatexMacros("\\ping", recursive).ok, false);
   const explosive = defsOf(String.raw`\newcommand{\a}{\b\b\b\b}\newcommand{\b}{\c\c\c\c}\newcommand{\c}{\d\d\d\d}\newcommand{\d}{\e\e\e\e}\newcommand{\e}{\f\f\f\f}\newcommand{\f}{\g\g\g\g}\newcommand{\g}{xxxxxxxxxxxxxxxxxxxx}`);
   assert.equal(expandLatexMacros("\\a", explosive).ok, false);
   const missing = defsOf(String.raw`\newcommand{\two}[2]{#1#2}`);
@@ -528,4 +558,27 @@ test("counters numbered within themselves and huge values do not hang or crash",
   assert.equal(formatCounterValue(1_000_000_000, "Roman"), "1000000000");
   assert.equal(formatCounterValue(0, "alph"), "0");
   assert.ok(Date.now() - started < 50);
+});
+
+test("a package restyling LaTeX's own commands and environments does not change what they show; the document's own redefinitions do", () => {
+  // neurips_2020.sty and naaclhlt2019.sty: sizes and sections through the kernel's machinery, and a restyled `table`.
+  const sty = String.raw`\renewcommand{\section}{\@startsection{section}{1}{\z@}{-2.0ex}{1.5ex}{\large\bf\raggedright}}
+\def\small{\@setsize\small{10pt}\ixpt\@ixpt}
+\renewcommand{\large}{\@setfontsize\large\@xiipt{14}}
+\renewenvironment{table}{\@float{table}}{\end@float}
+\newenvironment{note}{[}{]}
+\def\eg{e.g.}`;
+  const defs = readLatexDefinitions(sty, undefined, { file: "styles/neurips_2020.sty" });
+  assert.deepEqual([...defs.macros.keys()].sort(), ["eg"]);
+  assert.deepEqual([...defs.environments.keys()], ["note"]);
+  // A use through such a command expands: `\small` is LaTeX's.
+  const doc = readLatexDefinitions(String.raw`\newcommand\bertbase{BERT$_{\small \textsc{BASE}}$}`, defs);
+  assert.deepEqual(expandLatexMacros(String.raw`\bertbase`, doc, { mode: "text" }), { text: String.raw`BERT$_{\small \textsc{BASE}}$`, used: [doc.macros.get("bertbase")![0].fingerprint], ok: true });
+  // In the document, or a .tex file it inputs, they are the document's own.
+  for (const file of [undefined, "chapters/macros.tex"]) {
+    const own = readLatexDefinitions(String.raw`\renewcommand{\section}[1]{S: #1}\renewenvironment{table}{[}{]}`, undefined, { file });
+    assert.ok(own.macros.has("section") && own.environments.has("table"), file);
+  }
+  // A command that names itself is never expanded, wherever it is defined.
+  assert.ok(!defsOf(String.raw`\def\normalsize{\@setfontsize\normalsize\@xpt\@xipt}`).macros.has("normalsize"));
 });

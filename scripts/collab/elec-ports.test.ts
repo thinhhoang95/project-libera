@@ -153,9 +153,17 @@ test("utility host: start, ready, attach, secrets, shutdown", { timeout: 60_000 
   const utility = new UtilityHost(parent, { logger: quietLogger, onExit: (code) => exits.push(code), app: { host: { compaction: false, hubIdleMs: 10, connectTimeoutMs: 2_000 } } });
   try {
     fromMain({ t: "start", protocol: 1, userData, dataDir, appVersion: "test", port: 0, token: "utility-token" });
+    // Main's power state and a wake from sleep can arrive before the app has started.
+    fromMain({ t: "power", onBattery: true });
+    fromMain({ t: "resume" });
     await until(() => sent.some((message) => message.t === "ready" || message.t === "fatal"), "ready");
     const ready = sent.find((message) => message.t === "ready") as Extract<HostToMain, { t: "ready" }>;
     assert.ok(ready, JSON.stringify(sent));
+    const runtimeState = () => utility.controlApp?.runtime as unknown as { onBattery: boolean };
+    assert.equal(runtimeState().onBattery, true, "the power state sent while starting reached the runtime");
+    assert.equal((utility as unknown as { resumedWhileStarting: boolean }).resumedWhileStarting, false, "the wake was replayed after start");
+    fromMain({ t: "power", onBattery: false });
+    assert.equal(runtimeState().onBattery, false);
     assert.match(ready.url, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.ok(secretsAsked.includes("decrypt"), "the session was decrypted by main");
     assert.ok(existsSync(path.join(collabDir, `${databaseKey("acct_test", "http://127.0.0.1:9")}.sqlite`)));

@@ -5,3 +5,9 @@ declare module "codemirror-lang-latex/src/latex.mjs" {
   import type { LRParser } from "@lezer/lr";
   export const parser: LRParser;
 }
+// Its tokenizers, so one can be replaced (latex-parser.ts).
+declare module "codemirror-lang-latex/src/tokens.mjs" {
+  import type { ExternalTokenizer } from "@lezer/lr";
+  export const literalArgTokenizer: ExternalTokenizer;
+  export const specializeCtrlSeq: (name: string, stack: unknown) => number;
+}

@@ -3207,9 +3207,26 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-caption { margin-top: .45em; font-size: .9em; line-height: 1.45; text-align: center; }
 .cm-vis-figure-table .cm-vis-caption { margin: 0 0 .45em; }
 .cm-vis-caption-label { font-weight: 700; }
+/* Side-by-side minipages, each with its own caption. */
+.cm-vis-figure-panels { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 1em; }
+.cm-vis-figure-panel { flex: 1 1 14em; min-width: 0; }
+.cm-vis-figure-panels-stacked { flex-direction: column; align-items: stretch; }
+.cm-vis-inline-image { vertical-align: middle; }
+/* An algorithm: "Algorithm 1 Caption" between rules, then its numbered, indented lines. */
+.cm-vis-figure-algorithm, .cm-vis-figure-panel:has(.cm-vis-algorithm) { text-align: left; }
+.cm-vis-caption-algorithm { margin: 0 0 .3em; padding: .2em 0; border-block: 1px solid currentColor; text-align: left; }
+.cm-vis-algorithm { padding-bottom: .3em; border-bottom: 1px solid currentColor; font-size: .92em; line-height: 1.55; text-align: left; }
+.cm-vis-algorithm-line { display: flex; gap: .6em; }
+.cm-vis-algorithm-number { flex: none; width: 1.8em; text-align: right; color: var(--muted-foreground); font-size: .85em; }
+.cm-vis-algorithm-body { padding-left: calc(var(--vis-algorithm-depth, 0) * 1.4em); }
+.cm-vis-algorithm-comment { margin-left: .8em; color: var(--muted-foreground); }
+/* `\iffalse … \fi`: left out of the document, so faded. */
+.libera-latex-visual .cm-line.cm-vis-disabled { opacity: .45; }
+.cm-vis-rm { font-style: normal; font-weight: 400; }
 .cm-vis-image-placeholder, .cm-vis-image-loading { display: inline-block; padding: 1.6em 1.2em; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted-foreground); font-family: var(--font-sans); font-size: 12px; }
 .cm-vis-tabular { margin: .4em 0; overflow-x: auto; cursor: pointer; }
 .cm-vis-table { margin: .2em auto; border-collapse: collapse; font-size: .92em; line-height: 1.45; }
+.cm-vis-table.cm-vis-table-nested { display: inline-table; margin: 0; font-size: inherit; vertical-align: middle; }
 .cm-vis-table-cell { padding: .18em .75em; vertical-align: top; cursor: text; }
 .cm-vis-table-row.cm-vis-rule > td { border-top: 1px solid currentColor; }
 .cm-vis-table-row.cm-vis-rule-heavy > td { border-top: 1.5px solid currentColor; }

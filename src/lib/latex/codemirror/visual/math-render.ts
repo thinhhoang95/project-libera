@@ -12,13 +12,28 @@ const cache = new Map<string, string | null>();
 const CACHE_LIMIT = 3000;
 
 /** HTML for a formula, or null when KaTeX cannot render it. Cached. */
+/** Package commands KaTeX lacks, as KaTeX macros: nicefrac/xfrac's slanted fractions, bbm/dsfont's blackboard letters. */
+export const KATEX_MACROS: Record<string, string> = {
+  "\\nicefrac": "{}^{#1}\\!/\\!{}_{#2}",
+  "\\sfrac": "{}^{#1}\\!/\\!{}_{#2}",
+  "\\mathbbm": "\\mathbb{#1}",
+  "\\mathds": "\\mathbb{#1}",
+  "\\bbm": "\\mathbb{#1}",
+};
+
+/** LaTeX KaTeX lacks, written as what it can draw: `\textsc{Base}` as `\text{B{\small ASE}}` (small capitals). */
+export function forKatex(latex: string) {
+  if (!latex.includes("\\textsc")) return latex;
+  return latex.replace(/\\textsc\s*\{([^{}]*)\}/g, (_, text: string) => `\\text{${text.replace(/[a-z]+/g, (run) => `{\\small ${run.toUpperCase()}}`)}}`);
+}
+
 export function renderKatex(latex: string, display: boolean): string | null {
   const key = `${display ? "D" : "I"}${latex}`;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
   let html: string | null;
   try {
-    html = katex.renderToString(latex, { displayMode: display, throwOnError: true, strict: "ignore", trust: false, maxExpand: 500, output: "html" });
+    html = katex.renderToString(forKatex(latex), { displayMode: display, throwOnError: true, strict: "ignore", trust: false, maxExpand: 500, output: "html", macros: { ...KATEX_MACROS } });
   } catch {
     html = null;
   }

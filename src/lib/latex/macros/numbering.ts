@@ -1,9 +1,9 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
-import { parser } from "codemirror-lang-latex/src/latex.mjs";
+import { latexParser as parser } from "../codemirror/latex-parser";
 import { hashString } from "../../macros/core";
 import { definitionExtentAt, macroAt, type LatexDefinitions } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse } from "./expand";
-import { isPairMacro, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, usesStructureMacro } from "./structure";
+import { disabledRegions, isPairMacro, macroEnvironmentRegionAt, macroEnvironmentRegions, regionContaining, structureMacroNames, usesStructureMacro } from "./structure";
 
 /** Definitions whose body is not run where it is written: nothing in it is counted. */
 const DEFINITION_START = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|[gex]?def|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment)(?![A-Za-z@])/;
@@ -13,7 +13,7 @@ const DEFINITION_START = /^\\(?:newcommand|renewcommand|providecommand|DeclareRo
  * footnotes and counter commands of the tree, in document order, with each
  * \label bound to the last number stepped before it in its environment. */
 
-export type NumberingKind = "section" | "equation" | "figure" | "table" | "theorem" | "footnote" | "item";
+export type NumberingKind = "section" | "equation" | "figure" | "table" | "algorithm" | "theorem" | "footnote" | "item";
 
 export type NumberingEntry = {
   /** Start of the construct: the sectioning command, the environment, the footnote. */
@@ -80,6 +80,20 @@ export function environmentName(node: SyntaxNode, read: Read) {
   const group = begin?.getChild("EnvNameGroup");
   if (!group) return null;
   return read(group.from + 1, group.to - 1).trim();
+}
+
+/** Floats a `\caption` numbers, by environment name: starred, wrapped and sideways forms and `algorithm` included. */
+export const FLOAT_KINDS: Record<string, "figure" | "table" | "algorithm"> = {
+  figure: "figure", "figure*": "figure", wrapfigure: "figure", sidewaysfigure: "figure", "sidewaysfigure*": "figure", SCfigure: "figure",
+  table: "table", "table*": "table", wraptable: "table", sidewaystable: "table", "sidewaystable*": "table", SCtable: "table",
+  algorithm: "algorithm", "algorithm*": "algorithm",
+};
+
+/** The kind of float an environment node is (its `\caption` numbers a figure, table or algorithm), or null. */
+export function floatKind(node: SyntaxNode, read: Read): "figure" | "table" | "algorithm" | null {
+  if (node.name !== "FigureEnvironment" && node.name !== "TableEnvironment" && node.name !== "Environment") return null;
+  const env = environmentName(node, read) ?? "";
+  return FLOAT_KINDS[env] ?? (node.name === "FigureEnvironment" && !/^sub/.test(env) ? "figure" : node.name === "TableEnvironment" && !/^sub/.test(env) ? "table" : null);
 }
 
 /** `longtable` and `xltabular`: tables that are their own float, with a caption and head and foot rows. */
@@ -179,7 +193,7 @@ function stripTitle(text: string) {
 /** What a label after `\refstepcounter{counter}` refers to: `\refstepcounter{table}` makes a table label. */
 function counterKind(counter: string): NumberingKind {
   if (SECTION_COUNTERS.includes(counter) || counter === "part") return "section";
-  if (counter === "equation" || counter === "figure" || counter === "table" || counter === "footnote") return counter;
+  if (counter === "equation" || counter === "figure" || counter === "table" || counter === "algorithm" || counter === "footnote") return counter;
   if (/^enum(?:i|ii|iii|iv)$/.test(counter)) return "item";
   return "theorem";
 }
@@ -340,6 +354,39 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   }
   /** Entries and targets an expansion numbers at a construct of the document (its figure): not moved to the macro use. */
   const fixed = new WeakSet<object>();
+  /** The floats being read, innermost last: their number once captioned, and sub-figure labels waiting for it. */
+  const floats: Array<{ from: number; number: string | null; count: number; waiting: Array<{ target: LabelTarget; letter: string }> }> = [];
+  /** Steps a float's counter for its caption, numbering the float (or its panel) at `at`. */
+  const numberCaption = (kind: "figure" | "table" | "algorithm", at: SyntaxNode, outer: boolean) => {
+    const keep = <T extends object>(value: T) => { if (outer) fixed.add(value); return value; };
+    step(kind);
+    const number = format(kind);
+    entries.push(keep({ pos: at.from, kind, number }));
+    setTarget(keep({ number, kind, pos: at.from }));
+    // Sub-figures captioned before the float's own caption get its number now: 5a, 5b.
+    const float = floats[floats.length - 1];
+    if (float && float.number === null) {
+      float.number = number;
+      for (const { target, letter } of float.waiting) target.number = `${number}${letter}`;
+      float.waiting = [];
+    }
+  };
+  /** subcaption's `subfigure` caption: a letter in its float, after the float's number ("3a"), which may come later. */
+  const numberSubCaption = (kind: "figure" | "table", at: SyntaxNode) => {
+    const float = floats[floats.length - 1];
+    if (!float) return;
+    float.count++;
+    const letter = alph(float.count);
+    const target: LabelTarget = { number: float.number === null ? "?" : `${float.number}${letter}`, kind, pos: at.from };
+    if (float.number === null) float.waiting.push({ target, letter });
+    setTarget(target);
+    // The panel shows its letter: "(a)".
+    entries.push({ pos: at.from, kind, number: letter });
+  };
+  /** What `\iffalse … \fi` leaves out of the document: not numbered. */
+  const disabled = includeDepth ? [] : disabledRegions(mainRead(0, tree.length));
+  /** Nodes entered (for what follows the `\fi` inside them) but not counted themselves: by name and start. */
+  const passive = new Set<string>();
   const numberExpansion = (host: SyntaxNode, text: string) => {
     const entryCount = entries.length;
     const labelsBefore = new Map(labels);
@@ -385,12 +432,22 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     enter(ref) {
       if (ref.from < skipUntil) return false;
       const name = ref.name;
+      // `\iffalse … \fi`: what starts inside is not counted; a node running past the `\fi` is entered for what follows it.
+      if (disabled.length && !macroHost && !includeDepth) {
+        const region = regionContaining(disabled, ref.from);
+        if (region) {
+          if (ref.to <= region.to) return false;
+          passive.add(`${name}@${ref.from}`);
+          return undefined;
+        }
+      }
       const node = ref.node;
       // A definition's body is not run where it is written: `\newcommand{\fn}[1]{\footnote{#1}}` is no footnote.
       if (!macroHost && !includeDepth && ref.from >= 0) {
         const extent = definitionExtentAt(defs, ref.from);
         if (extent && ref.to <= extent.to && DEFINITION_START.test(read(ref.from, ref.from + 40))) { skipUntil = extent.to; return false; }
       }
+      if ((name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment") && floatKind(node, read)) floats.push({ from: ref.from, number: null, count: 0, waiting: [] });
       if (name === "Comment" || name === "VerbatimEnvironment" || name === "TikzPictureEnvironment") return false;
       if (name === "Input" || name === "Include") { numberIncluded(node); return false; }
       if (name in SECTION_LEVELS) {
@@ -416,6 +473,16 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         if (!ctrl || ctrl.name !== "CtrlSeq") return;
         const command = read(ctrl.from, ctrl.to);
         if (structureNames.size && numberMacroUse(node, command)) return false;
+        if (command === "\\captionof" && read(ctrl.to, ctrl.to + 1) !== "*") {
+          // caption's `\captionof{table}{…}`: a caption outside a float, numbered where it is (or at its minipage).
+          const kind = FLOAT_KINDS[argumentText(node, 0)?.trim() ?? ""];
+          if (kind) {
+            let at: [SyntaxNode, boolean] = [node, false];
+            for (const [parent, outer] of ancestors(node)) if (parent.name === "Environment" && environmentName(parent, outer ? mainRead : read) === "minipage") { at = [parent, outer]; break; }
+            numberCaption(kind, ...at);
+          }
+          return false;
+        }
         if (command === "\\appendix") {
           appendix = true;
           const top = chapters ? "chapter" : "section";
@@ -482,13 +549,19 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         } else {
           const numbered = NUMBERED_ROWS.has(base) && !starred;
           const tagged: boolean[] = [];
+          // amsmath keeps a \label in a \nonumber row for the next numbered row.
+          let waiting: string[] = [];
           const rows = dropTrailingBreak(base, splitMathRows(body)).map((row) => {
             const tag = /\\tag\*?\s*\{([^}]*)\}/.exec(row);
             let number: string | null = null;
             if (tag) number = tag[1];
             else if (numbered && !/\\(?:nonumber|notag)\b/.test(row)) { step("equation"); number = format("equation"); }
             tagged.push(!!tag);
-            for (const match of row.matchAll(/\\label\s*\{([^}]*)\}/g)) if (number) labels.set(match[1].trim(), { number, kind: "equation", pos: node.from });
+            waiting.push(...[...row.matchAll(/\\label\s*\{([^}]*)\}/g)].map((match) => match[1].trim()));
+            if (number) {
+              for (const key of waiting) labels.set(key, { number, kind: "equation", pos: node.from });
+              waiting = [];
+            }
             return number;
           });
           entries.push({ pos: node.from, kind: "equation", number: rows.find((row) => row !== null) ?? null, rows, tagged });
@@ -507,27 +580,30 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         return;
       }
       if (name === "Caption") {
+        // `\caption*{…}` numbers nothing.
+        const ctrl = node.firstChild;
+        if (ctrl && read(ctrl.to, ctrl.to + 1) === "*") return false;
         // Through `ancestors`, a caption a macro writes belongs to the figure the macro is used in.
+        // In a minipage of a float (side-by-side panels), the number is the panel's: recorded at the minipage.
+        let panel: [SyntaxNode, boolean] | null = null;
         for (const [parent, outer] of ancestors(node)) {
           // A figure around the macro use is in the document: read there, and its number stays at it.
           const readParent = outer ? mainRead : read;
-          const keep = <T extends object>(value: T) => { if (outer) fixed.add(value); return value; };
           if (parent.name === "TabularEnvironment" && isLongTable(parent, readParent)) {
-            step("table");
-            const number = format("table");
-            entries.push(keep({ pos: parent.from, kind: "table", number }));
-            setTarget(keep({ number, kind: "table", pos: parent.from }));
+            numberCaption("table", parent, outer);
             return;
           }
-          if (parent.name !== "FigureEnvironment" && parent.name !== "TableEnvironment") continue;
+          if (parent.name !== "FigureEnvironment" && parent.name !== "TableEnvironment" && parent.name !== "Environment") continue;
           const env = environmentName(parent, readParent) ?? "";
-          if (env === "subfigure" || env === "subtable") return false;
-          const kind: NumberingKind = parent.name === "FigureEnvironment" ? "figure" : "table";
-          step(kind);
-          const number = format(kind);
-          entries.push(keep({ pos: parent.from, kind, number }));
-          setTarget(keep({ number, kind, pos: parent.from }));
-          // A \label inside the caption refers to the figure too.
+          if (env === "subfigure" || env === "subtable") { numberSubCaption(env === "subtable" ? "table" : "figure", parent); return false; }
+          if (env === "minipage") { panel ??= [parent, outer]; continue; }
+          const kind = floatKind(parent, readParent);
+          if (!kind) continue;
+          // A \label inside the caption refers to the figure too. A float's second caption (two tables in
+          // one float, without minipages) numbers another table: recorded at that caption.
+          const float = floats[floats.length - 1];
+          const again = !panel && !outer && float?.from === parent.from && float.number !== null;
+          numberCaption(kind, ...(panel ?? (again ? [node, false] as [SyntaxNode, boolean] : [parent, outer])));
           return;
         }
         return false;
@@ -535,6 +611,13 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       if (name === "Environment") {
         const env = environmentName(node, read) ?? "";
         scopes.push({ node: node.from, target: currentTarget() });
+        // The appendix package's `appendices` environment letters its sections, as `\appendix` does.
+        if (env === "appendices") {
+          appendix = true;
+          const top = chapters ? "chapter" : "section";
+          counters.set(top, 0);
+          reset(top);
+        }
         if (env === "subequations") {
           // One equation number for the group, and 3a, 3b for the equations in it; a label right after the \begin is the group's.
           step("equation");
@@ -587,6 +670,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     },
     leave(ref) {
       const name = ref.name;
+      if (passive.size && passive.delete(`${name}@${ref.from}`)) return;
+      if (floats.length && floats[floats.length - 1].from === ref.from && (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment")) floats.pop();
       if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment" || name === "FootnoteCommand" || name === "EndnoteCommand" || name === "TabularEnvironment") {
         if (scopes.length && scopes[scopes.length - 1].node === ref.from) scopes.pop();
         if (name === "ListEnvironment") lists.pop();
@@ -633,6 +718,7 @@ const CREF_NAMES: Record<string, [string, string, string, string]> = {
   equation: ["eq.", "eqs.", "Equation", "Equations"],
   figure: ["fig.", "figs.", "Figure", "Figures"],
   table: ["table", "tables", "Table", "Tables"],
+  algorithm: ["algorithm", "algorithms", "Algorithm", "Algorithms"],
   footnote: ["footnote", "footnotes", "Footnote", "Footnotes"],
   item: ["item", "items", "Item", "Items"],
   theorem: ["theorem", "theorems", "Theorem", "Theorems"],

@@ -2,36 +2,63 @@ import { EditorSelection } from "@codemirror/state";
 import { EditorView, WidgetType } from "@codemirror/view";
 import { hashString } from "../../../macros/core";
 import { definitionCounts } from "../../macros/definitions";
+import { expandLatexMacroUse } from "../../macros/expand";
 import { numberingEntryAt, type NumberingKind } from "../../macros/numbering";
 import { resolveRelativeNotebookPath } from "../../project";
-import { applyEquationNumbers } from "./math-render";
+import { applyEquationNumbers, renderKatex } from "./math-render";
 import { preambleOpenField, togglePreamble, visualAux, visualConfig, visualDefinitions, visualNumbering } from "./model";
-import { bibLookup, citationText, stateReferenceText, labelTarget } from "./references";
+import { bibLookup, citationText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
 import { renderLatexFragment, type FragmentContext } from "./render-fragment";
 import { parseTabular } from "./table-model";
+import type { AlgorithmSpec } from "./algorithm";
 
 /* The widgets the Visual mode draws in place of LaTeX constructs
  * (docs/latex-visual-editor-plan.md §3). Widgets whose text depends on
  * numbering or the compiled `.aux` register a refresh, which the numbering
  * plugin calls when those change, so no decoration has to be rebuilt. */
 
-type Refreshable = HTMLElement & { liberaVisRefresh?: (view: EditorView) => void };
+/** An element that shows numbers: how it updates them, and where it was when it last did. */
+type Refreshable = HTMLElement & { liberaVisRefresh?: (view: EditorView) => void; liberaVisAt?: number | null };
 
 /** Registers how an element updates its numbers; called once now (after mounting) and on every numbering change. */
 function refreshable(dom: HTMLElement, view: EditorView, refresh: (view: EditorView) => void) {
   (dom as Refreshable).liberaVisRefresh = refresh;
   dom.setAttribute("data-vis-refresh", "");
-  queueMicrotask(() => { if (dom.isConnected) refresh(view); });
+  queueMicrotask(() => { if (dom.isConnected) { (dom as Refreshable).liberaVisAt = widgetPos(view, dom); refresh(view); } });
 }
 
-/** Calls every visible widget's refresh. */
-export function refreshVisualWidgets(view: EditorView) {
-  for (const element of view.contentDOM.querySelectorAll<HTMLElement>("[data-vis-refresh]")) (element as Refreshable).liberaVisRefresh?.(view);
+/**
+ * Calls every visible widget's refresh. With `moved`, only those now somewhere else than when they last
+ * refreshed: the editor reuses an equal widget's DOM for another place (every `\section` number is equal).
+ */
+export function refreshVisualWidgets(view: EditorView, moved = false) {
+  for (const element of view.contentDOM.querySelectorAll<HTMLElement>("[data-vis-refresh]")) {
+    const widget = element as Refreshable;
+    const at = widgetPos(view, element);
+    if (moved && at === widget.liberaVisAt) continue;
+    widget.liberaVisAt = at;
+    widget.liberaVisRefresh?.(view);
+  }
 }
 
 export function fragmentContext(view: EditorView, pos?: number): FragmentContext {
   const state = view.state;
-  return { defs: visualDefinitions(state), numbering: visualNumbering(state), aux: visualAux(state), bib: bibLookup(state), pos };
+  return {
+    defs: visualDefinitions(state), numbering: visualNumbering(state), aux: visualAux(state), bib: bibLookup(state), pos,
+    // Images in table cells and captions, found as the figure's are.
+    image: (path, width) => {
+      const frame = el("span", "cm-vis-figure-image cm-vis-inline-image");
+      if (width) frame.style.setProperty("--vis-image-width", width);
+      renderImage(frame, view, path);
+      return frame;
+    },
+    // A tabular nested in a cell: a small read-only grid (clicks go to the cell around it).
+    tabular: (source) => {
+      const grid = renderTableGrid(view, source, () => null, 0);
+      grid.classList.add("cm-vis-table-nested");
+      return grid;
+    },
+  };
 }
 
 /** A fragment context at a widget's own position, so definitions written after it in the body do not apply. */
@@ -117,18 +144,27 @@ function htmlKey(html: string) {
   return key;
 }
 
-/** A formula drawn by KaTeX. `numberOffset` is where its environment starts relative to the widget, for its equation numbers. */
+/**
+ * A formula drawn by KaTeX. `numberOffset` is where its environment starts relative to the widget, for its equation numbers.
+ * `referenced`: the formula's LaTeX when it has `\ref`s, drawn again with their numbers when numbering changes.
+ */
 export class MathWidget extends VisualWidget {
-  constructor(readonly html: string, readonly display: boolean, readonly block: boolean, readonly source: string, readonly numbered: boolean, readonly numberOffset: number, readonly length: number) {
-    super(`${display ? 1 : 0}${block ? 1 : 0}${numbered ? 1 : 0}${numberOffset}:${length}\u0000${htmlKey(html)}\u0000${source}`);
+  constructor(readonly html: string, readonly display: boolean, readonly block: boolean, readonly source: string, readonly numbered: boolean, readonly numberOffset: number, readonly length: number, readonly referenced: string | null = null) {
+    super(`${display ? 1 : 0}${block ? 1 : 0}${numbered ? 1 : 0}${referenced === null ? 0 : 1}${numberOffset}:${length}\u0000${htmlKey(html)}\u0000${source}`);
   }
   toDOM(view: EditorView) {
     const dom = el(this.block ? "div" : "span", `cm-vis-math ${this.display ? "cm-vis-math-display" : "cm-vis-math-inline"}`);
     dom.innerHTML = this.html;
     dom.setAttribute("aria-label", this.source);
     dom.setAttribute("role", "img");
-    if (this.numbered) {
+    if (this.numbered || this.referenced !== null) {
+      let shown = this.html;
       refreshable(dom, view, (target) => {
+        if (this.referenced !== null) {
+          const html = renderKatex(withReferenceNumbers(this.referenced, target.state), this.display);
+          if (html !== null && html !== shown) { dom.innerHTML = html; shown = html; }
+        }
+        if (!this.numbered) return;
         const pos = widgetPos(target, dom);
         if (pos === null) return;
         const entry = numberingEntryAt(visualNumbering(target.state), pos + this.numberOffset, "equation");
@@ -514,71 +550,133 @@ function renderImage(container: HTMLElement, view: EditorView, name: string, cla
   tryNext(0);
 }
 
-export type FigureSpec = {
-  env: string;
+/** What one float, or one panel of it (a minipage beside another), shows. */
+export type FigureContent = {
   images: Array<{ path: string; width?: string }>;
-  caption: string | null;
-  captionPos: number;
-  /** Where the environment started when the widget was built (captionPos is relative to it). */
-  start: number;
-  /** The document's path when the widget was built: images resolve against it, so a moved file redraws. */
-  base?: string;
-  kind: "figure" | "table";
-  /** Where the environment starts relative to the widget (indentation before it is replaced too). */
-  numberOffset: number;
-  length: number;
   /** For tables: the tabular sources inside, with their offsets relative to the widget.
    * `readOnly`: drawn from a reading of the source (a longtable's rows), not cell by cell from it. */
   tabulars?: Array<{ source: string; offset: number; readOnly?: boolean }>;
-  captionAbove?: boolean;
   /** Drawings the editor does not draw (TikZ, `\input` files): their file name, or "" for an inline picture. */
   drawings?: string[];
+  /** An `algorithmic` body, as numbered lines. */
+  algorithm?: AlgorithmSpec;
+  caption: string | null;
+  /** Where the caption's text is in the document when the widget was built. */
+  captionPos: number;
+  captionAbove?: boolean;
+  /** What the caption numbers: a figure, table or algorithm. */
+  kind: "figure" | "table" | "algorithm";
+  /** A sub-figure (subcaption): its caption is lettered, "(a) …". */
+  sub?: boolean;
+  /** `\caption*{…}`: the caption's text, without a label or number. */
+  unnumbered?: boolean;
+  /** Where the number is recorded relative to the widget: the environment's start, or its panel's. */
+  numberOffset: number;
 };
 
-function captionElement(view: EditorView, spec: FigureSpec) {
-  const caption = el("div", "cm-vis-caption");
-  const label = el("span", "cm-vis-caption-label");
-  const text = el("span", "cm-vis-caption-text");
-  caption.append(label, text);
-  if (spec.caption !== null) text.append(renderLatexFragment(spec.caption, fragmentContext(view, spec.captionPos)));
-  return { caption, label, text };
+export type FigureSpec = FigureContent & {
+  env: string;
+  /** Where the environment started when the widget was built (caption positions are relative to it). */
+  start: number;
+  /** The document's path when the widget was built: images resolve against it, so a moved file redraws. */
+  base?: string;
+  length: number;
+  /** Side-by-side minipages, each with its own content and caption (the float's own caption is the spec's). */
+  panels?: FigureContent[];
+  /** The panels are one above the other: a float holding two captioned tables without minipages. */
+  stacked?: boolean;
+};
+
+const FLOAT_LABELS = { figure: "Figure", table: "Table", algorithm: "Algorithm" };
+
+/** The lines of an algorithm, numbered and indented as the algorithmic package sets them. */
+function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
+  const list = el("div", "cm-vis-algorithm");
+  let count = 0;
+  for (const line of spec.lines) {
+    const row = el("div", "cm-vis-algorithm-line");
+    row.style.setProperty("--vis-algorithm-depth", String(line.depth));
+    const number = el("span", "cm-vis-algorithm-number");
+    if (line.numbered) { count++; if (spec.numberEvery && count % spec.numberEvery === 0) number.textContent = `${count}:`; }
+    const body = el("span", "cm-vis-algorithm-body");
+    if (line.lead) body.append(el("strong", "cm-vis-algorithm-keyword", line.lead), " ");
+    body.append(renderLatexFragment(line.text, context));
+    if (line.trail) body.append(" ", el("strong", "cm-vis-algorithm-keyword", line.trail));
+    if (line.comment !== undefined) {
+      const comment = el("span", "cm-vis-algorithm-comment");
+      comment.append("▷ ", renderLatexFragment(line.comment, context));
+      body.append(comment);
+    }
+    row.append(number, body);
+    list.append(row);
+  }
+  return list;
 }
 
-/** A figure or table environment: images or grids, and the numbered caption. */
+/** A figure, table or algorithm environment: images, drawings, grids or lines, and numbered captions (one per panel). */
 export class FigureWidget extends VisualWidget {
   constructor(readonly spec: FigureSpec) { super(JSON.stringify(spec)); }
   toDOM(view: EditorView) {
     const spec = this.spec;
     const dom = el("div", `cm-vis-figure cm-vis-figure-${spec.kind}`);
-    const { caption, label, text } = captionElement(view, spec);
-    const body = el("div", "cm-vis-figure-body");
-    for (const image of spec.images) {
-      const frame = el("span", "cm-vis-figure-image");
-      if (image.width) frame.style.setProperty("--vis-image-width", image.width);
-      renderImage(frame, view, image.path);
-      body.append(frame);
-    }
-    for (const drawing of spec.drawings ?? []) {
-      // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is.
-      const placeholder = el("span", "cm-vis-figure-drawing");
-      placeholder.append(el("span", "cm-vis-figure-drawing-name", drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
-      placeholder.append(el("span", "cm-vis-figure-drawing-note", "Drawn in the PDF"));
-      body.append(placeholder);
-    }
-    for (const tabular of spec.tabulars ?? []) body.append(renderTableGrid(view, tabular.source, () => {
-      const pos = widgetPos(view, dom);
-      return pos === null ? null : pos + tabular.offset;
-    }, tabular.readOnly ? spec.length - tabular.offset : undefined));
-    if (spec.caption !== null && spec.captionAbove) dom.append(caption, body); else dom.append(body);
-    if (spec.caption !== null && !spec.captionAbove) dom.append(caption);
+    const start = () => widgetPos(view, dom);
+    /** Each caption with how to redraw its number and text. */
+    const captions: Array<{ content: FigureContent; label: HTMLElement; text: HTMLElement }> = [];
+    const draw = (content: FigureContent, into: HTMLElement) => {
+      const body = el("div", "cm-vis-figure-body");
+      for (const image of content.images) {
+        const frame = el("span", "cm-vis-figure-image");
+        if (image.width) frame.style.setProperty("--vis-image-width", image.width);
+        renderImage(frame, view, image.path);
+        body.append(frame);
+      }
+      for (const drawing of content.drawings ?? []) {
+        // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is.
+        const placeholder = el("span", "cm-vis-figure-drawing");
+        placeholder.append(el("span", "cm-vis-figure-drawing-name", drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
+        placeholder.append(el("span", "cm-vis-figure-drawing-note", "Drawn in the PDF"));
+        body.append(placeholder);
+      }
+      for (const tabular of content.tabulars ?? []) body.append(renderTableGrid(view, tabular.source, () => {
+        const pos = start();
+        return pos === null ? null : pos + tabular.offset;
+      }, tabular.readOnly ? spec.length - tabular.offset : undefined));
+      if (content.algorithm) body.append(renderAlgorithm(content.algorithm, fragmentContext(view, content.captionPos)));
+      // `\caption*{}` shows nothing.
+      if (content.caption === null || (content.unnumbered && !content.caption.trim())) { into.append(body); return; }
+      const caption = el("div", `cm-vis-caption cm-vis-caption-${content.kind}`);
+      const label = el("span", "cm-vis-caption-label");
+      const text = el("span", "cm-vis-caption-text");
+      text.append(renderLatexFragment(content.caption, fragmentContext(view, content.captionPos)));
+      caption.append(label, text);
+      captions.push({ content, label, text });
+      if (content.captionAbove) into.append(caption, body); else into.append(body, caption);
+    };
+    if (spec.panels?.length) {
+      const row = el("div", `cm-vis-figure-panels${spec.stacked ? " cm-vis-figure-panels-stacked" : ""}`);
+      for (const panel of spec.panels) {
+        const element = el("div", "cm-vis-figure-panel");
+        draw(panel, element);
+        row.append(element);
+      }
+      // The float's own caption, if it has one besides the panels'.
+      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined };
+      if (spec.caption !== null && spec.captionAbove) draw(own, dom);
+      dom.append(row);
+      if (spec.caption !== null && !spec.captionAbove) draw(own, dom);
+    } else draw(spec, dom);
     refreshable(dom, view, (target) => {
       const pos = widgetPos(target, dom);
-      const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos + spec.numberOffset, spec.kind);
-      label.textContent = `${spec.kind === "figure" ? "Figure" : "Table"}${entry?.number ? ` ${entry.number}` : ""}: `;
-      // References and citations in the caption follow numbering and the .aux too.
-      if (spec.caption !== null && spec.caption.includes("\\")) {
-        const captionPos = pos === null ? spec.captionPos : pos + spec.numberOffset + (spec.captionPos - spec.start);
-        text.replaceChildren(renderLatexFragment(spec.caption, fragmentContext(target, captionPos)));
+      for (const { content, label, text } of captions) {
+        const entry = pos === null || content.unnumbered ? null : numberingEntryAt(visualNumbering(target.state), pos + content.numberOffset, content.kind);
+        label.textContent = content.unnumbered ? ""
+          : content.sub ? (entry?.number ? `(${entry.number}) ` : "")
+          : `${FLOAT_LABELS[content.kind]}${entry?.number ? ` ${entry.number}` : ""}${content.kind === "algorithm" ? " " : ": "}`;
+        // References and citations in the caption follow numbering and the .aux too.
+        if (content.caption !== null && content.caption.includes("\\")) {
+          const captionPos = pos === null ? content.captionPos : pos + spec.numberOffset + (content.captionPos - spec.start);
+          text.replaceChildren(renderLatexFragment(content.caption, fragmentContext(target, captionPos)));
+        }
       }
     });
     dom.addEventListener("mousedown", (event) => {
@@ -624,7 +722,8 @@ export function isEditingCell(td: HTMLElement) {
  * from `start`.
  */
 export function renderTableGrid(view: EditorView, source: string, start: () => number | null, readOnlyLength?: number) {
-  const model = parseTabular(source, 0);
+  const types = visualDefinitions(view.state).columnTypes;
+  const model = parseTabular(source, 0, types);
   const table = el("table", "cm-vis-table") as TableElement;
   const readOnly = readOnlyLength !== undefined;
   if (readOnly) table.dataset.readonly = "true";
@@ -633,7 +732,10 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   const context = fragmentContext(view);
   /** Cells whose LaTeX can show numbers, citations or macros, redrawn when those change. */
   const dynamic: Array<{ td: HTMLElement; text: string; from: number }> = [];
-  const aligns = model.columns.map((column) => (column === "c" ? "center" : column === "r" ? "right" : "left"));
+  // `\newcolumntype` letters align as their definition does.
+  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" ? "center" : column === "r" ? "right" : "left"));
+  /** Columns a `\multirow` above still covers, and for how many more rows. */
+  const rowsCovered = new Map<number, number>();
   model.rows.forEach((row, rowIndex) => {
     const tr = el("tr", "cm-vis-table-row");
     // `\addlinespace` is space, not a line.
@@ -642,10 +744,25 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
     if (lines.length < row.rulesBefore.length) tr.classList.add("cm-vis-row-spaced");
     let column = 0;
     row.cells.forEach((cell, cellIndex) => {
+      // An empty cell under a `\multirow` above is part of it.
+      const covered = rowsCovered.get(column) ?? 0;
+      if (covered > 0) {
+        rowsCovered.set(column, covered - 1);
+        if (!cell.text.trim()) { column += cell.span; return; }
+      }
       const td = el("td", "cm-vis-table-cell") as HTMLTableCellElement;
       if (cell.span > 1) td.colSpan = cell.span;
       td.style.textAlign = cell.span > 1 ? "center" : aligns[column] ?? "left";
       const text = cell.contentFrom !== undefined ? source.slice(cell.contentFrom, cell.contentTo) : cell.text;
+      // `\multirow{3}{*}{…}`: the cell spans the rows below it; so does a macro that writes one (`\blocka{64}{3}`).
+      const lead = text.trimStart();
+      const written = /^\\(?!multirow\b)[A-Za-z@]/.test(lead) && context.defs.macros.size ? expandLatexMacroUse(lead, context.defs, { mode: "text", pos: context.pos })?.text.trimStart() : undefined;
+      const multirow = /^\\multirow\s*(?:\[[^\]]*\]\s*)?\{\s*(\d+)\s*\}/.exec(written ?? lead);
+      if (multirow && Number(multirow[1]) > 1) {
+        td.rowSpan = Number(multirow[1]);
+        td.style.verticalAlign = "middle";
+        for (let at = column; at < column + cell.span; at++) rowsCovered.set(at, Number(multirow[1]) - 1);
+      }
       td.append(renderLatexFragment(text, context));
       if (text.includes("\\")) dynamic.push({ td, text, from: cell.contentFrom ?? cell.from });
       td.dataset.row = String(rowIndex);

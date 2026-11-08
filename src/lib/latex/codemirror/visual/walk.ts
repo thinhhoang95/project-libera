@@ -1,19 +1,22 @@
 import type { EditorState, Text } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
-import type { SyntaxNode, Tree } from "@lezer/common";
+import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
-import { enumerateItemLabel, environmentName } from "../../macros/numbering";
+import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind } from "../../macros/numbering";
+import { parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
-import { parser as latexParser } from "codemirror-lang-latex/src/latex.mjs";
+import { latexParser } from "../latex-parser";
 import { katexForEnvironment, renderKatex } from "./math-render";
-import { argumentInner, commandArguments, hasDirectError } from "./render-fragment";
-import { circledText, CONTROL_SYMBOLS, cssColor, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
+import { disabledField } from "./model";
+import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
+import { argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
+import { circledText, CONTROL_SYMBOLS, cssColor, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, parseTabular, readLongTable } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
-  ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
+  ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
   ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, type FigureSpec,
 } from "./widgets";
 
@@ -80,7 +83,7 @@ const OVERRIDABLE = new Set([
 /** Built-in environments drawn by the walk, which `\renewenvironment` may change. */
 const ENVIRONMENT_NODES = new Set(["FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "EquationEnvironment", "EquationArrayEnvironment"]);
 /** What may be in a figure or table besides its images, tables, caption and label, and still be drawn as one. */
-const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline)$/;
+const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline|fontsize|selectfont|newcolumntype|arraybackslash|[;,:!])$/;
 /** Definitions the grammar parses as unknown commands. */
 const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname)$/;
 const SECTION_CLASSES: Record<string, string> = {
@@ -91,19 +94,25 @@ const INLINE_STYLES: Record<string, string> = {
   TextBoldCommand: "cm-vis-b", TextItalicCommand: "cm-vis-i", EmphasisCommand: "cm-vis-em", UnderlineCommand: "cm-vis-u",
   TextTeletypeCommand: "cm-vis-tt", TextSmallCapsCommand: "cm-vis-sc", TextSansSerifCommand: "cm-vis-sf", TextMediumCommand: "cm-vis-md",
   StrikeOutCommand: "cm-vis-s", TextSuperscriptCommand: "cm-vis-sup", TextSubscriptCommand: "cm-vis-sub",
+  // `\textnormal{…}`, `\textrm{…}`, `\mbox{…}` in text: upright text, markup hidden.
+  MathTextCommand: "cm-vis-rm",
 };
 const MATH_CONTAINERS = new Set(["DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment", "Math", "InlineMath", "DisplayMath"]);
+/** Acknowledgment environments of conference classes (NeurIPS `ack`, ACM `acks`). */
+const ACKNOWLEDGMENTS = /^(?:ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement)$/;
 const BULLETS = ["•", "–", "∗", "·"];
 const TEXT_BLOCKS: Record<string, string> = {
   quote: "cm-vis-quote", quotation: "cm-vis-quote", verse: "cm-vis-quote", center: "cm-vis-center", flushleft: "cm-vis-flushleft",
   flushright: "cm-vis-flushright", abstract: "cm-vis-abstract",
+  // The appendix package's environment: its lines fold away, its sections are lettered (numbering.ts).
+  appendices: "cm-vis-appendices",
 };
 /** Node types the walk does something with; it only goes inside the others. */
 const HANDLED = new Set([
   ...Object.keys(SECTION_CLASSES), ...Object.keys(INLINE_STYLES), "TextColorCommand", "ColorBoxCommand", "HrefCommand", "UrlCommand",
   "FootnoteCommand", "EndnoteCommand", "DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment",
   "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "Item", "Environment",
-  "EndEnv", "Maketitle", "IncludeGraphics", "LineBreak", "Tilde", "Normal", "UnknownCommand",
+  "EndEnv", "Maketitle", "IncludeGraphics", "LineBreak", "Tilde", "Normal", "UnknownCommand", "Group",
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
@@ -300,6 +309,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   // A walk that starts inside an environment opened and closed by macros (`\beq … \eeq`): it is drawn whole, from its start.
   const insideRegion = from > 0 && structureMacroNames(defs).size ? macroEnvironmentRegionAt(macroRegionsFor(doc, defs), from, true) : null;
   if (insideRegion && insideRegion.from < from) consumed.push([insideRegion.from, insideRegion.to]);
+  // `\iffalse … \fi` is left out of the document: shown as faded source, with nothing in it drawn.
+  const disabled = (state.field(disabledField, false) ?? []).filter((region) => region.to > from && region.from < to);
+  for (const region of disabled) {
+    consumed.push([region.from, region.to]);
+    if (region.from >= from) emit({ kind: "disabled", from: region.from, to: region.to, reveal: "never", replaces: [], lines: [{ from: region.from, to: region.to, class: "cm-vis-disabled" }] });
+  }
+  /** The disabled region a node starts in: nothing is drawn for it, though what follows the `\fi` inside it is. */
+  const startsDisabled = (pos: number) => disabled.find((region) => region.from <= pos && pos < region.to);
 
   /** A use of a macro that writes a figure's caption (`\mycap{…}` for `\caption{…}`), maybe with a label: the caption's text. */
   const captionMacro = (use: SyntaxNode): string | null => {
@@ -312,6 +329,86 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (parts[0]?.name !== "Caption" || parts.length > 2 || (parts.length === 2 && parts[1].name !== "Label")) return null;
     const range = argumentInner(parts[0].getChild("TextArgument") ?? parts[0]);
     return range ? expansion.text.slice(range.from, range.to) : null;
+  };
+
+  const readNode = (start: number, end: number) => read(state, start, end);
+
+  /**
+   * `\ref` and `\eqref` in a formula, which KaTeX has neither of: the number they show, as text. The
+   * widget keeps the formula (`referenced`) to draw it again when numbering changes.
+   */
+  const withReferences = (latex: string) => withReferenceNumbers(latex, state);
+  const referenced = (latex: string) => (REFERENCE_IN_MATH.test(latex) ? latex : null);
+
+  /**
+   * A group whose content starts with a font or size switch (`{\bf …}`): the class it styles with
+   * ("" for a size: one size here), where its text starts (after the switch and its spaces) and its closing brace.
+   */
+  const groupSwitch = (group: SyntaxNode) => {
+    const close = group.lastChild;
+    if (!close || close.name !== "CloseBrace" || hasDirectError(group)) return null;
+    let first: SyntaxNode | null = group.getChild("Text")?.firstChild ?? null;
+    while (first && (first.name === "Whitespace" || first.name === "NewLine")) first = first.nextSibling;
+    const command = first?.name === "Command" ? first.firstChild : null;
+    const ctrl = command?.name === "UnknownCommand" ? command.firstChild : null;
+    if (!ctrl || ctrl.name !== "CtrlSeq") return null;
+    const text = readNode(ctrl.from, ctrl.to);
+    const className = FONT_SWITCHES[text] ?? (SIZE_COMMAND.test(text) ? "" : undefined);
+    if (className === undefined) return null;
+    // TeX skips the spaces after a control word.
+    let textFrom = ctrl.to;
+    while (textFrom < close.from && /\s/.test(readNode(textFrom, textFrom + 1))) textFrom++;
+    return { className, textFrom, close };
+  };
+
+  /** A tabular (or a longtable), drawn as a grid when its cells can be read. */
+  const drawTabular = (node: SyntaxNode): false | undefined => {
+    const formed = wellFormedEnvironment(node, state);
+    if (!formed) return undefined;
+    if (/^(?:longtable|xltabular)\*?$/.test(formed.name)) {
+      // Its caption, first head, body and last foot, with rows written through the document's macros expanded.
+      // Drawn, not edited by cell; one it cannot read has its parts drawn on their own.
+      if (!structural) return false;
+      const display = readLongTable(read(state, node.from, node.to), expandAt(node.from), defs.columnTypes);
+      if (!display) return undefined;
+      const span = aloneOnLines(doc, node.from, node.to);
+      const range = span ?? { from: node.from, to: node.to };
+      const spec: FigureSpec = {
+        env: formed.name, images: [], caption: display.caption, captionPos: display.captionAt >= 0 ? node.from + display.captionAt : node.from,
+        start: node.from, kind: "table", numberOffset: node.from - range.from, length: range.to - range.from,
+        tabulars: [{ source: display.tabular, offset: node.from - range.from, readOnly: true }], captionAbove: true,
+      };
+      emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(spec) }] });
+      return false;
+    }
+    if (!structural) return false;
+    const source = read(state, node.from, node.to);
+    // Rows written through the document's macros are drawn from their expansion (read-only).
+    const built = macroBuiltTabular(source, expandRowsAt(node.from), defs.columnTypes);
+    if (!built && !parseTabular(source, 0, defs.columnTypes)) return undefined;
+    const span = aloneOnLines(doc, node.from, node.to);
+    const range = span ?? { from: node.from, to: node.to };
+    emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TableWidget(built ?? source, node.from - range.from, range.to - range.from, !!built) }] });
+    return false;
+  };
+
+  /** A figure, table or algorithm float, drawn whole when the figure widget shows everything in it. */
+  const drawFloat = (node: SyntaxNode, kind: FigureContent["kind"]): false | undefined => {
+    const formed = wellFormedEnvironment(node, state);
+    if (!formed) return undefined;
+    if (!structural) return false;
+    const figure = figureSpec(node, formed.name, state, defs, expandRowsAt(node.from), captionMacro, kind);
+    if (!figure) return undefined;
+    const span = aloneOnLines(doc, node.from, node.to);
+    const range = span ?? { from: node.from, to: node.to };
+    // Offsets were from the environment's start: from here on they are from the widget's.
+    for (const content of [figure, ...(figure.panels ?? [])]) {
+      content.numberOffset += node.from - range.from;
+      for (const tabular of content.tabulars ?? []) tabular.offset -= range.from;
+    }
+    figure.length = range.to - range.from;
+    emit({ kind: "figure", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(figure) }] });
+    return false;
   };
 
   /** An item marker in the current list for `\item` (or a macro for it) at [at, to]; `optional` is its `[label]`. */
@@ -384,6 +481,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       }
       if (env.preambleEnd > 0 && ref.to <= env.preambleEnd) return false;
       if (consumed.length && isConsumed(ref)) return false;
+      // A node starting before an `\iffalse`'s `\fi` and running past it (`\iffalse \section{A} \fi more`): only what follows is drawn.
+      if (disabled.length && startsDisabled(ref.from)) return undefined;
       // Most nodes are text and argument holders: go inside without building a node object.
       if (!HANDLED.has(name)) return undefined;
       const node = ref.node;
@@ -450,6 +549,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return;
       }
 
+      // `{\bf bold}`, `{\tt [CLS]}`, `{\small text}`: a group opened by a font or size switch styles what follows it.
+      if (name === "Group") {
+        const switched = groupSwitch(node);
+        if (!switched) return;
+        consumed.push([node.from, switched.textFrom]);
+        emit({
+          kind: "style", from: node.from, to: node.to, reveal: "touch",
+          replaces: [{ from: node.from, to: switched.textFrom }, { from: switched.close.from, to: node.to }],
+          marks: switched.className ? [{ from: switched.textFrom, to: switched.close.from, class: switched.className }] : undefined,
+        });
+        return;
+      }
+
       switch (name) {
         case "TextColorCommand": case "ColorBoxCommand": {
           const args = commandArguments(node);
@@ -503,13 +615,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const latex = read(state, math.from, math.to);
           if (!latex.trim()) return false;
           const expanded = expandLatexMacros(latex, defs, { mode: "math", pos: node.from });
-          const html = expanded.ok ? renderKatex(expanded.text, display) : null;
+          const html = expanded.ok ? renderKatex(withReferences(expanded.text), display) : null;
           if (!html) return false;
           const span = display ? aloneOnLines(doc, node.from, node.to) : null;
           const range = span ?? { from: node.from, to: node.to };
           emit({
             kind: "math", from: range.from, to: range.to, reveal: "strict",
-            replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, display, !!span, read(state, node.from, node.to), false, node.from - range.from, range.to - range.from) }],
+            replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, display, !!span, read(state, node.from, node.to), false, node.from - range.from, range.to - range.from, referenced(expanded.text)) }],
           });
           return false;
         }
@@ -521,13 +633,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const body = read(state, formed.content.from, formed.content.to);
           const source = katexForEnvironment(formed.name, body);
           const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: node.from });
-          const html = expanded.ok ? renderKatex(expanded.text, !source.inline) : null;
+          const html = expanded.ok ? renderKatex(withReferences(expanded.text), !source.inline) : null;
           if (!html) return false;
           const span = source.inline ? null : aloneOnLines(doc, node.from, node.to);
           const range = span ?? { from: node.from, to: node.to };
           emit({
             kind: "math", from: range.from, to: range.to, reveal: "strict",
-            replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, !source.inline, !!span, read(state, node.from, node.to), source.numbered, node.from - range.from, range.to - range.from) }],
+            replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, !source.inline, !!span, read(state, node.from, node.to), source.numbered, node.from - range.from, range.to - range.from, referenced(expanded.text)) }],
           });
           return false;
         }
@@ -564,48 +676,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return false;
         }
         case "FigureEnvironment": case "TableEnvironment": {
-          const formed = wellFormedEnvironment(node, state);
-          if (!formed) return;
-          if (!structural) return false;
-          const figure = figureSpec(node, formed.name, state, expandRowsAt(node.from), captionMacro);
-          if (!figure) return;
-          const span = aloneOnLines(doc, node.from, node.to);
-          const range = span ?? { from: node.from, to: node.to };
-          figure.numberOffset = node.from - range.from;
-          figure.length = range.to - range.from;
-          for (const tabular of figure.tabulars ?? []) tabular.offset -= range.from;
-          emit({ kind: "figure", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(figure) }] });
-          return false;
+          // A subfigure on its own (its figure is not drawn whole) is drawn as a lettered panel.
+          return drawFloat(node, floatKind(node, readNode) ?? (name === "TableEnvironment" ? "table" : "figure"));
         }
-        case "TabularEnvironment": {
-          const formed = wellFormedEnvironment(node, state);
-          if (!formed) return;
-          if (/^(?:longtable|xltabular)\*?$/.test(formed.name)) {
-            // Its caption, first head, body and last foot, with rows written through the document's macros expanded.
-            // Drawn, not edited by cell; one it cannot read has its parts drawn on their own.
-            if (!structural) return false;
-            const display = readLongTable(read(state, node.from, node.to), expandAt(node.from));
-            if (!display) return;
-            const span = aloneOnLines(doc, node.from, node.to);
-            const range = span ?? { from: node.from, to: node.to };
-            const spec: FigureSpec = {
-              env: formed.name, images: [], caption: display.caption, captionPos: display.captionAt >= 0 ? node.from + display.captionAt : node.from,
-              start: node.from, kind: "table", numberOffset: node.from - range.from, length: range.to - range.from,
-              tabulars: [{ source: display.tabular, offset: node.from - range.from, readOnly: true }], captionAbove: true,
-            };
-            emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(spec) }] });
-            return false;
-          }
-          if (!structural) return false;
-          const source = read(state, node.from, node.to);
-          // Rows written through the document's macros are drawn from their expansion (read-only).
-          const built = macroBuiltTabular(source, expandRowsAt(node.from));
-          if (!built && !parseTabular(source, 0)) return;
-          const span = aloneOnLines(doc, node.from, node.to);
-          const range = span ?? { from: node.from, to: node.to };
-          emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TableWidget(built ?? source, node.from - range.from, range.to - range.from, !!built) }] });
-          return false;
-        }
+        case "TabularEnvironment": return drawTabular(node);
         case "ListEnvironment": {
           const formed = wellFormedEnvironment(node, state);
           if (!formed) return;
@@ -631,6 +705,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "Environment": case "KnownEnvironment": {
           if (name === "KnownEnvironment") return;
+          // `table*`, `algorithm` and the other floats the grammar does not name.
+          const kind = floatKind(node, readNode);
+          if (kind) return drawFloat(node, kind);
+          // `tabular*` and `tabulary` are tabulars the grammar does not name.
+          if (isTabular(node, readNode)) return drawTabular(node);
           return environment(node);
         }
         case "EndEnv": {
@@ -691,7 +770,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const theorem = defs.theorems.get(name);
     const user = defs.environments.get(name);
     const block = TEXT_BLOCKS[name];
-    if (!theorem && !user && !block && name !== "proof") return undefined;
+    if (!theorem && !user && !block && name !== "proof" && !ACKNOWLEDGMENTS.test(name)) return undefined;
     const begin = formed.begin;
     // The optional argument (a theorem's name) may be inside BeginEnv or right after it.
     let headerEnd = begin.to;
@@ -721,9 +800,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (!block) consumed.push([begin.from, headerEnd]);
     const contentLines = formed.content ? { from: doc.lineAt(Math.min(doc.length, headerEnd + 1)).from, to: doc.lineAt(Math.max(formed.end.from - 1, 0)).to } : null;
 
-    if (theorem || name === "proof" || name === "abstract") {
+    // NeurIPS's `ack` and the like: a heading as the abstract's.
+    const acknowledgments = ACKNOWLEDGMENTS.test(name);
+    if (theorem || name === "proof" || name === "abstract" || acknowledgments) {
       const variant = theorem ? "theorem" : name === "proof" ? "proof" : "abstract";
-      const title = theorem ? theorem.title : name === "proof" ? (note ?? "Proof") : "Abstract";
+      const title = theorem ? theorem.title : name === "proof" ? (note ?? "Proof") : acknowledgments ? "Acknowledgments" : "Abstract";
       const header = new EnvironmentHeaderWidget(variant, title, theorem ? note : null, theorem?.numbered ? "theorem" : null, 0);
       const span = aloneOnLines(doc, begin.from, headerEnd);
       if (structural) {
@@ -733,7 +814,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(null) }] });
         } else collapseLine(formed.end, "env-end");
       }
-      const styleClass = theorem ? THEOREM_STYLE_CLASSES[theorem.style] : name === "abstract" ? "cm-vis-abstract" : "cm-vis-proof";
+      const styleClass = theorem ? THEOREM_STYLE_CLASSES[theorem.style] : name === "abstract" ? "cm-vis-abstract" : acknowledgments ? "cm-vis-acknowledgments" : "cm-vis-proof";
       if (formed.content && formed.content.to > headerEnd) emit({ kind: "env-body", from: headerEnd, to: formed.end.from, reveal: "never", replaces: [], marks: [{ from: headerEnd, to: formed.end.from, class: styleClass }], lines: name === "abstract" && contentLines && contentLines.to >= contentLines.from ? [{ ...contentLines, class: "cm-vis-abstract-line" }] : undefined });
       return undefined;
     }
@@ -768,6 +849,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (lists[i].variant !== "number") continue;
       const change = counterChange(state, node, enumCounter(lists[i].depth));
       if (change) { lists[i].count = change(lists[i].count); return undefined; }
+    }
+    // `\footnotetext{…}`: the text of a note marked with `\footnotemark`, set as a footnote's (styled in both layers).
+    if (text === "\\footnotetext") {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      const inner = argument && argumentInner(argument.node);
+      if (inner && !hasDirectError(node)) {
+        emit({
+          kind: "footnote", from: node.from, to: argument.node.to, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: inner.from }, { from: inner.to, to: argument.node.to }] : [],
+          marks: [{ from: inner.from, to: inner.to, class: "cm-vis-footnote" }],
+        });
+        return undefined;
+      }
     }
     if (!structural) {
       // The style layer only needs the arguments of macros drawn with editable arguments.
@@ -804,6 +898,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (DEFINITION_COMMANDS.test(text)) return skipDefinition(node);
     const macro = macroAt(defs, name, node.from);
     if (macro) return macroUse(node, name);
+    // ACL's `\newcite{key}` and other styles' citation commands: chips, cited as the natbib command they act like.
+    if (CITE_ALIASES[text]) {
+      const keysArgument = args.find((arg) => !arg.optional);
+      const inner = keysArgument && argumentInner(keysArgument.node);
+      if (inner && !hasDirectError(node)) {
+        const keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
+        const optionals = args.filter((arg) => arg.optional).map((arg) => { const range = argumentInner(arg.node); return range ? read(state, range.from, range.to) : ""; });
+        const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+        const end = keysArgument.node.to;
+        emit({ kind: "cite", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new ChipWidget("cite", CITE_ALIASES[text], keys, notes, end - node.from) }] });
+        return false;
+      }
+    }
     if (SYMBOL_COMMANDS[text] !== undefined && emptyArgs) {
       emit({ kind: "symbol", from: ctrl.from, to: end, reveal: "never", replaces: [{ from: ctrl.from, to: end, widget: new SymbolWidget(SYMBOL_COMMANDS[text], read(state, ctrl.from, end), /TeX/.test(text) ? "cm-vis-symbol cm-vis-logo" : "cm-vis-symbol") }] });
       return false;
@@ -930,9 +1037,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (env.name === "EquationEnvironment" || env.name === "EquationArrayEnvironment") {
       const source = katexForEnvironment(envName, body);
       const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: from });
-      const html = expanded.ok ? renderKatex(expanded.text, !source.inline) : null;
+      const html = expanded.ok ? renderKatex(withReferences(expanded.text), !source.inline) : null;
       if (!html) return false;
-      emit({ kind: "math", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, !source.inline, !!span, read(state, from, to), source.numbered, from - range.from, range.to - range.from) }] });
+      emit({ kind: "math", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, !source.inline, !!span, read(state, from, to), source.numbered, from - range.from, range.to - range.from, referenced(expanded.text)) }] });
       return true;
     }
     let spec: ExpandedEnvironmentSpec;
@@ -961,6 +1068,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   }
 
   function macroUse(node: SyntaxNode, name: string): false | undefined {
+    // A macro in an environment's opening arguments (`\begin{subfigure}{\nfwidth}`) is a length or a setting: source.
+    for (let parent = node.parent, depth = 0; parent && depth < 6; parent = parent.parent, depth++) if (parent.name === "BeginEnv") return undefined;
     // An argument the parser ends early (at a blank line or a heading: an unclosed brace) is read
     // further in the text than the tree shows: drawn from the text, the use would change with
     // edits the tree does not tie to it. Its parts are drawn on their own.
@@ -997,9 +1106,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (ensure || (needsMathMode(use.text) && macroAt(defs, name, node.from)?.mathOnly)) {
       // A math macro used in text through \ensuremath: drawn as a formula.
       const latex = ensure ? ensure[1] : use.text;
-      const html = renderKatex(expandLatexMacros(latex, defs, { mode: "math", pos: node.from }).text, false);
+      const formula = expandLatexMacros(latex, defs, { mode: "math", pos: node.from }).text;
+      const html = renderKatex(withReferences(formula), false);
       if (!html) return undefined;
-      emit({ kind: "math", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new MathWidget(html, false, false, read(state, node.from, to), false, 0, to - node.from) }] });
+      emit({ kind: "math", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new MathWidget(html, false, false, read(state, node.from, to), false, 0, to - node.from, referenced(formula)) }] });
       // The parser may attach only some of the arguments to the command: the rest are inside the widget too.
       consumed.push([node.from, to]);
       return false;
@@ -1019,24 +1129,50 @@ function listContext(node: SyntaxNode, name: string, lists: ListContext[], state
   return { node, variant, depth, count, template: range ? state.doc.sliceString(range.from, range.to) : null };
 }
 
+/** Tabulars: the grammar names `tabular` and `tabularx`; `tabular*`, `tabulary` and `array`-like ones are plain environments. */
+const TABULAR_NAMES = /^(?:tabular\*?|tabularx|tabulary|longtable\*?|xltabular)$/;
+export function isTabular(node: SyntaxNode, read: (from: number, to: number) => string) {
+  return node.name === "TabularEnvironment" || (node.name === "Environment" && TABULAR_NAMES.test(environmentName(node, read) ?? ""));
+}
+
+/** Containers inside a float that hold one caption each: side-by-side minipages, algorithm floats inside them, and subcaption's sub-floats. */
+const PANEL_ENVIRONMENTS = new Set(["minipage", "algorithm", "algorithm*", "subfigure", "subtable"]);
+/** subcaption's sub-floats (the grammar parses `subfigure` as a figure): panels whose captions are lettered, "(a)". */
+const SUB_FLOATS = new Set(["subfigure", "subtable"]);
+const isSubFloat = (node: SyntaxNode, read: (from: number, to: number) => string) => (node.name === "FigureEnvironment" || node.name === "Environment") && SUB_FLOATS.has(environmentName(node, read) ?? "");
+
 /**
- * Whether the figure widget would show everything in a figure or table: its
- * images, tables, one caption, labels, comments and layout commands. Text,
- * other commands and sub-figures are not drawn by it, so such a figure stays
- * source (its parts render on their own).
+ * Whether the figure widget would show everything in a float: its images,
+ * drawings, tables and algorithms, one caption per float or minipage panel,
+ * labels, comments and layout commands. Text, other commands and sub-figures
+ * are not drawn by it, so such a float stays source (its parts render on their own).
  */
 function figureCovered(node: SyntaxNode, state: EditorState, captionMacro: (use: SyntaxNode) => string | null) {
   const content = node.getChild("Content");
   if (!content) return true;
+  const readState = (from: number, to: number) => read(state, from, to);
   let covered = true;
-  let captions = 0;
-  content.cursor().iterate((ref) => {
+  /** Captions per container (the float, or the panel the caption is in). */
+  const captions = new Map<number, number>();
+  const caption = (at: SyntaxNode) => {
+    let container = node.from;
+    for (let parent = at.parent; parent && parent.from > node.from; parent = parent.parent) {
+      if ((parent.name === "Environment" || parent.name === "FigureEnvironment") && PANEL_ENVIRONMENTS.has(environmentName(parent, readState) ?? "")) { container = parent.from; break; }
+    }
+    const count = (captions.get(container) ?? 0) + 1;
+    captions.set(container, count);
+    // A panel has one caption; the float itself may have several (two tables in one float, drawn as parts).
+    if (count > 1 && container !== node.from) covered = false;
+  };
+  /** Sub-floats in a wrapper (`\scalebox{1}{\begin{subfigure}…}`): panels, checked as the float's content is. */
+  const panel = (sub: SyntaxNode) => { sub.cursor().iterate(visit); return covered; };
+  const visit = (ref: SyntaxNodeRef): boolean | undefined => {
     if (!covered) return false;
     const name = ref.name;
     if (ref.type.isError) { covered = false; return false; }
     if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "BlankLine" || name === "LineBreak" || name === "Tilde") return false;
     if (name === "IncludeGraphics" || name === "Label" || name === "TabularEnvironment" || name === "SetLengthCommand" || name === "Centering") return false;
-    if (name === "Caption") { if (++captions > 1) covered = false; return false; }
+    if (name === "Caption") { caption(ref.node); return false; }
     if (name === "Normal") { if (read(state, ref.from, ref.to).trim()) covered = false; return false; }
     // A drawing from another file (`\input{fig}`, often TikZ): shown as a placeholder.
     if (name === "Input") return false;
@@ -1044,26 +1180,59 @@ function figureCovered(node: SyntaxNode, state: EditorState, captionMacro: (use:
       const ctrl = ref.node.firstChild;
       const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
       if (command === "\\includestandalone") return false;
-      // A macro that writes the caption (`\mycap{…}`) is the caption.
-      if (captionMacro(ref.node) !== null) { if (++captions > 1) covered = false; return false; }
+      // caption's `\captionof{table}{…}`, and a macro that writes the caption (`\mycap{…}`), are captions.
+      if (command === "\\captionof" || captionMacro(ref.node) !== null) { caption(ref.node); return false; }
       // `\resizebox{\linewidth}{!}{\input{fig}}`: a drawing, scaled.
-      if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state)) covered = false; return false; }
-      if (!FIGURE_LAYOUT.test(command)) covered = false;
+      if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel)) covered = false; return false; }
+      if (!FIGURE_LAYOUT.test(command) && !SIZE_COMMAND.test(command)) covered = false;
       return false;
     }
-    // `\begin{center}` around a table: its markup is layout, its content is checked. A TikZ picture is a drawing.
-    if (name === "Environment") {
-      const env = environmentName(ref.node, (from, to) => read(state, from, to));
-      if (env === "tikzpicture") return false;
-      if (env !== "center") covered = false;
+    // `\begin{center}`, minipages and sub-figures: their markup is layout, their content is checked. A TikZ picture
+    // is a drawing; an algorithm is its caption and its algorithmic lines.
+    if (name === "Environment" || name === "FigureEnvironment") {
+      const env = environmentName(ref.node, readState) ?? "";
+      if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { covered = false; return false; }
+      if (env === "tikzpicture" || TABULAR_NAMES.test(env)) return false;
+      if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state)) covered = false; return false; }
+      if (env !== "center" && !PANEL_ENVIRONMENTS.has(env)) covered = false;
       return undefined;
     }
     if (name === "BeginEnv" || name === "EndEnv") return false;
-    if (name === "Content" || name === "Text" || name === "Command" || name === "KnownCommand" || name === "KnownEnvironment") return undefined;
+    // `{\small \begin{tabular}…}`: a group around the content, for its size.
+    if (name === "Group" || name === "NonEmptyGroup" || name === "OpenBrace" || name === "CloseBrace") return undefined;
+    // `\\` between images (a `KnownCtrlSym` holding a `LineBreak`) is layout.
+    if (name === "Content" || name === "Text" || name === "Command" || name === "KnownCommand" || name === "KnownCtrlSym" || name === "KnownEnvironment") return undefined;
     covered = false;
     return false;
-  });
+  };
+  content.cursor().iterate(visit);
   return covered;
+}
+
+/** An `algorithmic` environment's lines, or null when they cannot be read. */
+function algorithmicSpec(node: SyntaxNode, state: EditorState) {
+  const content = node.getChild("Content");
+  const options = node.getChild("BeginEnv")?.getChild("OptionalArgument");
+  const range = options && argumentInner(options);
+  return content ? parseAlgorithmic(read(state, content.from, content.to), range ? read(state, range.from, range.to) : null) : null;
+}
+
+/** etoolbox toggles as the document sets them (`\togglefalse{hq}`), per document version: unset is false. */
+const toggleCache = new WeakMap<Text, Map<string, boolean>>();
+function toggleValue(doc: Text, name: string) {
+  let toggles = toggleCache.get(doc);
+  if (!toggles) {
+    toggles = new Map();
+    for (const match of doc.toString().matchAll(/^[^%\n]*?\\toggle(true|false)\s*\{([^}]*)\}/gm)) toggles.set(match[2].trim(), match[1] === "true");
+    toggleCache.set(doc, toggles);
+  }
+  return toggles.get(name) ?? false;
+}
+
+/** An image path as LaTeX reads it: `\iftoggle{hq}{a.pdf}{b.pdf}` is the branch the toggle chooses. */
+function imagePath(path: string, doc: Text) {
+  const toggle = /^\\iftoggle\s*\{([^}]*)\}\s*\{([^{}]*)\}\s*\{([^{}]*)\}$/.exec(path.trim());
+  return toggle ? (toggleValue(doc, toggle[1].trim()) ? toggle[2] : toggle[3]).trim() : path.trim();
 }
 
 /** Names of the document's macros that write table rows or cells (`&`, `\\`), directly or through another one. */
@@ -1085,107 +1254,245 @@ function rowMacroNames(defs: LatexDefinitions) {
 }
 
 /** Commands that scale or turn what their last argument draws. */
-const DRAWING_WRAPPERS = /^\\(?:resizebox\*?|scalebox|rotatebox|reflectbox)$/;
+const DRAWING_WRAPPERS = /^\\(?:resizebox\*?|scalebox|rotatebox|reflectbox|raisebox|adjustbox)$/;
 
-/** A wrapper's last argument holds only drawings (`\input`, `\includestandalone`, `\includegraphics`, a TikZ picture). */
-function drawingOnly(command: SyntaxNode, state: EditorState) {
+/**
+ * A wrapper's last argument holds only what a float draws: drawings (`\input`, `\includestandalone`,
+ * `\includegraphics`, a TikZ picture), tabulars (`\resizebox{\linewidth}{!}{\begin{tabular}…}`), and layout.
+ */
+function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: SyntaxNode) => boolean) {
   const argument = command.getChildren("TextArgument").at(-1);
   const inner = argument && argumentInner(argument);
   if (!argument || !inner) return false;
+  const readState = (from: number, to: number) => read(state, from, to);
   let only = true;
   argument.cursor().iterate((ref) => {
     if (!only || ref.from < inner.from && ref.to <= inner.from) return false;
     const name = ref.name;
-    if (name === "TextArgument" || name === "LongArg" || name === "Text" || name === "Content" || name === "Command" || name === "KnownCommand" || name === "OpenBrace" || name === "CloseBrace") return undefined;
-    if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "Input" || name === "IncludeGraphics") return false;
+    if (name === "TextArgument" || name === "LongArg" || name === "Text" || name === "Content" || name === "Command" || name === "KnownCommand" || name === "KnownCtrlSym" || name === "KnownEnvironment" || name === "OpenBrace" || name === "CloseBrace" || name === "Group") return undefined;
+    if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "LineBreak" || name === "Input" || name === "IncludeGraphics" || name === "Centering") return false;
+    if (isTabular(ref.node, readState)) return false;
     if (name === "Normal") { if (read(state, ref.from, ref.to).trim()) only = false; return false; }
-    if (name === "UnknownCommand") { const ctrl = ref.node.firstChild; if (!ctrl || read(state, ctrl.from, ctrl.to) !== "\\includestandalone") only = false; return false; }
-    if (name === "Environment" || name === "KnownEnvironment") { if (environmentName(ref.node, (from, to) => read(state, from, to)) !== "tikzpicture") only = false; return false; }
+    if (name === "UnknownCommand") {
+      const ctrl = ref.node.firstChild;
+      const text = ctrl ? read(state, ctrl.from, ctrl.to) : "";
+      if (text === "\\includestandalone" || FIGURE_LAYOUT.test(text) || SIZE_COMMAND.test(text)) return false;
+      if (DRAWING_WRAPPERS.test(text)) { if (!drawingOnly(ref.node, state, panel)) only = false; return false; }
+      only = false;
+      return false;
+    }
+    // Sub-figures in a float's wrapper are panels: the float checks them.
+    if (panel && isSubFloat(ref.node, readState)) { if (!panel(ref.node)) only = false; return false; }
+    if (name === "Environment" || name === "KnownEnvironment") {
+      const env = environmentName(ref.node, readState);
+      if (env === "tikzpicture") return false;
+      if (env === "center") return undefined;
+      only = false;
+      return false;
+    }
     only = false;
     return false;
   });
   return only;
 }
 
-/** What a figure or table environment shows: its images, drawings or tabulars, and its caption. */
-function figureSpec(node: SyntaxNode, env: string, state: EditorState, expand: (text: string) => string | null, captionMacro: (use: SyntaxNode) => string | null): FigureSpec | null {
+/** A float's or panel's content as read, with where each part is (to split a float with several captions). */
+type Collected = FigureContent & {
+  firstContent: number;
+  places: { images: number[]; drawings: number[]; captions: Array<{ pos: number; text: string; captionPos: number }> };
+};
+
+/**
+ * A float with several captions and no minipages (two tables in one `table`): one part per
+ * caption, with the content on its side. Captions above their content (the first caption
+ * comes first) take what follows them; captions below take what comes before. The first
+ * caption is numbered at the float, the others at themselves (numbering.ts).
+ */
+function captionSegments(own: Collected, floatFrom: number): FigureContent[] {
+  const captions = own.places.captions;
+  const starts = [...own.places.images, ...own.places.drawings, ...(own.tabulars ?? []).map((tabular) => tabular.offset)];
+  const above = captions[0].pos < Math.min(...starts);
+  // Each part's range: [this caption, next caption) above, (previous caption, this caption] below.
+  const range = (index: number) => above
+    ? { from: index === 0 ? -Infinity : captions[index].pos, to: index + 1 < captions.length ? captions[index + 1].pos : Infinity }
+    : { from: index === 0 ? -Infinity : captions[index - 1].pos + 1, to: index + 1 < captions.length ? captions[index].pos + 1 : Infinity };
+  return captions.map((caption, index) => {
+    const { from, to } = range(index);
+    const inside = (pos: number) => pos >= from && pos < to;
+    const tabulars = (own.tabulars ?? []).filter((tabular) => inside(tabular.offset));
+    const drawings = own.drawings?.filter((_, at) => inside(own.places.drawings[at])) ?? [];
+    return {
+      images: own.images.filter((_, at) => inside(own.places.images[at])),
+      tabulars: tabulars.length ? tabulars : undefined,
+      drawings: drawings.length ? drawings : undefined,
+      caption: caption.text,
+      captionPos: caption.captionPos,
+      captionAbove: above,
+      kind: own.kind,
+      numberOffset: index === 0 ? own.numberOffset : caption.pos - floatFrom,
+    };
+  });
+}
+
+/**
+ * What a float shows: its images, drawings, tabulars or algorithm, and its
+ * caption; with side-by-side minipages, each panel's own. Numbers are looked
+ * up where numbering records them: at the float, at a minipage panel, at an
+ * algorithm, or at a `\captionof` outside a panel.
+ */
+function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: LatexDefinitions, expand: (text: string) => string | null, captionMacro: (use: SyntaxNode) => string | null, kind: FigureContent["kind"]): FigureSpec | null {
   if (!figureCovered(node, state, captionMacro)) return null;
-  const images: FigureSpec["images"] = [];
-  const tabulars: Array<{ source: string; offset: number; readOnly?: boolean }> = [];
-  /** Drawings the editor cannot draw (TikZ, `\input` files): their file name, or "" for a picture written inline. */
-  const drawings: string[] = [];
-  let caption: SyntaxNode | null = null;
-  /** A caption written by a macro: its text and where the macro is used. */
-  let macroCaption: { text: string; pos: number } | null = null;
-  let firstContent = Number.MAX_SAFE_INTEGER;
-  node.cursor().iterate((ref) => {
-    if (ref.name === "Comment") return false;
-    if (ref.name === "UnknownCommand") {
-      const text = captionMacro(ref.node);
-      if (text !== null) { macroCaption = { text, pos: ref.from }; return false; }
+  const readState = (from: number, to: number) => read(state, from, to);
+  const isPanel = (candidate: SyntaxNode) => (candidate.name === "Environment" && environmentName(candidate, readState) === "minipage") || isSubFloat(candidate, readState);
+  let valid = true;
+
+  /** The content of a float or panel at `root`, leaving out the panels inside it (`skipPanels`). */
+  const collect = (root: SyntaxNode, defaultKind: FigureContent["kind"], skipPanels: boolean): Collected => {
+    const content: Collected = {
+      images: [], tabulars: [], drawings: [], caption: null, captionPos: root.from, kind: defaultKind, numberOffset: 0, firstContent: Number.MAX_SAFE_INTEGER,
+      places: { images: [], drawings: [], captions: [] },
+    };
+    let numberAt = root.from;
+    const panelRoot = isPanel(root);
+    // A sub-figure's caption is lettered, "(a)", numbered at it.
+    if (isSubFloat(root, readState)) {
+      content.sub = true;
+      content.kind = environmentName(root, readState) === "subtable" ? "table" : "figure";
     }
-    if (ref.name === "Input" || ref.name === "UnknownCommand" && read(state, ref.from, ref.from + 18) === "\\includestandalone") {
-      const argument = ref.node.getChild("InputArgument")?.getChild("FilePathArgument") ?? ref.node.getChild("InputArgument") ?? ref.node.getChild("TextArgument");
-      const inner = argument && argumentInner(argument);
-      if (ref.name === "Input" || inner) drawings.push(inner ? read(state, inner.from, inner.to).trim() : "");
-      firstContent = Math.min(firstContent, ref.from);
-      return false;
-    }
-    if ((ref.name === "Environment" || ref.name === "KnownEnvironment") && environmentName(ref.node, (from, to) => read(state, from, to)) === "tikzpicture") {
-      drawings.push("");
-      firstContent = Math.min(firstContent, ref.from);
-      return false;
-    }
-    if (ref.name === "IncludeGraphics") {
-      const argument = ref.node.getChild("IncludeGraphicsArgument")?.getChild("FilePathArgument") ?? ref.node.getChild("IncludeGraphicsArgument");
-      const inner = argument && argumentInner(argument);
-      const options = ref.node.getChild("OptionalArgument");
-      const optionsRange = options && argumentInner(options);
-      if (inner) images.push({ path: state.doc.sliceString(inner.from, inner.to).trim(), width: graphicsWidth(optionsRange ? state.doc.sliceString(optionsRange.from, optionsRange.to) : null) });
-      firstContent = Math.min(firstContent, ref.from);
-      return false;
-    }
-    if (ref.name === "TabularEnvironment") {
-      const source = state.doc.sliceString(ref.from, ref.to);
-      // A longtable is shown as source (see the TabularEnvironment case): so is its table.
-      if (/^\\begin\s*\{(?:longtable|xltabular)\*?\}/.test(source)) tabulars.push({ source: "", offset: ref.from });
-      else {
-        // Rows written through the document's macros are drawn from their expansion (read-only).
-        const built = macroBuiltTabular(source, expand);
-        tabulars.push(built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from });
+    const found = (at: number) => { content.firstContent = Math.min(content.firstContent, at); };
+    root.cursor().iterate((ref) => {
+      const name = ref.name;
+      if (name === "Comment") return false;
+      // A panel is content of its own: the float's caption after the panels is below them.
+      if (ref.from !== root.from && skipPanels && isPanel(ref.node)) { found(ref.from); return false; }
+      if (name === "UnknownCommand") {
+        const ctrl = ref.node.firstChild;
+        const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
+        if (command === "\\captionof") {
+          // `\captionof{table}{…}`: a caption of the kind it names; numbered at its panel, or where it is.
+          const args = ref.node.getChildren("TextArgument");
+          const type = args[0] && argumentInner(args[0]);
+          const text = args[1] && argumentInner(args[1]);
+          const named = type ? FLOAT_KINDS[read(state, type.from, type.to).trim()] : undefined;
+          if (named && text) {
+            content.kind = named;
+            content.caption = read(state, text.from, text.to);
+            content.captionPos = text.from;
+            numberAt = panelRoot ? root.from : ref.from;
+          }
+          return false;
+        }
+        const written = captionMacro(ref.node);
+        if (written !== null) { content.caption = written; content.captionPos = ref.from; return false; }
+        if (command === "\\includestandalone") {
+          const argument = ref.node.getChild("TextArgument");
+          const inner = argument && argumentInner(argument);
+          if (inner) { content.drawings!.push(read(state, inner.from, inner.to).trim()); content.places.drawings.push(ref.from); }
+          found(ref.from);
+          return false;
+        }
+        return undefined;
       }
-      firstContent = Math.min(firstContent, ref.from);
-      return false;
-    }
-    if (ref.name === "Caption") {
-      // A sub-figure's caption is not the figure's.
-      let nested = false;
-      for (let parent = ref.node.parent; parent && parent.from !== node.from; parent = parent.parent) if (parent.name === "FigureEnvironment" || parent.name === "TableEnvironment") nested = true;
-      if (!nested) caption = ref.node;
-      return false;
-    }
+      if (name === "Input") {
+        const argument = ref.node.getChild("InputArgument")?.getChild("FilePathArgument") ?? ref.node.getChild("InputArgument");
+        const inner = argument && argumentInner(argument);
+        content.drawings!.push(inner ? read(state, inner.from, inner.to).trim() : "");
+        content.places.drawings.push(ref.from);
+        found(ref.from);
+        return false;
+      }
+      if ((name === "Environment" || name === "KnownEnvironment") && !isTabular(ref.node, readState)) {
+        const envName = environmentName(ref.node, readState) ?? "";
+        if (envName === "tikzpicture") { content.drawings!.push(""); content.places.drawings.push(ref.from); found(ref.from); return false; }
+        if (envName === "algorithmic") {
+          const algorithm = algorithmicSpec(ref.node, state);
+          if (algorithm) content.algorithm = algorithm; else valid = false;
+          found(ref.from);
+          return false;
+        }
+        // An algorithm float (inside a minipage, or the float itself): its caption numbers an algorithm, at it.
+        if (envName === "algorithm" || envName === "algorithm*") { content.kind = "algorithm"; numberAt = ref.from; }
+        return undefined;
+      }
+      if (name === "IncludeGraphics") {
+        const argument = ref.node.getChild("IncludeGraphicsArgument")?.getChild("FilePathArgument") ?? ref.node.getChild("IncludeGraphicsArgument");
+        const inner = argument && argumentInner(argument);
+        const options = ref.node.getChild("OptionalArgument");
+        const optionsRange = options && argumentInner(options);
+        if (inner) {
+          content.images.push({ path: imagePath(read(state, inner.from, inner.to), state.doc), width: graphicsWidth(optionsRange ? read(state, optionsRange.from, optionsRange.to) : null) });
+          content.places.images.push(ref.from);
+        }
+        found(ref.from);
+        return false;
+      }
+      if (isTabular(ref.node, readState)) {
+        const source = read(state, ref.from, ref.to);
+        // A longtable is shown as source (see the TabularEnvironment case): so is its table.
+        if (/^\\begin\s*\{(?:longtable|xltabular)\*?\}/.test(source)) valid = false;
+        else {
+          // Rows written through the document's macros are drawn from their expansion (read-only).
+          const built = macroBuiltTabular(source, expand, defs.columnTypes);
+          const tabular = built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from };
+          if (!parseTabular(tabular.source, 0, defs.columnTypes)) valid = false;
+          content.tabulars!.push(tabular);
+        }
+        found(ref.from);
+        return false;
+      }
+      if (name === "Caption") {
+        // A sub-figure's caption is not the figure's.
+        for (let parent = ref.node.parent; parent && parent.from !== root.from; parent = parent.parent) if (parent.name === "FigureEnvironment" || parent.name === "TableEnvironment") return false;
+        const argument = ref.node.getChild("TextArgument");
+        const inner = argument && argumentInner(argument);
+        // `\caption*{…}` is a caption without a number.
+        const starred = read(state, ref.from, ref.from + 9) === "\\caption*";
+        if (inner) {
+          content.caption = read(state, inner.from, inner.to);
+          content.captionPos = inner.from;
+          content.unnumbered = starred || undefined;
+          if (!starred) content.places.captions.push({ pos: ref.from, text: content.caption, captionPos: inner.from });
+        }
+        return false;
+      }
+      return undefined;
+    });
+    content.numberOffset = numberAt - node.from;
+    content.captionAbove = content.caption !== null && content.captionPos < content.firstContent;
+    if (!content.tabulars!.length) content.tabulars = undefined;
+    if (!content.drawings!.length) content.drawings = undefined;
+    return content;
+  };
+
+  const panels: SyntaxNode[] = [];
+  node.cursor().iterate((ref) => {
+    if (ref.from === node.from) return undefined;
+    if (ref.name === "Comment") return false;
+    if (isPanel(ref.node)) { panels.push(ref.node); return false; }
     return undefined;
   });
-  const captionNode = caption as SyntaxNode | null;
-  const captionArgument = captionNode?.getChild("TextArgument");
-  const captionRange = captionArgument && argumentInner(captionArgument);
-  const written = macroCaption as { text: string; pos: number } | null;
-  if (!images.length && !tabulars.length && !drawings.length && !captionRange && !written) return null;
-  if (tabulars.some((tabular) => !parseTabular(tabular.source, 0))) return null;
-  const captionAt = captionRange?.from ?? written?.pos;
+  const own = collect(node, kind, true);
+  const parts = panels.map((panel) => collect(panel, kind, false));
+  if (!valid) return null;
+  const empty = (part: FigureContent) => !part.images.length && !part.tabulars && !part.drawings && !part.algorithm && part.caption === null;
+  if (empty(own) && parts.every(empty)) return null;
+  const strip = (part: Collected): FigureContent => {
+    const { firstContent, places, ...content } = part;
+    void firstContent;
+    void places;
+    return content;
+  };
+  // Two tables (or figures) in one float, each with its own caption: one part per caption, stacked.
+  const segments = !parts.length && own.places.captions.length > 1 ? captionSegments(own, node.from) : null;
   return {
+    ...strip(own),
+    ...(segments ? { caption: null, images: [], tabulars: undefined, drawings: undefined } : {}),
     env,
-    images,
-    caption: captionRange ? state.doc.sliceString(captionRange.from, captionRange.to) : written?.text ?? null,
-    captionPos: captionAt ?? node.from,
     start: node.from,
-    base: images.length ? graphicsBase(state) : undefined,
-    kind: node.name === "TableEnvironment" ? "table" : "figure",
-    numberOffset: 0,
+    base: [own, ...parts].some((part) => part.images.length) ? graphicsBase(state) : undefined,
     length: node.to - node.from,
-    tabulars: tabulars.length ? tabulars : undefined,
-    drawings: drawings.length ? drawings : undefined,
-    captionAbove: captionAt !== undefined ? captionAt < firstContent : false,
+    panels: segments ?? (parts.length ? parts.map(strip) : undefined),
+    stacked: segments ? true : undefined,
   };
 }
 

@@ -6,7 +6,8 @@ import { test } from "node:test";
 import fc from "fast-check";
 import { TreeFragment, type Tree } from "@lezer/common";
 import { highlightTree } from "@lezer/highlight";
-import { parser } from "codemirror-lang-latex/src/latex.mjs";
+// The parser Libera uses: the package's, with nested groups in file paths (latex-parser.ts).
+import { latexParser as parser } from "../../src/lib/latex/codemirror/latex-parser";
 import { latexHighlightStyle, latexLanguage as streamLanguage } from "../../src/lib/latex/codemirror/language";
 import { latexTreeLanguage } from "../../src/lib/latex/codemirror/latex-language";
 

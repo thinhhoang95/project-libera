@@ -37,6 +37,7 @@ const RESTART_MAX_MS = 30_000;
 /** A host that ran this long before crashing restarts from the shortest delay. */
 const STABLE_UPTIME_MS = 60_000;
 const ONLINE_POLL_MS = 5_000;
+const POWER_POLL_MS = 60_000;
 const MAX_DOC_ID_LENGTH = 512;
 const MAX_REQUEST_ID_LENGTH = 128;
 
@@ -136,6 +137,7 @@ function createCollabHost(options = {}) {
   let restartAttempt = 0;
   let startedAt = 0;
   let onlineTimer = null;
+  let powerTimer = null;
   let lastOnline = null;
   let shutdownId = 0;
   let readyWaiters = [];
@@ -267,6 +269,8 @@ function createCollabHost(options = {}) {
       port,
       token,
     });
+    // A restarted host starts at the normal pace until it hears otherwise.
+    postPower();
   }
 
   function waitForReady(timeoutMs) {
@@ -289,9 +293,28 @@ function createCollabHost(options = {}) {
     if (ready) post({ t: "nudge" });
   }
 
+  // The host checks shared folders less often on battery. Unknown counts as
+  // mains power: a missed battery state costs energy, never a missed edit.
+  function postPower() {
+    let onBattery = false;
+    try { onBattery = powerMonitor.isOnBatteryPower() === true; } catch { /* Unknown: keep the normal pace. */ }
+    post({ t: "power", onBattery });
+  }
+
   function installLifecycle() {
     powerMonitor.on("suspend", () => post({ t: "suspend" }));
-    powerMonitor.on("resume", () => post({ t: "resume" }));
+    powerMonitor.on("resume", () => {
+      post({ t: "resume" });
+      postPower();
+    });
+    powerMonitor.on("on-ac", postPower);
+    powerMonitor.on("on-battery", postPower);
+    // Electron has no on-ac/on-battery events on Linux: ask once a minute
+    // (the host ignores a state it already has).
+    if (process.platform === "linux") {
+      powerTimer = setInterval(postPower, POWER_POLL_MS);
+      powerTimer.unref?.();
+    }
     powerMonitor.on("unlock-screen", nudge);
     // Main has no "online" event; poll the cheap OS check and nudge when the
     // network comes back so the reconnect does not wait for its backoff.
@@ -366,6 +389,8 @@ function createCollabHost(options = {}) {
     restartTimer = null;
     if (onlineTimer) clearInterval(onlineTimer);
     onlineTimer = null;
+    if (powerTimer) clearInterval(powerTimer);
+    powerTimer = null;
     const processHandle = child;
     if (!processHandle) {
       stopPromise = Promise.resolve();

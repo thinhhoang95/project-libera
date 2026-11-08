@@ -6,6 +6,8 @@ export const CONTROL_SYMBOLS: Record<string, string> = {
   "\\%": "%", "\\&": "&", "\\_": "_", "\\#": "#", "\\$": "$", "\\{": "{", "\\}": "}",
   "\\,": " ", "\\;": " ", "\\:": " ", "\\ ": " ", "\\!": "", "\\/": "", "\\-": "­",
   "\\@": "",
+  // A backslash before a line break or tab is a space.
+  "\\\n": " ", "\\\t": " ",
 };
 
 /** Text-mode commands with no arguments. */
@@ -36,6 +38,14 @@ export function readAccent(text: string): { char: string; length: number } | nul
   if (base === "\\j") base = "ȷ";
   return { char: (base + mark).normalize("NFC"), length: match[0].length };
 }
+
+/** Font switches (`{\bf …}`, `{\itshape …}`): the class that styles what follows them in their group. */
+export const FONT_SWITCHES: Record<string, string> = {
+  "\\bf": "cm-vis-b", "\\bfseries": "cm-vis-b", "\\it": "cm-vis-i", "\\itshape": "cm-vis-i", "\\sl": "cm-vis-i", "\\slshape": "cm-vis-i",
+  "\\em": "cm-vis-em", "\\tt": "cm-vis-tt", "\\ttfamily": "cm-vis-tt", "\\sc": "cm-vis-sc", "\\scshape": "cm-vis-sc",
+  "\\sf": "cm-vis-sf", "\\sffamily": "cm-vis-sf", "\\mdseries": "cm-vis-md",
+  "\\rm": "cm-vis-rm", "\\rmfamily": "cm-vis-rm", "\\upshape": "cm-vis-rm", "\\normalfont": "cm-vis-rm",
+};
 
 /** Font size switches (`{\small 1}`): the editor keeps one size, so they draw nothing. */
 export const SIZE_COMMAND = /^\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;

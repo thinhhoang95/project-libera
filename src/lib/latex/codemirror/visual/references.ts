@@ -110,3 +110,15 @@ export function referenceChipText(command: string, keys: string[], numbering: La
 export function stateReferenceText(state: EditorState, command: string, keys: string[]) {
   return referenceChipText(command, keys, visualNumbering(state), visualAux(state), visualDefinitions(state));
 }
+
+/** Whether a formula refers to labels (`$\mathcal{L}_{\ref{eq:loss}}$`), whose numbers KaTeX cannot know. */
+export const REFERENCE_IN_MATH = /\\(?:eq|auto|Auto|c|C)?ref\b/;
+
+/** A formula with its references written as their numbers, for KaTeX. */
+export function withReferenceNumbers(latex: string, state: EditorState) {
+  if (!REFERENCE_IN_MATH.test(latex)) return latex;
+  return latex.replace(/\\(eq|auto|Auto|c|C)?ref\*?\s*\{([^{}]*)\}/g, (_, kind: string | undefined, keys: string) => {
+    const text = stateReferenceText(state, `\\${kind ?? ""}ref`, keys.split(",").map((key) => key.trim()).filter(Boolean));
+    return `\\text{${text.replace(/[\\{}_#%&$^~]/g, (char) => `\\${char}`)}}`;
+  });
+}

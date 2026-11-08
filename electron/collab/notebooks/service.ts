@@ -274,6 +274,8 @@ export class NotebookServiceImpl implements NotebookService {
   /** Folders being shared or joined right now: their marker is ours before the store knows it. */
   private readonly pendingRoots = new Set<string>();
   private readonly unjoined = new Map<string, UnjoinedFolder>();
+  /** Running on battery: projects check their folders less often. */
+  private onBattery = false;
 
   /** Where shared albums live: the gallery folder (its direct children are albums). */
   private readonly galleryRoot: string;
@@ -684,6 +686,8 @@ export class NotebookServiceImpl implements NotebookService {
     if (writer !== handle.writer) await this.switchRole(handle, writer);
     else if (writer && lease.outcome === "granted") {
       await this.updateMarker(handle, { writer: this.installationId, ...(lease.contended ? { syncedElsewhere: true } : {}) });
+      // Scans refused while the lease had lapsed (a wake from sleep) run now.
+      handle.runtime?.leaseConfirmed();
     }
   }
 
@@ -829,6 +833,7 @@ export class NotebookServiceImpl implements NotebookService {
       host: this.deps.host,
       logger: this.logger,
       timings: this.timings,
+      onBattery: () => this.onBattery,
       emit: (event) => this.deps.emit(event),
       accountId: () => this.accountId(),
       revoked: (projectId) => void this.revoke(projectId).catch((error) => this.logger.warn("Could not finish notebook revocation; it will be retried.", error)),
@@ -1000,6 +1005,16 @@ export class NotebookServiceImpl implements NotebookService {
       ...(handle.kind === "album" ? { kind: "album" as const } : {}),
       ...(handle.runtime?.pdfs.enabled ? { pdfLive: true } : {}),
     }));
+  }
+
+  powerChanged(onBattery: boolean): void {
+    if (this.onBattery === onBattery) return;
+    this.onBattery = onBattery;
+    for (const handle of this.projects.values()) handle.runtime?.powerChanged();
+  }
+
+  resumed(): void {
+    for (const handle of this.projects.values()) handle.runtime?.resumed();
   }
 
   /** The running project (tests, diagnostics). */

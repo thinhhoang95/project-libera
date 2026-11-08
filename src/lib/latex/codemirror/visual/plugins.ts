@@ -3,7 +3,7 @@ import { StateEffect, StateField, type Range } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { ySyncFacet } from "y-codemirror.next";
 import { remoteUsers } from "../../../collab/awareness";
-import { parser as latexParser } from "codemirror-lang-latex/src/latex.mjs";
+import { latexParser } from "../latex-parser";
 import { loadKey } from "../../macros/definitions";
 import { computeLatexNumbering, type IncludedFile } from "../../macros/numbering";
 import { latexProjectField } from "../editing";
@@ -42,7 +42,6 @@ const cancelIdle = (handle: number) => {
 /** Numbers headings, equations, figures and labels after a pause, and refreshes the widgets that show numbers. */
 export const numberingPlugin = ViewPlugin.fromClass(class {
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private refreshQueued = false;
   constructor(readonly view: EditorView) { this.schedule(0); }
   update(update: ViewUpdate) {
     const state = update.state;
@@ -54,7 +53,10 @@ export const numberingPlugin = ViewPlugin.fromClass(class {
     if (update.startState.field(numberingField, false) !== state.field(numberingField, false)
       || update.startState.field(auxField, false) !== state.field(auxField, false)
       || update.startState.field(latexProjectField, false) !== state.field(latexProjectField, false)) {
-      this.queueRefresh();
+      this.queueRefresh(false);
+    } else if (update.viewportChanged && !update.docChanged) {
+      // Scrolled: lines drawn again may reuse an equal widget's DOM from another place (every `\section` number is equal).
+      this.queueRefresh(true);
     }
   }
   private schedule(delay: number) {
@@ -71,10 +73,13 @@ export const numberingPlugin = ViewPlugin.fromClass(class {
     });
     if (numbering.fingerprint !== state.field(numberingField, false)?.fingerprint) this.view.dispatch({ effects: setNumbering.of(numbering) });
   }
-  private queueRefresh() {
-    if (this.refreshQueued) return;
-    this.refreshQueued = true;
-    queueMicrotask(() => { this.refreshQueued = false; refreshVisualWidgets(this.view); });
+  /** A full refresh queued, or one of the widgets that moved: a full one covers both. */
+  private refreshQueued: "all" | "moved" | null = null;
+  private queueRefresh(moved: boolean) {
+    if (this.refreshQueued === "all" || (this.refreshQueued === "moved" && moved)) return;
+    const first = this.refreshQueued === null;
+    this.refreshQueued = moved ? "moved" : "all";
+    if (first) queueMicrotask(() => { const kind = this.refreshQueued; this.refreshQueued = null; refreshVisualWidgets(this.view, kind === "moved"); });
   }
   destroy() { if (this.timer !== null) clearTimeout(this.timer); }
 });

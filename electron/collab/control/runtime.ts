@@ -75,6 +75,7 @@ export class CollabRuntime {
   private queue: Promise<unknown> = Promise.resolve();
   private lastStatus = "";
   private stopped = false;
+  private onBattery = false;
 
   constructor(options: CollabRuntimeOptions) {
     this.options = options;
@@ -180,6 +181,18 @@ export class CollabRuntime {
     this.current?.host.nudge();
   }
 
+  /** On battery, shared folders are checked less often (see SharedProject.pollInterval). */
+  setOnBattery(onBattery: boolean): void {
+    if (this.onBattery === onBattery) return;
+    this.onBattery = onBattery;
+    this.current?.notebooks.powerChanged?.(onBattery);
+  }
+
+  /** The computer woke from sleep: shared folders are checked now. */
+  resumed(): void {
+    this.current?.notebooks.resumed?.();
+  }
+
   private applyAccount(): void {
     const account = this.accounts.account;
     const session = this.accounts.session;
@@ -229,6 +242,7 @@ export class CollabRuntime {
     });
     this.notebookRoutes.clear();
     notebooks.registerRoutes(this.notebookRoutes);
+    if (this.onBattery) notebooks.powerChanged?.(true);
     const unsubscribe = host.on((event) => this.onHostEvent(event));
     this.current = { key, clientNamespace, host, notebooks, unsubscribe };
     try {

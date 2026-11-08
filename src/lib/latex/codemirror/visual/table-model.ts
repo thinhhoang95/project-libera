@@ -42,13 +42,19 @@ export type TableModel = {
   rulesAfter: string[];
   bodyFrom: number;
   bodyTo: number;
+  /** The document's `\newcolumntype`s the specification was read with. */
+  types?: ColumnTypes;
 };
 
+/** `\newcolumntype` letters and how many arguments each takes (definitions.ts `columnTypes`). */
+export type ColumnTypes = ReadonlyMap<string, { arity: number }>;
+
+const TABULAR_NEWLINE = /^\\tabularnewline(?![A-Za-z@])/;
 const RULE = /^\\(hline|toprule|midrule|bottomrule|cmidrule|cline|specialrule|addlinespace)\b(\s*\([^)]*\))?(\s*\{[^}]*\})?(\s*\[[^\]]*\])?/;
 
 /** The column letters of a specification, without rules, `@{…}`, `>{…}`, `p{…}` widths and repeats expanded. */
-export function parseColumnSpec(spec: string) {
-  return columnSpans(spec)?.map((column) => column.letter) ?? [];
+export function parseColumnSpec(spec: string, types?: ColumnTypes) {
+  return columnSpans(spec, 0, types)?.map((column) => column.letter) ?? [];
 }
 
 /** Most columns a specification may expand to; a larger one (nested `*{64}{…}` repeats) is left as source. */
@@ -62,7 +68,7 @@ const COLUMN_ARGUMENTS: Record<string, number> = { p: 1, m: 1, b: 1, w: 2, W: 2 
  * expanded (the spans of repeated columns are the repeat's), within limits.
  * Null for a specification that cannot be read or is too large.
  */
-export function columnSpans(spec: string, depth = 0): Array<{ letter: string; from: number; to: number; repeated: boolean }> | null {
+export function columnSpans(spec: string, depth = 0, types?: ColumnTypes): Array<{ letter: string; from: number; to: number; repeated: boolean }> | null {
   const columns: Array<{ letter: string; from: number; to: number; repeated: boolean }> = [];
   let before = -1;
   for (let i = 0; i < spec.length; i++) {
@@ -95,7 +101,7 @@ export function columnSpans(spec: string, depth = 0): Array<{ letter: string; fr
       const bodyEnd = countEnd < 0 ? -1 : matchingBrace(spec, countEnd + 1);
       if (countEnd < 0 || bodyEnd < 0) return null;
       const count = Number(spec.slice(i + 2, countEnd).trim());
-      const inner = columnSpans(spec.slice(countEnd + 2, bodyEnd), depth + 1);
+      const inner = columnSpans(spec.slice(countEnd + 2, bodyEnd), depth + 1, types);
       if (!Number.isInteger(count) || count < 0 || !inner || columns.length + count * inner.length > MAX_COLUMNS) return null;
       for (let n = 0; n < count; n++) for (const column of inner) columns.push({ letter: column.letter, from: i, to: bodyEnd + 1, repeated: true });
       i = bodyEnd;
@@ -103,7 +109,7 @@ export function columnSpans(spec: string, depth = 0): Array<{ letter: string; fr
     }
     if (/[A-Za-z]/.test(char)) {
       let end = i + 1;
-      for (let n = 0; n < (COLUMN_ARGUMENTS[char] ?? 0); n++) {
+      for (let n = 0; n < (types?.get(char)?.arity ?? COLUMN_ARGUMENTS[char] ?? 0); n++) {
         const close = matchingBrace(spec, end);
         if (close < 0) return null;
         end = close + 1;
@@ -141,7 +147,7 @@ function matchingBrace(text: string, open: number) {
  * Reads a tabular environment's source, which starts at document position
  * `offset`. Returns null for one it cannot map exactly.
  */
-export function parseTabular(source: string, offset = 0): TableModel | null {
+export function parseTabular(source: string, offset = 0, types?: ColumnTypes): TableModel | null {
   const begin = /^\\begin\s*\{([A-Za-z*]+)\}/.exec(source);
   if (!begin) return null;
   const env = begin[1];
@@ -182,13 +188,22 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
     let from = cellStart + lead;
     const to = Math.max(from, end - trail);
     let text = source.slice(from, to);
+    /** Moves the cell's start past `length` characters and the spaces after them. */
+    const advance = (length: number) => {
+      const rest = text.slice(length);
+      const skip = length + (rest.length - rest.trimStart().length);
+      from += skip;
+      text = text.slice(skip);
+    };
+    // A commented-out line before the cell's content (`%\footnotesize SPP-net & …`) is not part of it.
+    const skipComments = () => { for (let comment = /^%[^\n]*(?:\n|$)/.exec(text); comment; comment = /^%[^\n]*(?:\n|$)/.exec(text)) advance(comment[0].length); };
+    skipComments();
     // Rules and spaces at the start of a row belong to the row, not its first cell.
     if (!cells.length) {
       for (let rule = RULE.exec(text); rule; rule = RULE.exec(text)) {
         rules.push(rule[0].trim());
-        const skip = rule[0].length + (text.slice(rule[0].length).length - text.slice(rule[0].length).trimStart().length);
-        from += skip;
-        text = text.slice(skip);
+        advance(rule[0].length);
+        skipComments();
       }
     }
     const cell: TableCell = { from: offset + from, to: offset + to, outerFrom: offset + cellStart, outerTo: offset + end, text, span: 1, sourceOnly };
@@ -231,9 +246,10 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
       else if (source.startsWith("\\end", i)) environments--;
       else if (source[i + 1] === "(") math = "\\)";
       else if (source[i + 1] === "[") math = "\\]";
-      else if (source[i + 1] === "\\" && depth === 0 && environments === 0) {
+      else if ((source[i + 1] === "\\" || TABULAR_NEWLINE.test(source.slice(i, i + 16))) && depth === 0 && environments === 0) {
+        // `\\`, or array's `\tabularnewline`, ends the row.
         pushCell(i);
-        let end = i + 2;
+        let end = i + (source[i + 1] === "\\" ? 2 : "\\tabularnewline".length);
         if (source[end] === "*") end++;
         const spacing = /^[ \t]*\[[^\]]*\]/.exec(source.slice(end, bodyTo));
         if (spacing) end += spacing[0].length;
@@ -255,7 +271,7 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
   }
   // Unbalanced math, braces or environments: the cell map would be wrong, so the table stays as source.
   if (math || depth !== 0 || environments !== 0) return null;
-  const spans = columnSpans(spec);
+  const spans = columnSpans(spec, 0, types);
   if (!spans) return null;
   // The text after the last `\\`: a last row, or only rules.
   const tail = source.slice(cellStart, bodyTo);
@@ -275,7 +291,7 @@ export function parseTabular(source: string, offset = 0): TableModel | null {
     }
   } else rulesAfter.push(...rules);
 
-  return { specFrom: offset + specFrom, specTo: offset + specEnd, spec, columns: spans.map((column) => column.letter), rows, rulesAfter, bodyFrom: offset + bodyFrom, bodyTo: offset + bodyTo };
+  return { specFrom: offset + specFrom, specTo: offset + specEnd, spec, columns: spans.map((column) => column.letter), rows, rulesAfter, bodyFrom: offset + bodyFrom, bodyTo: offset + bodyTo, types };
 }
 
 /** A longtable read for display: its caption and label, and a plain tabular of the rows it prints first. */
@@ -291,7 +307,7 @@ const LONGTABLE_MARKERS = /^\\(endfirsthead|endhead|endfoot|endlastfoot)(?![A-Za
  * macros come out of `expand` (null when it cannot), so this is drawn, not
  * edited cell by cell. Null for a source it cannot read.
  */
-export function readLongTable(source: string, expand: (text: string) => string | null): LongTableDisplay | null {
+export function readLongTable(source: string, expand: (text: string) => string | null, types?: ColumnTypes): LongTableDisplay | null {
   const begin = /^\\begin\s*\{((?:longtable|xltabular)\*?)\}/.exec(source);
   if (!begin) return null;
   const env = begin[1];
@@ -357,7 +373,7 @@ export function readLongTable(source: string, expand: (text: string) => string |
   const expanded = expand(texts.join("\n"));
   if (expanded === null) return null;
   const tabular = `\\begin{tabular}{${spec}}${withoutComments(expanded)}\\end{tabular}`;
-  return parseTabular(tabular, 0) ? { caption, captionAt, label, tabular } : null;
+  return parseTabular(tabular, 0, types) ? { caption, captionAt, label, tabular } : null;
 }
 
 /** Drops `%` comments (keeping `\%`): after expansion they only end the lines of macro bodies. */
@@ -371,13 +387,13 @@ function withoutComments(text: string) {
  * when expanding changes the grid. Null when the tabular's own `&` and `\\`
  * already give its cells, or the expansion cannot be read.
  */
-export function macroBuiltTabular(source: string, expand: (text: string) => string | null): string | null {
+export function macroBuiltTabular(source: string, expand: (text: string) => string | null, types?: ColumnTypes): string | null {
   const expanded = expand(source);
   if (expanded === null || expanded === source) return null;
   const reading = withoutComments(expanded);
-  const built = parseTabular(reading, 0);
+  const built = parseTabular(reading, 0, types);
   if (!built) return null;
-  const own = parseTabular(source, 0);
+  const own = parseTabular(source, 0, types);
   const shape = (model: TableModel) => model.rows.map((row) => row.cells.reduce((count, cell) => count + cell.span, 0)).join(",");
   return own && shape(own) === shape(built) ? null : reading;
 }
@@ -453,7 +469,7 @@ export function deleteRow(model: TableModel, source: string, offset: number, ind
 export function insertColumn(model: TableModel, index: number, letter = "l"): TableChange[] | null {
   const changes: TableChange[] = [];
   // Place the letter after the whole specification of the index-th column (`p{2cm}`, `>{…}l<{…}`).
-  const spans = editableSpans(model.spec);
+  const spans = editableSpans(model.spec, model.types);
   if (!spans || spans.length !== model.columns.length) return null;
   const specAt = model.specFrom + (index < 0 ? (spans[0]?.from ?? 0) : spans[index].to);
   changes.push({ from: specAt, to: specAt, insert: letter });
@@ -479,7 +495,7 @@ export function insertColumn(model: TableModel, index: number, letter = "l"): Ta
 
 /** Changes that delete column `index` from the spec and every row; null when a \multicolumn spans it. */
 export function deleteColumn(model: TableModel, index: number): TableChange[] | null {
-  const spans = editableSpans(model.spec);
+  const spans = editableSpans(model.spec, model.types);
   if (!spans || spans.length !== model.columns.length || model.columns.length <= 1) return null;
   // The column's whole specification goes, with its `>{…}` and `<{…}`.
   const changes: TableChange[] = [{ from: model.specFrom + spans[index].from, to: model.specFrom + spans[index].to, insert: "" }];
@@ -505,7 +521,7 @@ export function deleteColumn(model: TableModel, index: number): TableChange[] | 
 }
 
 /** Column spans that can be edited one by one: null when a repeat (`*{n}{…}`) covers any column. */
-function editableSpans(spec: string) {
-  const spans = columnSpans(spec);
+function editableSpans(spec: string, types?: ColumnTypes) {
+  const spans = columnSpans(spec, 0, types);
   return spans && spans.every((span) => !span.repeated) ? spans : null;
 }

@@ -62,6 +62,10 @@ export class UtilityHost {
   private readonly secrets = new Map<number, { resolve: (value: string) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   /** Attaches that arrive while the app is still starting. */
   private readonly early: Array<{ docId: string; port: MessagePortLike }> = [];
+  /** The last power state main sent; applied when the app finishes starting. */
+  private onBattery = false;
+  /** A wake from sleep came while the app was starting; replayed once it has. */
+  private resumedWhileStarting = false;
 
   constructor(parent: ParentPortLike, options: UtilityHostOptions = {}) {
     this.parent = parent;
@@ -87,9 +91,19 @@ export class UtilityHost {
         if (!this.starting) this.starting = this.start(message);
         return;
       case "nudge":
+        this.app?.runtime.nudge();
+        return;
       case "resume":
         // After sleep the socket may look open but be dead; nudge probes it.
         this.app?.runtime.nudge();
+        // File watching can miss what changed while asleep: check the folders
+        // now, or once the app has started (projects start before it returns).
+        if (this.app) this.app.runtime.resumed();
+        else this.resumedWhileStarting = true;
+        return;
+      case "power":
+        this.onBattery = message.onBattery === true;
+        this.app?.runtime.setOnBattery(this.onBattery);
         return;
       case "suspend":
         // Every edit is already committed to SQLite before it is shown as
@@ -169,6 +183,11 @@ export class UtilityHost {
         app = await startControlApp({ ...options, server: { ...options.server, port: 0 } });
       }
       this.app = app;
+      if (this.onBattery) app.runtime.setOnBattery(true);
+      if (this.resumedWhileStarting) {
+        this.resumedWhileStarting = false;
+        app.runtime.resumed();
+      }
       this.post({ t: "ready", protocol: PARENT_PROTOCOL_VERSION, url: app.address.url, port: app.address.port, storeSchemaVersion: STORE_SCHEMA_VERSION });
       for (const { docId, port } of this.early.splice(0)) this.attach(docId, port);
     } catch (error) {

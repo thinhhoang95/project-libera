@@ -127,6 +127,56 @@ export function macroEnvironmentRegions(source: string | (() => string), defs: L
   return outer;
 }
 
+/** TeX's conditionals, which each need a `\fi`; `\newif\ifdraft` adds `\ifdraft`. (`\iftoggle`, `\ifthenelse` take arguments and need none.) */
+const PRIMITIVE_IFS = new Set(["if", "ifx", "ifnum", "ifdim", "ifodd", "iftrue", "iffalse", "ifcase", "ifdefined", "ifcsname", "ifmmode", "ifvmode", "ifhmode", "ifinner", "ifvoid", "ifhbox", "ifvbox", "ifeof", "iffontchar", "ifincsname", "ifpdf"]);
+const disabledCache = new Map<string, Array<{ from: number; to: number }>>();
+
+/**
+ * What `\iffalse … \fi` leaves out: from `\iffalse` to its `\fi`, or to an
+ * `\else` at its level (what follows the `\else` is typeset). Nested
+ * conditionals count; comments do not. Neither numbered nor drawn.
+ */
+export function disabledRegions(text: string): Array<{ from: number; to: number }> {
+  if (!text.includes("\\iffalse")) return [];
+  const cached = disabledCache.get(text);
+  if (cached) return cached;
+  const declared = new Set([...text.matchAll(/\\newif\s*\\(if[A-Za-z@]+)/g)].map((match) => match[1]));
+  const regions: Array<{ from: number; to: number }> = [];
+  const token = /%[^\n]*|\\(if[A-Za-z@]*|fi|else)(?![A-Za-z@])/g;
+  let start = -1;
+  let depth = 0;
+  for (let match = token.exec(text); match; match = token.exec(text)) {
+    if (match[0].startsWith("%")) { if (match.index > 0 && text[match.index - 1] === "\\") token.lastIndex = match.index + 1; continue; }
+    if (match.index > 0 && text[match.index - 1] === "\\") continue;
+    const name = match[1];
+    if (start < 0) {
+      if (name === "iffalse") { start = match.index; depth = 0; }
+      continue;
+    }
+    if (name === "fi" || (name === "else" && depth === 0)) {
+      if (depth === 0) { regions.push({ from: start, to: match.index + match[0].length }); start = -1; continue; }
+      depth--;
+    } else if (name !== "else" && (PRIMITIVE_IFS.has(name) || declared.has(name))) depth++;
+  }
+  if (disabledCache.size > 8) disabledCache.clear();
+  disabledCache.set(text, regions);
+  return regions;
+}
+
+/** The region containing `pos`, by binary search over sorted regions. */
+export function regionContaining<T extends { from: number; to: number }>(regions: readonly T[], pos: number): T | null {
+  let low = 0;
+  let high = regions.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const region = regions[middle];
+    if (pos < region.from) high = middle - 1;
+    else if (pos >= region.to) low = middle + 1;
+    else return region;
+  }
+  return null;
+}
+
 /** The macro environment region starting at `pos`, or the one `pos` is inside. */
 export function macroEnvironmentRegionAt(regions: MacroEnvironmentRegion[], pos: number, inside = false) {
   for (const region of regions) {

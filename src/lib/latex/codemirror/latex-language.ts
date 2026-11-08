@@ -3,7 +3,7 @@ import type { Extension } from "@codemirror/state";
 import { styleTags, tags } from "@lezer/highlight";
 // The parser module itself: the package root would also bundle its linter,
 // completion, tooltips and data tables, none of which Libera uses.
-import { parser } from "codemirror-lang-latex/src/latex.mjs";
+import { latexParser as parser } from "./latex-parser";
 import { bibtexLanguage, latexFoldRange, latexHighlightStyle, latexLanguage as streamLatexLanguage } from "./language";
 
 /* `.tex` files are parsed by codemirror-lang-latex (AGPL-3.0-or-later, based

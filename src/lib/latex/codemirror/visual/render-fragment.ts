@@ -1,12 +1,12 @@
 import type { SyntaxNode } from "@lezer/common";
-import { parser } from "codemirror-lang-latex/src/latex.mjs";
+import { latexParser as parser } from "../latex-parser";
 import type { LatexAuxData } from "../../aux-file";
 import type { LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros } from "../../macros/expand";
 import type { LatexNumbering } from "../../macros/numbering";
 import { renderKatex } from "./math-render";
 import { citationText, referenceChipText, type BibLookup } from "./references";
-import { circledText, CONTROL_SYMBOLS, cssColor, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
+import { circledText, CONTROL_SYMBOLS, cssColor, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 
 /* A static renderer for short LaTeX: captions, macro expansions, theorem
  * names, table cells and the title block (docs/latex-visual-editor-plan.md
@@ -20,7 +20,46 @@ export type FragmentContext = {
   bib: BibLookup;
   /** Where the fragment is in the open file, for definitions written in the body. */
   pos?: number;
+  /** Draws an image of the project (an `\includegraphics` in a table cell); without it, the command shows as source. */
+  image?: (path: string, width: string | null) => Node;
+  /** Draws a tabular nested in a cell, read-only; without it, the tabular shows as source. */
+  tabular?: (source: string) => Node;
 };
+
+/** Commands that print nothing here: spacing helpers that only matter to TeX's line breaking. */
+const INVISIBLE = new Set(["\\xspace", "\\ignorespaces", "\\unskip", "\\relax", "\\protect", "\\nobreak", "\\null", "\\leavevmode", "\\strut", "\\raggedright", "\\raggedleft", "\\arraybackslash", "\\selectfont"]);
+/** Layout inside a drawn caption, cell or title (not in text, where it stays as source): vertical space and settings draw nothing… */
+const VERTICAL_LAYOUT = /^\\(?:vspace|vskip|smallskip|medskip|bigskip|vfill|addvspace|newpage|clearpage|pagebreak|noindent|par|fontsize|setlength|addtolength|linespread|baselineskip)\*?$/;
+/** …and horizontal space is a space. */
+const HORIZONTAL_SPACE = /^\\(?:hspace|hskip|hfill|hfil|enskip|enspace)\*?$/;
+/** Boxes that print their (last) argument: `\mbox{…}`, `\rlap{$^*$}`, `\multirow{2}{*}{…}`, `\rotatebox{90}{…}`. */
+const BOXES = new Set(["\\mbox", "\\hbox", "\\makebox", "\\fbox", "\\framebox", "\\rlap", "\\llap", "\\text", "\\textnormal", "\\textup", "\\textrm", "\\textmd", "\\textsl", "\\centerline", "\\multirow", "\\rotatebox", "\\raisebox", "\\scalebox", "\\resizebox", "\\parbox", "\\makecell", "\\shortstack"]);
+/** Citation commands of other bibliography styles, as the natbib command they act like (ACL's `\newcite` is `\citet`). */
+export const CITE_ALIASES: Record<string, string> = { "\\newcite": "\\citet", "\\shortcite": "\\cite", "\\citeN": "\\citet", "\\citeNP": "\\citep", "\\citealtNP": "\\citealt" };
+
+/**
+ * TeX's own conditionals in a macro's expansion, which a drawing cannot evaluate: the `\else`
+ * branch, or nothing. cvpr.sty's `\onedot` (`\futurelet\@let@token\@onedot`, then
+ * `\ifx\@let@token.\else.\null\fi`) adds the dot after `\eg`: "e.g.".
+ */
+function withoutConditionals(text: string) {
+  // An inline TikZ drawing (`\tikz\fill[c] (0,0) rectangle (1ex,1ex);`, a colour key in a table): a small square.
+  if (text.includes("\\tikz")) text = text.replace(/\\tikz(?![A-Za-z@])\s*(?:\[[^\]]*\]\s*)?(?:\{(?:[^{}]|\{[^{}]*\})*\}|[^;]*;)/g, "■");
+  if (!/\\(?:if|futurelet)/.test(text)) return text;
+  return text
+    .replace(/\\futurelet\s*\\[A-Za-z@]+/g, "")
+    .replace(/\\if[A-Za-z@]*\s*(?:\\[A-Za-z@]+|[^\\\s])\s*(?:\\[A-Za-z@]+|[^\\\s])?([^]*?)\\else([^]*?)\\fi(?![A-Za-z@])/g, "$2")
+    .replace(/\\if[A-Za-z@]*\s*(?:\\[A-Za-z@]+|[^\\\s])\s*(?:\\[A-Za-z@]+|[^\\\s])?[^]*?\\fi(?![A-Za-z@])/g, "");
+}
+
+/** An `\includegraphics` width as CSS: `0.5\linewidth` as 50%, absolute units as written; null when not one of those. */
+export function graphicsWidthCss(options: string | null) {
+  const width = options && /(?:^|,)\s*width\s*=\s*([\d.]*)\s*(\\(?:line|text|column)width|cm|mm|in|pt|em|ex|px)/.exec(options);
+  if (!width) return null;
+  const amount = width[1] ? Number(width[1]) : 1;
+  if (!Number.isFinite(amount)) return null;
+  return width[2].startsWith("\\") ? `${Math.min(100, amount * 100)}%` : `${amount}${width[2]}`;
+}
 
 const STYLE_TAGS: Record<string, [string, string?]> = {
   TextBoldCommand: ["strong"], TextItalicCommand: ["em"], EmphasisCommand: ["em", "cm-vis-em"], UnderlineCommand: ["u"],
@@ -85,19 +124,42 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   const fragment = document.createDocumentFragment();
   const expansion = expandLatexMacros(latex, context.defs, { mode: "text", pos: context.pos });
   // Accents (`\'e`) span a command and the letter after it; typeset them before parsing.
-  const source = expansion.text.replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
+  const source = withoutConditionals(expansion.text).replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
   const tree = parser.parse(source);
   const read = (from: number, to: number) => source.slice(from, to);
 
   const renderRange = (parent: Node, from: number, to: number, container: SyntaxNode) => {
     let at = from;
+    // `\bf` and `\small` style (or size) everything after them in their group.
+    let target = parent;
     for (let child = container.firstChild; child; child = child.nextSibling) {
       if (child.to <= from || child.from >= to) continue;
-      if (child.from > at) parent.appendChild(document.createTextNode(typesetText(read(at, child.from))));
-      renderNode(parent, child);
+      if (child.from > at) target.appendChild(document.createTextNode(typesetText(read(at, child.from))));
+      const switched = fontSwitch(child);
+      if (switched) {
+        if (switched.className) { const span = element("span", switched.className); target.appendChild(span); target = span; }
+        // What the parser hung on the switch is text: `\tt [CLS]`, `\small{…}`.
+        for (let argument = switched.command.firstChild; argument; argument = argument.nextSibling) {
+          if (argument.name === "OptionalArgument") target.appendChild(document.createTextNode(typesetText(read(argument.from, argument.to))));
+          else if (argument.name === "TextArgument" || argument.name === "ShortTextArgument") renderArgument(target, argument);
+        }
+        at = child.to;
+        continue;
+      }
+      renderNode(target, child);
       at = child.to;
     }
-    if (at < to) parent.appendChild(document.createTextNode(typesetText(read(at, to))));
+    if (at < to) target.appendChild(document.createTextNode(typesetText(read(at, to))));
+  };
+
+  /** A font or size switch (`\bf`, `\small`): its command and the class it styles with ("" for a size). */
+  const fontSwitch = (node: SyntaxNode) => {
+    const command = node.name === "Command" ? node.firstChild : node;
+    const ctrl = command?.name === "UnknownCommand" ? command.firstChild : null;
+    if (!command || !ctrl || ctrl.name !== "CtrlSeq") return null;
+    const text = read(ctrl.from, ctrl.to);
+    const className = FONT_SWITCHES[text] ?? (SIZE_COMMAND.test(text) ? "" : undefined);
+    return className === undefined ? null : { command, className };
   };
 
   const renderArgument = (parent: Node, argument: SyntaxNode) => {
@@ -178,7 +240,30 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" }));
       return;
     }
-    if (name === "Label") return;
+    // Alignment and lengths inside a cell or caption (`\centering`, `\setlength{\tabcolsep}{0pt}`) have no effect here.
+    if (name === "Label" || name === "Centering" || name === "SetLengthCommand") return;
+    // Brackets the parser took for an optional argument (`mAP@[.5, .95]`) are text.
+    if (name === "OptionalArgument" || name === "OpenBracket" || name === "CloseBracket") { parent.appendChild(document.createTextNode(typesetText(read(node.from, node.to)))); return; }
+    // A tabular inside a cell (`\begin{tabular}{@{}c@{}}LOC \\ method\end{tabular}`): a small grid.
+    if (name === "TabularEnvironment" && context.tabular) { parent.appendChild(context.tabular(read(node.from, node.to))); return; }
+    if (name === "KnownEnvironment") { renderRange(parent, node.from, node.to, node); return; }
+    // `\multicolumn{2}{c}{…}` outside a table cell: its text.
+    if (name === "MultiColumn") {
+      const argument = node.getChildren("TextArgument").at(-1) ?? node.getChildren("ShortTextArgument").at(-1);
+      if (argument) { renderArgument(parent, argument); return; }
+    }
+    // `\textnormal{…}`, `\text{…}`, `\mbox{…}` outside math: their text.
+    if (name === "MathTextCommand") {
+      const argument = node.getChild("TextArgument") ?? node.getChild("ShortTextArgument");
+      if (argument) { renderArgument(parent, argument); return; }
+    }
+    if (name === "IncludeGraphics" && context.image) {
+      // An image in a table cell or caption.
+      const argument = node.getChild("IncludeGraphicsArgument")?.getChild("FilePathArgument") ?? node.getChild("IncludeGraphicsArgument");
+      const inner = argument && argumentInner(argument);
+      const options = node.getChild("OptionalArgument");
+      if (inner) { parent.appendChild(context.image(read(inner.from, inner.to).trim(), graphicsWidthCss(options ? read(options.from + 1, options.to - 1) : null))); return; }
+    }
     if (name === "Cite") {
       const keys = node.getChild("BibKeyArgument");
       const ctrl = node.firstChild!;
@@ -207,6 +292,28 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         return;
       }
       if (text === "\\today") { parent.appendChild(document.createTextNode(todayText())); return; }
+      // xspace: a space, unless punctuation, a closing brace, a footnote or the end follows (`\bert{} is` → "BERT is").
+      if (text === "\\xspace") {
+        const after = source.slice(ctrl!.to).replace(/^\s+/, "");
+        if (after && !/^(?:[,.'/?;:!~\-)\]}"]|\\(?:footnote|footnotemark)(?![A-Za-z])|\\\/|\\ )/.test(after)) parent.appendChild(document.createTextNode(" "));
+        return;
+      }
+      if (INVISIBLE.has(text) || VERTICAL_LAYOUT.test(text)) return;
+      if (HORIZONTAL_SPACE.test(text)) { parent.appendChild(document.createTextNode(" ")); return; }
+      if (BOXES.has(text)) {
+        const argument = commandArguments(node).filter((arg) => !arg.optional).at(-1);
+        if (argument) { renderArgument(parent, argument.node); return; }
+      }
+      if (CITE_ALIASES[text]) {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        const inner = argument && argumentInner(argument.node);
+        if (inner) {
+          const chip = element("span", "cm-vis-chip cm-vis-cite");
+          chip.textContent = citationText({ command: CITE_ALIASES[text], keys: read(inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean) }, context.aux, context.bib);
+          parent.appendChild(chip);
+          return;
+        }
+      }
       if (SIZE_COMMAND.test(text) && !commandArguments(node).length) return;
       if (text === "\\textcircled") {
         const arg = commandArguments(node)[0];

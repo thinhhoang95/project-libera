@@ -168,6 +168,25 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   return { text: inner + glue, end: read.end };
 }
 
+/** Math commands whose next token is their argument (accents, fonts, roots, fractions), and `^`/`_`. */
+const ARGUMENT_COMMANDS = "hat|widehat|tilde|widetilde|bar|overline|underline|vec|dot|ddot|dddot|check|breve|acute|grave|mathring|overrightarrow|overleftarrow|mathbf|mathrm|mathit|mathsf|mathtt|mathcal|mathbb|mathfrak|mathscr|mathnormal|boldsymbol|bm|pmb|sqrt|frac|dfrac|tfrac|cfrac|binom|dbinom|tbinom|operatorname|text";
+/** What ends right before a macro use that is an argument: such a command, `^`, `_`, or a fraction's first argument. */
+const ARGUMENT_BEFORE = new RegExp(String.raw`(?:\\(?:${ARGUMENT_COMMANDS})|[\^_]|\\(?:frac|dfrac|tfrac|cfrac|binom|dbinom|tbinom)\s*(?:\{(?:[^{}]|\{[^{}]*\})*\}|\\[A-Za-z@]+|[^\s{}\\]))\s*$`);
+
+/** One token, or one group: what TeX would read as one argument. */
+function singleToken(text: string) {
+  const trimmed = text.trim();
+  if (/^(?:\\[A-Za-z@]+|\\.|[^\\{}\s])$/.test(trimmed)) return true;
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return false;
+  let depth = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === "\\") { i++; continue; }
+    if (trimmed[i] === "{") depth++;
+    else if (trimmed[i] === "}" && --depth === 0 && i < trimmed.length - 1) return false;
+  }
+  return true;
+}
+
 function expandText(source: string, context: Context, depth: number): string | null {
   if (!source.includes("\\")) return source;
   const outer = context.mode;
@@ -215,12 +234,16 @@ function expandText(source: string, context: Context, depth: number): string | n
         continue;
       }
     }
-    context.mode = closer === null ? outer : "math";
+    const math = closer !== null || outer === "math";
+    context.mode = math ? "math" : outer;
     const result = expandUse(source, i, context, depth);
     context.mode = outer;
     if (result === false) return null;
     if (!result) { i += /^\\[A-Za-z@]+/.exec(source.slice(i, i + 80))![0].length - 1; continue; }
-    output = joinTokens(output + source.slice(copied, i), result.text);
+    const before = output + source.slice(copied, i);
+    // `\hat\bx` with `\bx` for `\mathbf{x}`: TeX gives \hat the macro, one token; its expansion, written out, needs braces.
+    const text = math && !singleToken(result.text) && ARGUMENT_BEFORE.test(before) ? `{${result.text}}` : result.text;
+    output = joinTokens(before, text);
     if (output.length > MAX_EXPANSION_LENGTH) return null;
     copied = result.end;
     i = result.end - 1;

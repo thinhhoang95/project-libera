@@ -80,6 +80,24 @@ const INK_DIRECTORY = "_ink";
  */
 const HYDRATION_WAIT_MS = 10_000;
 
+/**
+ * Files at least this large are verified against their stats every
+ * largeFileVerifyMs instead of every verifyMs: hashing a folder of figures
+ * and PDFs each minute costs more battery than everything else the sync
+ * does. The bound stays finite because no stat proves the bytes unchanged:
+ * Linux FAT derives ctime from mtime, and sync clients can set ChangeTime.
+ */
+export const LARGE_FILE_BYTES = 1024 * 1024;
+
+/** Watcher events at most delay a scan this long while they keep coming; a scan still runs during a long burst. */
+const SCAN_MAX_WAIT_MS = 5000;
+
+/** Distinct paths kept for the missed-event check between two walks; later events count for their top-level entry. */
+const MAX_REPORTED_PATHS = 10_000;
+
+/** Longest wait between retries of a failed state.json write. */
+const MAX_SAVE_RETRY_MS = 5 * 60_000;
+
 export interface Timings {
   /**
    * Quiet time after a change before a document's working copy is written.
@@ -97,10 +115,26 @@ export interface Timings {
   deleteGraceMs: number;
   /** Fallback poll for file systems where fs.watch misses events (ExFAT, network drives). */
   pollMs: number;
+  /**
+   * The poll while fs.watch appears to work here: a safety net then. A
+   * change the walk finds without a watcher event drops back to pollMs (a
+   * heuristic: see noticeMissedEvents for what it cannot see).
+   */
+  watchedPollMs: number;
+  /** How long an unexplained change may wait for its watcher event before fs.watch counts as missing events. */
+  watchGraceMs: number;
+  /** On battery, the poll and the content verifications run this many times less often. */
+  batteryScale: number;
   /** Retry delay for downloads and creates that failed (offline). */
   retryMs: number;
-  /** Maximum age of a content verification even if every stat is unchanged. */
+  /**
+   * Age after which a file below LARGE_FILE_BYTES is read and hashed again
+   * even if every stat is unchanged (times batteryScale on battery). Also
+   * the retry bound for a file whose change could not be handled yet.
+   */
   verifyMs: number;
+  /** The same for files of LARGE_FILE_BYTES or more, spread ±25% per file so they do not all come due together. */
+  largeFileVerifyMs: number;
   /** Delay before a shared PDF's sidecar copy is rewritten. */
   pdfWriteMs: number;
 }
@@ -111,8 +145,12 @@ export const DEFAULT_TIMINGS: Timings = {
   settleMs: 250,
   deleteGraceMs: 1200,
   pollMs: 5000,
+  watchedPollMs: 30_000,
+  watchGraceMs: 2000,
+  batteryScale: 4,
   retryMs: 5000,
   verifyMs: 60_000,
+  largeFileVerifyMs: 30 * 60_000,
   pdfWriteMs: 60_000,
 };
 
@@ -149,6 +187,8 @@ export interface ProjectContext {
   host: CollabHost;
   logger: Logger;
   timings: Timings;
+  /** Running on battery: the folder is checked less often. */
+  onBattery?(): boolean;
   emit(event: HostEvent): void;
   /** The signed-in account (manifest createdBy). */
   accountId(): Promise<string>;
@@ -201,9 +241,35 @@ export class SharedProject {
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private manifestTimer: ReturnType<typeof setTimeout> | null = null;
   private scanTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the armed scan timer fires (performance.now()), and when its first request came. */
+  private scanDueAt = 0;
+  private scanFirstAt = 0;
+  /** The armed scan was asked for without delay (poll, resume, retry); watcher debouncing never postpones it. */
+  private scanForced = false;
+  /** A scan is queued and has not started; it will see everything recorded until then. */
+  private scanQueued = false;
+  /** A scan was refused while the writer lease had lapsed; it runs once the lease is confirmed. */
+  private scanDeferred = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the current poll wait began (performance.now()); a new interval counts from here. */
+  private pollArmedAt = 0;
+  /** fs.watch has not been caught missing a change here (see noticeMissedEvents). */
+  private watcherTrusted = true;
+  /**
+   * The missed-event check's view of the folder, by manifestPathKey: the
+   * stats last accounted for, since when events explain a change, and when
+   * an unexplained change was first seen (performance.now() times).
+   */
+  private watchBaseline: Map<string, { entry: WalkEntry | null; since: number; unexplainedAt?: number }> | null = null;
+  /** Start of the walk the baseline came from: events since then explain paths it does not hold. */
+  private watchBaselineAt = 0;
+  /** manifestPathKey of each path fs.watch reported, with when (performance.now()). */
+  private readonly reportedAt = new Map<string, number>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** state.json is behind the in-memory state; kept until a write succeeds. */
+  private stateDirty = false;
+  private saveFailures = 0;
   private readonly missingSince = new Map<string, number>();
   private readonly refusedLogged = new Set<string>();
   private stopped = false;
@@ -216,7 +282,12 @@ export class SharedProject {
   private readonly uploadedBlobs = new Map<string, Uint8Array>();
   private dirtyPaths = new Set<string>();
   private verifyAll = false;
-  private readonly verified = new Map<string, { ctimeMs: number | undefined; at: number }>();
+  /**
+   * The last content read of each file. `pending`: what it found is not
+   * handled yet (a failed download or upload, a document not ready), so it
+   * is retried every verifyMs whatever the file's size.
+   */
+  private readonly verified = new Map<string, { ctimeMs: number | undefined; at: number; pending?: boolean }>();
   /** Retired path keys, each with the content hashes known for it. */
   private readonly retired: Map<string, Set<string>>;
   private observedEntries = new Map<string, ManifestEntry>();
@@ -359,7 +430,8 @@ export class SharedProject {
     this.stopped = true;
     this.watcher?.close();
     this.watcher = null;
-    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    this.pollTimer = null;
     for (const timer of [this.manifestTimer, this.scanTimer, this.retryTimer, ...this.timers]) if (timer) clearTimeout(timer);
     this.manifestTimer = this.scanTimer = this.retryTimer = null;
     this.timers.clear();
@@ -1298,32 +1370,210 @@ export class SharedProject {
       this.watcher = watch(this.info.root, { recursive: true }, (_event, name) => {
         const relative = typeof name === "string" ? name.split(path.sep).join("/") : "";
         if (relative && relative.split("/").some((segment) => segment.startsWith(".libera"))) return;
-        if (relative) this.dirtyPaths.add(relative);
-        else this.verifyAll = true;
+        if (relative) {
+          this.dirtyPaths.add(relative);
+          this.noteReported(relative);
+        } else this.verifyAll = true;
         this.scheduleScan(this.ctx.timings.settleMs);
       });
       this.watcher.on("error", (error) => {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: file watching stopped; polling only`, error);
         this.watcher?.close();
         this.watcher = null;
+        this.forgetWatchHistory();
+        this.retimePoll();
       });
+      // fs.watch on a network share reports what this computer does, not
+      // what other computers write there. Mapped drive letters and mounted
+      // shares are not recognized here; the missed-event check covers them.
+      this.watcherTrusted = !onWindowsNetworkShare(this.info.root);
     } catch (error) {
       this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: file watching unavailable; polling only`, error);
     }
     // The poll is the safety net: fs.watch misses events on ExFAT, network
     // shares and after sleep. Bounded verification also catches preserved stats.
-    this.pollTimer = setInterval(() => this.scheduleScan(0), this.ctx.timings.pollMs);
-    this.pollTimer.unref?.();
+    this.schedulePoll();
     this.scheduleScan(0);
   }
 
+  /**
+   * How long until the next safety-net scan. While fs.watch has seen every
+   * change, the poll only guards against it failing silently, so it can be
+   * slow; on battery, slower still.
+   */
+  private pollInterval(): number {
+    const { pollMs, watchedPollMs } = this.ctx.timings;
+    return (this.watcher && this.watcherTrusted ? watchedPollMs : pollMs) * this.powerScale();
+  }
+
+  private powerScale(): number {
+    return this.ctx.onBattery?.() ? Math.max(1, this.ctx.timings.batteryScale) : 1;
+  }
+
+  /** Starts a full poll wait from now; it keeps running while the project does (a follower's scans return early). */
+  private schedulePoll(): void {
+    this.pollArmedAt = performance.now();
+    this.armPoll(this.pollInterval());
+  }
+
+  /**
+   * The interval changed (power source, watcher state): the deadline counts
+   * from when the current wait began, so a run of changes (a loose charger)
+   * can never keep pushing the safety-net scan back.
+   */
+  private retimePoll(): void {
+    if (this.pollTimer) this.armPoll(Math.max(0, this.pollArmedAt + this.pollInterval() - performance.now()));
+  }
+
+  private armPoll(delay: number): void {
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    this.pollTimer = null;
+    if (this.stopped) return;
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
+      this.scheduleScan(0);
+      this.schedulePoll();
+    }, delay);
+    this.pollTimer.unref?.();
+  }
+
+  /** The power source changed. */
+  powerChanged(): void {
+    this.retimePoll();
+  }
+
+  /** The computer woke up: what changed while it slept may have no watcher event. */
+  resumed(): void {
+    if (this.pollTimer) this.scheduleScan(0);
+  }
+
+  /** The service renewed this writer's lease: a scan refused while it had lapsed runs now. */
+  leaseConfirmed(): void {
+    if (!this.scanDeferred) return;
+    this.scanDeferred = false;
+    this.scheduleScan(0);
+  }
+
+  private noteReported(relative: string): void {
+    if (!this.watcherTrusted) return;
+    let key = manifestPathKey(relative);
+    // Bounded while scans cannot complete (manifest not ready): further
+    // paths count for their top-level entry, coarser but never dropped.
+    if (!this.reportedAt.has(key) && this.reportedAt.size >= MAX_REPORTED_PATHS) key = manifestPathKey(relative.split("/")[0]);
+    this.reportedAt.set(key, performance.now());
+  }
+
+  /** Whether fs.watch reported `relative` or a folder above it at or after `since`. */
+  private reportedSince(relative: string, since: number): boolean {
+    const segments = relative.split("/");
+    for (let length = segments.length; length > 0; length -= 1) {
+      const at = this.reportedAt.get(manifestPathKey(segments.slice(0, length).join("/")));
+      if (at !== undefined && at >= since) return true;
+    }
+    return false;
+  }
+
+  /** The detector can no longer decide anything (no watcher, or it already missed a change). */
+  private forgetWatchHistory(): void {
+    this.watchBaseline = null;
+    this.reportedAt.clear();
+  }
+
+  /**
+   * A heuristic for fs.watch failing silently (a network share, ExFAT, a
+   * stream broken by sleep): a file whose stats changed between complete
+   * walks, or that appeared, with no event for it or a folder above it for
+   * watchGraceMs of this host's own clock. The poll then goes back to
+   * pollMs for the rest of the session.
+   *
+   * It cannot see misses that leave every stat equal, deletions (absence
+   * has no time to judge an event's lateness by), or folders without files;
+   * the poll's interval bounds how long those wait. Generated build output
+   * is not judged: it is not imported either.
+   */
+  private noticeMissedEvents(files: Map<string, WalkEntry>, verifyAll: boolean, startedAt: number): void {
+    if (!this.watcher || !this.watcherTrusted) {
+      this.forgetWatchHistory();
+      return;
+    }
+    const previous = verifyAll ? null : this.watchBaseline;
+    const next = new Map<string, { entry: WalkEntry | null; since: number; unexplainedAt?: number }>();
+    const now = performance.now();
+    let missed: string | null = null;
+    let oldestNeeded = startedAt;
+    for (const [relative, entry] of files) {
+      const key = manifestPathKey(relative);
+      const before = previous?.get(key);
+      const since = before?.since ?? this.watchBaselineAt;
+      const accounted = !previous || isGeneratedPath(relative) ||
+        (before?.entry && before.entry.size === entry.size && before.entry.mtimeMs === entry.mtimeMs && before.entry.ctimeMs === entry.ctimeMs) ||
+        this.reportedSince(relative, since);
+      if (accounted) {
+        // Only events after this walk began can explain the next change.
+        next.set(key, { entry, since: startedAt });
+        continue;
+      }
+      // An event can lag the change: keep this path's old baseline and
+      // events, and judge it once it has stayed unexplained for the grace.
+      const unexplainedAt = before?.unexplainedAt ?? now;
+      if (now - unexplainedAt >= this.ctx.timings.watchGraceMs) {
+        missed ??= relative;
+        continue;
+      }
+      next.set(key, { entry: before?.entry ?? null, since, unexplainedAt });
+      oldestNeeded = Math.min(oldestNeeded, since);
+    }
+    if (missed) {
+      this.watcherTrusted = false;
+      this.forgetWatchHistory();
+      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${missed} changed without a file-watch event; checking the folder every ${Math.round(this.pollInterval() / 1000)} s`);
+      this.retimePoll();
+      return;
+    }
+    this.watchBaseline = next;
+    this.watchBaselineAt = startedAt;
+    for (const [key, at] of this.reportedAt) if (at < oldestNeeded) this.reportedAt.delete(key);
+    // Judge what is waiting for its event soon, not at the next poll.
+    if (oldestNeeded < startedAt) this.scheduleScan(this.ctx.timings.watchGraceMs);
+  }
+
+  /**
+   * Arms the next scan. `delay` 0 (poll, resume, retry) runs it as soon as
+   * possible, and later watcher events cannot postpone it. A positive delay
+   * debounces watcher events: each moves the scan to `delay` after itself,
+   * but no further than SCAN_MAX_WAIT_MS after the first, so a long burst
+   * (a build, a big copy) still gets scanned.
+   */
   private scheduleScan(delay: number): void {
-    if (this.stopped || this.follower) return;
-    if (this.scanTimer) clearTimeout(this.scanTimer);
+    if (this.stopped) return;
+    if (this.follower) {
+      // A lapsed lease of a writer: run it once the lease is confirmed.
+      if (!this.info.follower) this.scanDeferred = true;
+      return;
+    }
+    const now = performance.now();
+    let due = now + delay;
+    if (this.scanTimer) {
+      if (delay === 0 ? this.scanDueAt <= due : this.scanForced) return;
+      if (delay > 0) due = Math.min(due, this.scanFirstAt + SCAN_MAX_WAIT_MS);
+      clearTimeout(this.scanTimer);
+    } else {
+      this.scanFirstAt = now;
+    }
+    // A debounce never replaces a forced scan (returned above), so this is the armed scan's kind.
+    this.scanForced = delay === 0;
+    this.scanDueAt = due;
     this.scanTimer = setTimeout(() => {
       this.scanTimer = null;
-      void this.enqueue(() => this.scan());
-    }, delay);
+      this.scanForced = false;
+      // One queued scan at a time: it starts later and sees what came since.
+      if (this.scanQueued) return;
+      this.scanQueued = true;
+      void this.enqueue(async () => {
+        this.scanQueued = false;
+        await this.scan();
+      });
+    }, Math.max(0, due - now));
     this.scanTimer.unref?.();
   }
 
@@ -1334,6 +1584,7 @@ export class SharedProject {
       this.missingSince.clear();
       return;
     }
+    const walkStartedAt = performance.now();
     const walked = await this.walk();
     if (!walked.complete) {
       // Neither a cap nor repeated partial subtree coverage establishes a
@@ -1352,10 +1603,13 @@ export class SharedProject {
     const directories = new Map<string, WalkEntry>();
     for (const entry of walked.entries) (entry.kind === "file" ? files : directories).set(entry.relative, entry);
     const skipped = new Set(walked.skipped);
-    const dirty = this.dirtyPaths;
+    // Compared as manifest keys: fs.watch can spell a name differently
+    // (Unicode normalization, case) from the walk on the same volume.
+    const dirty = new Set([...this.dirtyPaths].map(manifestPathKey));
     this.dirtyPaths = new Set();
     const verifyAll = this.verifyAll;
     this.verifyAll = false;
+    this.noticeMissedEvents(files, verifyAll, walkStartedAt);
     const known = new Set([...Object.values(this.state.layout), ...this.readEntries().values()].map((record) => record.path));
     // Parents of known entries are known too: a folder implied by "a/b.md"
     // must not become a new folder entry on every machine that sees it.
@@ -1390,12 +1644,17 @@ export class SharedProject {
       this.missingSince.delete(fileId);
       // Finder is replacing this file: its bytes are not the new version yet.
       if (isFinderCopy(seen)) continue;
-      // Stat equality is an optimization, never permanent proof of equality.
-      const settled = now - seen.mtimeMs > 3000;
+      // Stat equality is an optimization, never permanent proof of equality:
+      // every verification has a finite age (verificationAge).
+      // A file written in the last 3 s may change again within one timestamp
+      // step. An mtime in the future (a copy from a skewed clock) says nothing
+      // about that, and would force a read at every scan; this machine's ctime does.
+      const settled = seen.mtimeMs > now + 3000 && seen.ctimeMs !== undefined ? now - seen.ctimeMs > 3000 : now - seen.mtimeMs > 3000;
       const verification = this.verified.get(fileId);
-      const touchedByWatch = [...dirty].some((item) => item === record.path || record.path.startsWith(`${item}/`));
-      if (!record.hash || (!verifyAll && !touchedByWatch && settled && record.size === seen.size && record.mtimeMs === seen.mtimeMs &&
-          verification !== undefined && verification.ctimeMs === seen.ctimeMs && performance.now() - verification.at < this.ctx.timings.verifyMs)) continue;
+      const touchedByWatch = underAny(dirty, manifestPathKey(record.path));
+      const sameStats = record.size === seen.size && record.mtimeMs === seen.mtimeMs && verification !== undefined && verification.ctimeMs === seen.ctimeMs;
+      const verificationCurrent = verification !== undefined && performance.now() - verification.at < this.verificationAge(fileId, seen.size, verification.pending === true);
+      if (!record.hash || (!verifyAll && !touchedByWatch && settled && sameStats && verificationCurrent)) continue;
       // An online-only placeholder with this host's size and mtime holds no
       // local bytes that could have changed; reading it to verify would
       // download it (and every other one, at each verification).
@@ -1411,7 +1670,8 @@ export class SharedProject {
       }
       let bytes: Uint8Array | null = read;
       if (!bytes || !absolute) continue;
-      this.verified.set(fileId, { ctimeMs: seen.ctimeMs, at: performance.now() });
+      // Pending until what it found is handled; see settleVerification.
+      this.verified.set(fileId, { ctimeMs: seen.ctimeMs, at: performance.now(), pending: true });
       let hash = sha256(bytes);
       if (hash !== record.hash && record.kind === "blob" && this.canEdit) {
         const stripped = await this.stripForUpload(absolute, record.path, bytes).catch(() => null);
@@ -1423,13 +1683,21 @@ export class SharedProject {
       }
       if (hash === record.hash) {
         this.baselineMissing.delete(fileId);
-        Object.assign(record, { size: seen.size, mtimeMs: seen.mtimeMs });
-        this.saveSoon();
+        this.settleVerification(fileId);
+        // A verification that found nothing new must not rewrite state.json.
+        if (record.size !== seen.size || record.mtimeMs !== seen.mtimeMs) {
+          Object.assign(record, { size: seen.size, mtimeMs: seen.mtimeMs });
+          this.saveSoon();
+        }
         continue;
       }
       if (record.kind === "doc" && record.docId) {
         const runtime = this.docs.get(record.docId);
         if (runtime && !this.reconciliationFor(record.docId)) await this.takeExternalEdit(runtime, record, bytes, hash);
+        // Handled: taken in, waiting on the user (a reconciliation), or kept
+        // local for good (this role cannot edit, or it is not text). A
+        // document not ready yet, or a failed rewrite, stays pending.
+        if (record.hash === hash || this.reconciliationFor(record.docId) || !this.canEdit || decodeText(bytes) === null) this.settleVerification(fileId);
         continue;
       }
       const entry = this.entries.get(fileId);
@@ -1442,8 +1710,12 @@ export class SharedProject {
         else needsRetry = true;
         continue;
       }
-      // A replaced binary: a new blob and a manifest update.
-      if (!this.canEdit) continue;
+      // A replaced binary: a new blob and a manifest update. A viewer's
+      // replacement stays local for good, so it is handled.
+      if (!this.canEdit) {
+        this.settleVerification(fileId);
+        continue;
+      }
       const api = this.ctx.host.api;
       if (!api || !entry) continue;
       try {
@@ -1460,6 +1732,7 @@ export class SharedProject {
         map.set(fileId, entryRecord(updated));
         if (this.info.album) this.photoReplaced(doc, fileId, entry.blobHash, hash, accountId, now);
         setMaterialized(record, hash, seen.size, seen.mtimeMs);
+        this.settleVerification(fileId);
         this.ctx.host.store.putBlob({ hash, localPath: absolute, size: bytes.byteLength });
         touched.add(record.path);
       });
@@ -2177,16 +2450,79 @@ export class SharedProject {
     if (unique.length > 0) this.ctx.emit({ t: "files-changed", projectId: this.info.projectId, paths: unique });
   }
 
-  private saveSoon(): void {
+  /**
+   * Writes state.json soon. A write that fails (or finds the folder
+   * unavailable) is retried with backoff until one succeeds: until the
+   * next change, nothing else would rewrite it.
+   */
+  private saveSoon(delay = 100): void {
+    this.stateDirty = true;
     if (this.saveTimer || this.stopped || this.follower) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       void this.enqueue(async () => {
-        if (await this.rootAvailable()) await writeState(this.info.root, this.state, this.diskGuard());
+        if (!this.stateDirty || this.follower) return;
+        this.stateDirty = false;
+        let saved = false;
+        try {
+          if (await this.rootAvailable()) {
+            await writeState(this.info.root, this.state, this.diskGuard());
+            saved = true;
+          }
+        } finally {
+          if (saved) this.saveFailures = 0;
+          else if (!this.stopped) {
+            this.saveFailures += 1;
+            this.saveSoon(Math.min(MAX_SAVE_RETRY_MS, this.ctx.timings.retryMs * 2 ** (this.saveFailures - 1)));
+          }
+        }
       });
-    }, 100);
+    }, delay);
     this.saveTimer.unref?.();
   }
+
+  /**
+   * How long a content verification stands while the stats stay the same:
+   * verifyMs, or largeFileVerifyMs (spread per file) for large files whose
+   * last read was handled; times batteryScale on battery.
+   */
+  private verificationAge(fileId: string, size: number, pending: boolean): number {
+    const { verifyMs, largeFileVerifyMs } = this.ctx.timings;
+    const base = pending || size < LARGE_FILE_BYTES ? verifyMs : Math.max(verifyMs, largeFileVerifyMs * (0.75 + 0.5 * spreadFraction(fileId)));
+    return base * this.powerScale();
+  }
+
+  /** What the last read of this file found is handled; the longer large-file age may apply. */
+  private settleVerification(fileId: string): void {
+    const verification = this.verified.get(fileId);
+    if (verification) verification.pending = false;
+  }
+}
+
+/** Whether `key` or a folder above it is in `keys` (all manifestPathKey). */
+function underAny(keys: Set<string>, key: string): boolean {
+  if (keys.size === 0) return false;
+  for (let index = key.indexOf("/"); index >= 0; index = key.indexOf("/", index + 1)) if (keys.has(key.slice(0, index))) return true;
+  return keys.has(key);
+}
+
+/**
+ * A Windows UNC path (\\server\share, \\?\UNC\server\share). Extended-length
+ * and device paths to local drives (\\?\C:\, \\.\C:\) are not shares.
+ */
+export function onWindowsNetworkShare(root: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "win32") return false;
+  const normalized = root.replace(/\//g, "\\");
+  if (/^\\\\[?.]\\UNC\\/i.test(normalized)) return true;
+  if (/^\\\\[?.]\\/.test(normalized)) return false;
+  return normalized.startsWith("\\\\");
+}
+
+/** A stable fraction in [0, 1) per file, to spread large-file verifications over time. */
+function spreadFraction(fileId: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < fileId.length; index += 1) hash = Math.imul(hash ^ fileId.charCodeAt(index), 16777619);
+  return (hash >>> 0) / 2 ** 32;
 }
 
 function compatibleKind(record: LayoutRecord, relative: string): boolean {

@@ -1,4 +1,4 @@
-import { parser } from "codemirror-lang-latex/src/latex.mjs";
+import { latexParser as parser } from "../codemirror/latex-parser";
 import { resolveRelativeNotebookPath } from "../project";
 import { bodyStartOf, readLatexDefinitions, readLatexInputs, type LatexDefinitions } from "./definitions";
 import { computeLatexNumbering, type NumberingStart } from "./numbering";

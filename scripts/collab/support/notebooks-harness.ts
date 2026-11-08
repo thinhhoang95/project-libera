@@ -143,11 +143,13 @@ export async function makePeer(dir: string, name: string, server: ServerProcess,
   const library = options.library ?? path.join(dir, `${name}-library`, "users", "admin");
   mkdirSync(library, { recursive: true });
   const events: HostEvent[] = [];
+  const timings = { writeDebounceMs: 40, writeMaxWaitMs: 400, settleMs: 80, deleteGraceMs: 500, pollMs: 700, retryMs: 700, ...options.timings };
   const service = new NotebookServiceImpl(
     { host, libraryRoot: library, emit: (event) => events.push(event) },
     {
       logger,
-      timings: { writeDebounceMs: 40, writeMaxWaitMs: 400, settleMs: 80, deleteGraceMs: 500, pollMs: 700, retryMs: 700, ...options.timings },
+      // Tests that shorten the poll mean it, whether or not fs.watch works.
+      timings: { watchedPollMs: timings.pollMs, ...timings },
       joinTimeoutMs: 30_000,
       shareSyncTimeoutMs: 15_000,
       ...(options.leaseTtlMs ? { leaseTtlMs: options.leaseTtlMs } : {}),

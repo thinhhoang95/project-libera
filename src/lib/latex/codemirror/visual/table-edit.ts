@@ -2,9 +2,10 @@ import { syntaxTree } from "@codemirror/language";
 import { MapMode, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { dispatchAsOneStep as dispatchWidgetEdit } from "../../../collab/undo-boundary";
-import { visualConfig } from "./model";
+import { visualConfig, visualDefinitions } from "./model";
 import { fragmentContext, setTableHooks, type TableElement } from "./widgets";
 import { renderLatexFragment } from "./render-fragment";
+import { isTabular } from "./walk";
 import { deleteColumn, deleteRow, insertColumn, insertRow, parseTabular, setCellText, type TableCell, type TableChange, type TableModel } from "./table-model";
 
 /* Editing tables in the grid (docs/latex-visual-editor-plan.md §6.3). A cell
@@ -16,9 +17,9 @@ import { deleteColumn, deleteRow, insertColumn, insertRow, parseTabular, setCell
 function tableAt(view: EditorView, start: number): { model: TableModel; source: string; from: number } | null {
   const tree = syntaxTree(view.state);
   for (let node = tree.resolveInner(start + 1, -1) as ReturnType<typeof tree.resolveInner> | null; node; node = node.parent) {
-    if (node.name === "TabularEnvironment" && node.from === start) {
+    if (node.from === start && isTabular(node, (from, to) => view.state.sliceDoc(from, to))) {
       const source = view.state.sliceDoc(node.from, node.to);
-      const model = parseTabular(source, node.from);
+      const model = parseTabular(source, node.from, visualDefinitions(view.state).columnTypes);
       return model ? { model, source, from: node.from } : null;
     }
   }
