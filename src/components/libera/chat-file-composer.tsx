@@ -142,10 +142,11 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
     </div>}
     {canDictate && <DictationStatus dictation={dictation} />}
     {canDictate && <span className="absolute bottom-2 right-2 z-10"><DictationButton dictation={dictation} disabled={disabled || loading} /></span>}
+    {/* Grows with its content while focused; back at one row on blur, scrolled to the start of the prompt. */}
     <textarea ref={composerRef} aria-label="Chat prompt" aria-autocomplete="list" aria-controls={invocation ? listId : undefined} aria-activedescendant={invocation && matchCount ? `${listId}-${index}` : undefined}
-      placeholder={placeholder} rows={1} className={`block w-full resize-none rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent ${canDictate ? "pr-10" : ""}`}
+      placeholder={placeholder} rows={1} className={`block max-h-60 w-full resize-none overflow-y-auto rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent focus:[field-sizing:content] ${canDictate ? "pr-10" : ""}`}
       value={value} disabled={disabled || loading} onChange={(event) => { onChange(event.target.value); locate(event.currentTarget); }}
-      onSelect={(event) => locate(event.currentTarget)} onBlur={() => setInvocation(null)}
+      onSelect={(event) => locate(event.currentTarget)} onBlur={(event) => { event.currentTarget.scrollTop = 0; setInvocation(null); }}
       onKeyDown={(event) => {
         if (event.nativeEvent.isComposing) return;
         if (invocation) {
