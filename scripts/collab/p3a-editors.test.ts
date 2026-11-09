@@ -452,6 +452,28 @@ test("the Suggestions panel lists, filters, groups, steps with the keyboard and 
     assert.deepEqual(cards().map((card) => card.dataset.suggestionGroup), ["sg-panel-bob-1", "run-panel"]);
     await chooseAuthor("Everyone");
 
+    // In the desktop app the same filters open as the native menu: radio items under group headings.
+    type PopupInput = { items: { id?: string; label?: string; type?: string; checked?: boolean; enabled?: boolean }[] };
+    const popups: PopupInput[] = [];
+    const desktop = window as unknown as { liberaMenu?: { popup: (input: PopupInput) => Promise<string | null> } };
+    desktop.liberaMenu = {
+      popup: async (input) => {
+        popups.push(input);
+        return input.items.find((item) => item.type === "radio" && item.label?.startsWith("AI suggestions"))?.id ?? null;
+      },
+    };
+    try {
+      await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Filter suggestions"]')!.click(); });
+      assert.equal(dom.window.document.querySelector('[role="menuitemradio"]'), null, "no HTML menu beside the native one");
+      const items = popups[0].items;
+      assert.deepEqual(items.filter((item) => item.enabled === false).map((item) => item.label), ["Status", "Author"]);
+      assert.ok(items.some((item) => item.type === "radio" && item.label?.startsWith("Everyone") && item.checked));
+      assert.deepEqual(cards().map((card) => card.dataset.suggestionGroup), ["run-panel"], "the native choice applies");
+    } finally {
+      delete desktop.liberaMenu;
+    }
+    await chooseAuthor("Everyone");
+
     // Keyboard stepping selects and reveals in the editor.
     const list = host.querySelector<HTMLElement>('[role="listbox"]')!;
     const key = async (name: string) => act(async () => { list.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: name, bubbles: true })); });

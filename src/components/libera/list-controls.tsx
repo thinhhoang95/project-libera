@@ -2,11 +2,12 @@
 
 // Shared controls for the long lists in the side panels (comments,
 // suggestions, reviews) and the version histories: a filter icon button that
-// opens a small menu, and paging that shows the first 20 items with a
+// opens a small menu (the native Electron menu in the desktop app), and paging that shows the first 20 items with a
 // "Show more" button loading 40 more at a time.
 
 import { Check, ListFilter } from "lucide-react";
 import { useRef, useState } from "react";
+import { nativeMenuPointBelow, popupNativeMenu, type NativeMenuEntry } from "./native-menu";
 import { ToolbarMenu } from "./toolbar-menu";
 
 /** Items shown before the first "Show more". */
@@ -54,11 +55,32 @@ export interface ListFilterGroup {
   onChange: (value: string) => void;
 }
 
+/** The filters as a native menu: a disabled heading per group (when there are several), then its radio choices. */
+function nativeFilterMenu(groups: readonly ListFilterGroup[]): NativeMenuEntry[] {
+  return groups.flatMap((group, index) => {
+    const entries: NativeMenuEntry[] = [];
+    if (index > 0) entries.push({ type: "separator" });
+    if (groups.length > 1) entries.push({ id: `${index}:heading`, label: group.label, enabled: false });
+    for (const option of group.options) {
+      const checked = option.value === group.value;
+      entries.push({
+        id: `${index}:${option.value}`,
+        label: option.count === undefined ? option.label : `${option.label} (${option.count})`,
+        type: "radio",
+        checked,
+        onSelect: () => { if (!checked) group.onChange(option.value); },
+      });
+    }
+    return entries;
+  });
+}
+
 const menuItem = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-muted focus:bg-muted focus:outline-none";
 
 /** An icon button opening a menu of filters (status, author…), each a set of radio choices. */
 export function ListFilterButton({ label, groups, className = "" }: { label: string; groups: readonly ListFilterGroup[]; className?: string }) {
   const [open, setOpen] = useState(false);
+  const [nativeOpen, setNativeOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const active = groups.filter((group) => group.value !== group.defaultValue);
   const summary = active.map((group) => group.options.find((option) => option.value === group.value)?.label).filter(Boolean).join(" · ");
@@ -69,10 +91,18 @@ export function ListFilterButton({ label, groups, className = "" }: { label: str
       className={`libera-sidebar-icon-button libera-list-filter relative inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg ${className}`}
       aria-label={label}
       aria-haspopup="menu"
-      aria-expanded={open}
+      aria-expanded={open || nativeOpen}
       data-active={active.length > 0 || undefined}
       title={summary ? `${label}: ${summary}` : label}
-      onClick={() => setOpen((value) => !value)}
+      onClick={async () => {
+        const button = anchor.current;
+        if (open || !button || !window.liberaMenu) { setOpen((value) => !value); return; }
+        // Desktop app: the OS menu, resolving once closed (after running the choice).
+        setNativeOpen(true);
+        const shown = await popupNativeMenu(nativeFilterMenu(groups), nativeMenuPointBelow(button));
+        setNativeOpen(false);
+        if (!shown) setOpen(true);
+      }}
     >
       <ListFilter aria-hidden size={14} />
       {active.length > 0 ? <span aria-hidden className="libera-list-filter-dot absolute right-1 top-1 h-1.5 w-1.5 rounded-full" /> : null}
