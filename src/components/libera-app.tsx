@@ -15,7 +15,7 @@ import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookMarked, BookOpen, ChartColumnStacked, Columns2, FilePlus2, FileSearch, Images, Layers3, ListTree, LogOut, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, Settings, X } from "lucide-react";
+import { BookMarked, BookOpen, ChartColumnStacked, Columns2, FilePlus2, FileSearch, FolderInput, Images, Layers3, ListTree, LogOut, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, Settings, X } from "lucide-react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
@@ -30,7 +30,7 @@ import { useReferencesPanelRequests } from "@/components/libera/references/refer
 import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
 import { useReferencePaletteCommands } from "@/components/libera/references/reference-palette-commands";
 import { closedReferencesMenuItems } from "@/components/libera/references/references-panel";
-import { useAppMenuReferences } from "@/components/libera/app-menu";
+import { useAppMenuItems, useAppMenuReferences } from "@/components/libera/app-menu";
 import { ReferenceMoveNotice } from "@/components/libera/references/reference-move-notice";
 import { REFERENCES_REVEAL_EVENT, type ReferencesRevealDetail } from "@/lib/references/types";
 import { CollabProvider } from "@/components/libera/collab/collab-provider";
@@ -520,6 +520,7 @@ export function LiberaApp({
       { id: "app:go-to-file", title: "Go to file…", group: general, icon: FileSearch, shortcut: "Ctrl/⌘+P", run: () => openCommandPalette("files") },
       { id: "app:search", title: "Search everything", group: general, icon: ScanSearch, shortcut: "Ctrl/⌘+Shift+F", keywords: "find content global", run: showPanel("search") },
       { id: "app:new-note", title: "New untitled note", group: general, icon: FilePlus2, keywords: "create markdown draft", run: () => workspace.createUntitledFile() },
+      { id: "app:migration", title: "Migration…", group: general, icon: FolderInput, detail: "Move files and folders to another local notebook", keywords: "migrate move transfer files folders notebook", run: () => workspace.openMigrationDialog() },
       { id: "app:save", title: "Save", group: general, icon: Save, shortcut: "Ctrl/⌘+S", disabled: !workspace.activeTab, run: () => void workspace.saveActiveTab() },
       { id: "app:close-tab", title: "Close tab", group: general, icon: X, shortcut: "Ctrl/⌘+W", disabled: !workspace.activeTabId, run: () => workspace.closeTab(workspace.activeTabId) },
       { id: "app:toggle-chat", title: chatCollapsed ? "Show AI chat" : "Hide AI chat", group: general, icon: MessageSquareText, shortcut: "Ctrl/⌘+Shift+B", run: () => changeChatCollapsed(!chatCollapsed) },
@@ -546,6 +547,11 @@ export function LiberaApp({
         : []),
     ];
   });
+
+  // macOS File menu: app commands after the active tab's file actions.
+  useAppMenuItems("file", 0, () => [
+    { id: "migration", label: "Migration…", onSelect: () => workspace.openMigrationDialog() },
+  ]);
 
   function renderCanvasPane(pane: CanvasPaneNode, focused: boolean) {
     const tab = workspace.tabs.find((currentTab) => currentTab.id === pane.tabId);

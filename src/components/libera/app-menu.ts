@@ -9,7 +9,8 @@ import { serializeNativeMenu, type NativeMenuEntry } from "./native-menu";
  * and the main process puts them in its application menu:
  *
  * - File: the active tab's file actions (the "File actions" button beside the
- *   tab strip), registered with `useAppMenuFileActions`.
+ *   tab strip), registered with `useAppMenuFileActions`, then app commands
+ *   (such as Migration…), registered with `useAppMenuItems("file", …)`.
  * - Format and Insert: the active editor's tools, registered with
  *   `useAppMenuEditor`. The editor is the one in the focused canvas panel.
  * - References: the reference manager's menu (its panel's "More" button),
@@ -27,12 +28,12 @@ export type AppEditorMenus = { format?: NativeMenuEntry[]; insert?: NativeMenuEn
 
 type EditorProvider = { element: () => Element | null; read: () => AppEditorMenus };
 type SectionProvider = { priority: number; read: () => NativeMenuEntry[] | Promise<NativeMenuEntry[]> };
-type Section = "file" | "references" | "gallery" | "photo" | "view" | "tab" | "ai";
+type Section = "file" | "fileApp" | "references" | "gallery" | "photo" | "view" | "tab" | "ai";
 /** Menus built from every provider's items; the others show one provider's. */
-const MERGED_SECTIONS = new Set<Section>(["view", "tab", "ai"]);
+const MERGED_SECTIONS = new Set<Section>(["fileApp", "view", "tab", "ai"]);
 
 const editorProviders = new Set<EditorProvider>();
-const sectionProviders: Record<Section, Set<SectionProvider>> = { file: new Set(), references: new Set(), gallery: new Set(), photo: new Set(), view: new Set(), tab: new Set(), ai: new Set() };
+const sectionProviders: Record<Section, Set<SectionProvider>> = { file: new Set(), fileApp: new Set(), references: new Set(), gallery: new Set(), photo: new Set(), view: new Set(), tab: new Set(), ai: new Set() };
 let actions = new Map<string, () => void>();
 let lastSent = "";
 let generation = 0;
@@ -95,6 +96,7 @@ async function sync() {
     return provider ? provider.read() : [];
   };
   let fileItems: NativeMenuEntry[] = [];
+  let fileAppItems: NativeMenuEntry[] = [];
   let referenceItems: NativeMenuEntry[] = [];
   let galleryItems: NativeMenuEntry[] = [];
   let photoItems: NativeMenuEntry[] = [];
@@ -103,8 +105,8 @@ async function sync() {
   let aiItems: NativeMenuEntry[] = [];
   let editorMenus: AppEditorMenus = {};
   try {
-    [fileItems, referenceItems, galleryItems, photoItems, viewItems, tabItems, aiItems, editorMenus] = await Promise.all([
-      section("file"), section("references"), section("gallery"), section("photo"), section("view"), section("tab"), section("ai"), editor ? editor.read() : {},
+    [fileItems, fileAppItems, referenceItems, galleryItems, photoItems, viewItems, tabItems, aiItems, editorMenus] = await Promise.all([
+      section("file"), section("fileApp"), section("references"), section("gallery"), section("photo"), section("view"), section("tab"), section("ai"), editor ? editor.read() : {},
     ]);
   } catch {
     // Keep the menus already shown.
@@ -113,7 +115,8 @@ async function sync() {
   if (current !== generation) return;
   const next = new Map<string, () => void>();
   const menus = {
-    file: serializeNativeMenu(fileItems, next, "file:"),
+    // The active tab's file actions, then the app's File commands.
+    file: serializeNativeMenu(fileItems.length && fileAppItems.length ? [...fileItems, { type: "separator" }, ...fileAppItems] : [...fileItems, ...fileAppItems], next, "file:"),
     format: serializeNativeMenu(editorMenus.format ?? [], next, "format:"),
     insert: serializeNativeMenu(editorMenus.insert ?? [], next, "insert:"),
     // The gallery is mounted only while it is the active view.
@@ -212,9 +215,9 @@ export function useAppMenuPhoto(source: "selection" | "viewer", read: () => Nati
 }
 
 /**
- * Adds a group of items to the View, Tab or AI menu while mounted. Groups
- * with a lower `priority` come first.
+ * Adds a group of items to the File (after the active tab's file actions),
+ * View, Tab or AI menu while mounted. Groups with a lower `priority` come first.
  */
-export function useAppMenuItems(section: "view" | "tab" | "ai", priority: number, read: () => NativeMenuEntry[]) {
-  useSection(section, priority, read);
+export function useAppMenuItems(section: "file" | "view" | "tab" | "ai", priority: number, read: () => NativeMenuEntry[]) {
+  useSection(section === "file" ? "fileApp" : section, priority, read);
 }
