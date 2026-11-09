@@ -15,6 +15,7 @@ import { getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { cachedPdfIdentity } from "@/lib/storage/pdf-identity";
 import { ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS } from "@/lib/storage/pdf-sidecars";
+import { assertNotMigrating } from "@/lib/storage/migration-fence";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -262,6 +263,8 @@ export type WriteInkOptions = {
  * the chunk, and a Markdown ink block's new height is recorded with it.
  */
 export async function writeInk(relativePath: string, chunk: string, opsValue: unknown, frameValue: unknown, options: WriteInkOptions = {}): Promise<InkPayload> {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(relativePath);
   const { notebook, pathParts, fileType, sourcePath, folder } = await assertInkFile(relativePath);
   assertChunkFor(fileType, chunk);
   const ops = normalizeInkOps(opsValue);

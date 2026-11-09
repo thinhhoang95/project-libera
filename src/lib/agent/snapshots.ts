@@ -32,6 +32,8 @@ type SnapshotFile = {
   /** Hash of the content the agent last wrote, to detect later edits. */
   written: string;
   reverted?: boolean;
+  /** Where the file is now, when a notebook migration moved it after the run (recordMovedRunFiles). */
+  movedTo?: string;
   /**
    * Set when the file is a shared document: undo goes through the collab
    * host. "suggest": the run made suggestions (`suggestions` lists them);
@@ -90,12 +92,29 @@ async function pruneManifests(keep: string) {
     .map((entry) => rm(path.join(runsDirectory(), entry.name), { force: true })));
 }
 
+/** Runs started in this process keep their manifest in memory; a migration updates it there (recordMovedRunFiles). */
+const ACTIVE_RUNS = Symbol.for("libera.activeRunSnapshots");
+const MAX_ACTIVE_RUNS = 20;
+function activeRuns() {
+  const holder = globalThis as { [ACTIVE_RUNS]?: Map<string, RunSnapshots> };
+  return holder[ACTIVE_RUNS] ??= new Map();
+}
+
 export class RunSnapshots {
   private manifest: Manifest;
   private queue = Promise.resolve();
 
   constructor(readonly runId: string) {
     this.manifest = { version: 1, runId, createdAt: new Date().toISOString(), files: {} };
+    const runs = activeRuns();
+    runs.set(runId, this);
+    for (const id of [...runs.keys()].slice(0, Math.max(0, runs.size - MAX_ACTIVE_RUNS))) runs.delete(id);
+  }
+
+  /** Apply a change to the live manifest and save it, in order with the run's own saves. */
+  async update(change: (manifest: Manifest) => boolean) {
+    if (!Object.keys(this.manifest.files).length) return;
+    if (change(this.manifest)) await this.flush();
   }
 
   has(filePath: string) {
@@ -199,7 +218,7 @@ export async function undoRun(runId: string, paths?: string[]): Promise<UndoResu
   const manifest = await readManifest(runId);
   if (!manifest) throw new Error("This run's undo history is no longer available.");
   const targets = Object.keys(manifest.files).filter((filePath) => !paths || paths.includes(filePath));
-  return withReviewFiles(targets, () => undoFiles(runId, manifest, targets));
+  return withReviewFiles(targets.map((filePath) => manifest.files[filePath].movedTo ?? filePath), () => undoFiles(runId, manifest, targets));
 }
 
 async function undoFiles(runId: string, manifest: Manifest, targets: string[]): Promise<UndoResult[]> {
@@ -213,33 +232,84 @@ async function undoFiles(runId: string, manifest: Manifest, targets: string[]): 
       if (result.status === "restored") file.reverted = true;
       continue;
     }
+    // A file migrated to another notebook after the run is undone where it is now.
+    const diskPath = file.movedTo ?? filePath;
+    const moved = file.movedTo ? { currentPath: file.movedTo } : {};
     let absolutePath: string;
-    try { absolutePath = (await resolveLibraryPath(filePath)).absolutePath; }
-    catch (error) { results.push({ path: filePath, status: "missing", message: error instanceof Error ? error.message : "The file's notebook is unavailable." }); continue; }
-    if (isSharedNotebookPath(filePath)) {
+    try { absolutePath = (await resolveLibraryPath(diskPath)).absolutePath; }
+    catch (error) { results.push({ path: filePath, ...moved, status: "missing", message: error instanceof Error ? error.message : "The file's notebook is unavailable." }); continue; }
+    if (isSharedNotebookPath(diskPath)) {
       // The notebook was shared after the run; undoing would bypass the collab host.
-      results.push({ path: filePath, status: "conflict", message: `${filePath} is in a shared notebook now, so it was not undone.` });
+      results.push({ path: filePath, ...moved, status: "conflict", message: `${diskPath} is in a shared notebook now, so it was not undone.` });
       continue;
     }
     const current = await readCurrent(absolutePath);
     if (current === null && file.existed) {
-      results.push({ path: filePath, status: "missing", message: `${filePath} no longer exists.` });
+      results.push({ path: filePath, ...moved, status: "missing", message: `${diskPath} no longer exists.` });
       continue;
     }
     if (current !== null && file.written && hashContent(current) !== file.written) {
-      results.push({ path: filePath, status: "conflict", message: `${filePath} changed after the agent edited it, so it was not undone.` });
+      results.push({ path: filePath, ...moved, status: "conflict", message: `${diskPath} changed after the agent edited it, so it was not undone.` });
       continue;
     }
     if (!file.existed) {
       await rm(absolutePath, { force: true });
-      results.push({ path: filePath, status: "deleted" });
+      results.push({ path: filePath, ...moved, status: "deleted" });
     } else {
       await writeFile(absolutePath, file.original ?? "", "utf8");
-      results.push({ path: filePath, status: "restored", content: file.original ?? "", ...(file.draft !== undefined ? { draft: file.draft } : {}) });
+      results.push({ path: filePath, ...moved, status: "restored", content: file.original ?? "", ...(file.draft !== undefined ? { draft: file.draft } : {}) });
     }
     file.reverted = true;
-    notifySearchChanges([filePath]);
+    notifySearchChanges([diskPath]);
   }
   await writeManifest(manifest);
   return results;
+}
+
+/** How a notebook migration changed a file a run may have edited (recordMovedRunFiles). */
+export type MovedRunFile = {
+  to: string;
+  /** Rewrites applied to the file (image paths, citation keys): applied to the original and draft, so Undo restores text that works where the file is now. */
+  transform?: (text: string) => string;
+  /** The file's hash before and after those rewrites: a run that wrote `before` counts as having written `after`. */
+  hashes?: { before: string; after: string };
+};
+
+function applyMoves(manifest: Manifest, moves: ReadonlyMap<string, MovedRunFile>) {
+  let changed = false;
+  for (const [key, file] of Object.entries(manifest.files)) {
+    if (file.shared) continue;
+    const move = moves.get(file.movedTo ?? key);
+    if (!move) continue;
+    if (move.to === key) delete file.movedTo;
+    else file.movedTo = move.to;
+    if (move.transform) {
+      if (file.original !== null) file.original = move.transform(file.original);
+      if (file.draft !== undefined) file.draft = move.transform(file.draft);
+    }
+    if (move.hashes && file.written === move.hashes.before) file.written = move.hashes.after;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * Files moved to new paths by a notebook migration: a run that changed them
+ * can still be undone, where they are now. Manifests keep the recorded path
+ * as the key, since the run's changes list (in chat history) names it. Runs
+ * of this process are updated in memory, so their next save keeps the change.
+ */
+export async function recordMovedRunFiles(moves: ReadonlyMap<string, MovedRunFile>) {
+  if (!moves.size) return;
+  const live = activeRuns();
+  for (const run of live.values()) await run.update((manifest: Manifest) => applyMoves(manifest, moves));
+  let names: string[];
+  try { names = (await readdir(runsDirectory())).filter((name) => name.endsWith(".json")); }
+  catch { return; }
+  for (const name of names) {
+    const runId = name.slice(0, -".json".length);
+    if (!isRunId(runId) || live.has(runId)) continue;
+    const manifest = await readManifest(runId);
+    if (manifest && applyMoves(manifest, moves)) await writeManifest(manifest);
+  }
 }

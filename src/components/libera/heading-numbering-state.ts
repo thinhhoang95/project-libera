@@ -94,6 +94,20 @@ export function saveDocumentHeadingNumbering(documentPath: string, enabled: bool
   notify();
 }
 
+/** Documents moved to new paths (notebook migration) keep their numbering choice. */
+export function remapDocumentHeadingNumbering(moves: ReadonlyMap<string, string>) {
+  const documents = readDocuments();
+  if (![...moves.keys()].some((path) => path in documents)) return;
+  const next = Object.fromEntries(Object.entries(documents).map(([path, enabled]) => [moves.get(path) ?? path, enabled]));
+  unstoredDocuments = next;
+  try {
+    window.localStorage.setItem(DOCUMENTS_KEY, JSON.stringify(next));
+  } catch {
+    // Storage can be unavailable; the choice then lasts for this session only.
+  }
+  notify();
+}
+
 function subscribe(onChange: () => void) {
   const onStorage = (event: StorageEvent) => {
     if (event.key === SKIP_TITLE_KEY || event.key === DOCUMENTS_KEY) onChange();

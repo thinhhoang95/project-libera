@@ -37,6 +37,7 @@ import { CollabProvider } from "@/components/libera/collab/collab-provider";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
+import { NotebookMigrationDialog } from "@/components/libera/notebook-migration-dialog";
 import { WorkspaceViewContext } from "@/components/libera/workspace-view-context";
 import { NotebookGroupDialog } from "@/components/libera/notebook-group-dialog";
 import { SaveDraftDialog } from "@/components/libera/save-draft-dialog";
@@ -705,6 +706,7 @@ export function LiberaApp({
           onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
           onCreateLatex={workspace.createLatexFromPrompt}
           onCreateNotebook={workspace.openCreateNotebookDialog}
+          onOpenMigration={() => workspace.openMigrationDialog()}
           onCreateNotebookGroup={workspace.openCreateNotebookGroupDialog}
           onDeleteFile={workspace.deleteFileNodeFromPrompt}
           onDeleteFolder={workspace.deleteFolderFromPrompt}
@@ -871,6 +873,18 @@ export function LiberaApp({
       {workspace.workspaceManager.loadError && <div role="alert" className="border-t border-destructive/30 bg-card px-4 py-2 text-sm text-destructive">{workspace.workspaceManager.loadError} <button className="underline" onClick={workspace.workspaceManager.retry}>Retry loading workspaces</button></div>}
       <ReferenceMoveNotice key={workspace.referenceMoveNotice?.id} notice={workspace.referenceMoveNotice} onDismiss={workspace.dismissReferenceMoveNotice} />
       {(workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready && !workspace.workspaceManager.loadError)) && <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-border bg-card px-5 py-2 text-sm shadow-lg">{workspace.workspaceManager.switching ? "Saving your place…" : "Opening your workspace…"}</div>}
+      <NotebookMigrationDialog
+        open={workspace.migrationDialogSource !== null}
+        initialSource={workspace.migrationDialogSource ?? ""}
+        tree={workspace.fullTree}
+        groups={workspace.tree.notebookGroups}
+        unsavedTabsUnder={workspace.unsavedTabsUnder}
+        onSaveTabs={workspace.saveTabsBeforeMigration}
+        onRun={workspace.runNotebookMigration}
+        onResume={workspace.resumeNotebookMigration}
+        onApplyUnacknowledged={workspace.applyUnacknowledgedMigration}
+        onClose={workspace.closeMigrationDialog}
+      />
       <NotebookDialog
         dialog={workspace.notebookDialog}
         groups={workspace.tree.notebookGroups}

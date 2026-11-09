@@ -1265,7 +1265,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       const { results } = await apiRequest<{ results: UndoResult[] }>("/api/agent/undo", { method: "POST", body: JSON.stringify({ runId: run.runId, paths }) });
       const bridge = agentWorkspaceRef.current;
       for (const result of results) {
-        if ((result.status === "restored" || result.status === "deleted") && !result.shared) bridge?.restoreTabAfterUndo(result.path, { status: result.status, content: result.content, draft: result.draft });
+        if ((result.status === "restored" || result.status === "deleted") && !result.shared) bridge?.restoreTabAfterUndo(result.currentPath ?? result.path, { status: result.status, content: result.content, draft: result.draft });
       }
       const undone = new Set(results.filter((result) => result.status === "restored" || result.status === "deleted" || result.status === "already-reverted").map((result) => result.path));
       // Files back at their review baseline leave manual review.

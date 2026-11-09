@@ -9,6 +9,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { isTextFileType } from "@/lib/types";
 import { writeJsonState } from "@/lib/storage/json-state";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { isPathMigrating } from "@/lib/storage/migration-fence";
 import { resolveLibraryPath } from "./library";
 import type { AgentReviewFile, AgentReviewRevertResult } from "./types";
 
@@ -118,6 +119,8 @@ async function checkExpected(entry: ReviewEntry, expected?: ReviewExpectation) {
 /** Drops an entry whose file is back to its baseline, or was removed. Returns the file's text while it is still pending. */
 async function settle(entry: ReviewEntry): Promise<string | null> {
   const current = isSharedNotebookPath(entry.path) ? null : await readDisk(entry.path);
+  // A file half way through a notebook migration is not gone: keep its review for the migration to move.
+  if (current === null && await isPathMigrating(entry.path)) return null;
   if (current === null || (current === entry.baseline && !(entry.created && current === ""))) {
     await removeEntry(entry.path);
     return null;
@@ -244,6 +247,40 @@ export async function pruneReviews(paths: string[]) {
     await serialized(filePath, async () => {
       const entry = await readEntry(filePath);
       if (entry) await settle(entry);
+    });
+  }
+}
+
+/**
+ * A file moving to a new path in a notebook migration: its pending review is
+ * written at the new path (with `transform` applied to its baseline, as the
+ * migration applies it to the file) before `move` runs, under both paths'
+ * locks, and removed from the old path after. At no point is the review only
+ * at a path whose file is missing.
+ */
+export function withMovedReview<T>(from: string, to: string, transform: (text: string) => string, move: () => Promise<T>): Promise<T> {
+  return withReviewFiles([from, to], async () => {
+    const entry = await readEntry(from);
+    if (entry) await writeJsonState(entryPath(to), { ...entry, path: to, baseline: transform(entry.baseline), updatedAt: new Date().toISOString(), revision: randomUUID() });
+    let result: T;
+    try { result = await move(); }
+    catch (error) {
+      if (entry) await removeEntry(to);
+      throw error;
+    }
+    if (entry) await removeEntry(from);
+    return result;
+  });
+}
+
+/** Rewrite the baselines of these files' pending reviews (citation keys a migration changed in the files). */
+export async function transformReviewBaselines(transforms: ReadonlyMap<string, (text: string) => string>) {
+  for (const [filePath, transform] of transforms) {
+    await serialized(filePath, async () => {
+      const entry = await readEntry(filePath);
+      if (!entry) return;
+      const baseline = transform(entry.baseline);
+      if (baseline !== entry.baseline) await writeJsonState(entryPath(filePath), { ...entry, baseline, updatedAt: new Date().toISOString(), revision: randomUUID() });
     });
   }
 }

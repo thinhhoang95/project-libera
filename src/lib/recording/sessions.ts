@@ -306,6 +306,24 @@ export async function createRecording(input: { notebook?: string; parentPath?: s
   return status(runtime, 0, -1);
 }
 
+/**
+ * The folders unfinished recordings save into, read without changing anything
+ * (notebook migration planning: listUnfinishedRecordings also removes empty ones).
+ */
+export async function unfinishedRecordingDestinations(): Promise<{ name: string; directory: string }[]> {
+  let names: string[] = [];
+  try { names = await readdir(recordingsRoot()); } catch { return []; }
+  const destinations: { name: string; directory: string }[] = [];
+  for (const name of names) {
+    if (!ID_PATTERN.test(name)) continue;
+    try {
+      const meta = JSON.parse(await readFile(path.join(recordingsRoot(), name, "session.json"), "utf8")) as Partial<SessionMeta>;
+      if (meta.state !== "finished" && typeof meta.directory === "string") destinations.push({ name: meta.name ?? name, directory: meta.directory });
+    } catch { /* Not a recording, or one that can't be read. */ }
+  }
+  return destinations;
+}
+
 /** Recordings that were never finished, newest first. Empty ones left behind are removed. */
 export async function listUnfinishedRecordings(): Promise<UnfinishedRecording[]> {
   let names: string[] = [];

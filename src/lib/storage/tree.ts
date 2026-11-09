@@ -14,6 +14,7 @@ import { pathExists } from "@/lib/storage/fs-utils";
 import { readNotebookMetadata } from "@/lib/storage/notebook-metadata";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 import { mergeLegacyFolderState } from "@/lib/storage/directory-mode";
+import { isNotebookMigrating } from "@/lib/storage/migration-fence";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -333,10 +334,14 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
       notebookStats.birthtime.toISOString(),
     );
     const children = await readTreeDirectory(entry.name, [], { showArchive });
-    await prunePdfTextCaches(entry.name).catch(() => undefined);
-    await pruneAudioSidecars(entry.name).catch(() => undefined);
-    await reconcilePdfSidecars(entry.name, pdfFilesOf(children)).catch(() => undefined);
-    await reconcileInkFolders(entry.name, inkSourceFilesOf(children)).catch(() => undefined);
+    // A migration that has not finished may have moved a file but not yet its
+    // sidecars: they are not orphans, and pruning them would lose them.
+    if (!(await isNotebookMigrating(entry.name))) {
+      await prunePdfTextCaches(entry.name).catch(() => undefined);
+      await pruneAudioSidecars(entry.name).catch(() => undefined);
+      await reconcilePdfSidecars(entry.name, pdfFilesOf(children)).catch(() => undefined);
+      await reconcileInkFolders(entry.name, inkSourceFilesOf(children)).catch(() => undefined);
+    }
 
     notebooks.push({
       kind: "notebook",
@@ -365,10 +370,12 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
   for (const folder of linkedFolders) {
     const node = await getLinkedFolderNode(folder, { showArchive, validGroupIds });
     if (!node.folder?.missing) {
-      await prunePdfTextCaches(folder.name).catch(() => undefined);
-      await pruneAudioSidecars(folder.name).catch(() => undefined);
-      await reconcilePdfSidecars(folder.name, pdfFilesOf(node.children)).catch(() => undefined);
-      await reconcileInkFolders(folder.name, inkSourceFilesOf(node.children)).catch(() => undefined);
+      if (!(await isNotebookMigrating(folder.name))) {
+        await prunePdfTextCaches(folder.name).catch(() => undefined);
+        await pruneAudioSidecars(folder.name).catch(() => undefined);
+        await reconcilePdfSidecars(folder.name, pdfFilesOf(node.children)).catch(() => undefined);
+        await reconcileInkFolders(folder.name, inkSourceFilesOf(node.children)).catch(() => undefined);
+      }
     }
     notebooks.push(node);
     collectFilePaths(node.children, filePaths);

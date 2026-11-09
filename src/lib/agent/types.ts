@@ -101,7 +101,10 @@ export type AgentReviewFile = { path: string; baseline: string; current: string;
 export type AgentReviewRevertResult = { path: string; status: "restored" | "deleted" | "missing" | "conflict"; content?: string; message?: string };
 
 export type UndoResult = {
+  /** The path the run recorded, as the run's changes list it. */
   path: string;
+  /** Where the file is now, when it moved to another notebook after the run (notebook migration). */
+  currentPath?: string;
   status: "restored" | "deleted" | "conflict" | "missing" | "already-reverted";
   /** The restored disk content, for open tabs. */
   content?: string;

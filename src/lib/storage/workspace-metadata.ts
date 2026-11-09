@@ -288,6 +288,19 @@ export async function renameFileMetadataPath(currentPath: string, nextPath: stri
   });
 }
 
+/** Many files moved at once (notebook migration): stars and tags follow in one write, only when one changed. */
+export async function renameFileMetadataPaths(moves: ReadonlyMap<string, string>) {
+  const workspaceMetadata = await readWorkspaceMetadata();
+  const starred = workspaceMetadata.starredFilePaths.map((filePath) => moves.get(filePath) ?? filePath);
+  const tagged = Object.keys(workspaceMetadata.fileTags).some((filePath) => moves.has(filePath));
+  if (!tagged && starred.every((filePath, index) => filePath === workspaceMetadata.starredFilePaths[index])) return;
+  const fileTags: Record<string, string[]> = {};
+  // A moved file's tags win over anything left at its new path.
+  for (const [filePath, tags] of Object.entries(workspaceMetadata.fileTags)) if (!moves.has(filePath)) fileTags[filePath] = tags;
+  for (const [filePath, tags] of Object.entries(workspaceMetadata.fileTags)) { const next = moves.get(filePath); if (next) fileTags[next] = tags; }
+  await writeWorkspaceMetadata({ ...workspaceMetadata, fileTags, starredFilePaths: [...new Set(starred)] });
+}
+
 export async function removeFileMetadataPath(filePath: string) {
   const workspaceMetadata = await readWorkspaceMetadata();
 

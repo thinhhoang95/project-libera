@@ -74,6 +74,10 @@ import type { GalleryPhoto } from "@/lib/image-generation";
 import type { PhotoEdits } from "@/lib/photo-edits";
 import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
+import type { MigrationRequest, MigrationResult } from "@/lib/storage/migration";
+import type { ReferenceMoveResult } from "@/lib/references/moves";
+import { remapDocumentHeadingNumbering } from "./heading-numbering-state";
+import { agentReviewStore } from "@/lib/agent-review/store";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
 import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
@@ -1534,10 +1538,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   /** After a move: the destination's References panel reloads, and a notice says what was copied or renamed. */
   function reportReferenceMove(payload: LiberaFileMovePayload) {
-    const references = payload.references;
-    if (!references) return;
-    if (references.destinationRevision !== null) announceReferenceLibraryChange(payload.file.notebook, references.destinationRevision);
-    const summary = referenceMoveSummary(references, payload.file.notebook);
+    if (payload.references) reportReferences(payload.references, payload.file.notebook);
+  }
+
+  function reportReferences(references: ReferenceMoveResult, notebook: string) {
+    if (references.destinationRevision !== null) announceReferenceLibraryChange(notebook, references.destinationRevision);
+    const summary = referenceMoveSummary(references, notebook);
     if (summary) setReferenceMoveNotice({ id: Date.now(), ...summary });
   }
 
@@ -3777,6 +3783,196 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
+  // ---- Notebook migration (notebook-migration-dialog.tsx, storage/migration.ts) ----
+
+  /** The source notebook the migration dialog opens on; null while it is closed. */
+  const [migrationDialogSource, setMigrationDialogSource] = useState<string | null>(null);
+
+  function openMigrationDialog(notebook?: string) {
+    setMigrationDialogSource(notebook ?? selectedNotebookName ?? "");
+  }
+
+  function closeMigrationDialog() {
+    setMigrationDialogSource(null);
+  }
+
+  /** Open files at or under `paths` with unsaved text, ink or annotations. */
+  function unsavedTabsUnder(paths: string[]) {
+    // A failed or running save, or a draft that differs from the saved text, counts as unsaved too.
+    const unsaved = (tab: OpenTab) => tabUnsaved(tab) || tab.status === "error" || tab.status === "saving" ||
+      (isTextFileType(tab.file.fileType) && getTabDraft(tab) !== tab.saved);
+    return tabs.filter((tab) => !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab) && !tab.untitled &&
+      paths.some((path) => tab.file.path === path || tab.file.path.startsWith(`${path}/`)) && unsaved(tab));
+  }
+
+  /** Saves those files, as Save does for the active one, so the migration moves what the user sees. */
+  async function saveTabsBeforeMigration(paths: string[]) {
+    for (const tab of unsavedTabsUnder(paths)) {
+      const draft = getTabDraft(tab);
+      if (isTextFileType(tab.file.fileType) && !isSharedTab(tab.id) && (draft !== tab.saved || tab.status === "error")) {
+        updateTab(tab.id, (current) => ({ ...current, status: "saving", error: undefined }));
+        try {
+          const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
+            method: "PATCH",
+            body: JSON.stringify({ path: tab.file.path, content: draft }),
+          }, (payload) => ({ paths: [payload.file.path] }));
+          const latestDraft = getTabDraft(tab);
+          updateTab(tab.id, (current) => ({ ...current, file: payload.file, saved: draft, status: latestDraft === draft ? "clean" : "dirty" }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Save failed.";
+          updateTab(tab.id, (current) => ({ ...current, status: "error", error: message }));
+          throw new Error(`Could not save ${tab.file.name}: ${message}`);
+        }
+      }
+      await pendingSaves.save(tab.file.path);
+    }
+  }
+
+  /** The rewrites the migration made to moved notes (image paths, then citation keys), for texts it did not see. */
+  function migrationRewrite(result: MigrationResult) {
+    const images = new Map(result.moved.flatMap((move) => move.imageSources ? [[move.to, move.imageSources] as const] : []));
+    const keys = new Map((result.references?.drafts ?? []).map((draft) => [draft.path, new Map(Object.entries(draft.map))]));
+    if (!images.size && !keys.size) return undefined;
+    return (path: string, text: string) => {
+      const sources = images.get(path);
+      const map = keys.get(path);
+      const withImages = sources ? rewriteMarkdownImageSources(text, sources) : text;
+      return map ? rewriteCitationKeys(withImages, map).text : withImages;
+    };
+  }
+
+  function migrationFileChange(result: MigrationResult): WorkspaceFileChange {
+    const rewrite = migrationRewrite(result);
+    // A workspace group chosen for the new notebook comes back with the result, also after an interruption.
+    const notebookGroup = result.createdNotebook && result.workspaceGroup && workspaceManager.activeWorkspace ? result.workspaceGroup : undefined;
+    return {
+      paths: [...(result.createdNotebook ? [result.destination] : []), ...result.moved.map((move) => move.to)],
+      // One mapping: a file's own move (a renamed file) wins over its folder's.
+      moved: [...result.folders, ...result.moved.map(({ from, to }) => ({ from, to }))],
+      ...(rewrite ? { rewrite } : {}),
+      ...(notebookGroup ? { notebookGroup } : {}),
+    };
+  }
+
+  /** Review decisions not yet sent for files under `paths` reach the server before they move. */
+  async function flushReviewsUnder(paths: string[]) {
+    const under = agentReviewStore.list().map((file) => file.path).filter((path) => paths.some((selected) => path === selected || path.startsWith(`${selected}/`)));
+    if (under.length) await agentReviewStore.flush(under);
+  }
+
+  /**
+   * The app follows a migration's result, then tells the server it did, which
+   * then forgets the result. A failure here leaves the result on the server,
+   * so the next migration dialog applies it again; the files have moved either way.
+   */
+  async function settleMigrationResult(result: MigrationResult) {
+    try {
+      await applyMigrationResult(result);
+      // Other windows of the app have their own tabs and state to follow.
+      migrationChannelRef.current?.postMessage(result);
+      if (result.state === "done") await apiRequest("/api/notebooks/migrate", { method: "POST", body: JSON.stringify({ action: "acknowledge", id: result.id }) });
+    } catch (error) {
+      setWorkspaceError(`The files moved, but the app could not fully update for it: ${error instanceof Error ? error.message : String(error)}. Reopen Migration to try again.`);
+    }
+    void agentReviewStore.refresh();
+  }
+
+  /** A finished migration whose result never reached this window (the app quit, the response was lost). */
+  async function applyUnacknowledgedMigration(result: MigrationResult) {
+    await workspaceManager.runFileChange(async () => result, (value) => migrationFileChange(value));
+    await settleMigrationResult(result);
+  }
+
+  /** Runs a reviewed migration. Throws when nothing moved (the plan changed, a blocker); a partial run returns `interrupted`. */
+  async function runNotebookMigration(request: MigrationRequest, token: string) {
+    const create = request.destination.create;
+    // Workspace group assignments live in the workspace snapshot, not notebook metadata:
+    // the server keeps the choice with the migration and returns it with the result.
+    const body = create && workspaceManager.activeWorkspace
+      ? { ...request, destination: { ...request.destination, create: { ...create, groupId: null, workspaceGroupId: create.groupId ?? null } } }
+      : request;
+    await flushReviewsUnder(request.paths);
+    const result = await workspaceFileRequest<MigrationResult>("/api/notebooks/migrate", {
+      method: "POST",
+      body: JSON.stringify({ action: "run", request: body, token }),
+    }, (value) => migrationFileChange(value));
+    await settleMigrationResult(result);
+    return result;
+  }
+
+  async function resumeNotebookMigration(id: string, mode: "continue" | "stop") {
+    const result = await workspaceFileRequest<MigrationResult>("/api/notebooks/migrate", {
+      method: "POST",
+      body: JSON.stringify({ action: "resume", id, mode }),
+    }, (value) => migrationFileChange(value));
+    await settleMigrationResult(result);
+    return result;
+  }
+
+  /** Everything in the app that knows the moved files by path follows them. */
+  async function applyMigrationResult(result: MigrationResult) {
+    const moves = new Map(result.moved.map((move) => [move.from, move.to]));
+    const isOpen = (path: string) => tabsRef.current.find((tab) => !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab) && tab.file.path === path);
+    const open = result.moved.filter((move) => isOpen(move.from));
+    for (const move of result.moved) if (!isOpen(move.from)) pendingSaves.moveUnsaved(move.from, move.to, { sources: move.imageSources });
+    // The open files as they are now (images and citation keys may have been rewritten), a few at a time.
+    const payloads: (LiberaFilePayload | null)[] = [];
+    for (let start = 0; start < open.length; start += 4) {
+      payloads.push(...await Promise.all(open.slice(start, start + 4).map((move) =>
+        apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`).catch(() => null))));
+    }
+    // Then every tab follows in one go, so the editor re-renders once.
+    open.forEach((move, index) => {
+      const maps = { ...(move.imageSources ? { imageSources: move.imageSources } : {}), ...(result.references ? { references: result.references } : {}) };
+      const tab = isOpen(move.from);
+      // Not readable now: the tab still follows, and its text gets the same rewrites the file got.
+      const payload = payloads[index] ?? (tab ? { file: { ...tab.file, path: move.to, name: move.to.split("/").at(-1)!, notebook: move.to.split("/")[0] } } : null);
+      if (payload) retargetOpenTab(move.from, { ...payload, ...maps });
+    });
+    setFileInteractions((current) => {
+      if (!Object.keys(current).some((path) => moves.has(path))) return current;
+      const next = Object.fromEntries(Object.entries(current).map(([path, at]) => [moves.get(path) ?? path, at]));
+      try { window.localStorage.setItem(FILE_INTERACTIONS_STORAGE_KEY, JSON.stringify(next)); } catch { /* Storage unavailable. */ }
+      return next;
+    });
+    remapDocumentHeadingNumbering(moves);
+    if (result.references) reportReferences(result.references, result.destination);
+    // Expanded folders follow before the refresh, which drops paths that no longer exist.
+    updateExpanded((current) => {
+      const next = new Set<string>();
+      for (const expandedPath of current) {
+        const folder = result.folders.find((item) => expandedPath === item.from || expandedPath.startsWith(`${item.from}/`));
+        next.add(folder ? `${folder.to}${expandedPath.slice(folder.from.length)}` : expandedPath);
+      }
+      next.add(result.destination);
+      return next;
+    });
+    await refreshTree(result.destination);
+    if (result.moved.length) setSelectedNotebookName(result.destination);
+  }
+
+  // Another window ran a migration: this window's tabs and state follow it.
+  const migrationChannelRef = useRef<BroadcastChannel | null>(null);
+  const latestMigrationApply = useRef(applyMigrationResult);
+  useLayoutEffect(() => {
+    latestMigrationApply.current = applyMigrationResult;
+  });
+  useEffect(() => {
+    if (!authenticated || typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel("libera-notebook-migration");
+    migrationChannelRef.current = channel;
+    channel.onmessage = (event: MessageEvent<MigrationResult>) => {
+      const result = event.data;
+      if (result && typeof result.id === "string" && Array.isArray(result.moved)) {
+        void latestMigrationApply.current(result).catch((error: Error) => setWorkspaceError(error.message));
+      }
+    };
+    return () => {
+      channel.close();
+      if (migrationChannelRef.current === channel) migrationChannelRef.current = null;
+    };
+  }, [authenticated]);
+
   async function deleteFileFromPrompt(tab: OpenTab) {
     if (tab.untitled) { closeTab(tab.id); return; }
     await deleteFileNodeFromPrompt(tab.file);
@@ -4508,6 +4704,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       openMarkdownFileLink,
       listMarkdownSelectionLinks,
       openCreateNotebookDialog,
+      migrationDialogSource,
+      openMigrationDialog,
+      closeMigrationDialog,
+      unsavedTabsUnder,
+      saveTabsBeforeMigration,
+      runNotebookMigration,
+      resumeNotebookMigration,
+      applyUnacknowledgedMigration,
       openCreateNotebookGroupDialog,
       openEditNotebookDialog,
       openEditNotebookGroupDialog,

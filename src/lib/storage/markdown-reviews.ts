@@ -129,6 +129,19 @@ export async function moveReviewPath(from: string, to: string) {
     }
   });
 }
+/** Many files moved at once (notebook migration): their reviews follow in one transaction. `moves` maps exact paths. */
+export async function moveReviewPaths(moves: ReadonlyMap<string, string>) {
+  if (!moves.size) return;
+  return transaction(async (tx) => {
+    for (const [id, key] of tx.keys()) {
+      const to = moves.get(key);
+      if (to === undefined || to === key) continue;
+      const doc = await tx.getIfPresent(id);
+      if (doc) { doc.key = to; doc.revision++; }
+      else tx.rekey(id, to);
+    }
+  });
+}
 export async function deleteReviewPath(key: string) {
   return transaction((tx) => { for (const [id, stored] of tx.keys()) if (under(stored, key)) tx.remove(id); });
 }

@@ -10,6 +10,7 @@ import { assertFileSignature, readFileContentHash, readFileSignature } from "@/l
 import { audioSidecarDirectories, audioSidecarPaths, filePathFromParts, notebookPath, splitFilePath, transcriptPath } from "@/lib/storage/paths";
 import { cleanSegments, countWords } from "@/lib/transcription/edits";
 import { TRANSCRIPT_VERSION, type Transcript, type TranscriptSegment, type TranscriptSpeaker } from "@/lib/transcription/types";
+import { assertNotMigrating } from "@/lib/storage/migration-fence";
 
 // Where a voice memo's transcript lives. The recording is the document, and
 // Global Search indexes it through its transcript, once; the transcript is
@@ -133,6 +134,8 @@ async function writeLocal(file: string, transcript: Transcript, audio: string, s
  * collab host; when that is refused, it is kept on this computer.
  */
 export async function writeTranscript(relativePath: string, transcript: Transcript, options: { expectedSignature?: string; expectedContentHash?: string } = {}): Promise<{ shared: boolean }> {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(relativePath);
   const { audio, sidecar, companion } = locate(relativePath);
   const signature = options.expectedSignature ?? await readFileSignature(audio);
   await assertFileSignature(audio, signature);
@@ -164,6 +167,8 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
 
 /** Rename speakers by index; an empty name goes back to "Speaker N". */
 export async function renameTranscriptSpeakers(relativePath: string, names: Record<string, string>) {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(relativePath);
   const { transcript } = await readTranscript(relativePath);
   if (!transcript) throw new StorageError("This recording has no transcript yet.", 404);
   transcript.speakers = transcript.speakers.map((speaker, index) => {

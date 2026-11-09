@@ -4,6 +4,7 @@ import { assertPdfFileName } from "@/lib/storage/file-types";
 import { writeJsonForSource } from "@/lib/storage/fs-utils";
 import { ensureAdminRoot, filePathFromParts, pdfOutlinePath, relativeFilePath, splitFilePath } from "@/lib/storage/paths";
 import { openPdfDocument } from "@/lib/storage/pdf-text-cache";
+import { assertNotMigrating } from "@/lib/storage/migration-fence";
 import {
   MAX_OUTLINE_ENTRIES,
   MAX_OUTLINE_LEVEL,
@@ -203,6 +204,8 @@ export async function readPdfOutlineFile(relativePath: string): Promise<PdfOutli
  * path, bytes and signature. Throws a 409 StorageError otherwise.
  */
 export async function writePdfOutlineFile(relativePath: string, outline: PdfOutlineFile, snapshot: PdfSourceSnapshot) {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(relativePath);
   const { sidecar, document } = locate(relativePath);
   await writeJsonForSource(sidecar, outline, document, snapshot.signature, snapshot.contentHash);
 }

@@ -954,6 +954,40 @@ export async function moveTetheredFiles(from: string, to: string) {
   }
 }
 
+/**
+ * Many files moved at once (notebook migration, exact library paths): a
+ * tethered file among them follows, in one pass over the notebooks, awaited.
+ * Returns the notebooks whose tether could not be updated.
+ */
+export async function moveTetheredFilesBatch(moves: ReadonlyMap<string, string>) {
+  const failures: { notebook: string; error: unknown }[] = [];
+  if (!moves.size) return failures;
+  const directories = await readdir(getAdminRoot(), { withFileTypes: true }).catch(() => []);
+  const notebooks = new Set([...registry.runtimes.keys(), ...directories.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name),
+    ...getLinkedFolders().filter((folder) => !folder.unresolved).map((folder) => folder.name)]);
+  for (const notebook of notebooks) {
+    try {
+      if (!(await pathExists(bibTetherStatePath(notebook)))) continue;
+      const followed = await withReferenceFileLock(bibTetherStatePath(notebook), async () => {
+        const config = await readConfig(notebook);
+        if (!config || config.target.kind === "absolute") return false;
+        const moved = moves.get(displayPath(notebook, config.target));
+        if (!moved) return false;
+        const owner = moved.split("/")[0];
+        config.target = owner === notebook ? { kind: "notebook", path: moved.slice(owner.length + 1) } : { kind: "library", path: moved };
+        await saveConfig(notebook, config);
+        return true;
+      });
+      if (!followed) continue;
+      stopWatching(runtimeFor(notebook));
+      void requestTetherSync(notebook).catch(() => undefined);
+    } catch (error) {
+      failures.push({ notebook, error });
+    }
+  }
+  return failures;
+}
+
 /** Stop every watcher and timer (tests, before the data directory changes). */
 export function resetBibTethers() {
   for (const runtime of registry.runtimes.values()) {

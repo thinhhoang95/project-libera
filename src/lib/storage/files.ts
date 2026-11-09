@@ -1,4 +1,4 @@
-import { deleteImageAnnotationDirectory, deletePdfAnnotationDirectory, migrateImageAnnotationDirectory, migrateImageAnnotations, migratePdfAnnotationDirectory, migratePdfAnnotations, updatePdfCommentThreads, writePdfAnnotations } from "./annotations";
+import { migrateImageAnnotationDirectory, migrateImageAnnotations, migratePdfAnnotationDirectory, migratePdfAnnotations, updatePdfCommentThreads, writePdfAnnotations } from "./annotations";
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
 import { detachReferenceAttachments, moveReferenceAttachments } from "./references";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
@@ -19,17 +19,10 @@ import {
   assertDirectoryExists,
   copyFileIfExists,
   findAvailableFilePath,
-  moveFileIfExists,
   movePath,
   pathExists,
 } from "@/lib/storage/fs-utils";
-import {
-  copyPdfTextCache,
-  deletePdfTextCache,
-  deletePdfTextCacheDirectory,
-  movePdfTextCache,
-  movePdfTextCacheDirectory,
-} from "@/lib/storage/pdf-text-cache";
+import { copyPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import {
   cleanupMarkdownImageAssets,
   copyMarkdownImageAssets,
@@ -43,21 +36,15 @@ import {
 } from "@/lib/storage/markdown-assets";
 import {
   assertSafeSegment,
-  audioSidecarDirectories,
   audioPeaksPath,
-  audioSidecarPaths,
-  definitionsDirectoryPath,
   definitionsPath,
   ensureAdminRoot,
   filePathFromParts,
   imageAnnotationsPath,
-  imageAnnotationsDirectoryPath,
   itemPath,
   notebookPath,
   pdfAnnotationsPath,
-  pdfAnnotationsDirectoryPath,
   pdfOutlinePath,
-  pdfOutlinesDirectoryPath,
   rawFileUrl,
   relativeFilePath,
   splitDirectoryPath,
@@ -74,13 +61,14 @@ import {
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFileMovePayload, type LiberaFilePayload } from "@/lib/types";
 import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
-import { copyInkFolder, copyInkThroughEdit, deleteInkFolder, moveInkFolder, supportsInk } from "@/lib/storage/ink";
+import { copyInkFolder, copyInkThroughEdit, supportsInk } from "@/lib/storage/ink";
+import { moveFileSidecars, moveFolderSidecars, removeFileSidecars, removeFolderSidecars } from "@/lib/storage/sidecars";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyTranscript } from "@/lib/storage/transcripts";
-import { supportsDefinitions } from "@/lib/storage/definitions";
 import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { assertNotMigrating, itemLibraryPath } from "@/lib/storage/migration-fence";
 
 /** Reads a file for a tab. Text files come with their content, except plain
  * text files that are too large or turn out to be binary: those throw when
@@ -135,6 +123,7 @@ export async function createMarkdownFile(
   const parentDirectoryPath = itemPath(safeNotebook, parent.pathParts);
   // Files in a shared notebook are created through the collab host (manifest).
   assertNotSharedItem(safeNotebook, targetParts);
+  await assertNotMigrating(itemLibraryPath(safeNotebook, targetParts));
 
   if (!(await pathExists(parentDirectoryPath))) {
     throw new StorageError("Notebook does not exist.", 404);
@@ -163,6 +152,7 @@ export async function updateMarkdownFile(relativePath: string, content: string) 
 
   // A shared file is a working copy of a CRDT document; edits go through the host.
   assertNotSharedItem(notebook, pathParts);
+  await assertNotMigrating(itemLibraryPath(notebook, pathParts));
   const previous = fileType === "markdown" ? await readFile(filePathFromParts(notebook, pathParts), "utf8") : undefined;
   await writeFile(filePathFromParts(notebook, pathParts), content, "utf8");
   if (fileType === "markdown") await pruneUnusedMarkdownImageAssets(relativePath, content, previous);
@@ -191,7 +181,9 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
   const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
   const nextRelativePath = relativeFilePath(safeNextNotebook, nextParts);
   assertNotSharedItem(current.notebook, current.pathParts);
+  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
   assertNotSharedItem(safeNextNotebook, nextParts);
+  await assertNotMigrating(itemLibraryPath(safeNextNotebook, nextParts));
 
   if (await pathExists(nextPath)) {
     throw new StorageError("Destination file already exists.", 409);
@@ -275,6 +267,7 @@ export async function createFolder(parentPath: string, name: string) {
 
   const targetPath = itemPath(parent.notebook, [...parent.pathParts, safeName]);
   assertNotSharedItem(parent.notebook, [...parent.pathParts, safeName]);
+  await assertNotMigrating(itemLibraryPath(parent.notebook, [...parent.pathParts, safeName]));
 
   if (await pathExists(targetPath)) {
     throw new StorageError("Folder already exists.", 409);
@@ -299,7 +292,9 @@ export async function renameFolder(relativePath: string, nextName: string) {
   const nextParts = [...parentParts, safeNextName];
   const nextPath = itemPath(current.notebook, nextParts);
   assertNotSharedItem(current.notebook, current.pathParts);
+  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
   assertNotSharedItem(current.notebook, nextParts);
+  await assertNotMigrating(itemLibraryPath(current.notebook, nextParts));
 
   await assertDirectoryExists(currentPath, "Folder was not found.");
 
@@ -316,17 +311,8 @@ export async function renameFolder(relativePath: string, nextName: string) {
   const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
   for (const note of notes) await migratePythonSidecar(note);
   await rename(currentPath, nextPath);
-  await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
-  await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
-  await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
-  await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
-  await moveFileIfExists(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), pdfOutlinesDirectoryPath(current.notebook, nextParts));
+  await moveFolderSidecars(current.notebook, current.pathParts, current.notebook, nextParts);
   await moveFolderPythonSidecars(notes, relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await moveInkFolder(current.notebook, current.pathParts, current.notebook, nextParts);
-  await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
-    ...parentParts,
-    safeNextName,
-  ]);
   // Image URLs are relative to the notebook root, so their paths stay stable.
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
@@ -374,6 +360,7 @@ export async function archiveFolder(relativePath: string) {
 
   const currentPath = itemPath(current.notebook, current.pathParts);
   assertNotSharedItem(current.notebook, current.pathParts);
+  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
   await assertDirectoryExists(currentPath, "Folder was not found.");
 
   const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
@@ -390,14 +377,8 @@ export async function archiveFolder(relativePath: string) {
   const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
   for (const note of notes) await migratePythonSidecar(note);
   await rename(currentPath, available.path);
-  await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
-  await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
-  await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
-  await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
-  await moveFileIfExists(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), pdfOutlinesDirectoryPath(current.notebook, nextParts));
+  await moveFolderSidecars(current.notebook, current.pathParts, current.notebook, nextParts);
   await moveFolderPythonSidecars(notes, currentRelativePath, nextRelativePath);
-  await moveInkFolder(current.notebook, current.pathParts, current.notebook, nextParts);
-  await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameFileMetadataPathPrefix(currentRelativePath, nextRelativePath);
@@ -417,21 +398,14 @@ export async function deleteFolder(relativePath: string) {
 
   const targetPath = itemPath(current.notebook, current.pathParts);
   assertNotSharedItem(current.notebook, current.pathParts);
+  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
   await assertDirectoryExists(targetPath, "Folder was not found.");
   const markdown = (await readMarkdownAssetDocuments(current.notebook)).documents.filter((document) =>
     document.documentPath.startsWith(`${relativePath}/`));
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
   await rm(targetPath, { recursive: true });
-  await deletePdfAnnotationDirectory(current.notebook, current.pathParts);
-  await deleteImageAnnotationDirectory(current.notebook, current.pathParts);
-  await deletePdfTextCacheDirectory(current.notebook, current.pathParts);
-  for (const directory of audioSidecarDirectories(current.notebook, current.pathParts)) {
-    await rm(directory, { force: true, recursive: true });
-  }
-  await rm(definitionsDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
-  await rm(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
-  await deleteInkFolder(current.notebook, current.pathParts);
+  await removeFolderSidecars(current.notebook, current.pathParts);
   for (const document of markdown) await deletePythonSidecar(document.documentPath);
   await cleanupMarkdownImageAssets(current.notebook, markdown);
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
@@ -468,7 +442,9 @@ export async function moveFileToDirectory(
   const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
   const nextRelativePath = relativeFilePath(destination.notebook, nextParts);
   assertNotSharedItem(current.notebook, current.pathParts);
+  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
   assertNotSharedItem(destination.notebook, nextParts);
+  await assertNotMigrating(itemLibraryPath(destination.notebook, nextParts));
 
   if (currentPath === nextPath) {
     return readLiberaFile(nextRelativePath);
@@ -511,6 +487,8 @@ export async function archiveFile(relativePath: string) {
   }
 
   assertNotSharedItem(current.notebook, current.pathParts);
+
+  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
   const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
   await mkdir(archiveDirectoryPath, { recursive: true });
 
@@ -559,6 +537,7 @@ export async function copyFileToDirectory(
   const destinationPath = itemPath(destination.notebook, destination.pathParts);
   // Copying out of a shared notebook is a read; copying into one is a write.
   assertNotSharedItem(destination.notebook, [...destination.pathParts, requestedName]);
+  await assertNotMigrating(itemLibraryPath(destination.notebook, [...destination.pathParts, requestedName]));
 
   await assertDirectoryExists(destinationPath, "Destination folder was not found.");
   // A shared notebook's disk copy can lag what collaborators see (a
@@ -622,31 +601,15 @@ export async function deleteFile(relativePath: string) {
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   const fileType = assertSupportedFileName(name);
   assertNotSharedItem(notebook, pathParts);
+  await assertNotMigrating(itemLibraryPath(notebook, pathParts));
 
   if (fileType === "pdf") await migratePdfAnnotations(notebook, pathParts);
   if (fileType === "image") await migrateImageAnnotations(notebook, pathParts);
   const markdown = fileType === "markdown" ? await readFile(filePathFromParts(notebook, pathParts), "utf8") : null;
   await rm(filePathFromParts(notebook, pathParts));
-
-  if (fileType === "pdf") {
-    await rm(pdfAnnotationsPath(notebook, pathParts), { force: true });
-    await rm(pdfOutlinePath(notebook, pathParts), { force: true });
-    await deletePdfTextCache(notebook, pathParts);
-  }
-
-  if (fileType === "image") {
-    await rm(imageAnnotationsPath(notebook, pathParts), { force: true });
-  }
-
-  if (fileType === "audio") {
-    for (const sidecar of audioSidecarPaths(notebook, pathParts)) await rm(sidecar, { force: true });
-  }
-
-  if (supportsDefinitions(relativePath)) await rm(definitionsPath(notebook, pathParts), { force: true });
-  if (supportsInk(fileType)) await deleteInkFolder(notebook, pathParts);
+  await removeFileSidecars(notebook, pathParts, fileType);
 
   if (markdown !== null) {
-    await deletePythonSidecar(relativeFilePath(notebook, pathParts));
     await cleanupMarkdownImageAssets(notebook, [{ documentPath: relativePath, content: markdown }]);
   }
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
@@ -678,6 +641,7 @@ export async function writeUploadedFile(
   const targetPath = filePathFromParts(safeNotebook, targetParts);
   // Uploads, generated images and gallery saves into notebooks land here.
   assertNotSharedItem(safeNotebook, targetParts);
+  await assertNotMigrating(itemLibraryPath(safeNotebook, targetParts));
 
   if (await pathExists(targetPath)) {
     throw new StorageError(`File already exists: ${safeName}`, 409);
@@ -707,6 +671,8 @@ export async function saveEditedImageCopy(relativePath: string, edits: PhotoEdit
   }
 
   assertNotSharedItem(notebook, pathParts);
+
+  await assertNotMigrating(itemLibraryPath(notebook, pathParts));
 
   const { format, extension } = editedPhotoFormat(name);
   const body = await renderEditedPhoto(filePathFromParts(notebook, pathParts), edits, format);
@@ -756,12 +722,6 @@ async function moveFolderPythonSidecars(notes: string[], from: string, to: strin
   for (const note of notes) await movePythonSidecar(note, `${to}${note.slice(from.length)}`);
 }
 
-async function moveAudioSidecarDirectories(notebook: string, currentParts: string[], nextParts: string[]) {
-  const next = audioSidecarDirectories(notebook, nextParts);
-  for (const [index, directory] of audioSidecarDirectories(notebook, currentParts).entries()) {
-    await moveFileIfExists(directory, next[index]);
-  }
-}
 
 async function moveRelatedMetadata(
   currentNotebook: string,
@@ -771,61 +731,10 @@ async function moveRelatedMetadata(
   currentFileType: string,
   nextFileType: string,
 ) {
-  if (currentFileType === "pdf" && nextFileType === "pdf") {
-    await moveFileIfExists(
-      pdfAnnotationsPath(currentNotebook, currentPathParts),
-      pdfAnnotationsPath(nextNotebook, nextPathParts),
-    );
-    await movePdfTextCache(
-      currentNotebook,
-      currentPathParts,
-      nextNotebook,
-      nextPathParts,
-    );
-    await moveFileIfExists(
-      pdfOutlinePath(currentNotebook, currentPathParts),
-      pdfOutlinePath(nextNotebook, nextPathParts),
-    );
-  } else if (currentFileType === "pdf") {
-    await rm(pdfAnnotationsPath(currentNotebook, currentPathParts), { force: true });
-    await rm(pdfOutlinePath(currentNotebook, currentPathParts), { force: true });
-    await deletePdfTextCache(currentNotebook, currentPathParts);
-  }
-
-  if (currentFileType === "image" && nextFileType === "image") {
-    await moveFileIfExists(
-      imageAnnotationsPath(currentNotebook, currentPathParts),
-      imageAnnotationsPath(nextNotebook, nextPathParts),
-    );
-  } else if (currentFileType === "image") {
-    await rm(imageAnnotationsPath(currentNotebook, currentPathParts), { force: true });
-  }
-
-  if (currentFileType === "audio") {
-    const current = audioSidecarPaths(currentNotebook, currentPathParts);
-    const next = audioSidecarPaths(nextNotebook, nextPathParts);
-    for (const [index, sidecar] of current.entries()) {
-      if (nextFileType === "audio") await moveFileIfExists(sidecar, next[index]);
-      else await rm(sidecar, { force: true });
-    }
-  }
-
-  if (currentFileType === "markdown") {
-    const current = relativeFilePath(currentNotebook, currentPathParts);
-    if (nextFileType === "markdown") await movePythonSidecar(current, relativeFilePath(nextNotebook, nextPathParts));
-    else await deletePythonSidecar(current);
-  }
-
-  if (supportsDefinitionsType(currentFileType)) {
-    if (nextFileType === currentFileType) await moveFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts));
-    else await rm(definitionsPath(currentNotebook, currentPathParts), { force: true });
-  }
-
-  // Ink chunks are per kind of file (PDF pages, a note's blocks), so ink only follows the same kind.
-  if (supportsInk(currentFileType)) {
-    if (nextFileType === currentFileType) await moveInkFolder(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
-    else await deleteInkFolder(currentNotebook, currentPathParts);
-  }
+  // Sidecars (annotations, ink, transcripts, ...) follow a file that keeps its
+  // kind; ink chunks and annotations are per kind of file, so they are
+  // removed when it becomes another kind (storage/sidecars.ts).
+  await moveFileSidecars(currentNotebook, currentPathParts, nextNotebook, nextPathParts, currentFileType, nextFileType);
 }
 
 /** The shared document's text, or null (then the disk bytes are copied) when the host cannot answer. */

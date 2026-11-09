@@ -267,7 +267,7 @@ async function existingLibraries(notebooks?: string[]) {
  * pointer is detached and the entry kept). Returns the notebooks whose
  * libraries changed.
  */
-export async function remapReferenceAttachments(transform: (path: string) => string | null): Promise<string[]> {
+export async function remapReferenceAttachments(transform: (path: string) => string | null, failures?: { notebook: string; error: unknown }[]): Promise<string[]> {
   const changedNotebooks: string[] = [];
   for (const { notebook, target } of await existingLibraries()) {
     const changed = await withLibraryLock(target, async () => {
@@ -297,6 +297,11 @@ export async function remapReferenceAttachments(transform: (path: string) => str
       if (!dirty) return false;
       await writeJsonAtomically(target, { ...library, revision: library.revision + 1 });
       return true;
+    }).catch((error: unknown) => {
+      // With `failures`, one library that cannot be written does not stop the others.
+      if (!failures) throw error;
+      failures.push({ notebook, error });
+      return false;
     });
     if (changed) changedNotebooks.push(notebook);
   }
@@ -329,6 +334,25 @@ export async function moveReferenceAttachments(from: string, to: string) {
   } catch (error) {
     console.error(`[references] Could not update attachments moved from ${from} to ${to}:`, error);
   }
+}
+
+/**
+ * Many files moved at once (notebook migration): one pass over each library
+ * instead of one per file. `moves` maps exact library paths. Never fails the
+ * caller: libraries that could not be updated are returned, with those that changed.
+ */
+export async function moveReferenceAttachmentsBatch(moves: ReadonlyMap<string, string>) {
+  const failures: { notebook: string; error: unknown }[] = [];
+  if (!moves.size) return { changed: [] as string[], failures };
+  // Tethered files follow through moveTetheredFilesBatch (the caller), not one "moved" event per file.
+  let changed: string[] = [];
+  try {
+    changed = await remapReferenceAttachments((current) => moves.get(current) ?? current, failures);
+  } catch (error) {
+    failures.push({ notebook: "", error });
+  }
+  for (const failure of failures) console.error(`[references] Could not update attachments in ${failure.notebook || "the libraries"}:`, failure.error);
+  return { changed, failures };
 }
 
 /** A file or folder at `removed` was deleted: detach every pointer into it. Never fails the caller. */

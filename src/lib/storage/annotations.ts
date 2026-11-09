@@ -31,6 +31,7 @@ import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
 import { normalizeSpaceLayout, reconcilePdfSpaces } from "@/lib/pdf-space";
+import { assertNotMigrating } from "@/lib/storage/migration-fence";
 import type {
   ImageAnnotationsPayload,
   PdfAnnotation,
@@ -516,6 +517,8 @@ export async function writePdfAnnotations(
   relativePath: string,
   annotations: unknown,
 ): Promise<PdfAnnotationsPayload> {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(relativePath);
   const { notebook, pathParts } = splitFilePath(relativePath);
   const normalizedAnnotations = normalizePdfAnnotations(annotations);
   await updatePdfSidecar(relativePath, (sidecar) => ({
@@ -550,6 +553,8 @@ export async function updatePdfCommentThreads<T>(
   relativePath: string,
   change: (threads: PdfCommentThread[]) => { threads: PdfCommentThread[]; result: T },
 ): Promise<{ payload: PdfCommentsPayload; result: T }> {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(relativePath);
   const { notebook, pathParts } = splitFilePath(relativePath);
   return updatePdfSidecar(relativePath, (sidecar) => {
     const { threads, result } = change(normalizePdfCommentThreads(sidecar.comments, randomUUID));
@@ -607,6 +612,8 @@ export async function writeImageAnnotations(
   relativePath: string,
   annotations: unknown,
 ): Promise<ImageAnnotationsPayload> {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(relativePath);
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   assertImageFileName(name);

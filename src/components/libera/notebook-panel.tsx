@@ -89,6 +89,8 @@ export type NotebookPanelProps = {
   /** Removes a linked folder from the library; its files stay on disk. */
   onCloseDirectory?: (name: string) => void;
   onManageWorkspace?: () => void;
+  /** Opens the migration dialog (move files to another notebook) on the selected notebook. */
+  onOpenMigration?: () => void;
   activeTabId: string;
   expanded: Set<string>;
   fileInteractions: Record<string, string>;
@@ -578,6 +580,7 @@ export function NotebookPanel({
   onOpenDirectory,
   onCloseDirectory,
   onManageWorkspace,
+  onOpenMigration,
   activeTabId,
   expanded,
   fileInteractions,
@@ -879,11 +882,17 @@ export function NotebookPanel({
         })),
         { type: "separator" as const },
         { id: "view-options", label: workspaceActive ? "Workspace visibility…" : "View Options" },
+        ...(onOpenMigration ? [{ id: "migration", label: "Migration…" }] : []),
       ],
       nativeMenuPointFromButton(event.currentTarget),
     );
 
     if (!selectedItemId) {
+      return;
+    }
+
+    if (selectedItemId === "migration") {
+      onOpenMigration?.();
       return;
     }
 

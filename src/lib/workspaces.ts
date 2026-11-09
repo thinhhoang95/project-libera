@@ -4,7 +4,19 @@ import { mapCanvasLayoutTabIds, type CanvasLayout } from "@/lib/canvas-layout";
 import type { LiberaNotebookGroup, LiberaNotebookViewOptions, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
 export type WorkspaceScope = { mode: "all" | "include" | "exclude"; paths: string[]; includedPaths?: string[] };
-export type WorkspaceFileChange = { paths?: string[]; moved?: { from: string; to: string }; removed?: string[]; notebookGroup?: { notebook: string; groupId: string | null } };
+/**
+ * `moved` takes several moves at once (a notebook migration): applied as one
+ * mapping, where a file's own move wins over its folder's. `rewrite` changes
+ * the text of moved files' tabs, saved and unsaved, in every saved workspace
+ * (the migration rewrote their image paths and citation keys on disk).
+ */
+export type WorkspaceFileChange = {
+  paths?: string[];
+  moved?: { from: string; to: string } | { from: string; to: string }[];
+  rewrite?: (path: string, text: string) => string;
+  removed?: string[];
+  notebookGroup?: { notebook: string; groupId: string | null };
+};
 export type WorkspaceView = {
   sidebarSort: string;
   fileSort: "updated" | "name";
@@ -111,7 +123,8 @@ export function workspaceIncludesPath(scope: WorkspaceScope, path: string) {
 // Keep exceptions narrow: creating a file in an excluded folder must not reveal
 // the folder's other contents or change how future files are filtered.
 export function trackWorkspaceFileChange(library: WorkspaceLibrary, workspaceId: string | null, change: WorkspaceFileChange): WorkspaceLibrary {
-  const next = change.moved ? remapWorkspacePaths(library, change.moved.from, change.moved.to) : library;
+  const moves = change.moved ? (Array.isArray(change.moved) ? change.moved : [change.moved]) : [];
+  const next = moves.length ? remapWorkspacePathsMany(library, moves, change.rewrite) : library;
   const additions = change.paths ?? [];
   const keep = (path: string) => !change.removed?.some((parent) => withinPath(path, parent));
   return { ...next, updatedAt: Math.max(Date.now(), next.updatedAt + 1), workspaces: next.workspaces.map((workspace) => {
@@ -207,7 +220,19 @@ export function parseWorkspaceLibrary(value: unknown): WorkspaceLibrary {
 }
 
 export function remapWorkspacePaths(library: WorkspaceLibrary, from: string, to: string): WorkspaceLibrary {
-  const remap = (value: string) => withinPath(value, from) ? `${to}${value.slice(from.length)}` : value;
+  return remapWorkspacePathsMany(library, [{ from, to }]);
+}
+
+/** Many moves in one pass over the library: an exact path's move wins, else the longest moved folder holding it. */
+export function remapWorkspacePathsMany(library: WorkspaceLibrary, moves: { from: string; to: string }[], rewrite?: (path: string, text: string) => string): WorkspaceLibrary {
+  const exact = new Map(moves.map((move) => [move.from, move.to]));
+  const folders = [...moves].sort((a, b) => b.from.length - a.from.length);
+  const remap = (value: string) => {
+    const direct = exact.get(value);
+    if (direct !== undefined) return direct;
+    const folder = folders.find((move) => withinPath(value, move.from));
+    return folder ? `${folder.to}${value.slice(folder.from.length)}` : value;
+  };
   const session = (value: WorkspaceSession): WorkspaceSession => ({
     ...value, activeTabId: remap(value.activeTabId), selectedNotebookName: remap(value.selectedNotebookName),
     expandedPaths: value.expandedPaths.map(remap),
@@ -215,7 +240,9 @@ export function remapWorkspacePaths(library: WorkspaceLibrary, from: string, to:
     tabs: value.tabs.map((tab) => {
       if (tab.gallery || tab.page) return tab; // Gallery photos and app pages live outside notebooks.
       const path = remap(tab.file.path);
-      return path === tab.file.path ? tab : { ...tab, id: remap(tab.id), file: { ...tab.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] }, rawUrl: `/api/files/raw/${path.split("/").map(encodeURIComponent).join("/")}` };
+      if (path === tab.file.path) return tab;
+      const text = rewrite ? { saved: rewrite(path, tab.saved), draft: rewrite(path, tab.draft) } : {};
+      return { ...tab, ...text, id: remap(tab.id), file: { ...tab.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] }, rawUrl: `/api/files/raw/${path.split("/").map(encodeURIComponent).join("/")}` };
     }),
   });
   return { ...library, updatedAt: Math.max(Date.now(), library.updatedAt + 1), librarySession: library.librarySession ? session(library.librarySession) : null,

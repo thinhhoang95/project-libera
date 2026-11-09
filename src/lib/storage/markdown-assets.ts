@@ -18,6 +18,7 @@ import {
   markdownAssetsPathPrefix,
   notebookPath,
   normalizeMarkdownAssetPath,
+  rawFileUrl,
   relativeFilePath,
   splitFilePath,
 } from "@/lib/storage/paths";
@@ -28,6 +29,7 @@ import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-n
 import { markdownImageSources, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
+import { assertNotMigrating } from "@/lib/storage/migration-fence";
 
 export { markdownImageSources } from "@/lib/markdown-image-sources";
 
@@ -339,8 +341,16 @@ async function writeAvailableAsset(directory: string, name: string, body: Buffer
   }
 }
 
+/**
+ * Shared by the notes of one batch move between notebooks (storage/migration.ts):
+ * `moved` maps library paths of files moving in the same batch to their new
+ * paths, so a note embedding one points at it instead of copying it; `copied`
+ * lets notes that embed the same image share one copy in the destination.
+ */
+export type MarkdownAssetBatch = { moved: ReadonlyMap<string, string>; copied: Map<string, string> };
+
 /** Copies have independent image files and destinations never overwrite existing images. */
-export async function copyMarkdownImageAssets(from: string, to: string, markdown: string, includeOwnedUploads = false) {
+export async function copyMarkdownImageAssets(from: string, to: string, markdown: string, includeOwnedUploads = false, batch?: MarkdownAssetBatch) {
   await migratePythonSidecar(from);
   const destination = splitFilePath(to);
   assertNotSharedItem(destination.notebook, [MARKDOWN_ASSETS_DIR]);
@@ -370,6 +380,9 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
     for (const source of sources) {
       if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(source)) continue;
       if (source.startsWith("/") && !source.startsWith("/api/markdown-assets/raw") && !source.startsWith("/api/files/raw/")) continue;
+      // A notebook image moving in the same batch: follow it rather than copy it.
+      const movedImage = batch ? batch.moved.get(rawFileSourcePath(source) ?? "") : undefined;
+      if (movedImage) { imageSources[source] = rawFileUrl(movedImage); continue; }
       let asset;
       try { asset = await getMarkdownImageAssetBySource(from, source); }
       catch (error) {
@@ -387,9 +400,10 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
       const target = markdownAssetSourceTarget(from, source);
       const key = source.startsWith("/api/files/raw/") ? `raw:${asset.assetPath}`
         : `asset:${splitFilePath(target?.documentPath ?? from).notebook}/${asset.assetPath}`;
-      const existing = copied.get(key);
-      if (existing) { imageSources[source] = existing; continue; }
       const ownFigure = ownsPythonFigureSource(from, source, previousSources);
+      // A note's own Python figures are pruned with the note, so they are never shared with another note.
+      const existing = copied.get(key) ?? (ownFigure ? undefined : batch?.copied.get(key));
+      if (existing) { imageSources[source] = existing; continue; }
       const directory = ownFigure ? path.dirname(pythonSidecarFile(to).absolutePath) : markdownAssetsDirectoryPathFromParts(destination.notebook, destination.pathParts);
       const sameFigure = ownFigure && await readFile(path.join(directory, asset.fileName)).then((body) => body.equals(asset.body), () => false);
       const available = sameFigure ? { path: path.join(directory, asset.fileName), name: asset.fileName }
@@ -397,8 +411,9 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
       if (!sameFigure) created.push(available.path);
       imageSources[source] = `${ownFigure ? pythonFigureSourcePrefix(to) : markdownAssetsPathPrefix(destination.pathParts)}/${available.name}`;
       copied.set(key, imageSources[source]);
+      if (!ownFigure) batch?.copied.set(key, imageSources[source]);
     }
-    return { content: rewriteMarkdownImageSources(markdown, imageSources), imageSources, discard };
+    return { content: rewriteMarkdownImageSources(markdown, imageSources), imageSources, discard, created: [...created] };
   } catch (error) {
     await discard();
     throw error;
@@ -409,6 +424,8 @@ export async function writeMarkdownImageAsset(
   documentPath: string,
   upload: File,
 ): Promise<MarkdownImageAssetPayload> {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(documentPath);
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(documentPath);
   assertMarkdownFileName(name);

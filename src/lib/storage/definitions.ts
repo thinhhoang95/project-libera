@@ -5,6 +5,7 @@ import { getFileType } from "@/lib/storage/file-types";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { definitionsPath, filePathFromParts, splitFilePath } from "@/lib/storage/paths";
 import { DEFINITIONS_FILE_TYPES, parseDefinitionsFile, type DefinitionsFile, type DefinitionsPayload } from "@/lib/definitions";
+import { assertNotMigrating } from "@/lib/storage/migration-fence";
 
 // A document's definitions and notation cards live in a side-car beside the
 // notebook's others (like a PDF's annotations): `.libera/definitions/by-path/…`.
@@ -52,6 +53,8 @@ export async function readDefinitions(relativePath: string): Promise<Definitions
 }
 
 export async function writeDefinitions(relativePath: string, definitions: DefinitionsFile) {
+  // A file a notebook migration is moving is written after the migration.
+  await assertNotMigrating(relativePath);
   const { sidecar } = locate(relativePath);
   await writeJsonAtomically(sidecar, definitions);
 }
