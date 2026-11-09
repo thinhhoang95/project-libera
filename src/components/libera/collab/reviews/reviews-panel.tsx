@@ -17,11 +17,15 @@ import type { Review, ReviewAssignment, UserSummary } from "@/lib/collab/protoco
 import { roleAtLeast, type Role } from "@/lib/collab/protocol/roles";
 import { describeError } from "@/lib/collab/ui/client";
 import { timeAgo } from "@/lib/collab/ui/wording";
+import { ListFilterButton, ShowMoreButton, usePagedList } from "../../list-controls";
 import { loadProjectMembers } from "../mentions/mention-textarea";
 import { attributeUpdates, contentUpdates, DiffView, historyApi, RevisionView, type Attribution, type HistoryApi } from "../history";
 import { useReviews } from "./use-reviews";
 
-const buttonClass = "inline-flex h-7 items-center gap-1 rounded-md border border-border px-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
+// The same buttons and cards as the Comments tab (markdown-review-ui.tsx).
+const buttonClass = "review-button";
+
+type ReviewStatusFilter = "all" | "open" | "closed";
 
 const STATUS: Record<Review["status"], string> = {
   open: "Open",
@@ -97,7 +101,7 @@ function ReviewCard({ review, controller, snapshot, role, now, onOpen }: { revie
   const canClose = review.status !== "closed" && (review.requestedBy.id === me || (!!role && roleAtLeast(role, "editor")));
   const [error, setError] = useState("");
   const created = Date.parse(review.createdAt);
-  return <li className="libera-review-request rounded-lg border border-border bg-card px-2.5 py-2 text-sm" data-review-id={review.id} data-status={review.status}>
+  return <li className="libera-review-request review-comment-card libera-panel-card p-3 text-[13px]" data-review-id={review.id} data-status={review.status}>
     <div className="flex items-center gap-1.5 text-xs">
       <ClipboardCheck aria-hidden className="h-3.5 w-3.5 shrink-0" style={{ color: review.requestedBy.color }} />
       <span className="min-w-0 truncate font-medium">{review.requestedBy.id === me ? "You" : review.requestedBy.displayName} asked for a review</span>
@@ -177,6 +181,7 @@ export function ReviewsPanel({ session }: { session: SharedDocSession }) {
   const { controller, snapshot } = useReviews(session);
   const [openId, setOpenId] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
+  const [status, setStatus] = useState<ReviewStatusFilter>("all");
   const request = useSyncExternalStore(subscribeReviewOpen, pendingReviewOpen, () => null);
   // A notification asked to open one of this document's reviews: an
   // assignee gets it in checkpoint mode, anyone else sees it listed.
@@ -193,17 +198,29 @@ export function ReviewsPanel({ session }: { session: SharedDocSession }) {
     // Not in the list yet (the notification came first): read it again once.
     else if (!snapshot.reviews.some((review) => review.id === requested.reviewId)) void controller?.load().then(() => consumeReviewOpen(requested.seq));
   }, [requested, handledSeq, snapshot?.reviews, controller]);
-  if (!controller || !snapshot) return null;
-  const role = session.replica.getSnapshot().meta?.role ?? session.resolved.role;
-  const reviews = snapshot.reviews ?? [];
+  const reviews = snapshot?.reviews ?? [];
   const open = reviews.filter((review) => review.status !== "closed");
   const closed = reviews.filter((review) => review.status === "closed");
+  const listed = status === "open" ? open : status === "closed" ? closed : [...open, ...closed];
+  const page = usePagedList(listed, status);
+  if (!controller || !snapshot) return null;
+  const role = session.replica.getSnapshot().meta?.role ?? session.resolved.role;
   const shown = openId ? reviews.find((review) => review.id === openId) ?? null : null;
   return <section className="libera-reviews-panel flex min-h-0 flex-1 flex-col" aria-label="Reviews" data-doc={snapshot.docId}>
-    <ul className="min-h-0 flex-1 space-y-1.5 overflow-auto p-2" aria-label="Review requests">
+    <div className="flex items-center gap-1 border-b border-border px-3 py-2">
+      <span className="min-w-0 flex-1 text-xs font-semibold">Review requests</span>
+      <ListFilterButton label="Filter reviews" groups={[{ label: "Status", value: status, defaultValue: "all", onChange: (value) => setStatus(value as ReviewStatusFilter), options: [
+        { value: "all", label: "All reviews", count: reviews.length },
+        { value: "open", label: "Open", count: open.length },
+        { value: "closed", label: "Closed", count: closed.length },
+      ] }]} />
+    </div>
+    <ul className="min-h-0 flex-1 space-y-2 overflow-auto px-3 pb-4 pt-3" aria-label="Review requests">
       {snapshot.reviews === null ? <li className="flex items-center gap-2 px-1 py-6 text-sm text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />Loading reviews…</li>
-        : !reviews.length ? <li className="px-1 py-6 text-center text-sm text-muted-foreground">{snapshot.canRequest ? "No reviews yet. Use Request review… in the tab bar to ask collaborators." : "No reviews of this document yet."}</li>
-          : [...open, ...closed].map((review) => <ReviewCard key={review.id} review={review} controller={controller} snapshot={snapshot} role={role} now={now} onOpen={() => setOpenId(review.id)} />)}
+        : !reviews.length ? <li className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">{snapshot.canRequest ? "No reviews yet. Use Request review… in the tab bar to ask collaborators." : "No reviews of this document yet."}</li>
+          : !listed.length ? <li className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No {status} reviews.</li>
+            : page.visible.map((review) => <ReviewCard key={review.id} review={review} controller={controller} snapshot={snapshot} role={role} now={now} onOpen={() => setOpenId(review.id)} />)}
+      {page.remaining > 0 ? <li><ShowMoreButton remaining={page.remaining} onClick={page.showMore} /></li> : null}
     </ul>
     {snapshot.error ? <p role="alert" className="border-t border-border px-3 py-1.5 text-xs text-destructive">{snapshot.error}</p> : null}
     <p className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground" aria-live="polite">{open.length} open</p>

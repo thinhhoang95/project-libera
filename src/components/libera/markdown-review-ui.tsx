@@ -16,6 +16,7 @@ import { reviewIntent } from "@/lib/markdown-review";
 import { useMarkdownReview, type SharedReviewState } from "./markdown-review-context";
 import { apiRequest } from "./api-client";
 import { ChatFileComposer } from "./chat-file-composer";
+import { ListFilterButton, ShowMoreButton, usePagedList } from "./list-controls";
 import { usePaletteCommands } from "./command-palette/commands";
 import { useAppMenuItems } from "./app-menu";
 import type { ChatContext } from "@/lib/document-chat";
@@ -85,6 +86,7 @@ export function ReviewComments() {
   const [mentions, setMentions] = useState<string[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<CommentStatusFilter>("all");
   const selectedCard = useRef<HTMLElement | null>(null);
   const list = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -104,30 +106,42 @@ export function ReviewComments() {
     const top = target.offsetTop - container.offsetTop - 8;
     if (Math.abs(container.scrollTop - top) > 4) container.scrollTo?.({ top: Math.max(0, top) });
   }, [followScroll, viewportStart]);
-  if (!r) return null;
-  const threads = r.doc?.threads ?? [];
-  const active = threads.find((t) => t.id === r.selectedThread);
+  const threads = r?.doc?.threads ?? [];
+  const active = threads.find((t) => t.id === r?.selectedThread);
   // Agent suggestions keep their numbering too; only open ones are listed.
-  const agentSuggestions = r.doc?.agentSuggestions ?? [];
+  const agentSuggestions = r?.doc?.agentSuggestions ?? [];
   const openSuggestions = agentSuggestions.map((suggestion, index) => ({ suggestion, index })).filter(({ suggestion }) => suggestion.status === "pending" || suggestion.status === "conflicted");
   const pendingSuggestions = openSuggestions.filter(({ suggestion }) => suggestion.status === "pending");
   // Comments keep their document numbering while filtered.
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = threads.map((thread, index) => ({ thread, index })).filter(({ thread, index }) => {
+    if (!matchesCommentStatus(thread.status, status)) return false;
     if (!terms.length) return true;
     const haystack = [`comment ${index + 1}`, thread.status, thread.messages[0]?.author ?? "", thread.anchor.quote, ...thread.messages.map((m) => m.text), ...(isSharedThread(thread) ? [thread.shared.detached ? "detached" : "", ...thread.messages.map((m) => m.shared.author.displayName)] : [])].join("\n").toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
-  const shownSuggestions = openSuggestions.filter(({ suggestion, index }) => {
+  // Suggested edits are always open: a decided one leaves the list.
+  const shownSuggestions = status === "resolved" ? [] : openSuggestions.filter(({ suggestion, index }) => {
     if (!terms.length) return true;
     const haystack = [`edit ${index + 1}`, "agent", suggestion.status, suggestion.title, suggestion.reason, ...suggestion.edits.flatMap((edit) => [edit.before, edit.after])].join("\n").toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
+  // One page across both: suggested edits first, then the comments. The
+  // selected comment, and the one beside the editor's viewport, stay rendered.
+  const items = [...shownSuggestions.map((entry) => ({ kind: "suggestion" as const, ...entry })), ...shown.map((entry) => ({ kind: "thread" as const, ...entry }))];
+  const pinThread = active ?? (followScroll && viewportStart !== undefined ? shown.find(({ thread }) => thread.anchor.state === "attached" && thread.anchor.end >= viewportStart)?.thread : undefined);
+  const pinIndex = pinThread ? items.findIndex((item) => item.kind === "thread" && item.thread.id === pinThread.id) : -1;
+  const page = usePagedList(items, `${r?.doc?.id ?? ""}|${status}|${query.trim()}`, pinIndex);
+  const pageSuggestions = page.visible.flatMap((item) => item.kind === "suggestion" ? [item] : []);
+  const pageThreads = page.visible.flatMap((item) => item.kind === "thread" ? [item] : []);
+  if (!r) return null;
+  const openThreads = threads.filter((t) => t.status === "open").length;
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
     <header className="shrink-0 space-y-3 px-3 pb-3 pt-4">
       <div className="libera-notebook-heading flex items-center gap-1">
         <h2 className="min-w-0 flex-1 text-sm font-semibold">Comments</h2>
-        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{threads.filter((t) => t.status === "open").length} open{openSuggestions.length > 0 && <span className="review-agent-suggestion-count" title="Suggested edits from the agent, waiting for your decision"> · {openSuggestions.length} suggested</span>}</span>
+        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{openThreads} open{openSuggestions.length > 0 && <span className="review-agent-suggestion-count" title="Suggested edits from the agent, waiting for your decision"> · {openSuggestions.length} suggested</span>}</span>
+        {r.doc && <CommentStatusFilterButton value={status} onChange={setStatus} open={openThreads + openSuggestions.length} resolved={threads.length - openThreads} all={threads.length + openSuggestions.length} />}
         <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Undo acceptance" title="Undo acceptance" disabled={!!r.busy || !r.doc?.undo.length} onClick={() => void r.action("undo")}><Undo2 aria-hidden size={14} /></button>
         <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Redo acceptance" title="Redo acceptance" disabled={!!r.busy || !r.doc?.redo?.length} onClick={() => void r.action("redo")}><Redo2 aria-hidden size={14} /></button>
       </div>
@@ -145,16 +159,16 @@ export function ReviewComments() {
     <div ref={list} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
     {r.error && <p role="alert" className="mt-2 text-sm text-destructive">{r.error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
     {r.recovery && <div className="libera-panel-card space-y-2 p-3 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
-      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select text in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
-      {shownSuggestions.length > 0 && <section className="space-y-2" aria-label="Suggested edits">
+      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select text in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">{query.trim() ? `No ${status === "all" ? "" : `${status} `}comments match “${query.trim()}”.` : `No ${status} comments.`}</p>}
+      {pageSuggestions.length > 0 && <section className="space-y-2" aria-label="Suggested edits">
         {pendingSuggestions.length > 1 && <div className="flex flex-wrap items-center gap-1">
           <span className="min-w-0 flex-1 text-xs font-semibold">Suggested edits</span>
           <button type="button" className={button} disabled={!!r.busy || r.recovery} onClick={() => void r.action("agent-decision", { ids: pendingSuggestions.map(({ suggestion }) => suggestion.id), decision: "accept" })}><Check size={14} /> Accept all</button>
           <button type="button" className={button} disabled={!!r.busy} onClick={() => void r.action("agent-decision", { ids: pendingSuggestions.map(({ suggestion }) => suggestion.id), decision: "reject" })}><X size={14} /> Reject all</button>
         </div>}
-        {shownSuggestions.map(({ suggestion, index }) => <AgentSuggestionCard key={suggestion.id} suggestion={suggestion} number={index + 1} />)}
+        {pageSuggestions.map(({ suggestion, index }) => <AgentSuggestionCard key={suggestion.id} suggestion={suggestion} number={index + 1} />)}
       </section>}
-      {shown.map(({ thread, index }) => isSharedThread(thread) && r.shared ? <SharedThreadCard key={thread.id} thread={thread} index={index} shared={r.shared} selected={active?.id === thread.id} cardRef={active?.id === thread.id ? selectedCard : undefined} reply={reply} setReply={setReply} mentions={mentions} setMentions={setMentions} editing={editing} setEditing={setEditing} /> : <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} data-selected={active?.id === thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
+      {pageThreads.map(({ thread, index }) => isSharedThread(thread) && r.shared ? <SharedThreadCard key={thread.id} thread={thread} index={index} shared={r.shared} selected={active?.id === thread.id} cardRef={active?.id === thread.id ? selectedCard : undefined} reply={reply} setReply={setReply} mentions={mentions} setMentions={setMentions} editing={editing} setEditing={setEditing} /> : <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} data-selected={active?.id === thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
         <button className="w-full text-left" aria-expanded={active?.id === thread.id} onClick={() => { r.selectThread(active?.id === thread.id ? null : thread.id); setReply(""); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
           <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{thread.messages[0]?.author === "agent" && <span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title="Left by the AI agent"><Sparkles aria-hidden size={10} /> Agent</span>}</span><span className="text-[11px] capitalize text-muted-foreground">{thread.status === "addressed" ? "completed" : thread.status}{thread.status === "open" && thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</span></span>
           <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
@@ -170,8 +184,22 @@ export function ReviewComments() {
           <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label="Delete comment" title="Delete comment" disabled={!!r.busy} onClick={() => void r.action("delete", { threadId: thread.id })}><Trash2 aria-hidden size={16} /></button></div>
         </div>}
       </article>)}
+      <ShowMoreButton remaining={page.remaining} onClick={page.showMore} />
     </div>
   </section>;
+}
+
+export type CommentStatusFilter = "all" | "open" | "resolved";
+/** "Resolved" covers comments the agent completed (addressed) too. */
+export function matchesCommentStatus(status: string, filter: CommentStatusFilter) {
+  return filter === "all" || (filter === "open" ? status === "open" : status !== "open");
+}
+export function CommentStatusFilterButton({ value, onChange, open, resolved, all }: { value: CommentStatusFilter; onChange: (value: CommentStatusFilter) => void; open: number; resolved: number; all: number }) {
+  return <ListFilterButton label="Filter comments" groups={[{ label: "Status", value, defaultValue: "all", onChange: (next) => onChange(next as CommentStatusFilter), options: [
+    { value: "all", label: "All comments", count: all },
+    { value: "open", label: "Open", count: open },
+    { value: "resolved", label: "Resolved", count: resolved },
+  ] }]} />;
 }
 export function ReviewSuggestionCard({ suggestion, number }: { suggestion: ReviewSuggestion; number: number }) {
   const r = useMarkdownReview()!;

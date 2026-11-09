@@ -5,7 +5,8 @@ import { Check, PencilLine, RotateCcw, Save, Search, Send, Sparkles, Trash2, X }
 import { pdfCommentPages, sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { timeAgo } from "@/lib/collab/ui/wording";
 import { MentionTextarea } from "./collab/mentions/mention-textarea";
-import { CommentBody, useNow } from "./markdown-review-ui";
+import { CommentBody, CommentStatusFilterButton, matchesCommentStatus, useNow, type CommentStatusFilter } from "./markdown-review-ui";
+import { ShowMoreButton, usePagedList } from "./list-controls";
 import { changePdfComments, clearPdfCommentsError, focusPdfComment, loadPdfComments, selectPdfComment, usePdfComments } from "./pdf-comments-store";
 import type { PdfCommentMessage, PdfCommentThread } from "@/lib/types";
 
@@ -34,6 +35,7 @@ export function PdfReviewComments({ path }: { path: string }) {
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<CommentStatusFilter>("all");
   const selectedCard = useRef<HTMLElement | null>(null);
   const busy = !!state.busy;
   // Only your own words, and only if you can write here at all.
@@ -56,10 +58,14 @@ export function PdfReviewComments({ path }: { path: string }) {
 
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = threads.map((thread, index) => ({ thread, index })).filter(({ thread, index }) => {
+    if (!matchesCommentStatus(thread.status, status)) return false;
     if (!terms.length) return true;
     const haystack = [`comment ${index + 1}`, thread.status, pdfCommentPages(thread.anchor), thread.anchor.quote, ...thread.messages.map((m) => `${m.author ?? ""}\n${m.text}`)].join("\n").toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
+  // The selected comment (picked on a page) stays rendered past the first page.
+  const page = usePagedList(shown, `${path}|${status}|${query.trim()}`, active ? shown.findIndex(({ thread }) => thread.id === active.id) : -1);
+  const openCount = threads.filter((t) => t.status === "open").length;
 
   async function send(thread: PdfCommentThread) {
     const text = draft.trim();
@@ -74,7 +80,8 @@ export function PdfReviewComments({ path }: { path: string }) {
     <header className="shrink-0 space-y-3 px-3 pb-3 pt-4">
       <div className="libera-notebook-heading flex items-center gap-1">
         <h2 className="min-w-0 flex-1 text-sm font-semibold">Comments</h2>
-        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{threads.filter((t) => t.status === "open").length} open</span>
+        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{openCount} open</span>
+        {state.loaded && <CommentStatusFilterButton value={status} onChange={setStatus} open={openCount} resolved={threads.length - openCount} all={threads.length} />}
       </div>
       {threads.length > 0 && <div className="review-comment-search relative">
         <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -87,8 +94,8 @@ export function PdfReviewComments({ path }: { path: string }) {
       {state.error && <p role="alert" className="mt-2 text-sm text-destructive">{state.error} <button type="button" className="review-button" onClick={() => { clearPdfCommentsError(path); void loadPdfComments(path); }}>Reload comments</button></p>}
       {!state.loaded ? <p className="px-1 py-6 text-center text-sm text-muted-foreground">Loading comments…</p>
         : !threads.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select text on a page to add one.</p>
-        : !shown.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
-      {shown.map(({ thread, index }) => {
+        : !shown.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">{query.trim() ? `No ${status === "all" ? "" : `${status} `}comments match “${query.trim()}”.` : `No ${status} comments.`}</p>}
+      {page.visible.map(({ thread, index }) => {
         const selected = active?.id === thread.id;
         const replies = thread.messages.slice(1);
         return <article key={thread.id} ref={selected ? selectedCard : undefined} data-selected={selected} data-pdf-comment-card={thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
@@ -133,6 +140,7 @@ export function PdfReviewComments({ path }: { path: string }) {
           </div>}
         </article>;
       })}
+      <ShowMoreButton remaining={page.remaining} onClick={page.showMore} />
     </div>
   </section>;
 }

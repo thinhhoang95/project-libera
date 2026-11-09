@@ -441,12 +441,16 @@ test("the Suggestions panel lists, filters, groups, steps with the keyboard and 
     assert.equal(controller.edit("sg-panel-bob-1", "Hacked.").ok, false);
 
     // Filters: AI only, then Bob (his own and his AI's).
-    const select = host.querySelector<HTMLSelectElement>('select[aria-label="Filter suggestions by author"]')!;
-    await act(async () => { select.value = "ai"; select.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+    const chooseAuthor = async (label: string) => {
+      await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Filter suggestions"]')!.click(); });
+      const item = [...dom.window.document.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Author"] [role="menuitemradio"]')].find((option) => option.textContent?.includes(label))!;
+      await act(async () => { item.click(); });
+    };
+    await chooseAuthor("AI suggestions");
     assert.deepEqual(cards().map((card) => card.dataset.suggestionGroup), ["run-panel"]);
-    await act(async () => { select.value = "user:bob"; select.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+    await chooseAuthor("Bob");
     assert.deepEqual(cards().map((card) => card.dataset.suggestionGroup), ["sg-panel-bob-1", "run-panel"]);
-    await act(async () => { select.value = "all"; select.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+    await chooseAuthor("Everyone");
 
     // Keyboard stepping selects and reveals in the editor.
     const list = host.querySelector<HTMLElement>('[role="listbox"]')!;

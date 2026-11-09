@@ -12,10 +12,12 @@ import { Bot, Check, ChevronDown, ChevronUp, Loader2, MessageSquare, Pencil, Und
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { SharedDocSession } from "@/lib/collab/client/registry";
 import type { SuggestionGroupView, SuggestionsController } from "@/lib/collab/client/suggestions";
+import { ListFilterButton, ShowMoreButton, usePagedList } from "../../list-controls";
 import { MentionTextarea } from "../mentions/mention-textarea";
 import { useSuggestions } from "./use-suggestions";
 
 export type SuggestionAuthorFilter = "all" | "ai" | `user:${string}`;
+export type SuggestionStatusFilter = "all" | "open" | "decided";
 
 export interface SuggestionsPanelProps {
   session: SharedDocSession;
@@ -23,7 +25,9 @@ export interface SuggestionsPanelProps {
   initialFilter?: SuggestionAuthorFilter;
 }
 
-const buttonClass = "inline-flex h-7 items-center gap-1 rounded-md border border-border px-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
+// The same buttons, fields and cards as the Comments tab (markdown-review-ui.tsx).
+const buttonClass = "review-button";
+const iconButtonClass = "libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40";
 
 /** Groups that pass the author filter. */
 export function filterSuggestionGroups(groups: readonly SuggestionGroupView[], filter: SuggestionAuthorFilter): SuggestionGroupView[] {
@@ -74,7 +78,7 @@ function ReplyBox({ group, controller, projectId, selfId }: { group: SuggestionG
         else setError(result.message);
       }}
     >
-      <MentionTextarea autoFocus aria-label="Reply to this suggestion" rows={2} className="w-full rounded-md border border-border bg-card px-1.5 py-1 text-xs" projectId={projectId} selfId={selfId} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Reply… Type @ to mention someone" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); controller.cancelReply(); } }} />
+      <MentionTextarea autoFocus aria-label="Reply to this suggestion" rows={2} className="review-textarea" projectId={projectId} selfId={selfId} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Reply… Type @ to mention someone" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); controller.cancelReply(); } }} />
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
       <div className="flex gap-1">
         <button type="submit" className={buttonClass} disabled={!text.trim() || sending}>{sending ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null}Send reply</button>
@@ -98,7 +102,8 @@ function SuggestionCard({ group, controller, selected, onSelect, replying, proje
       aria-selected={selected}
       data-suggestion-group={group.id}
       data-state={group.state}
-      className={`libera-suggestion-card rounded-lg border px-2.5 py-2 text-sm ${selected ? "border-primary bg-primary/5" : "border-border bg-card"} ${group.state === "stale" ? "border-dashed" : ""}`}
+      data-selected={selected}
+      className="libera-suggestion-card review-comment-card libera-panel-card cursor-pointer p-3 text-[13px] transition"
       onClick={onSelect}
     >
       <div className="flex items-center gap-1.5 text-xs">
@@ -130,7 +135,7 @@ function SuggestionCard({ group, controller, selected, onSelect, replying, proje
       </ul>
       {editing !== null && single ? (
         <form className="mt-1.5 flex items-start gap-1.5" onSubmit={(event) => { event.preventDefault(); controller.edit(single.id, editing); setEditing(null); }}>
-          <textarea aria-label="Edit your suggestion" rows={2} className="min-w-0 flex-1 rounded-md border border-border bg-card px-1.5 py-1 text-xs" value={editing} onChange={(event) => setEditing(event.target.value)} />
+          <textarea aria-label="Edit your suggestion" rows={2} className="review-textarea min-w-0 flex-1" value={editing} onChange={(event) => setEditing(event.target.value)} />
           <button type="submit" className={buttonClass}>Save</button>
           <button type="button" className={buttonClass} onClick={() => setEditing(null)}>Cancel</button>
         </form>
@@ -152,7 +157,7 @@ export function SuggestionsPanel({ session, initialFilter = "all" }: Suggestions
   const { controller, snapshot } = useSuggestions(session);
   const [filter, setFilter] = useState<SuggestionAuthorFilter>(initialFilter);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [showDecided, setShowDecided] = useState(true);
+  const [status, setStatus] = useState<SuggestionStatusFilter>("all");
 
   const groups = useMemo(() => snapshot?.groups ?? [], [snapshot]);
   const decidedCount = groups.filter((group) => group.state === "decided").length;
@@ -166,9 +171,12 @@ export function SuggestionsPanel({ session, initialFilter = "all" }: Suggestions
     for (const group of groups) if (!seen.has(group.createdBy)) seen.set(group.createdBy, group.author);
     return [...seen.entries()];
   }, [groups]);
-  const visible = useMemo(() => filterSuggestionGroups(groups, filter).filter((group) => showDecided || group.state !== "decided"), [groups, filter, showDecided]);
+  const byAuthor = useMemo(() => filterSuggestionGroups(groups, filter), [groups, filter]);
+  const visible = useMemo(() => byAuthor.filter((group) => status === "all" || (status === "decided") === (group.state === "decided")), [byAuthor, status]);
   const live = visible.filter((group) => group.state !== "decided");
   const selectedIndex = visible.findIndex((group) => group.id === selectedId);
+  // Stepping with the keys past the first page keeps the selected card rendered.
+  const page = usePagedList(visible, `${filter}|${status}`, selectedIndex);
 
   if (!controller || !snapshot) return null;
 
@@ -193,36 +201,35 @@ export function SuggestionsPanel({ session, initialFilter = "all" }: Suggestions
 
   return (
     <section className="libera-suggestions-panel flex min-h-0 flex-1 flex-col" aria-label="Suggestions" data-doc={snapshot.docId}>
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">
-        <select
-          aria-label="Filter suggestions by author"
-          className="h-7 min-w-0 flex-1 rounded-md border border-border bg-card px-1.5 text-xs"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value as SuggestionAuthorFilter)}
-        >
-          <option value="all">Everyone</option>
-          <option value="ai">AI suggestions</option>
-          {authors.map(([id, author]) => <option key={id} value={`user:${id}`}>{id === snapshot.localUserId ? `${author.name} (you)` : author.name}</option>)}
-        </select>
-        <button type="button" className={buttonClass} aria-label="Previous suggestion" title="Previous suggestion (↑ or k)" onClick={() => step(-1)}><ChevronUp aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={buttonClass} aria-label="Next suggestion" title="Next suggestion (↓ or j)" onClick={() => step(1)}><ChevronDown aria-hidden className="h-3.5 w-3.5" /></button>
+      <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">
+        <ListFilterButton label="Filter suggestions" groups={[
+          { label: "Status", value: status, defaultValue: "all", onChange: (value) => setStatus(value as SuggestionStatusFilter), options: [
+            { value: "all", label: "All suggestions", count: byAuthor.length },
+            { value: "open", label: "Open", count: byAuthor.filter((group) => group.state !== "decided").length },
+            { value: "decided", label: "Decided", count: byAuthor.filter((group) => group.state === "decided").length },
+          ] },
+          { label: "Author", value: filter, defaultValue: "all", onChange: (value) => setFilter(value as SuggestionAuthorFilter), options: [
+            { value: "all", label: "Everyone" },
+            { value: "ai", label: "AI suggestions" },
+            ...authors.map(([id, author]) => ({ value: `user:${id}`, label: id === snapshot.localUserId ? `${author.name} (you)` : author.name })),
+          ] },
+        ]} />
+        <button type="button" className={iconButtonClass} aria-label="Previous suggestion" title="Previous suggestion (↑ or k)" onClick={() => step(-1)}><ChevronUp aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={iconButtonClass} aria-label="Next suggestion" title="Next suggestion (↓ or j)" onClick={() => step(1)}><ChevronDown aria-hidden className="h-3.5 w-3.5" /></button>
         {snapshot.canDecide ? (
-          <>
+          <span className="ml-auto flex gap-1">
             <button type="button" className={buttonClass} data-action="accept-all" disabled={!pendingCount} title="Accept every pending suggestion (a checkpoint is saved first; stale ones are skipped)" onClick={() => { controller.acceptAll(); }}>Accept all</button>
             <button type="button" className={buttonClass} data-action="reject-all" disabled={!liveCount} onClick={() => { controller.rejectAll(); }}>Reject all</button>
-          </>
+          </span>
         ) : null}
-        <label className="flex w-full items-center gap-1.5 text-xs text-muted-foreground">
-          <input type="checkbox" checked={showDecided} onChange={(event) => setShowDecided(event.target.checked)} />
-          Show decided
-        </label>
       </div>
-      <ul role="listbox" tabIndex={0} aria-label="Suggestions in this document" className="min-h-0 flex-1 space-y-1.5 overflow-auto p-2 outline-none" onKeyDown={onKeyDown}>
+      <ul role="listbox" tabIndex={0} aria-label="Suggestions in this document" className="min-h-0 flex-1 space-y-2 overflow-auto px-3 pb-4 pt-3 outline-none" onKeyDown={onKeyDown}>
         {visible.length === 0 ? (
-          <li className="px-1 py-6 text-center text-sm text-muted-foreground">{groups.length ? "No suggestions match this filter." : snapshot.canSuggest ? "No suggestions yet. Turn on Suggesting, or use Suggest edit on a selection." : "No suggestions yet."}</li>
-        ) : visible.map((group) => (
+          <li className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">{groups.length ? "No suggestions match this filter." : snapshot.canSuggest ? "No suggestions yet. Turn on Suggesting, or use Suggest edit on a selection." : "No suggestions yet."}</li>
+        ) : page.visible.map((group) => (
           <SuggestionCard key={group.id} group={group} controller={controller} selected={group.id === selectedId} replying={snapshot.replyingTo === group.id} projectId={session.resolved.projectId} selfId={snapshot.localUserId} onSelect={() => { setSelectedId(group.id); if (group.state !== "decided") controller.reveal(group.id); }} />
         ))}
+        {page.remaining > 0 ? <li role="presentation"><ShowMoreButton remaining={page.remaining} onClick={page.showMore} /></li> : null}
       </ul>
       <p className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground" aria-live="polite">
         {live.length} open{snapshot.history ? ` · ${snapshot.history.filter((info) => info.status === "accepted" || info.status === "rejected").length} decided on the server` : snapshot.historyError ? " · history unavailable offline" : ""}

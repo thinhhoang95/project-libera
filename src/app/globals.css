@@ -2620,6 +2620,11 @@ button.border[class*="border-white"]:hover {
 .review-comment-card { overflow-wrap: anywhere; }
 .review-comment-card[data-selected="false"]:hover { background: #ffffff66; }
 html.dark .review-comment-card[data-selected="false"]:hover { background: #a3bbef12; }
+/* Suggestions and Reviews tabs reuse the comment card; a stale suggestion is dashed. */
+.libera-suggestion-card[data-state="stale"] { outline: 1px dashed color-mix(in srgb, var(--muted-foreground) 55%, transparent); outline-offset: -1px; }
+/* The filter button of a side-panel list marks an active filter with a dot. */
+.libera-list-filter[data-active] { color: var(--accent); }
+.libera-list-filter-dot { background: var(--accent); }
 /* PDF annotation cards share the comment card; --annotation-color is the annotation's own. */
 .pdf-annotation-icon {
   display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center;

@@ -4,6 +4,7 @@
 
 import { ClipboardCheck, History, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ShowMoreButton, usePagedList } from "@/components/libera/list-controls";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { historyApi } from "@/components/libera/collab/history/history-api";
 import { RequestReviewDialog } from "@/components/libera/collab/reviews/request-review";
@@ -51,7 +52,6 @@ async function settled({ session }: Shared): Promise<void> {
 }
 
 const DELETED_PAGE = 50;
-const VERSION_PAGE = 20;
 
 function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared; role: Role; canAnnotate: boolean; onClose: () => void }) {
   const { docId } = shared.session;
@@ -61,7 +61,8 @@ function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared;
   const [error, setError] = useState("");
   const [deleted, setDeleted] = useState(() => shared.store.deleted());
   const [deletedShown, setDeletedShown] = useState(DELETED_PAGE);
-  const [versionsShown, setVersionsShown] = useState(VERSION_PAGE);
+  // Versions: the newest 20, then 40 more at a time.
+  const versions = usePagedList(revisions ?? [], docId);
   useEffect(() => shared.store.subscribe(() => setDeleted(shared.store.deleted())), [shared.store]);
   useEffect(() => {
     let active = true;
@@ -118,17 +119,13 @@ function HistoryDialog({ shared, role, canAnnotate, onClose }: { shared: Shared;
               <button type="submit" className={BUTTON} disabled={busy || !label.trim()}>Save</button>
             </form>
           ) : null}
-          {revisions === null ? <p className="text-xs text-muted-foreground">Loading…</p> : revisions.length ? revisions.slice(0, versionsShown).map((revision) => (
+          {revisions === null ? <p className="text-xs text-muted-foreground">Loading…</p> : revisions.length ? versions.visible.map((revision) => (
             <div key={revision.id} className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate">{revision.label ?? revision.kind} · {new Date(revision.createdAt).toLocaleString()}</span>
               {can(role, "restore") ? <button type="button" className={BUTTON} disabled={busy} onClick={() => void run(() => historyApi.restore(docId, { revisionId: revision.id }))}>Restore</button> : null}
             </div>
           )) : <p className="text-xs text-muted-foreground">No versions yet.</p>}
-          {revisions && revisions.length > versionsShown ? (
-            <button type="button" className={BUTTON} onClick={() => setVersionsShown((shown) => shown + VERSION_PAGE)}>
-              Show older ({revisions.length - versionsShown} more)
-            </button>
-          ) : null}
+          <ShowMoreButton remaining={versions.remaining} onClick={versions.showMore} />
         </section>
       </div>
     </ModalDialog>
