@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { assertNotebookSound, seeded, seedNotebook, splitLibraryPath, withTemporaryLibrary, writeAt, writeLibraryFile } from "./notebook-test-helpers";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,13 +9,10 @@ import { listPendingReviews, withReviewWrite } from "../../src/lib/agent/review-
 import { RunSnapshots, undoRun } from "../../src/lib/agent/snapshots";
 import { getMarkdownImageAssetBySource, markdownImageSources, writeMarkdownImageAsset } from "../../src/lib/storage/markdown-assets";
 import { acknowledgeMigration, listInterruptedMigrations, listUnacknowledgedMigrations, listUnreadableMigrations, planMigration, resumeMigration, runMigration, setAsideUnreadableMigration, setMigrationFaultForTests, type MigrationRequest } from "../../src/lib/storage/migration";
-import { currentReferenceJobRunner, setReferenceJobRunner } from "../../src/lib/references/jobs";
-import { resetBibTethers } from "../../src/lib/references/bib-tether";
 import { updateMarkdownFile } from "../../src/lib/storage/files";
 import { getTree } from "../../src/lib/storage/tree";
 import { remapWorkspacePathsMany, type WorkspaceLibrary } from "../../src/lib/workspaces";
 import type { OpenTab } from "../../src/components/libera/types";
-import { createNotebook } from "../../src/lib/storage/notebooks";
 import {
   audioPeaksPath,
   definitionsPath,
@@ -31,37 +29,10 @@ import { inkFolderPath } from "../../src/lib/storage/ink";
 import { findOrphanedSidecars, SIDECAR_PATH_HELPERS } from "../../src/lib/storage/sidecars";
 import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
 
-async function withLibrary(run: () => Promise<void>) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-migration-"));
-  const previous = process.env.LIBERA_DATA_DIR;
-  process.env.LIBERA_DATA_DIR = directory;
-  try { await createNotebook("Src"); await createNotebook("Dst"); await run(); }
-  finally {
-    // Background work started for this library (automatic reference entries, tether watchers) ends with it.
-    currentReferenceJobRunner()?.dispose();
-    setReferenceJobRunner(undefined);
-    resetBibTethers();
-    setMigrationFaultForTests(null);
-    if (previous === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previous;
-    await rm(directory, { recursive: true, force: true });
-  }
-}
-
-const split = (relative: string) => { const [notebook, ...parts] = relative.split("/"); return { notebook, parts }; };
-
-async function file(relative: string, content: string | Buffer = "text") {
-  const { notebook, parts } = split(relative);
-  const target = filePathFromParts(notebook, parts);
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, content);
-  return target;
-}
-
-async function sidecar(target: string, content: string) {
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, content);
-}
-
+const withLibrary = (run: () => Promise<void>) => withTemporaryLibrary(["Src", "Dst"], run);
+const split = splitLibraryPath;
+const file = writeLibraryFile;
+const sidecar = writeAt;
 const read = (target: string) => readFile(target, "utf8");
 
 async function migrate(request: MigrationRequest) {
@@ -70,33 +41,7 @@ async function migrate(request: MigrationRequest) {
   return { plan, result: await runMigration(request, plan.token) };
 }
 
-/** Every sidecar kind, with distinct content, for the files of a small project. */
-async function populate() {
-  await file("Src/papers/a.pdf", "%PDF-1.4 a");
-  const pdf = split("Src/papers/a.pdf");
-  await sidecar(pdfAnnotationsPath(pdf.notebook, pdf.parts), JSON.stringify({ version: 2, marks: [{ id: "m1" }] }));
-  await sidecar(pdfOutlinePath(pdf.notebook, pdf.parts), "outline");
-  await sidecar(pdfTextCachePath(pdf.notebook, pdf.parts), "text-cache");
-  await sidecar(definitionsPath(pdf.notebook, pdf.parts), "pdf-definitions");
-  await sidecar(path.join(inkFolderPath(pdf.notebook, pdf.parts), "me.json"), "pdf-ink");
-
-  await file("Src/papers/fig.png", Buffer.from("png-bytes"));
-  const image = split("Src/papers/fig.png");
-  await sidecar(imageAnnotationsPath(image.notebook, image.parts), JSON.stringify({ version: 2, marks: [] }));
-
-  await file("Src/audio/memo.m4a", Buffer.from("audio"));
-  const audio = split("Src/audio/memo.m4a");
-  await sidecar(transcriptPath(audio.notebook, audio.parts), "transcript");
-  await sidecar(audioPeaksPath(audio.notebook, audio.parts), "peaks");
-
-  await file("Src/notes/n.md", "# Note\n");
-  const upload = await writeMarkdownImageAsset("Src/notes/n.md", new File(["photo-bytes"], "photo.png"));
-  await file("Src/notes/n.md", `# Note\n\n${upload.markdown}\n\n![](/api/files/raw/Src/papers/fig.png)\n`);
-  const note = split("Src/notes/n.md");
-  await sidecar(definitionsPath(note.notebook, note.parts), "note-definitions");
-  await writeFile(path.join(notebookPath("Src"), "notes", ".hidden-config"), "hidden");
-  await file("Src/notes/data.unknownext", "unknown");
-}
+const populate = () => seedNotebook("Src");
 
 test("paths.ts per-file sidecars are all in the sidecar registry", async () => {
   const source = await readFile(path.join(process.cwd(), "src/lib/storage/paths.ts"), "utf8");
@@ -124,14 +69,14 @@ test("a mixed batch moves with every sidecar, image and record, and leaves nothi
   const pdf = split("Dst/papers/a.pdf");
   assert.equal(await read(filePathFromParts(pdf.notebook, pdf.parts)), "%PDF-1.4 a");
   assert.match(await read(pdfAnnotationsPath(pdf.notebook, pdf.parts)), /m1/);
-  assert.equal(await read(pdfOutlinePath(pdf.notebook, pdf.parts)), "outline");
-  assert.equal(await read(pdfTextCachePath(pdf.notebook, pdf.parts)), "text-cache");
-  assert.equal(await read(definitionsPath(pdf.notebook, pdf.parts)), "pdf-definitions");
-  assert.equal(await read(path.join(inkFolderPath(pdf.notebook, pdf.parts), "me.json")), "pdf-ink");
+  assert.equal(await read(pdfOutlinePath(pdf.notebook, pdf.parts)), seeded("outline"));
+  assert.equal(await read(pdfTextCachePath(pdf.notebook, pdf.parts)), seeded("text-cache"));
+  assert.equal(await read(definitionsPath(pdf.notebook, pdf.parts)), seeded("pdf-definitions"));
+  assert.equal(await read(path.join(inkFolderPath(pdf.notebook, pdf.parts), "me.json")), seeded("pdf-ink"));
   assert.ok(existsSync(imageAnnotationsPath("Dst", ["papers", "fig.png"])));
-  assert.equal(await read(transcriptPath("Dst", ["audio", "memo.m4a"])), "transcript");
-  assert.equal(await read(audioPeaksPath("Dst", ["audio", "memo.m4a"])), "peaks");
-  assert.equal(await read(definitionsPath("Dst", ["notes", "n.md"])), "note-definitions");
+  assert.equal(await read(transcriptPath("Dst", ["audio", "memo.m4a"])), seeded("transcript"));
+  assert.equal(await read(audioPeaksPath("Dst", ["audio", "memo.m4a"])), seeded("peaks"));
+  assert.equal(await read(definitionsPath("Dst", ["notes", "n.md"])), seeded("note-definitions"));
   assert.equal(await read(path.join(notebookPath("Dst"), "notes", ".hidden-config")), "hidden");
   assert.equal(await read(filePathFromParts("Dst", ["notes", "data.unknownext"])), "unknown");
 
@@ -155,6 +100,9 @@ test("a mixed batch moves with every sidecar, image and record, and leaves nothi
   assert.deepEqual(metadata.fileTags, { "Dst/notes/n.md": ["draft"] });
   assert.deepEqual((await listPendingReviews()).map((review) => review.path), ["Dst/notes/n.md"]);
   assert.deepEqual(await listInterruptedMigrations(), []);
+  // The notebook check agrees: both notebooks came out sound.
+  await assertNotebookSound("Src");
+  await assertNotebookSound("Dst");
 }));
 
 test("name clashes keep both files, and a new notebook is created by the run", () => withLibrary(async () => {
@@ -175,6 +123,7 @@ test("name clashes keep both files, and a new notebook is created by the run", (
   const result = await runMigration(request, plan.token);
   assert.equal(result.createdNotebook, true);
   assert.equal(await read(filePathFromParts("Fresh", ["b.md"])), "source b");
+  for (const notebook of ["Src", "Dst", "Fresh"]) await assertNotebookSound(notebook);
 }));
 
 test("a run refuses a plan that changed since it was reviewed", () => withLibrary(async () => {
@@ -201,7 +150,7 @@ test("a crash right after a file is published leaves it whole, keeps its sidecar
 
   // Loading the library while interrupted must not take the transcript for an orphan.
   await getTree();
-  assert.equal(await read(transcriptPath("Src", ["audio", "memo.m4a"])), "transcript");
+  assert.equal(await read(transcriptPath("Src", ["audio", "memo.m4a"])), seeded("transcript"));
   // Saves to files in flight wait for the migration.
   await assert.rejects(updateMarkdownFile("Src/notes/n.md", "edited meanwhile"), /being moved/);
 
@@ -212,12 +161,14 @@ test("a crash right after a file is published leaves it whole, keeps its sidecar
   assert.equal(resumed.state, "done");
   assert.deepEqual(resumed.leftovers, []);
   assert.deepEqual(resumed.bookkeeping, []);
-  assert.equal(await read(transcriptPath("Dst", ["audio", "memo.m4a"])), "transcript");
-  assert.equal(await read(definitionsPath("Dst", ["notes", "n.md"])), "note-definitions");
+  assert.equal(await read(transcriptPath("Dst", ["audio", "memo.m4a"])), seeded("transcript"));
+  assert.equal(await read(definitionsPath("Dst", ["notes", "n.md"])), seeded("note-definitions"));
   assert.ok(!existsSync(filePathFromParts("Src", ["audio", "memo.m4a"])));
   assert.deepEqual(await findOrphanedSidecars("Src"), []);
   assert.deepEqual(await findOrphanedSidecars("Dst"), []);
   assert.deepEqual(await listInterruptedMigrations(), []);
+  await assertNotebookSound("Src");
+  await assertNotebookSound("Dst");
 }));
 
 test("Stop finishes what moved and leaves the rest untouched in the source", () => withLibrary(async () => {
@@ -234,7 +185,7 @@ test("Stop finishes what moved and leaves the rest untouched in the source", () 
   assert.deepEqual(stopped.leftovers, []);
   // The note never moved: it, its sidecars and its images are where they were.
   assert.ok(stopped.remaining.includes("Src/notes/n.md"));
-  assert.equal(await read(definitionsPath("Src", ["notes", "n.md"])), "note-definitions");
+  assert.equal(await read(definitionsPath("Src", ["notes", "n.md"])), seeded("note-definitions"));
   const note = await read(filePathFromParts("Src", ["notes", "n.md"]));
   const upload = markdownImageSources(note).find((source) => !source.startsWith("/api/files/raw/"))!;
   assert.equal((await getMarkdownImageAssetBySource("Src/notes/n.md", upload)).body.toString(), "photo-bytes");
@@ -243,6 +194,9 @@ test("Stop finishes what moved and leaves the rest untouched in the source", () 
   assert.deepEqual(leftovers, []);
   // The folder that only partly moved stays, with its records.
   assert.ok(existsSync(path.join(notebookPath("Src"), "notes")));
+  // Stopping after the image moved leaves the note that stayed showing it from its old place: the one expected finding.
+  await assertNotebookSound("Src", { allow: ["Src/notes/n.md: Shows Src/papers/fig.png, which is missing"] });
+  await assertNotebookSound("Dst");
 }));
 
 test("a crash during finalizing resumes without running the interrupted step twice", () => withLibrary(async () => {
@@ -259,6 +213,8 @@ test("a crash during finalizing resumes without running the interrupted step twi
   assert.equal(resumed.state, "done");
   assert.ok(resumed.bookkeeping.some((entry) => /assets/.test(entry)), "the interrupted step is reported, not repeated");
   assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths, ["Dst/a.md"]);
+  await assertNotebookSound("Src");
+  await assertNotebookSound("Dst");
 }));
 
 test("resume refuses a destination file that is not the migration's", () => withLibrary(async () => {
@@ -276,18 +232,23 @@ test("resume refuses a destination file that is not the migration's", () => with
   assert.match(resumed.error ?? "", /not the file this migration moved/);
   assert.equal(await read(filePathFromParts("Dst", ["b.pdf"])), "unrelated", "nothing was replaced");
   assert.equal(await read(filePathFromParts("Src", ["b.pdf"])), "%PDF b", "nothing was removed");
+  // The check sees the migration as unfinished, on both sides, and nothing else wrong.
+  await assertNotebookSound("Src", { allow: ["did not finish"] });
+  await assertNotebookSound("Dst", { allow: ["did not finish"] });
 }));
 
 test("files keep their identity, and sidecar data left at a free name is never overwritten", () => withLibrary(async () => {
   await file("Src/a.pdf", "%PDF a");
   const { ino } = await stat(filePathFromParts("Src", ["a.pdf"]));
   // Dst/a.pdf is gone, but its annotations were kept (for re-attaching it later).
-  await sidecar(pdfAnnotationsPath("Dst", ["a.pdf"]), "kept annotations");
+  await sidecar(pdfAnnotationsPath("Dst", ["a.pdf"]), seeded("kept annotations"));
   const { plan, result } = await migrate({ source: "Src", paths: ["Src/a.pdf"], destination: { notebook: "Dst" } });
   assert.deepEqual(plan.items.map((item) => item.to), ["Dst/a-1.pdf"]);
   assert.equal(result.state, "done");
-  assert.equal(await read(pdfAnnotationsPath("Dst", ["a.pdf"])), "kept annotations");
+  assert.equal(await read(pdfAnnotationsPath("Dst", ["a.pdf"])), seeded("kept annotations"));
   assert.equal((await stat(filePathFromParts("Dst", ["a-1.pdf"]))).ino, ino, "a hard link keeps the file's inode and dates");
+  // The kept annotations of the gone a.pdf are the one expected finding.
+  await assertNotebookSound("Dst", { allow: ["Dst/a.pdf: Saved pdf annotations of Dst/a.pdf"] });
 }));
 
 test("pending agent reviews and undo history follow a note's rewritten image paths", () => withLibrary(async () => {
@@ -309,6 +270,7 @@ test("pending agent reviews and undo history follow a note's rewritten image pat
   const [undone] = await undoRun("run-migrated-2");
   assert.equal(undone.status, "restored", "the rewrite does not count as an edit after the agent's");
   assert.equal(await read(filePathFromParts("Dst", ["n.md"])), "![](/api/files/raw/Dst/fig.png)\nagent line\n");
+  await assertNotebookSound("Dst");
 }));
 
 test("a finished result is kept until the app acknowledges it", () => withLibrary(async () => {
@@ -465,4 +427,27 @@ test("the token covers the new notebook's details, and the result returns its wo
   const result = await runMigration(request("🧪"), plan.token);
   assert.deepEqual(result.workspaceGroup, { notebook: "Fresh", groupId: "group-1" });
   assert.equal(result.check, "clean");
+}));
+
+test("a note that stays and shows a moving image is warned about, and the check sees the same", () => withLibrary(async () => {
+  await file("Src/fig.png", Buffer.from("png"));
+  await file("Src/stays.md", "![](/api/files/raw/Src/fig.png)\n");
+  const { plan } = await migrate({ source: "Src", paths: ["Src/fig.png"], destination: { notebook: "Dst" } });
+  assert.deepEqual(plan.warnings.find((warning) => warning.kind === "inbound-images")?.paths, ["Src/stays.md"]);
+  // What the review warned about is exactly what the notebook check finds afterwards.
+  await assertNotebookSound("Src", { allow: ["Src/stays.md: Shows Src/fig.png, which is missing"] });
+  await assertNotebookSound("Dst");
+}));
+
+test("a flat move puts each selected item directly in the destination folder (Move… of one file)", () => withLibrary(async () => {
+  await populate();
+  await mkdir(path.join(notebookPath("Dst"), "inbox"), { recursive: true });
+  const { plan, result } = await migrate({ source: "Src", paths: ["Src/papers/a.pdf", "Src/notes"], destination: { notebook: "Dst", folder: "inbox", flat: true } });
+  assert.ok(plan.items.some((item) => item.from === "Src/papers/a.pdf" && item.to === "Dst/inbox/a.pdf"));
+  // A selected folder keeps its own content under it.
+  assert.ok(plan.items.some((item) => item.from === "Src/notes/n.md" && item.to === "Dst/inbox/notes/n.md"));
+  assert.equal(result.check, "clean");
+  assert.match(await read(pdfAnnotationsPath("Dst", ["inbox", "a.pdf"])), /m1/);
+  await assertNotebookSound("Src", { allow: ["Shows Src/papers/fig.png"] });
+  await assertNotebookSound("Dst");
 }));

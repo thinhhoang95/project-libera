@@ -14,7 +14,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { cachedPdfIdentity } from "@/lib/storage/pdf-identity";
-import { ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS } from "@/lib/storage/pdf-sidecars";
+import { matchByIdentity, ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS } from "@/lib/storage/pdf-sidecars";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
 import {
   ensureAdminRoot,
@@ -61,14 +61,56 @@ export function inkLibraryPath(notebook: string, pathParts: string[], fileName?:
 }
 
 /** Which chunks a file type has: PDF pages, or a note's blocks and text, or one image. */
-function assertChunkFor(fileType: string, chunk: string) {
-  if (!isInkChunkName(chunk)) throw new StorageError("Ink chunk is invalid.");
-  const valid = fileType === "pdf"
+/** Whether a chunk is one this kind of file has: a PDF's pages, a note's text and blocks, an image. */
+function chunkFits(fileType: string, chunk: string) {
+  return fileType === "pdf"
     ? pageNumberOfChunk(chunk) !== null
     : fileType === "markdown"
       ? chunk === "text" || chunk.startsWith("block-")
       : fileType === "image" && chunk === "image";
-  if (!valid) throw new StorageError("That ink chunk does not belong to this kind of file.");
+}
+
+function assertChunkFor(fileType: string, chunk: string) {
+  if (!isInkChunkName(chunk)) throw new StorageError("Ink chunk is invalid.");
+  if (!chunkFits(fileType, chunk)) throw new StorageError("That ink chunk does not belong to this kind of file.");
+}
+
+export type InkFolderInspection = {
+  /** Ink files the reader leaves out: not readable as ink, or named for another author than the one inside. */
+  unreadable: string[];
+  /** Ink files of a chunk this kind of file does not have, so never shown. */
+  misplaced: string[];
+  /** Strokes left out of the files that are read. */
+  droppedStrokes: number;
+  /** The bytes of the file the ink was drawn on, as each author file recorded them. */
+  sources: InkSource[];
+  bytes: number;
+};
+
+/**
+ * What the ink reader (readInkFolder) makes of one file's ink folder, for the
+ * notebook check (storage/integrity.ts). Reads only; a folder that can't be
+ * listed throws.
+ */
+export async function inspectInkFolder(folder: string, fileType: string): Promise<InkFolderInspection> {
+  const result: InkFolderInspection = { unreadable: [], misplaced: [], droppedStrokes: 0, sources: [], bytes: 0 };
+  for (const name of await readdir(folder)) {
+    // Other files (a sync service's conflict copy, system files) are not ink.
+    const parsed = parseInkFileName(name);
+    if (!parsed) continue;
+    if (!chunkFits(fileType, parsed.chunk)) result.misplaced.push(name);
+    let text: string;
+    try { text = await readFile(path.join(folder, name), "utf8"); } catch { result.unreadable.push(name); continue; }
+    result.bytes += text.length;
+    let stored: unknown = null;
+    try { stored = JSON.parse(text); } catch { /* Not ink. */ }
+    const file = normalizeInkAuthorFile(stored);
+    if (!file || file.author.key !== parsed.author) { result.unreadable.push(name); continue; }
+    const strokes = (stored as { strokes?: unknown }).strokes;
+    result.droppedStrokes += Math.max(0, (Array.isArray(strokes) ? strokes.length : 0) - file.strokes.length);
+    if (file.source) result.sources.push(file.source);
+  }
+  return result;
 }
 
 // ---- This computer's author --------------------------------------------------
@@ -485,18 +527,7 @@ export async function reconcileInkFolders(notebook: string, files: Array<{ path:
   }
 
   const hashes = new Map<string, Promise<string | null>>();
-  async function match(source: InkSource) {
-    const matches: string[] = [];
-    for (const candidate of files) {
-      if (candidate.size !== source.size || taken.has(candidate.path.toLowerCase())) continue;
-      if (!hashes.has(candidate.path)) {
-        const { notebook: owner, pathParts } = splitFilePath(candidate.path);
-        hashes.set(candidate.path, cachedPdfIdentity(filePathFromParts(owner, pathParts)).then((identity) => identity.contentHash, () => null));
-      }
-      if (await hashes.get(candidate.path) === source.sha256) matches.push(candidate.path);
-    }
-    return matches.length === 1 ? matches[0] : null;
-  }
+  const match = (source: InkSource) => matchByIdentity({ size: source.size, contentHash: source.sha256 }, files, taken, hashes);
 
   let reattached = 0;
   let setAside = 0;

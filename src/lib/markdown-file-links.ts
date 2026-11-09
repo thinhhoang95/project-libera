@@ -169,6 +169,12 @@ export function parseMediaTime(value: string | null) {
   return parts.reduce((total, part) => total * 60 + part, 0);
 }
 
+/** A link that keeps a Libera position (`#libera=…`) this build can't read: it opens the file at its start. */
+export function hasUnreadableLinkPosition(href: string) {
+  const { hash } = splitMarkdownHref(href);
+  return !!hash && new URLSearchParams(hash).has(LIBERA_LINK_HASH_KEY) && !parseMarkdownFileLinkMetadata(hash);
+}
+
 function parseMarkdownFileLinkMetadata(hash: string) {
   const params = new URLSearchParams(hash);
   const time = parseMediaTime(params.get("t"));

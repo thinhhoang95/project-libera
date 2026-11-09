@@ -176,7 +176,13 @@ function migrateDirectoryModeState(adminRoot, value) {
   return { version: DIRECTORY_MODE_STATE_VERSION, folders, recent: Array.isArray(value?.recent) ? value.recent : [] };
 }
 
-function readDirectoryModeState(adminRoot) {
+/**
+ * The linked folders. Reading upgrades as it goes: an older state file is
+ * rewritten, a folder gets its identity marker, a moved folder's location is
+ * recorded. With `readOnly` (the notebook check) nothing is written: the same
+ * folders come back, with the identity a marker already holds.
+ */
+function readDirectoryModeState(adminRoot, { readOnly = false } = {}) {
   let value;
 
   try {
@@ -194,6 +200,12 @@ function readDirectoryModeState(adminRoot) {
         // A path from another computer may name an unrelated local directory.
         // Auto-connect only if its synced marker proves the folder's identity.
         if (folder.unresolved && (!folder.id || readFolderId(folder.path) !== folder.id)) return folder;
+        if (readOnly) {
+          const id = readFolderId(folder.path) || folder.id;
+          const connected = { ...folder, ...(id ? { id } : {}) };
+          delete connected.unresolved;
+          return connected;
+        }
         const id = ensureDirectoryIdentity(adminRoot, folder.path, folder.id);
         const locations = { ...folder.locations, [directoryMachineKey()]: folder.path };
         const upgraded = { ...folder, ...(id ? { id } : {}), locations };
@@ -202,13 +214,14 @@ function readDirectoryModeState(adminRoot) {
         return upgraded;
       } catch { return folder; }
     });
-    if (changed) {
+    if (changed && !readOnly) {
       try { return writeDirectoryModeState(adminRoot, { ...state, folders }); } catch { return { ...state, folders }; }
     }
-    return state;
+    return readOnly ? { ...state, folders } : state;
   }
 
   const migrated = migrateDirectoryModeState(adminRoot, value);
+  if (readOnly) return normalizeDirectoryModeState(migrated);
   try {
     return writeDirectoryModeState(adminRoot, migrated);
   } catch {

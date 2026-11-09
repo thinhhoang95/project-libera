@@ -313,3 +313,21 @@ export async function recordMovedRunFiles(moves: ReadonlyMap<string, MovedRunFil
     if (manifest && applyMoves(manifest, moves)) await writeManifest(manifest);
   }
 }
+
+/** The files undo history can restore, where each is now: for checks. Read only. */
+export async function listRunFiles(): Promise<{ files: { runId: string; path: string; recordedPath: string; reverted: boolean; shared: boolean }[]; unreadable: number }> {
+  let names: string[];
+  try { names = (await readdir(runsDirectory())).filter((name) => name.endsWith(".json")); }
+  catch { return { files: [], unreadable: 0 }; }
+  const files: { runId: string; path: string; recordedPath: string; reverted: boolean; shared: boolean }[] = [];
+  let unreadable = 0;
+  for (const name of names) {
+    const runId = name.slice(0, -".json".length);
+    const manifest = isRunId(runId) ? await readManifest(runId) : null;
+    if (!manifest) { unreadable += 1; continue; }
+    for (const [key, file] of Object.entries(manifest.files)) {
+      files.push({ runId, path: file.movedTo ?? key, recordedPath: key, reverted: !!file.reverted, shared: !!file.shared });
+    }
+  }
+  return { files, unreadable };
+}

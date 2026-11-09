@@ -23,9 +23,14 @@ const PREVIEW_LIMIT = 8;
 
 type Step = "select" | "review" | "running" | "result";
 
+/** A migration prepared elsewhere (the tab strip's Move… to another notebook): files, destination notebook and folder. */
+export type MigrationPreset = { paths: string[]; destination: string; folder: string; flat?: boolean };
+
 type Props = {
   open: boolean;
   initialSource: string;
+  /** Opens straight on the review of this migration. */
+  preset?: MigrationPreset | null;
   tree: LiberaTree;
   groups: LiberaNotebookGroup[];
   unsavedTabsUnder: (paths: string[]) => OpenTab[];
@@ -76,17 +81,17 @@ export function NotebookMigrationDialog(props: Props) {
   return <MigrationDialogBody {...props} />;
 }
 
-function MigrationDialogBody({ initialSource, tree, groups, unsavedTabsUnder, onSaveTabs, onRun, onResume, onApplyUnacknowledged, onClose }: Props) {
+function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsUnder, onSaveTabs, onRun, onResume, onApplyUnacknowledged, onClose }: Props) {
   const collab = useCollabShell();
   const localNotebooks = useMemo(
     () => tree.notebooks.filter((notebook) => !notebook.folder?.missing && !collab?.projectForNotebook(notebook.name)),
     [tree.notebooks, collab],
   );
   const [source, setSource] = useState(() => localNotebooks.some((notebook) => notebook.name === initialSource) ? initialSource : localNotebooks[0]?.name ?? "");
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(preset?.paths ?? []));
   const [query, setQuery] = useState("");
-  const [destination, setDestination] = useState("");
-  const [folder, setFolder] = useState("");
+  const [destination, setDestination] = useState(() => preset && localNotebooks.some((notebook) => notebook.name === preset.destination && notebook.name !== initialSource) ? preset.destination : "");
+  const [folder, setFolder] = useState(preset?.folder ?? "");
   const [newNotebook, setNewNotebook] = useState<NotebookFormValues | null>(null);
   const [creatingNotebook, setCreatingNotebook] = useState(false);
   const [newNotebookError, setNewNotebookError] = useState("");
@@ -99,7 +104,8 @@ function MigrationDialogBody({ initialSource, tree, groups, unsavedTabsUnder, on
   const [discovery, setDiscovery] = useState(0);
   const [discoveryError, setDiscoveryError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  // Opened from Move… into a notebook that can't take a migration (shared, unknown): say so from the start.
+  const [error, setError] = useState(() => preset && !destination ? `${preset.destination} is not a local notebook here, so files can't be migrated into it.` : "");
 
   const sourceNode = localNotebooks.find((notebook) => notebook.name === source);
   const sourceChildren = useMemo(() => visibleChildren(sourceNode?.children ?? []), [sourceNode]);
@@ -143,10 +149,15 @@ function MigrationDialogBody({ initialSource, tree, groups, unsavedTabsUnder, on
 
   const request = (selection: ReadonlySet<string> = selected): MigrationRequest => ({
     source,
-    paths: selectionPaths(sourceChildren, selection),
-    destination: newNotebook
-      ? { notebook: destinationName, create: { color: newNotebook.color, emoji: newNotebook.emoji, groupId: newNotebook.groupId || null } }
-      : { notebook: destinationName, folder },
+    // From Move…, exactly the files chosen: a folder whose files happen to be all selected is not the folder itself.
+    paths: preset ? [...selection].sort() : selectionPaths(sourceChildren, selection),
+    destination: {
+      ...(newNotebook
+        ? { notebook: destinationName, create: { color: newNotebook.color, emoji: newNotebook.emoji, groupId: newNotebook.groupId || null } }
+        : { notebook: destinationName, folder }),
+      // Move…: the file goes into the chosen folder itself, not under its source folders.
+      ...(preset?.flat ? { flat: true } : {}),
+    },
   });
 
   /** `extra`: files the review suggested adding; the run sends the same selection. */
@@ -165,6 +176,16 @@ function MigrationDialogBody({ initialSource, tree, groups, unsavedTabsUnder, on
       setError(failure instanceof Error ? failure.message : "Could not prepare the migration.");
     } finally { setBusy(false); }
   }
+
+  // Opened from Move…: go straight to the review.
+  const reviewOnOpen = useRef(Boolean(preset && destination));
+  useEffect(() => {
+    if (!reviewOnOpen.current) return;
+    reviewOnOpen.current = false;
+    void review();
+    // Once, as the dialog opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function run() {
     if (!plan) return;

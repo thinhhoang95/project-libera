@@ -56,7 +56,8 @@ function isIndexFile(value: unknown): value is CitationIndexFile {
     typeof file.contentHash === "string" && Array.isArray(file.keys) && file.keys.every((key) => typeof key === "string");
 }
 
-async function readCitationIndex(indexPath: string): Promise<CitationIndex> {
+/** The index as saved (empty when missing, old or unreadable); reads only. The notebook check compares it with the notes. */
+export async function readCitationIndex(indexPath: string): Promise<CitationIndex> {
   try {
     const index = JSON.parse(await readFile(indexPath, "utf8"));
     if (index?.version === CITATION_INDEX_VERSION && index.files && typeof index.files === "object") {

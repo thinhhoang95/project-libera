@@ -185,6 +185,17 @@ async function ensureLayout(root: string, busy: () => Error) {
 // ---- Lock-free reads. Every file is replaced by an atomic rename, so a read
 // sees either the old or the new version, never a partial one.
 
+/**
+ * The stored reviews' keys without touching anything (for checks):
+ * readReviewKeys migrates a legacy database first. `legacy` says one is
+ * still waiting to be migrated; `damaged` that the index can't be read.
+ */
+export async function inspectReviewKeys(root: string): Promise<{ keys: string[]; legacy: boolean; damaged?: string }> {
+  const legacy = await readJson(legacyReviewDatabasePath(root)).then((value) => value !== undefined, () => true);
+  try { return { keys: [...(await readIndexFile(root) ?? new Map<string, string>()).values()], legacy }; }
+  catch (error) { return { keys: [], legacy, damaged: error instanceof Error ? error.message : String(error) }; }
+}
+
 /** Every stored document's id and key. */
 export async function readReviewKeys(root: string): Promise<Map<string, string>> {
   await ensureLayout(root, defaultBusy);

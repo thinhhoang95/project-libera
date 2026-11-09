@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -109,6 +110,18 @@ export type LinkedFolder = {
 
 type LinkedFoldersCache = { key: string; folders: LinkedFolder[] };
 const LINKED_FOLDERS_CACHE = Symbol.for("libera.linkedFolders");
+const READ_ONLY_STORAGE = Symbol.for("libera.readOnlyStorage");
+const readOnlyStorage = (globalThis as { [READ_ONLY_STORAGE]?: AsyncLocalStorage<true> })[READ_ONLY_STORAGE] ??= new AsyncLocalStorage<true>();
+
+/**
+ * Runs `task` so that finding where things are never writes: the linked
+ * folders' state is read without its upgrades (an older state file rewritten,
+ * a folder's identity marker created, its location recorded). For the
+ * notebook check (storage/integrity.ts), which only reads.
+ */
+export function withReadOnlyStorage<T>(task: () => Promise<T>): Promise<T> {
+  return readOnlyStorage.run(true, task);
+}
 
 /**
  * Read the linked folders. The state file can be written by another server
@@ -133,12 +146,15 @@ export function getLinkedFolders(): LinkedFolder[] {
     return cached.folders;
   }
 
-  const folders = readDirectoryModeState(adminRoot).folders.map((folder) => ({
+  const readOnly = readOnlyStorage.getStore() === true;
+  const folders = readDirectoryModeState(adminRoot, { readOnly }).folders.map((folder) => ({
     name: folder.name,
     path: folder.path,
     stateRoot: directoryStateRoot(adminRoot, folder.path, folder.id),
     ...(folder.unresolved ? { unresolved: true } : {}),
   }));
+  // Not kept: the next reading upgrades what this one left as it was.
+  if (readOnly) return folders;
   // Reading may migrate an older state file, which changes its identity.
   let storedKey = key;
   try {

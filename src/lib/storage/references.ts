@@ -137,6 +137,19 @@ async function readForWrite(target: string) {
 }
 
 /** The notebook's library. A missing library is an empty one at revision 0 and is not written. */
+/**
+ * A notebook's library as the app reads it, for checks: never set aside when
+ * damaged (readReferenceLibrary does that), only reported. `library` is null
+ * when the notebook has none.
+ */
+export async function inspectReferenceLibrary(notebook: string): Promise<{ library: ReferenceLibrary | null } | { damaged: string }> {
+  try { return { library: await readLibraryFile(referenceLibraryPath(notebook)) }; }
+  catch (error) {
+    if (error instanceof CorruptLibraryError || error instanceof StorageError) return { damaged: error.message };
+    throw error;
+  }
+}
+
 export async function readReferenceLibrary(notebook: string): Promise<ReferenceLibrary> {
   const target = referenceLibraryPath(notebook);
   await assertNotebookExists(notebook);

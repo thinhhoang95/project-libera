@@ -1,12 +1,17 @@
 import type { Dirent } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
+import { DEFINITIONS_FILE_TYPES, parseDefinitionsFile } from "@/lib/definitions";
+import { parsePdfOutlineFile } from "@/lib/pdf-outline";
+import { inspectImageSidecar, inspectPdfSidecar } from "@/lib/storage/annotations";
+import { inspectPdfTextCache } from "@/lib/storage/pdf-text-cache";
+import { parseTranscript } from "@/lib/storage/transcripts";
+import { inspectAudioPeaksCache } from "@/lib/transcription/peaks";
 import { pythonSidecarPath } from "@/lib/python/sidecar";
 import { INK_DIR } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, pathExists } from "@/lib/storage/fs-utils";
-import { inkFolderPath, supportsInk } from "@/lib/storage/ink";
+import { inkFolderPath, inspectInkFolder, supportsInk, type InkFolderInspection } from "@/lib/storage/ink";
 import { deletePythonSidecar, movePythonSidecar } from "@/lib/storage/markdown-assets";
 import {
   assertSafeUserSegment,
@@ -50,7 +55,35 @@ export type SidecarKind = {
   layout: "json" | "folder";
   /** A derived cache: failing to move it never fails the operation, and it is dropped instead. */
   cache?: boolean;
+  /** The owner's reading of a saved `json` side file, for the notebook check: null (or a throw) when it is not one the owner reads. */
+  inspect?: (value: unknown) => SidecarInspection | null;
+  /** The same for a `folder` side file. */
+  inspectFolder?: (folder: string, fileType: string) => Promise<InkFolderInspection>;
 };
+
+/** What a side file's owner makes of its saved content (storage/integrity.ts reports it). */
+export type SidecarInspection = {
+  /** Records in the file the owner's reader leaves out: not shown, and lost when it is next saved whole. */
+  dropped: number;
+  /** What those records are, plural ("annotations"). */
+  records: string;
+  /**
+   * The file it was made for, when it recorded that: its size tells cheaply
+   * that it was made for another version, and its content hash (SHA-256)
+   * finds the file again after a move outside the app.
+   */
+  source: { size: number; contentHash: string | null } | null;
+};
+
+/** An inspection from an owner's parser: records it leaves out are those in the file but not in its result. */
+function parsed<T>(parse: (value: unknown) => T | null, records: string, list: (value: Record<string, unknown>) => unknown, kept: (file: T) => number, source: (file: T) => SidecarInspection["source"]) {
+  return (value: unknown): SidecarInspection | null => {
+    const file = parse(value);
+    if (!file) return null;
+    const stored = list(value as Record<string, unknown>);
+    return { dropped: Math.max(0, (Array.isArray(stored) ? stored.length : 0) - kept(file)), records, source: source(file) };
+  };
+}
 
 const is = (...types: string[]) => (fileType: string) => types.includes(fileType);
 
@@ -60,14 +93,17 @@ function inkDirectory(notebook: string, folderParts: string[]) {
 }
 
 export const SIDECAR_KINDS: readonly SidecarKind[] = [
-  { id: "pdf-annotations", appliesTo: is("pdf"), filePath: pdfAnnotationsPath, directoryPath: pdfAnnotationsDirectoryPath, layout: "json" },
-  { id: "pdf-outline", appliesTo: is("pdf"), filePath: pdfOutlinePath, directoryPath: pdfOutlinesDirectoryPath, layout: "json" },
-  { id: "pdf-text", appliesTo: is("pdf"), filePath: pdfTextCachePath, directoryPath: pdfTextCacheDirectoryPath, layout: "json", cache: true },
-  { id: "image-annotations", appliesTo: is("image"), filePath: imageAnnotationsPath, directoryPath: imageAnnotationsDirectoryPath, layout: "json" },
-  { id: "transcript", appliesTo: is("audio"), filePath: transcriptPath, directoryPath: (notebook, parts) => audioSidecarDirectories(notebook, parts)[0], layout: "json" },
-  { id: "audio-peaks", appliesTo: is("audio"), filePath: audioPeaksPath, directoryPath: (notebook, parts) => audioSidecarDirectories(notebook, parts)[1], layout: "json", cache: true },
-  { id: "definitions", appliesTo: is(...DEFINITIONS_FILE_TYPES), filePath: definitionsPath, directoryPath: definitionsDirectoryPath, layout: "json" },
-  { id: "ink", appliesTo: (fileType) => supportsInk(fileType), filePath: inkFolderPath, directoryPath: inkDirectory, layout: "folder" },
+  { id: "pdf-annotations", appliesTo: is("pdf"), filePath: pdfAnnotationsPath, directoryPath: pdfAnnotationsDirectoryPath, layout: "json", inspect: inspectPdfSidecar },
+  { id: "pdf-outline", appliesTo: is("pdf"), filePath: pdfOutlinePath, directoryPath: pdfOutlinesDirectoryPath, layout: "json",
+    inspect: parsed(parsePdfOutlineFile, "outline entries", (value) => value.entries, (file) => file.entries.length, (file) => file.source) },
+  { id: "pdf-text", appliesTo: is("pdf"), filePath: pdfTextCachePath, directoryPath: pdfTextCacheDirectoryPath, layout: "json", cache: true, inspect: inspectPdfTextCache },
+  { id: "image-annotations", appliesTo: is("image"), filePath: imageAnnotationsPath, directoryPath: imageAnnotationsDirectoryPath, layout: "json", inspect: inspectImageSidecar },
+  { id: "transcript", appliesTo: is("audio"), filePath: transcriptPath, directoryPath: (notebook, parts) => audioSidecarDirectories(notebook, parts)[0], layout: "json",
+    inspect: parsed(parseTranscript, "transcript segments", (value) => value.segments, (file) => file.segments.length, (file) => file.audio.size ? { size: file.audio.size, contentHash: file.audio.contentHash ?? null } : null) },
+  { id: "audio-peaks", appliesTo: is("audio"), filePath: audioPeaksPath, directoryPath: (notebook, parts) => audioSidecarDirectories(notebook, parts)[1], layout: "json", cache: true, inspect: inspectAudioPeaksCache },
+  { id: "definitions", appliesTo: is(...DEFINITIONS_FILE_TYPES), filePath: definitionsPath, directoryPath: definitionsDirectoryPath, layout: "json",
+    inspect: parsed(parseDefinitionsFile, "definitions", (value) => value.entries, (file) => file.entries.length, (file) => file.source) },
+  { id: "ink", appliesTo: (fileType) => supportsInk(fileType), filePath: inkFolderPath, directoryPath: inkDirectory, layout: "folder", inspectFolder: inspectInkFolder },
 ];
 
 /** The path helpers in paths.ts that are per-file sidecars, for the guard test. */
@@ -150,10 +186,49 @@ export async function existingSidecars(notebook: string, pathParts: string[], fi
   return found;
 }
 
+export type ListedSidecar = ExistingSidecar & { kindInfo: SidecarKind; filePath: string; fileParts: string[] };
 export type OrphanedSidecar = ExistingSidecar & { filePath: string };
 
-async function entries(directory: string): Promise<Dirent[]> {
-  try { return await readdir(directory, { withFileTypes: true }); } catch { return []; }
+/** A folder's entries; a folder that is there but can't be read is reported to `unreadable`. */
+async function entries(directory: string, unreadable?: string[]): Promise<Dirent[]> {
+  try { return await readdir(directory, { withFileTypes: true }); }
+  catch (error) {
+    if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) unreadable?.push(directory);
+    return [];
+  }
+}
+
+/** Finder and Windows metadata never make a folder a file's ink folder. */
+const SYSTEM_JUNK = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
+
+/**
+ * Every per-file sidecar on disk in a notebook (SIDECAR_KINDS), with the
+ * file path it belongs to. Read only; the orphan report and the notebook
+ * check (storage/integrity.ts) build on it.
+ */
+export async function listSidecars(notebook: string): Promise<{ sidecars: ListedSidecar[]; unreadable: string[] }> {
+  const listed: ListedSidecar[] = [];
+  const unreadable: string[] = [];
+  for (const kind of SIDECAR_KINDS) {
+    const root = kind.directoryPath(notebook, []);
+    const walk = async (directory: string, parts: string[]) => {
+      const children = await entries(directory, unreadable);
+      if (kind.layout === "folder" && parts.length && children.some((child) => child.isFile() && !SYSTEM_JUNK.has(child.name))) {
+        listed.push({ kind: kind.id, kindInfo: kind, path: directory, filePath: `${notebook}/${parts.join("/")}`, fileParts: parts });
+        return;
+      }
+      for (const child of children) {
+        const target = path.join(directory, child.name);
+        if (child.isDirectory()) await walk(target, [...parts, child.name]);
+        else if (kind.layout === "json" && child.isFile() && child.name.endsWith(".json")) {
+          const fileParts = [...parts, child.name.slice(0, -".json".length)];
+          listed.push({ kind: kind.id, kindInfo: kind, path: target, filePath: `${notebook}/${fileParts.join("/")}`, fileParts });
+        }
+      }
+    };
+    await walk(root, []);
+  }
+  return { sidecars: listed, unreadable };
 }
 
 async function isFileOfType(notebook: string, parts: string[], kind: SidecarKind) {
@@ -172,28 +247,15 @@ function safeParts(parts: string[]) {
  * Sidecars in a notebook whose file is not there (or is no longer a file of
  * their kind). Libera keeps such sidecars on purpose in some cases (a file
  * moved outside the app can be re-attached), so this is a report, not a
- * cleanup. Migration uses it to prove that it left nothing behind.
+ * cleanup. Python code left by deleted notes is in `_assets`: see
+ * unreferencedMarkdownAssets.
  */
-export async function findOrphanedSidecars(notebook: string): Promise<OrphanedSidecar[]> {
+export async function findOrphanedSidecars(notebook: string, listed?: ListedSidecar[]): Promise<OrphanedSidecar[]> {
   const orphans: OrphanedSidecar[] = [];
-  for (const kind of SIDECAR_KINDS) {
-    const root = kind.directoryPath(notebook, []);
-    const walk = async (directory: string, parts: string[]) => {
-      const children = await entries(directory);
-      if (kind.layout === "folder" && parts.length && children.some((child) => child.isFile())) {
-        if (safeParts(parts) && !(await isFileOfType(notebook, parts, kind))) orphans.push({ kind: kind.id, path: directory, filePath: `${notebook}/${parts.join("/")}` });
-        return;
-      }
-      for (const child of children) {
-        const target = path.join(directory, child.name);
-        if (child.isDirectory()) await walk(target, [...parts, child.name]);
-        else if (kind.layout === "json" && child.isFile() && child.name.endsWith(".json")) {
-          const fileParts = [...parts, child.name.slice(0, -".json".length)];
-          if (safeParts(fileParts) && !(await isFileOfType(notebook, fileParts, kind))) orphans.push({ kind: kind.id, path: target, filePath: `${notebook}/${fileParts.join("/")}` });
-        }
-      }
-    };
-    await walk(root, []);
+  for (const sidecar of listed ?? (await listSidecars(notebook)).sidecars) {
+    if (safeParts(sidecar.fileParts) && !(await isFileOfType(notebook, sidecar.fileParts, sidecar.kindInfo))) {
+      orphans.push({ kind: sidecar.kind, path: sidecar.path, filePath: sidecar.filePath });
+    }
   }
   return orphans;
 }

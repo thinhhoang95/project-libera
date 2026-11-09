@@ -4,6 +4,8 @@
 
 Code: `src/lib/storage/migration.ts` (engine), `src/lib/storage/migration-fence.ts` (what other code leaves alone meanwhile), `src/lib/storage/sidecars.ts` (sidecar registry), `src/app/api/notebooks/migrate/route.ts`, `src/components/libera/notebook-migration-dialog.tsx`. Tests: `scripts/editor/notebook-migration.test.ts`.
 
+**Move…** in a tab's file actions uses the same procedure when the destination is another notebook: the dialog opens on the review of that one file, which goes directly into the chosen folder (`destination.flat`, rather than under its source folders). Moves within a notebook, and drag-and-drop, keep the direct move.
+
 ## Steps
 
 1. **Choose.** Pick the source notebook and check files and folders, then a destination notebook (and optionally a folder in it), or **New** to fill in the create-notebook dialog. A new notebook is only created when the migration runs, so cancelling leaves nothing behind.

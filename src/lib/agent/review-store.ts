@@ -157,6 +157,23 @@ export function withReviewWrite(filePath: string, before: string | null, runId: 
   });
 }
 
+/** The paths with a pending review, read without settling (or dropping) any of them, and how many entries can't be read: for checks. */
+export async function listReviewEntryPaths(): Promise<{ paths: string[]; unreadable: number }> {
+  let names: string[];
+  try { names = (await readdir(reviewDirectory())).filter((name) => name.endsWith(".json")); }
+  catch { return { paths: [], unreadable: 0 }; }
+  const paths: string[] = [];
+  let unreadable = 0;
+  for (const name of names) {
+    try {
+      const entry = JSON.parse(await readFile(path.join(reviewDirectory(), name), "utf8"));
+      if (isEntry(entry)) paths.push(entry.path);
+      else unreadable += 1;
+    } catch { unreadable += 1; }
+  }
+  return { paths: paths.sort(), unreadable };
+}
+
 /** Every file with changes to review, with its baseline and its text on disk. Settled entries are dropped on the way. */
 export async function listPendingReviews(): Promise<AgentReviewFile[]> {
   let names: string[];

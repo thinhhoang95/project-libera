@@ -57,6 +57,7 @@ import {
   type SidebarSortPreference,
 } from "./sidebar-sort-preference";
 import { useRecorderLauncher } from "@/components/libera/recording/meeting-recorder";
+import { NotebookIntegrityDialog } from "@/components/libera/notebook-integrity-dialog";
 
 const UPLOAD_ACCEPT = [...SUPPORTED_UPLOAD_EXTENSIONS].join(",");
 
@@ -640,6 +641,8 @@ export function NotebookPanel({
     [sortPreferenceToken],
   );
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
+  /** The notebook whose check (Check Notebook…) is shown. */
+  const [checkingNotebook, setCheckingNotebook] = useState<string | null>(null);
   const [viewOptionsSubmitting, setViewOptionsSubmitting] = useState(false);
   const [viewOptionsError, setViewOptionsError] = useState("");
   const [visibleNodeLimits, setVisibleNodeLimits] = useState<Record<string, number>>({});
@@ -1036,6 +1039,7 @@ export function NotebookPanel({
               onDeleteNotebook={onDeleteNotebook}
               onDropFile={dropFileOnPath}
               onDownloadNotebook={onDownloadNotebook}
+              onCheckNotebook={setCheckingNotebook}
               onEditNotebook={onEditNotebook}
               onRemoveFolder={onCloseDirectory}
               onOpenFile={onOpenFile}
@@ -1071,6 +1075,7 @@ export function NotebookPanel({
               onDeleteGroup={onDeleteNotebookGroup}
               onDeleteNotebook={onDeleteNotebook}
               onDownloadNotebook={onDownloadNotebook}
+              onCheckNotebook={setCheckingNotebook}
               onDropFile={dropFileOnPath}
               onEditGroup={onEditNotebookGroup}
               onEditNotebook={onEditNotebook}
@@ -1125,6 +1130,12 @@ export function NotebookPanel({
           onSubmit={(viewOptions) => void saveViewOptions(viewOptions)}
         />
       ) : null}
+      <NotebookIntegrityDialog
+        notebook={checkingNotebook}
+        tree={tree}
+        onOpenFile={(file) => { setCheckingNotebook(null); void onOpenFile(file); }}
+        onClose={() => setCheckingNotebook(null)}
+      />
     </div>
   );
 }
@@ -1253,6 +1264,7 @@ function NotebookSection({
   onDeleteNotebook,
   onDropFile,
   onDownloadNotebook,
+  onCheckNotebook,
   onEditNotebook,
   onRemoveFolder,
   onOpenFile,
@@ -1286,6 +1298,7 @@ function NotebookSection({
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDropFile: (destinationPath: string) => Promise<void>;
   onDownloadNotebook: (notebook: string) => void;
+  onCheckNotebook: (notebook: string) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
@@ -1339,6 +1352,7 @@ function NotebookSection({
                 label: "Reveal in File Explorer",
                 enabled: available && Boolean(window.liberaFileExplorer),
               },
+              { id: "check-notebook", label: "Check Notebook…", enabled: available },
               { type: "separator" as const },
               { id: "remove-folder", label: "Remove from Libera", enabled: Boolean(onRemoveFolder) },
             ]
@@ -1350,6 +1364,7 @@ function NotebookSection({
                 label: "Reveal in File Explorer",
                 enabled: Boolean(window.liberaFileExplorer),
               },
+              { id: "check-notebook", label: "Check Notebook…" },
               { type: "separator" as const },
               { id: "delete", label: "Delete" },
             ]),
@@ -1381,6 +1396,8 @@ function NotebookSection({
       onDownloadNotebook(notebook.name);
     } else if (selectedItemId === "reveal-in-file-explorer") {
       await revealNotebookInFileExplorer(notebook.name);
+    } else if (selectedItemId === "check-notebook") {
+      onCheckNotebook(notebook.name);
     } else if (selectedItemId === "delete") {
       await onDeleteNotebook(notebook.name);
     } else if (selectedItemId === "remove-folder") {
@@ -1594,6 +1611,7 @@ function NotebookGroupSection({
   onDeleteGroup,
   onDeleteNotebook,
   onDownloadNotebook,
+  onCheckNotebook,
   onDropFile,
   onEditGroup,
   onEditNotebook,
@@ -1627,6 +1645,7 @@ function NotebookGroupSection({
   onDeleteGroup: (group: LiberaNotebookGroup) => Promise<void>;
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDownloadNotebook: (notebook: string) => void;
+  onCheckNotebook: (notebook: string) => void;
   onDropFile: (destinationPath: string) => Promise<void>;
   onEditGroup: (group: LiberaNotebookGroup) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
@@ -1703,6 +1722,7 @@ function NotebookGroupSection({
               onContextMenu={onContextMenu}
               onDeleteNotebook={onDeleteNotebook}
               onDownloadNotebook={onDownloadNotebook}
+              onCheckNotebook={onCheckNotebook}
               onDropFile={onDropFile}
               onEditNotebook={onEditNotebook}
               onRemoveFolder={onRemoveFolder}
