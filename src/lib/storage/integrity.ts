@@ -33,8 +33,8 @@ import { StorageError } from "@/lib/storage/errors";
 // markdown-assets.ts, library-links.ts, latex/dependencies.ts, the review,
 // undo, reference and migration stores) what they hold and checking it
 // against the disk. It only reads: it never loads the library tree (whose
-// upkeep writes indexes and prunes sidecars) and repairs nothing. It runs on
-// demand, never in the background. The migration's final check
+// upkeep writes indexes and prunes sidecars) and repairs nothing (repair.ts
+// does, on confirmation). It runs on demand, never in the background. The migration's final check
 // (storage/migration.ts) uses checkNothingLeftAt from here.
 
 export type IntegritySeverity = "error" | "warning" | "info";

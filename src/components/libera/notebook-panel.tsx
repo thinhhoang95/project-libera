@@ -138,6 +138,8 @@ export type NotebookPanelProps = {
   onUpdateNotebookViewOptions: (
     viewOptions: LiberaNotebookViewOptions,
   ) => Promise<void>;
+  /** Check Notebook → Try to fix moved records: the tree (stars, tags) is read again. */
+  onNotebookRepaired?: (notebook: string) => void;
 };
 
 const SIDEBAR_PAGE_SIZE = 20;
@@ -622,6 +624,7 @@ export function NotebookPanel({
   onUploadChange,
   onUploadFiles,
   onUpdateNotebookViewOptions,
+  onNotebookRepaired,
 }: NotebookPanelProps) {
   const [draggingFile, setDraggingFile] = useState<LiberaFileNode | null>(null);
   const [dragOverPath, setDragOverPath] = useState("");
@@ -1135,6 +1138,7 @@ export function NotebookPanel({
         tree={tree}
         onOpenFile={(file) => { setCheckingNotebook(null); void onOpenFile(file); }}
         onClose={() => setCheckingNotebook(null)}
+        onRepaired={onNotebookRepaired}
       />
     </div>
   );

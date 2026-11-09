@@ -1,6 +1,6 @@
 # Notebook check
 
-**Notebook actions → Check Notebook…** checks a notebook against the disk and lists what is not sound, with what would set each finding right. It only reads: nothing is repaired, moved or rewritten, and it does not load the library tree (whose upkeep prunes sidecars and writes indexes). It runs only when asked, shows which check it is on, and can be stopped.
+**Notebook actions → Check Notebook…** checks a notebook against the disk and lists what is not sound, with what would set each finding right. The check only reads: nothing is repaired, moved or rewritten (that is **Try to fix**, below, and only on confirmation), and it does not load the library tree (whose upkeep prunes sidecars and writes indexes). It runs only when asked, shows which check it is on, and can be stopped.
 
 Code: `src/lib/storage/integrity.ts` (`verifyNotebook`, `checkNothingLeftAt`), `src/app/api/notebooks/verify/route.ts`, `src/components/libera/notebook-integrity-dialog.tsx`. Tests: `scripts/editor/notebook-integrity.test.ts`, `scripts/editor/notebook-operations-integrity.test.ts`.
 
@@ -22,6 +22,16 @@ The check owns no knowledge of its own. Each kind of state is asked of the modul
 | Migrations | `listInterruptedMigrations`, `listUnreadableMigrations` | an unfinished migration involving the notebook (error); an unreadable journal, a prepared copy left behind (warning) |
 
 The notebook is walked once and its notes read once per check; files are checked for existence once each, and the side files are listed once. Side files are compared with their file by size only (a stat), never by hashing the PDFs and recordings: a same-size change is left to the owner when the file is opened. Files are hashed only to match side files of a missing file, and only those of the size it recorded. Index entries are compared with hashes of the notes already read. Each check runs on its own: one that can't run is reported as such, and one that could only partly run (very large notebooks, unreadable notes, a folder or file it had no permission to read) says so. A path that could not be checked is never reported as missing. When any check is partial, the dialog says **Partly checked** instead of "No problems found".
+
+## Try to fix: files moved outside the app
+
+Files moved or renamed into another folder in Finder (or by a sync client) leave their records at the old path. When the check has findings that can come from that (side files, a note's Python code, records, references), the dialog offers **Try to fix…** (`src/lib/storage/repair.ts`, `src/app/api/notebooks/repair/route.ts`).
+
+- **Plan (reads only).** The paths that records are kept for (side files, Python code, stars and tags, review comments, reference attachments in any library, the tethered `.bib`) and that are surely gone are matched to the notebook's files **by name alone**. A pair is made when exactly one missing path has that name and exactly one file has it, and that file has no records of the same kind of its own (stars and attachments don't count). Everything else is listed as left alone, with why: no file of that name, several files of that name, several missing files of that name, or the only one has records of its own. Caches never make a match; they follow a matched file.
+- **Warning.** There is no fingerprint: a different file with the same name gets the records. The dialog says so and shows every pair before anything is written.
+- **Apply (on confirmation).** The plan is made again and refused if it differs from the one shown (a token). Side files and the Python code move as in an in-app move, but never over what the file found already has; then review comments, stars and tags, reference attachments and the tethered `.bib` follow in one write per store (the migration's batch helpers), and Global Search is told. Markdown links are not rewritten, as for every move in the app (`docs/features/related-notebooks.md`); the check run after the fix still lists them. Not for shared notebooks, nor while a migration involving the notebook is unfinished.
+
+A recording's transcript is kept when the recording is missing (the tree's upkeep, `pruneAudioSidecars`, drops only its waveform), so a recording moved in Finder gets it back. Tests: `scripts/editor/notebook-repair.test.ts`.
 
 ## Bounds, progress and stopping
 

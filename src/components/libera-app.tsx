@@ -744,6 +744,7 @@ export function LiberaApp({
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
+          onNotebookRepaired={(notebook) => void workspace.refreshTree(notebook).catch(() => undefined)}
           canOpenDirectories={workspace.canOpenDirectories}
           onOpenDirectory={() => void workspace.openDirectory()}
           onCloseDirectory={workspace.closeDirectory}

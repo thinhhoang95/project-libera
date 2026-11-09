@@ -1,19 +1,25 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, AlertTriangle, CheckCircle2, Info, Loader2, MinusCircle } from "lucide-react";
-import type { IntegrityCheckResult, IntegrityFinding, IntegrityProgress, IntegrityReport, IntegritySeverity, IntegrityStreamLine } from "@/lib/storage/integrity";
+import { AlertCircle, AlertTriangle, ArrowRight, CheckCircle2, Info, Loader2, MinusCircle } from "lucide-react";
+import type { IntegrityCheckId, IntegrityCheckResult, IntegrityFinding, IntegrityProgress, IntegrityReport, IntegritySeverity, IntegrityStreamLine } from "@/lib/storage/integrity";
+import type { RepairPlan, RepairResult, RepairUnmatched } from "@/lib/storage/repair";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_HEADER } from "@/lib/auth-session";
 import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
+import { apiRequest } from "./api-client";
 import { ModalDialog } from "./modal-dialog";
 
 // Results of the notebook check (storage/integrity.ts). The check only reads;
-// each finding says what would set it right.
+// each finding says what would set it right. Try to fix (storage/repair.ts)
+// finds files moved outside the app by name and, once confirmed, moves their
+// records to them.
 
 const secondary = "rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60";
 const primary = "rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60";
 const PREVIEW = 20;
 const ORDER: IntegritySeverity[] = ["error", "warning", "info"];
+/** Checks whose findings can come from a file moved outside the app. */
+const MOVABLE = new Set<IntegrityCheckId>(["sidecars", "assets", "records", "references"]);
 
 function findFile(tree: LiberaTree, libraryPath: string): LiberaFileNode | null {
   const visit = (nodes: LiberaTreeNode[]): LiberaFileNode | null => {
@@ -68,12 +74,14 @@ function StatusIcon({ status }: { status: IntegrityCheckResult["status"] }) {
   return <AlertCircle aria-label="Could not run" className="h-4 w-4 shrink-0 text-destructive" />;
 }
 
-export function NotebookIntegrityDialog({ notebook, tree, onOpenFile, onClose }: { notebook: string | null; tree: LiberaTree; onOpenFile: (file: LiberaFileNode) => void; onClose: () => void }) {
+type DialogProps = { tree: LiberaTree; onOpenFile: (file: LiberaFileNode) => void; onClose: () => void; onRepaired?: (notebook: string) => void };
+
+export function NotebookIntegrityDialog({ notebook, ...props }: DialogProps & { notebook: string | null }) {
   if (!notebook) return null;
-  return <IntegrityBody key={notebook} notebook={notebook} tree={tree} onOpenFile={onOpenFile} onClose={onClose} />;
+  return <IntegrityBody key={notebook} notebook={notebook} {...props} />;
 }
 
-function IntegrityBody({ notebook, tree, onOpenFile, onClose }: { notebook: string; tree: LiberaTree; onOpenFile: (file: LiberaFileNode) => void; onClose: () => void }) {
+function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: DialogProps & { notebook: string }) {
   const [report, setReport] = useState<IntegrityReport | null>(null);
   const [error, setError] = useState("");
   const [stopped, setStopped] = useState(false);
@@ -82,6 +90,10 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose }: { notebook: stri
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const controller = useRef<AbortController | null>(null);
   const checking = !report && !error && !stopped;
+  const [plan, setPlan] = useState<RepairPlan | null>(null);
+  const [fixing, setFixing] = useState<"planning" | "applying" | null>(null);
+  const [fixError, setFixError] = useState("");
+  const [fixed, setFixed] = useState<RepairResult | null>(null);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -94,6 +106,25 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose }: { notebook: stri
   }, [notebook, run]);
 
   const again = () => { setReport(null); setError(""); setStopped(false); setProgress(null); setRun((value) => value + 1); };
+  const checkAgain = () => { setFixed(null); setFixError(""); again(); };
+  const canFix = !!report && report.findings.some((finding) => MOVABLE.has(finding.check));
+  const prepareFix = async () => {
+    setFixing("planning"); setFixError(""); setFixed(null);
+    try { setPlan(await apiRequest<RepairPlan>(`/api/notebooks/repair?notebook=${encodeURIComponent(notebook)}`)); }
+    catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { setFixing(null); }
+  };
+  const applyFix = async () => {
+    if (!plan) return;
+    setFixing("applying"); setFixError("");
+    try {
+      const result = await apiRequest<RepairResult>("/api/notebooks/repair", { method: "POST", body: JSON.stringify({ notebook, token: plan.token }) });
+      setFixed(result); setPlan(null);
+      onRepaired?.(notebook);
+      again();
+    } catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { setFixing(null); }
+  };
   const stop = () => { controller.current?.abort(); setStopped(true); };
   const bySeverity = (severity: IntegritySeverity) => report?.findings.filter((finding) => finding.severity === severity).length ?? 0;
   // A check that could not run, or only partly, means the report can't say the notebook is clear.
@@ -107,24 +138,37 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose }: { notebook: stri
     <ModalDialog
       open
       title={`Check ${notebook}`}
-      description="Checks links, images, side files, LaTeX projects and records against the disk. Nothing is changed."
+      description={plan
+        ? "Files moved or renamed into another folder outside the app, found again by name. Nothing is changed until you confirm."
+        : "Checks links, images, side files, LaTeX projects and records against the disk. Nothing is changed."}
       panelClassName="max-w-2xl"
       footer={<>
         {report && <span role="status" className="mr-auto text-xs text-muted-foreground">{plural(report.counts.files, "file")} · {plural(report.counts.notes, "note")} · {plural(report.counts.sidecars, "side file")} · {(report.durationMs / 1000).toFixed(1)} s</span>}
-        {checking
-          ? <button className={secondary} type="button" onClick={stop}>Stop</button>
-          : <button className={secondary} type="button" onClick={again}>Check again</button>}
-        <button className={primary} type="button" onClick={onClose}>Close</button>
+        {plan ? <>
+          <button className={secondary} type="button" disabled={fixing !== null} onClick={() => { setPlan(null); setFixError(""); }}>Back</button>
+          <button className={primary} type="button" disabled={fixing !== null || !plan.moves.length} onClick={() => void applyFix()}>
+            {fixing === "applying" ? "Fixing…" : plan.moves.length ? `Fix ${plural(plan.moves.length, "file")}` : "Nothing to fix"}
+          </button>
+        </> : <>
+          {canFix && <button className={secondary} type="button" disabled={fixing !== null} onClick={() => void prepareFix()}>{fixing === "planning" ? "Looking for moved files…" : "Try to fix…"}</button>}
+          {checking
+            ? <button className={secondary} type="button" onClick={stop}>Stop</button>
+            : <button className={secondary} type="button" onClick={checkAgain}>Check again</button>}
+          <button className={primary} type="button" onClick={onClose}>Close</button>
+        </>}
       </>}
       onClose={onClose}
     >
-      {checking && <div role="status" className="space-y-2 py-4 text-sm">
+      {fixError && <p role="alert" className="mb-2 text-sm text-destructive">{fixError}</p>}
+      {fixed && !plan && <FixedSummary result={fixed} />}
+      {plan && <RepairPlanView plan={plan} />}
+      {!plan && checking && <div role="status" className="space-y-2 py-4 text-sm">
         <p className="flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />{progress ? `${progress.label} (${progress.index + 1} of ${progress.total})…` : `Checking ${notebook}…`}</p>
         <progress className="h-1.5 w-full accent-primary" max={progress?.total ?? 1} value={progress ? progress.index : 0} aria-label="Checks done" />
       </div>}
-      {stopped && <p role="status" className="py-4 text-sm text-muted-foreground">The check was stopped. Nothing was changed.</p>}
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      {report && <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
+      {!plan && stopped && <p role="status" className="py-4 text-sm text-muted-foreground">The check was stopped. Nothing was changed.</p>}
+      {!plan && error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {!plan && report && <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
         <p role="status" className={`font-medium ${partial.length ? "rounded-lg border border-amber-500/40 bg-amber-500/10 p-2" : ""}`}>{summary}</p>
         {report.checks.map((check) => {
           const findings = report.findings.filter((finding) => finding.check === check.id)
@@ -163,4 +207,51 @@ function FindingRow({ finding, file, onOpenFile }: { finding: IntegrityFinding; 
       {finding.fix && <p className="text-xs text-muted-foreground">{finding.fix}</p>}
     </div>
   </li>;
+}
+
+function FixedSummary({ result }: { result: RepairResult }) {
+  return <div role="status" className="mb-3 rounded-lg border border-border p-2 text-sm">
+    <p className="font-medium">{result.moved.length ? `The records of ${plural(result.moved.length, "file")} now follow ${result.moved.length === 1 ? "it" : "them"}.` : "No records were moved."}</p>
+    {result.problems.map((problem) => <p key={problem} className="text-xs text-destructive">{problem}</p>)}
+  </div>;
+}
+
+function unmatchedReason(item: RepairUnmatched) {
+  if (item.reason === "none") return "No file of this name is in the notebook.";
+  if (item.reason === "shared-name") return "Other missing files have the same name, so which is which can't be told.";
+  if (item.reason === "own") return `${item.candidates.join(", ")} already ${item.candidates.length === 1 ? "has" : "have"} records of ${item.candidates.length === 1 ? "its" : "their"} own, so ${item.candidates.length === 1 ? "it is" : "they are"} probably another file.`;
+  return `Several files have this name: ${item.candidates.join(", ")}.`;
+}
+
+function RepairPlanView({ plan }: { plan: RepairPlan }) {
+  return <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
+    <p role="note" className="flex gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2">
+      <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+      <span>Files are matched by name only. If a file below is a different file that happens to have the same name, it gets these records. Links in notes are not changed.</span>
+    </p>
+    {plan.moves.length > 0
+      ? <section className="rounded-lg border border-border">
+        <h3 className="px-3 py-2 font-medium">Moved files found ({plan.moves.length})</h3>
+        <ul className="divide-y divide-border border-t border-border">
+          {plan.moves.map((move) => <li key={move.from} className="px-3 py-2">
+            <p className="flex min-w-0 items-center gap-1.5 text-xs font-medium">
+              <span className="truncate text-muted-foreground line-through" title={move.from}>{move.from}</span>
+              <ArrowRight aria-label="now at" className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate" title={move.to}>{move.to}</span>
+            </p>
+            <p className="text-xs text-muted-foreground">Follows: {move.records.join(", ")}</p>
+          </li>)}
+        </ul>
+      </section>
+      : <p role="status" className="font-medium">No moved file could be found by name.</p>}
+    {plan.unmatched.length > 0 && <section className="rounded-lg border border-border">
+      <h3 className="px-3 py-2 font-medium">Left as they are ({plan.unmatched.length})</h3>
+      <ul className="divide-y divide-border border-t border-border">
+        {plan.unmatched.map((item) => <li key={item.from} className="px-3 py-2">
+          <p className="truncate text-xs font-medium" title={item.from}>{item.from}</p>
+          <p className="text-xs text-muted-foreground">{item.records.join(", ")} · {unmatchedReason(item)}</p>
+        </li>)}
+      </ul>
+    </section>}
+  </div>;
 }

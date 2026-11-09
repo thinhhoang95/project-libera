@@ -41,6 +41,15 @@ export function pythonSidecarPath(documentPath: string) {
   return [notebook, "_assets", ...parts.map(escape), escape(`${fileStem(parts.at(-1) ?? "")}.py`)].join("/");
 }
 
+/** The note a Python sidecar path belongs to (the inverse of pythonSidecarPath), or null when it is not one. */
+export function pythonSidecarDocumentPath(sidecarPath: string) {
+  const [notebook, assets, ...parts] = sidecarPath.split("/");
+  if (!notebook || assets !== "_assets" || parts.length < 2) return null;
+  const unescape = (part: string) => part.replace(/~([0-9A-F]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  const documentPath = [notebook, ...parts.slice(0, -1).map(unescape)].join("/");
+  return pythonSidecarPath(documentPath) === sidecarPath ? documentPath : null;
+}
+
 export function pythonFigureFolder(documentPath: string) {
   return pythonSidecarPath(documentPath).split("/").slice(1, -1).join("/");
 }

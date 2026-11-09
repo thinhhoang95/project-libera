@@ -190,7 +190,7 @@ test("transcription results cannot be saved after their original recording chang
   assert.ok(!existsSync(transcriptPath("Notes", ["audio.wav"])));
 }));
 
-test("library refresh removes orphaned audio sidecars without removing live transcripts", () => withLibrary(async () => {
+test("library refresh drops a missing recording's waveform but keeps its transcript for when it is found again", () => withLibrary(async () => {
   const target = await file("Notes/audio.wav", "RIFF");
   await file("Notes/live.wav", "RIFF");
   await writeTranscript("Notes/audio.wav", transcript());
@@ -201,7 +201,8 @@ test("library refresh removes orphaned audio sidecars without removing live tran
   await rm(target);
   assert.equal((await readTranscript("Notes/audio.wav")).transcript, null);
   await getTree();
-  assert.ok(!existsSync(transcriptPath("Notes", ["audio.wav"])));
+  // Moved or renamed outside the app, it gets its transcript back (Check Notebook → Try to fix).
+  assert.ok(existsSync(transcriptPath("Notes", ["audio.wav"])));
   assert.ok(!existsSync(peaks));
   assert.ok(existsSync(transcriptPath("Notes", ["live.wav"])));
 }));

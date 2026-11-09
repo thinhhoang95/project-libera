@@ -258,7 +258,11 @@ export async function pruneAudioSidecars(notebook: string) {
       }
     }
   }
-  for (const directory of audioSidecarDirectories(notebook, [])) await visit(directory);
+  // Only the waveform cache: a transcript is the user's work, kept for a
+  // recording moved or renamed outside the app until it is found again
+  // (Check Notebook → Try to fix), as a PDF's side files are.
+  const [, peaks] = audioSidecarDirectories(notebook, []);
+  await visit(peaks);
 }
 
 /**
