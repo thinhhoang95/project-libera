@@ -19,6 +19,7 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import type { PdfTextCachePayload, PdfTextPage } from "@/lib/types";
+import type { SidecarInspection } from "@/lib/storage/sidecars";
 
 const PDF_TEXT_CACHE_VERSION = 3;
 const PENDING_PDF_READS = Symbol.for("libera.pendingPdfTextReads");
@@ -89,6 +90,20 @@ function validPages(input: unknown): input is PdfTextPage[] {
   return Array.isArray(input) && input.length > 0 && input.every((page, index) =>
     page && typeof page === "object" && page.pageNumber === index + 1 && typeof page.text === "string",
   );
+}
+
+/**
+ * A saved text cache, for the notebook check (storage/integrity.ts): null when
+ * this build would not use it (it is extracted again), else the size of the
+ * PDF it was made from. Comparing the size is cheap; the full content
+ * comparison is left to the next read.
+ */
+export function inspectPdfTextCache(value: unknown): SidecarInspection | null {
+  if (!value || typeof value !== "object") return null;
+  const cache = value as StoredPdfTextCache;
+  const current = cache.version === PDF_TEXT_CACHE_VERSION && typeof cache.pdfContentHash === "string" && Array.isArray(cache.pages) && cache.pageCount === cache.pages.length;
+  if (!(current || cache.version === 2) || !validPages(cache.pages) || typeof cache.pdfSize !== "number") return null;
+  return { dropped: 0, records: "pages", source: { size: cache.pdfSize, contentHash: typeof cache.pdfContentHash === "string" ? cache.pdfContentHash : null } };
 }
 
 type PdfIdentity = { signature: string; hash: string; updatedAt: string; size: number };

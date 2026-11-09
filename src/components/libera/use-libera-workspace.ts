@@ -75,6 +75,7 @@ import type { PhotoEdits } from "@/lib/photo-edits";
 import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import type { MigrationRequest, MigrationResult } from "@/lib/storage/migration";
+import type { MigrationPreset } from "./notebook-migration-dialog";
 import type { ReferenceMoveResult } from "@/lib/references/moves";
 import { remapDocumentHeadingNumbering } from "./heading-numbering-state";
 import { agentReviewStore } from "@/lib/agent-review/store";
@@ -3787,13 +3788,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   /** The source notebook the migration dialog opens on; null while it is closed. */
   const [migrationDialogSource, setMigrationDialogSource] = useState<string | null>(null);
+  /** A migration prepared elsewhere (Move… to another notebook): the dialog opens on its review. */
+  const [migrationPreset, setMigrationPreset] = useState<MigrationPreset | null>(null);
 
-  function openMigrationDialog(notebook?: string) {
+  function openMigrationDialog(notebook?: string, preset?: MigrationPreset) {
+    setMigrationPreset(preset ?? null);
     setMigrationDialogSource(notebook ?? selectedNotebookName ?? "");
   }
 
   function closeMigrationDialog() {
     setMigrationDialogSource(null);
+    setMigrationPreset(null);
   }
 
   /** Open files at or under `paths` with unsaved text, ink or annotations. */
@@ -4148,6 +4153,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
         if (!destinationDirectory) {
           setWorkspaceInputDialogError("Destination path is required.");
+          return;
+        }
+
+        // To another notebook, a file moves as a migration of one file: reviewed, crash-safe, and
+        // followed by everything it has (storage/migration.ts). Within its notebook it moves directly.
+        const [destinationNotebook, ...folder] = destinationDirectory.split("/").map((part) => part.trim()).filter(Boolean);
+        if (destinationNotebook && destinationNotebook !== workspaceInputDialog.file.notebook) {
+          const file = workspaceInputDialog.file;
+          setWorkspaceInputDialog(null);
+          openMigrationDialog(file.notebook, { paths: [file.path], destination: destinationNotebook, folder: folder.join("/"), flat: true });
           return;
         }
 
@@ -4705,6 +4720,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       listMarkdownSelectionLinks,
       openCreateNotebookDialog,
       migrationDialogSource,
+      migrationPreset,
       openMigrationDialog,
       closeMigrationDialog,
       unsavedTabsUnder,

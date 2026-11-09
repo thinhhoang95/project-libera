@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import type { SearchFileKind, SearchSource } from "@/lib/global-search";
 import { documentPrompt, searchDocumentTitle } from "@/lib/search/chunking";
@@ -25,7 +25,7 @@ type DatabaseSync = {
   enableLoadExtension(enabled: boolean): void;
   close(): void;
 };
-type SqliteModule = { DatabaseSync: new (path: string, options?: { allowExtension?: boolean }) => DatabaseSync };
+type SqliteModule = { DatabaseSync: new (path: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSync };
 type IndexCounts = { files: number; failedFiles: number; images: number; chunks: number; embeddedChunks: number };
 
 const SCHEMA_VERSION = "1";
@@ -128,6 +128,31 @@ export function truncateVector(vector: Float32Array, dimensions: number) {
   norm = Math.sqrt(norm);
   for (let index = 0; index < truncated.length; index += 1) truncated[index] /= norm;
   return truncated;
+}
+
+/**
+ * The library paths the index holds for one notebook, read without opening it
+ * for writing (no schema check or upgrade, no checkpoint), for the notebook
+ * check. Null when there is no index or it can't be read that way: a WAL
+ * index that no one has open has no shared-memory file, and a read-only
+ * connection would create one.
+ */
+export function readIndexedLibraryPaths(filePath: string, notebook: string): string[] | null {
+  try {
+    if (!existsSync(filePath) || statSync(filePath).size < 100) return null;
+    const header = Buffer.alloc(20);
+    const descriptor = openSync(filePath, "r");
+    try { readSync(descriptor, header, 0, 20, 0); } finally { closeSync(descriptor); }
+    const wal = header[18] === 2 || header[19] === 2;
+    if (wal && !(existsSync(`${filePath}-wal`) && existsSync(`${filePath}-shm`))) return null;
+    const { DatabaseSync } = loadSqlite();
+    const db = new DatabaseSync(filePath, { readOnly: true });
+    try {
+      return (db.prepare("SELECT path FROM files WHERE source = 'library' AND notebook = ?").all(notebook) as { path: string }[]).map((row) => row.path);
+    } finally { db.close(); }
+  } catch {
+    return null;
+  }
 }
 
 export class SearchDatabase {

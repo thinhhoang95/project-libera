@@ -169,7 +169,8 @@ async function pdfExists(libraryPath: string): Promise<boolean | null> {
   }
 }
 
-async function readOrphans(notebook: string) {
+/** The side-cars set aside in `.libera/orphaned-sidecars/` for PDFs that went missing; reads only (the notebook check lists them too). */
+export async function readOrphans(notebook: string) {
   const orphans: Array<{ file: string; record: OrphanRecord }> = [];
   for (const store of KINDS) {
     const directory = orphanedSidecarsDirectoryPath(notebook, store.kind);
@@ -222,22 +223,9 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
   if (scanStored) lastStoredScan.set(notebook, now);
   if (!missing.length && !stored.length) return { reattached: 0, setAside: 0 };
 
-  const hashes = new Map<string, Promise<PdfIdentity | null>>();
-  const identityOf = (libraryPath: string) => {
-    if (!hashes.has(libraryPath)) {
-      const { notebook: owner, pathParts } = splitFilePath(libraryPath);
-      hashes.set(libraryPath, cachedPdfIdentity(filePathFromParts(owner, pathParts)).catch(() => null));
-    }
-    return hashes.get(libraryPath)!;
-  };
+  const hashes = new Map<string, Promise<string | null>>();
   /** The one PDF without this kind of side-car whose bytes are `identity`; null when none or several. */
-  async function match(kind: PdfSidecarKind, identity: PdfIdentity) {
-    const taken = withSidecar.get(kind)!;
-    const candidates = pdfFiles.filter((file) => file.size === identity.size && !taken.has(file.path.toLowerCase()));
-    const matches: string[] = [];
-    for (const candidate of candidates) if ((await identityOf(candidate.path))?.contentHash === identity.contentHash) matches.push(candidate.path);
-    return matches.length === 1 ? matches[0] : null;
-  }
+  const match = (kind: PdfSidecarKind, identity: PdfIdentity) => matchByIdentity(identity, pdfFiles, withSidecar.get(kind)!, hashes);
 
   let reattached = 0;
   let setAsideCount = 0;
@@ -284,6 +272,26 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
     if (now - Date.parse(record.orphanedAt) > ORPHAN_RETENTION_MS) await rm(file, { force: true });
   }
   return { reattached, setAside: setAsideCount };
+}
+
+/**
+ * The one file among `candidates` whose bytes are `identity` (its size, then
+ * its SHA-256), leaving out those `taken` (lower-cased library paths); null
+ * when none or several. Only files of that size are hashed, each once per
+ * `hashes`. The rule by which side files follow a file moved outside Libera,
+ * here and in ink.ts; the notebook check (storage/integrity.ts) reports it.
+ */
+export async function matchByIdentity(identity: { size: number; contentHash: string }, candidates: Array<{ path: string; size: number }>, taken: ReadonlySet<string>, hashes: Map<string, Promise<string | null>>) {
+  const matches: string[] = [];
+  for (const candidate of candidates) {
+    if (candidate.size !== identity.size || taken.has(candidate.path.toLowerCase())) continue;
+    if (!hashes.has(candidate.path)) {
+      const { notebook, pathParts } = splitFilePath(candidate.path);
+      hashes.set(candidate.path, cachedPdfIdentity(filePathFromParts(notebook, pathParts)).then((found) => found.contentHash, () => null));
+    }
+    if (await hashes.get(candidate.path) === identity.contentHash) matches.push(candidate.path);
+  }
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function notebookPrefix(notebook: string) {

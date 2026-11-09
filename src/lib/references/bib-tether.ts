@@ -988,6 +988,15 @@ export async function moveTetheredFilesBatch(moves: ReadonlyMap<string, string>)
   return failures;
 }
 
+/** The file a notebook's library is tethered to, read only (for checks): a library path, an absolute path outside it, or why its settings can't be read; null when untethered. */
+export async function readTetherTarget(notebook: string): Promise<{ libraryPath: string } | { absolutePath: string } | { damaged: string } | null> {
+  let config: TetherConfig | null;
+  try { config = await readConfig(notebook); }
+  catch (error) { return { damaged: error instanceof Error ? error.message : String(error) }; }
+  if (!config) return null;
+  return config.target.kind === "absolute" ? { absolutePath: config.target.path } : { libraryPath: displayPath(notebook, config.target) };
+}
+
 /** Stop every watcher and timer (tests, before the data directory changes). */
 export function resetBibTethers() {
   for (const runtime of registry.runtimes.values()) {

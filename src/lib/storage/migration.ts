@@ -5,9 +5,7 @@ import path from "node:path";
 import { transformReviewBaselines, withMovedReview } from "@/lib/agent/review-store";
 import { recordMovedRunFiles, type MovedRunFile } from "@/lib/agent/snapshots";
 import { isSharedNotebookPath, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
-import { readLatexIncludes } from "@/lib/latex/root";
-import { hasDocumentClass, readLatexBibliographyReferences, resolveLatexRootPath, resolveRelativeNotebookPath, stripLatexComments } from "@/lib/latex/project";
-import { resolveMarkdownFileLink } from "@/lib/markdown-file-links";
+import { latexDependencies } from "@/lib/latex/dependencies";
 import { pythonSidecarPath } from "@/lib/python/sidecar";
 import { moveTetheredFilesBatch } from "@/lib/references/bib-tether";
 import { publishReferenceEvent } from "@/lib/references/library-events";
@@ -15,15 +13,15 @@ import { rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
 import { copyReferenceEntries } from "@/lib/references/copy-entries";
 import { notifyReferenceFilesAdded, referenceJobsFilePath } from "@/lib/references/jobs";
-import { isLatexCitingPath } from "@/lib/references/latex-cite-syntax";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
 import { migrateImageAnnotations, migratePdfAnnotations } from "@/lib/storage/annotations";
 import { ARCHIVE_DIR, IGNORED_DOWNLOAD_ENTRIES, INK_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
-import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, type MarkdownAssetBatch } from "@/lib/storage/markdown-assets";
+import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, markdownImageTargets, readMarkdownAssetDocuments, type MarkdownAssetBatch } from "@/lib/storage/markdown-assets";
 import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
+import { checkNothingLeftAt } from "@/lib/storage/integrity";
 import { migrationJournalDirectory, migrationJournalsChanged } from "@/lib/storage/migration-fence";
 import { createNotebook, deleteNotebook } from "@/lib/storage/notebooks";
 import {
@@ -31,22 +29,20 @@ import {
   assertSafeUserSegment,
   ensureAdminRoot,
   filePathFromParts,
-  getAdminRoot,
   getLinkedFolder,
-  getLinkedFolders,
   itemPath,
   markdownAssetsDirectoryPathFromParts,
   notebookPath,
-  notebookSystemDirectoryPath,
   splitFilePath,
 } from "@/lib/storage/paths";
 import { moveReferenceAttachmentsBatch, readReferenceLibrary } from "@/lib/storage/references";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { existingSidecars, moveFileSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
+import { fileExistence, libraryNotebookNames, linkCandidates, readNotebookLinkIndex, resolveLinkWith } from "@/lib/storage/library-links";
 import { extractNotebookLinkDestinations } from "@/lib/storage/notebook-links";
-import { isVisibleTreeEntry } from "@/lib/storage/tree";
+import { isVisibleTreeEntry, listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { renameFileMetadataPathPrefix, renameFileMetadataPaths, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
-import type { LiberaFileNode, LiberaNotebookMetadata } from "@/lib/types";
+import type { LiberaNotebookMetadata } from "@/lib/types";
 
 // Notebook migration: move a selection of files and folders from one local
 // notebook to another (or to a new one), with everything Libera keeps for
@@ -91,6 +87,12 @@ export type MigrationDestination = {
    * it survives an interruption.
    */
   create?: Partial<Pick<LiberaNotebookMetadata, "color" | "emoji" | "groupId">> & { workspaceGroupId?: string | null };
+  /**
+   * Put each selected file or folder directly in the destination folder,
+   * without the folders it was in (Move… of one file). By default the source
+   * layout is mirrored. A selected folder keeps its own content either way.
+   */
+  flat?: boolean;
 };
 
 export type MigrationRequest = {
@@ -114,7 +116,7 @@ export type MigrationItem = {
   count?: number;
 };
 
-export type MigrationWarningKind = "renamed" | "inbound-links" | "outbound-links" | "latex-left-behind" | "latex-includes-moving" | "latex-incomplete" | "cross-device";
+export type MigrationWarningKind = "renamed" | "inbound-links" | "inbound-images" | "outbound-links" | "latex-left-behind" | "latex-includes-moving" | "latex-incomplete" | "cross-device";
 
 export type MigrationWarning = {
   kind: MigrationWarningKind;
@@ -126,7 +128,7 @@ export type MigrationWarning = {
 export type MigrationPlan = {
   token: string;
   source: string;
-  destination: { notebook: string; folder: string; create: boolean };
+  destination: { notebook: string; folder: string; create: boolean; flat?: boolean };
   items: MigrationItem[];
   /** Selected folders, moved whole: the source folder is removed when empty. */
   folders: { from: string; to: string }[];
@@ -470,18 +472,20 @@ async function summarize(directory: string): Promise<{ bytes: number; count: num
   return { bytes, count };
 }
 
-type Candidate = { fromParts: string[]; kind: "file" | "other"; fileType: string | null; identity: Identity; bytes: number; count?: number };
+/** `base`: how many leading parts of `fromParts` are the folders the selected item was in (left out by a flat move). */
+type Candidate = { fromParts: string[]; base: number; kind: "file" | "other"; fileType: string | null; identity: Identity; bytes: number; count?: number };
 
 async function expandSelection(source: string, paths: string[]) {
   const linked = !!getLinkedFolder(source);
   const candidates = new Map<string, Candidate>();
-  const folders: string[][] = [];
+  const folders: { parts: string[]; base: number }[] = [];
   const problems: string[] = [];
-  const add = (fromParts: string[], candidate: Omit<Candidate, "fromParts">) => {
-    candidates.set(fromParts.join("/"), { fromParts, ...candidate });
+  let base = 0;
+  const add = (fromParts: string[], candidate: Omit<Candidate, "fromParts" | "base">) => {
+    if (!candidates.has(fromParts.join("/"))) candidates.set(fromParts.join("/"), { fromParts, base, ...candidate });
   };
   const walk = async (folderParts: string[]) => {
-    folders.push(folderParts);
+    folders.push({ parts: folderParts, base });
     let entries: Dirent[];
     try { entries = await readdir(rawItemPath(source, folderParts), { withFileTypes: true }); }
     catch { throw new StorageError(`${[source, ...folderParts].join("/")} could not be read.`, 409); }
@@ -507,6 +511,7 @@ async function expandSelection(source: string, paths: string[]) {
     const stats = await lstatOrNull(itemPath(source, parts));
     if (!stats) throw new StorageError(`${selected} no longer exists. Review the selection again.`, 409);
     if (stats.isSymbolicLink()) throw new StorageError(`${selected} is a link, which can't be migrated.`, 400);
+    base = parts.length - 1;
     if (stats.isDirectory()) await walk(parts);
     else if (stats.isFile() && getFileType(parts.at(-1) ?? "")) add(parts, { kind: "file", fileType: getFileType(parts.at(-1) ?? ""), identity: identityOf(stats), bytes: stats.size });
     else throw new StorageError(`${selected} can't be migrated.`, 400);
@@ -634,8 +639,10 @@ async function buildPlan(request: MigrationRequest) {
   };
 
   const folderTargets: string[] = [];
-  for (const parts of folders) {
-    const target = [...folderParts, ...parts];
+  const flat = !!request.destination?.flat;
+  const placed = (parts: string[], partsBase: number) => [...folderParts, ...(flat ? parts.slice(partsBase) : parts)];
+  for (const { parts, base } of folders) {
+    const target = placed(parts, base);
     await reserveFolder(target);
     folderTargets.push([destinationName, ...target].join("/"));
   }
@@ -643,7 +650,7 @@ async function buildPlan(request: MigrationRequest) {
   const items: JournalItem[] = [];
   const ordered = [...candidates].sort((a, b) => a.fromParts.join("/").localeCompare(b.fromParts.join("/")));
   for (const candidate of ordered) {
-    const parent = [...folderParts, ...candidate.fromParts.slice(0, -1)];
+    const parent = placed(candidate.fromParts, candidate.base).slice(0, -1);
     const name = candidate.fromParts.at(-1)!;
     await reserveFolder(parent);
     let next = name;
@@ -678,13 +685,13 @@ async function buildPlan(request: MigrationRequest) {
   }
 
   const fullFolders = folders
-    .filter((parts) => request.paths.includes([source, ...parts].join("/")))
-    .map((parts) => ({ from: [source, ...parts].join("/"), to: [destinationName, ...folderParts, ...parts].join("/") }));
+    .filter(({ parts }) => request.paths.includes([source, ...parts].join("/")))
+    .map(({ parts, base }) => ({ from: [source, ...parts].join("/"), to: [destinationName, ...placed(parts, base)].join("/") }));
 
   const destinationDevice = destinationRoot?.dev ?? (await stat(path.dirname(notebookPath(destinationName)))).dev;
   const core: PlanCore = {
     source,
-    destination: { notebook: destinationName, folder: folderParts.join("/"), create },
+    destination: { notebook: destinationName, folder: folderParts.join("/"), create, ...(flat ? { flat } : {}) },
     items: items.map((item) => ({ from: item.from, to: item.to, kind: item.kind, fileType: item.fileType, renamed: item.renamed, size: item.size, ...(item.count !== undefined ? { count: item.count } : {}) })),
     folders: fullFolders,
     totalBytes: items.reduce((sum, item) => sum + item.size, 0),
@@ -715,119 +722,6 @@ export async function planMigration(request: MigrationRequest): Promise<Migratio
 
 // ---- Warnings ----------------------------------------------------------------
 
-/** Notebooks and connected linked folders, by name. */
-async function libraryNotebookNames() {
-  const entries = await readdir(getAdminRoot(), { withFileTypes: true }).catch(() => []);
-  return [
-    ...entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name),
-    ...getLinkedFolders().filter((folder) => !folder.unresolved).map((folder) => folder.name),
-  ];
-}
-
-/** Each Markdown file's links, as written, from the notebook's link index (kept by tree loads; read, never written here). */
-async function linkIndex(notebook: string): Promise<Record<string, string[]>> {
-  try {
-    const index = JSON.parse(await readFile(path.join(notebookSystemDirectoryPath(notebook), "notebook-links.json"), "utf8")) as { version?: number; files?: Record<string, { destinations?: unknown }> };
-    if (index.version !== 2 || !index.files) return {};
-    return Object.fromEntries(Object.entries(index.files).flatMap(([file, entry]) =>
-      Array.isArray(entry?.destinations) ? [[file, entry.destinations.filter((href): href is string => typeof href === "string")]] : []));
-  } catch { return {}; }
-}
-
-/**
- * Where a link points, resolved the way the editor resolves it, but against
- * a given picture of which files exist. The resolver only looks paths up, so
- * the paths it would consult are learned first, and only those are checked.
- */
-function linkCandidates(href: string, sourcePath: string) {
-  const asked: string[] = [];
-  resolveMarkdownFileLink(href, sourcePath, { get: (candidate: string) => { asked.push(candidate); return undefined; } } as unknown as ReadonlyMap<string, LiberaFileNode>);
-  return asked;
-}
-
-function resolveLink(href: string, sourcePath: string, exists: (libraryPath: string) => boolean) {
-  const lookup = { get: (candidate: string) => exists(candidate) ? { path: candidate, notebook: candidate.split("/")[0] } as LiberaFileNode : undefined };
-  return resolveMarkdownFileLink(href, sourcePath, lookup as unknown as ReadonlyMap<string, LiberaFileNode>)?.file.path ?? null;
-}
-
-/** Visible files of a notebook, read-only, for its LaTeX projects. */
-async function notebookFiles(notebook: string, limit: number) {
-  const linked = !!getLinkedFolder(notebook);
-  const files: string[] = [];
-  let truncated = false;
-  const walk = async (parts: string[]) => {
-    let entries: Dirent[];
-    try { entries = await readdir(rawItemPath(notebook, parts), { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      if (!isVisibleTreeEntry(entry.name, linked) || (!parts.length && entry.name === ARCHIVE_DIR)) continue;
-      if (files.length >= limit) { truncated = true; return; }
-      if (entry.isDirectory()) await walk([...parts, entry.name]);
-      else if (entry.isFile() && getFileType(entry.name)) files.push([notebook, ...parts, entry.name].join("/"));
-    }
-  };
-  await walk([]);
-  return { files, truncated };
-}
-
-const MAX_LATEX_FILES = 400;
-const MAX_LATEX_CHARACTERS = 1_000_000;
-
-/**
- * Which files each LaTeX source needs, resolved as TeX resolves them: from
- * its main file's folder (`\subimport` from its own), through
- * `\graphicspath`, with `\includegraphics*` and extension-less graphics.
- * Each file's main files are found through the include graph.
- */
-async function latexDependencies(source: string, sourceFiles: string[]) {
-  const existing = new Set(sourceFiles);
-  const texFiles = sourceFiles.filter((file) => isLatexCitingPath(file));
-  let incomplete = texFiles.length > MAX_LATEX_FILES;
-  const texts = new Map<string, string>();
-  for (const file of texFiles.slice(0, MAX_LATEX_FILES)) {
-    try {
-      const text = await readFile(absolute(file), "utf8");
-      if (text.length > MAX_LATEX_CHARACTERS) incomplete = true;
-      texts.set(file, text.slice(0, MAX_LATEX_CHARACTERS));
-    } catch { incomplete = true; }
-  }
-  const graphicsPaths = (text: string) => {
-    const match = /\\graphicspath\s*\{((?:\s*\{[^}]*\})+)\s*\}/.exec(stripLatexComments(text));
-    return match ? [...match[1].matchAll(/\{([^}]*)\}/g)].map((group) => group[1].trim()) : [];
-  };
-  const resolveFrom = (base: string, reference: string) => {
-    const resolved = resolveRelativeNotebookPath(base, reference);
-    if (!resolved || !resolved.startsWith(`${source}/`)) return [];
-    return path.extname(resolved) ? [resolved] : [resolved, ...[".pdf", ".png", ".jpg", ".jpeg", ".eps"].map((extension) => `${resolved}${extension}`)];
-  };
-  const dependencies = new Map<string, Set<string>>();
-  const mainFiles = new Map<string, Set<string>>();
-  const visit = (root: string, file: string, prefixes: string[], seen: Set<string>) => {
-    if (seen.has(file)) return;
-    seen.add(file);
-    const text = texts.get(file);
-    if (text === undefined) return;
-    (mainFiles.get(file) ?? mainFiles.set(file, new Set()).get(file)!).add(root);
-    const needs = dependencies.get(file) ?? new Set<string>();
-    dependencies.set(file, needs);
-    const add = (paths: string[]) => { for (const candidate of paths) if (existing.has(candidate)) needs.add(candidate); };
-    for (const include of readLatexIncludes(text)) {
-      const targets = resolveFrom(include.relativeToFile ? file : root, include.path);
-      add(targets);
-      for (const target of targets) if (texts.has(target)) visit(root, target, prefixes, seen);
-    }
-    for (const bibliography of readLatexBibliographyReferences(text)) add(resolveFrom(root, bibliography));
-    for (const match of stripLatexComments(text).matchAll(/\\includegraphics\*?\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
-      for (const prefix of ["", ...prefixes]) add(resolveFrom(root, `${prefix}${match[1].trim()}`));
-    }
-  };
-  const known = new Set(texts.keys());
-  const roots = [...texts].filter(([file, text]) => hasDocumentClass(text) && resolveLatexRootPath(file, text, known) === file).map(([file]) => file);
-  for (const root of roots) visit(root, root, graphicsPaths(texts.get(root)!), new Set());
-  // Sources no main file includes are read on their own.
-  for (const file of texts.keys()) if (!mainFiles.has(file)) visit(file, file, [], new Set());
-  return { dependencies, mainFiles, incomplete };
-}
-
 async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
   const warnings: MigrationWarning[] = [];
   const files = plan.items.filter((item) => item.kind === "file");
@@ -844,28 +738,21 @@ async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
 
   // Markdown links are not rewritten when files move (docs/features/related-notebooks.md).
   try {
-    const existsNow = new Map<string, boolean>();
-    const check = async (candidates: string[]) => {
-      for (const candidate of candidates) {
-        if (existsNow.has(candidate)) continue;
-        let found = false;
-        try { found = !!(await lstatOrNull(rawAbsolute(candidate)))?.isFile(); } catch { found = false; }
-        existsNow.set(candidate, found);
-      }
-    };
-    const before = (candidate: string) => existsNow.get(candidate) ?? false;
+    const disk = fileExistence();
+    const check = disk.check;
+    const before = disk.exists;
     const after = (candidate: string) => arriving.has(candidate) || (!moves.has(candidate) && before(candidate));
 
     // Notes that stay and link to a file that moves.
     const inbound = new Set<string>();
     for (const notebook of await libraryNotebookNames()) {
-      for (const [notePath, hrefs] of Object.entries(await linkIndex(notebook))) {
+      for (const [notePath, hrefs] of Object.entries(await readNotebookLinkIndex(notebook))) {
         if (moves.has(notePath)) continue;
         for (const href of hrefs) {
           const candidates = linkCandidates(href, notePath);
           if (!candidates.some((candidate) => moves.has(candidate))) continue;
           await check(candidates);
-          const target = resolveLink(href, notePath, before);
+          const target = resolveLinkWith(href, notePath, before);
           if (target && target !== notePath && moves.has(target)) inbound.add(notePath);
         }
       }
@@ -877,12 +764,20 @@ async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
       try { content = await readFile(absolute(note.from), "utf8"); } catch { continue; }
       for (const href of extractNotebookLinkDestinations(content)) {
         await check([...linkCandidates(href, note.from), ...linkCandidates(href, note.to)]);
-        const target = resolveLink(href, note.from, before);
+        const target = resolveLinkWith(href, note.from, before);
         if (!target || target === note.from) continue;
         const expected = moves.get(target) ?? target;
-        if (resolveLink(href, note.to, after) !== expected) outbound.add(note.from);
+        if (resolveLinkWith(href, note.to, after) !== expected) outbound.add(note.from);
       }
     }
+    // Notes that stay and show a moving image by its library address (`/api/files/raw/...`): the link index leaves embeds out.
+    const showing = new Set<string>();
+    const { documents } = await readMarkdownAssetDocuments(plan.source);
+    for (const note of documents) {
+      if (moves.has(note.documentPath)) continue;
+      if (markdownImageTargets(note.documentPath, note.content).some((target) => target.libraryPath && moves.has(target.libraryPath))) showing.add(note.documentPath);
+    }
+    if (showing.size) warnings.push({ kind: "inbound-images", message: `${showing.size} ${showing.size === 1 ? "note that stays shows" : "notes that stay show"} images you are moving. Those images will no longer show there.`, paths: [...showing].sort() });
     if (inbound.size) warnings.push({ kind: "inbound-links", message: `${inbound.size} ${inbound.size === 1 ? "note links" : "notes link"} to files you are moving. Those links will stop working.`, paths: [...inbound].sort() });
     if (outbound.size) warnings.push({ kind: "outbound-links", message: `${outbound.size} moving ${outbound.size === 1 ? "note has links" : "notes have links"} that will no longer find their file from the new place.`, paths: [...outbound].sort() });
   } catch (error) {
@@ -890,7 +785,7 @@ async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
   }
 
   try {
-    const { files: sourceFiles, truncated } = await notebookFiles(plan.source, 20_000);
+    const { files: sourceFiles, truncated } = await listVisibleNotebookFiles(plan.source);
     const { dependencies, mainFiles, incomplete } = await latexDependencies(plan.source, sourceFiles);
     const leftBehind = new Set<string>();
     const lost = new Set<string>();
@@ -1307,22 +1202,24 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
 
   // What the final check can say: nothing of a moved item left at its old
   // path (the item itself, a sidecar), and no prepared copy left anywhere.
-  const leftovers: string[] = [];
+  // The notebook check's definition of "nothing left" (storage/integrity.ts).
+  let leftovers: string[] = [];
   let unverified = false;
   if (journal.state === "done") {
+    const places: Parameters<typeof checkNothingLeftAt>[0] = [];
     for (const [index, item] of journal.items.entries()) {
       try {
-        if (await lstatOrNull(stagedPath(journal, index, item))) leftovers.push(`${item.to} (prepared copy)`);
+        places.push({ label: `${item.to} (prepared copy)`, absolutePath: stagedPath(journal, index, item) });
         if (states[index] === "pending") continue;
-        if (await lstatOrNull(located(item, item.from))) leftovers.push(item.from);
-        if (item.kind !== "file") continue;
-        const { notebook, pathParts } = splitFilePath(item.from);
-        for (const sidecar of await existingSidecars(notebook, pathParts, item.fileType)) leftovers.push(`${item.from} (${sidecar.kind})`);
+        places.push({ label: item.from, absolutePath: located(item, item.from), ...(item.kind === "file" ? { libraryPath: item.from, fileType: item.fileType } : {}) });
       } catch (error) {
         unverified = true;
         leftovers.push(`${item.from} (could not be checked: ${errorText(error)})`);
       }
     }
+    const check = await checkNothingLeftAt(places);
+    leftovers = [...leftovers, ...check.leftovers];
+    unverified ||= check.unverified;
   }
   const check: MigrationResult["check"] = journal.state !== "done" ? "incomplete" : unverified ? "unverified"
     : remaining.length || leftovers.length || moved.some((move) => move.incomplete) ? "incomplete" : "clean";

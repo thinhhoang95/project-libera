@@ -7,10 +7,24 @@ import type { AudioPeaksPayload } from "@/lib/transcription/types";
 import { getTranscriptionWorker } from "@/lib/transcription/worker-client";
 import { readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
 import { writeJsonForSource } from "@/lib/storage/fs-utils";
+import type { SidecarInspection } from "@/lib/storage/sidecars";
 
 /** Enough detail for a wide window; the viewer draws fewer bars by taking the loudest of each group. */
 const PEAK_BUCKETS = 2400;
 const inflight = new Map<string, Promise<AudioPeaksPayload>>();
+
+/**
+ * A saved waveform, for the notebook check (storage/integrity.ts): null when it
+ * would be drawn again. Its key starts with the recording's size.
+ */
+export function inspectAudioPeaksCache(value: unknown): SidecarInspection | null {
+  if (!value || typeof value !== "object") return null;
+  const cached = value as { key?: unknown; duration?: unknown; peaks?: unknown };
+  if (typeof cached.key !== "string" || typeof cached.duration !== "number" || !Number.isFinite(cached.duration) || cached.duration < 0) return null;
+  if (!Array.isArray(cached.peaks) || !cached.peaks.every(Number.isFinite)) return null;
+  const size = Number(cached.key.split(":")[0]);
+  return { dropped: 0, records: "peaks", source: Number.isFinite(size) ? { size, contentHash: cached.key.split("\0")[1] || null } : null };
+}
 
 /**
  * A recording's waveform overview, decoded once and cached beside its other

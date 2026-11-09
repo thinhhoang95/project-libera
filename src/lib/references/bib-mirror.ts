@@ -116,19 +116,20 @@ async function tetherOwnsMirror(notebook: string, candidates: string[]) {
 }
 
 /**
- * Bring the notebook's mirror up to date with `library`. Does nothing when
- * the setting is off. Never overwrites a references.bib that was changed
- * outside Libera (see the module comment).
+ * What writeBibMirror would do for `library`, without doing it; reads only.
+ * `current` says whether the file it would write already has the text (for
+ * `write`, whether a references.bib exists at all). The notebook check
+ * reports a mirror that is not current.
  */
-export async function writeBibMirror(notebook: string, library: ReferenceLibrary): Promise<BibMirrorResult> {
+export async function planBibMirror(notebook: string, library: ReferenceLibrary) {
   const entries = Object.keys(library.entries).length;
   const mainPath = `${notebook}/${BIB_MIRROR_FILE}`;
-  if (!library.settings?.bibMirror) return { status: "disabled", path: mainPath, entries };
+  if (!library.settings?.bibMirror) return { status: "disabled", path: mainPath, entries } as const;
   const root = notebookPath(notebook);
   // One owner per output: a tether preserves external edits and custom fields,
   // whereas the generated mirror replaces its entire output.
   if (await tetherOwnsMirror(notebook, [path.join(root, BIB_MIRROR_FILE), path.join(root, BIB_MIRROR_FALLBACK_FILE)])) {
-    return { status: "disabled", path: mainPath, entries };
+    return { status: "disabled", path: mainPath, entries } as const;
   }
   const text = renderBibMirror(library);
   const hash = sha256(text);
@@ -136,25 +137,36 @@ export async function writeBibMirror(notebook: string, library: ReferenceLibrary
   const main = path.join(root, BIB_MIRROR_FILE);
   const current = await readText(main);
   const currentHash = current === null ? null : sha256(current);
-
-  if (currentHash === hash) {
-    if (state.hash !== hash) await writeJsonAtomically(bibMirrorStatePath(notebook), { version: STATE_VERSION, hash });
-    return { status: "unchanged", path: mainPath, entries };
-  }
-  if (current === null || currentHash === state.hash) {
-    await writeAtomically(main, text);
-    await writeJsonAtomically(bibMirrorStatePath(notebook), { version: STATE_VERSION, hash });
-    return { status: "written", path: mainPath, entries };
-  }
-
+  if (currentHash === hash) return { status: "unchanged", path: mainPath, entries, text, hash, recordHash: state.hash !== hash, main } as const;
+  if (current === null || currentHash === state.hash) return { status: "write", path: mainPath, entries, text, hash, exists: current !== null, main } as const;
   // Edited by hand, or a references.bib Libera never wrote: keep it, mirror beside it.
   const fallback = path.join(root, BIB_MIRROR_FALLBACK_FILE);
-  const fallbackPath = `${notebook}/${BIB_MIRROR_FALLBACK_FILE}`;
-  if ((await readText(fallback)) !== text) {
-    await writeAtomically(fallback, text);
-    console.warn(`[references] ${mainPath} was changed outside Libera and was left as it is; the generated bibliography was written to ${fallbackPath}.`);
+  return { status: "protected", path: `${notebook}/${BIB_MIRROR_FALLBACK_FILE}`, editedPath: mainPath, entries, text, fallback, current: (await readText(fallback)) === text } as const;
+}
+
+/**
+ * Bring the notebook's mirror up to date with `library`. Does nothing when
+ * the setting is off. Never overwrites a references.bib that was changed
+ * outside Libera (see the module comment).
+ */
+export async function writeBibMirror(notebook: string, library: ReferenceLibrary): Promise<BibMirrorResult> {
+  const plan = await planBibMirror(notebook, library);
+  const { entries, path: mirrorPath } = plan;
+  if (plan.status === "disabled") return { status: "disabled", path: mirrorPath, entries };
+  if (plan.status === "unchanged") {
+    if (plan.recordHash) await writeJsonAtomically(bibMirrorStatePath(notebook), { version: STATE_VERSION, hash: plan.hash });
+    return { status: "unchanged", path: mirrorPath, entries };
   }
-  return { status: "protected", path: fallbackPath, editedPath: mainPath, entries };
+  if (plan.status === "write") {
+    await writeAtomically(plan.main, plan.text);
+    await writeJsonAtomically(bibMirrorStatePath(notebook), { version: STATE_VERSION, hash: plan.hash });
+    return { status: "written", path: mirrorPath, entries };
+  }
+  if (!plan.current) {
+    await writeAtomically(plan.fallback, plan.text);
+    console.warn(`[references] ${plan.editedPath} was changed outside Libera and was left as it is; the generated bibliography was written to ${mirrorPath}.`);
+  }
+  return { status: "protected", path: mirrorPath, editedPath: plan.editedPath, entries };
 }
 
 // ---------------------------------------------------------------------------

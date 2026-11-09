@@ -101,6 +101,67 @@ function referencedRawFilePaths(markdown: string) {
   return rawPaths;
 }
 
+/**
+ * A note's local image embeds and where each is on disk, for checks
+ * (storage/integrity.ts). `absolutePath` is null when the address can't be
+ * read as a library image.
+ */
+export function markdownImageTargets(documentPath: string, markdown: string) {
+  const targets: { source: string; libraryPath: string | null; absolutePath: string | null }[] = [];
+  for (const source of markdownImageSources(markdown)) {
+    try {
+      const raw = rawFileSourcePath(source);
+      if (raw) {
+        const { notebook, pathParts } = splitFilePath(raw);
+        targets.push({ source, libraryPath: raw, absolutePath: filePathFromParts(notebook, pathParts) });
+        continue;
+      }
+      const target = markdownAssetSourceTarget(documentPath, source);
+      if (!target) continue;
+      const notebook = splitFilePath(target.documentPath).notebook;
+      targets.push({ source, libraryPath: `${notebook}/${target.assetPath}`, absolutePath: markdownAssetPath(notebook, target.assetPath).targetPath });
+    } catch {
+      targets.push({ source, libraryPath: null, absolutePath: null });
+    }
+  }
+  return targets;
+}
+
+/**
+ * Files in a notebook's `_assets` that no saved note embeds and that are not
+ * in an existing note's own folders (where unsaved uploads and a note's
+ * Python code live): what cleanupMarkdownImageAssets would consider unused,
+ * reported instead of removed. Null when the notes could not all be read.
+ */
+export async function unreferencedMarkdownAssets(notebook: string, scan?: { documents: MarkdownDocument[]; complete: boolean }) {
+  const { documents, complete } = scan ?? await readMarkdownAssetDocuments(notebook);
+  if (!complete) return null;
+  const referenced = new Set<string>();
+  const owned: string[] = [];
+  for (const document of documents) {
+    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) referenced.add(asset.toLowerCase());
+    for (const prefix of ownedPrefixes(document.documentPath)) owned.push(`${prefix.toLowerCase()}/`);
+  }
+  const unused: string[] = [];
+  const root = path.join(notebookPath(notebook), MARKDOWN_ASSETS_DIR);
+  const walk = async (directory: string, relative: string) => {
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const assetPath = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) await walk(path.join(directory, entry.name), assetPath);
+      else if (entry.isFile() && !JUNK_FILES.has(entry.name)) {
+        const key = assetPath.toLowerCase();
+        if (!referenced.has(key) && !owned.some((prefix) => key.startsWith(prefix))) unused.push(`${notebook}/${assetPath}`);
+      }
+    }
+  };
+  await walk(root, MARKDOWN_ASSETS_DIR);
+  return unused.sort();
+}
+
+const JUNK_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
+
 async function removeEmptyDirectory(targetPath: string) {
   try {
     await rmdir(targetPath);

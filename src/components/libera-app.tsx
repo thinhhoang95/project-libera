@@ -876,6 +876,7 @@ export function LiberaApp({
       <NotebookMigrationDialog
         open={workspace.migrationDialogSource !== null}
         initialSource={workspace.migrationDialogSource ?? ""}
+        preset={workspace.migrationPreset}
         tree={workspace.fullTree}
         groups={workspace.tree.notebookGroups}
         unsavedTabsUnder={workspace.unsavedTabsUnder}

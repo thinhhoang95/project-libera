@@ -32,6 +32,7 @@ import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
 import { normalizeSpaceLayout, reconcilePdfSpaces } from "@/lib/pdf-space";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
+import type { SidecarInspection } from "@/lib/storage/sidecars";
 import type {
   ImageAnnotationsPayload,
   PdfAnnotation,
@@ -316,6 +317,55 @@ function normalizeImageAnnotations(input: unknown): PdfTextAnnotation[] {
     delete note.space;
     return [note];
   });
+}
+
+/**
+ * What the readers make of a saved PDF sidecar, for the notebook check
+ * (storage/integrity.ts): the annotations and comment threads they leave out,
+ * which the next save of the markup or of the comments loses, and the PDF it
+ * was saved for. Annotation types from a newer Libera are kept on save
+ * (withPreservedUnknowns), so they are not counted. Null when it is not a
+ * sidecar the readers can use.
+ */
+export function inspectPdfSidecar(value: unknown): SidecarInspection | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const sidecar = value as PdfSidecar;
+  if ((sidecar.annotations !== undefined && !Array.isArray(sidecar.annotations)) || (sidecar.comments !== undefined && !Array.isArray(sidecar.comments))) return null;
+  const stored: unknown[] = sidecar.annotations as unknown[] | undefined ?? [];
+  const preserved = stored.filter((item) => {
+    const entry = item as { id?: unknown; type?: unknown } | null;
+    return !!entry && typeof entry === "object" && typeof entry.id === "string" && typeof entry.type === "string" && !isKnownPdfAnnotationType(entry.type);
+  }).length;
+  const threads: unknown[] = sidecar.comments as unknown[] | undefined ?? [];
+  return {
+    dropped: Math.max(0, stored.length - preserved - normalizePdfAnnotations(stored).length) + Math.max(0, threads.length - normalizePdfCommentThreads(threads, () => "inspected").length),
+    records: "annotations or comments",
+    source: parsePdfIdentity(sidecar.source),
+  };
+}
+
+/**
+ * The ids of a PDF's or an image's saved annotations, for the notebook check's
+ * links to one annotation. Read where the side file is now, without upgrading
+ * older layouts: null when there is none there or it can't be read.
+ */
+export async function savedAnnotationIds(relativePath: string): Promise<Set<string> | null> {
+  const { notebook, name, pathParts } = splitFilePath(relativePath);
+  const image = getFileType(name) === "image";
+  try {
+    const stored = (JSON.parse(await readFile(image ? imageAnnotationsPath(notebook, pathParts) : pdfAnnotationsPath(notebook, pathParts), "utf8")) as PdfSidecar).annotations;
+    return new Set((image ? normalizeImageAnnotations(stored) : normalizePdfAnnotations(stored)).map((annotation) => annotation.id));
+  } catch {
+    return null;
+  }
+}
+
+/** What the reader makes of a saved image sidecar, for the notebook check: notes it leaves out are lost on the next save. */
+export function inspectImageSidecar(value: unknown): SidecarInspection | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const stored = (value as { annotations?: unknown }).annotations;
+  if (stored !== undefined && !Array.isArray(stored)) return null;
+  return { dropped: Math.max(0, (stored?.length ?? 0) - normalizeImageAnnotations(stored).length), records: "notes", source: null };
 }
 
 /** Enumerate annotated files without following symlinks or entering app/dependency state. */

@@ -17,13 +17,19 @@ export function extractNotebookLinkDestinations(content: string): string[] {
 // size, and paths are sorted: a touched, re-downloaded or reordered file does
 // not rewrite the index, and computers sharing a synced notebook write the same one.
 type LinkEntry = { contentHash: string; destinations: string[] };
-type LinkIndex = { version: 2; files: Record<string, LinkEntry> };
+export type LinkIndex = { version: 2; files: Record<string, LinkEntry> };
 
 function collectFiles(nodes: LiberaTreeNode[]): LiberaFileNode[] {
   return nodes.flatMap((node) => node.kind === "file" ? [node] : collectFiles(node.children));
 }
 
-async function readLinkIndex(indexPath: string): Promise<LinkIndex> {
+/** Where a notebook's link index is kept: the data folder, never a linked folder itself. */
+export function linkIndexPath(notebook: string) {
+  return path.join(notebookSystemDirectoryPath(notebook), "notebook-links.json");
+}
+
+/** The index as saved (empty when missing or unreadable); reads only. The notebook check compares it with the notes. */
+export async function readLinkIndex(indexPath: string): Promise<LinkIndex> {
   try {
     const index = JSON.parse(await readFile(indexPath, "utf8"));
     if (index.version === 2 && index.files && typeof index.files === "object") {
@@ -46,8 +52,7 @@ const rebuilds = new Map<string, Promise<LinkIndex["files"]>>();
 async function notebookDestinations(notebook: LiberaNotebookNode, files: LiberaFileNode[]) {
   if (notebook.folder?.missing) return {};
   // Linked folders keep this index in the data folder, never in the user's folder.
-  const directory = notebookSystemDirectoryPath(notebook.name);
-  const indexPath = path.join(directory, "notebook-links.json");
+  const indexPath = linkIndexPath(notebook.name);
   const root = notebookPath(notebook.name);
   const task = (rebuilds.get(indexPath) ?? Promise.resolve()).catch(() => undefined)
     .then(() => rebuildDestinations(notebook, files, indexPath, root));

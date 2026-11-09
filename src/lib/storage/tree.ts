@@ -7,6 +7,7 @@ import { scheduleReferenceReattach } from "@/lib/storage/references";
 import { readLastNotebookName } from "@/lib/storage/last-notebook";
 import type { Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
+import path from "node:path";
 import { ARCHIVE_DIR, INK_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
@@ -65,6 +66,31 @@ export function isVisibleTreeEntry(name: string, linked = false) {
     name === INK_DIR ||
     (linked && SKIPPED_LINKED_FOLDER_ENTRIES.has(name))
   );
+}
+
+/**
+ * A notebook's visible files (library paths), without the tree's upkeep: no
+ * index, prune or reconcile, so a check can read a notebook without changing
+ * it. The archive is left out. `onHidden` sees each entry the tree hides.
+ */
+export async function listVisibleNotebookFiles(notebook: string, { limit = 20_000, onHidden }: { limit?: number; onHidden?: (libraryPath: string, name: string) => void } = {}) {
+  const linked = getLinkedFolders().some((folder) => folder.name === notebook);
+  const root = notebookPath(notebook);
+  const files: string[] = [];
+  let truncated = false;
+  const walk = async (parts: string[]) => {
+    let entries;
+    try { entries = await readdir(path.join(root, ...parts), { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!parts.length && entry.name === ARCHIVE_DIR) continue;
+      if (!isVisibleTreeEntry(entry.name, linked)) { onHidden?.([notebook, ...parts, entry.name].join("/"), entry.name); continue; }
+      if (files.length >= limit) { truncated = true; return; }
+      if (entry.isDirectory()) await walk([...parts, entry.name]);
+      else if (entry.isFile() && getFileType(entry.name)) files.push([notebook, ...parts, entry.name].join("/"));
+    }
+  };
+  await walk([]);
+  return { files, truncated };
 }
 
 /** Targeted search updates use the same exclusions as a full library walk. */
