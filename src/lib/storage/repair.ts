@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import { lstat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, lstat, mkdir, readdir, rm, rmdir } from "node:fs/promises";
+import path from "node:path";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { moveTetheredFilesBatch, readTetherTarget } from "@/lib/references/bib-tether";
 import { publishReferenceEvent } from "@/lib/references/library-events";
 import { getFileType } from "@/lib/storage/file-types";
-import { moveFileIfExists, pathExists } from "@/lib/storage/fs-utils";
+import { pathExists } from "@/lib/storage/fs-utils";
 import { fileExistence, libraryNotebookNames } from "@/lib/storage/library-links";
 import { readMarkdownAssetDocuments, unreferencedMarkdownAssets, movePythonSidecar } from "@/lib/storage/markdown-assets";
 import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
@@ -69,12 +71,33 @@ export type RepairResult = { notebook: string; moved: RepairMove[]; problems: st
 const under = (libraryPath: string, notebook: string) => libraryPath.startsWith(`${notebook}/`);
 const baseName = (libraryPath: string) => libraryPath.slice(libraryPath.lastIndexOf("/") + 1);
 
-function assertRepairable(name: string) {
+/** A notebook this computer may change records of: not shared, and connected. Also used by Acknowledge (cleanup.ts). */
+export function assertRepairable(name: string) {
   const notebook = assertSafeSegment(name, "Notebook name");
   if (notebook.startsWith(".")) throw new StorageError("That is not a notebook.", 400);
   if (isSharedNotebookPath(notebook)) throw new StorageError("Shared notebooks are kept in step by collaboration and can't be fixed here.", 409);
   if (getLinkedFolder(notebook)?.unresolved) throw new StorageError(`${notebook} is not connected on this computer. Reconnect it first.`, 409);
   return notebook;
+}
+
+/**
+ * Moves a side file, or an ink folder, to where nothing is. Creating the
+ * destination is exclusive (COPYFILE_EXCL, mkdir), so a side file the app
+ * saves there meanwhile is never replaced: then the source stays. Renaming
+ * would replace it on every platform.
+ */
+async function moveIntoPlace(source: string, destination: string): Promise<boolean> {
+  await mkdir(path.dirname(destination), { recursive: true });
+  const taken = (error: unknown) => (error as NodeJS.ErrnoException).code === "EEXIST";
+  if ((await lstat(source)).isDirectory()) {
+    try { await mkdir(destination); } catch (error) { if (taken(error)) return false; throw error; }
+    for (const name of await readdir(source)) await moveIntoPlace(path.join(source, name), path.join(destination, name));
+    await rmdir(source).catch(() => undefined);
+    return true;
+  }
+  try { await copyFile(source, destination, constants.COPYFILE_EXCL); } catch (error) { if (taken(error)) return false; throw error; }
+  await rm(source, { force: true });
+  return true;
 }
 
 /** What would be moved where. Reads only. */
@@ -166,13 +189,11 @@ async function plan(name: string): Promise<RepairPlan> {
     // Stars or an attachment alone are worth finding again; caches alone are not listed (they are made again).
     const named = [...filesByName.get(baseName(from)) ?? []].sort();
     if ((missingByName.get(baseName(from)) ?? 0) > 1) { unmatched.push({ from, records: kept, reason: "shared-name", candidates: named }); continue; }
-    const free: string[] = [];
-    for (const candidate of named) {
-      const own = await ownRecords(candidate);
-      if (!kept.some((record) => own.has(record))) free.push(candidate);
-    }
-    if (free.length === 1) moves.push({ from, to: free[0], records: kept });
-    else unmatched.push({ from, records: kept, reason: free.length > 1 ? "several" : named.length ? "own" : "none", candidates: named });
+    // Exactly one file of that name, or no guess: one of several is never picked for having no records.
+    if (named.length !== 1) { unmatched.push({ from, records: kept, reason: named.length ? "several" : "none", candidates: named }); continue; }
+    const own = await ownRecords(named[0]);
+    if (kept.some((record) => own.has(record))) unmatched.push({ from, records: kept, reason: "own", candidates: named });
+    else moves.push({ from, to: named[0], records: kept });
   }
 
   const token = createHash("sha256").update(JSON.stringify(moves)).digest("hex").slice(0, 32);
@@ -203,9 +224,9 @@ export async function applyNotebookRepair(name: string, token: string): Promise<
         if (!kind.appliesTo(fileType)) continue;
         const source = kind.filePath(notebook, from.pathParts);
         const destination = kind.filePath(notebook, to.pathParts);
-        // Never over what the file found has: moveFileIfExists replaces.
-        if (!(await pathExists(source)) || await pathExists(destination)) continue;
-        try { await moveFileIfExists(source, destination); }
+        // Never over what the file found has, even if it saves one meanwhile.
+        if (!(await pathExists(source))) continue;
+        try { await moveIntoPlace(source, destination); }
         catch (error) { if (!kind.cache) throw error; }
       }
       if (fileType === "markdown") {

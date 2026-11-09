@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "../../src/lib/python/sidecar";
@@ -191,3 +191,16 @@ test("a Python sidecar path leads back to its note", () => {
   assert.equal(pythonSidecarDocumentPath("Nb/_assets/n.md/photo.png"), null);
   assert.equal(pythonSidecarDocumentPath("Nb/notes/n.py"), null);
 });
+
+test("one of several files of a name is never picked for having no records of its own", () => withTemporaryLibrary(["Nb"], async () => {
+  // A starred file deleted outside the app; two files of its name elsewhere, one with annotations of its own.
+  await writeLibraryFile("Nb/old/x.pdf", "%PDF old");
+  await setStarredFilePath("Nb/old/x.pdf", true);
+  await rm(filePathFromParts("Nb", ["old", "x.pdf"]));
+  await writeLibraryFile("Nb/b/x.pdf", "%PDF b");
+  await writeAt(pdfAnnotationsPath("Nb", ["b", "x.pdf"]), JSON.stringify({ version: 2, marks: [] }));
+  await writeLibraryFile("Nb/c/x.pdf", "%PDF c");
+  const plan = await planNotebookRepair("Nb");
+  assert.deepEqual(plan.moves, []);
+  assert.deepEqual(plan.unmatched.map((item) => [item.from, item.reason]), [["Nb/old/x.pdf", "several"]]);
+}));

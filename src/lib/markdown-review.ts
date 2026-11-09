@@ -373,6 +373,8 @@ export class ReviewDraftTracker {
 export function newReview(key: string, snapshot: string, id: string): ReviewDocument {
   return { schemaVersion: 1, key, id, snapshot, revision: 0, enabled: false, threads: [], undo: [] };
 }
+/** Window event: Check Notebook moved reviews to `detail.paths` outside the editor (Try to fix); an open review of one reloads. */
+export const REVIEWS_MOVED_EVENT = "libera:reviews-moved";
 /** Nothing anyone wrote: no comments, no review session or rounds, no suggestions, no undo. Opening a note makes such a review (loadReview). */
 export function isEmptyReview(doc: ReviewDocument) {
   return !doc.threads.length && !doc.session && !doc.agentSuggestions?.length && !doc.previousRounds?.length && !doc.undo.length && !doc.redo?.length;

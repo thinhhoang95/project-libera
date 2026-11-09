@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { AlertCircle, AlertTriangle, ArrowRight, CheckCircle2, Info, Loader2, MinusCircle } from "lucide-react";
 import type { IntegrityCheckId, IntegrityCheckResult, IntegrityFinding, IntegrityProgress, IntegrityReport, IntegritySeverity, IntegrityStreamLine } from "@/lib/storage/integrity";
 import type { RepairPlan, RepairResult, RepairUnmatched } from "@/lib/storage/repair";
+import type { CleanupPlan, CleanupResult } from "@/lib/storage/cleanup";
+import { REVIEWS_MOVED_EVENT } from "@/lib/markdown-review";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_HEADER } from "@/lib/auth-session";
 import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 import { apiRequest } from "./api-client";
@@ -12,9 +14,11 @@ import { ModalDialog } from "./modal-dialog";
 // Results of the notebook check (storage/integrity.ts). The check only reads;
 // each finding says what would set it right. Try to fix (storage/repair.ts)
 // finds files moved outside the app by name and, once confirmed, moves their
-// records to them.
+// records to them. Acknowledge (storage/cleanup.ts) then removes what the
+// check still reports as stale, once its cost is confirmed.
 
 const secondary = "rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60";
+const danger = "rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-60";
 const primary = "rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60";
 const PREVIEW = 20;
 const ORDER: IntegritySeverity[] = ["error", "warning", "info"];
@@ -74,7 +78,8 @@ function StatusIcon({ status }: { status: IntegrityCheckResult["status"] }) {
   return <AlertCircle aria-label="Could not run" className="h-4 w-4 shrink-0 text-destructive" />;
 }
 
-type DialogProps = { tree: LiberaTree; onOpenFile: (file: LiberaFileNode) => void; onClose: () => void; onRepaired?: (notebook: string) => void };
+/** `onRepaired` refreshes the tree, whose upkeep brings indexes up to date and moves side files to files it finds again; the check waits for it. */
+type DialogProps = { tree: LiberaTree; onOpenFile: (file: LiberaFileNode) => void; onClose: () => void; onRepaired?: (notebook: string) => Promise<unknown> | void };
 
 export function NotebookIntegrityDialog({ notebook, ...props }: DialogProps & { notebook: string | null }) {
   if (!notebook) return null;
@@ -94,6 +99,9 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
   const [fixing, setFixing] = useState<"planning" | "applying" | null>(null);
   const [fixError, setFixError] = useState("");
   const [fixed, setFixed] = useState<RepairResult | null>(null);
+  const [cleanup, setCleanup] = useState<CleanupPlan | null>(null);
+  const [understood, setUnderstood] = useState(false);
+  const [cleaned, setCleaned] = useState<CleanupResult | null>(null);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -106,10 +114,12 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
   }, [notebook, run]);
 
   const again = () => { setReport(null); setError(""); setStopped(false); setProgress(null); setRun((value) => value + 1); };
-  const checkAgain = () => { setFixed(null); setFixError(""); again(); };
+  const checkAgain = () => { setFixed(null); setCleaned(null); setFixError(""); again(); };
   const canFix = !!report && report.findings.some((finding) => MOVABLE.has(finding.check));
+  const canClear = !!report && report.findings.some((finding) => finding.clear?.length);
+  const settle = async () => { try { await onRepaired?.(notebook); } catch { /* The check says what is left. */ } };
   const prepareFix = async () => {
-    setFixing("planning"); setFixError(""); setFixed(null);
+    setFixing("planning"); setFixError(""); setFixed(null); setCleaned(null);
     try { setPlan(await apiRequest<RepairPlan>(`/api/notebooks/repair?notebook=${encodeURIComponent(notebook)}`)); }
     catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
     finally { setFixing(null); }
@@ -120,11 +130,30 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
     try {
       const result = await apiRequest<RepairResult>("/api/notebooks/repair", { method: "POST", body: JSON.stringify({ notebook, token: plan.token }) });
       setFixed(result); setPlan(null);
-      onRepaired?.(notebook);
+      window.dispatchEvent(new CustomEvent(REVIEWS_MOVED_EVENT, { detail: { paths: result.moved.map((move) => move.to) } }));
+      await settle();
       again();
     } catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
     finally { setFixing(null); }
   };
+  const prepareCleanup = async () => {
+    setFixing("planning"); setFixError(""); setFixed(null); setCleaned(null); setUnderstood(false);
+    try { setCleanup(await apiRequest<CleanupPlan>(`/api/notebooks/cleanup?notebook=${encodeURIComponent(notebook)}`)); }
+    catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { setFixing(null); }
+  };
+  const applyCleanup = async () => {
+    if (!cleanup) return;
+    setFixing("applying"); setFixError("");
+    try {
+      const result = await apiRequest<CleanupResult>("/api/notebooks/cleanup", { method: "POST", body: JSON.stringify({ notebook, token: cleanup.token }) });
+      setCleaned(result); setCleanup(null);
+      await settle();
+      again();
+    } catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { setFixing(null); }
+  };
+  const lost = cleanup?.items.filter((item) => item.lost).length ?? 0;
   const stop = () => { controller.current?.abort(); setStopped(true); };
   const bySeverity = (severity: IntegritySeverity) => report?.findings.filter((finding) => finding.severity === severity).length ?? 0;
   // A check that could not run, or only partly, means the report can't say the notebook is clear.
@@ -140,17 +169,25 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
       title={`Check ${notebook}`}
       description={plan
         ? "Files moved or renamed into another folder outside the app, found again by name. Nothing is changed until you confirm."
-        : "Checks links, images, side files, LaTeX projects and records against the disk. Nothing is changed."}
+        : cleanup
+          ? "What the check still reports as stale, and what removing each costs. Nothing is changed until you confirm."
+          : "Checks links, images, side files, LaTeX projects and records against the disk. Nothing is changed."}
       panelClassName="max-w-2xl"
       footer={<>
         {report && <span role="status" className="mr-auto text-xs text-muted-foreground">{plural(report.counts.files, "file")} · {plural(report.counts.notes, "note")} · {plural(report.counts.sidecars, "side file")} · {(report.durationMs / 1000).toFixed(1)} s</span>}
-        {plan ? <>
+        {cleanup ? <>
+          <button className={secondary} type="button" disabled={fixing !== null} onClick={() => { setCleanup(null); setFixError(""); }}>Back</button>
+          <button className={danger} type="button" disabled={fixing !== null || !cleanup.items.length || (lost > 0 && !understood)} onClick={() => void applyCleanup()}>
+            {fixing === "applying" ? "Removing…" : cleanup.items.length ? `Remove ${plural(cleanup.items.length, "stale item")}` : "Nothing to remove"}
+          </button>
+        </> : plan ? <>
           <button className={secondary} type="button" disabled={fixing !== null} onClick={() => { setPlan(null); setFixError(""); }}>Back</button>
           <button className={primary} type="button" disabled={fixing !== null || !plan.moves.length} onClick={() => void applyFix()}>
             {fixing === "applying" ? "Fixing…" : plan.moves.length ? `Fix ${plural(plan.moves.length, "file")}` : "Nothing to fix"}
           </button>
         </> : <>
-          {canFix && <button className={secondary} type="button" disabled={fixing !== null} onClick={() => void prepareFix()}>{fixing === "planning" ? "Looking for moved files…" : "Try to fix…"}</button>}
+          {canFix && <button className={secondary} type="button" disabled={fixing !== null || checking} onClick={() => void prepareFix()}>{fixing === "planning" ? "Working…" : "Try to fix…"}</button>}
+          {canClear && <button className={secondary} type="button" disabled={fixing !== null || checking} onClick={() => void prepareCleanup()}>Acknowledge…</button>}
           {checking
             ? <button className={secondary} type="button" onClick={stop}>Stop</button>
             : <button className={secondary} type="button" onClick={checkAgain}>Check again</button>}
@@ -160,15 +197,17 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
       onClose={onClose}
     >
       {fixError && <p role="alert" className="mb-2 text-sm text-destructive">{fixError}</p>}
-      {fixed && !plan && <FixedSummary result={fixed} />}
+      {fixed && !plan && !cleanup && <FixedSummary result={fixed} />}
+      {cleaned && !cleanup && <CleanedSummary result={cleaned} />}
       {plan && <RepairPlanView plan={plan} />}
-      {!plan && checking && <div role="status" className="space-y-2 py-4 text-sm">
+      {cleanup && <CleanupPlanView plan={cleanup} lost={lost} understood={understood} onUnderstood={setUnderstood} />}
+      {!cleanup && !plan && checking && <div role="status" className="space-y-2 py-4 text-sm">
         <p className="flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />{progress ? `${progress.label} (${progress.index + 1} of ${progress.total})…` : `Checking ${notebook}…`}</p>
         <progress className="h-1.5 w-full accent-primary" max={progress?.total ?? 1} value={progress ? progress.index : 0} aria-label="Checks done" />
       </div>}
-      {!plan && stopped && <p role="status" className="py-4 text-sm text-muted-foreground">The check was stopped. Nothing was changed.</p>}
-      {!plan && error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      {!plan && report && <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
+      {!cleanup && !plan && stopped && <p role="status" className="py-4 text-sm text-muted-foreground">The check was stopped. Nothing was changed.</p>}
+      {!cleanup && !plan && error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {!cleanup && !plan && report && <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
         <p role="status" className={`font-medium ${partial.length ? "rounded-lg border border-amber-500/40 bg-amber-500/10 p-2" : ""}`}>{summary}</p>
         {report.checks.map((check) => {
           const findings = report.findings.filter((finding) => finding.check === check.id)
@@ -213,6 +252,42 @@ function FixedSummary({ result }: { result: RepairResult }) {
   return <div role="status" className="mb-3 rounded-lg border border-border p-2 text-sm">
     <p className="font-medium">{result.moved.length ? `The records of ${plural(result.moved.length, "file")} now follow ${result.moved.length === 1 ? "it" : "them"}.` : "No records were moved."}</p>
     {result.problems.map((problem) => <p key={problem} className="text-xs text-destructive">{problem}</p>)}
+  </div>;
+}
+
+function CleanedSummary({ result }: { result: CleanupResult }) {
+  return <div role="status" className="mb-3 rounded-lg border border-border p-2 text-sm">
+    <p className="font-medium">{result.cleared ? `${plural(result.cleared, "stale item")} removed.` : "Nothing was removed."}</p>
+    {result.problems.map((problem) => <p key={problem} className="text-xs text-destructive">{problem}</p>)}
+  </div>;
+}
+
+function CleanupPlanView({ plan, lost, understood, onUnderstood }: { plan: CleanupPlan; lost: number; understood: boolean; onUnderstood: (value: boolean) => void }) {
+  const items = [...plan.items].sort((a, b) => Number(b.lost) - Number(a.lost) || a.path.localeCompare(b.path));
+  return <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
+    {lost > 0 && <div role="note" className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2">
+      <p className="flex gap-2">
+        <AlertCircle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+        <span>{plural(lost, "item")} below {lost === 1 ? "holds" : "hold"} things that are deleted for good: annotations, ink, comments, transcripts, code or images. This can&apos;t be undone in Libera; your sync service&apos;s version history may still have them.</span>
+      </p>
+      <label className="flex items-center gap-2 pl-6 font-medium">
+        <input type="checkbox" checked={understood} onChange={(event) => onUnderstood(event.target.checked)} />
+        I understand these are deleted for good
+      </label>
+    </div>}
+    {items.length > 0
+      ? <section className="rounded-lg border border-border">
+        <h3 className="px-3 py-2 font-medium">Removed ({items.length})</h3>
+        <ul className="divide-y divide-border border-t border-border">
+          {items.map((item, index) => <li key={`${item.path}-${index}`} className="px-3 py-2">
+            <p className="truncate text-xs font-medium" title={item.path}>{item.path}</p>
+            <p className="text-xs text-muted-foreground">{item.message}</p>
+            <p className={`text-xs ${item.lost ? "font-medium text-destructive" : ""}`}>{item.consequence}</p>
+          </li>)}
+        </ul>
+      </section>
+      : <p role="status" className="font-medium">Nothing stale is left to remove.</p>}
+    {plan.remaining > 0 && <p className="text-xs text-muted-foreground">{plural(plan.remaining, "other finding")} {plan.remaining === 1 ? "is" : "are"} not removed: broken links, missing images or LaTeX files and damaged files need you to set them right. Side files that follow a file found again and indexes catch up when the notebook is refreshed, right after this.</p>}
   </div>;
 }
 

@@ -166,6 +166,10 @@ export async function moveReviewPaths(moves: ReadonlyMap<string, string>, option
 export async function deleteReviewPath(key: string) {
   return transaction((tx) => { for (const [id, stored] of tx.keys()) if (under(stored, key)) tx.remove(id); });
 }
+/** The review of exactly this path; reviews of files under a folder of the same name are kept. */
+export async function deleteReviewKey(key: string) {
+  return transaction((tx) => { for (const [id, stored] of tx.keys()) if (stored === key) tx.remove(id); });
+}
 export async function copyReviewPath(from: string, to: string) {
   return transaction(async (tx) => {
     for (const [id, key] of tx.keys()) if (under(key, from)) {

@@ -139,7 +139,7 @@ export type NotebookPanelProps = {
     viewOptions: LiberaNotebookViewOptions,
   ) => Promise<void>;
   /** Check Notebook → Try to fix moved records: the tree (stars, tags) is read again. */
-  onNotebookRepaired?: (notebook: string) => void;
+  onNotebookRepaired?: (notebook: string) => Promise<unknown> | void;
 };
 
 const SIDEBAR_PAGE_SIZE = 20;

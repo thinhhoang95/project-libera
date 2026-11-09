@@ -18,12 +18,13 @@ import { savedAnnotationIds } from "@/lib/storage/annotations";
 import { parseTranscript } from "@/lib/storage/transcripts";
 import { markdownImageTargets, readMarkdownAssetDocuments, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { extractNotebookLinkDestinations, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
-import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, transcriptPath } from "@/lib/storage/paths";
+import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, orphanedSidecarsDirectoryPath, transcriptPath } from "@/lib/storage/paths";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectReviewKeys } from "@/lib/storage/review-files";
 import { existingSidecars, listSidecars, findOrphanedSidecars, type SidecarInspection } from "@/lib/storage/sidecars";
 import { matchByIdentity, readOrphans } from "@/lib/storage/pdf-sidecars";
 import { getFileType } from "@/lib/storage/file-types";
+import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 import { StorageError } from "@/lib/storage/errors";
@@ -50,7 +51,33 @@ export type IntegrityFinding = {
   message: string;
   /** What would set it right. Nothing is changed by the check itself. */
   fix?: string;
+  /** What Acknowledge (cleanup.ts) removes to clear this finding, on confirmation. */
+  clear?: CleanupAction[];
 };
+
+/**
+ * Something stale that Acknowledge removes: what is left of a file that is
+ * gone, a side file saved for another version of its file, an out-of-date
+ * cache or index. Paths are library paths; cleanup.ts says what each costs.
+ * `gone` names the file whose absence makes it stale: cleanup.ts checks it
+ * is still gone right before removing anything.
+ */
+export type CleanupAction = (
+  | { type: "side-file"; kind: string; filePath: string }
+  | { type: "ink-files"; filePath: string; names: string[] }
+  | { type: "set-aside"; file: string }
+  | { type: "asset"; path: string }
+  | { type: "star"; path: string }
+  | { type: "tags"; path: string }
+  | { type: "review"; path: string }
+  | { type: "agent-review"; path: string }
+  /** One attachment of one reference, in `library`'s reference library. */
+  | { type: "attachment"; library: string; entry: string; path: string }
+  /** The tether, as long as it is still to `target`. */
+  | { type: "tether"; target: string }
+  | { type: "bib-mirror" }
+  | { type: "citations" }
+) & { gone?: string };
 
 export type IntegrityCheckResult = {
   id: IntegrityCheckId;
@@ -237,6 +264,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   const notesCut = readable.length < notes.documents.length ? `${notes.documents.length - readable.length} notes were left out (the limit of ${Math.round(limits.bytes / 1024 / 1024)} MB read).` : null;
   let cancelled = false;
 
+  /** Each image embed's target is probed once, by the checks that ask about it. */
+  const probes = new Map<string, Promise<"present" | "absent" | "unknown">>();
+  const probeOnce = (absolutePath: string) => {
+    if (!probes.has(absolutePath)) probes.set(absolutePath, probe(absolutePath));
+    return probes.get(absolutePath)!;
+  };
+
   const order = Object.keys(LABELS) as IntegrityCheckId[];
   let findingsCut = false;
   const run = async (id: IntegrityCheckId, check: (add: (finding: Omit<IntegrityFinding, "check">) => void) => Promise<string | void>) => {
@@ -295,7 +329,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       }
       return sizes.get(key) ?? null;
     };
-    const outdatedCaches = new Map<string, number>();
+    const outdatedCaches = new Map<string, CleanupAction[]>();
     const name = (kind: string) => kind.replace(/-/g, " ");
     for (const sidecar of sidecars) {
       if (!budget.allows()) break;
@@ -307,7 +341,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         try { ink = await kind.inspectFolder(sidecar.path, getFileType(sidecar.fileParts.at(-1) ?? "") ?? ""); } catch { unreadSidecars += 1; continue; }
         budget.read(ink.bytes);
         if (ink.unreadable.length) add({ severity: "error", path: sidecar.filePath, message: `${plural(ink.unreadable.length, "ink file")} of ${sidecar.filePath} can't be read, so ${ink.unreadable.length === 1 ? "its" : "their"} ink is not shown (${ink.unreadable.slice(0, 3).join(", ")}).`, fix: "Restore them from your sync service's version history." });
-        if (ink.misplaced.length) add({ severity: "info", path: sidecar.filePath, message: `${plural(ink.misplaced.length, "ink file")} of ${sidecar.filePath} ${ink.misplaced.length === 1 ? "belongs" : "belong"} to a page or block this kind of file doesn't have, so ${ink.misplaced.length === 1 ? "it is" : "they are"} never shown.` });
+        if (ink.misplaced.length) add({ severity: "info", path: sidecar.filePath, message: `${plural(ink.misplaced.length, "ink file")} of ${sidecar.filePath} ${ink.misplaced.length === 1 ? "belongs" : "belong"} to a page or block this kind of file doesn't have, so ${ink.misplaced.length === 1 ? "it is" : "they are"} never shown.`, clear: [{ type: "ink-files", filePath: sidecar.filePath, names: ink.misplaced }] });
         if (ink.droppedStrokes) add({ severity: "warning", path: sidecar.filePath, message: `${plural(ink.droppedStrokes, "stroke")} in the ink of ${sidecar.filePath} can't be read and ${ink.droppedStrokes === 1 ? "is" : "are"} not shown.`, fix: "Restore the ink folder from your sync service's version history before drawing on that page again." });
         sources.push(...ink.sources.map((source) => ({ size: source.size, contentHash: source.sha256 })));
       } else {
@@ -319,7 +353,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         try { const value = JSON.parse(text); inspection = kind.inspect ? kind.inspect(value) : null; valid = !kind.inspect || inspection !== null; } catch { valid = false; }
         if (kind.cache) {
           // Caches make themselves again; one line per kind says how many would be.
-          if (!valid || (inspection?.source && !orphaned.has(sidecar.path) && await sizeOf(sidecar.fileParts) !== inspection.source.size)) outdatedCaches.set(kind.id, (outdatedCaches.get(kind.id) ?? 0) + 1);
+          if (!valid || (inspection?.source && !orphaned.has(sidecar.path) && await sizeOf(sidecar.fileParts) !== inspection.source.size)) outdatedCaches.set(kind.id, [...outdatedCaches.get(kind.id) ?? [], { type: "side-file", kind: kind.id, filePath: sidecar.filePath }]);
           continue;
         }
         if (!valid) { add({ severity: "error", path: sidecar.filePath, message: `The saved ${name(sidecar.kind)} of ${sidecar.filePath} can't be read.`, fix: "Restore it from a backup or your sync service's version history." }); continue; }
@@ -331,11 +365,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (!sources.length || orphaned.has(sidecar.path)) continue;
       const size = await sizeOf(sidecar.fileParts);
       if (size !== null && sources.some((recorded) => recorded.size !== size)) {
-        add({ severity: "info", path: sidecar.filePath, message: `The ${name(sidecar.kind)} of ${sidecar.filePath} was saved for another version of the file (its size differs), so it may no longer match it.`, fix: "Open the file to see whether it still matches; make it again if not." });
+        add({ severity: "info", path: sidecar.filePath, message: `The ${name(sidecar.kind)} of ${sidecar.filePath} was saved for another version of the file (its size differs), so it may no longer match it.`, fix: "Open the file to see whether it still matches; make it again if not.", clear: [{ type: "side-file", kind: sidecar.kind, filePath: sidecar.filePath }] });
       }
     }
-    for (const [kind, count] of outdatedCaches) {
-      add({ severity: "info", path: notebook, message: `${count} ${kind === "pdf-text" ? (count === 1 ? "PDF text cache is" : "PDF text caches are") : (count === 1 ? "waveform is" : "waveforms are")} out of date or can't be read; ${count === 1 ? "it is" : "they are"} made again when needed.` });
+    for (const [kind, clear] of outdatedCaches) {
+      const count = clear.length;
+      add({ severity: "info", path: notebook, message: `${count} ${kind === "pdf-text" ? (count === 1 ? "PDF text cache is" : "PDF text caches are") : (count === 1 ? "waveform is" : "waveforms are")} out of date or can't be read; ${count === 1 ? "it is" : "they are"} made again when needed.`, clear });
     }
     // Side files of files that are gone. The tree's reconciliation moves a
     // PDF's side files and the ink of a PDF or image to the one file with the
@@ -370,36 +405,87 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       const moved = await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path));
       add(moved
         ? { severity: "info", path: orphan.filePath, message: `${what}, belong to ${moved}: the same file, moved outside the app. They go to it the next time the notebook is opened.` }
-        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure." });
+        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath }] });
     }
-    // Side files set aside for files that left the notebook outside the app, waiting for them to come back.
-    let returning = 0;
+    // Side files set aside for files that left the notebook outside the app,
+    // waiting for them to come back. Those whose file is back go to it the
+    // next time the notebook is opened, by the owners' rules
+    // (pdf-sidecars.ts reconcilePdfSidecars, ink.ts reconcileInkFolders): the
+    // same bytes, or, with none recorded, the file back under its old path
+    // without side files of that kind. They are never stale.
+    const listed = new Set(visible.files);
+    const comesBack = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) =>
+      identity ? owner(kind, fileType, identity) : listed.has(originalPath) && !taken(kind).has(originalPath.toLowerCase()) ? originalPath : null;
+    const returning: string[] = [];
     const kinds = { annotations: "pdf-annotations", outline: "pdf-outline", definitions: "definitions" } as const;
-    for (const { record } of await readOrphans(notebook)) {
+    for (const { file, record } of await readOrphans(notebook)) {
       if (!budget.allows()) break;
-      const moved = record.source ? await owner(kinds[record.kind], "pdf", record.source) : null;
-      if (moved) { returning += 1; add({ severity: "info", path: moved, message: `Saved ${name(kinds[record.kind])} set aside when ${record.originalPath} left the notebook belong to ${moved}, the same file. They go to it the next time the notebook is opened.` }); }
+      const moved = await comesBack(kinds[record.kind], "pdf", record.originalPath, record.source ?? null);
+      if (moved) { returning.push(file); add({ severity: "info", path: moved, message: `Saved ${name(kinds[record.kind])} set aside when ${record.originalPath} left the notebook belong to ${moved}${record.source ? ", the same file" : ""}. They go to it the next time the notebook is opened.` }); }
     }
-    let kept = -returning;
+    const setAsideInk = orphanedSidecarsDirectoryPath(notebook, "ink");
+    for (const entry of await readdir(setAsideInk, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory() || !budget.allows()) continue;
+      const directory = path.join(setAsideInk, entry.name);
+      let record: { originalPath?: unknown; source?: { size?: unknown; sha256?: unknown } | null } | null = null;
+      try { record = JSON.parse(await readFile(path.join(directory, "record.json"), "utf8")); } catch { /* Not a set-aside record the owner reads. */ }
+      if (typeof record?.originalPath !== "string") continue;
+      const source = record.source && typeof record.source.size === "number" && typeof record.source.sha256 === "string" ? { size: record.source.size, contentHash: record.source.sha256 } : null;
+      const moved = await comesBack("ink", getFileType(record.originalPath), record.originalPath, source);
+      if (moved) { returning.push(directory); add({ severity: "info", path: moved, message: `Ink set aside when ${record.originalPath} left the notebook belongs to ${moved}. It goes to it the next time the notebook is opened.` }); }
+    }
+    const isReturning = (file: string) => returning.some((kept) => file === kept || file.startsWith(`${kept}${path.sep}`));
+    const setAside = path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR);
+    const kept: CleanupAction[] = [];
     const walk = async (directory: string) => {
       for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-        if (entry.isDirectory()) await walk(path.join(directory, entry.name));
-        else if (entry.isFile()) kept += 1;
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory()) await walk(file);
+        else if (entry.isFile() && !isReturning(file)) kept.push({ type: "set-aside", file: path.relative(setAside, file).split(path.sep).join("/") });
       }
     };
-    await walk(path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR));
-    if (kept > 0) add({ severity: "info", path: notebook, message: `${kept} side ${kept === 1 ? "file is" : "files are"} kept for files that left the notebook outside the app, in case they come back.` });
+    await walk(setAside);
+    if (kept.length) add({ severity: "info", path: notebook, message: `${kept.length} side ${kept.length === 1 ? "file is" : "files are"} kept for files that left the notebook outside the app, in case they come back.`, clear: kept });
     if (unreadable.length || unreadSidecars) return `${unreadable.length + unreadSidecars} side ${unreadable.length + unreadSidecars === 1 ? "file or folder" : "files or folders"} could not be read.`;
   });
 
   await run("assets", async (add) => {
     const unused = await unreferencedMarkdownAssets(notebook, notes);
     if (unused === null) return "Some notes could not be read, so unused images can't be told apart.";
+    // An image whose name a note's missing embed has is most likely that
+    // embed's image, left behind when the note moved: it is kept for the
+    // embed to be pointed at again, never offered to Acknowledge.
+    const embedded = new Set<string>();
+    if (unused.some((asset) => !asset.toLowerCase().endsWith(".py"))) {
+      for (const note of readable) {
+        for (const target of markdownImageTargets(note.documentPath, note.content)) {
+          if (target.absolutePath && await probeOnce(target.absolutePath) !== "present") embedded.add(path.basename(target.absolutePath).toLowerCase());
+        }
+      }
+    }
+    // Python code is named after its note: code whose name a note without
+    // code of its own would have is most likely that note's, its folder
+    // moved or renamed. It is kept too.
+    const codeNames = new Map<string, string>();
+    if (unused.some((asset) => asset.toLowerCase().endsWith(".py"))) {
+      for (const file of visible.files) {
+        if (getFileType(file) !== "markdown") continue;
+        const own = pythonSidecarPath(file);
+        if (await probeOnce(path.join(notebookPath(notebook), ...own.split("/").slice(1))) === "absent") codeNames.set(own.slice(own.lastIndexOf("/") + 1).toLowerCase(), file);
+      }
+    }
     for (const asset of unused) {
       const python = asset.toLowerCase().endsWith(".py");
+      const name = asset.slice(asset.lastIndexOf("/") + 1).toLowerCase();
+      const wanted = !python && embedded.has(name);
+      const owner = python ? codeNames.get(name) : undefined;
       add(python
-        ? { severity: "warning", path: asset, message: "Python code of a note that is not in the notebook.", fix: "Move the note back and it is found again; remove the code only once you no longer need it." }
-        : { severity: "info", path: asset, message: "An image no note shows (an open, unsaved note may still use it).", fix: "It can be removed once no note needs it." });
+        ? owner
+          ? { severity: "warning", path: asset, message: `Python code of a note that is not in the notebook, named like ${owner}: probably its code, left behind when a folder moved.`, fix: `Move it to ${pythonSidecarPath(owner)} to give it back to ${owner}.` }
+          : { severity: "warning", path: asset, message: "Python code of a note that is not in the notebook.", fix: "Move the note back and it is found again; remove the code only once you no longer need it.", clear: [{ type: "asset", path: asset, ...(pythonSidecarDocumentPath(asset) ? { gone: pythonSidecarDocumentPath(asset)! } : {}) }] }
+        : wanted
+          ? { severity: "info", path: asset, message: "An image no note shows, but a note shows a missing image of this name: probably this one, left behind when the note moved.", fix: "Point the note's image at this file, or insert it again." }
+          : { severity: "info", path: asset, message: "An image no note shows (an open, unsaved note may still use it).", fix: "It can be removed once no note needs it.", clear: [{ type: "asset", path: asset }] });
     }
   });
 
@@ -410,7 +496,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       for (const target of markdownImageTargets(note.documentPath, note.content)) {
         budget.probe();
         if (!target.absolutePath) { add({ severity: "warning", path: note.documentPath, message: `The image address "${target.source}" can't be read.` }); continue; }
-        const state = await probe(target.absolutePath);
+        const state = await probeOnce(target.absolutePath);
         if (state === "unknown") unchecked += 1;
         if (state === "absent") add({ severity: "error", path: note.documentPath, message: `Shows ${target.libraryPath ?? target.source}, which is missing.`, fix: "Put the image back, or insert it again." });
       }
@@ -509,22 +595,22 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // A file that could not be checked is never reported as missing.
     const missing = async (libraryPath: string) => { await disk.check([libraryPath]); return !disk.exists(libraryPath) && !disk.unknown(libraryPath); };
     for (const starred of metadata.starredFilePaths) {
-      if (under(starred, notebook) && await missing(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back." });
+      if (under(starred, notebook) && await missing(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back.", clear: [{ type: "star", path: starred, gone: starred }] });
     }
     for (const tagged of Object.keys(metadata.fileTags)) {
-      if (under(tagged, notebook) && await missing(tagged)) add({ severity: "warning", path: tagged, message: "Has tags, but the file is missing.", fix: "Put the file back, or its tags stay unused." });
+      if (under(tagged, notebook) && await missing(tagged)) add({ severity: "warning", path: tagged, message: "Has tags, but the file is missing.", fix: "Put the file back, or its tags stay unused.", clear: [{ type: "tags", path: tagged, gone: tagged }] });
     }
     // Read without migrating older review storage (readReviewKeys would).
     const reviews = await inspectReviewKeys(getStateRoot());
     if (reviews.damaged) add({ severity: "error", path: notebook, message: `The review comments' index can't be read (${reviews.damaged}).`, fix: "Restore .libera/reviews/index.json from your sync service's version history." });
     if (reviews.legacy) add({ severity: "info", path: notebook, message: "Older review storage is waiting to be converted; it is the next time review comments load." });
     for (const key of new Set(reviews.keys)) {
-      if (under(key, notebook) && await missing(key)) add({ severity: "info", path: key, message: "Review comments are kept for this file, which is missing." });
+      if (under(key, notebook) && await missing(key)) add({ severity: "info", path: key, message: "Review comments are kept for this file, which is missing.", clear: [{ type: "review", path: key, gone: key }] });
     }
     const pending = await listReviewEntryPaths();
     if (pending.unreadable) add({ severity: "warning", path: notebook, message: `${pending.unreadable} pending agent ${pending.unreadable === 1 ? "review can't" : "reviews can't"} be read (in any notebook).` });
     for (const reviewed of pending.paths) {
-      if (under(reviewed, notebook) && await missing(reviewed)) add({ severity: "warning", path: reviewed, message: "The agent's changes to this file wait for review, but the file is missing.", fix: "Put the file back to review them; they are dropped the next time reviews load." });
+      if (under(reviewed, notebook) && await missing(reviewed)) add({ severity: "warning", path: reviewed, message: "The agent's changes to this file wait for review, but the file is missing.", fix: "Put the file back to review them; they are dropped the next time reviews load.", clear: [{ type: "agent-review", path: reviewed, gone: reviewed }] });
     }
     const runs = await listRunFiles();
     if (runs.unreadable) add({ severity: "info", path: notebook, message: `${runs.unreadable} agent ${runs.unreadable === 1 ? "run's" : "runs'"} undo history can't be read (in any notebook).` });
@@ -552,7 +638,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (library !== notebook && !under(attachment.path, notebook)) continue;
           await disk.check([attachment.path]);
           if (!disk.exists(attachment.path) && !disk.unknown(attachment.path)) {
-            add({ severity: "warning", path: attachment.path, message: `Attached to the reference "${entry.key}" in ${library}'s library, but missing.`, fix: "Put the file back (it is re-attached when found), or detach it in References." });
+            add({ severity: "warning", path: attachment.path, message: `Attached to the reference "${entry.key}" in ${library}'s library, but missing.`, fix: "Put the file back (it is re-attached when found), or detach it in References.", clear: [{ type: "attachment", library, entry: entry.id, path: attachment.path, gone: attachment.path }] });
           }
         }
       }
@@ -562,9 +648,9 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       add({ severity: "warning", path: notebook, message: `The .bib tether's settings can't be read (${tether.damaged}).`, fix: "Choose the tethered file again in References." });
     } else if (tether && "libraryPath" in tether) {
       await disk.check([tether.libraryPath]);
-      if (!disk.exists(tether.libraryPath) && !disk.unknown(tether.libraryPath)) add({ severity: "warning", path: tether.libraryPath, message: "The library is tethered to this .bib file, which is missing.", fix: "Put the file back, or choose the tethered file again in References." });
+      if (!disk.exists(tether.libraryPath) && !disk.unknown(tether.libraryPath)) add({ severity: "warning", path: tether.libraryPath, message: "The library is tethered to this .bib file, which is missing.", fix: "Put the file back, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.libraryPath, gone: tether.libraryPath }] });
     } else if (tether && await probe(tether.absolutePath) === "absent") {
-      add({ severity: "warning", path: notebook, message: `The library is tethered to ${tether.absolutePath}, which is missing.`, fix: "Reconnect the drive, or choose the tethered file again in References." });
+      add({ severity: "warning", path: notebook, message: `The library is tethered to ${tether.absolutePath}, which is missing.`, fix: "Reconnect the drive, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.absolutePath }] });
     }
   });
 
@@ -595,12 +681,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     }
     if (await probe(citationIndexPath(notebook)) === "present") {
       const count = await outdated((await readCitationIndex(citationIndexPath(notebook))).files);
-      if (count) add({ severity: "info", path: notebook, message: `The citation index is out of date for ${plural(count, "file")}; it is brought up to date the next time citations are listed.` });
+      if (count) add({ severity: "info", path: notebook, message: `The citation index is out of date for ${plural(count, "file")}; it is brought up to date the next time citations are listed.`, clear: [{ type: "citations" }] });
     }
     if (ownLibrary) {
       const mirror = await planBibMirror(notebook, ownLibrary);
       const again = "It is written again after the next change in References.";
-      if (mirror.status === "write") add({ severity: "info", path: mirror.path, message: mirror.exists ? "The .bib mirror is out of date with the reference library." : "The .bib mirror is on, but references.bib is not written yet.", fix: again });
+      if (mirror.status === "write") add({ severity: "info", path: mirror.path, message: mirror.exists ? "The .bib mirror is out of date with the reference library." : "The .bib mirror is on, but references.bib is not written yet.", fix: again, clear: [{ type: "bib-mirror" }] });
       if (mirror.status === "protected") add({ severity: "info", path: mirror.editedPath, message: `references.bib was changed outside Libera, so the library's bibliography goes to ${mirror.path} instead${mirror.current ? "" : ", which is out of date"}.`, fix: `Cite ${mirror.path} in LaTeX, or remove the edited references.bib so that Libera writes it again.` });
     }
     // Global Search, read without opening the index for writing; skipped when that can't be done.

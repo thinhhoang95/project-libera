@@ -18,7 +18,8 @@ export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
   const payload = (await response.json().catch(() => ({}))) as Partial<ApiError>;
 
   if (!response.ok) {
-    throw new Error(payload.error ?? "Request failed.");
+    // The status lets a caller tell "not found" from other failures.
+    throw Object.assign(new Error(payload.error ?? "Request failed."), { status: response.status });
   }
 
   return payload as T;

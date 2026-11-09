@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, createRef, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { syncReview, commentRange, paragraphRange, plainParagraphRange, ReviewDraftTracker, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
+import { syncReview, commentRange, paragraphRange, plainParagraphRange, ReviewDraftTracker, REVIEWS_MOVED_EVENT, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
@@ -351,6 +351,12 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); }
     }
   }, [key, publish, snapshot, localStore, tabState]);
+  // Try to fix moved an older review to this path (in place of the empty one opening it made): show it.
+  useEffect(() => {
+    const onMoved = (event: Event) => { if (key && (event as CustomEvent<{ paths?: string[] }>).detail?.paths?.includes(key)) void reload(); };
+    window.addEventListener(REVIEWS_MOVED_EVENT, onMoved);
+    return () => window.removeEventListener(REVIEWS_MOVED_EVENT, onMoved);
+  }, [key, reload]);
   const draft = activeTab?.draft;
   // Anchors follow the unsaved buffer in memory as you type (`tracker`). The
   // review is stored, with the edits that led to the buffer, only now and

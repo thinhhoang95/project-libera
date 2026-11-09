@@ -231,12 +231,15 @@ export async function listSidecars(notebook: string): Promise<{ sidecars: Listed
   return { sidecars: listed, unreadable };
 }
 
-async function isFileOfType(notebook: string, parts: string[], kind: SidecarKind) {
+/** Null when it can't be told (no permission, a drive offline): such a file is not taken for gone. */
+async function isFileOfType(notebook: string, parts: string[], kind: SidecarKind): Promise<boolean | null> {
+  const type = getFileType(parts.at(-1) ?? "");
+  if (!type || !kind.appliesTo(type)) return false;
   try {
-    const type = getFileType(parts.at(-1) ?? "");
-    if (!type || !kind.appliesTo(type)) return false;
     return (await stat(filePathFromParts(notebook, parts))).isFile();
-  } catch { return false; }
+  } catch (error) {
+    return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? false : null;
+  }
 }
 
 function safeParts(parts: string[]) {
@@ -253,7 +256,7 @@ function safeParts(parts: string[]) {
 export async function findOrphanedSidecars(notebook: string, listed?: ListedSidecar[]): Promise<OrphanedSidecar[]> {
   const orphans: OrphanedSidecar[] = [];
   for (const sidecar of listed ?? (await listSidecars(notebook)).sidecars) {
-    if (safeParts(sidecar.fileParts) && !(await isFileOfType(notebook, sidecar.fileParts, sidecar.kindInfo))) {
+    if (safeParts(sidecar.fileParts) && (await isFileOfType(notebook, sidecar.fileParts, sidecar.kindInfo)) === false) {
       orphans.push({ kind: sidecar.kind, path: sidecar.path, filePath: sidecar.filePath });
     }
   }

@@ -9,6 +9,9 @@ import type { CommentInput, DeleteInput, EditInput, ReattachInput, ReplyInput, R
 
 export const LOCAL_REVIEW_ROUTE = "/api/markdown-reviews";
 
+/** A request that found no such review (apiRequest sets `status`). */
+const notFound = (error: unknown) => (error as { status?: unknown } | null)?.status === 404;
+
 export interface LocalReviewStoreOptions {
   /** The review key: a Libera path, `draft:<tabId>` or `standalone:<id>`. */
   key: string;
@@ -67,23 +70,44 @@ export class LocalReviewStore implements ReviewStore {
     return this.requestImpl<ReviewDocument>(LOCAL_REVIEW_ROUTE, { method: "POST", body: JSON.stringify({ action: "migrate", id: previous.id, revision: previous.revision, snapshot, key: this.key }) });
   }
 
-  /** Reads the stored review by id (Reload review). */
+  /**
+   * Reads the stored review by id (Reload review). When that review is gone,
+   * the one stored for the key is loaded instead (see `mutate`).
+   */
   async read(id: string, signal?: AbortSignal): Promise<ReviewDocument> {
-    return this.publish(await this.requestImpl<ReviewDocument>(`${LOCAL_REVIEW_ROUTE}?id=${encodeURIComponent(id)}`, { signal }));
+    try {
+      return this.publish(await this.requestImpl<ReviewDocument>(`${LOCAL_REVIEW_ROUTE}?id=${encodeURIComponent(id)}`, { signal }));
+    } catch (error) {
+      if (!notFound(error) || !this.current) throw error;
+      return this.load(signal, this.current.snapshot);
+    }
   }
 
   /**
    * Any review action against `doc`'s revision with the given snapshot: the
    * comment operations below and the agentic-review ones (toggle, sync,
    * decision, undo, redo, new-round) that keep their local route.
+   *
+   * A review can be replaced under an open editor: Check Notebook → Try to
+   * fix gives a file moved outside the app its older review in place of the
+   * empty one that opening it made (markdown-reviews.ts moveReviewPaths). The
+   * action then finds no review by that id; the key's review is loaded and
+   * the action applied to it once.
    */
   async mutate(action: string, fields: Record<string, unknown>, context: { doc: ReviewDocument; snapshot: string; signal?: AbortSignal }): Promise<ReviewDocument> {
-    const result = await this.requestImpl<ReviewDocument>(LOCAL_REVIEW_ROUTE, {
+    const send = (doc: ReviewDocument) => this.requestImpl<ReviewDocument>(LOCAL_REVIEW_ROUTE, {
       method: "POST",
       signal: context.signal,
-      body: JSON.stringify({ ...fields, action, id: context.doc.id, revision: context.doc.revision, snapshot: context.snapshot }),
+      body: JSON.stringify({ ...fields, action, id: doc.id, revision: doc.revision, snapshot: context.snapshot }),
     });
-    return this.publish(result);
+    try {
+      return this.publish(await send(context.doc));
+    } catch (error) {
+      if (!notFound(error)) throw error;
+      const replacement = await this.load(context.signal, context.snapshot);
+      if (replacement.id === context.doc.id) throw error;
+      return this.publish(await send(replacement));
+    }
   }
 
   private act(action: string, fields: Record<string, unknown>): Promise<ReviewDocument> {
