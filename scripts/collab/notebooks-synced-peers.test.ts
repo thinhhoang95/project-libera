@@ -208,3 +208,53 @@ test("a synced notebook folder is adopted, followed and handed over between inst
 function sleepTicks(count: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, (LEASE_TTL_MS / 3) * count + 100));
 }
+
+test("a follower's window hears when the writer's disk catches up", { timeout: 60_000 }, async () => {
+  const temp = tempRoot("libera-notebooks-follower-tree-");
+  const server = await startServerProcess();
+  const peers: Peer[] = [];
+  try {
+    const auth = await register(server, "Alice");
+    const alice = await makePeer(temp.dir, "alice", server, auth, { leaseTtlMs: LEASE_TTL_MS });
+    peers.push(alice);
+    const root = path.join(alice.library, "Research");
+    writeTree(root, { "note.md": "first line\n", "gone.md": "bye\n" });
+    const shared = await alice.router.call("POST", ControlRoutes.share, { notebook: "Research" });
+    const { projectId } = shared.body as { projectId: string };
+    const twin = await makePeer(temp.dir, "alice-twin", server, auth, { library: alice.library, leaseTtlMs: LEASE_TTL_MS, timings: { followerDiskMs: 40 } });
+    peers.push(twin);
+    await until(() => isFollower(twin, projectId) === true, "the second installation to follow");
+    await until(() => twin.service.resolvePath("Research/gone.md") !== null, "the follower to know the file");
+    const files = ControlRoutes.files(projectId);
+    const heard = (liberaPath: string) => twin.events.some((event) => event.t === "files-changed" && event.paths.includes(liberaPath));
+
+    twin.events.length = 0;
+    const deleted = await twin.router.call("POST", files, { op: "delete", path: "gone.md" });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+    const again = await twin.router.call("POST", files, { op: "delete", path: "gone.md" });
+    assert.equal(again.status, 200, `deleting it again is not an error: ${JSON.stringify(again.body)}`);
+    await until(() => !existsSync(path.join(root, "gone.md")), "the writer to remove the file");
+    await until(() => heard("Research/gone.md"), "the follower's window to hear that it left the disk");
+
+    twin.events.length = 0;
+    const created = await twin.router.call("POST", files, { op: "create-file", path: "new.md", content: "" });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    await until(() => existsSync(path.join(root, "new.md")), "the writer to write the file");
+    await until(() => heard("Research/new.md"), "the follower's window to hear that it reached the disk");
+
+    const renamed = await twin.router.call("POST", files, { op: "rename", path: "note.md", to: "renamed.md" });
+    assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+    const renamedAgain = await twin.router.call("POST", files, { op: "rename", path: "note.md", to: "renamed.md" });
+    assert.equal(renamedAgain.status, 200, `the same rename again is not an error: ${JSON.stringify(renamedAgain.body)}`);
+    await until(() => existsSync(path.join(root, "renamed.md")) && !existsSync(path.join(root, "note.md")), "the writer to rename the file");
+
+    const elsewhere = await twin.router.call("POST", files, { op: "rename", path: "note.md", to: "elsewhere.md" });
+    assert.equal(elsewhere.status, 404, "a different rename of a path that has moved on is refused");
+    const unknown = await twin.router.call("POST", files, { op: "delete", path: "never-here.md" });
+    assert.equal(unknown.status, 404, "a path that was never shared is still refused");
+  } finally {
+    for (const peer of peers) await closePeer(peer);
+    await server.stop();
+    removeDataDir(server.dataDir);
+  }
+});

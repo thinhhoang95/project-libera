@@ -98,6 +98,9 @@ const MAX_REPORTED_PATHS = 10_000;
 /** Longest wait between retries of a failed state.json write. */
 const MAX_SAVE_RETRY_MS = 5 * 60_000;
 
+/** How long a follower keeps watching for one path, for a slow sync client or a writer that is away. */
+const FOLLOWER_DISK_WAIT_MS = 10 * 60_000;
+
 export interface Timings {
   /**
    * Quiet time after a change before a document's working copy is written.
@@ -125,6 +128,8 @@ export interface Timings {
   watchGraceMs: number;
   /** On battery, the poll and the content verifications run this many times less often. */
   batteryScale: number;
+  /** How often a follower checks whether the writer's disk has caught up with the manifest. */
+  followerDiskMs: number;
   /** Retry delay for downloads and creates that failed (offline). */
   retryMs: number;
   /**
@@ -148,6 +153,7 @@ export const DEFAULT_TIMINGS: Timings = {
   watchedPollMs: 30_000,
   watchGraceMs: 2000,
   batteryScale: 4,
+  followerDiskMs: 1000,
   retryMs: 5000,
   verifyMs: 60_000,
   largeFileVerifyMs: 30 * 60_000,
@@ -266,6 +272,9 @@ export class SharedProject {
   private watchBaselineAt = 0;
   /** manifestPathKey of each path fs.watch reported, with when (performance.now()). */
   private readonly reportedAt = new Map<string, number>();
+  /** Paths a follower is waiting on: whether each should be on disk, and until when to wait. */
+  private readonly awaitedOnDisk = new Map<string, { present: boolean; until: number }>();
+  private followerDiskTimer: ReturnType<typeof setInterval> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   /** state.json is behind the in-memory state; kept until a write succeeds. */
   private stateDirty = false;
@@ -432,6 +441,7 @@ export class SharedProject {
     this.watcher = null;
     if (this.pollTimer) clearTimeout(this.pollTimer);
     this.pollTimer = null;
+    this.stopAwaitingDisk();
     for (const timer of [this.manifestTimer, this.scanTimer, this.retryTimer, ...this.timers]) if (timer) clearTimeout(timer);
     this.manifestTimer = this.scanTimer = this.retryTimer = null;
     this.timers.clear();
@@ -804,6 +814,50 @@ export class SharedProject {
     this.state.layout = next;
     this.ctx.layoutChanged(this.info.projectId);
     this.treeChanged(previous, next);
+    this.awaitDisk(previous, next);
+  }
+
+  /**
+   * A follower has no watcher, and the writer changes the disk after the
+   * manifest, so the tree a window read on tree-changed can be out of date.
+   * This says when the disk catches up, which through a sync client can take
+   * minutes. An empty `previous` is the first read of the manifest, not a change.
+   */
+  private awaitDisk(previous: Record<string, LayoutRecord>, next: Record<string, LayoutRecord>): void {
+    if (Object.keys(previous).length === 0) return;
+    const until = Date.now() + FOLLOWER_DISK_WAIT_MS;
+    for (const [fileId, record] of Object.entries(previous)) {
+      if (next[fileId]?.path !== record.path) this.awaitedOnDisk.set(record.path, { present: false, until });
+    }
+    for (const [fileId, record] of Object.entries(next)) {
+      if (previous[fileId]?.path !== record.path) this.awaitedOnDisk.set(record.path, { present: true, until });
+    }
+    if (this.awaitedOnDisk.size === 0 || this.followerDiskTimer) return;
+    this.followerDiskTimer = setInterval(() => void this.checkAwaitedDisk(), this.ctx.timings.followerDiskMs);
+    this.followerDiskTimer.unref?.();
+  }
+
+  private async checkAwaitedDisk(): Promise<void> {
+    if (!this.follower) {
+      this.stopAwaitingDisk();
+      return;
+    }
+    const arrived: string[] = [];
+    for (const [relative, awaited] of [...this.awaitedOnDisk]) {
+      const target = await resolveInside(this.info.root, relative).catch(() => null);
+      const settled = target !== null && (await statIfExists(target) !== null) === awaited.present;
+      if (settled) arrived.push(relative);
+      if (settled || Date.now() >= awaited.until) this.awaitedOnDisk.delete(relative);
+    }
+    if (this.stopped) return;
+    if (arrived.length) this.filesChanged(arrived);
+    if (this.awaitedOnDisk.size === 0) this.stopAwaitingDisk();
+  }
+
+  private stopAwaitingDisk(): void {
+    if (this.followerDiskTimer) clearInterval(this.followerDiskTimer);
+    this.followerDiskTimer = null;
+    this.awaitedOnDisk.clear();
   }
 
   private scheduleRetry(): void {
@@ -934,6 +988,9 @@ export class SharedProject {
     const recovery = path.join(archiveRoot, name);
     await writeFileAtomic(recovery, encodeText(text), contentGuard(recovery, null, this.diskGuard()));
     await this.archive(record.path);
+    // Writing it back made its folders again if they were deleted with it.
+    const inUse = (relative: string) => Object.values(this.state.layout).some((other) => other.path === relative || other.path.startsWith(`${relative}/`));
+    await pruneEmptyDirectories(this.info.root, path.posix.dirname(record.path), inUse);
   }
 
   private refuse(relative: string, error: unknown): void {
@@ -2136,7 +2193,11 @@ export class SharedProject {
             if (!request.to) throw new ControlError(400, "bad-request", "rename needs `to`.");
             const to = normalizeRelative(request.to);
             const moving = entriesUnder(this.entries.values(), relative);
-            if (moving.length === 0) throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            if (moving.length === 0) {
+              // The same rename again: on a follower the disk still shows the old name.
+              if (this.retired.has(manifestPathKey(relative)) && entriesUnder(this.entries.values(), to).length > 0) return { paths: [] };
+              throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            }
             this.assertFree(to, moving.map((entry) => entry.fileId));
             const displayed = computeLayout(this.entries.values()).paths;
             const depth = relative.split("/").length;
@@ -2169,7 +2230,11 @@ export class SharedProject {
           }
           case "delete": {
             const removing = entriesUnder(this.entries.values(), relative);
-            if (removing.length === 0) throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            if (removing.length === 0) {
+              // Already removed, and still on a follower's disk until the writer gets to it.
+              if (this.retired.has(manifestPathKey(relative))) return { paths: [] };
+              throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
+            }
             const displayed = computeLayout(this.entries.values()).paths;
             await this.writeManifest((map, doc) => {
               for (const entry of removing) map.delete(entry.fileId);

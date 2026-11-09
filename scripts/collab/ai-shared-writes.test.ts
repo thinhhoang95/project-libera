@@ -231,8 +231,10 @@ class FakeHost {
       if (op.op === "delete") {
         if (!existsSync(target)) return this.send(response, 404, { error: { code: "not-found", message: "File not found." } });
         const archiveTarget = path.join(this.library, "Shared", "_archive", ...op.path.split("/"));
-        mkdirSync(path.dirname(archiveTarget), { recursive: true });
-        renameSync(target, archiveTarget);
+        this.byWriter(() => {
+          mkdirSync(path.dirname(archiveTarget), { recursive: true });
+          renameSync(target, archiveTarget);
+        });
         for (const docPath of this.docs.keys()) {
           if (docPath === liberaPath || docPath.startsWith(`${liberaPath}/`)) this.docs.delete(docPath);
         }
@@ -1196,5 +1198,14 @@ test("a follower's save reads the file once the writer has put it on disk", asyn
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal(((await response.json()) as { content: string }).content, "text\n");
     assert.equal(existsSync(path.join(root, "Shared", "soon.md")), true, "it waited for the file");
+  });
+});
+
+test("a follower's delete leaves the tree once the writer has removed the file", async () => {
+  await withFixture(async ({ host }) => {
+    host.writerDelayMs = 100;
+    const response = await FILES_DELETE(authed("/api/files?path=Shared%2Fviewed.md", { method: "DELETE" }));
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.doesNotMatch(await response.text(), /viewed\.md/);
   });
 });

@@ -510,10 +510,14 @@ async function moveCompanionTranscript(fromPath: string, toPath: string, config:
  * through a sync client. The save has succeeded either way.
  */
 async function fileArrived(liberaPath: string): Promise<boolean> {
+  return diskCaughtUp(liberaPath, true);
+}
+
+async function diskCaughtUp(liberaPath: string, present: boolean): Promise<boolean> {
   const { notebook, pathParts } = splitFilePath(liberaPath);
   const target = filePathFromParts(notebook, pathParts);
   const deadline = Date.now() + ARRIVAL_WAIT_MS;
-  while (!(await pathExists(target))) {
+  while ((await pathExists(target)) !== present) {
     if (Date.now() >= deadline) return false;
     await sleep(ARRIVAL_CHECK_MS);
   }
@@ -635,6 +639,8 @@ export async function deleteSharedFile(relativePath: string, options: SharedWrit
   // The host deletes the file's ink with it, in the same change.
   await removeFileMetadataPath(liberaPath);
   notifySearchChanges([liberaPath]);
+  // If it is slower than this, the host says when the file has left the disk.
+  await diskCaughtUp(liberaPath, false);
   return getTree();
 }
 
