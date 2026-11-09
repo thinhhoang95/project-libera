@@ -11,7 +11,8 @@ import { readMarkdownAssetDocuments, unreferencedMarkdownAssets, movePythonSidec
 import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
 import { assertSafeSegment, filePathFromParts, getLinkedFolder, getStateRoot, notebookPath, splitFilePath, withReadOnlyStorage } from "@/lib/storage/paths";
 import { inspectReferenceLibrary, moveReferenceAttachmentsBatch, readReferenceLibrary } from "@/lib/storage/references";
-import { inspectReviewKeys } from "@/lib/storage/review-files";
+import { isEmptyReview, type ReviewDocument } from "@/lib/markdown-review";
+import { inspectReviewDocuments, inspectReviewKeys } from "@/lib/storage/review-files";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { listSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { listVisibleNotebookFiles } from "@/lib/storage/tree";
@@ -144,6 +145,12 @@ async function plan(name: string): Promise<RepairPlan> {
 
   const ownRecords = async (candidate: string) => {
     const own = new Set([...records.get(candidate) ?? []].filter((record) => OWN.has(record)));
+    // Opening the file where it is now made an empty review: it is not the
+    // file's own, and applying replaces it (moveReviewPaths, replaceEmpty).
+    if (own.has(REVIEWS)) {
+      const reviews = await inspectReviewDocuments<ReviewDocument>(getStateRoot(), candidate);
+      if (reviews?.every(isEmptyReview)) own.delete(REVIEWS);
+    }
     // Python code of a note that is there is in use, so it was not listed above.
     if (getFileType(baseName(candidate)) === "markdown") {
       const python = splitFilePath(pythonSidecarPath(candidate));
@@ -217,7 +224,9 @@ export async function applyNotebookRepair(name: string, token: string): Promise<
     const step = async (what: string, task: () => Promise<unknown>) => {
       try { await task(); } catch (error) { problems.push(`${what} could not follow: ${error instanceof Error ? error.message : String(error)}`); }
     };
-    await step("Review comments", () => moveReviewPaths(pairs));
+    await step("Review comments", async () => {
+      for (const from of await moveReviewPaths(pairs, { replaceEmpty: true })) problems.push(`The review comments of ${from} stayed there: ${pairs.get(from)} has review comments of its own.`);
+    });
     await step("Stars and tags", () => renameFileMetadataPaths(pairs));
     await step("Reference attachments", async () => {
       const { changed, failures } = await moveReferenceAttachmentsBatch(pairs);

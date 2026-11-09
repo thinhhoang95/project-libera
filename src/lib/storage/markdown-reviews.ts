@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getStateRoot } from "./paths";
 import { StorageError } from "./errors";
 import { findReviewDocument, isSafeReviewId, readReviewDocument, readReviewDocuments, withReviewTransaction, type ReviewTransaction } from "./review-files";
-import { agentSuggestionTitle, anchorAt, newReview, syncReview, type AgentSuggestion, type ReviewDocument, type ReviewRange } from "../markdown-review";
+import { agentSuggestionTitle, anchorAt, isEmptyReview, newReview, syncReview, type AgentSuggestion, type ReviewDocument, type ReviewRange } from "../markdown-review";
 
 // Each document's review is its own file (review-files.ts), so a write
 // rewrites only the document it changed. A lock coordinates separate Next
@@ -129,17 +129,38 @@ export async function moveReviewPath(from: string, to: string) {
     }
   });
 }
-/** Many files moved at once (notebook migration): their reviews follow in one transaction. `moves` maps exact paths. */
-export async function moveReviewPaths(moves: ReadonlyMap<string, string>) {
-  if (!moves.size) return;
+/**
+ * Many files moved at once (notebook migration): their reviews follow in one
+ * transaction. `moves` maps exact paths. With `replaceEmpty` (Try to fix), a
+ * destination may already have a review: an empty one (opening the file made
+ * it) gives way; one with anything in it is kept, and the review moving there
+ * stays where it was. Returns the paths whose reviews stayed.
+ */
+export async function moveReviewPaths(moves: ReadonlyMap<string, string>, options: { replaceEmpty?: boolean } = {}): Promise<string[]> {
+  if (!moves.size) return [];
   return transaction(async (tx) => {
+    const stayed = new Set<string>();
+    if (options.replaceEmpty) {
+      const sourceOf = new Map([...moves].map(([from, to]) => [to, from]));
+      const replaced = new Map<string, string[]>();
+      for (const [id, key] of tx.keys()) {
+        const from = sourceOf.get(key);
+        if (from === undefined || moves.has(key)) continue;
+        // A review whose file has not synced yet can't be shown to be empty.
+        const doc = await tx.getIfPresent(id);
+        if (doc && isEmptyReview(doc)) replaced.set(key, [...replaced.get(key) ?? [], id]);
+        else stayed.add(from);
+      }
+      for (const [key, ids] of replaced) if (!stayed.has(sourceOf.get(key)!)) for (const id of ids) tx.remove(id);
+    }
     for (const [id, key] of tx.keys()) {
       const to = moves.get(key);
-      if (to === undefined || to === key) continue;
+      if (to === undefined || to === key || stayed.has(key)) continue;
       const doc = await tx.getIfPresent(id);
       if (doc) { doc.key = to; doc.revision++; }
       else tx.rekey(id, to);
     }
+    return [...stayed];
   });
 }
 export async function deleteReviewPath(key: string) {

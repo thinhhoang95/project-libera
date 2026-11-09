@@ -196,6 +196,23 @@ export async function inspectReviewKeys(root: string): Promise<{ keys: string[];
   catch (error) { return { keys: [], legacy, damaged: error instanceof Error ? error.message : String(error) }; }
 }
 
+/**
+ * The stored documents of `key` without touching anything (for checks and
+ * plans), like inspectReviewKeys. Null when the index or one of them can't be
+ * read (not synced yet, damaged), so the caller can't take it for empty.
+ */
+export async function inspectReviewDocuments<D extends StoredReview>(root: string, key: string): Promise<D[] | null> {
+  try {
+    const documents: D[] = [];
+    for (const [id, stored] of await readIndexFile(root) ?? new Map<string, string>()) {
+      if (stored === key) documents.push((await readDocumentFile<D>(root, id, key))!);
+    }
+    return documents;
+  } catch {
+    return null;
+  }
+}
+
 /** Every stored document's id and key. */
 export async function readReviewKeys(root: string): Promise<Map<string, string>> {
   await ensureLayout(root, defaultBusy);

@@ -373,6 +373,10 @@ export class ReviewDraftTracker {
 export function newReview(key: string, snapshot: string, id: string): ReviewDocument {
   return { schemaVersion: 1, key, id, snapshot, revision: 0, enabled: false, threads: [], undo: [] };
 }
+/** Nothing anyone wrote: no comments, no review session or rounds, no suggestions, no undo. Opening a note makes such a review (loadReview). */
+export function isEmptyReview(doc: ReviewDocument) {
+  return !doc.threads.length && !doc.session && !doc.agentSuggestions?.length && !doc.previousRounds?.length && !doc.undo.length && !doc.redo?.length;
+}
 export function applyReviewEdits(text: string, edits: ReviewEdit[]): string {
   const sorted = [...edits].sort((a, b) => a.start - b.start);
   sorted.forEach((e, index) => {

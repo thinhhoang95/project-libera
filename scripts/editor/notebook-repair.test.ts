@@ -3,8 +3,10 @@ import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "../../src/lib/python/sidecar";
+import { addReviewThreads, findReview, loadReview, moveReviewPaths } from "../../src/lib/storage/markdown-reviews";
+import { inspectReviewKeys } from "../../src/lib/storage/review-files";
 import { inkFolderPath } from "../../src/lib/storage/ink";
-import { audioPeaksPath, definitionsPath, filePathFromParts, getAdminRoot, imageAnnotationsPath, pdfAnnotationsPath, pdfOutlinePath, transcriptPath } from "../../src/lib/storage/paths";
+import { audioPeaksPath, definitionsPath, filePathFromParts, getAdminRoot, getStateRoot, imageAnnotationsPath, pdfAnnotationsPath, pdfOutlinePath, transcriptPath } from "../../src/lib/storage/paths";
 import { readReferenceLibrary } from "../../src/lib/storage/references";
 import { applyNotebookRepair, planNotebookRepair } from "../../src/lib/storage/repair";
 import { pruneAudioSidecars } from "../../src/lib/storage/transcripts";
@@ -124,7 +126,47 @@ test("a name that could be several files is never guessed", () => withTemporaryL
   assert.deepEqual(await readFile(transcriptPath("Nb", ["other", "talk.m4a"]), "utf8"), seeded("transcript"), "a file's own records are never replaced");
 }));
 
-test("a fix is applied only as it was shown", () => withTemporaryLibrary(["Nb"], async () => {
+test("opening a moved note before the fix doesn't keep its comments from following it", () => withTemporaryLibrary(["Nb"], async () => {
+  const text = "# Note\n\nSome text to comment on.\n";
+  for (const name of ["opened", "commented"]) {
+    await writeLibraryFile(`Nb/old/${name}.md`, text);
+    await addReviewThreads(`Nb/old/${name}.md`, text, [{ range: { start: 8, end: 12 }, text: `about ${name}` }]);
+    await setFileTagsForPath(`Nb/old/${name}.md`, ["digest"]);
+    await finderMove(`Nb/old/${name}.md`, `Nb/new/${name}.md`);
+  }
+  // Opening a note makes an empty review at its new path.
+  await loadReview("Nb/new/opened.md", text);
+  // Commenting at the new path makes a review of its own.
+  await addReviewThreads("Nb/new/commented.md", text, [{ range: { start: 8, end: 12 }, text: "new comment" }]);
+
+  const plan = await planNotebookRepair("Nb");
+  assert.deepEqual(plan.moves, [{ from: "Nb/old/opened.md", to: "Nb/new/opened.md", records: ["review comments", "tags"] }]);
+  assert.deepEqual(plan.unmatched.map((item) => [item.from, item.reason]), [["Nb/old/commented.md", "own"]]);
+
+  const result = await applyNotebookRepair("Nb", plan.token);
+  assert.deepEqual(result.problems, []);
+  const keys = (await inspectReviewKeys(getStateRoot())).keys.sort();
+  assert.deepEqual(keys, ["Nb/new/commented.md", "Nb/new/opened.md", "Nb/old/commented.md"], "the empty review gave way, one review per path");
+  assert.deepEqual((await findReview("Nb/new/opened.md"))?.threads.map((thread) => thread.messages[0].text), ["about opened"]);
+  assert.deepEqual((await findReview("Nb/new/commented.md"))?.threads.map((thread) => thread.messages[0].text), ["new comment"], "a review with comments is never replaced");
+  assert.deepEqual((await readWorkspaceMetadata()).fileTags["Nb/new/opened.md"], ["digest"]);
+}));
+
+test("a review that gains comments after the plan stays where it was", () => withTemporaryLibrary(["Nb"], async () => {
+  const text = "# Note\n\nSome text.\n";
+  await writeLibraryFile("Nb/old/n.md", text);
+  await addReviewThreads("Nb/old/n.md", text, [{ range: { start: 8, end: 12 }, text: "old" }]);
+  await finderMove("Nb/old/n.md", "Nb/new/n.md");
+  await loadReview("Nb/new/n.md", text);
+  assert.equal((await planNotebookRepair("Nb")).moves.length, 1);
+  // Between the plan and its transaction, someone comments at the new path.
+  await addReviewThreads("Nb/new/n.md", text, [{ range: { start: 8, end: 12 }, text: "new" }]);
+  assert.deepEqual(await moveReviewPaths(new Map([["Nb/old/n.md", "Nb/new/n.md"]]), { replaceEmpty: true }), ["Nb/old/n.md"]);
+  assert.deepEqual((await findReview("Nb/old/n.md"))?.threads.map((thread) => thread.messages[0].text), ["old"]);
+  assert.deepEqual((await findReview("Nb/new/n.md"))?.threads.map((thread) => thread.messages[0].text), ["new"]);
+}));
+
+test("a fix is applied only as it was shown",() => withTemporaryLibrary(["Nb"], async () => {
   await writeLibraryFile("Nb/a/x.pdf", "%PDF");
   await setStarredFilePath("Nb/a/x.pdf", true);
   await finderMove("Nb/a/x.pdf", "Nb/b/x.pdf");
