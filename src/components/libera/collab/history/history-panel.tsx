@@ -65,7 +65,7 @@ function attributionMarks(ranges: AttributedRange[]): Extension {
 }
 
 /** A read-only CodeMirror view of a revision; reports the selected range for "Restore selection" (also the review checkpoint view). */
-export function RevisionView({ text, onSelection }: { text: string; onSelection: (range: { start: number; end: number } | null) => void }) {
+export function RevisionView({ text, onSelection, className = "max-h-[55vh] min-h-48 rounded-lg border border-border" }: { text: string; onSelection: (range: { start: number; end: number } | null) => void; className?: string }) {
   const parent = useRef<HTMLDivElement | null>(null);
   const report = useRef(onSelection);
   useEffect(() => { report.current = onSelection; });
@@ -84,10 +84,10 @@ export function RevisionView({ text, onSelection }: { text: string; onSelection:
     });
     return () => view.destroy();
   }, [text]);
-  return <div ref={parent} className="libera-history-view max-h-[55vh] min-h-48 overflow-auto rounded-lg border border-border text-[13px]" aria-label="Revision text" />;
+  return <div ref={parent} className={`libera-history-view overflow-auto text-[13px] ${className}`} aria-label="Revision text" />;
 }
 
-export function DiffView({ attribution, before }: { attribution: Attribution; before: string }) {
+export function DiffView({ attribution, before, className = "max-h-[55vh] rounded-lg border border-border" }: { attribution: Attribution; before: string; className?: string }) {
   const parent = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!parent.current) return;
@@ -100,12 +100,20 @@ export function DiffView({ attribution, before }: { attribution: Attribution; be
     });
     return () => view.destroy();
   }, [attribution, before]);
-  return <div ref={parent} className="libera-history-diff max-h-[55vh] overflow-auto rounded-lg border border-border text-[13px]" aria-label="Changes" />;
+  return <div ref={parent} className={`libera-history-diff overflow-auto text-[13px] ${className}`} aria-label="Changes" />;
 }
 
 function byWhom(user: UserSummary | null): string {
   return user ? user.displayName : "Libera";
 }
+
+// The version history dialog's two panes: a frame each, a header row of one
+// height, a body that fills the rest and scrolls, and an optional footer.
+const pane = "flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border";
+const paneHeader = "flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs";
+const paneFooter = "flex shrink-0 flex-wrap items-center gap-2 border-t border-border px-3 py-2";
+const paneBody = "min-h-0 flex-1";
+const paneNote = "flex items-center gap-2 p-3 text-xs text-muted-foreground";
 
 export interface DocumentHistoryPanelProps {
   target: HistoryTarget;
@@ -225,16 +233,23 @@ export function DocumentHistoryPanel({ target, onClose, api = historyApi }: Docu
   const diffBusy = compareKey !== null && !shownDiff && !error;
 
   return <ModalDialog open title="Version history" description={target.path} panelClassName="max-w-5xl w-full" onClose={onClose} footer={<button className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" type="button" onClick={onClose}>Close</button>}>
-    <div className="libera-history grid min-h-0 gap-3 md:grid-cols-[16rem_1fr]">
-      <aside className="flex min-h-0 flex-col gap-2" aria-label="Revisions">
-        {canName && (naming === null
-          ? <button type="button" className="review-button" onClick={() => setNaming("")}><Tag aria-hidden size={14} /> Name this version…</button>
-          : <form className="flex gap-1" onSubmit={(event) => { event.preventDefault(); void nameVersion(); }}>
-            <input autoFocus aria-label="Version name" className="libera-panel-field h-8 min-w-0 flex-1 px-2 text-xs" maxLength={200} placeholder="Version name" value={naming} onChange={(event) => setNaming(event.target.value)} />
-            <button type="submit" className="review-button" disabled={!naming.trim() || busy === "name"}>Save</button>
-          </form>)}
-        <ol className="min-h-0 flex-1 space-y-1 overflow-auto">
-          {revisions === null ? <li className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Loading…</li> : !revisions.length ? <li className="text-xs text-muted-foreground">No versions yet. Libera saves one after five idle minutes and when you close the document.</li> : page.visible.map((revision) => (
+    {/* Two panes of one height: the list scrolls in its own pane, and the
+        version (or the diff) fills the other, whatever either holds. */}
+    <div className="libera-history grid gap-3 md:h-[min(68vh,46rem)] md:grid-cols-[16rem_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]">
+      <aside className={pane} aria-label="Revisions">
+        <div className={paneHeader}>
+          {naming === null
+            ? <>
+              <span className="min-w-0 flex-1 font-semibold">Versions{revisions?.length ? <span className="ml-1 font-normal tabular-nums text-muted-foreground">{revisions.length}</span> : null}</span>
+              {canName && <button type="button" className="review-button" onClick={() => setNaming("")}><Tag aria-hidden size={14} /> Name this version…</button>}
+            </>
+            : <form className="flex min-w-0 flex-1 gap-1" onSubmit={(event) => { event.preventDefault(); void nameVersion(); }}>
+              <input autoFocus aria-label="Version name" className="libera-panel-field h-7 min-w-0 flex-1 px-2 text-xs" maxLength={200} placeholder="Version name" value={naming} onChange={(event) => setNaming(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setNaming(null); } }} />
+              <button type="submit" className="review-button" disabled={!naming.trim() || busy === "name"}>Save</button>
+            </form>}
+        </div>
+        <ol className="max-h-72 min-h-0 flex-1 space-y-1 overflow-auto p-1.5 md:max-h-none">
+          {revisions === null ? <li className="flex items-center gap-2 p-1.5 text-xs text-muted-foreground"><LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Loading…</li> : !revisions.length ? <li className="p-1.5 text-xs text-muted-foreground">No versions yet. Libera saves one after five idle minutes and when you close the document.</li> : page.visible.map((revision) => (
             <li key={revision.id}>
               <button type="button" aria-pressed={revision.id === selectedId} data-revision-kind={revision.kind} className="w-full rounded-lg px-2 py-1.5 text-left text-xs hover:bg-muted aria-pressed:bg-muted" onClick={() => { setSelectedId(revision.id); setCompare({ kind: "none" }); setResult(""); }}>
                 <span className="block font-medium">{revisionTitle(revision)}</span>
@@ -245,29 +260,33 @@ export function DocumentHistoryPanel({ target, onClose, api = historyApi }: Docu
           {page.remaining > 0 ? <li><ShowMoreButton remaining={page.remaining} onClick={page.showMore} /></li> : null}
         </ol>
       </aside>
-      <section className="flex min-h-0 min-w-0 flex-col gap-2" aria-label="Revision">
-        {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-        {result && <p role="status" className="text-xs">{result}</p>}
-        {selected && <div className="flex flex-wrap items-center gap-2 text-xs">
-          <History aria-hidden size={14} /><strong>{revisionTitle(selected)}</strong>
-          <label className="ml-auto inline-flex items-center gap-1">Compare with
-            <select aria-label="Compare with" className="libera-panel-field h-7 px-1 text-xs" value={compare.kind === "revision" ? compare.id : compare.kind} onChange={(event) => { const value = event.target.value; setCompare(value === "none" ? { kind: "none" } : value === "now" ? { kind: "now" } : { kind: "revision", id: value }); }}>
-              <option value="none">Nothing (show this version)</option>
-              <option value="now">The current text</option>
-              {otherRevisions.map((revision) => <option key={revision.id} value={revision.id}>{revisionTitle(revision)} · {new Date(revision.createdAt).toLocaleString()}</option>)}
-            </select>
-          </label>
+      <section className={pane} aria-label="Revision">
+        <div className={paneHeader}>
+          {selected ? <>
+            <History aria-hidden size={14} className="shrink-0" /><strong className="min-w-0 truncate">{revisionTitle(selected)}</strong>
+            <label className="ml-auto inline-flex min-w-0 items-center gap-1">Compare with
+              <select aria-label="Compare with" className="libera-panel-field h-7 min-w-0 max-w-64 px-1 text-xs" value={compare.kind === "revision" ? compare.id : compare.kind} onChange={(event) => { const value = event.target.value; setCompare(value === "none" ? { kind: "none" } : value === "now" ? { kind: "now" } : { kind: "revision", id: value }); }}>
+                <option value="none">Nothing (show this version)</option>
+                <option value="now">The current text</option>
+                {otherRevisions.map((revision) => <option key={revision.id} value={revision.id}>{revisionTitle(revision)} · {new Date(revision.createdAt).toLocaleString()}</option>)}
+              </select>
+            </label>
+          </> : <span className="text-muted-foreground">{revisions?.length ? "Choose a version" : "Version"}</span>}
+        </div>
+        {(error || result) && <div className="shrink-0 space-y-1 border-b border-border px-3 py-2">
+          {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+          {result && <p role="status" className="text-xs">{result}</p>}
         </div>}
-        {compare.kind === "none"
-          ? (content && content.id === selectedId ? <RevisionView text={content.text} onSelection={setSelection} /> : selected ? <p className="text-xs text-muted-foreground">Loading this version…</p> : null)
-          : diffBusy || !shownDiff ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Comparing…</p>
-            : <>
-              <DiffView attribution={shownDiff.attribution} before={shownDiff.before} />
-              {shownDiff.attribution.authors.length > 0 && <ul className="flex flex-wrap gap-2 text-[11px]" aria-label="Authors of the changes">
-                {shownDiff.attribution.authors.map((author) => <li key={author.key} className="inline-flex items-center gap-1" data-author-kind={author.kind}><span aria-hidden className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: author.color }} />{author.label}</li>)}
-              </ul>}
-            </>}
-        {canRestore && selected && compare.kind === "none" && <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-h-72 flex-1 flex-col md:min-h-0">
+          {compare.kind === "none"
+            ? (content && content.id === selectedId ? <RevisionView text={content.text} onSelection={setSelection} className={paneBody} /> : selected ? <p className={paneNote}><LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Loading this version…</p> : null)
+            : diffBusy || !shownDiff ? <p className={paneNote}><LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Comparing…</p>
+              : <DiffView attribution={shownDiff.attribution} before={shownDiff.before} className={paneBody} />}
+        </div>
+        {compare.kind !== "none" && shownDiff && shownDiff.attribution.authors.length > 0 && <ul className={paneFooter} aria-label="Authors of the changes">
+          {shownDiff.attribution.authors.map((author) => <li key={author.key} className="inline-flex items-center gap-1 text-[11px]" data-author-kind={author.kind}><span aria-hidden className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: author.color }} />{author.label}</li>)}
+        </ul>}
+        {canRestore && selected && compare.kind === "none" && <div className={paneFooter}>
           {confirming
             ? <>
               <span className="text-xs">{confirming === "whole" ? "Replace the whole document with this version? Everyone sees the change; a checkpoint is saved first." : "Replace that section of the document with the selected text of this version?"}</span>
