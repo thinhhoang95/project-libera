@@ -639,6 +639,38 @@ Caf\=e
   assert.match(text, /Cafē/);
 });
 
+test("mathpartir's mathpar and \\inferrule are drawn as rules (Featherweight Go's typing rules)", () => {
+  const preamble = String.raw`\documentclass{article}
+\usepackage{mathpartir}
+\newcommand{\ov}[1]{\overline{#1}}
+\newcommand{\fields}{\mathit{fields}}`;
+  const doc = `${preamble}
+\\begin{document}
+\\begin{mathpar}
+\\inferrule
+  {(\\mathsf{type}~t_S~\\mathsf{struct}\\{\\ov{f~t}\\}) \\in \\ov{D}}
+  {\\fields(t_S) = \\ov{f~t}}
+
+\\inferrule[t-call]
+  {\\Gamma \\vdash e : t \\and \\Gamma \\vdash \\ov{e} : \\ov{t}}
+  {\\Gamma \\vdash e.m(\\ov{e}) : u}
+\\\\
+\\inferrule*[right=r-field]
+  {}
+  {\\text{$v$ is a value}}
+\\end{mathpar}
+$\\inferrule{a}{b}$ inline too.
+\\end{document}
+`;
+  const state = visualState(doc);
+  const math = constructs(state).filter((item) => item.startsWith("math:"));
+  assert.equal(math.length, 2);
+  const text = visibleText(doc);
+  assert.doesNotMatch(text, /\\inferrule|\\begin\{mathpar\}/);
+  assert.match(text, /t-call/i);
+  assert.match(text, /r-field/i);
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);

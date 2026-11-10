@@ -8,7 +8,7 @@ import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, restatable
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
-import { countedRows, katexForEnvironment, renderKatex } from "./math-render";
+import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { disabledField } from "./model";
 import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
@@ -872,6 +872,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return undefined;
   }
 
+  /** mathpartir's `mathpar`: its inference rules as one displayed formula; source when KaTeX cannot draw it. */
+  function mathpar(node: SyntaxNode, formed: NonNullable<ReturnType<typeof wellFormedEnvironment>>): false | undefined {
+    if (!structural || !formed.content) return undefined;
+    const latex = mathparForKatex(read(state, formed.content.from, formed.content.to));
+    const expanded = expandLatexMacros(latex, defs, { mode: "math", pos: node.from });
+    const html = expanded.ok ? renderKatex(withReferences(expanded.text), true) : null;
+    if (!html) return undefined;
+    const span = aloneOnLines(doc, node.from, node.to);
+    const range = span ?? { from: node.from, to: node.to };
+    emit({ kind: "math", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new MathWidget(html, true, !!span, read(state, node.from, node.to), false, node.from - range.from, range.to - range.from, referenced(expanded.text)) }] });
+    return false;
+  }
+
   /** A list: its `\begin` and `\end` lines fold away and its lines are indented; its items are drawn as they are met. */
   function drawList(node: SyntaxNode): undefined {
     const formed = wellFormedEnvironment(node, state);
@@ -928,6 +941,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const name = formed.name;
     if (name === "thebibliography") return bibliography(node, formed);
     if (name === "frontmatter") return frontMatter(formed);
+    if (name === "mathpar" || name === "mathpar*") return mathpar(node, formed);
     // thmtools' `\begin{restatable}[note]{theorem}{name}`: the theorem it names, with its heading over the whole opening.
     if (name === "restatable" || name === "restatable*") {
       const restated = restatableTheorem(node, readNode);

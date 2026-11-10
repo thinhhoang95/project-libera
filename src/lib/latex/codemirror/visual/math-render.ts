@@ -1,4 +1,5 @@
 import katex from "katex";
+import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { splitMathRows, stripTexComments } from "../../macros/numbering";
 
 /* KaTeX for the Visual mode. Formulas arrive with the document's macros
@@ -66,6 +67,75 @@ export function countedRows(latex: string): { latex: string; numbered: boolean }
   return { latex: `\\begin{equation}${untagged(text)}\\end{equation}`, numbered: true };
 }
 
+/** The premises or conclusion of a rule: lines (`\\`) stacked, and `\and` between premises as a gap. */
+function ruleStack(text: string) {
+  const parts = text.replace(/\\and(?![A-Za-z@])/g, "\\qquad ").trim();
+  return parts ? `\\begin{array}{c}${parts}\\end{array}` : "";
+}
+
+/**
+ * mathpartir's inference rules, which KaTeX lacks: `\inferrule[name]{premises}{conclusion}` (and `\inferrule*` with
+ * `[right=name]`) as a fraction of the stacked premises over the conclusion, the name beside it. A rule whose
+ * arguments do not close is left as it is (KaTeX then fails, and the formula stays source).
+ */
+export function inferrulesForKatex(latex: string) {
+  let out = "";
+  let at = 0;
+  for (let index = latex.indexOf("\\inferrule"); index >= 0; index = latex.indexOf("\\inferrule", at)) {
+    let i = index + "\\inferrule".length;
+    if (/[A-Za-z@]/.test(latex[i] ?? "")) { out += latex.slice(at, i); at = i; continue; }
+    if (latex[i] === "*") i++;
+    const skip = () => { while (/\s/.test(latex[i] ?? "")) i++; };
+    skip();
+    const options = latex[i] === "[" ? readOptional(latex, i, TEX_GROUPS) : null;
+    if (options) { i = options.end; skip(); }
+    const premises = latex[i] === "{" ? readGroup(latex, i, TEX_GROUPS) : null;
+    if (premises) { i = premises.end; skip(); }
+    const conclusion = premises && latex[i] === "{" ? readGroup(latex, i, TEX_GROUPS) : null;
+    if (!premises || !conclusion) { out += latex.slice(at, i); at = i; continue; }
+    const name = options ? (/(?:^|,)\s*(?:right|left|Right|Left|lab|Lab)\s*=\s*([^,]*)/.exec(options.content)?.[1] ?? (options.content.includes("=") ? "" : options.content)).trim() : "";
+    const rule = `\\dfrac{${ruleStack(premises.content)}}{${ruleStack(conclusion.content)}}`;
+    out += latex.slice(at, index) + (name ? `{\\scriptsize\\textsc{${name}}}\\;${rule}` : rule);
+    at = conclusion.end;
+  }
+  return out + latex.slice(at);
+}
+
+/**
+ * mathpartir's `mathpar` body as one formula: rules separated by `\and` or blank lines side by side, `\\` starting a
+ * new row.
+ */
+export function mathparForKatex(body: string) {
+  // The rules first (their own `\and` and `\\` are inside their braces), then the layout around them.
+  const text = inferrulesForKatex(stripTexComments(body).trim());
+  const rows: string[][] = [[]];
+  let rule = "";
+  let depth = 0;
+  let environments = 0;
+  const endRule = () => { if (rule.trim()) rows[rows.length - 1].push(rule.trim()); rule = ""; };
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\") {
+      // A command or an escaped character (`\{`) is copied as it is; at the top level, `\\` and `\and` lay the rules out.
+      if (depth === 0) {
+        if (text.startsWith("\\begin", i)) environments++;
+        else if (text.startsWith("\\end", i)) environments--;
+        else if (environments === 0 && text[i + 1] === "\\") { endRule(); rows.push([]); i++; continue; }
+        else if (environments === 0 && /^\\and(?![A-Za-z@])/.test(text.slice(i, i + 5))) { endRule(); i += 3; continue; }
+      }
+      rule += char + (text[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "\n" && depth === 0 && environments === 0 && /^\n[ \t]*\n/.test(text.slice(i, i + 40))) { endRule(); continue; }
+    rule += char;
+  }
+  endRule();
+  return `\\begin{gathered}${rows.filter((row) => row.length).map((row) => row.join(" \\qquad ")).join(" \\\\[1.2em] ")}\\end{gathered}`;
+}
+
 /** TeX's `\raise<dimen>` and `\lower<dimen>` before a box. */
 export const RAISE = /\\(?:raise|lower)\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:ex|em|pt|mm|cm|in|bp|mu)\s*/g;
 
@@ -81,6 +151,7 @@ export function forKatex(latex: string) {
   let out = latex.includes("\\raise") || latex.includes("\\lower") ? latex.replace(RAISE, "") : latex;
   if (out.includes("\\textsc")) out = out.replace(/\\textsc\s*\{([^{}]*)\}/g, (_, text: string) => `\\text{${text.replace(/[a-z]+/g, (run) => `{\\small ${run.toUpperCase()}}`)}}`);
   if (/\\[a-z]+\s*\\(?:math|text|operatorname|boldsymbol|bm)/.test(out)) out = out.replace(UNBRACED_ARGUMENT, "\\$1{$2}");
+  if (out.includes("\\inferrule")) out = inferrulesForKatex(out);
   // `\begin{psmallmatrix}…\end{psmallmatrix}` (Borusyak et al.'s rank conditions): `smallmatrix` in parentheses.
   if (out.includes("smallmatrix")) {
     out = out.replace(SMALL_MATRIX, (whole, side: string, env: string) => {
