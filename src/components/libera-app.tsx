@@ -602,6 +602,7 @@ export function LiberaApp({
         onInsertMarkdownTable={workspace.insertMarkdownTable}
         onShiftMarkdownList={workspace.shiftMarkdownList}
         onOpenFile={workspace.openFile}
+        onUploadFiles={workspace.uploadFiles}
         onShowImage={(file) => {
           if (tab) workspace.showImageInTab(tab.id, file);
         }}

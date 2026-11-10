@@ -13,6 +13,7 @@ import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./re
 import { cssColor } from "./symbols";
 import { parseTabular } from "./table-model";
 import type { AlgorithmSpec } from "./algorithm";
+import { attachDrawingPreview } from "./drawing-preview";
 
 /* The widgets the Visual mode draws in place of LaTeX constructs
  * (docs/latex-visual-editor-plan.md §3). Widgets whose text depends on
@@ -710,6 +711,7 @@ export class FigureWidget extends VisualWidget {
         const diagram = /^diagram:(.*)$/.exec(drawing)?.[1];
         placeholder.append(el("span", "cm-vis-figure-drawing-name", diagram ? `Diagram (${diagram})` : drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
         placeholder.append(el("span", "cm-vis-figure-drawing-note", "Drawn in the PDF"));
+        attachDrawingPreview(view, placeholder, drawing, () => { const pos = start(); return pos === null ? null : view.state.sliceDoc(pos, pos + spec.length); });
         body.append(placeholder);
       }
       for (const box of content.boxes ?? []) {

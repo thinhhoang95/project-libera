@@ -7,6 +7,8 @@ export type MarkdownDisplayPreferences = {
   codeTextWidth: number;
   textScale: number;
   outlineExpansionLevel: number;
+  /** Spellcheck in the LaTeX editor's Visual mode (Source mode never checks: command names would be flagged). */
+  latexSpellcheck: boolean;
 };
 
 /** Which editor family a width triangle belongs to; each keeps its own saved width. */
@@ -24,6 +26,7 @@ export const DEFAULT_MARKDOWN_DISPLAY_PREFERENCES: MarkdownDisplayPreferences = 
   codeTextWidth: 75,
   textScale: 100,
   outlineExpansionLevel: 6,
+  latexSpellcheck: true,
 };
 
 export function normalizeMarkdownDisplayPreferences(input: Partial<MarkdownDisplayPreferences> = {}): MarkdownDisplayPreferences {
@@ -39,5 +42,6 @@ export function normalizeMarkdownDisplayPreferences(input: Partial<MarkdownDispl
     codeTextWidth: normalize(input.codeTextWidth, textWidth, 0, 100),
     textScale: normalize(input.textScale, 100, 75, 250),
     outlineExpansionLevel: normalize(input.outlineExpansionLevel, 6, 1, 6),
+    latexSpellcheck: typeof input.latexSpellcheck === "boolean" ? input.latexSpellcheck : true,
   };
 }
