@@ -121,6 +121,11 @@ function statementKind(name: string): Kind | undefined {
   return BLOCK_STATEMENTS[name] ?? (/^[A-Z]/.test(name) ? STATEMENTS[name.toLowerCase()] : undefined);
 }
 
+/** Whether `\name` is a statement of algorithmic or algpseudocode (`\State`, `\IF`). */
+export function isAlgorithmicStatement(name: string) {
+  return !!statementKind(name);
+}
+
 /** The blocks a block's last line closes, by its lower-cased name. */
 const CLOSES: Record<string, string[]> = {
   endif: ["if"], endfor: ["for", "forall"], endwhile: ["while"], until: ["repeat"], endloop: ["loop"], endfunction: ["function"],

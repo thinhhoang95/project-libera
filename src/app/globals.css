@@ -3268,6 +3268,11 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-algorithm-comment { margin-left: .8em; color: var(--muted-foreground); }
 .cm-vis-algorithm-rule { margin: .2em 0 .2em 2.4em; border-top: 1px solid currentColor; }
 .cm-vis-algorithm-rule-dotted { border-top-style: dotted; }
+.cm-vis-algorithm-editable { cursor: text; border-radius: 3px; }
+.cm-vis-algorithm-editable:hover { background: var(--muted); }
+.cm-vis-algorithm-editing .cm-vis-algorithm-body { flex: 1 1 auto; min-width: 0; }
+.cm-vis-algorithm-raw { white-space: pre-wrap; }
+.cm-vis-caption-text[data-algorithm-caption] { cursor: text; }
 /* `\iffalse … \fi`: left out of the document, so faded. */
 .libera-latex-visual .cm-line.cm-vis-disabled { opacity: .45; }
 /* A branch left out inside a paragraph's line (`\ifnum\llncs=1 short\else full\fi`): only its text. */

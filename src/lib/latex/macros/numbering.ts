@@ -4,6 +4,7 @@ import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/co
 import { definitionExtentAt, macroAt, readLatexInputs, type LatexDefinitions } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse } from "./expand";
 import { readCtable } from "../codemirror/visual/table-model";
+import { algorithmLineLabels, readAlgorithm2eBody, readAlgorithmicBody, type AlgorithmSpec } from "../codemirror/visual/algorithm";
 import { disabledRegions, discardingMacros, isPairMacro, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, regionContaining, structureMacroNames, usesStructureMacro } from "./structure";
 
 /** Definitions whose body is not run where it is written: nothing in it is counted. */
@@ -643,7 +644,24 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   const disabled = includeDepth ? [] : disabledRegions(mainRead(0, tree.length), discardingMacros(defs), defs);
   /** Nodes entered (for what follows the `\fi` inside them) but not counted themselves: by name and start. */
   const passive = new Set<string>();
-  const numberExpansion = (host: SyntaxNode, text: string) => {
+  /** Where the `\label`s set to an algorithm's line are: their own `\label` node does not set them again. */
+  const lineLabelAt = new Set<number>();
+  const algorithmLabels = (node: SyntaxNode, env: string) => {
+    const content = node.getChild("Content");
+    if (!content) return;
+    const body = read(content.from, content.to);
+    if (!/\\(?:label|nllabel|lnl)\s*\{/.test(body)) return;
+    let spec: AlgorithmSpec | null;
+    if (env === "algorithmic") {
+      const optional = node.getChild("BeginEnv")?.getChild("OptionalArgument");
+      spec = readAlgorithmicBody(body, optional ? read(optional.from + 1, optional.to - 1) : null, defs, node.from);
+    } else spec = readAlgorithm2eBody(body, defs, node.from)?.algorithm ?? null;
+    for (const label of spec ? algorithmLineLabels(spec) : []) {
+      labels.set(label.key, { number: label.number, kind: "item", type: "line", anchor: "line", pos: content.from + label.at });
+      lineLabelAt.add(content.from + label.at);
+    }
+  };
+  const numberExpansion =(host: SyntaxNode, text: string) => {
     const entryCount = entries.length;
     const labelsBefore = new Map(labels);
     const targetBefore = globalTarget;
@@ -981,6 +999,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       if (name === "Environment") {
         const env = environmentName(node, read) ?? "";
         scopes.push({ node: node.from, target: env === "subtable" ? null : currentTarget() });
+        // A `\label` on an algorithm's line (`\State … \label{l:x}`, algorithm2e's `\nllabel{l:x}`) is that line's number.
+        if (env === "algorithmic" || env === "algorithm" || env === "algorithm*") algorithmLabels(node, env);
         // enumitem's lists of the document's own (`\newlist{exercises}{enumerate}{6}`): numbered as their kind.
         const custom = defs.lists?.get(env);
         if (custom) {
@@ -1060,6 +1080,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       if (name === "Label") {
         const argument = node.getChild("LabelArgument");
         if (!argument) return false;
+        if (lineLabelAt.has(node.from)) return false;
         const key = read(argument.from, argument.to).replace(/^\{|\}$/g, "").trim();
         const target = currentTarget();
         if (key && target) labels.set(key, target);
@@ -1125,6 +1146,7 @@ const AUTOREF_NAMES: Record<string, string> = {
   equation: "Equation", footnote: "footnote", item: "item", figure: "Figure", table: "Table", part: "Part", appendix: "Appendix",
   chapter: "chapter", section: "section", subsection: "subsection", subsubsection: "subsubsection", paragraph: "paragraph",
   subparagraph: "subparagraph", theorem: "Theorem", page: "page", algorithm: "Algorithm", lstlisting: "Listing", listing: "Listing",
+  line: "line",
 };
 
 const upperFirst = (text: string) => (text ? text[0].toUpperCase() + text.slice(1) : text);
