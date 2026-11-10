@@ -132,7 +132,9 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   // Accents (`\'e`) span a command and the letter after it; typeset them before parsing.
   // A control space at the very end (`… \ ` in a cell, trimmed) is a space.
   // `\raise.17ex\hbox{…}`: the box, in place.
-  const source = withoutConditionals(expansion.text).replace(RAISE, "").replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
+  // A box's optional position, height and alignment (`\parbox[b][0.25\textwidth][c]{w}{…}`, Generalized Random Forests'
+  // figure cells) set its layout, not what it shows: without them, the box is `\parbox{w}{…}`, drawn by its content.
+  const source = withoutConditionals(expansion.text).replace(RAISE, "").replace(/\\(parbox|makebox|framebox)((?:\s*\[[^\][]*\])+)/g, "\\$1").replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
   const tree = parser.parse(source);
   const read = (from: number, to: number) => source.slice(from, to);
 
@@ -255,6 +257,11 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
     if (name === "OptionalArgument" || name === "OpenBracket" || name === "CloseBracket") { parent.appendChild(document.createTextNode(typesetText(read(node.from, node.to)))); return; }
     // A tabular inside a cell (`\begin{tabular}{@{}c@{}}LOC \\ method\end{tabular}`): a small grid.
     if (name === "TabularEnvironment" && context.tabular) { parent.appendChild(context.tabular(read(node.from, node.to))); return; }
+    // `\parbox{w}{…}` (the grammar's own node): its content, as the other boxes.
+    if (name === "ParBoxCommand") {
+      const argument = node.getChildren("TextArgument").at(-1);
+      if (argument && !hasDirectError(node)) { renderArgument(parent, argument); return; }
+    }
     // `\hbox{…}` (the grammar's own node): its content, as the other boxes.
     if (name === "Hbox") {
       const argument = commandArguments(node).filter((arg) => !arg.optional).at(-1);

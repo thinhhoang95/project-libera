@@ -13,6 +13,7 @@ import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirro
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
 import { columnSpans } from "../../src/lib/latex/codemirror/visual/table-model";
 import { renderKatex } from "../../src/lib/latex/codemirror/visual/math-render";
+import { parseAlgorithm2e } from "../../src/lib/latex/codemirror/visual/algorithm";
 import { expandLatexMacros } from "../../src/lib/latex/macros/expand";
 import { macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 import { readCompiledBibliography } from "../../src/lib/latex/project";
@@ -439,6 +440,68 @@ test("a chapter's references to another chapter resolve without a compile; the .
   assert.equal(labelTarget("sec:spanner", numbering, { labels: { "sec:spanner": { number: "5", page: "9" } }, citations: {} })?.number, "5");
   // A label of this file stays this file's.
   assert.equal(labelTarget("sec:jtree", numbering, { labels: { "sec:jtree": { number: "7", page: "1" } }, citations: {} })?.number, "3");
+});
+
+test("algorithm2e's \\KwTo in a loop header and its side comments in parentheses are read (Synthetic DiD, max-flow paper)", () => {
+  const variance = parseAlgorithm2e(String.raw`\For{$b \leftarrow 1$ \KwTo $B$}{Compute $\hat\tau^{(b)}$\;}`, { numbered: false, ends: true });
+  assert.ok(variance);
+  assert.equal(variance.lines[0].lead, "for");
+  assert.match(variance.lines[0].text, /\\textbf\{to\}/);
+  assert.doesNotMatch(variance.lines[0].text, /KwTo/);
+  const spanner = parseAlgorithm2e(String.raw`\For(\tcp*[f]{Re-set level-$\geq j$ sparsifiers.}){$i = j, \dots, L$}{Rebuild $H_i$\;}
+\ForEach(\label{line:each}){$e \in E$}{Update $e$\;}
+\If(\tcp*[h]{rare}){$x > 0$}{Stop\;}`, { numbered: true, ends: true });
+  assert.ok(spanner);
+  assert.equal(spanner.lines[0].comment, "Re-set level-$\\geq j$ sparsifiers.");
+  assert.equal(spanner.lines[0].text, "$i = j, \\dots, L$");
+  const each = spanner.lines.find((line) => line.text === "$e \\in E$");
+  assert.ok(each);
+  assert.equal(each.comment, undefined);
+  assert.equal(spanner.lines.find((line) => line.lead === "if")?.comment, "rare");
+  // Parentheses that do not close leave the algorithm as source.
+  assert.equal(parseAlgorithm2e(String.raw`\For(\tcp{x}{c}{b\;}`, { numbered: false, ends: true }), null);
+});
+
+test("floats with adjustbox, a \\subcaption* note or an algorithm's prose are drawn whole, with that text (SDID, Callaway & Sant'Anna, GRF)", () => {
+  const adjust = "\\begin{document}\n\\begin{table}\n\\caption{Results}\n\\begin{adjustbox}{width=\\linewidth}\n\\begin{tabular}{lc}\na & 1 \\\\\nb & 2\n\\end{tabular}\n\\end{adjustbox}\n\\end{table}\n\\end{document}\n";
+  assert.equal(constructs(visualState(adjust)).some((item) => item.startsWith("figure:")), true);
+  const note = "\\begin{document}\n\\begin{figure}[t]\n\\caption{Minimum wage effects}\n\\centering\n\\includegraphics{plot.pdf}\n\\subcaption*{\\textit{Notes:} The effect of the minimum wage on teen employment.}\n\\end{figure}\n\\end{document}\n";
+  assert.equal(constructs(visualState(note)).some((item) => item.startsWith("figure:")), true);
+  assert.match(visibleText(note), /Notes: The effect of the minimum wage on teen employment\./);
+  const prose = String.raw`\documentclass{article}
+\usepackage{algorithm,algpseudocode}
+\begin{document}
+\begin{algorithm}[t]
+\caption{Generalized random forest}\label{alg:forest}
+\vspace{-0.4\baselineskip}
+\justify
+All tuning parameters are pre-specified, including the number of trees $B$.
+\begin{algorithmic}[1]
+\Procedure{GeneralizedRandomForest}{set of examples $\mathcal{S}$}
+\State weight vector $\alpha \gets 0$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+\end{document}
+`;
+  assert.equal(constructs(visualState(prose)).some((item) => item.startsWith("figure:")), true);
+  const text = visibleText(prose);
+  assert.match(text, /All tuning parameters are pre-specified, including the number of trees/);
+  assert.doesNotMatch(text, /\\justify|\\vspace|\\caption/);
+  // Prose after the lines is not drawn by the widget: the float stays source.
+  const after = prose.replace("\\end{algorithmic}\n", "\\end{algorithmic}\nMore text after.\n");
+  assert.equal(constructs(visualState(after)).some((item) => item.startsWith("figure:")), false);
+});
+
+test("a box's optional arguments do not leave it raw in a table cell (GRF's \\parbox[b][0.25\\textwidth][c]{…}{…})", () => {
+  const doc = String.raw`\begin{document}
+\begin{tabular}{cc}
+\parbox[b][0.25\textwidth][c]{0.1\textwidth}{$\cdots$} & x \\
+\end{tabular}
+\end{document}
+`;
+  const text = visibleText(doc);
+  assert.doesNotMatch(text, /\\parbox|textwidth/);
 });
 
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {

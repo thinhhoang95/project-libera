@@ -1399,6 +1399,11 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
   if (algorithm2eSpec(node, state, defs)) return true;
   const readState = (from: number, to: number) => read(state, from, to);
   let covered = true;
+  // An algorithm float may describe its algorithm before the lines (Generalized Random Forests: "All tuning
+  // parameters are pre-specified…"): prose there is drawn above them. Anywhere else, prose leaves the float source.
+  const proseBefore = algorithmProseLimit(node, state);
+  /** The end of a `\subcaption*{…}` note's group, whose text is drawn as the note. */
+  let noteUntil = -1;
   /** Captions per container (the float, or the panel the caption is in). */
   const captions = new Map<number, number>();
   const caption = (at: SyntaxNode) => {
@@ -1416,12 +1421,14 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
   const visit = (ref: SyntaxNodeRef): boolean | undefined => {
     if (!covered) return false;
     const name = ref.name;
+    if (ref.to <= noteUntil) return false;
     if (ref.type.isError) { covered = false; return false; }
     // A listing or `\verb` text is visible content the figure widget cannot draw: replacing the float would hide it.
     if (VISIBLE_SKIPPED.has(name)) { covered = false; return false; }
     if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "BlankLine" || name === "LineBreak" || name === "Tilde") return false;
     if (name === "IncludeGraphics" || name === "Label" || name === "TabularEnvironment" || name === "SetLengthCommand" || name === "Centering") return false;
     if (name === "Caption") { caption(ref.node); return false; }
+    if (ref.to <= proseBefore && PROSE_NODES.has(name)) return false;
     if (name === "Normal") { if (read(state, ref.from, ref.to).trim()) covered = false; return false; }
     // A drawing from another file (`\input{fig}`, often TikZ): shown as a placeholder.
     if (name === "Input") return false;
@@ -1429,6 +1436,14 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       const ctrl = ref.node.firstChild;
       const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
       if (command === "\\includestandalone") return false;
+      // subcaption's `\subcaption*{Notes: …}` under a figure: unnumbered text, drawn under the caption.
+      if (command === "\\subcaption" && read(state, ctrl!.to, ctrl!.to + 1) === "*") {
+        const note = starredNote(state, ctrl!.to);
+        if (!note) { covered = false; return false; }
+        noteUntil = note.end;
+        return false;
+      }
+      if (ref.to <= proseBefore && (command === "\\justify" || command === "\\justifying")) return false;
       // `\subfigure[caption]{…}`: a panel, its caption in brackets and its content checked as the float's.
       if (isSubFloatCommand(ref.node, readState)) { panel(ref.node); return false; }
       // caption's `\captionof{table}{…}`, and a macro that writes the caption (`\mycap{…}`), are captions.
@@ -1446,6 +1461,8 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { covered = false; return false; }
       if (env === "tikzpicture" || TABULAR_NAMES.test(env)) return false;
       if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state)) covered = false; return false; }
+      // adjustbox's `\begin{adjustbox}{width=\linewidth}`: a size around the content, which is checked.
+      if (env === "adjustbox") return undefined;
       // overpic: an image with text put over it, drawn without the overlay.
       if (env === "overpic") return false;
       if (env !== "center" && !SIZE_ENVIRONMENTS.has(env) && !PANEL_ENVIRONMENTS.has(env)) covered = false;
@@ -1604,7 +1621,7 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
     if (name === "Environment" || name === "KnownEnvironment") {
       const env = environmentName(ref.node, readState);
       if (env === "tikzpicture") return false;
-      if (env === "center" || SIZE_ENVIRONMENTS.has(env ?? "")) return undefined;
+      if (env === "center" || env === "adjustbox" || SIZE_ENVIRONMENTS.has(env ?? "")) return undefined;
       only = false;
       return false;
     }
@@ -1612,6 +1629,45 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
     return false;
   });
   return only;
+}
+
+/** The group after a starred command at `at` (`\subcaption*{…}`): its text and where it ends; null without one. */
+function starredNote(state: EditorState, at: number) {
+  const after = read(state, at, Math.min(state.doc.length, at + 6000));
+  const open = /^\*\s*\{/.exec(after);
+  const group = open ? readGroup(after, open[0].length - 1, TEX_GROUPS) : null;
+  return group ? { text: group.content.trim(), end: at + group.end } : null;
+}
+
+/** What an algorithm float's prose may hold: text, formulas, styles, citations and references. */
+const PROSE_NODES = new Set([
+  "Normal", "Text", "Whitespace", "NewLine", "BlankLine", "Tilde", "DollarMath", "ParenMath", "InlineMath", "Math", "Dollar",
+  "TextBoldCommand", "TextItalicCommand", "EmphasisCommand", "TextTeletypeCommand", "TextSmallCapsCommand", "Cite", "Ref", "UrlCommand", "HrefCommand",
+]);
+
+/**
+ * Where an algorithm float's `algorithmic` starts (prose before it is drawn above the lines), or -1 when the float is
+ * not an algorithm with algorithmic lines.
+ */
+function algorithmProseLimit(node: SyntaxNode, state: EditorState) {
+  if (!/^algorithm\*?$/.test(environmentName(node, (from, to) => read(state, from, to)) ?? "")) return -1;
+  const match = /\\begin\s*\{algorithmic\}/.exec(read(state, node.from, node.to));
+  return match ? node.from + match.index : -1;
+}
+
+/**
+ * An algorithm float's prose before its lines, as it reads: without the caption, labels, layout commands and comments;
+ * null when there is none.
+ */
+function algorithmIntro(node: SyntaxNode, state: EditorState) {
+  const limit = algorithmProseLimit(node, state);
+  const begin = node.getChild("BeginEnv");
+  if (limit < 0 || !begin) return null;
+  let text = stripTexComments(read(state, begin.to, limit));
+  // The caption with its (balanced) argument, and the labels.
+  text = text.replace(/\\caption\*?\s*(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g, "").replace(/\\label\s*\{[^{}]*\}/g, "");
+  text = text.replace(/\\(?:vspace|hspace)\*?\s*\{[^{}]*\}|\\(?:justify|justifying|centering|raggedright|raggedleft|noindent|par|small|footnotesize|scriptsize|medskip|smallskip|bigskip)(?![A-Za-z@])/g, "");
+  return text.trim() ? text.trim() : null;
 }
 
 /** A float's or panel's content as read, with where each part is (to split a float with several captions). */
@@ -1712,6 +1768,12 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         }
         const written = captionMacro(ref.node);
         if (written !== null) { content.caption = written; content.captionPos = ref.from; return false; }
+        // `\subcaption*{Notes: …}`: a note under the caption (its group may follow the command outside its node).
+        if (command === "\\subcaption" && ctrl && read(state, ctrl.to, ctrl.to + 1) === "*") {
+          const note = starredNote(state, ctrl.to);
+          if (note) (content.notes ??= []).push(note.text);
+          return false;
+        }
         if (command === "\\includestandalone") {
           const argument = ref.node.getChild("TextArgument");
           const inner = argument && argumentInner(argument);
@@ -1805,6 +1867,10 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     }
     if (!content.tabulars!.length) content.tabulars = undefined;
     if (!content.drawings!.length) content.drawings = undefined;
+    if (root === node && content.algorithm) {
+      const intro = algorithmIntro(node, state);
+      if (intro) content.intro = intro;
+    }
     return content;
   };
 

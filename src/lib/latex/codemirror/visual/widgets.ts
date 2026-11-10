@@ -8,7 +8,7 @@ import { resolveRelativeNotebookPath } from "../../project";
 import { applyEquationNumbers, renderKatex } from "./math-render";
 import { preambleOpenField, togglePreamble, visualAux, visualConfig, visualDefinitions, visualNumbering } from "./model";
 import { bibLookup, citationText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
-import { renderLatexFragment, type FragmentContext } from "./render-fragment";
+import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./render-fragment";
 import { cssColor } from "./symbols";
 import { parseTabular } from "./table-model";
 import type { AlgorithmSpec } from "./algorithm";
@@ -574,6 +574,10 @@ export type FigureContent = {
   sub?: boolean;
   /** `\caption*{…}`: the caption's text, without a label or number. */
   unnumbered?: boolean;
+  /** Unnumbered notes under the caption (subcaption's `\subcaption*{Notes: …}`). */
+  notes?: string[];
+  /** An algorithm float's prose before its lines, drawn above them. */
+  intro?: string;
   /** Where the number is recorded relative to the widget: the environment's start, or its panel's. */
   numberOffset: number;
 };
@@ -645,16 +649,25 @@ export class FigureWidget extends VisualWidget {
         const pos = start();
         return pos === null ? null : pos + tabular.offset;
       }, tabular.readOnly ? spec.length - tabular.offset : undefined));
-      if (content.algorithm) body.append(renderAlgorithm(content.algorithm, fragmentContext(view, content.captionPos)));
+      if (content.algorithm) {
+        const lines = renderAlgorithm(content.algorithm, fragmentContext(view, content.captionPos));
+        if (content.intro) {
+          // The prose and the lines, one above the other (the body lays its items out in a row).
+          const block = el("div", "cm-vis-algorithm-block");
+          block.append(renderLatexInto("div", "cm-vis-figure-intro", content.intro, fragmentContext(view, content.captionPos)), lines);
+          body.append(block);
+        } else body.append(lines);
+      }
+      const notes = content.notes?.length ? content.notes.map((note) => renderLatexInto("div", "cm-vis-figure-note", note, fragmentContext(view, content.captionPos))) : [];
       // `\caption*{}` shows nothing.
-      if (content.caption === null || (content.unnumbered && !content.caption.trim())) { into.append(body); return; }
+      if (content.caption === null || (content.unnumbered && !content.caption.trim())) { into.append(body, ...notes); return; }
       const caption = el("div", `cm-vis-caption cm-vis-caption-${content.kind}`);
       const label = el("span", "cm-vis-caption-label");
       const text = el("span", "cm-vis-caption-text");
       text.append(renderLatexFragment(content.caption, fragmentContext(view, content.captionPos)));
       caption.append(label, text);
       captions.push({ content, label, text });
-      if (content.captionAbove) into.append(caption, body); else into.append(body, caption);
+      if (content.captionAbove) into.append(caption, body, ...notes); else into.append(body, caption, ...notes);
     };
     if (spec.panels?.length) {
       const row = el("div", `cm-vis-figure-panels${spec.stacked ? " cm-vis-figure-panels-stacked" : ""}`);

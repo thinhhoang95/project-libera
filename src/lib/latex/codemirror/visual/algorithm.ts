@@ -180,6 +180,9 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
   const name = (text: string) => text.trim().replace(/^\\/, "");
   /** The document's function names and keywords in an argument (`\Fn{\FMain{$x$}}`), as they are drawn. */
   const words = (text: string) => !text.includes("\\") ? text : text.replace(/\\([A-Za-z@]+)(?![A-Za-z@])(\s*\{((?:[^{}]|\{[^{}]*\})*)\})?/g, (whole, command: string, group: string | undefined, args: string | undefined) => {
+    // algorithm2e's own words in a loop's or condition's header (`\For{$i \leftarrow 1$ \KwTo $B$}`).
+    if (command === "KwTo" || command === "KwDownTo") return `\\textbf{${command === "KwTo" ? "to" : "downto"}}${group ?? ""}`;
+    if ((command === "KwRet" || command === "Return") && group) return `\\textbf{return} ${args!.trim()}`;
     const fn = functions.get(command);
     if (fn !== undefined) return group ? `\\textsc{${fn}}(${args!.trim()})` : `\\textsc{${fn}}`;
     const keyword = keywords.get(command);
@@ -196,6 +199,28 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
       if (text || comment !== undefined) push({ text, comment });
     };
     const end = () => { if (ends) push({ lead: "end", text: "" }); };
+    /**
+     * algorithm2e's side comment before a block's arguments: `\For(\tcp*[f]{Re-set sparsifiers}){c}{…}`,
+     * `\ForEach(\label{l:x}){c}{…}`. Its comment text (labels draw nothing), "" when there is none, or null when the
+     * parentheses do not close.
+     */
+    const sideComment = (): string | null => {
+      let at = i;
+      while (/\s/.test(text[at] ?? "")) at++;
+      if (text[at] !== "(") return "";
+      let depth = 0;
+      for (let k = at + 1; k < text.length; k++) {
+        const c = text[k];
+        if (c === "\\") { k++; continue; }
+        if (c === "{") depth++;
+        else if (c === "}") depth--;
+        else if (c === ")" && depth === 0) {
+          i = k + 1;
+          return text.slice(at + 1, k).replace(/\\label\s*\{[^{}]*\}/g, "").replace(/\\tc[pc]\*?\s*(?:\[[^\]]*\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g, "$1").trim();
+        }
+      }
+      return null;
+    };
     /** The next `count` groups after `i`, past spaces and an optional `[…]` first. */
     const args = (count: number, optional = false) => {
       const out: string[] = [];
@@ -243,9 +268,11 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
       if (input) { flush(); const [value] = args(1) ?? []; if (value !== undefined) push({ lead: input, text: value, numbered: false }); continue; }
       if (command in LOOPS_2E) {
         flush();
+        const side = sideComment();
+        if (side === null) { failed = true; break; }
         const parts = args(2);
         if (!parts) break;
-        push({ lead: LOOPS_2E[command], text: parts[0], trail: "do" });
+        push({ lead: LOOPS_2E[command], text: parts[0], trail: "do", ...(side ? { comment: side } : {}) });
         read(parts[1], depth + 1);
         end();
         continue;
@@ -261,9 +288,11 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
       }
       if (command === "If" || command === "uIf" || command === "ElseIf" || command === "uElseIf") {
         flush();
+        const side = sideComment();
+        if (side === null) { failed = true; break; }
         const parts = args(2);
         if (!parts) break;
-        push({ lead: command.endsWith("ElseIf") ? "else if" : "if", text: parts[0], trail: "then" });
+        push({ lead: command.endsWith("ElseIf") ? "else if" : "if", text: parts[0], trail: "then", ...(side ? { comment: side } : {}) });
         read(parts[1], depth + 1);
         if (!command.startsWith("u")) end();
         continue;
@@ -279,6 +308,7 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
       }
       if (command === "eIf") {
         flush();
+        if (sideComment() === null) { failed = true; break; }
         const parts = args(3);
         if (!parts) break;
         push({ lead: "if", text: parts[0], trail: "then" });
