@@ -1,6 +1,7 @@
 import { EMPTY_AUX } from "../../aux-file";
-import type { LatexDefinitions, LatexMacro } from "../../macros/definitions";
+import { conditionalFactsKey, type LatexDefinitions, type LatexMacro } from "../../macros/definitions";
 import { EMPTY_NUMBERING } from "../../macros/numbering";
+import { macroPassThrough } from "../../macros/structure";
 import { renderLatexFragment } from "./render-fragment";
 
 /* Transparent arguments (docs/latex-visual-editor-plan.md §7.5): when a text
@@ -59,10 +60,11 @@ function styleAround(node: Node, root: Node) {
 export function transparentPlan(macro: LatexMacro, defs: LatexDefinitions): TransparentPlan | null {
   if (macro.arity < 1 || macro.arity > 4 || macro.optional !== undefined || macro.spec || macro.mathOnly || macro.unsupported) return null;
   // The plan renders the body, with the macros it uses: it depends on all the definitions, not only this one.
-  const key = `${macro.fingerprint}\u0000${defs.fingerprint}`;
+  const key = `${macro.fingerprint}\u0000${defs.fingerprint}\u0000${conditionalFactsKey(defs)}`;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const plan = computePlan(macro, defs);
+  // A macro that passes its argument on unchanged (`\rev{…}`, a version switch that is on) draws only the argument.
+  const plan = macroPassThrough(macro, defs) === "identity" ? { pieces: ["", ""], marks: [{ class: "cm-vis-macro-arg", style: "" }] } : computePlan(macro, defs);
   cache.set(key, plan);
   if (cache.size > 500) cache.delete(cache.keys().next().value!);
   return plan;

@@ -6,7 +6,7 @@ import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, 
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { CAPTION_OF, enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
-import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
+import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { disabledField } from "./model";
@@ -92,7 +92,7 @@ const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|setlen
  * What a macro's expansion may hold only as TeX programming: building names, appending to macros, global and expanded
  * definitions, box registers, and conditionals other than the `\ifx` of cvpr's `\onedot` (which the renderer reads).
  */
-const TEX_PROGRAMMING = /\\(?:expandafter|csname|endcsname|noexpand|g@addto@macro|@for|@ifnextchar|@ifstar|typeout|gdef|xdef|edef|newif|setbox|advance|multiply|divide|ifdefined|ifcsname|ifnum|ifdim|ifcase|if@[A-Za-z@]*|PackageError|PackageWarning|ClassError)(?![A-Za-z@])|\\if(?!x(?![A-Za-z@]))[a-z]{3,}[A-Za-z@]*/;
+const TEX_PROGRAMMING = /\\(?:expandafter|csname|endcsname|noexpand|g@addto@macro|@for|@ifnextchar|@ifstar|typeout|gdef|xdef|edef|newif|setbox|advance|multiply|divide|ifdefined|ifcsname|ifnum|ifdim|ifcase|if@[A-Za-z@]*|PackageError|PackageWarning|ClassError)(?![A-Za-z@])|\\if(?!x(?![A-Za-z@]))[a-z]{3,}[A-Za-z@]*|\\ifx(?![A-Za-z@])(?!\s*\\@let@token)/;
 /** Whether every `\begin{x}` in a text is closed by its `\end{x}` in it, in order. */
 function balancedEnvironments(text: string) {
   if (!text.includes("\\begin") && !text.includes("\\end")) return true;
@@ -1064,7 +1064,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           // `\title{…}`, `\author{…}` and `\date{…}` written in the body right before `\maketitle`: what the title block
           // shows, folded into it (Alt-click shows their source).
           const bodyStart = Math.max(0, env.preambleEnd);
-          const run = node.from > bodyStart ? titleDeclarationsStart(read(state, bodyStart, node.from), ABSTRACT_WITH_TITLE.test(defs.documentClass ?? "")) : null;
+          const wrapper = (name: string) => { const macro = macroAt(defs, name, node.from); return macro ? macroPassThrough(macro, defs) : null; };
+          const run = node.from > bodyStart ? titleDeclarationsStart(read(state, bodyStart, node.from), ABSTRACT_WITH_TITLE.test(defs.documentClass ?? ""), wrapper) : null;
           // Only within this walk's range, so the construct does not start before what is being built.
           const declarations = run && bodyStart + run.start >= from ? bodyStart + run.start : null;
           // acmart's teaser figure among them is drawn on its own: the block ends before it, and the rest up to `\maketitle` folds away.
@@ -2027,8 +2028,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // An argument the parser ends early (at a blank line or a heading: an unclosed brace) is read
     // further in the text than the tree shows: drawn from the text, the use would change with
     // edits the tree does not tie to it. Its parts are drawn on their own.
-    if (node.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError)) return undefined;
-    if (structureMacroNames(defs).has(name)) {
+    // A wrapper whose argument holds a paragraph heading (q-bio.NC 2610.36484's `\rev{\paragraph{Version.} …}`) is one:
+    // when its body only passes the argument on or styles it, it is read from the text to its closing brace in the same
+    // paragraph (argumentGroups), and the argument's parts are drawn on their own.
+    const broken = node.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError);
+    if (broken && !/^\s*\{\s*\\(?:paragraph|subparagraph)\*?\s*\{/.test(read(state, node.from + 1 + name.length, Math.min(doc.length, node.from + name.length + 40)))) return undefined;
+    if (!broken && structureMacroNames(defs).has(name)) {
       const drawn = structuralMacroUse(node, name);
       if (drawn !== null) return drawn;
     }
@@ -2037,6 +2042,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const macro = macroAt(defs, name, node.from)!;
     const plan = transparentPlan(macro, defs);
     const groups = plan ? argumentGroups(source, node.from, 1 + name.length, macro.arity) : null;
+    if (broken && !(plan && groups)) return undefined;
     if (plan && groups) {
       const end = groups[groups.length - 1].close + 1;
       const replaces: Replace[] = [];
@@ -3064,7 +3070,7 @@ function titleNotes(keywords: string[], subjclass: string[], ccs: string[]): Arr
  * The run of title declarations that ends `text` (`text` is the body up to `\maketitle`): where it starts, the abstract
  * and notes in it; null when something else comes right before `\maketitle`. Comments and spaces between them are part of the run.
  */
-function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleRun | null {
+function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper?: (name: string) => "discard" | "identity" | null): TitleRun | null {
   let run: TitleRun | null = null;
   let keywords: string[] = [];
   let subjclass: string[] = [];
@@ -3109,6 +3115,20 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleR
       if (command[1] === "keywords" && groups.length) keywords.push(groups.at(-1)!.trim());
       if (command[1] === "subjclass" && groups.length) subjclass.push(groups.at(-1)!.trim());
       if (command[1] === "ccsdesc" && groups.length) ccs.push(groups.at(-1)!.trim());
+      i = end;
+      continue;
+    }
+    // A version switch around declarations (cs.DS 2611.09172's `\iffullversion{ \title{…} }`): one that prints nothing,
+    // or passes on only declarations, is part of the run.
+    const kind = command && groups.length === 1 ? wrapper?.(command[1]) : null;
+    if (kind && (kind === "discard" || !groups[0].trim() || titleDeclarationsStart(groups[0], abstractWithTitle, wrapper)?.start === groups[0].search(/\S/))) {
+      run ??= { start, gaps: [], abstract: null, notes: [] };
+      i = end;
+      continue;
+    }
+    // A file the run includes (acmart's abstract in `\input{abstract}`) is drawn on its own, as a teaser figure is.
+    if (run && command && /^(?:input|include)$/.test(command[1]) && groups.length === 1) {
+      run.gaps.push({ from: start, to: end });
       i = end;
       continue;
     }
