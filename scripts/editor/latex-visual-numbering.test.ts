@@ -371,6 +371,81 @@ Text.
   assert.equal(citationText({ command: "\\citeA", keys: ["reich2018"] }, EMPTY_AUX, lookup(entries)), "Allegretto and Reich (2018)");
 });
 
+/** A mounted Visual mode for `doc`, numbered as the app numbers it; `use` reads its DOM before it is destroyed. */
+function mounted<T>(doc: string, use: (dom: HTMLElement) => T) {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  const view = new EditorView({ state: visualState(doc), parent });
+  view.dispatch({ effects: setNumbering.of(computeLatexNumbering(syntaxTree(view.state), (from, to) => view.state.doc.sliceString(from, to), visualDefinitions(view.state))) });
+  refreshVisualWidgets(view);
+  try { return use(view.contentDOM); } finally { view.destroy(); parent.remove(); }
+}
+
+test("B4-10: a \\tag written in math is read whole, and a reference to it draws the math", () => {
+  const source = String.raw`\begin{document}
+\begin{equation}
+a = b \tag{$\mathcal{I}$}\label{eq:I}
+\end{equation}
+By \eqref{eq:I} and \ref{eq:I}.
+\end{document}`;
+  assert.equal(number(source).labels.get("eq:I")?.number, "$\\mathcal{I}$");
+  const chips = mounted(source, (dom) => [...dom.querySelectorAll(".cm-vis-ref")].map((chip) => ({ math: !!chip.querySelector(".katex"), label: chip.getAttribute("aria-label") })));
+  assert.deepEqual(chips, [{ math: true, label: "Reference to (\\mathcal{I})" }, { math: true, label: "Reference to \\mathcal{I}" }]);
+});
+
+test("B4-09: \\hyperref[label]{text} draws its text as a link to the label", () => {
+  const source = String.raw`\begin{document}
+\section{Results}\label{sec:result}
+By the \hyperref[sec:result]{identity lemma}, done.
+\end{document}`;
+  assert.match(visibleText(source), /By the identity lemma, done\./);
+  const link = mounted(source, (dom) => dom.querySelector("[data-ref]")?.textContent);
+  assert.equal(link, "identity lemma");
+});
+
+test("B4-24/B7-24: \\footnotemark and \\footnotetext share a number, in displays too; \\fnsymbol marks are symbols", () => {
+  const source = String.raw`\begin{document}
+Text.\footnote{First.}
+\begin{equation*}
+x \quad \text{for each $m$.\footnotemark}
+\end{equation*}
+\footnotetext{The map is integrable.}
+Then\footnotemark[7] and \footnotetext[7]{Seventh.} and\footnote{Third.}
+\renewcommand{\thefootnote}{\fnsymbol{footnote}}
+\setcounter{footnote}{0}
+Title\footnotemark
+\footnotetext{Contact.}
+\footnotetext[2]{Corresponding authors.}
+\end{document}`;
+  const numbers = number(source).entries.filter((entry) => entry.kind === "footnote").map((entry) => entry.number);
+  assert.deepEqual(numbers, ["1", "2", "7", "7", "3", "*", "*", "†"]);
+  const marks = mounted(source, (dom) => [...dom.querySelectorAll(".cm-vis-footnote-mark")].map((mark) => mark.textContent));
+  assert.deepEqual(marks, ["1", "2", "7", "7", "3", "*", "*", "†"]);
+});
+
+test("B5-28: a listing with a caption is numbered, and its label refers to it", () => {
+  const source = String.raw`\documentclass{book}
+\usepackage{listings}
+\usepackage{cleveref}
+\begin{document}
+\chapter{Introduction}
+\begin{lstlisting}[caption={A Julia function, short}, label=lst:jl]
+function f(x)
+end
+\end{lstlisting}
+\begin{lstlisting}[title={Unnumbered}]
+x
+\end{lstlisting}
+\lstinputlisting[caption=Loader,label={lst:load}]{load.jl}
+\end{document}`;
+  const labels = number(source).labels;
+  assert.equal(labels.get("lst:jl")?.number, "1.1");
+  assert.equal(labels.get("lst:load")?.number, "1.2");
+  assert.equal(says(source, "\\cref", ["lst:jl"]), "listing 1.1");
+  assert.equal(says(source, "\\autoref", ["lst:load"]), "Listing 1.2");
+  assert.equal(number(source.replace("{book}", "{article}").replace("\\chapter{Introduction}", "")).labels.get("lst:jl")?.number, "1");
+});
+
 test("B7-27: a .bib named twice, or a key twice in it, is read once", () => {
   assert.deepEqual(readLatexBibliographyReferences(String.raw`\ifnum\x=1 \bibliography{abbrev3,crypto} \else \bibliography{abbrev3,crypto} \fi`), ["abbrev3.bib", "crypto.bib"]);
   assert.deepEqual(readBibEntries("@article{a, title={One}}\n@misc{a, title={Two}}\n@book{b, title={Three}}").map((entry) => [entry.key, entry.title]), [["a", "One"], ["b", "Three"]]);

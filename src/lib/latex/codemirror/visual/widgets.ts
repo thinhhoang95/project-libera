@@ -209,12 +209,23 @@ export class ChipWidget extends VisualWidget {
       dom.setAttribute("aria-keyshortcuts", "Enter");
     }
     const update = (target: EditorView) => {
-      dom.textContent = this.text(target);
+      const text = this.text(target);
+      dom.textContent = text;
+      // A reference to a `\tag{$\mathcal{I}$}` (Econometrica's): its math drawn, not its source.
+      if (this.kind === "ref" && /\$[^$]+\$/.test(text)) {
+        dom.replaceChildren(...text.split(/(\$[^$]+\$)/).filter(Boolean).map((part) => {
+          const html = /^\$[^$]+\$$/.test(part) ? renderKatex(part.slice(1, -1), false) : null;
+          if (!html) return document.createTextNode(part);
+          const math = el("span", "cm-vis-chip-math");
+          math.innerHTML = html;
+          return math;
+        }));
+      }
       if (this.kind === "ref") {
         const missing = this.keys.some((key) => !labelTarget(key, visualNumbering(target.state), visualAux(target.state)));
         dom.classList.toggle("cm-vis-missing", missing);
         dom.title = `${this.command}{${this.keys.join(",")}}${missing ? " (label not found)" : ""}`;
-        dom.setAttribute("aria-label", `Reference to ${dom.textContent}`);
+        dom.setAttribute("aria-label", `Reference to ${text.replace(/\$/g, "")}`);
       } else if (this.kind === "cite") {
         const bib = bibLookup(target.state);
         dom.title = this.keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : key; }).join("\n");

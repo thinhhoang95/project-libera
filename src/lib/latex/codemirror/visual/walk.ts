@@ -1181,6 +1181,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
+    // hyperref's `\hyperref[label]{text}`: the text, as a link to the label (Econometrica's "\hyperref[lemma:x]{identity
+    // lemma}", 117 of them); ⌘/Ctrl-click follows it. Its 4-argument form stays source.
+    if (text === "\\hyperref") {
+      const parts = commandArguments(node);
+      const label = parts.length === 2 && parts[0].optional ? argumentInner(parts[0].node) : null;
+      const body = label && !parts[1].optional ? argumentInner(parts[1].node) : null;
+      const key = label ? read(state, label.from, label.to).trim() : "";
+      if (body && key && body.to > body.from && !hasDirectError(node)) {
+        const to = parts[1].node.to;
+        emit({
+          kind: "style", from: node.from, to, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: body.from }, { from: body.to, to }] : [],
+          marks: [{ from: body.from, to: body.to, class: "cm-vis-link cm-vis-ref-link", attributes: { "data-ref": key, title: `${key} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}-click to follow)` } }],
+        });
+        return undefined;
+      }
+    }
     // fancyref's `\Fref{sec:x}` (the grammar knows only `\fref` as a reference): a reference chip.
     if (text === "\\Fref" || text === "\\fref") {
       const argument = commandArguments(node).find((arg) => !arg.optional);
@@ -1242,14 +1259,22 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const change = counterChange(state, node, enumCounter(lists[i].depth));
       if (change) { lists[i].count = change(lists[i].count); return undefined; }
     }
-    // `\footnotetext{…}`: the text of a note marked with `\footnotemark`, set as a footnote's (styled in both layers).
+    // `\footnotemark` (`[n]`): the note's number, as a footnote's mark; the `\footnotetext` after it has the note.
+    if (text === "\\footnotemark") {
+      const optional = read(state, ctrl.to, ctrl.to + 1) === "[" ? commandArguments(node).find((arg) => arg.optional) : null;
+      const to = optional ? optional.node.to : ctrl.to;
+      if (structural && !hasDirectError(node)) emit({ kind: "footnote", from: node.from, to, reveal: "touch", replaces: [{ from: node.from, to, widget: new FootnoteMarkWidget() }] });
+      return false;
+    }
+    // `\footnotetext{…}`: the text of a note marked with `\footnotemark`, set as a footnote's (styled in both layers),
+    // after its number.
     if (text === "\\footnotetext") {
       const argument = commandArguments(node).find((arg) => !arg.optional);
       const inner = argument && argumentInner(argument.node);
       if (inner && !hasDirectError(node)) {
         emit({
           kind: "footnote", from: node.from, to: argument.node.to, reveal: "touch",
-          replaces: structural ? [{ from: node.from, to: inner.from }, { from: inner.to, to: argument.node.to }] : [],
+          replaces: structural ? [{ from: node.from, to: inner.from, widget: new FootnoteMarkWidget() }, { from: inner.to, to: argument.node.to }] : [],
           marks: [{ from: inner.from, to: inner.to, class: "cm-vis-footnote" }],
         });
         return undefined;

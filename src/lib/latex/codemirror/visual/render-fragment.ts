@@ -450,6 +450,16 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       }
       if (text === "\\thanks") { parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" })); return; }
       if (text === "\\footnotemark") { parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" })); return; }
+      // hyperref's `\hyperref[label]{text}` (in a proof's note: "Proof of the {\hyperref[lemma:x]{necessity lemma}}"): its text, as a link.
+      if (text === "\\hyperref") {
+        const parts = commandArguments(node);
+        if (parts.length === 2 && parts[0].optional && !parts[1].optional) {
+          const link = element("span", "cm-vis-link cm-vis-ref-link");
+          renderArgument(link, parts[1].node);
+          parent.appendChild(link);
+          return;
+        }
+      }
       if (text === "\\ensuremath") {
         const arg = commandArguments(node)[0];
         const inner = arg && argumentInner(arg.node);
