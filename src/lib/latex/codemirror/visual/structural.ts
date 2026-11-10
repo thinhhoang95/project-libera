@@ -190,6 +190,9 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
           // so are enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as the lists the grammar knows.
           rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name) || (wholeLists && !!defs.lists?.has(name)));
         }
+        // A group opened by a font or size switch (`{\tt …}`, `{    \it …}`) is drawn whole: an edit whose `}` now closes
+        // one opened lines before (`\begin{algorithmic}` becoming `\be\eqnralgorithmic}`) draws it from its `{`.
+        if (!rendered && node.name === "Group" && node.lastChild?.name === "CloseBrace") rendered = /^\{\s*\\[A-Za-z@]/.test(state.doc.sliceString(node.from, Math.min(node.to, node.from + 64)));
         // A use of the document's macros is drawn from its arguments: an edit in one (a brace that now closes it) redraws it.
         if (!rendered && node.name === "UnknownCommand") {
           const ctrl = node.firstChild;

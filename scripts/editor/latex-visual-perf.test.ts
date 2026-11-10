@@ -145,6 +145,19 @@ const CUSTOM_LIST = String.raw`\documentclass{article}
 \end{document}
 `;
 
+test("a } typed lines after a font switch's { draws the group it closes", () => {
+  // The flaky "edits around hand-numbered rows, font switches in environments and stacks" property (a counterexample
+  // found by fuzzing, not a timing one): `\begin{algorithmic}` edited to `\be\eqnralgorithmic}` closed the
+  // `{    \it Ce genre…` group opened lines before. Only the edited lines were walked, and the group's style starts before them.
+  const doc = "\\documentclass{article}\n\\begin{document}\nBefore {    \\it open\n\\begin{quote}\nQuoted.\n\\end{quote}\nAfter\nEnd.\n\\end{document}\n";
+  const fresh = assertIncrementalMatchesFresh(doc, [{ from: doc.indexOf("After") + 5, insert: "}" }]);
+  assert.ok(constructs(fresh).some((entry) => entry.startsWith(`style:${doc.indexOf("{    \\it")}:`)), "the group is drawn in italics");
+  // And as in the counterexample, with the parser's error recovery around an environment's `\end`.
+  const paper = "\\documentclass{article}\n\\begin{document}\n{    \\it Ce genre d'exp\\'erience.\n\\begin{algorithm}\n\\begin{algorithmic}\n\\STATE x\n\\end{algorithmic}\n\\end{algorithm}\n\\end{document}\n";
+  const at = paper.indexOf("\\begin{algorithmic}");
+  assertIncrementalMatchesFresh(paper, [{ from: at + 3, to: at + 7, insert: "\\eqnr" }]);
+});
+
 test("typing in a list of the document's own (enumitem's \\newlist) keeps its items drawn", () => {
   // The edit's lines were walked without the list around them: `\item Two` lost its marker until the next full build.
   const fresh = assertIncrementalMatchesFresh(CUSTOM_LIST, [{ from: CUSTOM_LIST.indexOf("Two") + 1, insert: "x" }]);
