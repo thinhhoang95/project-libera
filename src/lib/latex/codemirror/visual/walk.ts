@@ -4,7 +4,7 @@ import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
-import { CAPTION_OF, enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
+import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
@@ -21,6 +21,7 @@ import {
   RestatedTheoremWidget, restatablesIn, TodoWidget,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
+import { CODE_ENVIRONMENTS, CodeCaptionWidget, CodeFileWidget, codeTokens, ContentsWidget, CounterWidget, documentCounters, inlineCodeRange, readCodeHeader, TEXT_WRAPPERS as STYLED_WRAPPERS, TextDrawingWidget } from "./text-commands";
 
 /* One walk over the syntax tree that recognises constructs
  * (docs/latex-visual-editor-plan.md §3–4). Each construct says which markup
@@ -160,8 +161,12 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   // State the numbering reads (numbering.ts): `\appendix`, `\setcounter{equation}{0}`, and a counter's format
   // (`\renewcommand{\theequation}{S\arabic{equation}}`, only a `\the…` one). Column and spacing switches, TeX groups.
   appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
+  // IEEEtran's `\appendices`; counters stepped where they are.
+  appendices: 0, stepcounter: 1, refstepcounter: 1,
   begingroup: 0, endgroup: 0,
 };
+/** The lists of contents a document prints, by the kind of entry they list. */
+const CONTENTS_LISTS: Record<string, "section" | "figure" | "table"> = { "\\tableofcontents": "section", "\\listoffigures": "figure", "\\listoftables": "table" };
 /** Layout-line commands whose `[…]` is text, not an option (ICML's `\twocolumn[\icmltitle{…}…]`): such a line stays. */
 const LAYOUT_LINE_TEXT_OPTION = /^(?:onecolumn|twocolumn)$/;
 
@@ -302,7 +307,7 @@ const HANDLED = new Set([
   "FootnoteCommand", "EndnoteCommand", "DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment",
   "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "Item", "Environment",
   "EndEnv", "Maketitle", "IncludeGraphics", "LineBreak", "Tilde", "Normal", "UnknownCommand", "Group",
-  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand",
+  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand", "ParBoxCommand",
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
@@ -375,17 +380,17 @@ function counterChange(state: EditorState, node: SyntaxNode, counter: string | n
 const itemCounts = new WeakMap<object, Map<string, { defs: LatexDefinitions; ends: number[]; counts: number[] }>>();
 
 /** The item count of `list` (not of lists inside it) at `pos`: its `\item`s before it, and changes to its counter. */
-function itemsBefore(list: SyntaxNode, pos: number, state: EditorState, counter: string | null, defs: LatexDefinitions) {
+function itemsBefore(list: SyntaxNode, pos: number, state: EditorState, counter: string | null, defs: LatexDefinitions, base = 0) {
   // A long list is built in pieces, each asking for the count where it starts: the list is read once per parse,
   // not once per piece (an `enumerate` of 10,000 items took seconds to build).
   let root = list;
   while (root.parent) root = root.parent!;
   let lists = root.tree ? itemCounts.get(root.tree) : undefined;
   if (root.tree && !lists) itemCounts.set(root.tree, (lists = new Map()));
-  const key = `${list.from}:${list.to}:${counter}`;
+  const key = `${list.from}:${list.to}:${counter}:${base}`;
   let read = lists?.get(key);
   if (!read || read.defs !== defs) {
-    read = { defs, ...readItemCounts(list, state, counter, defs) };
+    read = { defs, ...readItemCounts(list, state, counter, defs, base) };
     lists?.set(key, read);
   }
   // They do not overlap: those that end by `pos` come first.
@@ -398,9 +403,9 @@ function itemsBefore(list: SyntaxNode, pos: number, state: EditorState, counter:
   return read.counts[low];
 }
 
-function readItemCounts(list: SyntaxNode, state: EditorState, counter: string | null, defs: LatexDefinitions) {
+function readItemCounts(list: SyntaxNode, state: EditorState, counter: string | null, defs: LatexDefinitions, base = 0) {
   const ends: number[] = [];
-  const counts = [0];
+  const counts = [base];
   const content = list.getChild("Content");
   if (!content) return { ends, counts };
   const add = (end: number, change: (count: number) => number) => { ends.push(end); counts.push(change(counts[counts.length - 1])); };
@@ -543,7 +548,8 @@ function namedTheorem(code: string, defs: LatexDefinitions) {
 }
 
 /** `inline`: a list run into its paragraph (paralist's `inparaenum`), whose lines are not indented. */
-type ListContext = { node: SyntaxNode; variant: "bullet" | "number" | "description"; depth: number; count: number; template: string | null; inline?: boolean };
+/** `adjusted`: a list continued from another or started elsewhere (enumitem's `resume`, `start=`); `base`: the count it starts from here. */
+type ListContext = { node: SyntaxNode; variant: "bullet" | "number" | "description"; depth: number; count: number; template: string | null; inline?: boolean; adjusted?: boolean; base?: number };
 /** paralist's lists, as the lists they are; the `inpara` ones run into their paragraph (Depth Anything's `inparaenum`). */
 const PARALIST: Record<string, "enumerate" | "itemize" | "description"> = {
   compactenum: "enumerate", asparaenum: "enumerate", inparaenum: "enumerate", compactitem: "itemize", asparaitem: "itemize", inparaitem: "itemize",
@@ -777,10 +783,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     } else if (list.variant === "number") {
       list.count++;
       label = enumerateItemLabel(list.count, list.depth, list.template);
+    } else if (list.variant === "bullet" && bulletLabel(list.template)) {
+      // enumitem's `\begin{itemize}[label=--]`: the bullet it chose.
+      ({ label, latex } = bulletLabel(list.template)!);
     } else label = list.variant === "description" ? "" : BULLETS[(list.depth - 1) % BULLETS.length];
     const line = doc.lineAt(at);
     const replaceFrom = read(state, line.from, at).trim() ? at : line.from;
-    emit({ kind: "item", from: replaceFrom, to, reveal: "never", replaces: [{ from: replaceFrom, to, widget: new ItemMarkerWidget(label, variant, list.depth, { latex, inline: list.inline }) }] });
+    const numberedAt = list.adjusted && optional === null && list.variant === "number" ? at - replaceFrom : null;
+    emit({ kind: "item", from: replaceFrom, to, reveal: "never", replaces: [{ from: replaceFrom, to, widget: new ItemMarkerWidget(label, variant, list.depth, { latex, inline: list.inline }, numberedAt) }] });
     return true;
   };
 
@@ -837,6 +847,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const line = layoutLine(state, ref.from);
           if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
         }
+        // `\verb|…|`, `\lstinline`, `verbatim`, `lstlisting`, `minted`: code, its text taken as written.
+        if (VISIBLE_SKIPPED.has(name) && name !== "Csname" && ref.from >= from && ref.from < to && ref.from > env.preambleEnd && !isConsumed(ref) && !startsDisabled(ref.from)) drawCode(ref.node);
         return false;
       }
       if (env.preambleEnd > 0 && ref.to <= env.preambleEnd) return false;
@@ -898,7 +910,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (formed) {
             const list = listContext(node, custom ?? formed.name, lists, state, 0);
             if (!list.template && custom) list.template = customListLabel(defs, formed.name, list.depth);
-            list.count = itemsBefore(node, from, state, list.variant === "number" ? enumCounter(list.depth) : null, defs);
+            list.count = itemsBefore(node, from, state, list.variant === "number" ? enumCounter(list.depth) : null, defs, list.base);
             lists.push(list);
             // A long list is built in pieces (structural.ts): its `\end` line is drawn by the piece it is in.
             if (structural && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "list-end");
@@ -1192,14 +1204,27 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             if (at < symbolsUntil) continue;
             emit({ kind: "symbol", from: at, to: at + match[0].length, reveal: "never", replaces: [{ from: at, to: at + match[0].length, widget: new SymbolWidget(LIGATURE_CHARS[match[0]], match[0]) }] });
           }
+          // TeX's single quotes, `` `word' ``: ‘word’ (a pair in this text; an apostrophe alone is left as typed).
+          for (const match of text.matchAll(/(?<!`)`(?!`)([^`'\n]*?[^`'\s\n])'(?!')/g)) {
+            const open = node.from + match.index!;
+            const close = open + match[0].length - 1;
+            if (open < symbolsUntil) continue;
+            emit({ kind: "symbol", from: open, to: open + 1, reveal: "never", replaces: [{ from: open, to: open + 1, widget: new SymbolWidget("‘", "`") }] });
+            emit({ kind: "symbol", from: close, to: close + 1, reveal: "never", replaces: [{ from: close, to: close + 1, widget: new SymbolWidget("’", "'") }] });
+          }
           return false;
         }
         case "Centering": case "SetLengthCommand": {
           // `\centering` or `\setlength{\parindent}{0pt}` on a line of layout: it folds away (M-13).
           const line = structural ? layoutLine(state, node.from) : null;
           if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
+          // `{\centering text\par}` in a line of text: the switch prints nothing there.
+          else if (structural && name === "Centering" && /^\\centering$/.test(read(state, node.from, node.to))) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
           return false;
         }
+        // `\parbox{w}{…}` in the text: its text (a list in it is drawn as lists are).
+        case "ParBoxCommand":
+          return starts ? textWrapper(node, "\\parbox") ?? undefined : undefined;
         case "UnknownCommand":
           return unknownCommand(node);
       }
@@ -1283,6 +1308,54 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (last >= first) emit({ kind: "list-body", from: node.from, to: node.to, reveal: "never", replaces: [], lines: [{ from: doc.line(first).from, to: doc.line(last).to, class: `cm-vis-list cm-vis-list-d${Math.min(6, list.depth)}` }] });
     }
     return undefined;
+  }
+
+  /**
+   * Code: `\verb|…|` and `\lstinline|…|` in the typewriter face, their markup hidden; a `verbatim`, `lstlisting` or `minted`
+   * block as its lines, as written, in the typewriter face (edited in place), its `\begin` and `\end` lines folded away
+   * (listings' caption drawn over it). One whose delimiters or options are not closed on their line stays source.
+   */
+  function drawCode(node: SyntaxNode) {
+    if (node.name === "VerbCommand" || node.name === "LstInlineCommand") {
+      const content = node.getChild("VerbContent") ?? node.getChild("LstInlineContent");
+      const range = content ? inlineCodeRange(read(state, content.from, content.to)) : null;
+      if (!content || !range || content.from + range.to + 1 !== node.to) return;
+      inlineCode(node.from, content.from + range.from, content.from + range.to, node.to);
+      return;
+    }
+    const formed = wellFormedEnvironment(node, state);
+    if (!formed || !CODE_ENVIRONMENTS.test(formed.name) || !formed.content) return;
+    const header = readCodeHeader(formed.name, read(state, formed.content.from, Math.min(formed.content.to, formed.content.from + 2000)));
+    if (!header) return;
+    const headerEnd = formed.content.from + header.end;
+    const opening = aloneOnLines(doc, formed.begin.from, headerEnd);
+    const closing = aloneOnLines(doc, formed.end.from, formed.end.to);
+    if (!opening || !closing || doc.lineAt(opening.from).number !== doc.lineAt(headerEnd).number) return;
+    if (structural) {
+      if (header.caption) {
+        const widget = new CodeCaptionWidget(header.caption, header.numbered, node.from - opening.from);
+        emit({ kind: "env-header", from: opening.from, to: opening.to, reveal: "line", wholeLine: true, replaces: [{ from: opening.from, to: opening.to, widget }] });
+      } else collapseLine(opening, "code-begin");
+      collapseLine(closing, "code-end");
+    }
+    const first = doc.lineAt(opening.to).number + 1;
+    const last = doc.lineAt(closing.from).number - 1;
+    if (last < first) return;
+    const body = { from: doc.line(first).from, to: doc.line(last).to };
+    const marks = codeTokens(read(state, body.from, body.to), header.language).map((token) => ({ from: body.from + token.from, to: body.from + token.to, class: token.class }));
+    emit({ kind: "code-body", from: node.from, to: node.to, reveal: "never", replaces: [], marks, lines: [{ ...body, class: "cm-vis-code-line" }] });
+  }
+
+  /** Inline code from `from` to `to` (its markup around it hidden): typewriter text, edited in place. */
+  function inlineCode(from: number, codeFrom: number, codeTo: number, to: number) {
+    if (codeTo <= codeFrom) return;
+    emit({
+      kind: "style", from, to, reveal: "touch",
+      replaces: structural ? [{ from, to: codeFrom }, { from: codeTo, to }] : [],
+      marks: [{ from: codeFrom, to: codeTo, class: "cm-vis-code-inline" }],
+    });
+    consumed.push([from, to]);
+    symbolsUntil = Math.max(symbolsUntil, to);
   }
 
   /** AASTeX's `deluxetable` (2611.08676): its caption, rows and notes as a table float, drawn read-only; null when it cannot be read. */
@@ -1406,6 +1479,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       }
       return undefined;
     }
+    // A `minipage` in the text (a list set in a narrower box): its text, its opening (with the width) and end folded away.
+    if (name === "minipage") {
+      const nameEnd = formed.begin.getChild("EnvNameGroup")?.to ?? formed.begin.to;
+      const head = /^(?:\s*\[[^\]\n]*\]){0,3}\s*\{[^{}\n]*(?:\{[^{}\n]*\}[^{}\n]*)*\}/.exec(read(state, nameEnd, Math.min(doc.length, nameEnd + 200)));
+      if (!head) return undefined;
+      const headerEnd = nameEnd + head[0].length;
+      consumed.push([formed.begin.from, headerEnd]);
+      if (structural) {
+        collapseLine({ from: formed.begin.from, to: headerEnd }, "env-begin");
+        collapseLine(formed.end, "env-end");
+      }
+      return undefined;
+    }
     // acmart's and LIPIcs' `CCSXML`: the classification as XML, for the publisher. It prints nothing: it folds away.
     if (name === "CCSXML") {
       if (structural && aloneOnLines(doc, node.from, node.to)) collapseLine(node, "metadata");
@@ -1511,6 +1597,65 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (parent.name === "Environment" && environmentName(parent, readNode) === name) return true;
     }
     return false;
+  }
+
+  /** A `\setcounter{c}{n}` (`\addtocounter`, `\stepcounter`, `\refstepcounter`) with its arguments: folded or hidden; false when malformed. */
+  function counterCommandHidden(node: SyntaxNode, text: string) {
+    const mandatory = commandArguments(node).filter((arg) => !arg.optional);
+    if (mandatory.length !== (/^\\(?:set|addto)counter$/.test(text) ? 2 : 1) || hasDirectError(node) || mandatory.some((arg) => !argumentInner(arg.node))) return false;
+    if (!structural) return true;
+    const line = layoutLine(state, node.from);
+    if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); return true; }
+    const end = mandatory[mandatory.length - 1].node.to;
+    emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end }] });
+    consumed.push([node.from, end]);
+    return true;
+  }
+
+  /**
+   * A command wrapping text (`TEXT_WRAPPERS`: `\added{…}`, `\replaced{new}{old}`, `\hl{…}`, `\fbox{…}`, `\parbox{w}{…}`,
+   * `\enquote{…}`; xcolor's `\fcolorbox{frame}{fill}{…}`): its markup and hidden arguments are hidden, its text styled and
+   * edited in place; its options (`\added[id=R1]{…}`) are hidden. Null when it is none of these, the document defines it,
+   * or its arguments are broken (it stays source).
+   */
+  function textWrapper(node: SyntaxNode, text: string): undefined | null {
+    const box = text === "\\fcolorbox" ? { args: [null, null, "cm-vis-fbox"] } : null;
+    const spec: { args: Array<string | null>; open?: string; close?: string; package?: string } | undefined = box ?? (Object.hasOwn(STYLED_WRAPPERS, text) ? STYLED_WRAPPERS[text] : undefined);
+    if (!spec || macroAt(defs, text.slice(1), node.from) || hasDirectError(node)) return null;
+    if (spec.package && !defs.packages.includes(spec.package)) return null;
+    const args = commandArguments(node);
+    const used = args.filter((arg) => !arg.optional).slice(0, spec.args.length);
+    // Options only before the arguments: what follows them is text.
+    if (used.length < spec.args.length || args.some((arg) => arg.optional && arg.node.from > used[used.length - 1].node.from)) return null;
+    const inners = used.map((arg) => argumentInner(arg.node));
+    if (inners.some((inner) => !inner)) return null;
+    let style: string | undefined;
+    if (box) {
+      const frame = cssColor(null, read(state, inners[0]!.from, inners[0]!.to), defs.colors);
+      const fill = cssColor(null, read(state, inners[1]!.from, inners[1]!.to), defs.colors);
+      if (!frame || !fill) return null;
+      style = `border-color: ${frame}; background: color-mix(in srgb, ${fill} 35%, transparent)`;
+    }
+    const end = used[used.length - 1].node.to;
+    const replaces: Replace[] = [];
+    const marks: Mark[] = [];
+    let hiddenFrom = node.from;
+    let shown = 0;
+    spec.args.forEach((className, index) => {
+      if (className === null) return;
+      const inner = inners[index]!;
+      // Between two shown arguments (`\replaced{new}{old}`), a space.
+      const open = shown === 0 ? spec.open : " ";
+      replaces.push({ from: hiddenFrom, to: inner.from, widget: open ? new SymbolWidget(open, text) : undefined });
+      if (className && inner.to > inner.from) marks.push({ from: inner.from, to: inner.to, class: className, attributes: style ? { style } : undefined });
+      hiddenFrom = inner.to;
+      shown++;
+    });
+    replaces.push({ from: hiddenFrom, to: end, widget: spec.close ? new SymbolWidget(spec.close, text) : undefined });
+    emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: structural ? replaces : [], marks });
+    // The hidden arguments (a `\parbox`'s width, `\fcolorbox`'s colours) are not walked.
+    spec.args.forEach((className, index) => { if (className === null) consumed.push([used[index].node.from, used[index].node.to]); });
+    return undefined;
   }
 
   function unknownCommand(node: SyntaxNode): false | undefined {
@@ -1694,15 +1839,21 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       }
     }
     // `\setcounter{enumi}{3}` in a list: its next item is 4.
-    if (/^\\(?:set|addto|step|refstep)counter$/.test(text)) for (let i = lists.length - 1; i >= 0; i--) {
-      if (lists[i].variant !== "number") continue;
-      const change = counterChange(state, node, enumCounter(lists[i].depth));
-      if (change) { lists[i].count = change(lists[i].count); return undefined; }
+    if (/^\\(?:set|addto|step|refstep)counter$/.test(text)) {
+      for (let i = lists.length - 1; i >= 0; i--) {
+        if (lists[i].variant !== "number") continue;
+        const change = counterChange(state, node, enumCounter(lists[i].depth));
+        if (change) { lists[i].count = change(lists[i].count); break; }
+      }
+      // It prints nothing: a line of them folds away, and one in a line of text (`\setcounter{enumi}{6} \item …`) is hidden.
+      if (counterCommandHidden(node, text)) return false;
     }
     // `\footnotemark` (`[n]`): the note's number, as a footnote's mark; the `\footnotetext` after it has the note.
     if (text === "\\footnotemark") {
       const optional = read(state, ctrl.to, ctrl.to + 1) === "[" ? commandArguments(node).find((arg) => arg.optional) : null;
-      const to = optional ? optional.node.to : ctrl.to;
+      // An empty group after it (`\footnotemark{}`) prints nothing: it is part of the mark.
+      const empty = /^\{\s*\}/.exec(read(state, optional ? optional.node.to : ctrl.to, Math.min(doc.length, (optional ? optional.node.to : ctrl.to) + 8)));
+      const to = (optional ? optional.node.to : ctrl.to) + (empty?.[0].length ?? 0);
       if (structural && !hasDirectError(node)) emit({ kind: "footnote", from: node.from, to, reveal: "touch", replaces: [{ from: node.from, to, widget: new FootnoteMarkWidget() }] });
       return false;
     }
@@ -1772,6 +1923,21 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return undefined;
       }
     }
+    // Tracked changes, soul's styles, boxes, `\enquote`, margin notes: their text, styled, edited in place.
+    const wrapped = textWrapper(node, text);
+    if (wrapped !== null) return wrapped;
+    // minted's `\mintinline{python}|x = 1|` (or `{x = 1}`): inline code.
+    if (text === "\\mintinline" && !macroAt(defs, "mintinline", node.from)) {
+      const language = commandArguments(node).find((arg) => !arg.optional);
+      if (language && argumentInner(language.node)) {
+        const after = read(state, language.node.to, Math.min(doc.length, language.node.to + 2000));
+        const range = inlineCodeRange(after);
+        if (range && !hasDirectError(node)) {
+          inlineCode(node.from, language.node.to + range.from, language.node.to + range.to, language.node.to + range.to + 1);
+          return false;
+        }
+      }
+    }
     if (!structural) {
       // The style layer only needs the arguments of macros drawn with editable arguments.
       if (ctrl.name === "CtrlSeq" && macroAt(defs, text.slice(1), node.from)) return macroUse(node, text.slice(1));
@@ -1807,6 +1973,21 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     const name = text.slice(1);
+    // A counter printed in the text (`\theex`, `\arabic{ex}`, `\Roman{section}`): its value here, from the numbering pass.
+    const counters = /^(?:arabic|alph|Alph|roman|Roman|fnsymbol|value|the[A-Za-z]+)$/.test(name) ? documentCounters(defs, () => read(state, 0, Math.max(0, env.preambleEnd))) : null;
+    if (counters) {
+      const argument = /^the/.test(name) ? null : args.find((arg) => !arg.optional);
+      const inner = argument && argumentInner(argument.node);
+      const counter = argument ? (inner ? read(state, inner.from, inner.to).trim() : "") : name.slice(3);
+      const own = /^the/.test(name) ? macroAt(defs, name, node.from) : null;
+      // A document's own `\theex` that only formats counters is numbered as written (numbering.ts reads it).
+      const formatOnly = !own || (!own.arity && !own.body.includes("#") && /^(?:[^\\]|\\(?:arabic|alph|Alph|roman|Roman|fnsymbol|the[A-Za-z]+)(?![A-Za-z]))*$/.test(own.body));
+      if (counters.has(counter) && formatOnly && (argument || !args.length) && !hasDirectError(node)) {
+        const end = argument ? argument.node.to : ctrl.to;
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end, widget: new CounterWidget(read(state, node.from, end)) }] });
+        return false;
+      }
+    }
     if (DEFINITION_COMMANDS.test(text)) return skipDefinition(node);
     const macro = macroAt(defs, name, node.from);
     if (macro) return macroUse(node, name);
@@ -1884,6 +2065,29 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       consumed.push([node.from, end]);
       return false;
     }
+    // `\tableofcontents`, `\listoffigures`, `\listoftables` on their own line: the list they print, read-only.
+    const contents = CONTENTS_LISTS[text];
+    if (contents && !args.length) {
+      const span = aloneOnLines(doc, node.from, ctrl.to);
+      if (span) {
+        emit({ kind: "contents", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new ContentsWidget(contents, span.to - span.from) }] });
+        return false;
+      }
+    }
+    // listings' `\lstinputlisting[caption=…]{file}`, minted's `\inputminted{python}{file}`: a code block naming the file.
+    if ((text === "\\lstinputlisting" || text === "\\inputminted") && !hasDirectError(node)) {
+      const file = mandatory[text === "\\inputminted" ? 1 : 0];
+      const inner = file && argumentInner(file.node);
+      const span = inner ? aloneOnLines(doc, node.from, file.node.to) : null;
+      if (inner && span && span.from === doc.lineAt(node.from).from) {
+        const options = args.find((arg) => arg.optional && arg.node.to <= file.node.from);
+        const range = options && argumentInner(options.node);
+        const header = range ? readCodeHeader("lstlisting", `[${read(state, range.from, range.to)}]`) : null;
+        const numbered = text === "\\lstinputlisting" && !!header?.numbered;
+        emit({ kind: "code-file", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new CodeFileWidget(read(state, inner.from, inner.to).trim(), header?.caption ?? null, numbered, span.to - span.from) }] });
+        return false;
+      }
+    }
     // A line holding only layout folds away.
     if (Object.hasOwn(LAYOUT_LINE_ARGS, text.slice(1))) {
       const line = layoutLine(state, node.from);
@@ -1910,6 +2114,28 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const group = mandatory[0] && mandatory[0].node.from === textFrom ? first : null;
       emit({ kind: "symbol", from: node.from, to: group ? mandatory[0].node.to : textFrom, reveal: "touch", replaces: group ? [{ from: node.from, to: group.from }, { from: group.to, to: mandatory[0].node.to }] : [{ from: node.from, to: textFrom }] });
       return undefined;
+    }
+    // Space in a line of text: `\hfill`, `\hfil` (a gap), `\vfill` (nothing); `\linebreak` breaks it.
+    if (/^\\(?:hfill|hfil|vfill)$/.test(text)) {
+      emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to, widget: text === "\\vfill" ? undefined : new SymbolWidget(" ", text, "cm-vis-symbol cm-vis-hfill") }] });
+      return false;
+    }
+    if (text === "\\linebreak" && !mandatory.length) {
+      const end = args[0]?.optional ? args[0].node.to : ctrl.to;
+      emit({ kind: "symbol", from: ctrl.from, to: end, reveal: "never", replaces: [{ from: ctrl.from, to: end, widget: new LineBreakWidget() }] });
+      return false;
+    }
+    // `\phantom{x}` takes the space of its content, unseen (a space here); `\vphantom{x}` only a height (nothing).
+    if (/^\\[hv]?phantom$/.test(text) && mandatory.length === 1 && first && !hasDirectError(node)) {
+      const end = mandatory[0].node.to;
+      emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end, widget: text === "\\vphantom" ? undefined : new SymbolWidget(" ", read(state, node.from, end)) }] });
+      return false;
+    }
+    // `\rule{2cm}{0.4pt}` (a bar), `\hrulefill` and `\dotfill` (a line and dots across), drawn as in a caption or cell.
+    if ((text === "\\rule" && mandatory.length === 2 && !hasDirectError(node)) || ((text === "\\hrulefill" || text === "\\dotfill") && !mandatory.length)) {
+      const end = text === "\\rule" ? mandatory[1].node.to : ctrl.to;
+      emit({ kind: "symbol", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new TextDrawingWidget(read(state, node.from, end), end - node.from) }] });
+      return false;
     }
     // `\afterpage{…}` (a landscape table after this page) and `\raisebox{-0.1cm}{\protect\includegraphics…}` (Generative Agents'
     // inline icons): what they hold, drawn as the text around it.
@@ -2215,7 +2441,19 @@ function listContext(node: SyntaxNode, name: string, lists: ListContext[], state
   const depth = lists.filter((list) => list.variant === variant || (variant !== "number" && list.variant !== "number")).length + 1;
   const optional = node.getChild("BeginEnv")?.getChild("OptionalArgument");
   const range = optional && argumentInner(optional);
-  return { node, variant, depth, count, template: range ? state.doc.sliceString(range.from, range.to) : null };
+  const template = range ? state.doc.sliceString(range.from, range.to) : null;
+  // enumitem's `start=5` starts it here; `resume` continues another list, which the numbering pass counts (the items take its numbers).
+  const start = variant === "number" && template && LIST_CONTINUES.test(template) ? enumitemListStart(template, name, new Map()) : null;
+  return { node, variant, depth, count: count + (start?.count ?? 0), template, adjusted: !!start, base: start?.count ?? 0 };
+}
+
+/** enumitem's `label=…` of an itemize (`[label=--]`, `[label=$\star$]`): its bullet, as text or LaTeX; null when it gives none. */
+function bulletLabel(template: string | null): { label: string; latex: boolean } | null {
+  if (!template || !/(?:^|,)\s*label\s*=/.test(template)) return null;
+  const label = listOptionMap(template).get("label");
+  if (label === null || label === undefined) return null;
+  if (/[\\$]/.test(label)) return { label, latex: true };
+  return { label: label.replace(/---/g, "—").replace(/--/g, "–").replace(/[{}]/g, ""), latex: false };
 }
 
 /**

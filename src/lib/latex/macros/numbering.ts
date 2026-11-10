@@ -14,7 +14,8 @@ const DEFINITION_START = /^\\(?:newcommand|renewcommand|providecommand|DeclareRo
  * footnotes and counter commands of the tree, in document order, with each
  * \label bound to the last number stepped before it in its environment. */
 
-export type NumberingKind = "section" | "equation" | "figure" | "table" | "algorithm" | "theorem" | "footnote" | "item" | "listing";
+/** "counter": a counter printed in the text (`\theex`, `\arabic{ex}`), its value there. */
+export type NumberingKind = "section" | "equation" | "figure" | "table" | "algorithm" | "theorem" | "footnote" | "item" | "listing" | "counter";
 
 export type NumberingEntry = {
   /** Start of the construct: the sectioning command, the environment, the footnote. */
@@ -193,6 +194,8 @@ function dropTrailingBreak(env: string, rows: string[]) {
 }
 
 const ENUM_COUNTERS = ["enumi", "enumii", "enumiii", "enumiv"];
+/** LaTeX's own counters a document may print (`\thesection`, `\arabic{figure}`). */
+export const PRINTABLE_COUNTERS = new Set([...SECTION_COUNTERS, "part", "equation", "figure", "table", "footnote", "algorithm", "lstlisting", ...ENUM_COUNTERS]);
 
 /** The label an `enumerate` item shows: `1.`, `(a)`, or a custom `[(i)]` / `label=(\alph*)` template. */
 export function enumerateItemLabel(count: number, depth: number, template: string | null) {
@@ -233,6 +236,55 @@ export function enumerateItemReference(counts: number[], templates: Array<string
   if (depth === 2) return `${first}${formatCounterValue(second, "alph")}`;
   if (depth === 3) return `${first}(${formatCounterValue(second, "alph")})${formatCounterValue(third, "roman")}`;
   return `${first}(${formatCounterValue(second, "alph")})${formatCounterValue(third, "roman")}${formatCounterValue(fourth, "Alph")}`;
+}
+
+/** A list's `[key=value, flag]` options, split at top-level commas: each key with its value (braces removed), or null for a flag. */
+export function listOptionMap(text: string) {
+  const options = new Map<string, string | null>();
+  let depth = 0;
+  let start = 0;
+  const add = (part: string) => {
+    const equals = part.indexOf("=");
+    const key = (equals < 0 ? part : part.slice(0, equals)).trim();
+    if (key) options.set(key, equals < 0 ? null : part.slice(equals + 1).trim().replace(/^\{([\s\S]*)\}$/, "$1").trim());
+  };
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\") i++;
+    else if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "," && depth === 0) { add(text.slice(start, i)); start = i + 1; }
+  }
+  add(text.slice(start));
+  return options;
+}
+
+/** Whether a list's options continue or start its numbering elsewhere than 1 (enumitem's `resume`, `series`, `start`). */
+export const LIST_CONTINUES = /(?:^|,)\s*(?:resume\*?|series|start)\s*(?:[=,]|$)/;
+
+/**
+ * Where an enumerate list starts counting, by enumitem's options: `start=5` (its first item is 5), `resume` (after the
+ * last list of its name), `resume=s` and `resume*=s` (after the series `s` a list named with `series=s`), and `resume*`,
+ * which takes that list's options too. `saved`: what each list name (`env:enumerate`) and series (`series:s`) ended at.
+ */
+export function enumitemListStart(options: string | null, env: string, saved: ReadonlyMap<string, { count: number; template: string | null }>) {
+  if (!options || !LIST_CONTINUES.test(options)) return { count: 0, template: options, series: null as string | null, adjusted: false };
+  const map = listOptionMap(options);
+  let count = 0;
+  let template: string | null = options;
+  const resumeKey = map.has("resume*") ? "resume*" : map.has("resume") ? "resume" : null;
+  if (resumeKey) {
+    const series = map.get(resumeKey);
+    const previous = saved.get(series ? `series:${series}` : `env:${env}`);
+    if (previous) {
+      count = previous.count;
+      // `resume*` repeats the previous list's options (its label), unless this one gives its own.
+      if (resumeKey === "resume*" && previous.template && !/(?:^|,)\s*label\s*=/.test(options)) template = `${previous.template},${options}`;
+    }
+  }
+  const start = Number(map.get("start"));
+  if (map.get("start") && Number.isInteger(start)) count = start - 1;
+  return { count, template, series: map.get("series") || null, adjusted: true };
 }
 
 function stripTitle(text: string) {
@@ -458,7 +510,20 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   const scopes: Array<{ node: number; target: LabelTarget | null }> = [];
   const currentTarget = () => scopes.length ? scopes[scopes.length - 1].target : globalTarget;
   const setTarget = (target: LabelTarget) => { if (scopes.length) scopes[scopes.length - 1].target = target; else globalTarget = target; };
-  const lists: Array<{ enumerate: boolean; count: number; depth: number; template: string | null }> = [];
+  const lists: Array<{ enumerate: boolean; count: number; depth: number; template: string | null; name?: string; series?: string | null; adjusted?: boolean }> = [];
+  /** What each enumerate list name and enumitem series ended at, for a later list's `resume`. */
+  const savedLists = new Map<string, { count: number; template: string | null }>();
+  /** A list, started by its options (`resume`, `start=`), as the innermost one. */
+  const pushList = (enumerate: boolean, depth: number, name: string, options: string | null) => {
+    const start = enumerate ? enumitemListStart(options, name, savedLists) : { count: 0, template: options, series: null, adjusted: false };
+    lists.push({ enumerate, count: start.count, depth, template: start.template, name, series: start.series, adjusted: start.adjusted });
+  };
+  const popList = () => {
+    const list = lists.pop();
+    if (!list?.enumerate || !list.name) return;
+    savedLists.set(`env:${list.name}`, { count: list.count, template: list.template });
+    if (list.series) savedLists.set(`series:${list.series}`, { count: list.count, template: list.template });
+  };
   /** The parts of the current linguex example so far (`\a.`, `\b.`). */
   let exampleParts = 0;
   /** The enumerate list a counter `enumi`…`enumiv` belongs to, innermost first. */
@@ -481,6 +546,20 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       }
     }
     return null;
+  };
+
+  /** Whether a name is a counter of the document: LaTeX's, a theorem's, or one it made (`\newcounter`) or set. */
+  const knownCounter = (name: string) => counters.has(name) || within.has(name) || PRINTABLE_COUNTERS.has(name) || [...defs.theorems.values()].some((theorem) => theorem.counter === name);
+  /** What `\theex`, `\arabic{ex}` (`\alph`, `\Roman`, `\fnsymbol`…) or `\value{ex}` print here; null for other commands and unknown counters. */
+  const printedCounter = (command: string, node: SyntaxNode): string | null => {
+    const style = /^\\(arabic|alph|Alph|roman|Roman|fnsymbol|value)$/.exec(command)?.[1];
+    if (style) {
+      const counter = argumentText(node, 0)?.trim();
+      if (!counter || !knownCounter(counter)) return null;
+      return style === "value" ? String(value(counter)) : formatCounterValue(value(counter), style as "arabic");
+    }
+    const counter = /^\\the([A-Za-z]+)$/.exec(command)?.[1];
+    return counter && knownCounter(counter) ? format(counter) : null;
   };
 
   let includeDepth = 0;
@@ -795,7 +874,18 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           if (table) skipUntil = node.from + table.length;
           return false;
         }
-        if (command === "\\appendix") {
+        // A counter printed in the text (`\theex`, `\arabic{ex}`): its value here, which the Visual mode's counter shows.
+        const printed = !macroHost && !includeDepth ? printedCounter(command, node) : null;
+        if (printed !== null) {
+          entries.push({ pos: node.from, kind: "counter", number: printed });
+          return false;
+        }
+        if (command === "\\newcounter") {
+          const counter = argumentText(node, 0)?.trim();
+          if (counter && !counters.has(counter)) counters.set(counter, 0);
+        }
+        // IEEEtran's `\appendices` letters the sections after it, as `\appendix` does.
+        if (command === "\\appendix" || (command === "\\appendices" && !macroAt(defs, "appendices", node.from))) {
           appendix = true;
           cleverefAppendix = true;
           appendixAt = Math.min(appendixAt, here);
@@ -988,7 +1078,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const enumerate = custom === "enumerate";
           const depth = lists.filter((list) => list.enumerate).length + (enumerate ? 1 : 0);
           const options = defs.listOptions?.get(`${env}:${depth}`);
-          lists.push({ enumerate, count: 0, depth, template: optional ? read(optional.from + 1, optional.to - 1) : options ? options.replace(/\\the([A-Za-z]+)/g, (_, counter: string) => format(counter)) : null });
+          pushList(enumerate, depth, env, optional ? read(optional.from + 1, optional.to - 1) : options ? options.replace(/\\the([A-Za-z]+)/g, (_, counter: string) => format(counter)) : null);
           return;
         }
         // The appendix package's `appendices` environment letters its sections, as `\appendix` does; so does
@@ -1042,10 +1132,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       if (name === "ListEnvironment") {
         const env = environmentName(node, read) ?? "";
         const optional = node.getChild("BeginEnv")?.getChild("OptionalArgument");
-        lists.push({
-          enumerate: env === "enumerate", count: 0, depth: lists.filter((list) => list.enumerate).length + (env === "enumerate" ? 1 : 0),
-          template: optional ? read(optional.from + 1, optional.to - 1) : null,
-        });
+        pushList(env === "enumerate", lists.filter((list) => list.enumerate).length + (env === "enumerate" ? 1 : 0), env, optional ? read(optional.from + 1, optional.to - 1) : null);
         scopes.push({ node: node.from, target: currentTarget() });
         return;
       }
@@ -1054,6 +1141,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         if (list?.enumerate && !node.getChild("OptionalArgument")) {
           list.count++;
           setTarget(itemTarget(list, node.from));
+          // A list continued from another (`resume`) or started elsewhere (`start=5`): its items show the number from here.
+          if (list.adjusted && !macroHost && !includeDepth) entries.push({ pos: node.from, kind: "item", number: enumerateItemLabel(list.count, list.depth, list.template) });
         }
         return;
       }
@@ -1073,7 +1162,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       if (floats.length && floats[floats.length - 1].from === ref.from && (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment")) floats.pop();
       if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment" || name === "FootnoteCommand" || name === "EndnoteCommand" || name === "TabularEnvironment" || name === "UnknownCommand") {
         if (scopes.length && scopes[scopes.length - 1].node === ref.from) scopes.pop();
-        if (name === "ListEnvironment" || (name === "Environment" && defs.lists?.has(environmentName(ref.node, read) ?? ""))) lists.pop();
+        if (name === "ListEnvironment" || (name === "Environment" && defs.lists?.has(environmentName(ref.node, read) ?? ""))) popList();
         const group = subequations[subequations.length - 1];
         if (name === "Environment" && group?.node === ref.from) { subequations.pop(); counters.set("equation", group.saved); }
       }

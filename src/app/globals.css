@@ -3337,6 +3337,34 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-table-menu button { display: block; width: 100%; padding: 4px 10px; border-radius: 5px; text-align: left; color: var(--foreground); }
 .cm-vis-table-menu button:hover:not(:disabled) { background: var(--muted); }
 .cm-vis-table-menu button:disabled { opacity: .45; }
+/* Running text: tracked changes, soul, boxes, margin notes, counters, code, contents lists. */
+.cm-vis-added { color: #15803d; text-decoration: underline; text-decoration-color: color-mix(in srgb, #16a34a 70%, transparent); text-underline-offset: 2px; }
+.cm-vis-deleted { color: var(--destructive); text-decoration: line-through; }
+.cm-vis-hl { background: color-mix(in srgb, #facc15 40%, transparent); border-radius: 2px; }
+.cm-vis-change-comment, .cm-vis-margin-note { padding: 0 .35em; border-radius: .35em; background: var(--latex-visual-chip); color: var(--muted-foreground); font-family: var(--font-sans); font-size: .78em; }
+.cm-vis-margin-note::before { content: "margin: "; opacity: .7; }
+.cm-vis-so { letter-spacing: .12em; }
+.cm-vis-fbox { padding: 0 .2em; border: 1px solid currentColor; }
+.cm-vis-hfill { display: inline-block; min-width: 2em; }
+.cm-vis-hrulefill, .cm-vis-dotfill { display: inline-block; min-width: 4em; height: .6em; vertical-align: baseline; border-bottom: 1px solid currentColor; }
+.cm-vis-dotfill { border-bottom-style: dotted; border-bottom-width: 2px; }
+.cm-vis-text-drawing { cursor: pointer; }
+.cm-vis-counter.cm-vis-raw { font-size: .85em; }
+.cm-vis-code-inline { font-family: var(--font-mono); font-size: .88em; padding: 0 .2em; border-radius: .25em; background: color-mix(in srgb, var(--muted) 70%, transparent); }
+.libera-latex-visual .cm-line.cm-vis-code-line { font-family: var(--font-mono); font-size: .88em; white-space: pre; background: color-mix(in srgb, var(--muted) 55%, transparent); padding-left: 1em; }
+.cm-vis-code-caption { display: block; text-align: center; padding: .3em 0; }
+.cm-vis-code-keyword { color: #7c3aed; }
+.cm-vis-code-string { color: #b45309; }
+.cm-vis-code-comment { color: var(--muted-foreground); font-style: italic; }
+.cm-vis-code-block { margin: .4em 0; cursor: pointer; }
+.cm-vis-code-block pre.cm-vis-code { margin: 0; padding: .4em 1em; font-family: var(--font-mono); font-size: .88em; white-space: pre-wrap; background: color-mix(in srgb, var(--muted) 55%, transparent); }
+.cm-vis-contents { margin: .4em 0; cursor: pointer; }
+.cm-vis-contents-title { font-weight: 700; font-size: 1.2em; margin-bottom: .3em; }
+.cm-vis-contents-number { display: inline-block; min-width: 2.6em; padding-right: .4em; font-variant-numeric: tabular-nums; }
+.cm-vis-contents-level0 { font-weight: 700; }
+.cm-vis-contents-level1 { font-weight: 600; }
+.cm-vis-contents-level2 { padding-left: 1.5em; }
+.cm-vis-contents-level3, .cm-vis-contents-level4 { padding-left: 3em; }
 .libera-latex-editor .cm-diagnostic-warning { border-left-color: var(--latex-warning); }
 .libera-latex-editor .cm-lintRange-error { background-image: none; text-decoration: underline wavy color-mix(in srgb, var(--destructive) 75%, transparent); text-decoration-skip-ink: none; text-underline-offset: 3px; }
 .libera-latex-editor .cm-lintRange-warning { background-image: none; text-decoration: underline wavy color-mix(in srgb, var(--latex-warning) 70%, transparent); text-decoration-skip-ink: none; text-underline-offset: 3px; }

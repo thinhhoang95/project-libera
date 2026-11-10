@@ -23,7 +23,7 @@ import type { AlgorithmSpec } from "./algorithm";
 type Refreshable = HTMLElement & { liberaVisRefresh?: (view: EditorView) => void; liberaVisAt?: number | null };
 
 /** Registers how an element updates its numbers; called once now (after mounting) and on every numbering change. */
-function refreshable(dom: HTMLElement, view: EditorView, refresh: (view: EditorView) => void) {
+export function refreshable(dom: HTMLElement, view: EditorView, refresh: (view: EditorView) => void) {
   (dom as Refreshable).liberaVisRefresh = refresh;
   dom.setAttribute("data-vis-refresh", "");
   queueMicrotask(() => { if (dom.isConnected) { (dom as Refreshable).liberaVisAt = widgetPos(view, dom); refresh(view); } });
@@ -64,13 +64,13 @@ export function fragmentContext(view: EditorView, pos?: number): FragmentContext
 }
 
 /** A fragment context at a widget's own position, so definitions written after it in the body do not apply. */
-function widgetContext(view: EditorView, dom: HTMLElement, offset = 0) {
+export function widgetContext(view: EditorView, dom: HTMLElement, offset = 0) {
   const pos = widgetPos(view, dom);
   return fragmentContext(view, pos === null ? undefined : pos + offset);
 }
 
 /** The document position a widget's DOM stands at, or null when it is not in the view. */
-function widgetPos(view: EditorView, dom: HTMLElement) {
+export function widgetPos(view: EditorView, dom: HTMLElement) {
   try {
     return dom.isConnected ? view.posAtDOM(dom) : null;
   } catch {
@@ -266,12 +266,23 @@ export class ItemMarkerWidget extends VisualWidget {
    * `latex`: a label written with formulas or styles (`\item[$(i)$]`, `\item[\textbf{Step 1}]`), drawn as LaTeX;
    * `inline`: an item of a list run into its paragraph (paralist's `inparaenum`).
    */
-  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number, readonly flags: { latex?: boolean; inline?: boolean } = {}) {
-    super(`${variant}\u0000${depth}\u0000${label}\u0000${flags.latex ? "l" : ""}${flags.inline ? "i" : ""}`);
+  /**
+   * `numberedAt`: for an item of a list continued from another (enumitem's `resume`), where its `\item` is from the
+   * widget's start: its number comes from the numbering pass, which counts the lists before it.
+   */
+  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number, readonly flags: { latex?: boolean; inline?: boolean } = {}, readonly numberedAt: number | null = null) {
+    super(`${variant}\u0000${depth}\u0000${label}\u0000${flags.latex ? "l" : ""}${flags.inline ? "i" : ""}\u0000${numberedAt ?? ""}`);
   }
   toDOM(view: EditorView) {
     const dom = el("span", `cm-vis-item cm-vis-item-${this.variant}${this.flags.inline ? " cm-vis-item-inline" : ""}`, this.flags.latex ? undefined : this.label);
     dom.style.setProperty("--vis-depth", String(this.depth));
+    if (this.numberedAt !== null && !this.flags.latex) {
+      refreshable(dom, view, (target) => {
+        const pos = widgetPos(target, dom);
+        const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos + this.numberedAt!, "item");
+        dom.textContent = entry?.number ?? this.label;
+      });
+    }
     if (this.flags.latex) {
       const render = (target: EditorView) => dom.replaceChildren(renderLatexFragment(this.label, widgetContext(target, dom)));
       render(view);
