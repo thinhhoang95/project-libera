@@ -206,7 +206,7 @@ export function ReviewSuggestionCard({ suggestion, number }: { suggestion: Revie
   const [revision, setRevision] = useState<string | null>(null);
   const pending = suggestion.status === "pending", conflicted = suggestion.status === "conflicted";
   return <article className="review-suggestion" aria-label={`Change ${number}: ${suggestion.title}`}>
-    <div className="flex items-start gap-2"><button className="flex-1 text-left font-semibold" onClick={() => r.focus(suggestion.edits[0])}>Change {number}: {suggestion.title}</button><span className="text-xs capitalize">{suggestion.status}</span></div>
+    <div className="flex items-start gap-2"><button className="min-w-0 flex-1 text-left font-semibold" onClick={() => r.focus(suggestion.edits[0])}>Change {number}: {suggestion.title}</button><span className="text-xs capitalize">{suggestion.status}</span></div>
     <p className="mt-1 text-xs text-muted-foreground">{suggestion.reason}</p>
     {r.shared && <p className="mt-1 text-xs text-muted-foreground">Shared as a suggestion: collaborators see it, and an editor accepts or rejects it.</p>}
     {suggestion.edits.length > 1 && <p className="mt-1 text-xs font-semibold">Linked changes · accepted together</p>}
@@ -325,7 +325,7 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
       <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full disabled:opacity-40" aria-label="New review round" title="New review round" disabled={!doc || !!r.busy || attachmentBusy || r.recovery} onClick={() => void r.action("new-round")}><Plus aria-hidden size={16} /></button>
       <button type="button" className="libera-sidebar-icon-button libera-window-no-drag inline-flex h-8 w-8 shrink-0 items-center justify-center" aria-label="Return to AI chat" title="Return to AI chat" onClick={() => r.setChatReview(false)}><ArrowLeft aria-hidden size={17} /></button>
     </header>
-    <div className={`libera-chat-log min-h-0 flex-1 space-y-3 overflow-auto p-3 ${!session ? "flex flex-col" : ""}`}>
+    <div className={`libera-chat-log min-h-0 flex-1 space-y-3 overflow-auto p-3 wrap-anywhere ${!session ? "flex flex-col" : ""}`}>
       {!session && <div className="libera-chat-welcome libera-review-welcome">
         <span className="libera-ai-orb" aria-hidden><PencilLine size={30} strokeWidth={1.5} /></span>
         <h2>A fresh perspective.<br />A stronger draft.</h2>
@@ -412,7 +412,7 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
  * collapsed card, whose toggle button takes the clicks instead of its links.
  */
 export function CommentBody({ text, preview = false, shared = false }: { text: string; preview?: boolean; shared?: boolean }) {
-  return <MarkdownRenderer content={text} baseFontSize={13} baseLineHeight={1.5} renderImages={false} contentTrust={shared ? "shared" : "local"} className={`review-comment-body min-w-0 break-words${preview ? " review-comment-preview" : ""}`} />;
+  return <MarkdownRenderer content={text} baseFontSize={13} baseLineHeight={1.5} renderImages={false} contentTrust={shared ? "shared" : "local"} className={`review-comment-body min-w-0 wrap-anywhere${preview ? " review-comment-preview" : ""}`} />;
 }
 
 export function useNow(intervalMs = 60_000) {

@@ -106,17 +106,20 @@ function SuggestionCard({ group, controller, selected, onSelect, replying, proje
       className="libera-suggestion-card review-comment-card libera-panel-card cursor-pointer p-3 text-[13px] transition"
       onClick={onSelect}
     >
-      <div className="flex items-center gap-1.5 text-xs">
-        {group.isAi ? <Bot aria-hidden className="h-3.5 w-3.5 shrink-0" style={{ color: group.author.color }} /> : <span aria-hidden className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: group.author.color }} />}
-        <span className="min-w-0 truncate font-medium" data-testid="suggestion-author">{group.label}</span>
-        {group.items.length > 1 ? <span className="shrink-0 text-muted-foreground">· {group.items.length} linked changes</span> : null}
-        <span className="ml-auto shrink-0 text-muted-foreground" data-testid="suggestion-status">
+      {/* A narrow rail wraps the status onto its own line instead of pushing it out of the card. */}
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+        <span className="flex min-w-0 max-w-full items-center gap-1.5">
+          {group.isAi ? <Bot aria-hidden className="h-3.5 w-3.5 shrink-0" style={{ color: group.author.color }} /> : <span aria-hidden className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: group.author.color }} />}
+          <span className="min-w-0 truncate font-medium" title={group.label} data-testid="suggestion-author">{group.label}</span>
+          {group.items.length > 1 ? <span className="shrink-0 whitespace-nowrap text-muted-foreground">· {group.items.length} linked changes</span> : null}
+        </span>
+        <span className="ml-auto min-w-0 max-w-full truncate text-muted-foreground" title={statusLabel(group)} data-testid="suggestion-status">
           {group.pending ? <Loader2 aria-hidden className="mr-1 inline h-3 w-3 animate-spin" /> : null}
           {statusLabel(group)}
         </span>
       </div>
       {group.items[0].record.title || group.items[0].record.reason ? (
-        <p className="mt-1 text-xs text-muted-foreground">{group.items[0].record.title}{group.items[0].record.reason ? ` — ${group.items[0].record.reason}` : ""}</p>
+        <p className="mt-1 text-xs text-muted-foreground wrap-anywhere">{group.items[0].record.title}{group.items[0].record.reason ? ` — ${group.items[0].record.reason}` : ""}</p>
       ) : null}
       <ul className="mt-1 space-y-1">
         {group.items.map((item) => (

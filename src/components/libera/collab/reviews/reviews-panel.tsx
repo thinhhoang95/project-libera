@@ -53,9 +53,9 @@ function decisionLabel(assignment: ReviewAssignment, me: string | null): string 
 /** A reviewer's line: decision, outdated badge, and when. */
 function AssignmentLine({ assignment, me, now }: { assignment: ReviewAssignment; me: string | null; now: number }) {
   const decided = assignment.decidedAt ? Date.parse(assignment.decidedAt) : NaN;
-  return <li className="flex items-center gap-1.5 text-xs" data-reviewer={assignment.reviewer.id} data-decision={assignment.decision} data-outdated={assignment.outdated || undefined}>
-    {assignment.decision === "approved" ? <Check aria-hidden className="h-3.5 w-3.5 text-green-600" /> : assignment.decision === "changes-requested" ? <X aria-hidden className="h-3.5 w-3.5 text-amber-600" /> : <Clock aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />}
-    <span className="font-medium" style={{ color: assignment.reviewer.color || undefined }}>{assignment.reviewer.displayName}</span>
+  return <li className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs" data-reviewer={assignment.reviewer.id} data-decision={assignment.decision} data-outdated={assignment.outdated || undefined}>
+    {assignment.decision === "approved" ? <Check aria-hidden className="h-3.5 w-3.5 shrink-0 text-green-600" /> : assignment.decision === "changes-requested" ? <X aria-hidden className="h-3.5 w-3.5 shrink-0 text-amber-600" /> : <Clock aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+    <span className="min-w-0 max-w-full truncate font-medium" title={assignment.reviewer.displayName} style={{ color: assignment.reviewer.color || undefined }}>{assignment.reviewer.displayName}</span>
     <span className="text-muted-foreground">{decisionLabel(assignment, me)}</span>
     {assignment.outdated ? <span className="rounded bg-amber-500/15 px-1 text-[10px] font-medium text-amber-700 dark:text-amber-300" data-testid="review-outdated">outdated</span> : null}
     {Number.isFinite(decided) ? <span className="ml-auto text-[11px] text-muted-foreground" title={new Date(decided).toLocaleString()}>{timeAgo(Math.max(0, now - decided))}</span> : null}
@@ -102,10 +102,12 @@ function ReviewCard({ review, controller, snapshot, role, now, onOpen }: { revie
   const [error, setError] = useState("");
   const created = Date.parse(review.createdAt);
   return <li className="libera-review-request review-comment-card libera-panel-card p-3 text-[13px]" data-review-id={review.id} data-status={review.status}>
-    <div className="flex items-center gap-1.5 text-xs">
-      <ClipboardCheck aria-hidden className="h-3.5 w-3.5 shrink-0" style={{ color: review.requestedBy.color }} />
-      <span className="min-w-0 truncate font-medium">{review.requestedBy.id === me ? "You" : review.requestedBy.displayName} asked for a review</span>
-      <span className="ml-auto shrink-0 text-muted-foreground" data-testid="review-status">{STATUS[review.status]}</span>
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+      <span className="flex min-w-0 max-w-full items-center gap-1.5">
+        <ClipboardCheck aria-hidden className="h-3.5 w-3.5 shrink-0" style={{ color: review.requestedBy.color }} />
+        <span className="min-w-0 truncate font-medium">{review.requestedBy.id === me ? "You" : review.requestedBy.displayName} asked for a review</span>
+      </span>
+      <span className="ml-auto min-w-0 max-w-full truncate text-muted-foreground" data-testid="review-status">{STATUS[review.status]}</span>
     </div>
     <p className="mt-1 text-xs text-muted-foreground">{review.scope.kind === "document" ? "Whole document" : <>Passage: <q>{review.scope.quote.length > 120 ? `${review.scope.quote.slice(0, 117)}…` : review.scope.quote}</q></>}{Number.isFinite(created) ? ` · ${timeAgo(Math.max(0, now - created))}` : ""}</p>
     {review.note ? <p className="mt-1 whitespace-pre-wrap text-xs">{review.note}</p> : null}

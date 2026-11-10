@@ -2617,7 +2617,7 @@ button.border[class*="border-white"]:hover {
 /* Review annotations are UI decorations, never serialized document content. */
 .review-comments { overflow: hidden; }
 .review-comment-search input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
-.review-comment-card { overflow-wrap: anywhere; }
+.review-comment-card, .review-suggestion { overflow-wrap: anywhere; }
 .review-comment-card[data-selected="false"]:hover { background: #ffffff66; }
 html.dark .review-comment-card[data-selected="false"]:hover { background: #a3bbef12; }
 /* Suggestions and Reviews tabs reuse the comment card; a stale suggestion is dashed. */
