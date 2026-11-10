@@ -2,9 +2,9 @@ import type { EditorState, Text } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
-import { definitionExtentAround, definitionExtentAt, macroAt, type LatexDefinitions } from "../../macros/definitions";
+import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
-import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind } from "../../macros/numbering";
+import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, stripTexComments } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
@@ -787,9 +787,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "Environment": case "KnownEnvironment": {
           if (name === "KnownEnvironment") return;
-          // `table*`, `algorithm` and the other floats the grammar does not name.
+          // `table*`, `algorithm` and the other floats the grammar does not name; a theorem the document calls
+          // `algorithm` (`\newtheorem{algorithm}{Algorithm}`, Callaway & Sant'Anna's bootstrap) is the document's own.
           const kind = floatKind(node, readNode);
-          if (kind) return drawFloat(node, kind);
+          if (kind && !defs.theorems.has(environmentName(node, readNode) ?? "")) return drawFloat(node, kind);
           // `tabular*` and `tabulary` are tabulars the grammar does not name.
           if (isTabular(node, readNode)) return drawTabular(node);
           return environment(node);
@@ -801,10 +802,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "Maketitle": {
           if (!structural) return false;
-          const title = readTitleParts(state, node.from);
+          const title = readTitleParts(state, node.from, defs.documentClass);
           const span = aloneOnLines(doc, node.from, node.to);
           const range = span ?? { from: node.from, to: node.to };
-          emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TitleWidget(title.title, title.author, title.date, range.to - range.from) }] });
+          emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TitleWidget(title.title, title.author, title.date, range.to - range.from, title.abstract) }] });
           return false;
         }
         case "IncludeGraphics": {
@@ -875,11 +876,41 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return undefined;
   }
 
+  /**
+   * imsart's and elsarticle's `frontmatter`: the class prints the title block from the commands in it, with no
+   * `\maketitle`. Drawn as the title block over those commands (up to the abstract or keywords, which are drawn as
+   * text), when they are only front-matter commands; otherwise the environment stays source.
+   */
+  function frontMatter(formed: NonNullable<ReturnType<typeof wellFormedEnvironment>>): false | undefined {
+    if (!formed.content) return undefined;
+    const inside = read(state, formed.begin.to, formed.end.from);
+    // The abstract or keywords (the grammar may nest them in text nodes): found in the text, outside comments.
+    let stop = formed.end.from;
+    for (const match of inside.matchAll(/\\begin\s*\{(?:abstract|keywords?)\}/g)) {
+      if (isInLatexComment(inside, match.index ?? 0)) continue;
+      stop = formed.begin.to + (match.index ?? 0);
+      break;
+    }
+    const parts = frontMatterParts(read(state, formed.begin.to, stop));
+    if (!parts) return undefined;
+    let end = stop;
+    while (end > formed.begin.to && /\s/.test(read(state, end - 1, end))) end--;
+    const span = aloneOnLines(doc, formed.begin.from, end);
+    if (!span) return undefined;
+    consumed.push([span.from, span.to]);
+    if (structural) {
+      emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(parts.title, parts.author, parts.date, span.to - span.from) }] });
+      collapseLine(formed.end, "env-end");
+    }
+    return undefined;
+  }
+
   function environment(node: SyntaxNode): false | undefined {
     const formed = wellFormedEnvironment(node, state);
     if (!formed) return undefined;
     const name = formed.name;
     if (name === "thebibliography") return bibliography(node, formed);
+    if (name === "frontmatter") return frontMatter(formed);
     const theorem = defs.theorems.get(name);
     const user = defs.environments.get(name);
     const block = TEXT_BLOCKS[name];
@@ -969,6 +1000,18 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
     const text = read(state, ctrl.from, ctrl.to);
+    // `\index{social choice}` and `\glossary{…}`: entries for the back of the book, a small grey tag where they are
+    // (O'Donnell's book has one every few lines).
+    if (text === "\\index" || text === "\\glossary") {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      const inner = argument && argumentInner(argument.node);
+      // Only `\index{…}` with nothing between the command and its argument (no `[…]` of another package).
+      if (inner && !hasDirectError(node) && !read(state, ctrl.to, argument.node.from).trim()) {
+        const to = argument.node.to;
+        if (structural) emit({ kind: "index", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ChipWidget("index", text, [read(state, inner.from, inner.to).trim()], {}, to - node.from) }] });
+        return false;
+      }
+    }
     // `\setcounter{enumi}{3}` in a list: its next item is 4.
     if (/^\\(?:set|addto|step|refstep)counter$/.test(text)) for (let i = lists.length - 1; i >= 0; i--) {
       if (lists[i].variant !== "number") continue;
@@ -1801,32 +1844,86 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
 const titleCache = new WeakMap<Text, Map<number, ReturnType<typeof scanTitleParts>>>();
 
 /** `\title`, `\author` and `\date` before a `\maketitle` at `pos` (cached per document version). */
-function readTitleParts(state: EditorState, pos: number) {
+function readTitleParts(state: EditorState, pos: number, documentClass: string | null) {
   let byPos = titleCache.get(state.doc);
   if (!byPos) titleCache.set(state.doc, byPos = new Map());
   let parts = byPos.get(pos);
-  if (!parts) byPos.set(pos, parts = scanTitleParts(state, pos));
+  if (!parts) byPos.set(pos, parts = scanTitleParts(state.doc.sliceString(0, Math.min(pos, 120_000)), documentClass));
   return parts;
 }
 
-function scanTitleParts(state: EditorState, pos: number) {
-  // TeX reads them before \maketitle; the preamble is where they almost always are.
-  const text = state.doc.sliceString(0, Math.min(pos, 120_000));
-  const part = (command: string) => {
-    const pattern = new RegExp(`\\\\${command}\\s*(?:\\[[^\\]]*\\])?\\s*\\{`, "g");
-    let found: string | null = null;
-    for (const match of text.matchAll(pattern)) {
-      const lineStart = text.lastIndexOf("\n", match.index ?? 0) + 1;
-      if (/(^|[^\\])%/.test(text.slice(lineStart, match.index))) continue;
-      const open = (match.index ?? 0) + match[0].length - 1;
-      let depth = 0;
-      for (let i = open; i < text.length; i++) {
-        if (text[i] === "\\") { i++; continue; }
-        if (text[i] === "{") depth++;
-        else if (text[i] === "}" && --depth === 0) { found = text.slice(open + 1, i); break; }
-      }
+/** What imsart's and elsarticle's front matter may hold before the abstract: the title block's commands. */
+const FRONT_MATTER_COMMANDS = /^(?:title|runtitle|subtitle|author|runauthor|address|affiliation|affil|printead|ead|thanksref|thankstext|thanks|tnoteref|tnotetext|corref|cortext|fnref|fntext|date|dedicated|received|accepted|support|orcid|email|and|AND|thanksmark|dedicatory)$/;
+
+/** An author written with imsart's name parts (`\fnms{Susan} \snm{Athey}\ead[label=e1]{…}`), as the name it prints. */
+function frontMatterAuthor(author: string) {
+  return author
+    .replace(/\\(?:fnms|snm|bnms|particle|suffix)\s*\{([^{}]*)\}/g, "$1")
+    .replace(/\\(?:ead|thanksref|corref|fnref|thanksmark|orcid|inst|tnoteref)\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}/g, "")
+    .replace(/\s+/g, " ").trim();
+}
+
+/** The title block a `frontmatter` environment's commands give, or null when it holds anything else. */
+function frontMatterParts(text: string): { title: string | null; author: string | null; date: string | null } | null {
+  const source = stripTexComments(text);
+  let title: string | null = null;
+  let date: string | null = null;
+  const authors: string[] = [];
+  let i = 0;
+  while (i < source.length) {
+    const space = /^\s+/.exec(source.slice(i, i + 200));
+    if (space) { i += space[0].length; continue; }
+    const command = /^\\([A-Za-z@]+)\*?/.exec(source.slice(i, i + 60));
+    if (!command || !FRONT_MATTER_COMMANDS.test(command[1])) return null;
+    i += command[0].length;
+    const args: string[] = [];
+    for (;;) {
+      let at = i;
+      while (at < source.length && /[ \t]/.test(source[at])) at++;
+      if (source[at] === "\n" && !/^\n[ \t]*\n/.test(source.slice(at, at + 40))) { at++; while (at < source.length && /[ \t]/.test(source[at])) at++; }
+      if (source[at] === "[") { const optional = readOptional(source, at, TEX_GROUPS); if (!optional) return null; i = optional.end; continue; }
+      if (source[at] === "{") { const group = readGroup(source, at, TEX_GROUPS); if (!group) return null; args.push(group.content); i = group.end; continue; }
+      break;
     }
-    return found;
-  };
-  return { title: part("title"), author: part("author"), date: part("date") };
+    if (command[1] === "title") title = args.at(-1) ?? title;
+    else if (command[1] === "author") authors.push(frontMatterAuthor(args.at(-1) ?? ""));
+    else if (command[1] === "date") date = args.at(-1) ?? date;
+  }
+  if (title === null && !authors.length) return null;
+  return { title, author: authors.length ? authors.join(" \\and ") : null, date };
+}
+
+/** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart. */
+const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl)$/;
+
+/** The arguments of every `\command[…]{…}` in `text`, outside comments, in order. */
+function commandGroups(text: string, command: string) {
+  const pattern = new RegExp(`\\\\${command}(?![A-Za-z@])\\s*(?:\\[[^\\]]*\\])?\\s*\\{`, "g");
+  const found: string[] = [];
+  for (const match of text.matchAll(pattern)) {
+    const lineStart = text.lastIndexOf("\n", match.index ?? 0) + 1;
+    if (/(^|[^\\])%/.test(text.slice(lineStart, match.index))) continue;
+    const open = (match.index ?? 0) + match[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < text.length; i++) {
+      if (text[i] === "\\") { i++; continue; }
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}" && --depth === 0) { found.push(text.slice(open + 1, i)); break; }
+    }
+  }
+  return found;
+}
+
+/**
+ * The title block's parts as TeX reads them before `\maketitle` (the preamble is where they almost always are). acmart
+ * and its kin add an author with each `\author`; acmart takes the abstract before `\begin{document}` and prints it with
+ * the title, so an abstract in the preamble is part of the block.
+ */
+function scanTitleParts(text: string, documentClass: string | null) {
+  const last = (command: string) => commandGroups(text, command).at(-1) ?? null;
+  const authors = commandGroups(text, "author");
+  const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
+  const bodyStart = /\\begin\s*\{document\}/.exec(text)?.index ?? -1;
+  const abstract = bodyStart > 0 ? /\\begin\s*\{abstract\}([\s\S]*?)\\end\s*\{abstract\}/.exec(stripTexComments(text.slice(0, bodyStart)))?.[1].trim() ?? null : null;
+  return { title: last("title"), author, date: last("date"), abstract };
 }

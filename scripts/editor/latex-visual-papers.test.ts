@@ -324,6 +324,94 @@ Under \ref{assu:A1,assu:A2} and \ref{assu:A2}.
   assert.doesNotMatch(text, /\?/);
 });
 
+test("a theorem the document calls algorithm is drawn as a theorem, not tried as a float (Callaway & Sant'Anna's bootstrap)", () => {
+  const doc = String.raw`\documentclass{article}
+\newtheorem{algorithm}{Algorithm}
+\begin{document}
+\begin{algorithm}\label{alg:boot}
+1) Draw a realization. 2) Compute the estimator.
+\end{algorithm}
+\end{document}
+`;
+  const text = visibleText(doc);
+  assert.match(text, /Algorithm 1/);
+  assert.doesNotMatch(text, /\\begin\{algorithm\}/);
+  assert.match(text, /Draw a realization/);
+});
+
+test("acmart's authors are all in the title block, and its abstract before \\begin{document} is drawn with the title (Featherweight Go)", () => {
+  const doc = String.raw`\documentclass[acmsmall]{acmart}
+\title{Featherweight Go}
+\author{Robert Griesemer}
+\affiliation{\institution{Google}}
+\author{Philip Wadler}
+\affiliation{\institution{University of Edinburgh}}
+\author{Nobuko Yoshida}
+\begin{abstract}
+We describe a design for generics in Go.
+\end{abstract}
+\begin{document}
+\maketitle
+\section{Introduction}
+Text.
+\end{document}
+`;
+  const text = visibleText(doc);
+  const drawn = text.slice(text.indexOf("Featherweight Go", text.indexOf("Preamble") + 1));
+  for (const name of ["Robert Griesemer", "Philip Wadler", "Nobuko Yoshida"]) assert.match(drawn, new RegExp(name));
+  assert.match(drawn, /Abstract\s*We describe a design for generics in Go\./);
+  // In an article, the last \author is the one TeX keeps.
+  const article = visibleText(String.raw`\documentclass{article}
+\title{T}\author{First}\author{Second}
+\begin{document}
+\maketitle
+\end{document}
+`);
+  assert.doesNotMatch(article.slice(article.lastIndexOf("T")), /First/);
+});
+
+test("imsart's frontmatter is drawn as the title block, and its abstract as text (Generalized Random Forests)", () => {
+  const doc = String.raw`\documentclass[aos]{imsart}
+\begin{document}
+\begin{frontmatter}
+\title{Generalized Random Forests}
+\runtitle{Generalized Random Forests}
+\author{\fnms{Susan} \snm{Athey}\ead[label=e1]{athey@stanford.edu}}
+\address{Stanford Graduate School of Business \\ \printead{e1}}
+\and
+\author{\fnms{Stefan} \snm{Wager}\corref{}\ead[label=e3]{swager@stanford.edu}}
+\runauthor{Athey, Tibshirani and Wager}
+\begin{abstract}
+We propose generalized random forests.
+\end{abstract}
+\end{frontmatter}
+\section{Introduction}
+\end{document}
+`;
+  const text = visibleText(doc);
+  assert.match(text, /Generalized Random Forests/);
+  assert.match(text, /Susan Athey/);
+  assert.match(text, /Stefan Wager/);
+  assert.match(text, /We propose generalized random forests\./);
+  assert.doesNotMatch(text, /\\fnms|\\runtitle|\\begin\{frontmatter\}|\\address/);
+  // A frontmatter holding anything else stays source.
+  const other = visibleText(doc.replace("\\runtitle{Generalized Random Forests}", "Some text here."));
+  assert.match(other, /\\begin\{frontmatter\}/);
+});
+
+test("\\index entries are small tags, not raw commands (O'Donnell's book)", () => {
+  const doc = String.raw`\begin{document}
+In this section we describe social choice,
+\index{social choice}
+a topic studied by economists. \index{Arrow's Theorem@Arrow's Theorem!proof}
+\end{document}
+`;
+  const text = visibleText(doc);
+  assert.doesNotMatch(text, /\\index/);
+  assert.match(text, /social choice/);
+  assert.match(text, /Arrow's Theorem › proof/);
+});
+
 test("an array drawn on its own keeps its column specification (Featherweight Go's \\begin{array}{l} in rules)", () => {
   const doc = "\\begin{document}\n\\begin{array}{cc}\na & b \\\\\nc & d\n\\end{array}\n\\end{document}\n";
   assert.equal(constructs(visualState(doc)).some((item) => item.startsWith("math:")), true);

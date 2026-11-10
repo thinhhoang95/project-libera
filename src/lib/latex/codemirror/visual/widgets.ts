@@ -188,11 +188,14 @@ export class MathWidget extends VisualWidget {
 
 /** A citation, reference or label chip. */
 export class ChipWidget extends VisualWidget {
-  constructor(readonly kind: "cite" | "ref" | "label", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number) {
+  /** `index`: an `\index{…}` or `\glossary{…}` entry, which the PDF does not show where it is: a small grey tag, as a label. */
+  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number) {
     super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}`);
   }
   private text(view: EditorView) {
     if (this.kind === "label") return this.keys[0];
+    // makeidx's `sort@shown!sub` entries: what each level shows.
+    if (this.kind === "index") return this.keys[0].split("!").map((level) => level.slice(level.lastIndexOf("@") + 1).replace(/\|.*$/, "")).join(" › ");
     if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state));
     return stateReferenceText(view.state, this.command, this.keys);
   }
@@ -216,7 +219,7 @@ export class ChipWidget extends VisualWidget {
         dom.title = this.keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : key; }).join("\n");
         dom.setAttribute("aria-label", `Citation ${dom.textContent}`);
       } else {
-        dom.title = `\\label{${this.keys[0]}}`;
+        dom.title = `${this.command}{${this.keys[0]}}`;
       }
     };
     update(view);
@@ -895,8 +898,9 @@ export function preambleSummary(view: EditorView | null, defs = view ? visualDef
 
 /** `\maketitle`: the title, authors and date from the preamble. */
 export class TitleWidget extends VisualWidget {
-  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number) {
-    super(JSON.stringify([title, author, date, length]));
+  /** `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`). */
+  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null) {
+    super(JSON.stringify([title, author, date, length, abstract]));
   }
   toDOM(view: EditorView) {
     const dom = el("div", "cm-vis-title-block");
@@ -915,6 +919,15 @@ export class TitleWidget extends VisualWidget {
         dom.append(authors);
       }
       if (this.date !== null) { const date = el("div", "cm-vis-date"); date.append(renderLatexFragment(this.date, context)); dom.append(date); }
+      if (this.abstract) {
+        const abstract = el("div", "cm-vis-title-abstract");
+        const heading = el("div", "cm-vis-title-abstract-heading");
+        heading.textContent = "Abstract";
+        const body = el("div", "cm-vis-title-abstract-body");
+        body.append(renderLatexFragment(this.abstract, context));
+        abstract.append(heading, body);
+        dom.append(abstract);
+      }
     };
     render(view);
     refreshable(dom, view, render);
