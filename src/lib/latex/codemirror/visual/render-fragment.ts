@@ -3,7 +3,7 @@ import { latexParser as parser } from "../latex-parser";
 import type { LatexAuxData } from "../../aux-file";
 import type { LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros } from "../../macros/expand";
-import type { LatexNumbering } from "../../macros/numbering";
+import { numberingEntryAt, type LatexNumbering } from "../../macros/numbering";
 import { katexForEnvironment, RAISE, renderKatex } from "./math-render";
 import { citationStyle, citationText, referenceChipText, referencesInMath, type BibLookup } from "./references";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
@@ -43,6 +43,11 @@ const HORIZONTAL_SPACE = /^\\(?:hspace|hskip|hfill|hfil|enskip|enspace)\*?$/;
 const LAYOUT_ARITY: Record<string, number> = { "\\vspace": 1, "\\hspace": 1, "\\addvspace": 1, "\\linespread": 1, "\\fontsize": 2, "\\setcounter": 2, "\\addtocounter": 2, "\\stepcounter": 1, "\\refstepcounter": 1 };
 /** `\vskip 1em plus 2pt` and `\hskip 1em` (a 2410.03413 author is `\hskip 1em Fuyuki Kitagawa`): the primitive and its glue. */
 const PRIMITIVE_SKIP = /\\([vh])skip(?![A-Za-z@])\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|px|\\[A-Za-z@]+)(?:\s*(?:plus|minus)\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|fil+|\\[A-Za-z@]+))*/g;
+/**
+ * Settings that print nothing, with their arguments: NFS's `\fontfamily{ptm}\selectfont` in a cell, and a caption note
+ * macro's `\captionsetup{font=footnotesize}` before its `\caption*{…}` (the HANK paper's `\fignote{…}`).
+ */
+const SETTINGS = /^\\(?:fontfamily|fontseries|fontshape|fontencoding|usefont|captionsetup|DeclareCaptionFont)$/;
 /** Boxes that print their (last) argument: `\mbox{…}`, `\rlap{$^*$}`, `\multirow{2}{*}{…}`, `\rotatebox{90}{…}`. */
 const BOXES = new Set(["\\mbox", "\\hbox", "\\makebox", "\\fbox", "\\framebox", "\\rlap", "\\llap", "\\text", "\\textnormal", "\\textup", "\\textrm", "\\textmd", "\\textsl", "\\centerline", "\\multirow", "\\rotatebox", "\\raisebox", "\\scalebox", "\\resizebox", "\\parbox", "\\makecell", "\\shortstack", "\\tikzmarknode", "\\pbox", "\\titlecap"]);
 /**
@@ -181,6 +186,11 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   const read = (from: number, to: number) => source.slice(from, to);
   /** A formula's LaTeX with its references written as their numbers, as the text's formulas have them. */
   const inMath = (latex: string) => referencesInMath(latex, context.numbering, context.aux, context.defs);
+  /** Where each `\footnote` written in the fragment is in the document (numbering records it there); none without a position. */
+  const footnoteAt = context.pos === undefined ? [] : [...latex.matchAll(/\\footnote(?![A-Za-z@])/g)].map((match) => context.pos! + match.index!);
+  let footnotes = 0;
+  /** The number of the fragment's `index`-th footnote, "*" when it is not known (one a macro writes). */
+  const footnoteNumber = (index: number) => (footnoteAt[index] === undefined ? null : numberingEntryAt(context.numbering, footnoteAt[index], "footnote")?.number) ?? "*";
 
   const renderRange = (parent: Node, from: number, to: number, container: SyntaxNode) => {
     let at = from;
@@ -189,9 +199,33 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
     for (let child = container.firstChild; child; child = child.nextSibling) {
       if (child.to <= from || child.from >= to) continue;
       if (child.from > at) target.appendChild(document.createTextNode(typesetText(read(at, child.from))));
+      // `\textcolor[HTML]{1F77B4}{text}`: the grammar knows `\textcolor` without a model only, and leaves the model and
+      // groups after it as siblings; read together, they are the coloured text.
+      const modelled = modelColor(child);
+      if (modelled) {
+        const span = element("span", modelled.box ? "cm-vis-colorbox" : "cm-vis-color");
+        if (modelled.box) span.style.backgroundColor = modelled.css; else span.style.color = modelled.css;
+        renderNode(span, modelled.text);
+        target.appendChild(span);
+        child = modelled.text;
+        at = child.to;
+        continue;
+      }
+      // `{\color{red} text}` and `\color[HTML]{222222}` in a cell or caption: what follows in its group is coloured.
+      const color = colorSwitch(child);
+      if (color) {
+        const span = element("span", "cm-vis-color");
+        span.style.color = color.css;
+        target.appendChild(span);
+        target = span;
+        // A group the parser hung on the switch after the colour's (`\color{red}{text}`) is text.
+        for (const argument of color.rest) renderArgument(target, argument);
+        at = child.to;
+        continue;
+      }
       const switched = fontSwitch(child);
       if (switched) {
-        if (switched.className) { const span = element("span", switched.className); if (switched.color) span.style.color = switched.color; target.appendChild(span); target = span; }
+        if (switched.className) { const span = element("span", switched.className); target.appendChild(span); target = span; }
         // What the parser hung on the switch is text: `\tt [CLS]`, `\small{…}` (after a colour's own arguments).
         for (let argument = switched.command.firstChild, own = switched.own; argument; argument = argument.nextSibling) {
           if (own > 0 && (argument.name === "OptionalArgument" || /Argument$/.test(argument.name))) { if (argument.name !== "OptionalArgument") own--; continue; }
@@ -213,17 +247,39 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
     const ctrl = command?.name === "UnknownCommand" ? command.firstChild : null;
     if (!command || !ctrl || ctrl.name !== "CtrlSeq") return null;
     const text = read(ctrl.from, ctrl.to);
-    // `{\color{MidnightBlue} …}` (HANK's title): a colour it can draw styles the rest of its group; `own`, its arguments.
-    if (text === "\\color") {
-      const args = commandArguments(command);
-      const model = args[0]?.optional ? argumentInner(args[0].node) : null;
-      const name = args.find((arg) => !arg.optional);
-      const range = name && argumentInner(name.node);
-      const color = range && !hasDirectError(command) ? cssColor(model ? read(model.from, model.to) : null, read(range.from, range.to), context.defs.colors) : null;
-      return color ? { command, className: "cm-vis-color", color, own: 1 } : null;
-    }
+    // (`{\color{MidnightBlue} …}`, HANK's title, is colorSwitch's.)
     const className = FONT_SWITCHES[text] ?? (SIZE_COMMAND.test(text) ? "" : undefined);
-    return className === undefined ? null : { command, className, color: undefined, own: 0 };
+    return className === undefined ? null : { command, className, own: 0 };
+  };
+
+  /** `\color[model]{name}` (a switch): its CSS colour and the groups the parser hung on it after the colour's; null for a colour it cannot draw. */
+  const colorSwitch = (node: SyntaxNode) => {
+    const command = node.name === "Command" ? node.firstChild : node;
+    const ctrl = command?.name === "UnknownCommand" ? command.firstChild : null;
+    if (!command || !ctrl || ctrl.name !== "CtrlSeq" || read(ctrl.from, ctrl.to) !== "\\color" || hasDirectError(command)) return null;
+    const args = commandArguments(command);
+    const model = args[0]?.optional ? argumentInner(args[0].node) : null;
+    const named = args.findIndex((arg) => !arg.optional);
+    const name = named >= 0 ? argumentInner(args[named].node) : null;
+    if (!name || (args[0]?.optional && !model)) return null;
+    const css = cssColor(model ? read(model.from, model.to) : null, read(name.from, name.to), context.defs.colors);
+    return css ? { css, rest: args.slice(named + 1).filter((arg) => !arg.optional).map((arg) => arg.node) } : null;
+  };
+
+  /**
+   * `\textcolor[HTML]{1F77B4}{text}` and `\colorbox[rgb]{…}{…}` (the grammar's command ends at its name, with an error,
+   * and the model, the colour and the text follow as siblings): the CSS colour and the text's group; null otherwise.
+   */
+  const modelColor = (node: SyntaxNode) => {
+    const command = node.name === "Command" ? node.firstChild?.firstChild : null;
+    if (!command || (command.name !== "TextColorCommand" && command.name !== "ColorBoxCommand") || commandArguments(command).length) return null;
+    const head = /^\[([^\]]*)\]\s*\{([^{}]*)\}\s*/.exec(source.slice(node.to));
+    if (!head) return null;
+    let text = node.nextSibling;
+    while (text && text.to <= node.to + head[0].length) text = text.nextSibling;
+    if (!text || text.from !== node.to + head[0].length || text.name !== "Group" || hasDirectError(text)) return null;
+    const css = cssColor(head[1].trim(), head[2], context.defs.colors);
+    return css ? { css, text, box: command.name === "ColorBoxCommand" } : null;
   };
 
   const renderArgument = (parent: Node, argument: SyntaxNode) => {
@@ -309,8 +365,20 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       return;
     }
     if (name === "FootnoteCommand" || name === "EndnoteCommand") {
-      parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" }));
+      // Its mark and its text, as a footnote in the text is drawn (a footnote in a caption, a table cell or a macro's
+      // argument). A note whose mark is emptied first (`\blfootnote`: `\renewcommand\thefootnote{}\footnote{…}`) is
+      // not counted: "*" sets its text apart.
+      const unmarked = /\\renewcommand\s*\{?\s*\\thefootnote\s*\}?\s*\{\s*\}\s*$/.test(source.slice(Math.max(0, node.from - 60), node.from));
+      const index = footnotes++;
+      parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: name === "FootnoteCommand" && !unmarked ? footnoteNumber(index) : "*" }));
+      const argument = node.getChild("TextArgument");
+      if (argument && !hasDirectError(node)) { const text = element("span", "cm-vis-footnote"); renderArgument(text, argument); parent.appendChild(text); }
       return;
+    }
+    // `\caption*{Notes: …}` written by a note macro (`\fignote{…}` for `\captionsetup{…}\caption*{…}`): its text.
+    if (name === "Caption" && read(node.from, node.from + 9) === "\\caption*") {
+      const argument = node.getChild("TextArgument");
+      if (argument && !hasDirectError(node)) { renderArgument(parent, argument); return; }
     }
     // Alignment and lengths inside a cell or caption (`\centering`, `\setlength{\tabcolsep}{0pt}`) have no effect here.
     if (name === "Label" || name === "Centering" || name === "SetLengthCommand") return;
@@ -419,6 +487,18 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       if (INVISIBLE.has(text) || VERTICAL_LAYOUT.test(text)) { renderExtra(parent, node, LAYOUT_ARITY[text] ?? 0); return; }
       // A counter command with its arguments, or a definition the grammar did not name (`\renewcommand\thefootnote{}`).
       if (PRINTS_NOTHING.test(text)) { if (text in LAYOUT_ARITY) renderExtra(parent, node, LAYOUT_ARITY[text]); return; }
+      if (SETTINGS.test(text)) return;
+      // `18.10\phantom{0}` aligns numbers in a column (the minimum-wage paper's summary table): the space its content
+      // takes, unseen; `\vphantom` only sets a height.
+      if (text === "\\phantom" || text === "\\hphantom" || text === "\\vphantom") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) {
+          if (text !== "\\vphantom") { const space = element("span", "cm-vis-phantom"); space.style.visibility = "hidden"; renderArgument(space, argument.node); parent.appendChild(space); }
+          return;
+        }
+      }
+      // `\newline` (in `\textit{…}` in a figure's description, a cell) breaks the line.
+      if (text === "\\newline" || text === "\\linebreak") { parent.appendChild(element("br")); return; }
       if (HORIZONTAL_SPACE.test(text)) { parent.appendChild(document.createTextNode(" ")); renderExtra(parent, node, LAYOUT_ARITY[text] ?? 0); return; }
       // hyperref's `\hyperref[label]{text}` (and its four-argument form): the text, as a link.
       if (text === "\\hyperref") {

@@ -3228,6 +3228,21 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
   color: var(--muted-foreground); font-family: var(--font-sans); font-size: .85em;
 }
 .cm-vis-figure-drawing-name { font-family: var(--font-mono); color: var(--foreground); }
+/* A tcolorbox or mdframed box in a float: its title on top, its parts (`\tcblower`) divided by a dashed line. */
+.cm-vis-figure-box { flex: 1 1 100%; min-width: 0; border: 1px solid var(--border); border-radius: 6px; text-align: left; font-size: .92em; overflow: hidden; }
+.cm-vis-figure-box-title { padding: .3em .8em; font-weight: 700; background: color-mix(in srgb, var(--muted) 70%, transparent); border-bottom: 1px solid var(--border); }
+.cm-vis-figure-box-part { padding: .45em .8em; }
+.cm-vis-figure-box-part + .cm-vis-figure-box-part { border-top: 1px dashed var(--border); }
+.cm-vis-figure-overlay { flex: 1 1 100%; color: var(--muted-foreground); font-family: var(--font-sans); font-size: .8em; }
+/* A tcolorbox or mdframed box in the text: a frame around its lines, its title as its first line. */
+.libera-latex-visual .cm-line.cm-vis-box { padding-inline: 1em; box-shadow: inset 1px 0 0 var(--border), inset -1px 0 0 var(--border); background: color-mix(in srgb, var(--muted) 30%, transparent); }
+.libera-latex-visual .cm-line.cm-vis-box-first { padding-top: .35em; border-radius: 6px 6px 0 0; box-shadow: inset 1px 0 0 var(--border), inset -1px 0 0 var(--border), inset 0 1px 0 var(--border); }
+.libera-latex-visual .cm-line.cm-vis-box-last { padding-bottom: .35em; border-radius: 0 0 6px 6px; box-shadow: inset 1px 0 0 var(--border), inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border); }
+.libera-latex-visual .cm-line.cm-vis-box-first.cm-vis-box-last { border-radius: 6px; box-shadow: inset 0 0 0 1px var(--border); }
+.libera-latex-visual .cm-line.cm-vis-box-title { font-weight: 700; }
+.cm-vis-box-lower { display: block; margin: .3em 0; border-top: 1px dashed var(--border); }
+/* Rows a table reads from another file (`\input{rows}`): a placeholder naming it. */
+.cm-vis-table-input { padding: .18em .75em; text-align: center; color: var(--muted-foreground); font-family: var(--font-sans); font-size: .85em; font-style: italic; cursor: pointer; }
 .cm-vis-image, .cm-vis-image-inline img { max-width: 100%; max-height: 440px; object-fit: contain; }
 .cm-vis-image-inline { display: inline-block; max-width: 100%; vertical-align: middle; }
 .cm-vis-caption { margin-top: .45em; font-size: .9em; line-height: 1.45; text-align: center; }

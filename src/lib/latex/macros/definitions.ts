@@ -841,7 +841,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       const letter = readGroupAt(source, index);
       const count = letter ? readOptionalAt(source, letter.end) : null;
       const body = letter ? readGroupAt(source, count?.end ?? letter.end) : null;
-      if (letter && body && /^\s*[A-Za-z]\s*$/.test(letter.content)) {
+      // A letter, or another character a specification has no use for (estout's `\newcolumntype{.}{D{.}{.}{-1}}`).
+      if (letter && body && /^\s*(?:[A-Za-z]|[^\s|@!<>*{}\[\]\\])\s*$/.test(letter.content)) {
         end = body.end;
         const arity = count ? Number(count.content.trim()) : 0;
         // Its base column, without the `>{…}`, `<{…}` and `@{…}` parts: `p{#1}`, `m{…}`, `b{…}` or `X` wrap.

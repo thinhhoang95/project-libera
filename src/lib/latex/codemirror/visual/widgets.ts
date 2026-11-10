@@ -597,6 +597,10 @@ export type FigureContent = {
   unnumbered?: boolean;
   /** Unnumbered notes under the caption (subcaption's `\subcaption*{Notes: …}`). */
   notes?: string[];
+  /** Framed text (a `tcolorbox` of prompts in a `table*`): its title and its LaTeX, `\tcblower` dividing it. */
+  boxes?: Array<{ title: string | null; body: string }>;
+  /** Labels put over the images (a `picture` of `\put`s, overpic's), drawn in the PDF only. */
+  overlay?: boolean;
   /** An algorithm float's prose before its lines, drawn above them. */
   intro?: string;
   /** Where the number is recorded relative to the widget: the environment's start, or its panel's. */
@@ -617,6 +621,29 @@ export type FigureSpec = FigureContent & {
 };
 
 const FLOAT_LABELS = { figure: "Figure", table: "Table", algorithm: "Algorithm" };
+
+/**
+ * The names the open file gives its floats, per document version: caption's `\captionsetup[figure]{name={Fig.}}`
+ * (the cannabis paper's "Fig. 1") and `\renewcommand{\figurename}{Fig.}`. A name holding a command is not read.
+ */
+const floatNameCache = new WeakMap<EditorView["state"]["doc"], Partial<Record<FigureContent["kind"], string>>>();
+function floatNames(doc: EditorView["state"]["doc"]) {
+  let names = floatNameCache.get(doc);
+  if (names) return names;
+  names = {};
+  const text = doc.toString();
+  if (/\\(?:captionsetup|renewcommand)/.test(text)) {
+    const plain = text.replace(/(^|[^\\])%[^\n]*/g, "$1");
+    for (const match of plain.matchAll(/\\captionsetup\s*\[\s*(figure|table|algorithm)\s*\]\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g)) {
+      const name = /(?:^|,)\s*name\s*=\s*(?:\{([^{}]*)\}|([^,]*))/.exec(match[2]);
+      const value = (name?.[1] ?? name?.[2])?.trim();
+      if (value && !value.includes("\\")) names[match[1] as FigureContent["kind"]] = value;
+    }
+    for (const match of plain.matchAll(/\\renewcommand\s*\{?\s*\\(figure|table|algorithm)name\s*\}?\s*\{([^{}\\]*)\}/g)) names[match[1] as FigureContent["kind"]] = match[2].trim();
+  }
+  floatNameCache.set(doc, names);
+  return names;
+}
 
 /** The lines of an algorithm, numbered and indented as the algorithmic package sets them. */
 function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
@@ -660,12 +687,22 @@ export class FigureWidget extends VisualWidget {
         body.append(frame);
       }
       for (const drawing of content.drawings ?? []) {
-        // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is.
+        // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is, or the
+        // package that draws it ("diagram:tikz-cd").
         const placeholder = el("span", "cm-vis-figure-drawing");
-        placeholder.append(el("span", "cm-vis-figure-drawing-name", drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
+        const diagram = /^diagram:(.*)$/.exec(drawing)?.[1];
+        placeholder.append(el("span", "cm-vis-figure-drawing-name", diagram ? `Diagram (${diagram})` : drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
         placeholder.append(el("span", "cm-vis-figure-drawing-note", "Drawn in the PDF"));
         body.append(placeholder);
       }
+      for (const box of content.boxes ?? []) {
+        // A framed box's text, its parts divided where `\tcblower` is.
+        const frame = el("div", "cm-vis-figure-box");
+        if (box.title) frame.append(renderLatexInto("div", "cm-vis-figure-box-title", box.title, fragmentContext(view, content.captionPos)));
+        for (const part of box.body.split(/\\tcblower(?![A-Za-z@])/)) frame.append(renderLatexInto("div", "cm-vis-figure-box-part", part.trim(), fragmentContext(view, content.captionPos)));
+        body.append(frame);
+      }
+      if (content.overlay) body.append(el("div", "cm-vis-figure-overlay", "+ overlay (labels drawn in the PDF)"));
       for (const tabular of content.tabulars ?? []) body.append(renderTableGrid(view, tabular.source, () => {
         const pos = start();
         return pos === null ? null : pos + tabular.offset;
@@ -698,10 +735,13 @@ export class FigureWidget extends VisualWidget {
         row.append(element);
       }
       // The float's own caption, if it has one besides the panels'.
-      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined };
+      // Its notes are under the panels, whether its caption is above or below them (the cannabis paper's figures).
+      const notesBelow = spec.caption === null || spec.captionAbove;
+      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined, notes: notesBelow ? undefined : spec.notes };
       if (spec.caption !== null && spec.captionAbove) draw(own, dom);
       dom.append(row);
       if (spec.caption !== null && !spec.captionAbove) draw(own, dom);
+      else if (spec.notes?.length) dom.append(...spec.notes.map((note) => renderLatexInto("div", "cm-vis-figure-note", note, fragmentContext(view, spec.captionPos))));
     } else draw(spec, dom);
     refreshable(dom, view, (target) => {
       const pos = widgetPos(target, dom);
@@ -709,7 +749,7 @@ export class FigureWidget extends VisualWidget {
         const entry = pos === null || content.unnumbered ? null : numberingEntryAt(visualNumbering(target.state), pos + content.numberOffset, content.kind);
         label.textContent = content.unnumbered ? ""
           : content.sub ? (entry?.number ? `(${entry.number}) ` : "")
-          : `${FLOAT_LABELS[content.kind]}${entry?.number ? ` ${entry.number}` : ""}${content.kind === "algorithm" ? " " : ": "}`;
+          : `${floatNames(target.state.doc)[content.kind] || FLOAT_LABELS[content.kind]}${entry?.number ? ` ${entry.number}` : ""}${content.kind === "algorithm" ? " " : ": "}`;
         // References and citations in the caption follow numbering and the .aux too.
         if (content.caption !== null && content.caption.includes("\\")) {
           const captionPos = pos === null ? content.captionPos : pos + spec.numberOffset + (content.captionPos - spec.start);
@@ -780,13 +820,43 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   const wraps = model.columns.map((column) => (types.has(column) ? !!types.get(column)!.paragraph : /^[pmbXLCRJ]$/.test(column)));
   /** Columns a `\multirow` above still covers, and for how many more rows. */
   const rowsCovered = new Map<number, number>();
+  /** The rules of rows not drawn, drawn above the next row; whether the last such row closes the table. */
+  let carried: string[] = [];
+  let closing = false;
   model.rows.forEach((row, rowIndex) => {
+    const rulesBefore = [...carried, ...row.rulesBefore];
+    carried = [];
+    // stargazer's `\\[-1.8ex]\hline` and `\hline \\[-1.8ex]`: empty rows a negative space pulls up to nothing in the
+    // PDF (the Grammarly paper's tables); their rules go to the next row.
+    if (row.breakAt !== null && row.cells.every((cell) => !cell.text.trim()) && /^\\\\\*?\s*\[\s*-/.test(source.slice(row.breakAt, row.to)) && ![...rowsCovered.values()].some((count) => count > 0)) {
+      if (rowIndex + 1 < model.rows.length) { carried = rulesBefore; return; }
+      if (rulesBefore.length) { closing = true; return; }
+    }
     const tr = el("tr", "cm-vis-table-row");
     // `\addlinespace` is space, not a line; `\noalign{…}` sets up the line after it (a thicker one: Mask R-CNN's `\shline`).
-    const lines = row.rulesBefore.filter((rule) => !/^\\(?:addlinespace|noalign)/.test(rule));
-    const thick = row.rulesBefore.some((rule) => /^\\noalign\s*\{[^}]*\\arrayrulewidth\s*[\d.]+\s*pt/.test(rule));
+    const lines = rulesBefore.filter((rule) => !/^\\(?:addlinespace|noalign)/.test(rule));
+    const thick = rulesBefore.some((rule) => /^\\noalign\s*\{[^}]*\\arrayrulewidth\s*[\d.]+\s*pt/.test(rule));
     if (lines.length) tr.classList.add(thick || lines.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
-    if (row.rulesBefore.some((rule) => /^\\addlinespace/.test(rule))) tr.classList.add("cm-vis-row-spaced");
+    if (rulesBefore.some((rule) => /^\\addlinespace/.test(rule))) tr.classList.add("cm-vis-row-spaced");
+    // Rows read from another file (`\input{./tables/summary_stats_post.tex} \\`, the Grammarly paper): a placeholder row.
+    const input = row.cells.length === 1 ? /^\\(?:input|include)\s*\{([^{}]+)\}$/.exec(row.cells[0].text.trim()) : null;
+    if (input) {
+      const name = input[1].trim().replace(/^\.\//, "");
+      // Not a cell of the grid: the cell editor and keys leave it alone.
+      const td = el("td", "cm-vis-table-input", `Rows from ${/\.[A-Za-z]+$/.test(name) ? name : `${name}.tex`}`) as HTMLTableCellElement;
+      td.colSpan = Math.max(1, model.columns.length);
+      const cell = row.cells[0];
+      td.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const base = start();
+        if (base !== null) revealSourceAt(view, readOnly ? base : base + cell.from, readOnly ? base + readOnlyLength! : base + cell.to);
+      });
+      tr.append(td);
+      table.append(tr);
+      return;
+    }
     let column = 0;
     row.cells.forEach((cell, cellIndex) => {
       // An empty cell under a `\multirow` above is part of it.
@@ -847,7 +917,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
     });
     table.append(tr);
   });
-  if (model.rulesAfter.length) table.classList.add("cm-vis-table-closed");
+  if (model.rulesAfter.length || closing) table.classList.add("cm-vis-table-closed");
   if (dynamic.length) {
     refreshable(table, view, (target) => {
       const base = start();
