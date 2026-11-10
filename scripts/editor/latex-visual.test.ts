@@ -78,7 +78,9 @@ function at(view: EditorView, needle: string, offset = 0) {
 
 function number(view: EditorView) {
   const state = view.state;
-  const numbering = computeLatexNumbering(syntaxTree(state), (from, to) => state.doc.sliceString(from, to), visualDefinitions(state));
+  // The whole tree, as the app numbers once the parser has caught up (under a loaded test run the parse may lag).
+  const tree = ensureSyntaxTree(state, state.doc.length, 5000) ?? syntaxTree(state);
+  const numbering = computeLatexNumbering(tree, (from, to) => state.doc.sliceString(from, to), visualDefinitions(state));
   view.dispatch({ effects: setNumbering.of(numbering) });
   refreshVisualWidgets(view);
 }

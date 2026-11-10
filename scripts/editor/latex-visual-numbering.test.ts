@@ -371,14 +371,14 @@ Text.
   assert.equal(citationText({ command: "\\citeA", keys: ["reich2018"] }, EMPTY_AUX, lookup(entries)), "Allegretto and Reich (2018)");
 });
 
-/** A mounted Visual mode for `doc`, numbered as the app numbers it; `use` reads its DOM before it is destroyed. */
-function mounted<T>(doc: string, use: (dom: HTMLElement) => T) {
+/** A mounted Visual mode for `doc`, numbered as the app numbers it; `inspect` reads its DOM before it is destroyed. */
+function mounted<T>(doc: string, inspect: (dom: HTMLElement) => T) {
   const parent = document.createElement("div");
   document.body.append(parent);
   const view = new EditorView({ state: visualState(doc), parent });
   view.dispatch({ effects: setNumbering.of(computeLatexNumbering(syntaxTree(view.state), (from, to) => view.state.doc.sliceString(from, to), visualDefinitions(view.state))) });
   refreshVisualWidgets(view);
-  try { return use(view.contentDOM); } finally { view.destroy(); parent.remove(); }
+  try { return inspect(view.contentDOM); } finally { view.destroy(); parent.remove(); }
 }
 
 test("B4-10: a \\tag written in math is read whole, and a reference to it draws the math", () => {

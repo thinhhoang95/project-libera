@@ -11,7 +11,6 @@ import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-langu
 import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
 import { computeLatexNumbering } from "../../src/lib/latex/macros/numbering";
-import { readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
