@@ -10,4 +10,7 @@ declare module "codemirror-lang-latex/src/tokens.mjs" {
   import type { ExternalTokenizer } from "@lezer/lr";
   export const literalArgTokenizer: ExternalTokenizer;
   export const specializeCtrlSeq: (name: string, stack: unknown) => number;
+  export const specializeEnvName: (name: string, terms: unknown) => number;
 }
+// KaTeX's mhchem extension (`\ce`, `\pu`), loaded on first use (visual/math-render.ts): it registers its macros on import.
+declare module "katex/contrib/mhchem";

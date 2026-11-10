@@ -376,13 +376,13 @@ function physicsMatricesForKatex(latex: string) {
   const rows = (kind: string, fill: string, a: string, b: string, c: string): string | null => {
     const size = (text: string) => (/^\s*\d+\s*$/.test(text) && Number(text) >= 1 && Number(text) <= 12 ? Number(text) : null);
     const grid = (m: number, n: number, cell: (i: number, j: number) => string) => Array.from({ length: m }, (_, i) => Array.from({ length: n }, (_, j) => cell(i, j)).join("&")).join("\\\\");
-    if (kind === "imat") { const n = size(a); return n && grid(n, n, (i, j) => (i === j ? "1" : "0")); }
-    if (kind === "zmat") { const m = size(a); const n = size(b); return m && n && grid(m, n, () => "0"); }
+    if (kind === "imat") { const n = size(a); return n ? grid(n, n, (i, j) => (i === j ? "1" : "0")) : null; }
+    if (kind === "zmat") { const m = size(a); const n = size(b); return m && n ? grid(m, n, () => "0") : null; }
     if (kind === "xmat" || kind === "xmat*") {
       const m = size(b);
       const n = size(c);
       // `xmat` (physics' starred `\xmat*`): indexed entries (`x_{11}`, or `x_{1}` for one row or column); `xmat*` (unstarred): the entry itself.
-      return m && n && grid(m, n, (i, j) => (kind === "xmat*" ? a : `${a}_{${m === 1 ? j + 1 : n === 1 ? i + 1 : `${i + 1}${j + 1}`}}`));
+      return m && n ? grid(m, n, (i, j) => (kind === "xmat*" ? a : `${a}_{${m === 1 ? j + 1 : n === 1 ? i + 1 : `${i + 1}${j + 1}`}}`)) : null;
     }
     if (kind === "pmat") return PAULI[a.trim()] ?? null;
     const items = a.split(",").map((item) => item.trim());
