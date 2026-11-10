@@ -1,7 +1,7 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { latexParser as parser } from "../codemirror/latex-parser";
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
-import { definitionExtentAt, macroAt, type LatexDefinitions } from "./definitions";
+import { definitionExtentAt, macroAt, readLatexInputs, type LatexDefinitions } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse } from "./expand";
 import { readCtable } from "../codemirror/visual/table-model";
 import { disabledRegions, discardingMacros, isPairMacro, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, regionContaining, structureMacroNames, usesStructureMacro } from "./structure";
@@ -120,6 +120,27 @@ export function floatKind(node: SyntaxNode, read: Read): "figure" | "table" | "a
 export function restatableTheorem(node: SyntaxNode, read: Read) {
   const head = /^\\begin\s*\{restatable\*?\}\s*(?:\[((?:[^\][{}]|\{[^{}]*\})*)\])?\s*\{([^{}]+)\}\s*\{([^{}]+)\}/.exec(read(node.from, Math.min(node.to, node.from + 600)));
   return head ? { env: head[2].trim(), note: head[1]?.trim() || null, name: head[3].trim(), length: head[0].length } : null;
+}
+
+/** Environments around a theorem's text that only frame it (mdframed's box, framed's rule): dropped when it is drawn. */
+const THEOREM_FRAMES = /^(?:mdframed|framed|oframed|shaded\*?|snugshade\*?|leftbar|tcolorbox)$/;
+
+/**
+ * A user environment whose code is a theorem, perhaps in frames (the book 2403.14606's 212 `boxdef`s:
+ * `\newenvironment{boxdef}[1]{\begin{definition}[#1]\begin{mdframed}[style=defsty]}{\end{mdframed}\end{definition}}`):
+ * the theorem's environment and its note as the begin code (arguments substituted) gives it. Null for any other code.
+ */
+export function wrappedTheorem(begin: string, end: string, defs: LatexDefinitions): { env: string; note: string | null } | null {
+  const plain = (code: string) => stripTexComments(code).replace(/\s+/g, "");
+  const opening = /^\\begin\{([^{}]+)\}(?:\[((?:[^\][{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\])?((?:\\begin\{[^{}]+\}(?:\[[^\]]*\])?)*)$/.exec(plain(begin));
+  if (!opening || !defs.theorems.has(opening[1])) return null;
+  const frames = [...opening[3].matchAll(/\\begin\{([^{}]+)\}/g)].map((match) => match[1]);
+  if (frames.some((frame) => !THEOREM_FRAMES.test(frame))) return null;
+  // The end code closes the frames and then the theorem.
+  if (plain(end) !== [...frames].reverse().concat(opening[1]).map((name) => `\\end{${name}}`).join("")) return null;
+  // The note as written (spaces kept): read again from the code.
+  const note = opening[2] === undefined ? null : /\\begin\s*\{[^{}]+\}\s*\[((?:[^\][{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\]/.exec(stripTexComments(begin))?.[1].trim() || null;
+  return { env: opening[1], note };
 }
 
 /** `longtable` and `xltabular`: tables that are their own float, with a caption and head and foot rows. */
@@ -251,10 +272,25 @@ export type NumberingStart = {
   mainmatter?: boolean;
   /** The numbers of the labels in the whole document (other chapters' too), without positions: references to them resolve. */
   labels?: Array<[string, LabelTarget]>;
+  /** Top counters (`chapter`, `section`) whose `\the…` the main file made after its `\appendix`: it applies, not the letters. */
+  appendixFormats?: string[];
 };
 
 /** A file the document `\input`s or `\include`s, parsed: its counters advance the document's. */
 export type IncludedFile = { tree: Tree; read: Read };
+
+/**
+ * What numbering an included file did, by the state it was included in: the same file from the same counters, formats
+ * and label target does the same again, so a main file's numbering after a pause in typing does not walk all its
+ * chapters again (the thesis 1709.01953's 15, 17–80 ms each time). `nested`: the files it included in turn.
+ */
+type IncludedResult = {
+  key: string; nested: Array<[string, IncludedFile | null]>; counters: Array<[string, number]>; within: Array<[string, string]>; prefix: Array<[string, string]>;
+  appendix: boolean; appendixMoved: boolean; labels: Array<[string, LabelTarget]>; target: LabelTarget | null;
+  /** `\mainmatter`/`\backmatter`, `\appendix` for cleveref and `\crefalias` in the file (or files it includes). */
+  mainmatter: boolean; cleverefAppendix: boolean; crefAliases: Array<[string, string]>;
+};
+const includedResults = new WeakMap<IncludedFile, IncludedResult[]>();
 
 export type NumberingOptions = {
   start?: NumberingStart | null;
@@ -273,6 +309,8 @@ function usesChapters(text: string) {
  */
 function chapterNumbered(tree: Tree, read: Read, defs: LatexDefinitions, options: NumberingOptions) {
   if (CHAPTER_CLASSES.test(defs.documentClass ?? "")) return true;
+  // A file of a book whose main file has numbered chapters before it (the book 2403.14606's nowfnt class).
+  if (options.start?.counters.chapter) return true;
   if (usesChapters(read(0, tree.length))) return true;
   if (!options.includes) return false;
   let found = false;
@@ -280,8 +318,8 @@ function chapterNumbered(tree: Tree, read: Read, defs: LatexDefinitions, options
   tree.iterate({
     enter(ref) {
       if (found || looked >= 40) return false;
-      if (ref.name !== "Input" && ref.name !== "Include") return undefined;
-      const argument = ref.node.getChild("InputArgument") ?? ref.node.getChild("IncludeArgument");
+      if (ref.name !== "Input" && ref.name !== "Include" && ref.name !== "Subfile") return undefined;
+      const argument = ref.node.getChild("InputArgument") ?? ref.node.getChild("IncludeArgument") ?? ref.node.getChild("SubfileArgument");
       const file = argument ? options.includes?.(read(argument.from + 1, argument.to - 1).trim()) : null;
       looked++;
       if (file && usesChapters(file.read(0, file.tree.length))) found = true;
@@ -376,7 +414,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   const customFormat = (name: string): string | undefined => {
     const macro = macroAt(defs, `the${name}`, here);
     if (!macro) return undefined;
-    if (appendix && name === (chapters ? "chapter" : "section") && macro.pos < appendixAt) return undefined;
+    if (appendix && name === (chapters ? "chapter" : "section") && macro.pos < appendixAt && !(macro.pos < 0 && options.start?.appendixFormats?.includes(name))) return undefined;
     if (macro.arity || macro.unsupported || formatting.has(name)) return "?";
     formatting.add(name);
     try {
@@ -439,23 +477,71 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
 
   let includeDepth = 0;
   const included = new Set<string>();
-  /** Numbers an `\input`/`\include`d file in place: its counters count, its entries and labels (positions in another file) do not. */
-  const numberIncluded = (node: SyntaxNode) => {
-    const argument = node.getChild("InputArgument") ?? node.getChild("IncludeArgument");
-    const name = argument ? read(argument.from + 1, argument.to - 1).trim() : "";
+  /** The files the included file being remembered includes in turn, as `options.includes` gave them. */
+  let nestedFiles: Array<[string, IncludedFile | null]> | null = null;
+  /** What a remembered result depends on besides the file: the state numbering is in where it is included. */
+  const includeKey = (name: string) => {
+    const formats: string[] = [];
+    for (const macro of defs.macros.keys()) {
+      if (!macro.startsWith("the")) continue;
+      const format = macroAt(defs, macro, here);
+      formats.push(format ? `${macro}:${format.fingerprint}:${format.pos < appendixAt ? 1 : 0}:${format.pos < 0 ? 1 : 0}` : macro);
+    }
+    // A formula's row macros expand with the definitions at positions (structure.ts): those of the open file's body count.
+    const positions: string[] = [];
+    if (structureNames.size) for (const [macro, list] of defs.macros) for (const item of list) if (item.pos >= 0 || item.end !== undefined) positions.push(`${macro}@${item.pos}-${item.end ?? ""}`);
+    const target = currentTarget();
+    return JSON.stringify([
+      name, [...counters], [...within], [...prefix], appendix, chapters, defs.fingerprint, defs.packages.join(","), options.start?.appendixFormats ?? null, formats, positions,
+      scopes.length > 0, target ? { ...target, pos: null } : null, mainmatter, cleverefAppendix, [...crefAliases],
+    ]);
+  };
+  /**
+   * Numbers an `\input`/`\include`d file in place: its counters count, its entries and labels (positions in another file) do not.
+   * `written`: the name the import package's `\import{dir/}{file}` reads, `dir/file` (definitions.ts `readLatexInputs`).
+   */
+  const numberIncluded = (node: SyntaxNode, written?: string) => {
+    const argument = node.getChild("InputArgument") ?? node.getChild("IncludeArgument") ?? node.getChild("SubfileArgument");
+    const name = written ?? (argument ? read(argument.from + 1, argument.to - 1).trim() : "");
     const file = name && includeDepth < 4 && !included.has(name) ? options.includes?.(name) : null;
+    if (nestedFiles && name && includeDepth < 4 && !included.has(name)) nestedFiles.push([name, file ?? null]);
     if (!file) return;
+    // An include at the top of the body (not in a list, float or formula group): numbered once for each state it starts from.
+    const remember = !includeDepth && !macroHost && !lists.length && !floats.length && !subequations.length;
+    const key = remember ? includeKey(name) : "";
+    const known = remember ? includedResults.get(file)?.find((result) => result.key === key && result.nested.every(([inner, innerFile]) => (options.includes?.(inner) ?? null) === innerFile)) : undefined;
+    if (known) {
+      counters.clear();
+      for (const [counter, count] of known.counters) counters.set(counter, count);
+      for (const [map, pairs] of [[within, known.within], [prefix, known.prefix]] as const) { map.clear(); for (const [counter, parent] of pairs) map.set(counter, parent); }
+      appendix = known.appendix;
+      mainmatter = known.mainmatter;
+      cleverefAppendix = known.cleverefAppendix;
+      crefAliases.clear();
+      for (const [counter, type] of known.crefAliases) crefAliases.set(counter, type);
+      if (known.appendixMoved) appendixAt = Math.min(appendixAt, here);
+      for (const [label, target] of known.labels) labels.set(label, { ...target });
+      if (known.target) setTarget({ ...known.target });
+      if (globalTarget) globalTarget = { ...globalTarget, pos: -1 };
+      return;
+    }
     const entryCount = entries.length;
     const savedLabels = new Map(labels);
     const savedRead = read;
+    const targetBefore = currentTarget();
+    const appendixBefore = appendixAt;
+    const savedNested = nestedFiles;
+    if (remember) nestedFiles = [];
     // Positions in the included file start again at 0: what the open file skips (a definition's body) is not there.
     const savedSkip = skipUntil;
     skipUntil = -1;
     included.add(name);
     includeDepth++;
     read = file.read;
+    let complete = false;
     try {
       file.tree.iterate(visitor);
+      complete = true;
     } finally {
       read = savedRead;
       skipUntil = savedSkip;
@@ -463,9 +549,22 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       included.delete(name);
       entries.length = entryCount;
       // Its labels keep their numbers (a reference to an included chapter's section resolves), without a position here.
-      for (const [key, target] of labels) if (savedLabels.get(key) !== target) labels.set(key, { ...target, pos: -1 });
+      const added: Array<[string, LabelTarget]> = [];
+      for (const [label, target] of labels) if (savedLabels.get(label) !== target) { const moved = { ...target, pos: -1 }; labels.set(label, moved); added.push([label, moved]); }
+      const changed = currentTarget() !== targetBefore;
       // A label right after the include refers to the last number in it, which is not in this file.
       if (globalTarget) globalTarget = { ...globalTarget, pos: -1 };
+      if (remember && complete) {
+        const results = includedResults.get(file) ?? [];
+        const target = currentTarget();
+        results.unshift({
+          key, nested: nestedFiles ?? [], counters: [...counters], within: [...within], prefix: [...prefix], appendix, appendixMoved: appendixAt !== appendixBefore,
+          labels: added.map(([label, target]) => [label, { ...target }]), target: changed && target ? { ...target } : null,
+          mainmatter, cleverefAppendix, crefAliases: [...crefAliases],
+        });
+        includedResults.set(file, results.slice(0, 4));
+      }
+      nestedFiles = savedNested;
     }
   };
 
@@ -613,7 +712,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         return false;
       }
       if (name === "Comment" || name === "VerbatimEnvironment" || name === "TikzPictureEnvironment") return false;
-      if (name === "Input" || name === "Include") { numberIncluded(node); return false; }
+      if (name === "Input" || name === "Include" || name === "Subfile") { numberIncluded(node); return false; }
       if (name in SECTION_LEVELS) {
         const command = node.getChild("SectioningCommand");
         if (!command) return;
@@ -640,6 +739,12 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         if (!ctrl || ctrl.name !== "CtrlSeq") return;
         const command = read(ctrl.from, ctrl.to);
         if (structureNames.size && numberMacroUse(node, command)) return false;
+        // The import package's `\subimport{chapters/}{intro}`: an include, numbered as `\input{chapters/intro}` is.
+        if (/^\\(?:sub)?(?:import|inputfrom|includefrom)$/.test(command)) {
+          const input = readLatexInputs(read(node.from, node.from + 400))[0];
+          if (input?.pos === 0 && input.dir !== undefined) numberIncluded(node, input.path);
+          return false;
+        }
         if (CAPTION_OF.test(command) && read(ctrl.to, ctrl.to + 1) !== "*") {
           // caption's `\captionof{table}{…}` (KOMA's `\captionaboveof`): a caption outside a float, numbered where it is (or at its minipage).
           const kind = FLOAT_KINDS[argumentText(node, 0)?.trim() ?? ""];
@@ -886,7 +991,10 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         }
         // thmtools' restatable typesets the theorem it names.
         const restated = env === "restatable" || env === "restatable*" ? restatableTheorem(node, read) : null;
-        const theorem = defs.theorems.get(restated?.env ?? env);
+        // A user environment that is a theorem in a frame (`boxdef`) numbers that theorem.
+        const user = restated || defs.theorems.has(env) ? undefined : defs.environments.get(env);
+        const wrapped = user ? wrappedTheorem(user.begin, user.end, defs) : null;
+        const theorem = defs.theorems.get(restated?.env ?? wrapped?.env ?? env);
         if (theorem) {
           let number: string | null = null;
           if (theorem.numbered) {
@@ -894,7 +1002,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             step(counter);
             number = format(counter);
           }
-          const theoremEnv = restated?.env ?? env;
+          const theoremEnv = restated?.env ?? wrapped?.env ?? env;
           entries.push({ pos: node.from, kind: "theorem", number, env: theoremEnv });
           if (number) setTarget({ number, kind: "theorem", pos: node.from, env: theoremEnv });
         }

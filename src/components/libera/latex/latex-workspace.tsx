@@ -11,7 +11,7 @@ import type { BibMirrorResult } from "@/lib/references/bib-mirror";
 import { useReferenceLibrary } from "@/components/libera/references/use-reference-library";
 import {
   LATEX_ENGINE_LABELS, hasDocumentClass, isCompilableLatexPath, readBibEntries, readCompiledBibliography, readLatexBibliographyReferences, readLatexLabels,
-  readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, type BibEntrySummary, type LatexEngineSetting,
+  readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, subfilesRootPath, type BibEntrySummary, type LatexEngineSetting,
 } from "@/lib/latex/project";
 import { bodyStartOf, collectLatexDefinitions, readLatexInputs } from "@/lib/latex/macros/definitions";
 import type { NumberingStart } from "@/lib/latex/macros/numbering";
@@ -113,6 +113,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   // a complete document, or else the main file that includes this chapter.
   const magicRoot = isTex && readLatexMagicComments(draftForAnalysis).root ? resolveLatexRootPath(filePath, draftForAnalysis, knownLatexPaths) : null;
   const standalone = isTex && hasDocumentClass(draftForAnalysis);
+  // A subfiles chapter (`\documentclass[../main.tex]{subfiles}`) compiles on its own too, but is part of the main file it names.
+  const subfilesRoot = isTex ? subfilesRootPath(filePath, draftForAnalysis, knownLatexPaths) : null;
   const needsDiscovery = isTex && !standalone && (!magicRoot || magicRoot === filePath);
   const [discoveredRoot, setDiscoveredRoot] = useState<string | null | undefined>(() => discoveredRoots.get(filePath));
   useEffect(() => {
@@ -127,7 +129,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       });
     return () => { cancelled = true; };
   }, [discoveredRoot, filePath, needsDiscovery]);
-  const resolvedRoot: string | null = !isTex ? null : magicRoot && magicRoot !== filePath ? magicRoot : standalone ? filePath : discoveredRoot ?? null;
+  const resolvedRoot: string | null = !isTex ? null : magicRoot && magicRoot !== filePath ? magicRoot : subfilesRoot ?? (standalone ? filePath : discoveredRoot ?? null);
   // "Compile current file" typesets this file on its own, which needs its own \documentclass.
   const currentDisabledReason = !standalone ? "Has no \\documentclass, so it cannot be typeset on its own" : resolvedRoot === filePath ? "This file is already the main file" : null;
   const compileTarget: LatexCompileTarget = viewState?.compileTarget === "current" && !currentDisabledReason ? "current" : "main";
@@ -380,9 +382,13 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     let cancelled = false;
     const read: string[] = [];
     const readText = async (path: string) => { read.push(path); return readLiveText(path); };
-    // The main file's definitions in TeX's order, with its macro files, as the editor reads them.
+    // The main file's definitions in TeX's order, with its macro files, as the editor reads them: its preamble's (the
+    // definitions its body makes before this chapter apply from where they are, which chapterNumberingStart reads).
     const rootSource = macroSources.find((source) => source.path === rootPath);
-    const base = rootSource ? collectLatexDefinitions(macroSources) : undefined;
+    const base = rootSource ? collectLatexDefinitions(macroSources.map((source) => {
+      const body = source === rootSource ? source.text.search(/\\begin\s*\{document\}/) : -1;
+      return body >= 0 ? { ...source, text: source.text.slice(0, body) } : source;
+    })) : undefined;
     void chapterNumberingStart(filePath, rootPath, readText, base).then((start) => {
       if (cancelled) return;
       setNumberingStartState((current) => (JSON.stringify(current) === JSON.stringify(start) ? current : start));

@@ -2,7 +2,7 @@ import { syntaxTree } from "@codemirror/language";
 import type { Range } from "@codemirror/state";
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode } from "@lezer/common";
-import { environmentName } from "../../macros/numbering";
+import { environmentName, wrappedTheorem } from "../../macros/numbering";
 import { definitionsField, visualDefinitions } from "./model";
 import { structuralField } from "./structural";
 import { boxEnvironments, walkConstructs } from "./walk";
@@ -47,7 +47,8 @@ function build(view: EditorView): DecorationSet {
       if (STYLE_CONTAINERS.has(node.name)) from = Math.min(from, node.from);
       else if (node.name === "Environment") {
         const name = environmentName(node, (start, end) => state.doc.sliceString(start, end));
-        if (name && (defs.theorems.has(name) || name === "proof" || name === "abstract" || /^(?:quote|quotation|verse|center|flushleft|flushright)$/.test(name) || boxEnvironments(state.doc).has(name))) from = Math.min(from, node.from);
+        const user = name ? defs.environments.get(name) : undefined;
+        if (name && (defs.theorems.has(name) || (user && wrappedTheorem(user.begin, user.end, defs)) || name === "proof" || name === "abstract" || /^(?:quote|quotation|verse|center|flushleft|flushright)$/.test(name) || boxEnvironments(state.doc).has(name))) from = Math.min(from, node.from);
       }
     }
     walkConstructs({
