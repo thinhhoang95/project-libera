@@ -7,7 +7,7 @@ import { numberingEntryAt, type LatexNumbering } from "../../macros/numbering";
 import { katexForEnvironment, RAISE, renderKatex } from "./math-render";
 import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { citationStyle, citationText, referenceChipText, referencesInMath, type BibLookup } from "./references";
-import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
+import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, TEXT_WRAPPERS, todayText } from "./symbols";
 
 /* A static renderer for short LaTeX: captions, macro expansions, theorem
  * names, table cells and the title block (docs/latex-visual-editor-plan.md
@@ -543,6 +543,29 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
           parent.appendChild(top);
           parent.appendChild(document.createTextNode("⁄"));
           parent.appendChild(bottom);
+          return;
+        }
+      }
+      // hyperref's `\texorpdfstring{TeX}{bookmark}` in a caption or title: the TeX.
+      if (text === "\\texorpdfstring") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) { renderArgument(parent, argument.node); return; }
+      }
+      // `\hrulefill` and `\dotfill`: a line or dots across.
+      if (text === "\\hrulefill" || text === "\\dotfill") { parent.appendChild(element("span", text === "\\hrulefill" ? "cm-vis-hrulefill" : "cm-vis-dotfill")); return; }
+      // Tracked changes, soul's styles, framed boxes, `\enquote{…}` (symbols.ts): their text, styled; xcolor's `\fcolorbox`.
+      const wrapper = Object.hasOwn(TEXT_WRAPPERS, text) ? TEXT_WRAPPERS[text] : text === "\\fcolorbox" ? { args: [null, null, "cm-vis-fbox"] } : undefined;
+      if (wrapper && (!wrapper.package || context.defs.packages.includes(wrapper.package))) {
+        const parts = commandArguments(node).filter((arg) => !arg.optional);
+        if (parts.length >= wrapper.args.length) {
+          if ("open" in wrapper && wrapper.open) parent.appendChild(document.createTextNode(wrapper.open));
+          wrapper.args.forEach((className, index) => {
+            if (className === null) return;
+            const span = element("span", className || undefined);
+            renderArgument(span, parts[index].node);
+            parent.appendChild(span);
+          });
+          if ("close" in wrapper && wrapper.close) parent.appendChild(document.createTextNode(wrapper.close));
           return;
         }
       }
