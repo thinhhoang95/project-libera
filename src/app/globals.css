@@ -3333,6 +3333,9 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-math-editor-actions button { padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--foreground); }
 .cm-vis-math-editor-actions button.cm-vis-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
 .cm-vis-math-editor-hint { margin-right: auto; color: var(--muted-foreground); font-family: var(--font-sans); font-size: 11px; }
+.cm-vis-math-editor-status { color: var(--muted-foreground); font-family: var(--font-sans); font-size: 11px; }
+.cm-vis-math-editor-status:empty { display: none; }
+.cm-vis-math-source { display: block; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font-family: var(--font-mono, monospace); font-size: 13px; resize: vertical; }
 .cm-vis-table-menu { position: fixed; z-index: 60; min-width: 12rem; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); box-shadow: 0 10px 28px rgb(0 0 0 / .16); font-family: var(--font-sans); font-size: 12.5px; }
 .cm-vis-table-menu button { display: block; width: 100%; padding: 4px 10px; border-radius: 5px; text-align: left; color: var(--foreground); }
 .cm-vis-table-menu button:hover:not(:disabled) { background: var(--muted); }

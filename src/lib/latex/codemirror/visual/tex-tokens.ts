@@ -50,6 +50,18 @@ export function canonicalTokens(source: string): Canonical[] {
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (/^\s+$/.test(token.text)) continue;
+    // Primes: `f'` is `f^{\prime}`, `f''` is `f^{\prime\prime}` (MathLive's spelling). The tokens cover the primes written.
+    if (token.text === "'") {
+      let k = i;
+      while (tokens[k + 1]?.text === "'") k++;
+      const from = token.from;
+      const to = tokens[k].to;
+      const primes = Array.from({ length: k - i + 1 }, () => "\\prime");
+      for (const text of k === i ? ["^", ...primes] : ["^", "{", ...primes, "}"]) push(text, from, to);
+      i = k;
+      argument = null;
+      continue;
+    }
     // A text argument: one token holding the whole group as written.
     if (TEXT_ARGUMENT.test(token.text)) {
       push(token.text, token.from, token.to);
@@ -63,7 +75,10 @@ export function canonicalTokens(source: string): Canonical[] {
           else if (tokens[k].text === "}" && --depth === 0) break;
         }
         if (k < tokens.length) {
-          push(source.slice(tokens[j].from, tokens[k].to), tokens[j].from, tokens[k].to);
+          let group = source.slice(tokens[j].from, tokens[k].to);
+          // MathLive writes `\operatorname{argmin}` as `\operatorname{\mathrm{argmin}}`.
+          if (token.text.startsWith("\\operatorname")) group = group.replace(/^\{\s*\\mathrm\s*\{([^{}]*)\}\s*\}$/, "{$1}");
+          push(group, tokens[j].from, tokens[k].to);
           i = k;
           argument = null;
           continue;
@@ -96,6 +111,8 @@ export function canonicalTokens(source: string): Canonical[] {
 /** Spellings of the same command (KaTeX and TeX define them as each other). */
 const ALIASES: Record<string, string> = {
   "\\le": "\\leq", "\\ge": "\\geq", "\\ne": "\\neq", "\\to": "\\rightarrow", "\\gets": "\\leftarrow", "\\lbrace": "\\{", "\\rbrace": "\\}",
+  // MathLive writes `\boldsymbol` as `\bm` (math-pieces.ts writes it back as `\boldsymbol`).
+  "\\bm": "\\boldsymbol",
 };
 
 export type TexChange = { from: number; to: number; insert: string };
