@@ -551,3 +551,77 @@ Text.
   assert.match(bodyText(source.replace("aastex701", "aastex631")), /Emails: drcoria@unm\.edu, ianc@ku\.edu/);
   assert.equal(constructs(visualState(source.replace("\\begin{abstract}", "\\maketitle\n\\begin{abstract}"))).filter((item) => item.startsWith("title:")).length, 1);
 });
+
+test("a citation note prints its emphasis, font switches and spacing as text (cs.CL 2611.11838, math.AG 2611.08810)", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\begin{document}
+Probing \citep[\emph{inter alia}]{hewitt,tenney} and \cite[{\rm I\hspace{-.01em}I\hspace{-.01em}I}. 7.1 and~8.2]{Stichtenoth}.
+Kept: \cite[\unknownmacro{x}]{other}.
+\end{document}
+`);
+  assert.match(text, /hewitt; tenney, inter alia\]/);
+  assert.match(text, /\[Stichtenoth, III\. 7\.1 and 8\.2\]/);
+  assert.doesNotMatch(text, /\\emph|\\rm|\\hspace/);
+  // A note with a command that is not understood leaves its citation as source.
+  assert.match(text, /\\cite\[\\unknownmacro\{x\}\]\{other\}/);
+});
+
+test("linguex's examples are numbered (1), (2) with lettered parts, and referable (cs.CL 2611.11838)", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\usepackage{linguex}
+\begin{document}
+See (\ref{ex:p}), (\ref{ex:q}) and (\ref{ex:pb}).
+
+\ex.\label{ex:p}
+\textbf{Original:} I'm afraid the cat was hit.
+\a. First reading.
+\b.\label{ex:pb} Second reading.
+
+\ex.\label{ex:q} Plain example.
+
+\exg. Dit is een voorbeeld.\\
+This is an example.
+\end{document}
+`);
+  assert.match(text, /See \(1\), \(2\) and \(1b\)\./);
+  assert.match(text, /\(1\)\s*ex:p\s*Original: I'm afraid/);
+  assert.match(text, /a\. First reading\.\s*b\.\s*ex:pb Second reading\./);
+  assert.match(text, /\(2\)\s*ex:q Plain example\./);
+  assert.match(text, /\(3\) Dit is een voorbeeld\./);
+  assert.doesNotMatch(text, /\\ex|\\a\.|\\b\./);
+});
+
+test("Cambridge's jfp front matter folds into the title block, also when a long document is built in pieces (cs.LO 2610.41832)", () => {
+  const doc = String.raw`\documentclass[nolinenum]{jfp}
+\begin{document}
+\journaltitle{arxiv}
+\cpr{The Author(s),}
+\doival{10.1017/xxxxx}
+\newcommand{\shorttitle}{Pareto climate economics}
+\lefttitle{Botta, Jansson, Richter}
+\righttitle{\shorttitle}
+\totalpg{\pageref{lastpage01}}
+\jnlDoiYr{2026}
+\title{Pareto climate economics: optimism and pessimism}
+\begin{authgrp}
+\author{NICOLA BOTTA} \affiliation{Potsdam Institute for Climate Impact Research.
+  (\email{botta@pik-potsdam.de})}
+%
+\author{PATRIK JANSSON}
+\affiliation{Chalmers University of Technology. (\email{patrikj@chalmers.se})}
+\end{authgrp}
+\begin{abstract}
+${"We argue that simple models help. ".repeat(80)}
+\end{abstract}
+\maketitle%[E]
+\section{Introduction}
+${"Body text of the paper. ".repeat(600)}
+\end{document}
+`;
+  const state = visualState(doc);
+  assert.ok(constructs(state).includes(`title:${doc.indexOf("\\journaltitle")}:${doc.indexOf("%[E]") + 4}`));
+  const text = bodyText(doc);
+  assert.match(text, /Pareto climate economics: optimism and pessimism/);
+  assert.match(text, /NICOLA BOTTA.*PATRIK JANSSON/);
+  assert.doesNotMatch(text, /\\journaltitle|\\cpr|\\doival|\\jnlDoiYr|\\author|authgrp|\\affiliation|\\email/);
+});

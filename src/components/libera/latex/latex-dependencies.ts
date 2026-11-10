@@ -8,6 +8,7 @@ import { findInclusion, includeTargets } from "@/lib/latex/macros/project-number
 import type { MacroSource } from "@/lib/latex/codemirror/visual";
 import { resolveRelativeNotebookPath } from "@/lib/latex/project";
 import { hashString } from "@/lib/macros/core";
+import { findBeginDocument } from "@/lib/latex/document-begin";
 
 /* The other files a LaTeX file's Visual mode reads (docs/latex-visual-editor-plan.md
  * §7.3, §7.7): the macro files and local packages its preamble (or its main
@@ -102,7 +103,7 @@ export async function collectMacroSources(options: {
   if (rootPath !== filePath) {
     const rootText = await readText(rootPath);
     paths.push(rootPath);
-    const bodyStart = /\\begin\s*\{document\}/.exec(rootText);
+    const bodyStart = findBeginDocument(rootText);
     preamble = rootText.slice(0, bodyStart ? bodyStart.index : 0);
     text = preamble;
     const steps = bodyStart ? await findInclusion(filePath, rootPath, readText) : null;
@@ -155,7 +156,7 @@ export async function collectBodyIncludes(options: {
   const { rootPath, known, readText } = options;
   const includes = new Map<string, string>();
   const paths: string[] = [];
-  const bodyStart = /\\begin\s*\{document\}/.exec(options.text);
+  const bodyStart = findBeginDocument(options.text);
   const seen = new Set<string>([options.filePath]);
   let queue = loadsOf(options.text.slice(bodyStart ? bodyStart.index : 0), rootPath, known, false);
   for (let depth = 0; queue.length && depth < MAX_DEPTH; depth++) {

@@ -459,6 +459,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   const currentTarget = () => scopes.length ? scopes[scopes.length - 1].target : globalTarget;
   const setTarget = (target: LabelTarget) => { if (scopes.length) scopes[scopes.length - 1].target = target; else globalTarget = target; };
   const lists: Array<{ enumerate: boolean; count: number; depth: number; template: string | null }> = [];
+  /** The parts of the current linguex example so far (`\a.`, `\b.`). */
+  let exampleParts = 0;
   /** The enumerate list a counter `enumi`…`enumiv` belongs to, innermost first. */
   const enumerateList = (counter: string) => {
     const depth = ENUM_COUNTERS.indexOf(counter) + 1;
@@ -745,6 +747,16 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         if (!ctrl || ctrl.name !== "CtrlSeq") return;
         const command = read(ctrl.from, ctrl.to);
         if (structureNames.size && numberMacroUse(node, command)) return false;
+        // linguex's examples: `\ex.` steps ExNo ("1"), its parts `\a.` and `\b.` are lettered ("1a"); a label refers to them.
+        if (/^\\(?:ex|exg|exi|a|b)$/.test(command) && read(ctrl.to, ctrl.to + 1) === "." && defs.packages.includes("linguex") && !macroAt(defs, command.slice(1), node.from)) {
+          const part = command === "\\a" || command === "\\b";
+          if (!part) { counters.set("ExNo", (counters.get("ExNo") ?? 0) + 1); exampleParts = 0; }
+          exampleParts = command === "\\a" ? 1 : command === "\\b" ? exampleParts + 1 : exampleParts;
+          const number = `${counters.get("ExNo") ?? 0}${part ? String.fromCharCode(96 + Math.min(26, exampleParts)) : ""}`;
+          entries.push({ pos: node.from, kind: "item", number });
+          setTarget({ number, kind: "item", pos: node.from, type: "example" });
+          return false;
+        }
         // The import package's `\subimport{chapters/}{intro}`: an include, numbered as `\input{chapters/intro}` is.
         if (/^\\(?:sub)?(?:import|inputfrom|includefrom)$/.test(command)) {
           const input = readLatexInputs(read(node.from, node.from + 400))[0];

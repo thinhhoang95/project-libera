@@ -1,6 +1,7 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import { classMacros, packageMacros, readAlgorithmBlock } from "./packages";
 import { decideConditional, type ConditionalFacts } from "./conditionals";
+import { findBeginDocument } from "../document-begin";
 
 /* The document's own definitions, read the way TeX would read them, for the
  * Visual mode (docs/latex-visual-editor-plan.md §7). Only forms whose meaning
@@ -32,6 +33,8 @@ export type LatexMacro = {
   end?: number;
   /** A definition the Visual mode cannot render (`\edef`, delimited parameters, under an unknown conditional): it hides earlier meanings, and its uses stay source. */
   unsupported?: boolean;
+  /** An unsupported definition TeX certainly makes (`\def\fullversion` with delimited parameters): `\ifx\fullversion\undefined` is false. */
+  exists?: boolean;
   /** `\let\a\b` with `\b` not one of the document's macros: only a name for another command, whose arguments are unknown. */
   alias?: boolean;
   /** `\providecommand`: does nothing when the command already exists, which for LaTeX's own commands the reader cannot know. */
@@ -139,6 +142,11 @@ export type LatexDefinitions = {
    * one false, `\drafttrue` sets it. null where it is set under a condition the reader cannot evaluate.
    */
   switches?: Map<string, LatexSwitchSetting[]>;
+  /**
+   * Names whose definition is commented out (`% \def\conference`): a version switch the author turned off, which
+   * `\ifx\conference\undefined` finds undefined when nothing else defines it (cs.DS 2611.09172).
+   */
+  commentedOut?: Set<string>;
   /** `\documentclass[options]{…}`'s options. */
   classOptions?: string[];
   /**
@@ -803,6 +811,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
   };
   const scanner = new TexScanner(source);
   if (options.uncertain) scanner.assumeUncertain();
+  if (source.includes("%")) for (const match of source.matchAll(/^[ \t]*%+[ \t]*\\(?:def|newcommand\s*\{?)\s*\\([A-Za-z@]+)/gm)) (defs.commentedOut ??= new Set()).add(match[1]);
   /** The code of the options given, run at `\ProcessOptions`. */
   const pendingOptions: Array<{ text: string; offset: number; uncertain: boolean }> = [];
   /** Every option's code, by name, for `\ExecuteOptions`. */
@@ -816,7 +825,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
   };
   scanner.facts = {
     constant: (name) => constantOf(latest(name)),
-    defined: (name) => { const macro = latest(name); return macro && !macro.unsupported && !macro.alias ? true : undefined; },
+    defined: (name) => definedState(defs, latest(name), name),
     switchState: (name) => {
       const list = defs.switches?.get(name);
       if (!list) return undefined;
@@ -861,7 +870,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     /** A definition that cannot be rendered still hides the earlier meaning of its name. */
     const shadow = (name: string, message: string) => {
       note(defs.unsupported, name, message);
-      added = addMacro(context, { name, arity: 0, body: "", pos, file: context.file, unsupported: true }, "renew");
+      added = addMacro(context, { name, arity: 0, body: "", pos, file: context.file, unsupported: true, ...(uncertain ? {} : { exists: true }) }, "renew");
     };
 
     if (match[1] === undefined) {
@@ -1468,9 +1477,7 @@ export function collectLatexDefinitions(sources: readonly DefinitionSource[], op
 
 /** Where the document body starts: after `\begin{document}`, or 0 for a chapter file without one. */
 export function bodyStartOf(source: string) {
-  const match = /\\begin\s*\{document\}/.exec(source);
-  if (!match || inComment(source, match.index)) return 0;
-  return match.index + match[0].length;
+  return findBeginDocument(source)?.end ?? 0;
 }
 
 /** The definition of `name` that applies at `pos` in the open file (a local one only inside its group). */
@@ -1489,11 +1496,20 @@ export function switchAt(defs: LatexDefinitions, name: string, pos: number): boo
   return null;
 }
 
+/**
+ * Whether `name` is defined, for `\ifx\x\undefined` and `\ifdefined`: true for one of the document's macros, false for
+ * a name whose only definition is commented out, undefined when not known (LaTeX or a package may define it).
+ */
+function definedState(defs: LatexDefinitions, macro: LatexMacro | null | undefined, name: string) {
+  if (macro && (macro.exists || (!macro.unsupported && !macro.alias))) return true;
+  return !macro && defs.commentedOut?.has(name) ? false : undefined;
+}
+
 /** What decides a conditional at `pos` in the open file (conditionals.ts): constants, switches, and in a formula or not. */
 export function conditionalFacts(defs: LatexDefinitions, pos: number, math?: boolean): ConditionalFacts {
   return {
     constant: (name) => constantOf(macroAt(defs, name, pos)),
-    defined: (name) => { const macro = macroAt(defs, name, pos); return macro && !macro.unsupported && !macro.alias ? true : undefined; },
+    defined: (name) => definedState(defs, macroAt(defs, name, pos), name),
     switchState: (name) => switchAt(defs, name, pos),
     math,
   };
@@ -1506,8 +1522,9 @@ export function conditionalFactsKey(defs: LatexDefinitions) {
   let key = factsKeys.get(defs);
   if (key !== undefined) return key;
   const parts: string[] = [];
-  for (const [name, list] of defs.macros) parts.push(`${name}=${list.map((macro) => constantOf(macro) ?? (macro.unsupported || macro.alias ? "?" : "")).join(",")}`);
+  for (const [name, list] of defs.macros) parts.push(`${name}=${list.map((macro) => constantOf(macro) ?? (macro.exists ? "!" : macro.unsupported || macro.alias ? "?" : "")).join(",")}`);
   for (const [name, list] of defs.switches ?? []) parts.push(`${name}:${list.map((setting) => setting.value).join(",")}`);
+  if (defs.commentedOut) parts.push(`%${[...defs.commentedOut].join(",")}`);
   factsKeys.set(defs, key = parts.join("\u0000"));
   return key;
 }

@@ -6,7 +6,7 @@ import { readGroup, TEX_GROUPS } from "../../../macros/core";
 import { macroAt } from "../../macros/definitions";
 import { environmentName, FLOAT_KINDS } from "../../macros/numbering";
 import { bodyStartIn, disabledField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
-import { macroRegionsFor, walkConstructs, type Construct, type RevealPolicy } from "./walk";
+import { macroRegionsFor, titleRunStart, walkConstructs, type Construct, type RevealPolicy } from "./walk";
 import { preambleSummary } from "./widgets";
 
 /* The structural layer (docs/latex-visual-editor-plan.md §4–5, §8): hidden
@@ -238,6 +238,13 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
     for (const region of state.field(disabledField, false) ?? []) {
       if (region.from >= high) break;
       if (region.to > low) { low = Math.min(low, region.from); high = Math.max(high, region.to); }
+    }
+    // `\maketitle` folds the title declarations right before it into its block: built with them (a piece of a long
+    // document starting among them, cs.LO 2610.41832, left them as source).
+    const maketitle = state.doc.sliceString(low, high).indexOf("\\maketitle");
+    if (maketitle >= 0) {
+      const start = titleRunStart(state, visualDefinitions(state), preambleEndOf(state), low + maketitle);
+      if (start !== null && start < low) low = start;
     }
     const next = lineBounds(state, low, high);
     if (next.from === range.from && next.to === range.to) break;

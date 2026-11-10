@@ -36,6 +36,7 @@ import { LatexInsertToolbar } from "./latex-insert-toolbar";
 import { LatexPdfPreview, type PdfHighlightRequest, type PdfZoom } from "./latex-pdf-preview";
 import { closeLatexPdfWindow, openLatexPdfWindow, registerLatexPdfWindowHandlers, sendLatexPdfHighlight, useLatexPdfWindowOpen } from "./latex-pdf-window";
 import { LatexSnippetDialog, type LatexSnippetDialogRequest } from "./latex-snippet-dialog";
+import { beginDocumentIndex } from "@/lib/latex/document-begin";
 
 type LatexWorkspaceProps = {
   tab: OpenTab;
@@ -386,7 +387,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     // definitions its body makes before this chapter apply from where they are, which chapterNumberingStart reads).
     const rootSource = macroSources.find((source) => source.path === rootPath);
     const base = rootSource ? collectLatexDefinitions(macroSources.map((source) => {
-      const body = source === rootSource ? source.text.search(/\\begin\s*\{document\}/) : -1;
+      const body = source === rootSource ? beginDocumentIndex(source.text) : -1;
       return body >= 0 ? { ...source, text: source.text.slice(0, body) } : source;
     })) : undefined;
     void chapterNumberingStart(filePath, rootPath, readText, base).then((start) => {

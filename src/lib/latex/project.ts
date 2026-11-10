@@ -1,5 +1,6 @@
 /** LaTeX project helpers shared by the editor and the build. Pure functions. */
 import { readGroup, readOptional, TEX_GROUPS } from "../macros/core";
+import { beginDocumentIndex } from "./document-begin";
 
 export const LATEX_ENGINES = ["pdflatex", "xelatex", "lualatex"] as const;
 export type LatexEngine = (typeof LATEX_ENGINES)[number];
@@ -42,7 +43,7 @@ export function resolveLatexEngine(source: string, setting: LatexEngineSetting =
   const program = readLatexMagicComments(source).program?.replace(/^(pdf|xe|lua)tex$/, "$1latex");
   if (isLatexEngine(program)) return program;
   if (setting !== "auto") return setting;
-  const preamble = stripLatexComments(source.slice(0, Math.max(0, source.search(/\\begin\s*\{document\}/)) || 20000));
+  const preamble = stripLatexComments(source.slice(0, Math.max(0, beginDocumentIndex(source)) || 20000));
   if (/\\usepackage(?:\[[^\]]*\])?\{[^}]*\b(?:fontspec|unicode-math|polyglossia|xeCJK)\b/.test(preamble)) return "xelatex";
   if (/\\usepackage(?:\[[^\]]*\])?\{[^}]*\b(?:luacode|luatexja|lua-ul|luacolor)\b/.test(preamble) || /\\directlua\b/.test(preamble)) return "lualatex";
   return "pdflatex";

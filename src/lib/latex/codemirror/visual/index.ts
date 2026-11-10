@@ -9,6 +9,7 @@ import { visualConfig, visualStateFields, type VisualConfig } from "./model";
 import { linkClicks, numberingPlugin, pendingFiller, remoteOutlines } from "./plugins";
 import { structuralField } from "./structural";
 import { visualStylePlugin } from "./style";
+import { findBeginDocument } from "../../document-begin";
 
 /* The LaTeX Visual mode: a layer of decorations over the same editor and the
  * same document (docs/latex-visual-editor-plan.md). Switching it on or off
@@ -66,9 +67,9 @@ export function isVisualModeOn(state: EditorState) {
 /** Where the cursor goes when Visual mode starts: out of the folded preamble. */
 export function visualEntrySelection(state: EditorState) {
   const head = state.selection.main.head;
-  const begin = /\\begin\s*\{document\}/.exec(state.doc.sliceString(0, Math.min(state.doc.length, 400_000)));
+  const begin = findBeginDocument(state.doc.sliceString(0, Math.min(state.doc.length, 400_000)));
   if (!begin) return null;
-  const bodyStart = begin.index + begin[0].length;
+  const bodyStart = begin.end;
   const line = state.doc.lineAt(bodyStart);
   // Body text on the `\begin{document}` line is not folded: the cursor goes before it.
   const rest = state.doc.sliceString(bodyStart, line.to).trim() ? bodyStart : null;

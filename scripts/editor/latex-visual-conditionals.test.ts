@@ -123,7 +123,8 @@ test("B7-04: \\ifnum on a \\def'd or \\newcommand'd flag is decided: one branch 
   assert.equal(numbering.labels.get("long")?.number, "1.1");
   assert.equal(numbering.labels.has("short"), false);
   assert.equal(numbering.labels.get("app")?.number, "2");
-  assert.deepEqual(leftOut(source).map((text) => text.slice(0, 13)), ["\\ifnum\\llncs=", "\\else\n\\begin{"]);
+  // The branches not taken, and the tests and `\fi`s of decided conditionals, which print nothing.
+  assert.deepEqual(leftOut(source).map((text) => text.slice(0, 13)), ["\\ifnum\\llncs=", "\\fi", "\\ifnum\\llncs=", "\\else\n\\begin{", "\\ifnum\\full>0", "\\fi"]);
   // `\iff` is an arrow, not a conditional the `\fi` would close.
   assert.deepEqual(leftOut(String.raw`\def\llncs{0}\begin{document}\ifnum\llncs=1 $a\iff b$\fi\end{document}`), [String.raw`\ifnum\llncs=1 $a\iff b$\fi`]);
   // A test on what the reader does not know (a counter) stays undecided: nothing is left out.
@@ -141,7 +142,7 @@ We prove it in section~2 \ifnum\llncs=1 (short)\else (full)\fi and then more.
   try {
     const line = [...view.contentDOM.querySelectorAll(".cm-line")].find((element) => element.textContent?.includes("We prove"));
     assert.ok(line && !line.classList.contains("cm-vis-disabled"));
-    assert.deepEqual([...line.querySelectorAll(".cm-vis-disabled-text")].map((element) => element.textContent), ["\\ifnum\\llncs=1 (short)\\else"]);
+    assert.deepEqual([...line.querySelectorAll(".cm-vis-disabled-text")].map((element) => element.textContent), ["\\ifnum\\llncs=1 (short)\\else", "\\fi"]);
   } finally {
     view.destroy();
     parent.remove();
@@ -392,7 +393,64 @@ test("conditionals in a project file decide the open file's regions, and a chang
   let state = visualState(body);
   state = state.update({ effects: sources(main) }).state;
   const regions = () => state.field(disabledField).map((region) => state.doc.sliceString(region.from, region.to));
-  assert.deepEqual(regions(), ["\\else \\section{Long}\\fi"]);
+  // The test of the branch taken is left out with the other branch.
+  assert.deepEqual(regions(), ["\\ifnum\\llncs=1 ", "\\else \\section{Long}\\fi"]);
   state = state.update({ effects: sources(String.raw`\def\llncs{0}`) }).state;
-  assert.deepEqual(regions(), ["\\ifnum\\llncs=1 \\section{Short}\\else"]);
+  assert.deepEqual(regions(), ["\\ifnum\\llncs=1 \\section{Short}\\else", "\\fi"]);
+});
+
+test("version switches made of \\ifx…\\undefined pass their argument on or leave it out; the one on holds the title (cs.DS 2611.09172)", () => {
+  const source = String.raw`\documentclass{acmart}
+\def\fullversion
+% \def\conference
+\setcopyright{acmcopyright}
+\newcommand{\ifconference}[1]{{{\ifx\fullversion\undefined{#1}\fi}\xspace}}
+\newcommand{\iffullversion}[1]{{{\ifx\conference\undefined{#1}\fi}\xspace}}
+\begin{document}
+\ifconference{ \title{Short Title} }
+\iffullversion{ \title{Full Title} }
+\author{Ziyang Men}
+\email{ziyang.men@email.ucr.edu}
+\affiliation{\institution{University of California, Riverside}\country{}}
+\input{abstract}
+\ccsdesc[500]{Computer systems organization~Embedded systems}
+\maketitle
+\section{Intro}
+Shown in \ifconference{the supplemental material.}\iffullversion{the appendix} here.
+\end{document}`;
+  // `\def\fullversion` reads up to the next brace (delimited parameters): still a definition.
+  assert.deepEqual(leftOut(source).map((text) => text.slice(0, 16)), ["\\ifconference{ \\", "\\ifconference{th"]);
+  const state = visualState(source);
+  assert.ok(kindsAt(state, "\\iffullversion{the").includes("macro-args"));
+  assert.ok(kindsAt(state, "\\ifconference{ \\title").includes("title"));
+  const text = visibleText(source);
+  assert.match(text, /Full Title/);
+  assert.match(text, /the appendix here\./);
+  assert.doesNotMatch(text, /\\iffullversion|\\title|\\author|\\ccsdesc/);
+});
+
+test("an identity wrapper around a paragraph heading draws its content; a true \\newif switch's markers print nothing (q-bio.NC 2610.36484)", () => {
+  const source = String.raw`\documentclass{article}
+\newif\ifarxiv
+\arxivtrue
+\newcommand{\rev}[1]{#1}
+\newcommand{\revc}[1]{\textcolor{red}{#1}}
+\begin{document}
+\section{Details}
+\rev{\paragraph{Version.} Every number comes from one version.}
+
+\revc{\paragraph{Scope.} Ten tasks.}
+
+\ifarxiv\else
+Checklist text.
+\fi
+\end{document}`;
+  const state = visualState(source);
+  assert.ok(kindsAt(state, "\\rev{").includes("macro-args"));
+  assert.ok(kindsAt(state, "\\paragraph{Version.}").includes("heading"));
+  assert.ok(kindsAt(state, "\\revc{").includes("macro-args"));
+  assert.deepEqual(leftOut(source), ["\\ifarxiv", "\\else\nChecklist text.\n\\fi"]);
+  const text = visibleText(source);
+  assert.match(text, /Version\.\s*Every number comes from one version\./);
+  assert.doesNotMatch(text, /\\rev|\\paragraph/);
 });

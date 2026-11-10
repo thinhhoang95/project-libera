@@ -9,7 +9,7 @@ import { readGroup, TEX_GROUPS } from "../../macros/core";
 export type ConditionalFacts = {
   /** What a macro without arguments stands for when it is a plain constant (`\def\llncs{0}`: "0"). */
   constant: (name: string) => string | undefined;
-  /** True for one of the document's macros (never undefined or `\relax`); undefined when not known. */
+  /** True for one of the document's macros (never undefined or `\relax`), false for one known to be undefined; undefined when not known. */
   defined?: (name: string) => boolean | undefined;
   /** A `\newif` switch's state (`ifdraft` after `\drafttrue`): null for a switch whose state is not known, undefined for no switch. */
   switchState?: (name: string) => boolean | null | undefined;
@@ -147,6 +147,8 @@ function decideTokens(text: string, at: number, name: "if" | "ifx", facts: Condi
     if (a === b) return { value: true, end: second.end };
     // One of the document's macros is neither undefined nor `\relax` (`\ifx\llncs\undefined`).
     if ((UNDEFINED.test(b) && facts.defined?.(a)) || (UNDEFINED.test(a) && facts.defined?.(b))) return { value: false, end: second.end };
+    // One known to be undefined (its only definition commented out: `% \def\conference`) is `\undefined`.
+    if ((UNDEFINED.test(b) && facts.defined?.(a) === false) || (UNDEFINED.test(a) && facts.defined?.(b) === false)) return { value: true, end: second.end };
     // Two constants that differ (the same text may still differ in TeX: `\long` or not).
     const [x, y] = [facts.constant(a), facts.constant(b)];
     return x !== undefined && y !== undefined && x !== y ? { value: false, end: second.end } : null;

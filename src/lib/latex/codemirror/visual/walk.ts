@@ -6,20 +6,21 @@ import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, 
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { CAPTION_OF, enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
-import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
+import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { disabledField } from "./model";
-import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
+import { citationNoteText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, parseTabular, readCtable, readDeluxeTable, readLongTable } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
   ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget,
 } from "./widgets";
+import { beginDocumentIndex } from "../../document-begin";
 
 /* One walk over the syntax tree that recognises constructs
  * (docs/latex-visual-editor-plan.md §3–4). Each construct says which markup
@@ -91,7 +92,7 @@ const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|setlen
  * What a macro's expansion may hold only as TeX programming: building names, appending to macros, global and expanded
  * definitions, box registers, and conditionals other than the `\ifx` of cvpr's `\onedot` (which the renderer reads).
  */
-const TEX_PROGRAMMING = /\\(?:expandafter|csname|endcsname|noexpand|g@addto@macro|@for|@ifnextchar|@ifstar|typeout|gdef|xdef|edef|newif|setbox|advance|multiply|divide|ifdefined|ifcsname|ifnum|ifdim|ifcase|if@[A-Za-z@]*|PackageError|PackageWarning|ClassError)(?![A-Za-z@])|\\if(?!x(?![A-Za-z@]))[a-z]{3,}[A-Za-z@]*/;
+const TEX_PROGRAMMING = /\\(?:expandafter|csname|endcsname|noexpand|g@addto@macro|@for|@ifnextchar|@ifstar|typeout|gdef|xdef|edef|newif|setbox|advance|multiply|divide|ifdefined|ifcsname|ifnum|ifdim|ifcase|if@[A-Za-z@]*|PackageError|PackageWarning|ClassError)(?![A-Za-z@])|\\if(?!x(?![A-Za-z@]))[a-z]{3,}[A-Za-z@]*|\\ifx(?![A-Za-z@])(?!\s*\\@let@token)/;
 /** Whether every `\begin{x}` in a text is closed by its `\end{x}` in it, in order. */
 function balancedEnvironments(text: string) {
   if (!text.includes("\\begin") && !text.includes("\\end")) return true;
@@ -104,6 +105,14 @@ function balancedEnvironments(text: string) {
 }
 
 /** Lengths a float sets for its table or caption (`\aboverulesep = 2mm`, `\tabcolsep=3pt`): layout. */
+/** linguex's example (`\ex.`, `\exg.` with a gloss, `\exi.`) and part (`\a.`, `\b.`) markers. */
+const LINGUEX_MARKER = /^\\(?:ex|exg|exi|a|b)$/;
+
+/** Whether a citation's notes can be printed as text (`[\emph{inter alia}]`); one that cannot leaves the citation source. */
+function notesUnderstood(notes: { pre?: string; post?: string }) {
+  return [notes.pre, notes.post].every((note) => !note || citationNoteText(note) !== null);
+}
+
 const FLOAT_LENGTHS = /^\\(?:tabcolsep|arraycolsep|arrayrulewidth|aboverulesep|belowrulesep|doublerulesep|extrarowheight|abovecaptionskip|belowcaptionskip|textfloatsep|intextsep|columnsep|parskip|parindent)$/;
 const GLUE = String.raw`-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|\\[A-Za-z@]+)`;
 /** `\vskip 0.15in plus 2pt minus 1pt`, `\kern-3pt`: TeX's glue after a primitive. */
@@ -519,14 +528,18 @@ function drawableEnvironmentCode(code: string): string | null {
 
 /**
  * The named-theorem idiom (O'Donnell's `\newenvironment{named}[1]{\renewcommand{\theoremname}{#1}\begin{namedtheorem}}`
- * with `\newtheorem*{namedtheorem}{\theoremname}`): an unnumbered theorem whose heading is the argument. Null otherwise.
+ * with `\newtheorem*{namedtheorem}{\theoremname}`): an unnumbered theorem whose heading is the argument, or holds it
+ * (math.CO 2611.11191's restated `\newtheorem*{teoremarepinner}{Theorem \theteoremarepnum}` with
+ * `\renewcommand{\theteoremarepnum}{\ref{r:#1}}`: "Theorem 1.1"). Null otherwise.
  */
 function namedTheorem(code: string, defs: LatexDefinitions) {
   const match = /^\s*\\(?:re)?newcommand\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\\begin\s*\{([^{}]+)\}\s*$/.exec(code);
   if (!match) return null;
   const theorem = defs.theorems.get(match[4].trim());
-  if (!theorem || theorem.numbered || theorem.title.replace(/\\protect\s*/g, "").trim() !== `\\${match[1] ?? match[2]}`) return null;
-  return { theorem, title: match[3].trim() };
+  const title = theorem?.title.replace(/\\protect\s*/g, "").trim() ?? "";
+  const use = new RegExp(String.raw`\\${match[1] ?? match[2]}(?![A-Za-z@])`, "g");
+  if (!theorem || theorem.numbered || title.match(use)?.length !== 1) return null;
+  return { theorem, title: title.replace(use, () => match[3].trim()) };
 }
 
 /** `inline`: a list run into its paragraph (paralist's `inparaenum`), whose lines are not indented. */
@@ -1031,6 +1044,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (alias?.alias && ALIAS_FAMILIES[name].test(alias.body)) command = alias.body + (command.endsWith("*") ? "*" : "");
           const optionals = node.getChildren("OptionalArgument").map((arg) => { const range = argumentInner(arg); return range ? read(state, range.from, range.to) : ""; });
           const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+          if (!notesUnderstood(notes)) return false;
           // cleveref's `\crefrange{a}{b}`: the grammar ends it after `{a}`; the chip takes the second key's group too.
           let to = node.to;
           if (/^\\[cC]refrange\*?$/.test(command)) {
@@ -1103,8 +1117,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           // `\title{…}`, `\author{…}` and `\date{…}` written in the body right before `\maketitle`: what the title block
           // shows, folded into it (Alt-click shows their source).
           const bodyStart = Math.max(0, env.preambleEnd);
-          const run = node.from > bodyStart ? titleDeclarationsStart(read(state, bodyStart, node.from), ABSTRACT_WITH_TITLE.test(defs.documentClass ?? "")) : null;
-          // Only within this walk's range, so the construct does not start before what is being built.
+          const run = titleRun(state, defs, bodyStart, node.from);
+          // Only within this walk's range, so the construct does not start before what is being built (the structural
+          // layer widens a range holding `\maketitle` back to titleRunStart).
           const declarations = run && bodyStart + run.start >= from ? bodyStart + run.start : null;
           // acmart's teaser figure among them is drawn on its own: the block ends before it, and the rest up to `\maketitle` folds away.
           const gaps = declarations !== null ? run!.gaps.map((gap) => ({ from: bodyStart + gap.from, to: bodyStart + gap.to })) : [];
@@ -1113,9 +1128,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             while (end > start && /\s/.test(read(state, end - 1, end))) end--;
             return { start, end };
           };
-          const blockEnd = gaps.length ? trimmed(declarations!, gaps[0].from).end : node.to;
+          // A comment after `\maketitle` on its line (cs.LO 2610.41832's `\maketitle%[E]`) is part of its line.
+          const commentLine = doc.lineAt(node.to);
+          const end = /^[ \t]*%/.test(read(state, node.to, commentLine.to)) ? commentLine.to : node.to;
+          const blockEnd = gaps.length ? trimmed(declarations!, gaps[0].from).end : end;
           const folded = declarations !== null ? aloneOnLines(doc, declarations, blockEnd) : null;
-          const span = folded ?? aloneOnLines(doc, node.from, node.to);
+          const span = folded ?? aloneOnLines(doc, node.from, end);
           const range = span ?? { from: node.from, to: node.to };
           if (range.from < node.from) consumed.push([range.from, Math.min(node.from, range.to)]);
           // An abstract and keywords in the run are printed with the title (amsart's abstract before `\maketitle`).
@@ -1499,6 +1517,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
     const text = read(state, ctrl.from, ctrl.to);
+    // linguex's numbered examples (cs.CL 2611.11838): `\ex.` is "(1)", its parts `\a.` and `\b.` are "a.", "b.".
+    if (LINGUEX_MARKER.test(text) && read(state, ctrl.to, ctrl.to + 1) === "." && defs.packages.includes("linguex") && !macroAt(defs, text.slice(1), node.from)) {
+      if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to + 1, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to + 1, widget: new ExampleMarkerWidget(text === "\\a" || text === "\\b") }] });
+      consumed.push([node.from, ctrl.to + 1]);
+      return false;
+    }
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
     if (text === "\\printbibliography") {
       const end = commandArguments(node).filter((arg) => arg.optional).at(-1)?.node.to ?? ctrl.to;
@@ -1812,6 +1836,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
         const optionals = args.filter((arg) => arg.optional).map((arg) => { const range = argumentInner(arg.node); return range ? read(state, range.from, range.to) : ""; });
         const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+        if (!notesUnderstood(notes)) return false;
         const end = keysArgument.node.to;
         emit({ kind: "cite", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new ChipWidget("cite", CITE_ALIASES[text], keys, notes, end - node.from) }] });
         return false;
@@ -2116,8 +2141,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // An argument the parser ends early (at a blank line or a heading: an unclosed brace) is read
     // further in the text than the tree shows: drawn from the text, the use would change with
     // edits the tree does not tie to it. Its parts are drawn on their own.
-    if (node.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError)) return undefined;
-    if (structureMacroNames(defs).has(name)) {
+    // A wrapper whose argument holds a paragraph heading (q-bio.NC 2610.36484's `\rev{\paragraph{Version.} …}`) is one:
+    // when its body only passes the argument on or styles it, it is read from the text to its closing brace in the same
+    // paragraph (argumentGroups), and the argument's parts are drawn on their own.
+    const broken = node.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError);
+    if (broken && !/^\s*\{\s*\\(?:paragraph|subparagraph)\*?\s*\{/.test(read(state, node.from + 1 + name.length, Math.min(doc.length, node.from + name.length + 40)))) return undefined;
+    if (!broken && structureMacroNames(defs).has(name)) {
       const drawn = structuralMacroUse(node, name);
       if (drawn !== null) return drawn;
     }
@@ -2126,6 +2155,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const macro = macroAt(defs, name, node.from)!;
     const plan = transparentPlan(macro, defs);
     const groups = plan ? argumentGroups(source, node.from, 1 + name.length, macro.arity) : null;
+    if (broken && !(plan && groups)) return undefined;
     if (plan && groups) {
       const end = groups[groups.length - 1].close + 1;
       const replaces: Replace[] = [];
@@ -3368,16 +3398,16 @@ function icmlTitle(block: string): { title: string | null; author: string | null
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
 const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/;
 /**
  * Environments among them: an abstract the class prints with the title (acmart's, amsart's), acmart's CCS metadata,
  * and its teaser figure, which is drawn on its own (the title block stops before it).
  */
-const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure)$/;
+const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl)$/;
+const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp)$/;
 
 type TitleRun = {
   start: number;
@@ -3386,6 +3416,20 @@ type TitleRun = {
   abstract: string | null;
   notes: Array<[string, string]>;
 };
+
+/** The run of title declarations before `\maketitle` at `pos`, in the body from `bodyStart`. */
+function titleRun(state: EditorState, defs: LatexDefinitions, bodyStart: number, pos: number) {
+  if (pos <= bodyStart) return null;
+  const wrapper = (name: string) => { const macro = macroAt(defs, name, pos); return macro ? macroPassThrough(macro, defs) : null; };
+  return titleDeclarationsStart(read(state, bodyStart, pos), ABSTRACT_WITH_TITLE.test(defs.documentClass ?? ""), wrapper);
+}
+
+/** Where the title block of `\maketitle` at `pos` starts when it folds declarations before it, or null. */
+export function titleRunStart(state: EditorState, defs: LatexDefinitions, preambleEnd: number, pos: number) {
+  const bodyStart = Math.max(0, preambleEnd);
+  const run = titleRun(state, defs, bodyStart, pos);
+  return run ? bodyStart + run.start : null;
+}
 
 /** What `\keywords`, `\subjclass` and `\ccsdesc` add to a title block, as its small lines (label, LaTeX). */
 function titleNotes(keywords: string[], subjclass: string[], ccs: string[]): Array<[string, string]> {
@@ -3400,7 +3444,7 @@ function titleNotes(keywords: string[], subjclass: string[], ccs: string[]): Arr
  * The run of title declarations that ends `text` (`text` is the body up to `\maketitle`): where it starts, the abstract
  * and notes in it; null when something else comes right before `\maketitle`. Comments and spaces between them are part of the run.
  */
-function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleRun | null {
+function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper?: (name: string) => "discard" | "identity" | null): TitleRun | null {
   let run: TitleRun | null = null;
   let keywords: string[] = [];
   let subjclass: string[] = [];
@@ -3448,6 +3492,20 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleR
       i = end;
       continue;
     }
+    // A version switch around declarations (cs.DS 2611.09172's `\iffullversion{ \title{…} }`): one that prints nothing,
+    // or passes on only declarations, is part of the run.
+    const kind = command && groups.length === 1 ? wrapper?.(command[1]) : null;
+    if (kind && (kind === "discard" || !groups[0].trim() || titleDeclarationsStart(groups[0], abstractWithTitle, wrapper)?.start === groups[0].search(/\S/))) {
+      run ??= { start, gaps: [], abstract: null, notes: [] };
+      i = end;
+      continue;
+    }
+    // A file the run includes (acmart's abstract in `\input{abstract}`) is drawn on its own, as a teaser figure is.
+    if (run && command && /^(?:input|include)$/.test(command[1]) && groups.length === 1) {
+      run.gaps.push({ from: start, to: end });
+      i = end;
+      continue;
+    }
     // Anything else ends the run: the declarations after it may still make one.
     run = null;
     keywords = [];
@@ -3459,8 +3517,8 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleR
   return run;
 }
 
-/** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX. */
-export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj)$/;
+/** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX, Cambridge's jfp. */
+export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj)$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
 export const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
 
@@ -3515,7 +3573,7 @@ function scanTitleParts(text: string, documentClass: string | null) {
   const last = (command: string) => commandGroups(text, command).at(-1) ?? null;
   const authors = LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author");
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
-  const bodyStart = /\\begin\s*\{document\}/.exec(text)?.index ?? -1;
+  const bodyStart = beginDocumentIndex(text);
   const abstract = bodyStart > 0 ? /\\begin\s*\{abstract\}([\s\S]*?)\\end\s*\{abstract\}/.exec(stripTexComments(text.slice(0, bodyStart)))?.[1].trim() ?? null : null;
   // Keywords and classifications in the preamble (LIPIcs', acmart's): small lines of the block. Those in the body are
   // the title run's (titleDeclarationsStart), so they are not shown twice.
