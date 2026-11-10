@@ -94,6 +94,8 @@ test("the sample draws every construct it recognises, and the file is not change
   assert.deepEqual(kinds(view.state), {
     preamble: 1, title: 1, "env-header": 6, "env-end": 5, "env-footer": 1, style: 6, math: 8, heading: 3, footnote: 1, symbol: 6,
     cite: 2, macro: 1, "macro-args": 1, "list-begin": 2, item: 4, "list-end": 2, ref: 6, figure: 2, "document-end": 1,
+    // The verbatim block's `\begin` and `\end` lines fold (text round); its lines stay as written, in the code face.
+    "code-begin": 1, "code-end": 1,
   });
   const content = view.contentDOM;
   assert.ok(content.querySelector(".cm-vis-preamble"), "the preamble folds into a block");
@@ -202,7 +204,10 @@ a & first \\
   const tables = [...view.contentDOM.querySelectorAll(".cm-vis-tabular table")] as HTMLElement[];
   assert.equal(tables.length, 2);
   assert.equal(tables[0].dataset.readonly, undefined, "its own cells are edited in place");
-  assert.equal(tables[1].dataset.readonly, "true");
+  // Since the tables round a macro row is drawn from its expansion row by row, and the table is not read-only as a
+  // whole: the macro rows' cells are marked as such (a click shows the call's source).
+  assert.equal(tables[1].dataset.readonly, undefined);
+  assert.equal(tables[1].querySelectorAll(".cm-vis-table-macro").length, 4);
   assert.deepEqual([...tables[1].querySelectorAll("tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent?.trim())), [["b", "second"], ["c", "third"]]);
   view.destroy();
 });
@@ -1230,7 +1235,9 @@ See \cref{tab:notation}.
   const view = mount(doc);
   const list = constructs(view.state);
   const definitions = doc.indexOf("\\newcommand{\\COrow}");
-  const bodiesEnd = doc.indexOf("\\refstepcounter");
+  // The `\refstepcounter` line (counter commands print nothing, text round) folds from its line's start, indentation
+  // included: the bodies end where that line starts.
+  const bodiesEnd = doc.lastIndexOf("\n", doc.indexOf("\\refstepcounter")) + 1;
   assert.ok(list.every((entry) => { const from = Number(entry.split(":")[1]); return from < definitions || from >= bodiesEnd; }), `nothing in definition bodies is drawn: ${list.join(" ")}`);
   const row = list.find((entry) => entry.startsWith("macro:"));
   assert.ok(row, "the row is drawn as its expansion");
@@ -1269,14 +1276,17 @@ test("a figure with content the widget does not draw stays source", () => {
   const drawn = mount("\\begin{figure}[h]\n\\centering\\small\n\\includegraphics[width=.5\\textwidth]{a}\n\\caption{C}\\label{fig:a}\n\\end{figure}");
   assert.equal(kinds(drawn.state).figure, 1);
   drawn.destroy();
-  // Sub-figures of images (one above the other, with `\\`) are panels of their figure; one holding text keeps the figure source.
+  // Sub-figures of images (one above the other, with `\\`) are panels of their figure.
   const panels = mount("\\begin{figure}\n\\begin{subfigure}{.5\\textwidth}\\includegraphics{a}\\\\\n\\includegraphics{b}\\caption{A}\\end{subfigure}\\caption{C}\n\\end{figure}");
   assert.ok(constructs(panels.state).some((entry) => entry.startsWith("figure:0:")));
   panels.destroy();
-  for (const inner of ["Some text \\includegraphics{a}\\caption{C}", "\\includegraphics{a}\\foo\\caption{C}", "\\begin{subfigure}{.5\\textwidth}K=2 \\includegraphics{a}\\caption{A}\\end{subfigure}\\caption{C}"]) {
+  // Since the floats round (principle 1) text or a command the widget does not draw no longer keeps the whole figure
+  // source: the figure is drawn and just that piece is shown as its source, inside the figure (in its panel).
+  for (const [inner, piece] of [["Some text \\includegraphics{a}\\caption{C}", "Some text"], ["\\includegraphics{a}\\foo\\caption{C}", "\\foo"], ["\\begin{subfigure}{.5\\textwidth}K=2 \\includegraphics{a}\\caption{A}\\end{subfigure}\\caption{C}", "K=2"]]) {
     const view = mount(`\\begin{figure}\n${inner}\n\\end{figure}`);
-    // (A sub-figure may still be drawn on its own.)
-    assert.ok(!constructs(view.state).some((entry) => entry.startsWith("figure:0:")), inner);
+    assert.ok(constructs(view.state).some((entry) => entry.startsWith("figure:0:")), inner);
+    const sources = [...view.contentDOM.querySelectorAll(".cm-vis-figure .cm-vis-figure-source")].map((part) => part.textContent?.trim());
+    assert.deepEqual(sources, [piece], inner);
     view.destroy();
   }
 });
