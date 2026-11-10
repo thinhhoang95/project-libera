@@ -29,6 +29,8 @@ export type TableRow = {
   to: number;
   /** Rules before this row: \hline, \toprule, \midrule, \bottomrule, \cline. */
   rulesBefore: string[];
+  /** Where each of `rulesBefore` is (absolute), for removing them. */
+  ruleRanges: Array<{ from: number; to: number }>;
   /** Where the row's `\\` starts, or null when the last row has none. */
   breakAt: number | null;
 };
@@ -42,6 +44,8 @@ export type TableModel = {
   rows: TableRow[];
   /** Rules after the last row. */
   rulesAfter: string[];
+  /** Where each of `rulesAfter` is (absolute). */
+  rulesAfterRanges: Array<{ from: number; to: number }>;
   bodyFrom: number;
   bodyTo: number;
   /** The document's `\newcolumntype`s the specification was read with. */
@@ -367,6 +371,7 @@ export function parseTabular(source: string, offset = 0, types?: ColumnTypes): T
   const rows: TableRow[] = [];
   let cells: TableCell[] = [];
   let rules: string[] = [];
+  let ruleRanges: Array<{ from: number; to: number }> = [];
   let cellStart = bodyFrom;
   let rowStart = -1;
   let depth = 0;
@@ -395,6 +400,7 @@ export function parseTabular(source: string, offset = 0, types?: ColumnTypes): T
     if (!cells.length) {
       for (let rule = RULE.exec(text); rule; rule = RULE.exec(text)) {
         rules.push(rule[0].trim());
+        ruleRanges.push({ from: offset + from, to: offset + from + rule[0].trimEnd().length });
         advance(rule[0].length);
         skipComments();
       }
@@ -446,9 +452,10 @@ export function parseTabular(source: string, offset = 0, types?: ColumnTypes): T
         if (source[end] === "*") end++;
         const spacing = /^[ \t]*\[[^\]]*\]/.exec(source.slice(end, bodyTo));
         if (spacing) end += spacing[0].length;
-        rows.push({ cells, from: offset + (rowStart >= 0 ? rowStart : cells[0]?.from - offset), to: offset + end, rulesBefore: rules, breakAt: offset + i });
+        rows.push({ cells, from: offset + (rowStart >= 0 ? rowStart : cells[0]?.from - offset), to: offset + end, rulesBefore: rules, ruleRanges, breakAt: offset + i });
         cells = [];
         rules = [];
+        ruleRanges = [];
         rowStart = -1;
         cellStart = end;
         i = end - 1;
@@ -469,6 +476,7 @@ export function parseTabular(source: string, offset = 0, types?: ColumnTypes): T
   // The text after the last `\\`: a last row, or only rules.
   const tail = source.slice(cellStart, bodyTo);
   const rulesAfter: string[] = [];
+  const rulesAfterRanges: Array<{ from: number; to: number }> = [];
   if (cells.length || tail.trim()) {
     // A commented-out row before the closing rule (`% c & d \\` then `\hline`) is no row.
     let rest = withoutComments(tail).trim();
@@ -478,14 +486,31 @@ export function parseTabular(source: string, offset = 0, types?: ColumnTypes): T
     if (cells.length || rest) {
       rulesAfter.length = 0;
       pushCell(bodyTo);
-      rows.push({ cells, from: offset + (rowStart >= 0 ? rowStart : cellStart), to: offset + bodyTo, rulesBefore: rules, breakAt: null });
+      rows.push({ cells, from: offset + (rowStart >= 0 ? rowStart : cellStart), to: offset + bodyTo, rulesBefore: rules, ruleRanges, breakAt: null });
     } else {
       // Rules after the last row: keep the ones already read there too.
       rulesAfter.unshift(...rules);
+      rulesAfterRanges.push(...ruleRanges, ...ruleRangesIn(source, cellStart, bodyTo, offset));
     }
-  } else rulesAfter.push(...rules);
+  } else { rulesAfter.push(...rules); rulesAfterRanges.push(...ruleRanges); }
 
-  return { specFrom: offset + specFrom, specTo: offset + specEnd, spec, columns: spans.map((column) => column.letter), rows, rulesAfter, bodyFrom: offset + bodyFrom, bodyTo: offset + bodyTo, types };
+  return { specFrom: offset + specFrom, specTo: offset + specEnd, spec, columns: spans.map((column) => column.letter), rows, rulesAfter, rulesAfterRanges, bodyFrom: offset + bodyFrom, bodyTo: offset + bodyTo, types };
+}
+
+/** The rules at the start of [from, to) of `source`, past spaces and comment lines, as absolute ranges. */
+function ruleRangesIn(source: string, from: number, to: number, offset: number) {
+  const ranges: Array<{ from: number; to: number }> = [];
+  let i = from;
+  while (i < to) {
+    const space = /^\s+/.exec(source.slice(i, to));
+    if (space) { i += space[0].length; continue; }
+    if (source[i] === "%") { const end = source.indexOf("\n", i); i = end < 0 || end > to ? to : end + 1; continue; }
+    const rule = RULE.exec(source.slice(i, to));
+    if (!rule) break;
+    ranges.push({ from: offset + i, to: offset + i + rule[0].trimEnd().length });
+    i += rule[0].length;
+  }
+  return ranges;
 }
 
 /** A longtable read for display: its caption and label, and a plain tabular of the rows it prints first. */
@@ -719,4 +744,283 @@ export function deleteColumn(model: TableModel, index: number): TableChange[] | 
 function editableSpans(spec: string, types?: ColumnTypes) {
   const spans = columnSpans(spec, 0, types);
   return spans && spans.every((span) => !span.repeated) ? spans : null;
+}
+
+/* ---- Rows written through the document's macros ------------------------------------------------------------- */
+
+/**
+ * The rows of a tabular that the document's macros write (`\row{a}{b}` for `a & b \\`), by row index of the
+ * tabular's own reading: each such row's expansion, a tabular body to draw (not edit), or null when its expansion
+ * cannot be read (the row is shown as its source). Rows whose cells only use macros (`\blocka{64}{3}`) are not
+ * among them: they stay cells. Null when the tabular has no such row, or its own reading fails.
+ */
+export function macroRowReadings(source: string, expand: (text: string) => string | null, types?: ColumnTypes): Record<number, string | null> | null {
+  const own = parseTabular(source, 0, types);
+  if (!own) return null;
+  const readings: Record<number, string | null> = {};
+  let any = false;
+  own.rows.forEach((row, index) => {
+    const text = source.slice(row.from, row.to);
+    const expanded = expand(text);
+    if (expanded === text) return;
+    any = true;
+    if (expanded === null) { readings[index] = null; return; }
+    const body = withoutComments(expanded);
+    const sub = parseTabular(`\\begin{tabular}{${own.spec}}${body}\\end{tabular}`, 0, types);
+    if (!sub) { readings[index] = null; return; }
+    const shape = (r: TableRow) => r.cells.map((cell) => cell.span).join(",");
+    // The same one row, cell for cell: the macros are in its cells.
+    if (sub.rows.length === 1 && !sub.rows[0].rulesBefore.length && !sub.rulesAfter.length && shape(sub.rows[0]) === shape(row)) return;
+    readings[index] = body;
+  });
+  return any && Object.keys(readings).length ? readings : null;
+}
+
+/* ---- What the commands around a tabular set for its grid ----------------------------------------------------- */
+
+/** xcolor's `\rowcolors{start}{odd}{even}` and the row height `\arraystretch` in force for a tabular. */
+export type TableSettings = { rowColors?: { start: number; odd: string; even: string }; stretch?: number };
+
+/**
+ * The settings `text` (the LaTeX before a tabular in its float or group) leaves for it: the last `\rowcolors`
+ * (none after a `\hiderowcolors`), and `stretch`, the body of `\arraystretch` in force there. Undefined when none.
+ */
+export function readTableSettings(text: string, stretch?: string | null): TableSettings | undefined {
+  const settings: TableSettings = {};
+  const plain = withoutComments(text);
+  let last: RegExpExecArray | null = null;
+  for (const match of plain.matchAll(/\\(rowcolors\*?|hiderowcolors|showrowcolors)(?![A-Za-z@])(?:\s*\[[^\]]*\])?(?:\s*\{\s*(\d+)\s*\}\s*\{([^{}]*)\}\s*\{([^{}]*)\})?/g)) {
+    if (match[1] === "hiderowcolors") last = null;
+    else if (match[1].startsWith("rowcolors") && match[2]) last = match;
+  }
+  if (last) settings.rowColors = { start: Number(last[2]), odd: last[3].trim(), even: last[4].trim() };
+  // A `\renewcommand{\arraystretch}{…}` in the text, else the one in force (the preamble's).
+  const own = [...plain.matchAll(/\\(?:renewcommand\s*\{?\s*\\arraystretch\s*\}?|def\s*\\arraystretch)\s*\{([^{}]*)\}/g)].at(-1)?.[1] ?? stretch;
+  const factor = own === undefined || own === null ? NaN : Number(own.trim());
+  if (Number.isFinite(factor) && factor > 0 && factor !== 1) settings.stretch = Math.min(4, Math.max(0.5, factor));
+  return settings.rowColors || settings.stretch ? settings : undefined;
+}
+
+/* ---- Editing: merging and splitting cells, alignment, rules, moving rows and columns ------------------------- */
+
+/** One change replacing `current` at `from` by `next`, writing only the characters that differ. */
+function replaceMinimal(from: number, current: string, next: string): TableChange {
+  let start = 0;
+  while (start < current.length && start < next.length && current[start] === next[start]) start++;
+  let end = 0;
+  while (end < current.length - start && end < next.length - start && current[current.length - 1 - end] === next[next.length - 1 - end]) end++;
+  return { from: from + start, to: from + current.length - end, insert: next.slice(start, next.length - end) };
+}
+
+/** The cells of a row covering columns [first, last] exactly, as indices; null when a span crosses either edge or the row is short. */
+function cellsCovering(row: TableRow, first: number, last: number) {
+  let column = 0;
+  let from = -1;
+  for (let c = 0; c < row.cells.length; c++) {
+    if (column === first) from = c;
+    column += row.cells[c].span;
+    if (from >= 0 && column - 1 === last) return { from, to: c };
+    if (column - 1 >= last) return null;
+  }
+  return null;
+}
+
+/** The column a row's cell starts at. */
+export function columnOfCell(row: TableRow, cellIndex: number) {
+  let column = 0;
+  for (let i = 0; i < cellIndex; i++) column += row.cells[i]?.span ?? 1;
+  return column;
+}
+
+const MULTICOLUMN = /^\\multicolumn\s*\{\s*(\d+)\s*\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{/;
+const MULTIROW = /^\\multirow\s*(?:\[[^\]]*\]\s*)?\{\s*(\d+)\s*\}\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*(?:\[[^\]]*\]\s*)?\{/;
+
+/** What a cell shows: a `\multicolumn`'s content, else its text. */
+function cellContent(cell: TableCell, source: string, offset: number) {
+  return cell.contentFrom !== undefined && cell.contentTo !== undefined ? source.slice(cell.contentFrom - offset, cell.contentTo - offset) : cell.text;
+}
+
+/** Whether LaTeX has a comment (an unescaped `%`): wrapped in braces, it would hide the closing one. */
+function hasComment(text: string) {
+  return /(^|[^\\])(?:\\\\)*%/.test(text);
+}
+
+/**
+ * Changes that merge the cells of rows [r1, r2] and columns [c1, c2] into one: `\multicolumn{n}{a}{…}` across
+ * columns, `\multirow{n}{*}{…}` down rows (both for a block), with the merged cells' text joined in the first;
+ * the other rows' cells in the block become empty. Null when a cell crosses the block's edge, holds a comment or
+ * a `\multirow` already, or the block is one cell.
+ */
+export function mergeCells(model: TableModel, source: string, offset: number, r1: number, r2: number, c1: number, c2: number): TableChange[] | null {
+  if (r1 > r2) [r1, r2] = [r2, r1];
+  if (c1 > c2) [c1, c2] = [c2, c1];
+  if (r1 < 0 || c1 < 0 || (r1 === r2 && c1 === c2)) return null;
+  const width = c2 - c1 + 1;
+  const height = r2 - r1 + 1;
+  const letter = model.columns[c1];
+  const align = letter === "l" || letter === "c" || letter === "r" ? letter : "c";
+  const changes: TableChange[] = [];
+  const texts: string[] = [];
+  const blocks: Array<{ from: number; to: number; current: string }> = [];
+  for (let r = r1; r <= r2; r++) {
+    const row = model.rows[r];
+    const covering = row && cellsCovering(row, c1, c2);
+    if (!covering) return null;
+    const cells = row.cells.slice(covering.from, covering.to + 1);
+    if (cells.some((cell) => hasComment(cell.text) || /\\multirow\b/.test(cell.text) || (cell.span > 1 && cell.contentFrom === undefined))) return null;
+    for (const cell of cells) { const text = cellContent(cell, source, offset).trim(); if (text) texts.push(text); }
+    const from = cells[0].from;
+    const to = cells[cells.length - 1].to;
+    blocks.push({ from, to, current: source.slice(from - offset, to - offset) });
+  }
+  const content = texts.join(" ");
+  blocks.forEach((block, i) => {
+    let text = i === 0 ? (height > 1 ? `\\multirow{${height}}{*}{${content}}` : content) : "";
+    if (width > 1) text = `\\multicolumn{${width}}{${align}}{${text}}`;
+    changes.push(replaceMinimal(block.from, block.current, text));
+  });
+  return changes;
+}
+
+/** Changes that split a `\multicolumn` (into its columns, the text in the first) or a `\multirow` (into its rows); null for another cell. */
+export function splitCell(model: TableModel, source: string, offset: number, r: number, c: number): TableChange[] | null {
+  const cell = model.rows[r]?.cells[c];
+  if (!cell) return null;
+  const current = source.slice(cell.from - offset, cell.to - offset);
+  if (cell.contentFrom !== undefined && cell.contentTo !== undefined && MULTICOLUMN.test(current)) {
+    const content = source.slice(cell.contentFrom - offset, cell.contentTo - offset);
+    return [replaceMinimal(cell.from, current, `${content}${" &".repeat(Math.max(0, cell.span - 1))}`)];
+  }
+  const multirow = MULTIROW.exec(current);
+  if (multirow) {
+    const open = cell.from - offset + multirow[0].length - 1;
+    const close = matchingBrace(source, open);
+    if (close < 0 || source.slice(close + 1, cell.to - offset).trim()) return null;
+    return [replaceMinimal(cell.from, current, source.slice(open + 1, close))];
+  }
+  return null;
+}
+
+/** The change that sets column `column`'s alignment letter (`l`, `c` or `r`) in the specification; null when it is another kind of column. */
+export function setColumnAlignment(model: TableModel, column: number, letter: "l" | "c" | "r"): TableChange[] | null {
+  const spans = editableSpans(model.spec, model.types);
+  const span = spans?.[column];
+  if (!span || spans!.length !== model.columns.length) return null;
+  let at = span.from;
+  // Past `>{…}` before the letter.
+  while (at < span.to) {
+    if (/\s/.test(model.spec[at])) { at++; continue; }
+    if (model.spec[at] !== ">") break;
+    const close = matchingBrace(model.spec, at + 1);
+    if (close < 0) return null;
+    at = close + 1;
+  }
+  const current = model.spec[at];
+  if (!/^[lcr]$/.test(current ?? "") || current === letter || model.types?.has(current)) return null;
+  return [{ from: model.specFrom + at, to: model.specFrom + at + 1, insert: letter }];
+}
+
+/** Whether the table is ruled with booktabs (`\toprule`, `\midrule`, `\bottomrule`, `\cmidrule`) rather than `\hline`. */
+function booktabs(model: TableModel) {
+  return [...model.rows.flatMap((row) => row.rulesBefore), ...model.rulesAfter].some((rule) => /^\\(?:toprule|midrule|bottomrule|cmidrule)/.test(rule));
+}
+
+/** Changes that add a rule above row `r` (`below`: under it): `\hline`, or booktabs' rule for that place when the table uses booktabs. */
+export function addRule(model: TableModel, source: string, offset: number, r: number, below = false): TableChange[] | null {
+  const row = model.rows[r];
+  if (!row || !row.cells.length) return null;
+  const ruled = booktabs(model);
+  const last = r === model.rows.length - 1;
+  if (below && !last) return addRule(model, source, offset, r + 1, false);
+  const rule = !ruled ? "\\hline" : below ? "\\bottomrule" : r === 0 ? "\\toprule" : "\\midrule";
+  const at = row.cells[0].from;
+  const indent = indentationBefore(source, offset, at);
+  if (below) {
+    if (row.breakAt === null) {
+      // The last row gains a `\\` first: a rule must start a row.
+      const end = row.cells[row.cells.length - 1].to;
+      return [{ from: end, to: end, insert: ` \\\\\n${indent}${rule}` }];
+    }
+    return [{ from: row.to, to: row.to, insert: `\n${indent}${rule}` }];
+  }
+  const local = at - offset;
+  const lineStart = source.lastIndexOf("\n", local - 1) + 1;
+  const alone = !source.slice(lineStart, local).trim();
+  return [{ from: at, to: at, insert: alone ? `${rule}\n${indent}` : `${rule} ` }];
+}
+
+/** Changes that remove the rules above row `r` (`below`: under it); null when there are none. */
+export function removeRules(model: TableModel, source: string, offset: number, r: number, below = false): TableChange[] | null {
+  if (!model.rows[r]) return null;
+  const ranges = below ? (model.rows[r + 1]?.ruleRanges ?? (r === model.rows.length - 1 ? model.rulesAfterRanges : [])) : model.rows[r].ruleRanges;
+  if (!ranges.length) return null;
+  const changes: TableChange[] = [];
+  // Rules next to each other (only spaces between) go together, with their line when nothing else is on it.
+  let group: { from: number; to: number } | null = null;
+  const flush = () => {
+    if (!group) return;
+    let { from, to } = group;
+    const lineStart = source.lastIndexOf("\n", from - offset - 1) + 1;
+    let lineEnd = source.indexOf("\n", to - offset);
+    if (lineEnd < 0) lineEnd = source.length;
+    if (!source.slice(lineStart, from - offset).trim() && !source.slice(to - offset, lineEnd).trim() && lineEnd < source.length) { from = offset + lineStart; to = offset + lineEnd + 1; }
+    else {
+      // Only the rule and the spaces after it.
+      while (/[ \t]/.test(source[to - offset] ?? "")) to++;
+    }
+    changes.push({ from, to, insert: "" });
+    group = null;
+  };
+  for (const range of ranges) {
+    if (group && !source.slice(group.to - offset, range.from - offset).trim()) group.to = range.to;
+    else { flush(); group = { ...range }; }
+  }
+  flush();
+  return changes;
+}
+
+/** The changes that swap row `r` with the row above (`direction` -1) or below (1); the rules between rows stay where they are. */
+export function moveRow(model: TableModel, source: string, offset: number, r: number, direction: -1 | 1): TableChange[] | null {
+  const a = model.rows[r];
+  const b = model.rows[r + direction];
+  if (!a || !b || !a.cells.length || !b.cells.length) return null;
+  const range = (row: TableRow) => ({ from: row.cells[0].from, to: row.cells[row.cells.length - 1].to });
+  const ra = range(a);
+  const rb = range(b);
+  const text = (span: { from: number; to: number }) => source.slice(span.from - offset, span.to - offset);
+  // A last row ends without `\\`: its text moves, the `\\` stays.
+  return [replaceMinimal(ra.from, text(ra), text(rb)), replaceMinimal(rb.from, text(rb), text(ra))].sort((x, y) => x.from - y.from);
+}
+
+/** The changes that swap column `column` with the one left (`direction` -1) or right (1), in the specification and every row. */
+export function moveColumn(model: TableModel, source: string, offset: number, column: number, direction: -1 | 1): TableChange[] | null {
+  const other = column + direction;
+  const spans = editableSpans(model.spec, model.types);
+  if (!spans || spans.length !== model.columns.length || !spans[column] || !spans[other]) return null;
+  const changes: TableChange[] = [];
+  const specText = (span: { from: number; to: number }) => model.spec.slice(span.from, span.to);
+  changes.push(replaceMinimal(model.specFrom + spans[column].from, specText(spans[column]), specText(spans[other])));
+  changes.push(replaceMinimal(model.specFrom + spans[other].from, specText(spans[other]), specText(spans[column])));
+  for (const row of model.rows) {
+    const width = row.cells.reduce((sum, cell) => sum + cell.span, 0);
+    // A short row without either column is left alone.
+    if (width <= Math.min(column, other)) continue;
+    const a = cellsCovering(row, column, column);
+    const b = cellsCovering(row, other, other);
+    if (!a || !b) return null;
+    const ca = row.cells[a.from];
+    const cb = row.cells[b.from];
+    const text = (cell: TableCell) => source.slice(cell.from - offset, cell.to - offset);
+    changes.push(replaceMinimal(ca.from, text(ca), text(cb)), replaceMinimal(cb.from, text(cb), text(ca)));
+  }
+  return changes.filter((change) => change.from !== change.to || change.insert).sort((x, y) => x.from - y.from);
+}
+
+/**
+ * The text a cell's editor writes: a comment on its last line would hide what follows the cell on its line (its
+ * `&` or `\\`), so a line break ends it; `after` is the rest of that line in the document.
+ */
+export function safeCellText(text: string, after: string) {
+  const lastLine = text.slice(text.lastIndexOf("\n") + 1);
+  return hasComment(lastLine) && after.trim() ? `${text}\n` : text;
 }

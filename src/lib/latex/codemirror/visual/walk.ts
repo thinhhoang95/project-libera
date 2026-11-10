@@ -13,12 +13,12 @@ import { disabledField } from "./model";
 import { citationNoteText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
-import { macroBuiltTabular, parseTabular, readCtable, readDeluxeTable, readLongTable } from "./table-model";
+import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
   ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
   ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
-  RestatedTheoremWidget, restatablesIn, TodoWidget,
+  RestatedTheoremWidget, restatablesIn, TodoWidget, type TableExtras,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
 
@@ -88,6 +88,8 @@ const OVERRIDABLE = new Set([
 const ENVIRONMENT_NODES = new Set(["FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "EquationEnvironment", "EquationArrayEnvironment"]);
 /** What may be in a figure or table besides its images, tables, caption and label, and still be drawn as one. */
 const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|setlength|definecolor|colorlet|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|hfil|vfill|hspace\*?|vspace\*?|vskip|hskip|vglue|hglue|kern|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline|fontsize|selectfont|fontfamily|newcolumntype|arraybackslash|center|endcenter|Description|rule|[;,:!])$/;
+/** What a float may set for the tabular after it, which its grid draws (`\rowcolors{2}{gray!10}{white}`). */
+const TABLE_SETTING = /^\\(?:rowcolors\*?|showrowcolors|hiderowcolors|arrayrulecolor)$/;
 /**
  * What a macro's expansion may hold only as TeX programming: building names, appending to macros, global and expanded
  * definitions, box registers, and conditionals other than the `\ifx` of cvpr's `\onedot` (which the renderer reads).
@@ -161,6 +163,8 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   // (`\renewcommand{\theequation}{S\arabic{equation}}`, only a `\the…` one). Column and spacing switches, TeX groups.
   appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
   begingroup: 0, endgroup: 0,
+  // xcolor's alternating row fills, drawn by the tables after them.
+  rowcolors: 3, showrowcolors: 0, hiderowcolors: 0,
 };
 /** Layout-line commands whose `[…]` is text, not an option (ICML's `\twocolumn[\icmltitle{…}…]`): such a line stays. */
 const LAYOUT_LINE_TEXT_OPTION = /^(?:onecolumn|twocolumn)$/;
@@ -733,13 +737,21 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     if (!structural) return false;
     const source = read(state, node.from, node.to);
-    // Rows written through the document's macros are drawn from their expansion (read-only).
-    const built = macroBuiltTabular(source, expandRowsAt(node.from), defs.columnTypes);
+    // Rows written through the document's macros are drawn from their expansion, row by row (the others stay
+    // editable); when the tabular's own rows cannot be read, the whole table is drawn from it (read-only).
+    const macroRows = macroRowReadings(source, expandRowsAt(node.from), defs.columnTypes);
+    const built = macroRows ? null : macroBuiltTabular(source, expandRowsAt(node.from), defs.columnTypes);
     // A tabular of rules only (`\hline\hline`) draws nothing to show: it stays source.
     if (!built && !parseTabular(source, 0, defs.columnTypes)?.rows.length) return undefined;
     const span = aloneOnLines(doc, node.from, node.to);
     const range = span ?? { from: node.from, to: node.to };
-    emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TableWidget(built ?? source, node.from - range.from, range.to - range.from, !!built) }] });
+    // `{\rowcolors{2}{gray!10}{white}\renewcommand{\arraystretch}{1.3}\begin{tabular}…}`: what its group sets for it.
+    let container = node.from;
+    for (let parent = node.parent; parent && parent.parent?.name !== "DocumentEnvironment"; parent = parent.parent) {
+      if (parent.name === "Group" || parent.name === "NonEmptyGroup" || parent.name === "Content") { container = parent.from; break; }
+    }
+    const extras = tableExtras(read(state, Math.max(container, node.from - 2000), node.from), defs, node.from, macroRows);
+    emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TableWidget(built ?? source, node.from - range.from, range.to - range.from, !!built, extras) }] });
     return false;
   };
 
@@ -2443,7 +2455,7 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel, defs, notesFrom)) covered = false; return false; }
       // Layout with what it takes (`\vskip 0.15in`, `\vspace*{2pt}`, `\setlength\tabcolsep{3pt}`, `\aboverulesep = 2mm`,
       // acmart's `\Description{…}`): none of it is drawn, so none of it is content.
-      if (FIGURE_LAYOUT.test(command) || SIZE_COMMAND.test(command) || FLOAT_LENGTHS.test(command)) { noteUntil = Math.max(noteUntil, layoutExtent(state, ctrl!.to, command)); return false; }
+      if (FIGURE_LAYOUT.test(command) || SIZE_COMMAND.test(command) || FLOAT_LENGTHS.test(command) || TABLE_SETTING.test(command)) { noteUntil = Math.max(noteUntil, layoutExtent(state, ctrl!.to, command)); return false; }
       // `\fbox{\begin{minipage}…}`, or a macro writing such a box (cs.CL 2611.11838's `\genbox{color}{title}{text}`).
       const box = textBoxUse(ref.node, state, defs);
       if (box) { noteUntil = Math.max(noteUntil, ref.from + box.end); return false; }
@@ -2551,7 +2563,7 @@ function imagePath(path: string, doc: Text) {
 
 /** Names of the document's macros that write table rows or cells (`&`, `\\`), directly or through another one. */
 const rowMacroCache = new WeakMap<LatexDefinitions, Set<string>>();
-function rowMacroNames(defs: LatexDefinitions) {
+export function rowMacroNames(defs: LatexDefinitions) {
   let names = rowMacroCache.get(defs);
   if (names) return names;
   names = new Set();
@@ -2566,6 +2578,16 @@ function rowMacroNames(defs: LatexDefinitions) {
   }
   rowMacroCache.set(defs, names);
   return names;
+}
+
+/**
+ * What a tabular's grid takes from around it: the `\rowcolors` and `\arraystretch` set in `before` (the LaTeX
+ * before it in its float or group) or in force at `pos`, and the rows the document's macros write. Undefined for none.
+ */
+function tableExtras(before: string, defs: LatexDefinitions, pos: number, macroRows: Record<number, string | null> | null): TableExtras | undefined {
+  const settings = readTableSettings(before, macroAt(defs, "arraystretch", pos)?.body);
+  if (!settings && !macroRows) return undefined;
+  return { ...(settings ? { settings } : {}), ...(macroRows ? { macroRows } : {}) };
 }
 
 /** AASTeX's classes (aastex631, aastex7, aastex701), and emulateapj, which has its commands. */
@@ -2714,7 +2736,7 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
     if (name === "UnknownCommand") {
       const ctrl = ref.node.firstChild;
       const text = ctrl ? read(state, ctrl.from, ctrl.to) : "";
-      if (text === "\\includestandalone" || FIGURE_LAYOUT.test(text) || SIZE_COMMAND.test(text)) return false;
+      if (text === "\\includestandalone" || FIGURE_LAYOUT.test(text) || SIZE_COMMAND.test(text) || TABLE_SETTING.test(text)) return false;
       if (DRAWING_WRAPPERS.test(text)) { if (!drawingOnly(ref.node, state, panel, defs)) only = false; return false; }
       // A document macro that only sets layout (`\tablestyle{2pt}{1.1}` before the tabular).
       if (defs && layoutMacro(ref.node, state, defs)) return false;
@@ -3117,9 +3139,14 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         // A longtable is shown as source (see the TabularEnvironment case): so is its table.
         if (/^\\begin\s*\{(?:longtable|xltabular)\*?\}/.test(source)) valid = false;
         else {
-          // Rows written through the document's macros are drawn from their expansion (read-only).
-          const built = macroBuiltTabular(source, expand, defs.columnTypes);
+          // Rows written through the document's macros are drawn from their expansion, row by row; the whole table
+          // (read-only) when its own rows cannot be read.
+          const macroRows = macroRowReadings(source, expand, defs.columnTypes);
+          const built = macroRows ? null : macroBuiltTabular(source, expand, defs.columnTypes);
           const tabular: NonNullable<FigureContent["tabulars"]>[number] = built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from };
+          // `\rowcolors` and `\arraystretch` set in the float before it.
+          const extras = tableExtras(read(state, Math.max(node.from, ref.from - 2000), ref.from), defs, ref.from, macroRows);
+          if (extras) tabular.extras = extras;
           if (!parseTabular(tabular.source, 0, defs.columnTypes)?.rows.length) valid = false;
           // revtex's `ruledtabular`: double rules above and below the grid.
           for (let parent = ref.node.parent; parent && parent.from > root.from; parent = parent.parent) if (parent.name === "Environment" && environmentName(parent, readState) === "ruledtabular") { tabular.ruled = true; break; }

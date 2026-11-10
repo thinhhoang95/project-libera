@@ -3,10 +3,12 @@ import { MapMode, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { dispatchAsOneStep as dispatchWidgetEdit } from "../../../collab/undo-boundary";
 import { visualConfig, visualDefinitions } from "./model";
-import { fragmentContext, setTableHooks, type TableElement } from "./widgets";
-import { renderLatexFragment } from "./render-fragment";
-import { isTabular } from "./walk";
-import { deleteColumn, deleteRow, insertColumn, insertRow, parseTabular, setCellText, type TableCell, type TableChange, type TableModel } from "./table-model";
+import { fragmentContext, setTableHooks, type TableElement } from "./widgets";import { renderLatexFragment } from "./render-fragment";
+import { isTabular, rowMacroNames } from "./walk";
+import {
+  addRule, columnOfCell, deleteColumn, deleteRow, insertColumn, insertRow, mergeCells, moveColumn, moveRow, parseTabular, removeRules, safeCellText, setCellText, setColumnAlignment, splitCell,
+  type TableCell, type TableChange, type TableModel,
+} from "./table-model";
 
 /* Editing tables in the grid (docs/latex-visual-editor-plan.md §6.3). A cell
  * becomes its LaTeX source while it is edited, and saving rewrites only that
@@ -64,6 +66,8 @@ const cellSessions = new Set<CellSession>();
 /** Maps open editors' and menus' positions through every change, remote ones included; a deleted one becomes null. */
 const sessionTracker = EditorView.updateListener.of((update) => {
   if (!update.docChanged) return;
+  // Any edit redraws or moves the grid: the selection of cells ends.
+  if (cellSelection?.view === update.view) cellSelection = null;
   for (const session of [...sessions, ...cellSessions]) {
     if (session.view !== update.view) continue;
     const map = (pos: number | null, assoc: -1 | 1) => (pos === null ? null : update.changes.mapPos(pos, assoc, MapMode.TrackDel));
@@ -125,7 +129,11 @@ function editCell(view: EditorView, td: HTMLElement, tableStart: () => number | 
   if (begin === null || !canEdit(view)) return;
   const table = tableAt(view, begin);
   const cell = table?.model.rows[row]?.cells[cellIndex];
-  if (!table || !cell || cell.sourceOnly) return;
+  if (!table || !cell) return;
+  // The cell is where a selection of cells (Shift-click) starts.
+  cellSelection = { view, start: begin, anchor: { row, column: columnOfCell(table.model.rows[row], cellIndex) }, focus: null };
+  paintSelection(view);
+  // A cell with a comment or a line break opens as its source over several lines (Shift+Enter starts one).
   const range = cellRange(cell);
   const original = resume?.original ?? view.state.sliceDoc(range.from, range.to);
   td.setAttribute("contenteditable", "true");
@@ -171,6 +179,9 @@ function editCell(view: EditorView, td: HTMLElement, tableStart: () => number | 
         showCurrent(now);
         window.alert(`The table changed while you were editing this cell, so your text was not saved:\n\n${text}`);
       } else if (now === original || window.confirm("A co-author changed this cell while you were editing it. Replace their text with yours?")) {
+        // A comment typed at the end must not hide the `&` or `\\` after the cell.
+        const end = cellRange(found.cell).to;
+        text = safeCellText(text, view.state.sliceDoc(end, view.state.doc.lineAt(end).to));
         // Only the characters that changed are written.
         dispatchAsOneStep(view, [setCellText(found.cell, text, now ?? undefined)], "input.visual.table");
       } else showCurrent(now);
@@ -189,7 +200,21 @@ function editCell(view: EditorView, td: HTMLElement, tableStart: () => number | 
   const onKey = (event: KeyboardEvent) => {
     event.stopPropagation();
     if (event.key === "Escape") { event.preventDefault(); finish(false); }
-    else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); finish(true); }
+    else if (event.key === "Enter" && event.shiftKey) {
+      // A line break in the cell's source (after a comment, or for a long cell), as plain text.
+      event.preventDefault();
+      const selection = window.getSelection();
+      if (!selection?.rangeCount) return;
+      const domRange = selection.getRangeAt(0);
+      domRange.deleteContents();
+      const line = document.createTextNode("\n");
+      domRange.insertNode(line);
+      domRange.setStartAfter(line);
+      domRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(domRange);
+      session.typed = true;
+    } else if (event.key === "Enter") { event.preventDefault(); finish(true); }
     else if (event.key === "Tab") { event.preventDefault(); finish(true, event.shiftKey ? -1 : 1); }
   };
   const onBlur = () => {
@@ -216,24 +241,50 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
   const clickedRange = cellRange(clicked);
   const session: TableSession = { view, start, cellFrom: clickedRange.from, cellTo: clickedRange.to };
   sessions.add(session);
-  type Plan = (model: TableModel, source: string, from: number, row: number, column: number) => TableChange[] | null;
-  const items: Array<[string, Plan]> = [
+  type Plan = (model: TableModel, source: string, from: number, row: number, column: number, cellIndex: number) => TableChange[] | null;
+  /** A plan that adds or removes cells in rows: not for a table with rows its macros write (their cells are in the macro). */
+  const everyRow = (plan: Plan): Plan => (model, source, from, r, column, cellIndex) => (hasMacroRows(view, model, source, from) ? null : plan(model, source, from, r, column, cellIndex));
+  /** The selected cells (Shift-click) when the clicked cell is among them. */
+  const selected = () => {
+    if (!cellSelection || cellSelection.view !== view || cellSelection.start !== session.start || !cellSelection.focus) return null;
+    const { anchor, focus } = cellSelection;
+    return { r1: Math.min(anchor.row, focus.row), r2: Math.max(anchor.row, focus.row), c1: Math.min(anchor.column, focus.column), c2: Math.max(anchor.column, focus.column) };
+  };
+  const selectedBlock = selected();
+  const clickedColumn = columnOfCell(table.model.rows[row], cellIndex);
+  const block = selectedBlock && row >= selectedBlock.r1 && row <= selectedBlock.r2 && clickedColumn >= selectedBlock.c1 && clickedColumn <= selectedBlock.c2 ? selectedBlock : null;
+  const inBlock = !!block;
+  const items: Array<[string, Plan] | "-"> = [
     ["Insert row above", (model, source, from, r) => insertRow(model, source, from, r - 1)],
     ["Insert row below", (model, source, from, r) => insertRow(model, source, from, r)],
     ["Delete row", (model, source, from, r) => deleteRow(model, source, from, r)],
-    ["Insert column left", (model, _source, _from, _r, column) => insertColumn(model, column - 1)],
-    ["Insert column right", (model, _source, _from, _r, column) => insertColumn(model, column)],
-    ["Delete column", (model, _source, _from, _r, column) => deleteColumn(model, column)],
+    ["Move row up", (model, source, from, r) => moveRow(model, source, from, r, -1)],
+    ["Move row down", (model, source, from, r) => moveRow(model, source, from, r, 1)],
+    "-",
+    ["Insert column left", everyRow((model, _source, _from, _r, column) => insertColumn(model, column - 1))],
+    ["Insert column right", everyRow((model, _source, _from, _r, column) => insertColumn(model, column))],
+    ["Delete column", everyRow((model, _source, _from, _r, column) => deleteColumn(model, column))],
+    ["Move column left", everyRow((model, source, from, _r, column) => moveColumn(model, source, from, column, -1))],
+    ["Move column right", everyRow((model, source, from, _r, column) => moveColumn(model, source, from, column, 1))],
+    ["Align column left", (model, _source, _from, _r, column) => setColumnAlignment(model, column, "l")],
+    ["Align column center", (model, _source, _from, _r, column) => setColumnAlignment(model, column, "c")],
+    ["Align column right", (model, _source, _from, _r, column) => setColumnAlignment(model, column, "r")],
+    "-",
+    inBlock && block
+      ? ["Merge selected cells", everyRow((model, source, from) => mergeCells(model, source, from, block.r1, block.r2, block.c1, block.c2))]
+      : ["Merge with cell right", everyRow((model, source, from, r, column, c) => mergeCells(model, source, from, r, r, column, column + (model.rows[r]?.cells[c]?.span ?? 1)))],
+    ["Merge with cell below", everyRow((model, source, from, r, column, c) => mergeCells(model, source, from, r, r + 1, column, column + (model.rows[r]?.cells[c]?.span ?? 1) - 1))],
+    ["Split cell", (model, source, from, r, _column, c) => splitCell(model, source, from, r, c)],
+    "-",
+    ["Add rule above", (model, source, from, r) => addRule(model, source, from, r)],
+    ["Add rule below", (model, source, from, r) => addRule(model, source, from, r, true)],
+    ["Remove rules above", (model, source, from, r) => removeRules(model, source, from, r)],
+    ["Remove rules below", (model, source, from, r) => removeRules(model, source, from, r, true)],
   ];
-  const columnOf = (model: TableModel, r: number, c: number) => {
-    let column = 0;
-    for (let i = 0; i < c; i++) column += model.rows[r]?.cells[i]?.span ?? 1;
-    return column;
-  };
   const planNow = (plan: Plan) => {
     const found = resolveSession(view, session);
     if (!found) return null;
-    return plan(found.table.model, found.table.source, found.table.from, found.row, columnOf(found.table.model, found.row, found.cellIndex));
+    return plan(found.table.model, found.table.source, found.table.from, found.row, columnOfCell(found.table.model.rows[found.row], found.cellIndex), found.cellIndex);
   };
   openMenu?.close();
   const menu = document.createElement("div");
@@ -251,7 +302,15 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
   };
   const outside = (down: MouseEvent) => { if (!menu.contains(down.target as Node)) close(); };
   const buttons: HTMLButtonElement[] = [];
-  for (const [label, plan] of items) {
+  for (const item of items) {
+    if (item === "-") {
+      const separator = document.createElement("div");
+      separator.className = "cm-vis-table-menu-separator";
+      separator.setAttribute("role", "separator");
+      menu.append(separator);
+      continue;
+    }
+    const [label, plan] = item;
     const button = document.createElement("button");
     button.type = "button";
     button.setAttribute("role", "menuitem");
@@ -260,7 +319,7 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
     const planned = planNow(plan);
     if (!planned || !planned.length) {
       button.disabled = true;
-      button.title = "Not possible here (a \\multicolumn spans it, or the column specification repeats)";
+      button.title = "Not possible here (a \\multicolumn or \\multirow is in the way, the column specification repeats, or rows are written through macros)";
     }
     // Pressing keeps the focus where it is; the click (also from Enter or Space) acts.
     button.addEventListener("mousedown", (down) => down.preventDefault());
@@ -287,6 +346,9 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
     else if (key.key === "Tab") { key.preventDefault(); close(); returnFocus?.focus(); }
   });
   document.body.append(menu);
+  // Kept on screen whatever its height.
+  const height = menu.offsetHeight;
+  if (height) menu.style.top = `${Math.max(0, Math.min(event.clientY, window.innerHeight - height - 8))}px`;
   document.addEventListener("mousedown", outside, true);
   openMenu = { view, menu, close };
   buttons.find((button) => !button.disabled)?.focus();
@@ -294,10 +356,62 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
 
 let openMenu: { view: EditorView; menu: HTMLElement; close: () => void } | null = null;
 
+/** Whether some row of the table is written through the document's macros (`\row{a}{b}`): its cells are in the macro. */
+function hasMacroRows(view: EditorView, model: TableModel, source: string, from: number) {
+  const names = rowMacroNames(visualDefinitions(view.state));
+  if (!names.size) return false;
+  return model.rows.some((row) => [...source.slice(row.from - from, row.to - from).matchAll(/\\([A-Za-z@]+)/g)].some((use) => names.has(use[1])));
+}
+
+/** Cells selected for merging: the cell opened last (`anchor`) to the cell Shift-clicked (`focus`), by row and column. */
+let cellSelection: { view: EditorView; start: number; anchor: { row: number; column: number }; focus: { row: number; column: number } | null } | null = null;
+
+/** Marks the selected cells in the grid (and unmarks the others). */
+function paintSelection(view: EditorView) {
+  for (const marked of view.contentDOM.querySelectorAll(".cm-vis-table-selected")) marked.classList.remove("cm-vis-table-selected");
+  const selection = cellSelection;
+  if (!selection || selection.view !== view || !selection.focus) return;
+  const table = tableAt(view, selection.start);
+  if (!table) return;
+  const r1 = Math.min(selection.anchor.row, selection.focus.row);
+  const r2 = Math.max(selection.anchor.row, selection.focus.row);
+  const c1 = Math.min(selection.anchor.column, selection.focus.column);
+  const c2 = Math.max(selection.anchor.column, selection.focus.column);
+  for (const grid of view.contentDOM.querySelectorAll<TableElement>(".cm-vis-table")) {
+    if (grid.liberaTableStart?.() !== selection.start) continue;
+    for (const td of grid.querySelectorAll<HTMLElement>(".cm-vis-table-cell[data-row]")) {
+      const r = Number(td.dataset.row);
+      const row = table.model.rows[r];
+      const c = Number(td.dataset.cell);
+      if (!row?.cells[c] || r < r1 || r > r2) continue;
+      const column = columnOfCell(row, c);
+      if (column <= c2 && column + row.cells[c].span - 1 >= c1) td.classList.add("cm-vis-table-selected");
+    }
+  }
+}
+
+/** Shift-click on a cell: the selection runs from the cell opened last to it (a new one starts at it). */
+function selectCell(view: EditorView, _td: HTMLElement, tableStart: () => number | null, row: number, cellIndex: number) {
+  const start = tableStart();
+  if (start === null) return;
+  const table = tableAt(view, start);
+  const cells = table?.model.rows[row];
+  if (!table || !cells?.cells[cellIndex]) return;
+  const at = { row, column: columnOfCell(cells, cellIndex) };
+  if (cellSelection?.view === view && cellSelection.start === start) cellSelection.focus = at;
+  else cellSelection = { view, start, anchor: at, focus: at };
+  paintSelection(view);
+}
+
 /** Installs the table editor; the widgets call it through hooks. */
 export function installTableEditor(): Extension {
-  setTableHooks({ edit: editCell, menu: tableMenu, adopt: adoptCellSessions });
+  setTableHooks({ edit: editCell, menu: tableMenu, adopt: adoptCellSessions, select: selectCell });
   return [sessionTracker];
+}
+
+/** Opens the table menu for a cell (exported for tests, which have no right-click). */
+export function openTableMenu(view: EditorView, event: MouseEvent, tableStart: () => number | null, row: number, cellIndex: number) {
+  tableMenu(view, event, tableStart, row, cellIndex);
 }
 
 /** Renders a cell's LaTeX (exported for tests). */
