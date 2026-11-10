@@ -119,11 +119,12 @@ test("wrong and unsupported definitions are listed, and comments between argumen
 \newcommand{\nobody}
 \def\delimited#1.{#1}
 \edef\expanded{x}
-\NewDocumentCommand{\fancy}{r<>}{#1}
+\NewDocumentCommand{\fancy}{v}{#1}
 \renewenvironment{abstract}%
   {\begin{center}}%
   {\end{center}}`);
   assert.deepEqual(defs.problems.map((problem) => problem.message), ["\\bad uses #2 but takes 1 argument", "\\nobody has no {…} body"]);
+  // xparse `r<>` is read now (macros round), so a still-unread verbatim `v` argument stands for the unsupported spec.
   assert.deepEqual(defs.unsupported.map((note) => note.name), ["delimited", "expanded", "fancy"]);
   assert.equal(defs.environments.get("abstract")?.begin, "\\begin{center}");
 });
