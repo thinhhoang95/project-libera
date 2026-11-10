@@ -456,7 +456,8 @@ test("a chapter's counters continue from where the main file includes it", async
     "nb/chapters/model.tex": String.raw`\subsection{Attention}\begin{equation}y\end{equation}`,
   };
   const start = await chapterNumberingStart("nb/chapters/model.tex", "nb/main.tex", async (path) => files[path] ?? "");
-  assert.deepEqual(start, { counters: { section: 2, subsection: 0, subsubsection: 0, paragraph: 0, subparagraph: 0, equation: 1 }, appendix: false });
+  assert.deepEqual(start?.counters, { section: 2, subsection: 0, subsubsection: 0, paragraph: 0, subparagraph: 0, equation: 1 });
+  assert.equal(start?.appendix, false);
   const numbering = number(files["nb/chapters/model.tex"], { start });
   assert.deepEqual(numbering.entries.map((entry) => `${entry.kind}:${entry.number}`), ["section:2.1", "equation:2"]);
   assert.equal(await chapterNumberingStart("nb/other.tex", "nb/main.tex", async (path) => files[path] ?? ""), null);
@@ -475,7 +476,8 @@ test("a main file's numbers count the chapters it includes", () => {
     includes: (name) => (name === "chapters/background" ? { tree, read: (from, to) => chapter.slice(from, to) } : null),
   });
   assert.equal(numbering.labels.get("sec:method")?.number, "3");
-  assert.equal(numbering.labels.get("eq:in"), undefined, "labels in the included file are its own (the .aux has them)");
+  // A label in the included file keeps its number, without a position in this file (the .aux, when there is one, wins).
+  assert.deepEqual(numbering.labels.get("eq:in"), { number: "1", kind: "equation", pos: -1 });
   assert.deepEqual(numbering.entries.map((entry) => entry.number), ["1", "3"]);
 });
 

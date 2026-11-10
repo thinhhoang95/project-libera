@@ -89,12 +89,15 @@ export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLo
   return `[${note(body)}]`;
 }
 
-/** Labels with their numbers: the numbering pass first, then the compiled `.aux` for labels in other files. */
+/**
+ * Labels with their numbers: the numbering pass for labels in this file; for labels in other files, the compiled
+ * `.aux` when there is one, else the numbers the numbering pass read from the other files (position -1).
+ */
 export function labelTarget(key: string, numbering: LatexNumbering, aux: LatexAuxData): LabelTarget | null {
   const local = numbering.labels.get(key);
-  if (local) return local;
+  if (local && local.pos >= 0) return local;
   const compiled = aux.labels[key];
-  if (!compiled) return null;
+  if (!compiled) return local ?? null;
   const kind = /^(?:eq|equation)[:.-]/i.test(key) ? "equation" : /^(?:fig|figure)[:.-]/i.test(key) ? "figure" : /^(?:tab|table)[:.-]/i.test(key) ? "table" : "section";
   return { number: compiled.number, kind, pos: -1, title: compiled.title };
 }

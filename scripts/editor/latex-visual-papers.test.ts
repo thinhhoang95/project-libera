@@ -19,9 +19,10 @@ import { readCompiledBibliography } from "../../src/lib/latex/project";
 import { citationText } from "../../src/lib/latex/codemirror/visual/references";
 import { EMPTY_AUX } from "../../src/lib/latex/aux-file";
 import { computeLatexNumbering, numberingEntryAt } from "../../src/lib/latex/macros/numbering";
+import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
-for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
+for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
 for (const key of ["getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const) Object.defineProperty(globalThis, key, { value: (dom.window[key] as (...args: never[]) => unknown).bind(dom.window), configurable: true });
 after(() => dom.window.close());
 
@@ -413,6 +414,31 @@ a topic studied by economists. \index{Arrow's Theorem@Arrow's Theorem!proof}
   assert.doesNotMatch(text, /\\index/);
   assert.match(text, /social choice/);
   assert.match(text, /Arrow's Theorem › proof/);
+});
+
+test("a chapter's references to another chapter resolve without a compile; the .aux, when there is one, wins (max-flow paper)", async () => {
+  const files: Record<string, string> = {
+    "nb/main.tex": String.raw`\documentclass{article}
+\begin{document}
+\input{intro}
+\input{spanner}
+\input{jtree}
+\end{document}`,
+    "nb/intro.tex": String.raw`\section{Introduction}\label{sec:intro}`,
+    "nb/spanner.tex": String.raw`\section{Spanners}\label{sec:spanner}\newtheorem{theorem}{Theorem}\begin{theorem}\label{thm:spanner}A spanner.\end{theorem}`,
+    "nb/jtree.tex": String.raw`\section{Data Structure Chain}\label{sec:jtree} By Section~\ref{sec:spanner} and \ref{sec:intro}.`,
+  };
+  const start = await chapterNumberingStart("nb/jtree.tex", "nb/main.tex", async (path) => files[path] ?? "");
+  const numbering = number(files["nb/jtree.tex"], { start });
+  assert.equal(numbering.labels.get("sec:jtree")?.number, "3");
+  assert.ok(numbering.labels.get("sec:jtree")!.pos >= 0);
+  assert.deepEqual(numbering.labels.get("sec:spanner"), { number: "2", kind: "section", pos: -1, title: "Spanners" });
+  assert.equal(numbering.labels.get("sec:intro")?.number, "1");
+  const { labelTarget } = await import("../../src/lib/latex/codemirror/visual/references");
+  assert.equal(labelTarget("sec:spanner", numbering, EMPTY_AUX)?.number, "2");
+  assert.equal(labelTarget("sec:spanner", numbering, { labels: { "sec:spanner": { number: "5", page: "9" } }, citations: {} })?.number, "5");
+  // A label of this file stays this file's.
+  assert.equal(labelTarget("sec:jtree", numbering, { labels: { "sec:jtree": { number: "7", page: "1" } }, citations: {} })?.number, "3");
 });
 
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {

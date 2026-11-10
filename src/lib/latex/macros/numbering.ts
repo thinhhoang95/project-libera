@@ -202,6 +202,8 @@ export type NumberingStart = {
   /** Counter values where the file is included (a chapter of a main file). */
   counters: Record<string, number>;
   appendix: boolean;
+  /** The numbers of the labels in the whole document (other chapters' too), without positions: references to them resolve. */
+  labels?: Array<[string, LabelTarget]>;
 };
 
 /** A file the document `\input`s or `\include`s, parsed: its counters advance the document's. */
@@ -321,7 +323,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   };
 
   const entries: NumberingEntry[] = [];
-  const labels = new Map<string, LabelTarget>();
+  // Labels of the other files of the document (a chapter's references to another), overridden by this file's own.
+  const labels = new Map<string, LabelTarget>((options.start?.labels ?? []).map(([key, target]) => [key, { ...target, pos: -1 }]));
   // The label target: sections set it globally; environments push a scope.
   let globalTarget: LabelTarget | null = null;
   const scopes: Array<{ node: number; target: LabelTarget | null }> = [];
@@ -375,8 +378,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       includeDepth--;
       included.delete(name);
       entries.length = entryCount;
-      labels.clear();
-      for (const [key, target] of savedLabels) labels.set(key, target);
+      // Its labels keep their numbers (a reference to an included chapter's section resolves), without a position here.
+      for (const [key, target] of labels) if (savedLabels.get(key) !== target) labels.set(key, { ...target, pos: -1 });
       // A label right after the include refers to the last number in it, which is not in this file.
       if (globalTarget) globalTarget = { ...globalTarget, pos: -1 };
     }
