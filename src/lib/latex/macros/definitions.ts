@@ -186,7 +186,8 @@ class TexScanner {
     let index = this.frames.length - 1;
     if (kind) while (index >= 0 && this.frames[index].kind !== kind) index--;
     if (index < 0) return;
-    for (const frame of this.frames.splice(index)) if (!frame.keep) for (const macro of frame.locals) macro.end ??= at;
+    // A local definition of another file (a `\renewcommand` in a table of the main file's body) ends there, before the open file.
+    for (const frame of this.frames.splice(index)) if (!frame.keep) for (const macro of frame.locals) macro.end ??= macro.file !== undefined ? -1 : at;
   }
 
   /** Whether `\name` opens a conditional that a `\fi` closes; etoolbox's and biblatex's `\ifbool{…}{…}{…}` are macros. */
@@ -783,7 +784,12 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     } else if (command === "documentclass") {
       const options = readOptionalAt(source, index);
       const name = readGroupAt(source, options?.end ?? index);
-      if (name) { end = name.end; defs.documentClass = name.content.trim(); }
+      if (name) {
+        end = name.end;
+        // A subfiles chapter (`\documentclass[../main.tex]{subfiles}`) is typeset with its main file's class, read before it.
+        if (name.content.trim() !== "subfiles") defs.documentClass = name.content.trim();
+        addClassTheorems(defs, name.content.trim(), options?.content ?? "");
+      }
     } else if (command === "usepackage" || command === "RequirePackage") {
       const packageOptions = readOptionalAt(source, index);
       const names = readGroupAt(source, packageOptions?.end ?? index);
@@ -972,14 +978,110 @@ export function definitionCounts(defs: LatexDefinitions) {
   return { macros: defs.macros.size, environments: defs.environments.size, theorems: defs.theorems.size, packages: new Set(defs.packages).size };
 }
 
-/** `\input`, `\include` and `\subfile` targets in a source (comments skipped), in order, with positions. */
+/** An included file as written: `path` is the name the numbering and the loaders key it by (`dir` + `file` for the import package's commands). */
+export type LatexInput = { pos: number; end: number; command: string; path: string; dir?: string; file?: string };
+
+/**
+ * `\input`, `\include` and `\subfile` targets in a source (comments skipped), in order, with positions; and the import
+ * package's `\import{dir/}{file}`, `\subimport{dir/}{file}`, `\inputfrom`, `\includefrom` and their `sub` forms.
+ */
 export function readLatexInputs(source: string) {
-  const inputs: Array<{ pos: number; command: string; path: string }> = [];
-  for (const match of source.matchAll(/\\(input|include|subfile)\s*\{([^}]+)\}/g)) {
+  const inputs: LatexInput[] = [];
+  for (const match of source.matchAll(/\\(input|include|subfile)\s*\{([^}]+)\}|\\((?:sub)?(?:import|inputfrom|includefrom))\*?\s*\{([^{}]*)\}\s*\{([^{}]+)\}/g)) {
     if (inComment(source, match.index ?? 0)) continue;
-    inputs.push({ pos: match.index ?? 0, command: match[1], path: match[2].trim() });
+    const pos = match.index ?? 0;
+    if (match[1]) { inputs.push({ pos, end: pos + match[0].length, command: match[1], path: match[2].trim() }); continue; }
+    const dir = match[4].trim().replace(/^(?:\.\/)+/, "").replace(/^\.$/, "").replace(/([^/])$/, "$1/");
+    inputs.push({ pos, end: pos + match[0].length, command: match[3], path: `${dir}${match[5].trim()}`, dir, file: match[5].trim() });
   }
   return inputs;
 }
 
 export { inComment as isInLatexComment };
+
+/** Classes whose theorems are known here, with their options (their `.cls` is rarely in the project, and reads only through its conditionals). */
+const KNOWN_THEOREM_CLASSES = /^(?:llncs|(?:lipics|oasics)(?:-v\d+)?|acmart)$/;
+
+/**
+ * The theorems a well-known class defines, for the names the document has not defined (the document's own
+ * `\newtheorem` replaces them, as acmart lets it). LIPIcs and acmart theorems share the theorem counter; llncs's have
+ * their own unless `envcountsame`, and are numbered in sections with `envcountsect`.
+ */
+function addClassTheorems(defs: LatexDefinitions, cls: string, optionText: string) {
+  if (!KNOWN_THEOREM_CLASSES.test(cls)) return;
+  const options = optionText.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim());
+  /** `counter`: the counter it steps (its own name by default), or null when it is not numbered. */
+  const add = (name: string, title: string, style: TheoremStyle, counter: string | null = name, within?: string) => {
+    if (defs.theorems.has(name)) return;
+    defs.theorems.set(name, { name, title, counter: counter ?? name, ...(within ? { within } : {}), numbered: counter !== null, style });
+  };
+  if (cls === "llncs") {
+    const same = options.includes("envcountsame");
+    const sect = options.includes("envcountsect");
+    const reset = options.includes("envcountreset");
+    add("theorem", "Theorem", "plain", "theorem", sect ? "section" : undefined);
+    if (reset && !sect && !defs.counterWithin.has("theorem")) defs.counterWithin.set("theorem", "section");
+    add("claim", "Claim", "remark", null);
+    const plain = new Set(["corollary", "definition", "lemma", "proposition"]);
+    for (const name of ["case", "conjecture", "corollary", "definition", "example", "exercise", "lemma", "note", "problem", "property", "proposition", "question", "solution", "remark"]) {
+      const fresh = !defs.theorems.has(name);
+      add(name, name[0].toUpperCase() + name.slice(1), plain.has(name) ? "plain" : "remark", same ? "theorem" : name, !same && sect ? "section" : undefined);
+      if (fresh && !same && !sect && reset && !defs.counterWithin.has(name)) defs.counterWithin.set(name, "section");
+    }
+  } else if (cls === "acmart") {
+    if (options.some((option) => /^acmthm\s*=\s*false$/.test(option))) return;
+    add("theorem", "Theorem", "plain", "theorem", "section");
+    for (const name of ["conjecture", "proposition", "lemma", "corollary"]) add(name, name[0].toUpperCase() + name.slice(1), "plain", "theorem");
+    for (const name of ["example", "definition"]) add(name, name[0].toUpperCase() + name.slice(1), "definition", "theorem");
+  } else {
+    // LIPIcs and OASIcs.
+    add("theorem", "Theorem", "plain", "theorem", options.includes("numberwithinsect") ? "section" : undefined);
+    for (const name of ["lemma", "corollary", "proposition", "exercise", "definition", "conjecture", "observation"]) add(name, name[0].toUpperCase() + name.slice(1), "plain", "theorem");
+    add("example", "Example", "definition", "theorem");
+    for (const name of ["note", "remark", "claim"]) {
+      add(name, name[0].toUpperCase() + name.slice(1), name === "claim" ? "definition" : "remark", "theorem");
+      add(`${name}*`, name[0].toUpperCase() + name.slice(1), name === "claim" ? "definition" : "remark", null);
+    }
+  }
+}
+
+/**
+ * The theorem definitions of a document class the project has (the book 2403.14606's nowfnt.cls), as source the
+ * definition reader reads: its `\theoremstyle`s and `\newtheorem`s, and llncs-style `\spnewtheorem`s written as those,
+ * without the rest of the class (its page macros are not the document's). Both branches of the class's conditionals are
+ * read, the later winning. Empty for the classes known above and for a class that defines none.
+ */
+export function classTheoremSource(cls: string, text: string) {
+  if (KNOWN_THEOREM_CLASSES.test(cls)) return "";
+  const out: string[] = [];
+  for (const match of text.matchAll(/\\(newtheorem|theoremstyle|spnewtheorem|spn@wtheorem)(?![A-Za-z@])(\*?)/g)) {
+    const at = match.index ?? 0;
+    if (inComment(text, at)) continue;
+    let index = at + match[0].length;
+    if (match[1] === "theoremstyle") {
+      const style = readGroupAt(text, index);
+      if (style) out.push(`\\theoremstyle{${style.content.trim()}}`);
+      continue;
+    }
+    const name = readGroupAt(text, index);
+    if (!name || /[#\\]/.test(name.content) || name.content.trim() === "proof") continue;
+    index = name.end;
+    const shared = match[2] ? null : readOptionalAt(text, index);
+    if (shared) index = shared.end;
+    const title = readGroupAt(text, index);
+    if (!title) continue;
+    index = title.end;
+    const within = shared || match[2] ? null : readOptionalAt(text, index);
+    if (within) index = within.end;
+    const star = match[2];
+    const head = `\\newtheorem${star}{${name.content.trim()}}${shared ? `[${shared.content.trim()}]` : ""}{${title.content.trim()}}${within ? `[${within.content.trim()}]` : ""}`;
+    if (match[1] === "newtheorem") { out.push(head); continue; }
+    // `\spnewtheorem{name}…{caption font}{body font}`: an italic body is the plain style, an upright one under a bold caption the definition style.
+    const captionFont = readGroupAt(text, index);
+    const bodyFont = captionFont && readGroupAt(text, captionFont.end);
+    if (!captionFont || !bodyFont) continue;
+    const style = /\\(?:itshape|it|slshape|sl)(?![A-Za-z])/.test(bodyFont.content) ? "plain" : /\\(?:bfseries|bf)(?![A-Za-z])/.test(captionFont.content) ? "definition" : "remark";
+    out.push(`\\theoremstyle{${style}}${head}`);
+  }
+  return out.join("\n");
+}

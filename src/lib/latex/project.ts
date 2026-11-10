@@ -74,6 +74,16 @@ export function resolveRelativeNotebookPath(fromPath: string, reference: string)
   return parts.join("/");
 }
 
+/** The main file a subfiles chapter names in `\documentclass[../main.tex]{subfiles}`, from the chapter's folder; null for any other file. */
+export function subfilesRootPath(filePath: string, source: string, knownPaths?: ReadonlySet<string>) {
+  const match = /\\documentclass\s*\[([^\]]*)\]\s*\{\s*subfiles\s*\}/.exec(stripLatexComments(source.slice(0, 60_000)));
+  const name = match?.[1].trim();
+  if (!name) return null;
+  const resolved = resolveRelativeNotebookPath(filePath, /\.tex$/i.test(name) ? name : `${name}.tex`);
+  if (!resolved || resolved === filePath || (knownPaths && !knownPaths.has(resolved))) return null;
+  return resolved;
+}
+
 /** The main file to typeset when editing `filePath`, honoring `% !TEX root`. */
 export function resolveLatexRootPath(filePath: string, source: string, knownPaths?: ReadonlySet<string>) {
   const root = readLatexMagicComments(source).root;

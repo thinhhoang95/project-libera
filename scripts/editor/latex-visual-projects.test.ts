@@ -11,8 +11,9 @@ import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-langu
 import { latexParser as parser } from "../../src/lib/latex/codemirror/latex-parser";
 import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
-import { collectLatexDefinitions, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
+import { collectLatexDefinitions, macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 import { computeLatexNumbering, type NumberingStart } from "../../src/lib/latex/macros/numbering";
+import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -101,6 +102,126 @@ test("an environment whose code does more than open a theorem in a frame is not 
   assert.equal(numbering.labels.get("a"), undefined);
   assert.equal(numbering.labels.get("b"), undefined);
   assert.doesNotMatch(visibleText(doc), /Definition 1/);
+});
+
+/** A project's files by notebook path, read as the workspace reads them. */
+function project(files: Record<string, string>) {
+  return { known: new Set(Object.keys(files)), readText: async (path: string) => files[path] ?? "" };
+}
+
+/** What the workspace gives a chapter: its macro sources and where its numbering starts (latex-workspace.tsx). */
+async function chapterData(files: Record<string, string>, filePath: string, rootPath = "nb/main.tex") {
+  const { collectMacroSources } = await import("../../src/components/libera/latex/latex-dependencies");
+  const { known, readText } = project(files);
+  const own = files[filePath];
+  const { sources } = await collectMacroSources({ filePath, rootPath, ownPreamble: own.slice(0, Math.max(0, own.search(/\\begin\s*\{document\}/))), known, readText, version: () => "1" });
+  const macroSources = sources.map((source) => ({ ...source, version: "1" }));
+  const rootSource = sources.find((source) => source.path === rootPath);
+  const base = rootSource ? collectLatexDefinitions(sources.map((source) => {
+    const body = source === rootSource ? source.text.search(/\\begin\s*\{document\}/) : -1;
+    return body >= 0 ? { ...source, text: source.text.slice(0, body) } : source;
+  })) : undefined;
+  const start = await chapterNumberingStart(filePath, rootPath, readText, base);
+  return { sources: macroSources, start };
+}
+
+test("a chapter knows the macros its main file defines in its body before including it (2304.03442, B5-11)", async () => {
+  const files = {
+    "nb/main.tex": String.raw`\documentclass{article}
+\newcommand{\pre}{P}
+\begin{document}
+\newcommand{\gentxt}[1]{\textbf{#1}}
+{\newcommand{\scoped}{S}}
+\begin{table}\renewcommand{\arraystretch}{2}\end{table}
+\input{sections/intro}
+\newcommand{\later}{L}
+\input{sections/method}
+\end{document}`,
+    "nb/sections/intro.tex": String.raw`\section{Intro}\newcommand{\fromintro}{I}`,
+    "nb/sections/method.tex": String.raw`\section{Method}
+Text $\pre$ \gentxt{agent} and \fromintro{} but \later{} and \scoped{}.`,
+  };
+  const { sources } = await chapterData(files, "nb/sections/method.tex");
+  const state = visualState(files["nb/sections/method.tex"], [], sources);
+  const defs = visualDefinitions(state);
+  for (const name of ["pre", "gentxt", "fromintro", "later"]) assert.ok(macroAt(defs, name, 30), name);
+  // A definition local to a group of the main file's body ended there.
+  assert.equal(macroAt(defs, "scoped", 30), null);
+  assert.equal(macroAt(defs, "arraystretch", 30), null);
+  const text = visibleText(files["nb/sections/method.tex"], sources);
+  assert.match(text, /P agent and I(?:\{\})? but L(?:\{\})? and \\scoped/);
+  // The intro, included before \later is defined, does not see it.
+  const intro = await chapterData(files, "nb/sections/intro.tex");
+  const introDefs = visualDefinitions(visualState(files["nb/sections/intro.tex"], [], intro.sources));
+  assert.equal(macroAt(introDefs, "later", 5), null);
+  assert.ok(macroAt(introDefs, "gentxt", 5));
+});
+
+test("a chapter is numbered with the formats and counters its main file sets in its body before including it (B4-03)", async () => {
+  const files = {
+    "nb/main.tex": String.raw`\documentclass{article}
+\begin{document}
+\section{Main}
+\begin{table}\caption{Main}\label{tab:main}\end{table}
+\input{results}
+\appendix
+\renewcommand{\thetable}{A\arabic{table}}
+\setcounter{table}{0}
+\renewcommand{\thesection}{S\arabic{section}}
+\input{appendix}
+\end{document}`,
+    "nb/results.tex": String.raw`\section{Results}\begin{table}\caption{R}\label{tab:r}\end{table}`,
+    "nb/appendix.tex": String.raw`\section{Proofs}\label{sec:proofs}
+\begin{table}\caption{Extra}\label{tab:extra}\end{table}`,
+  };
+  const { sources, start } = await chapterData(files, "nb/appendix.tex");
+  assert.equal(start?.counters.table, 0);
+  assert.equal(start?.appendix, true);
+  // The tables before the appendix keep their numbers, in this chapter's references too.
+  assert.equal(start?.labels?.find(([key]) => key === "tab:r")?.[1].number, "2");
+  const state = visualState(files["nb/appendix.tex"], [], sources, start);
+  const numbering = computeLatexNumbering(syntaxTree(state), (from, to) => state.doc.sliceString(from, to), visualDefinitions(state), { start });
+  assert.equal(numbering.labels.get("tab:extra")?.number, "A1");
+  assert.equal(numbering.labels.get("sec:proofs")?.number, "S1");
+  // Without the main file's body, the appendix's format and the letters would be used instead.
+  const results = await chapterData(files, "nb/results.tex");
+  const resultsState = visualState(files["nb/results.tex"], [], results.sources, results.start);
+  const resultsNumbering = computeLatexNumbering(syntaxTree(resultsState), (from, to) => resultsState.doc.sliceString(from, to), visualDefinitions(resultsState), { start: results.start });
+  assert.equal(resultsNumbering.labels.get("tab:r")?.number, "2");
+});
+
+test("a section format made before \\appendix gives way to its letters in a chapter included after it", async () => {
+  const files = {
+    "nb/main.tex": String.raw`\documentclass{article}
+\begin{document}
+\renewcommand{\thesection}{\Roman{section}}
+\section{One}
+\appendix
+\input{appendix}
+\end{document}`,
+    "nb/appendix.tex": String.raw`\section{Proofs}\label{sec:proofs}`,
+  };
+  const { sources, start } = await chapterData(files, "nb/appendix.tex");
+  const state = visualState(files["nb/appendix.tex"], [], sources, start);
+  const numbering = computeLatexNumbering(syntaxTree(state), (from, to) => state.doc.sliceString(from, to), visualDefinitions(state), { start });
+  assert.equal(numbering.labels.get("sec:proofs")?.number, "A");
+});
+
+test("a chapter included through another file gets that file's definitions up to its include", async () => {
+  const files = {
+    "nb/main.tex": String.raw`\documentclass{book}
+\begin{document}
+\include{toc}
+\end{document}`,
+    "nb/toc.tex": String.raw`\newcommand{\early}{E}
+\input{chapters/one}
+\newcommand{\late}{L}`,
+    "nb/chapters/one.tex": String.raw`\chapter{One} \early \late`,
+  };
+  const { sources } = await chapterData(files, "nb/chapters/one.tex");
+  const defs = visualDefinitions(visualState(files["nb/chapters/one.tex"], [], sources));
+  assert.ok(macroAt(defs, "early", 5));
+  assert.equal(macroAt(defs, "late", 5), null);
 });
 
 void collectLatexDefinitions;

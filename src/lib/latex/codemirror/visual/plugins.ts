@@ -23,11 +23,12 @@ const includedTrees = new Map<string, IncludedFile>();
 function includedFile(text: string | undefined): IncludedFile | null {
   if (text === undefined) return null;
   let file = includedTrees.get(text);
-  if (!file) {
-    file = { tree: latexParser.parse(text), read: (from, to) => text.slice(from, to) };
-    includedTrees.set(text, file);
-    if (includedTrees.size > 40) includedTrees.delete(includedTrees.keys().next().value!);
-  }
+  // The least recently used goes first: an unchanged chapter keeps its tree (and its numbering, numbering.ts) while another is edited.
+  if (file) includedTrees.delete(text);
+  else file = { tree: latexParser.parse(text), read: (from, to) => text.slice(from, to) };
+  includedTrees.set(text, file);
+  // As many as a body's includes are followed (latex-dependencies.ts): a project's files stay parsed between pauses.
+  if (includedTrees.size > 400) includedTrees.delete(includedTrees.keys().next().value!);
   return file;
 }
 

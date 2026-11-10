@@ -202,7 +202,8 @@ function touchesDefinitions(tr: Transaction, defs: LatexDefinitions) {
 /** Whether definitions have anything with a position in the open file, which edits before it move. */
 function hasPositions(defs: LatexDefinitions) {
   if (defs.extents.length || defs.problems.some((note) => note.file === undefined) || defs.unsupported.some((note) => note.file === undefined)) return true;
-  for (const list of defs.macros.values()) for (const macro of list) if (macro.pos >= 0 || macro.end !== undefined) return true;
+  // A local definition of another file ended there (end -1): it has no position here.
+  for (const list of defs.macros.values()) for (const macro of list) if (macro.pos >= 0 || (macro.end !== undefined && macro.end >= 0)) return true;
   return false;
 }
 
