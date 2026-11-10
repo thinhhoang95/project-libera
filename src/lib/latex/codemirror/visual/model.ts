@@ -1,6 +1,6 @@
 import { Facet, StateEffect, StateField, type EditorState, type Text, type Transaction } from "@codemirror/state";
 import { EMPTY_AUX, type LatexAuxData } from "../../aux-file";
-import { bodyStartOf, collectLatexDefinitions, definitionsFingerprint, emptyLatexDefinitions, mapLatexDefinitions, type DefinitionSource, type LatexDefinitions } from "../../macros/definitions";
+import { bodyStartOf, collectLatexDefinitions, conditionalFactsKey, definitionsFingerprint, emptyLatexDefinitions, mapLatexDefinitions, type DefinitionSource, type LatexDefinitions } from "../../macros/definitions";
 import { EMPTY_NUMBERING, type LatexNumbering, type NumberingStart } from "../../macros/numbering";
 import { disabledRegions, discardingMacros } from "../../macros/structure";
 
@@ -95,7 +95,7 @@ function touchesConditionals(tr: Transaction) {
   tr.changes.iterChanges((fromA, toA, fromB, toB) => {
     if (touched) return;
     const near = (doc: Text, from: number, to: number) => doc.sliceString(Math.max(0, from - 12), Math.min(doc.length, to + 12));
-    if (/\\(?:if|fi|else)/.test(near(tr.startState.doc, fromA, toA)) || /\\(?:if|fi|else)/.test(near(tr.state.doc, fromB, toB))) touched = true;
+    if (/\\(?:if|fi|else|unless|repeat)/.test(near(tr.startState.doc, fromA, toA)) || /\\(?:if|fi|else|unless|repeat)/.test(near(tr.state.doc, fromB, toB))) touched = true;
   });
   return touched;
 }
@@ -111,15 +111,15 @@ function touchesGroups(tr: Transaction) {
   return touched;
 }
 
-/** The document's macros that discard their arguments, by name: a change to them changes what is left out. */
-const discardingKey = (state: EditorState) => [...discardingMacros(visualDefinitions(state)).keys()].join(",");
+/** The document's macros that discard their arguments, and what decides its conditionals (`\def\llncs{0}`): a change to them changes what is left out. */
+const discardingKey = (state: EditorState) => `${[...discardingMacros(visualDefinitions(state)).keys()].join(",")}\u0000${conditionalFactsKey(visualDefinitions(state))}`;
 
 /** What `\iffalse … \fi` and uses of macros that discard their arguments leave out (structure.ts `disabledRegions`): kept in step with edits. */
 export const disabledField = StateField.define<Array<{ from: number; to: number }>>({
-  create: (state) => disabledRegions(state.doc.toString(), discardingMacros(visualDefinitions(state))),
+  create: (state) => disabledRegions(state.doc.toString(), discardingMacros(visualDefinitions(state)), visualDefinitions(state)),
   update(value, tr) {
     const discarding = discardingMacros(visualDefinitions(tr.state));
-    const recompute = () => disabledRegions(tr.state.doc.toString(), discarding);
+    const recompute = () => disabledRegions(tr.state.doc.toString(), discarding, visualDefinitions(tr.state));
     if (discardingKey(tr.startState) !== discardingKey(tr.state)) return recompute();
     if (!tr.docChanged) return value;
     if (touchesConditionals(tr) || (discarding.size && touchesGroups(tr))) return recompute();
@@ -169,7 +169,7 @@ export function noteBodyStart(tr: Transaction) {
 }
 
 /** Commands that define something, or that change which definitions TeX runs (conditionals, groups, verbatim). */
-const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|def|gdef|edef|xdef|let|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage|input|graphicspath|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
+const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|declare|def|gdef|edef|xdef|let|mathchardef|setboolean|loop|repeat|unless|ProcessOptions|[A-Za-z@]+(?:true|false)(?![A-Za-z@])|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage|input|graphicspath|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
 
 function computeDefinitions(state: EditorState, sources: readonly MacroSource[]): LatexDefinitions {
   return collectLatexDefinitions(sources, { text: state.doc.toString(), bodyStart: bodyStartIn(state.doc) });

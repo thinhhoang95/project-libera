@@ -1,4 +1,5 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
+import { decideConditional, type ConditionalFacts } from "./conditionals";
 
 /* The document's own definitions, read the way TeX would read them, for the
  * Visual mode (docs/latex-visual-editor-plan.md §7). Only forms whose meaning
@@ -62,6 +63,9 @@ export type LatexTheoremDefinition = {
 
 export type LatexDefinitionNote = { pos: number; file?: string; name: string; message: string };
 
+/** A `\newif` switch set at `pos` (as a macro's), until `end` when set in a group. */
+export type LatexSwitchSetting = { pos: number; value: boolean | null; end?: number };
+
 /** `paragraph`: a column whose cells wrap, as `p{…}` and tabularx's `X` do; the others are one line. */
 export type LatexColumnType = { arity: number; align: "left" | "center" | "right"; paragraph?: boolean; math?: boolean };
 
@@ -102,6 +106,13 @@ export type LatexDefinitions = {
   /** enumitem's `\setlist[exercises,1]{label=…}`: the options of a list's level, by `name:level`. */
   listOptions?: Map<string, string>;
   /**
+   * `\newif\ifdraft` switches (and ifthen's booleans) by conditional name, each setting in reading order: `\newif` makes
+   * one false, `\drafttrue` sets it. null where it is set under a condition the reader cannot evaluate.
+   */
+  switches?: Map<string, LatexSwitchSetting[]>;
+  /** `\documentclass[options]{…}`'s options. */
+  classOptions?: string[];
+  /**
    * Where the open file's definitions are (absolute ranges, in order), so edits inside one re-read them.
    * `broken`: a definition without its body, which runs to the end so any later edit may complete it; it is
    * no body to skip (what follows it is still the document).
@@ -122,13 +133,14 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|loop|DeclareOption|ProcessOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
 
 /** `keep`: a group whose definitions TeX runs at the top level later (`\AtBeginDocument{…}`), so they do not end with it. */
-type Frame = { kind: "brace" | "group" | "env"; locals: LatexMacro[]; keep?: boolean };
+/** `uncertain`: code TeX may or may not run (a package option's, when how the package is loaded is not known). */
+type Frame = { kind: "brace" | "group" | "env"; locals: Array<{ end?: number }>; keep?: boolean; uncertain?: boolean };
 type Branch = "run" | "skip" | "unknown";
 
 /** TeX's own conditionals (and engine tests): each is closed by a `\fi`. */
@@ -156,11 +168,19 @@ class TexScanner {
   private newifs = new Set<string>();
   /** Where the next `{` opens a group run later at the top level (`\AtBeginDocument{`). */
   private deferredBrace = -1;
+  /** Where a `\unless` ends, which turns the next conditional around; -1 when none. */
+  private unless = -1;
+  /** Whether the group at `deferredBrace` is run only maybe (see `Frame`). */
+  private deferredUncertain = false;
+  /** What decides a conditional here (the definitions read so far): `\ifnum\llncs=0` with `\def\llncs{0}`. None: every test is unknown. */
+  facts?: ConditionalFacts;
+  /** Called where the source sets a `\newif` switch (`\newif\ifdraft`, `\drafttrue`); null under a condition not evaluated. */
+  onSwitch?: (name: string, value: boolean | null, at: number) => void;
   private static SPECIAL = /[\\{}%]/g;
   constructor(readonly source: string) {}
 
   branch(): Branch {
-    let unknown = false;
+    let unknown = this.frames.some((frame) => frame.uncertain);
     for (const conditional of this.conditionals) {
       const state = conditional.inElse ? conditional.second : conditional.first;
       if (state === "skip") return "skip";
@@ -181,6 +201,17 @@ class TexScanner {
 
   jump(to: number) { if (to > this.pos) this.pos = to; }
 
+  /** The `{` at `at` opens code run at the top level later (not a group), maybe only (`uncertain`). */
+  deferBrace(at: number, uncertain: boolean) {
+    this.deferredBrace = at;
+    this.deferredUncertain = uncertain;
+  }
+
+  /** All of the source is code TeX may or may not run. */
+  assumeUncertain() {
+    this.frames.push({ kind: "group", locals: [], keep: true, uncertain: true });
+  }
+
   private close(kind: Frame["kind"] | null, at: number) {
     // Closes the innermost frame of `kind` (any kind when null) and the frames opened inside it.
     let index = this.frames.length - 1;
@@ -189,9 +220,19 @@ class TexScanner {
     for (const frame of this.frames.splice(index)) if (!frame.keep) for (const macro of frame.locals) macro.end ??= at;
   }
 
+  /** Whether `\name` is a `\newif` switch: made in this source or in one read before. */
+  private isSwitch(name: string) {
+    return this.newifs.has(name) || this.facts?.switchState?.(name) !== undefined;
+  }
+
+  /** A switch set at `at` (`\drafttrue`, `\newif\ifdraft`), unknown under a condition the reader cannot evaluate. */
+  private setSwitch(name: string, value: boolean, at: number) {
+    this.onSwitch?.(name, this.branch() === "unknown" ? null : value, at);
+  }
+
   /** Whether `\name` opens a conditional that a `\fi` closes; etoolbox's and biblatex's `\ifbool{…}{…}{…}` are macros. */
   private opensConditional(name: string) {
-    if (PRIMITIVE_CONDITIONALS.has(name) || this.newifs.has(name)) return true;
+    if (PRIMITIVE_CONDITIONALS.has(name) || this.isSwitch(name)) return true;
     if (COMMAND_TESTS.test(name)) return false;
     // `\ifbool{x}`, `\iffieldundef{x}`, `\ifnumequal{a}{b}`: a test taking braced arguments.
     return !/^\s*\{/.test(this.source.slice(this.pos, this.pos + 40));
@@ -222,7 +263,7 @@ class TexScanner {
         if (skipping) continue;
         if (char === "{") {
           const keep = at === this.deferredBrace;
-          this.frames.push(keep ? { kind: "brace", locals: [], keep } : { kind: "brace", locals: [] });
+          this.frames.push(keep ? { kind: "brace", locals: [], keep, ...(this.deferredUncertain ? { uncertain: true } : {}) } : { kind: "brace", locals: [] });
         } else this.close("brace", at);
         continue;
       }
@@ -234,19 +275,35 @@ class TexScanner {
       if (name === "else") { const top = this.conditionals[this.conditionals.length - 1]; if (top) top.inElse = true; continue; }
       if (name === "iffalse") { this.conditionals.push({ first: "skip", second: "run", inElse: false }); continue; }
       if (name === "iftrue") { this.conditionals.push({ first: "run", second: "skip", inElse: false }); continue; }
+      if (name === "unless") { this.unless = this.pos; continue; }
       if (/^if/.test(name) && name !== "ifthenelse" && this.opensConditional(name)) {
-        // Under a false branch TeX only counts conditionals; elsewhere one it cannot evaluate.
-        this.conditionals.push(skipping ? { first: "skip", second: "skip", inElse: false } : { first: "unknown", second: "unknown", inElse: false });
+        // Under a false branch TeX only counts conditionals. Elsewhere one is decided when what it tests is known
+        // (`\ifnum\llncs=0` after `\def\llncs{0}`, `\if0`, a `\newif` switch), else it is unknown.
+        const decided = !skipping && this.facts ? decideConditional(source, this.pos, name, this.facts) : null;
+        const value = decided ? decided.value !== (this.unless >= 0 && !source.slice(this.unless, at).trim()) : null;
+        this.unless = -1;
+        this.conditionals.push(skipping ? { first: "skip", second: "skip", inElse: false } : value === null ? { first: "unknown", second: "unknown", inElse: false }
+          : { first: value ? "run" : "skip", second: value ? "skip" : "run", inElse: false });
         continue;
       }
       if (skipping) continue;
       if (name === "newif") {
-        // `\newif\iffoo` defines a conditional; it does not open one.
+        // `\newif\iffoo` defines a conditional (false); it does not open one.
         const next = /^\s*\\([A-Za-z@]+)/.exec(source.slice(this.pos, this.pos + 80));
-        if (next) { this.pos += next[0].length; this.newifs.add(next[1]); }
+        if (next) { this.pos += next[0].length; this.newifs.add(next[1]); this.setSwitch(next[1], false, at); }
+      } else if (/^[A-Za-z@]+(?:true|false)$/.test(name) && this.isSwitch(`if${name.replace(/(?:true|false)$/, "")}`)) {
+        // `\drafttrue` after `\newif\ifdraft`.
+        this.setSwitch(`if${name.replace(/(?:true|false)$/, "")}`, name.endsWith("true"), at);
+      } else if (name === "newboolean" || name === "provideboolean" || name === "setboolean") {
+        // ifthen's booleans are `\newif` switches: `\newboolean{draft}` is `\ifdraft`, `\setboolean{draft}{true}` sets it.
+        const args = /^\s*\{\s*([A-Za-z@]+)\s*\}(?:\s*\{\s*(true|false)\s*\})?/.exec(source.slice(this.pos, this.pos + 120));
+        const switchName = args ? `if${args[1]}` : "";
+        if (args && name !== "setboolean" && !(name === "provideboolean" && this.isSwitch(switchName))) { this.newifs.add(switchName); this.setSwitch(switchName, false, at); }
+        else if (args?.[2] && this.isSwitch(switchName)) this.setSwitch(switchName, args[2] === "true", at);
+        if (args) this.pos += args[0].length;
       } else if (DEFERRED_TOP_LEVEL.test(name)) {
         const open = /^\s*\{/.exec(source.slice(this.pos, this.pos + 40));
-        if (open) this.deferredBrace = this.pos + open[0].length - 1;
+        if (open) this.deferBrace(this.pos + open[0].length - 1, false);
       } else if (name === "verb" || name === "lstinline") {
         let index = this.pos;
         if (source[index] === "*") index++;
@@ -448,6 +505,8 @@ type ReadOptions = {
   filePos?: number;
   /** Called where the source loads another file (`\input{name}`, `\usepackage{name}`), to read its definitions there. */
   load?: (key: string, at: number) => void;
+  /** Code TeX may or may not run (a package option's, when how the package is loaded is not known): read as under a condition. */
+  uncertain?: boolean;
 };
 
 /** `deferred`: the definition being read is in `\AtBeginDocument{…}` (it runs after the packages' own hooks). */
@@ -487,6 +546,15 @@ const PACKAGE_FILE = /\.(?:sty|cls)$/i;
 /** Formula commands the Visual mode draws itself when a document builds them from boxes (see math-render.ts's KATEX_MACROS). */
 const BOX_BUILT = new Set(["widebar"]);
 
+/** Whether `body` uses a `\let` copy of LaTeX's own `\name` (`\oldparagraph` after `\let\oldparagraph\paragraph`). */
+function callsSavedOriginal(defs: LatexDefinitions, name: string, body: string) {
+  for (const use of body.matchAll(/\\([A-Za-z@]+)/g)) {
+    const saved = defs.macros.get(use[1])?.at(-1);
+    if (saved?.alias && saved.body === `\\${name}`) return true;
+  }
+  return false;
+}
+
 function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, mode: "new" | "renew" | "provide"): LatexMacro | null {
   // A class's or package's font machinery (naaclhlt2019.sty's `\small`) passes the command itself as a token,
   // which expanding cannot follow: LaTeX's own meaning is drawn instead.
@@ -501,6 +569,9 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // Formula commands built from box arithmetic (the TeX.SX `\widebar`: `\@ifnextchar`, `\setbox`, `\mathaccent"0362`),
   // which expanding cannot follow: KaTeX draws a near equivalent (math-render.ts).
   if (BOX_BUILT.has(macro.name) && /\\(?:@ifnextchar|setbox|mathaccent|wide@bar)(?![A-Za-z])/.test(macro.body)) return null;
+  // A drawn command wrapped around its saved self (2107.05853's `\let\oldparagraph\paragraph`
+  // `\renewcommand{\paragraph}[1]{\oldparagraph{#1.}}`): LaTeX's own is drawn (a heading), without what the wrapper adds.
+  if (DRAWN_BUILTINS.has(macro.name) && !macro.alias && callsSavedOriginal(context.defs, macro.name, macro.body)) return null;
   const existing = context.defs.macros.get(macro.name);
   if (mode === "provide" && existing?.length) return null;
   const fingerprint = hashString(JSON.stringify([macro.name, macro.arity, macro.optional ?? null, macro.spec ?? null, macro.body, !!macro.mathOnly, !!macro.unsupported, !!macro.alias, mode === "provide"]));
@@ -509,6 +580,172 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   list.push(added);
   context.defs.macros.set(macro.name, list);
   return added;
+}
+
+/** What a macro without arguments stands for when it is a plain constant (`\def\llncs{0}`), which conditionals may test. */
+function constantOf(macro: LatexMacro | null | undefined) {
+  return macro && !macro.unsupported && !macro.alias && !macro.provided && !macro.arity && !macro.spec && !macro.mathOnly && macro.body.length <= 64 && !/[\\{}#%$&^_~]/.test(macro.body) ? macro.body : undefined;
+}
+
+/** A body that defines a macro named by an argument (`\newcommand{\newmathabbrev}[2]{\newcommand{#1}{\mathrm{#2}}}`). */
+const DEFINER_BODY = /^\s*\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|DeclareMathOperator)\*?\s*(?:\{\s*#[1-9]\s*\}|#[1-9])/;
+function definerOf(macro: LatexMacro | undefined) {
+  return !!macro && !macro.unsupported && !macro.alias && macro.arity > 0 && !macro.spec && macro.optional === undefined && DEFINER_BODY.test(macro.body);
+}
+
+/** The definition commands, and the uses of the document's definers (named by letters). */
+function definitionPattern(definers: ReadonlySet<string>) {
+  const names = [...definers].filter((name) => /^[A-Za-z@]+$/.test(name));
+  return new RegExp(names.length ? String.raw`${DEFINITION.source}|\\(${names.join("|")})(?![A-Za-z@])` : DEFINITION.source, "g");
+}
+
+/** One undelimited argument at `index`: a group's content, a command, or a character; null at a paragraph's end. */
+function readArgumentAt(source: string, index: number) {
+  const at = skipSpace(source, index);
+  if (source[at] === "{") return readGroup(source, at, TEX_GROUPS);
+  const token = /^(?:\\[A-Za-z@]+|\\[^A-Za-z@\s]|[^\s{}%\\])/.exec(source.slice(at, at + 80));
+  return token ? { content: token[0], end: at + token[0].length } : null;
+}
+
+/** A `\newcommand` body written without braces, one token on the definition's line (`\newcommand\cfont\mathsf`, `\newcommand{\x}\alpha`). */
+function unbracedBody(source: string, index: number) {
+  const token = /^[ \t]*(\\[A-Za-z@]+|\\[^A-Za-z@\s]|[^\s{}%\\[])/.exec(source.slice(index, index + 80));
+  if (!token || /^\\(?:begin|end|par)$/.test(token[1])) return null;
+  return { content: token[1], end: index + token[0].length };
+}
+
+/** Where plain TeX's `\loop … \repeat` that starts at `index` ends (its body is the text up to `\repeat`, outside groups); -1 when it does not. */
+function loopEnd(source: string, index: number) {
+  let depth = 0;
+  for (let i = index; i < source.length; i++) {
+    const char = source[i];
+    if (char === "%") { const end = source.indexOf("\n", i); if (end < 0) return -1; i = end; continue; }
+    if (char === "{") depth++;
+    else if (char === "}") { if (--depth < 0) return -1; }
+    else if (char === "\\") {
+      const word = /^\\(?:[A-Za-z@]+|[\s\S])/.exec(source.slice(i, i + 40))!;
+      if (word[0] === "\\repeat" && depth === 0) return i + word[0].length;
+      i += word[0].length - 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Whether the package or class `context.file` was loaded with `option` (`\usepackage[accepted]{icml2020}`), the
+ * class's options counting for every package as LaTeX's do; null when how it was loaded is not known.
+ */
+function optionGiven(context: ReadContext, option: string): boolean | null {
+  const file = context.file !== undefined ? /^(.*)\.(sty|cls)$/i.exec(context.file) : null;
+  if (!file) return null;
+  const named = (name: string) => file[1] === name || file[1].endsWith(`/${name}`);
+  const classOptions = context.defs.classOptions ?? [];
+  if (file[2].toLowerCase() === "cls") return context.defs.documentClass !== null && named(context.defs.documentClass) ? classOptions.includes(option) : null;
+  const loaded = context.defs.packages.find(named);
+  if (loaded === undefined) return null;
+  return (context.defs.packageOptions.get(loaded) ?? []).includes(option) || classOptions.includes(option);
+}
+
+/** thmtools' and amsthm's theorem styles the document makes (`\newtheoremstyle{named}…`, `\declaretheoremstyle[…]{mythm}`), by name. */
+const documentTheoremStyles = new WeakMap<LatexDefinitions, Map<string, TheoremStyle>>();
+
+/**
+ * The look of a theorem style the document makes, as one of amsthm's three: an italic body is `plain`, an italic
+ * head `remark`, anything else `definition` (an upright body under a bold head).
+ */
+function styleOfFonts(bodyFont: string, headFont: string): TheoremStyle {
+  if (/\\(?:itshape|slshape|em|it|sl|textit|emph)(?![A-Za-z])/.test(bodyFont)) return "plain";
+  if (/\\(?:itshape|slshape|it|sl|textit)(?![A-Za-z])/.test(headFont) && !/\\(?:bfseries|bf|textbf)(?![A-Za-z])/.test(headFont)) return "remark";
+  return "definition";
+}
+
+/** A theorem style named in the document: amsthm's three, thmtools' `theorem` (plain), or one the document made. */
+function theoremStyleNamed(defs: LatexDefinitions, name: string): TheoremStyle | null {
+  if (name === "plain" || name === "definition" || name === "remark") return name;
+  if (name === "theorem") return "plain";
+  return documentTheoremStyles.get(defs)?.get(name) ?? null;
+}
+
+/** `key=value` options (`name=Theorem, numberwithin=section`), values without their braces. */
+function keyValues(text: string) {
+  const options = new Map<string, string>();
+  let depth = 0;
+  let item = "";
+  const flush = () => {
+    const pair = /^\s*([A-Za-z]+)\s*(?:=\s*([\s\S]*?))?\s*$/.exec(item);
+    if (pair) options.set(pair[1].toLowerCase(), (pair[2] ?? "").replace(/^\{([\s\S]*)\}$/, "$1").trim());
+    item = "";
+  };
+  for (const char of text) {
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    if (char === "," && depth === 0) flush(); else item += char;
+  }
+  flush();
+  return options;
+}
+
+/** Math fonts a `\DeclareMathAlphabet` may name, by NFSS family, and the KaTeX alphabet each is drawn with. */
+function mathAlphabetBody(encoding: string, family: string, series: string, shape: string): string | null {
+  const bold = /^(?:sb|b|bx|eb|ub)$/.test(series.trim());
+  const italic = /^(?:it|sl)$/.test(shape.trim());
+  const name = family.trim();
+  let kind: "rm" | "sf" | "tt" | "cal" | "scr" | "frak" | "bb" | null = null;
+  if (/^\\rmdefault$|^(?:cmr|lmr|ptm|ppl|pnc|pbk|txr|pxr|bch|cmdh|cmfib)$/.test(name)) kind = "rm";
+  else if (/^\\sfdefault$|^(?:cmss|lmss|phv|uhv|fvs|cmbr|iwona|txss|pxss)$/.test(name)) kind = "sf";
+  else if (/^\\ttdefault$|^(?:cmtt|lmtt|pcr|txtt|pxtt)$/.test(name)) kind = "tt";
+  // Calligraphic: the OMS encoding's math symbols (`\pazocal` from zplm), Euler script.
+  else if (encoding.trim() === "OMS" || /^(?:eus|cmsy|zplm|zpsy)$/.test(name)) kind = "cal";
+  // Zapf Chancery (`\mathpzc`) and RSFS are script letters.
+  else if (/^(?:pzc|rsfs|rsfso)$/.test(name)) kind = "scr";
+  else if (/^(?:euf|yfrak|ygoth)$/.test(name)) kind = "frak";
+  else if (/^(?:bbm|bbmss|msb|bbold|dsrom|dsss)$/.test(name)) kind = "bb";
+  if (!kind) return null;
+  if (kind === "rm") return bold && italic ? "\\boldsymbol{#1}" : bold ? "\\mathbf{#1}" : italic ? "\\mathit{#1}" : "\\mathrm{#1}";
+  // KaTeX has no bold sans letters in formulas: bold is what tells them apart (the paper's `\mathbfsf` for tensors).
+  if (kind === "sf") return bold ? "\\mathbf{#1}" : italic ? "\\mathsfit{#1}" : "\\mathsf{#1}";
+  return { tt: "\\mathtt{#1}", cal: "\\mathcal{#1}", scr: "\\mathscr{#1}", frak: "\\mathfrak{#1}", bb: "\\mathbb{#1}" }[kind];
+}
+
+/** Computer Modern's Greek letters by position: upright capitals in `operators` and `letters` (0–10), italic lower case in `letters` (11–39). */
+const GREEK_CAPITALS = ["Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Upsilon", "Phi", "Psi", "Omega"];
+const GREEK_LOWER = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi", "rho", "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega", "varepsilon", "vartheta", "varpi", "varrho", "varsigma", "varphi"];
+/** The large operators of Computer Modern's extension font, by position (text and display sizes). */
+const LARGE_SYMBOLS: Record<number, string> = { 0x50: "\\sum", 0x58: "\\sum", 0x51: "\\prod", 0x59: "\\prod", 0x52: "\\int", 0x5a: "\\int", 0x53: "\\bigcup", 0x5b: "\\bigcup", 0x54: "\\bigcap", 0x5c: "\\bigcap", 0x56: "\\bigwedge", 0x5e: "\\bigwedge", 0x57: "\\bigvee", 0x5f: "\\bigvee", 0x60: "\\coprod", 0x61: "\\coprod" };
+const MATH_CLASSES: Record<string, string> = { mathord: "", mathalpha: "", mathop: "\\mathop", mathbin: "\\mathbin", mathrel: "\\mathrel", mathopen: "\\mathopen", mathclose: "\\mathclose", mathpunct: "\\mathpunct" };
+
+/**
+ * A math symbol by its font and position (`\DeclareMathSymbol{\R}{\mathalpha}{AMSb}{"52}` is `\mathbb{R}`,
+ * `\mathchardef\mhyphen="2D` a hyphen): Computer Modern's letters, Greek and large operators, and the AMS
+ * blackboard letters; null for any other.
+ */
+function mathSymbolBody(mathClass: string, font: string, position: number): string | null {
+  if (!Number.isInteger(position) || position < 0 || position > 255) return null;
+  const char = String.fromCharCode(position);
+  let symbol: string | null = null;
+  if (font === "operators" || font === "letters") {
+    if (position <= 10) symbol = font === "operators" ? `\\${GREEK_CAPITALS[position]}` : `\\mathit{\\${GREEK_CAPITALS[position]}}`;
+    else if (font === "letters" && position <= 39) symbol = `\\${GREEK_LOWER[position - 11]}`;
+    else if (/[A-Za-z0-9]/.test(char)) symbol = font === "operators" ? `\\mathrm{${char}}` : char;
+    // The text font's punctuation, where Computer Modern has the ASCII character (a hyphen, not a dash).
+    else if (font === "operators" && /[!()*+,\-./:;=?@[\]]/.test(char)) symbol = `\\text{${char}}`;
+  } else if (font === "largesymbols" || font === "cmlargesymbols") symbol = LARGE_SYMBOLS[position] ?? null;
+  else if (font === "AMSb" && /[A-Z]/.test(char)) symbol = `\\mathbb{${char}}`;
+  if (!symbol) return null;
+  const wrapper = MATH_CLASSES[mathClass.replace(/^\\/, "").trim()];
+  if (wrapper === undefined) return null;
+  // A large operator keeps its own class (and its limits).
+  return wrapper && !LARGE_SYMBOLS[position] ? `${wrapper}{${symbol}}` : symbol;
+}
+
+/** A TeX number: decimal, `"` hexadecimal, `'` octal or `` ` `` a character's code; NaN for anything else. */
+function texNumber(text: string) {
+  const value = text.trim();
+  if (/^[0-9]+$/.test(value)) return Number(value);
+  if (/^"[0-9A-Fa-f]+$/.test(value)) return parseInt(value.slice(1), 16);
+  if (/^'[0-7]+$/.test(value)) return parseInt(value.slice(1), 8);
+  const code = /^`\\?(.)$/.exec(value);
+  return code ? code[1].charCodeAt(0) : Number.NaN;
 }
 
 /** Commands whose definitions are global whatever the group (`\gdef`, and xparse's, which are made with expl3's global `\cs_new`). */
@@ -528,7 +765,37 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     theoremStyle: "plain",
   };
   const scanner = new TexScanner(source);
-  const pattern = new RegExp(DEFINITION.source, "g");
+  if (options.uncertain) scanner.assumeUncertain();
+  /** The code of the options given, run at `\ProcessOptions`. */
+  const pendingOptions: Array<{ text: string; offset: number; uncertain: boolean }> = [];
+  // Conditionals are decided by what is defined where the reader is (TeX reads the file in this order).
+  const here = () => context.offset + scanner.pos;
+  const latest = (name: string) => {
+    const list = defs.macros.get(name) ?? [];
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].end === undefined || list[i].end! > here()) return list[i];
+    return undefined;
+  };
+  scanner.facts = {
+    constant: (name) => constantOf(latest(name)),
+    defined: (name) => { const macro = latest(name); return macro && !macro.unsupported && !macro.alias ? true : undefined; },
+    switchState: (name) => {
+      const list = defs.switches?.get(name);
+      if (!list) return undefined;
+      for (let i = list.length - 1; i >= 0; i--) if (list[i].end === undefined || list[i].end! > here()) return list[i].value;
+      return null;
+    },
+  };
+  scanner.onSwitch = (name, value, at) => {
+    const setting: LatexSwitchSetting = { pos: effectivePos(context, at), value };
+    const switches = defs.switches ??= new Map();
+    const list = switches.get(name);
+    if (list) list.push(setting); else switches.set(name, [setting]);
+    if (!scanner.deferred()) scanner.innermost()?.locals.push(setting);
+  };
+  // Macros the document defines macros with (`\newcommand{\newmathabbrev}[2]{\newcommand{#1}{\mathrm{#2}}}`): their uses are read too.
+  const definers = new Set<string>();
+  for (const [name, list] of defs.macros) if (definerOf(list[list.length - 1])) definers.add(name);
+  let pattern = definitionPattern(definers);
   for (let match: RegExpExecArray | null; (match = pattern.exec(source));) {
     const start = match.index;
     scanner.advance(start);
@@ -537,8 +804,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     const uncertain = scanner.branch() === "unknown";
     context.deferred = scanner.deferred();
     let index = start + match[0].length;
-    const command = match[1];
-    const note = (list: LatexDefinitionNote[], name: string, message: string) => list.push({ pos: context.offset + start, file: context.file, name, message });
+    const command = match[1] ?? match[2];
+    const note =(list: LatexDefinitionNote[], name: string, message: string) => list.push({ pos: context.offset + start, file: context.file, name, message });
     const starred = source[index] === "*";
     if (starred) index++;
     const pos = effectivePos(context, start);
@@ -555,7 +822,29 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       added = addMacro(context, { name, arity: 0, body: "", pos, file: context.file, unsupported: true }, "renew");
     };
 
-    if (/^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/.test(command) && /\\WithSuffix\s*$/.test(source.slice(Math.max(0, start - 24), start))) {
+    if (match[1] === undefined) {
+      // A use of one of the document's definers: what its body defines, with the arguments put in (2402.08434's
+      // `\newmathabbrev{\Pr}{Pr}` is `\newcommand{\Pr}{\mathrm{Pr}}`). Under a condition it defines nothing (its uses stay source).
+      const definer = latest(command);
+      if (!definer || !definerOf(definer)) continue;
+      const args: string[] = [];
+      let at = start + match[0].length;
+      for (let n = 0; n < definer.arity; n++) {
+        const argument = readArgumentAt(source, at);
+        if (!argument) break;
+        args.push(argument.content);
+        at = argument.end;
+      }
+      if (args.length < definer.arity) continue;
+      end = at;
+      if (!uncertain) {
+        const text = definer.body.replace(/##|#([1-9])/g, (all, n: string | undefined) => (n ? args[Number(n) - 1] ?? all : "#"));
+        // Read where the use is: in the preamble, everywhere; in the body, from there. Its extents are the use's.
+        const extents = defs.extents.length;
+        readLatexDefinitions(text, defs, { file: context.file, offset: context.offset + start, bodyStart: start < context.bodyStart ? text.length + 1 : 0, filePos: context.filePos });
+        defs.extents.length = extents;
+      }
+    } else if (/^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/.test(command) && /\\WithSuffix\s*$/.test(source.slice(Math.max(0, start - 24), start))) {
       // suffix's `\WithSuffix\newcommand\foo*{…}` defines what `\foo*` does; `\foo` itself keeps its meaning. The body
       // is skipped (it is not run here), and the suffix is no missing body.
       const name = readCommandName(source, index);
@@ -573,7 +862,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       if (count) { arity = Number(count.content.trim()) || 0; index = count.end; }
       const optional = count ? readOptionalAt(source, index) : null;
       if (optional) index = optional.end;
-      const body = readGroupAt(source, index);
+      // TeX reads the body as one argument: a group, or one token (2204.14024's `\newcommand\cfont\mathsf`).
+      const body = readGroupAt(source, index) ?? unbracedBody(source, index);
       if (!body) { note(defs.problems, name.name, `\\${name.name} has no {…} body`); broken = true; if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`); }
       else {
         end = body.end;
@@ -617,6 +907,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       if (!target) continue;
       end = after + target[0].length;
       if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
+      // `\let\x\undefined` removes a command (before defining it again): its uses are not drawn.
+      else if (/^@?undefined$/.test(target[1])) added = addMacro(context, { name: name.name, arity: 0, body: "", pos, file: context.file, unsupported: true }, "renew");
       else {
         // The meaning the target has here (its latest definition still in force).
         const list = defs.macros.get(target[1]) ?? [];
@@ -649,6 +941,34 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         else added = addMacro(context, {
           name: name.name, arity: 3, spec: [{ type: "s" }, { type: "o" }, { type: "m" }], mathOnly: true, pos, file: context.file,
           body: `\\IfBooleanTF{#1}{\\left${open} #3 \\right${close}}{\\IfNoValueTF{#2}{\\mathopen{${open}}#3\\mathclose{${close}}}{\\mathopen{#2${open}}#3\\mathclose{#2${close}}}}`,
+        }, "new");
+      }
+    } else if (command === "DeclarePairedDelimiterX" || command === "DeclarePairedDelimiterXPP") {
+      // The forms with a body (2410.03413's `\DeclarePairedDelimiterX\braket[2]{\langle}{\rangle}{#1 \delimsize\vert #2}`),
+      // whose `\delimsize` is the size of the outer delimiters; XPP adds code before and after them.
+      const name = readCommandName(source, index);
+      if (!name) continue;
+      const count = readOptionalAt(source, name.end);
+      const arity = count ? Number(count.content.trim()) : 0;
+      const groups: Array<{ content: string; end: number }> = [];
+      for (let at = count?.end ?? name.end, n = 0; n < (command === "DeclarePairedDelimiterX" ? 3 : 5); n++) {
+        const group = readGroupAt(source, at);
+        if (!group) break;
+        groups.push(group);
+        at = group.end;
+      }
+      if (groups.length < (command === "DeclarePairedDelimiterX" ? 3 : 5) || !Number.isInteger(arity) || arity < 0 || arity > 7) { note(defs.problems, name.name, `\\${name.name} needs its delimiters and body`); broken = true; }
+      else {
+        end = groups[groups.length - 1].end;
+        const [pre, left, right, post, inner] = command === "DeclarePairedDelimiterX" ? ["", groups[0].content, groups[1].content, "", groups[2].content] : groups.map((group) => group.content);
+        const [open, close] = [left.trim(), right.trim()];
+        // The document's arguments come after the star and the size.
+        const shifted = inner.replace(/##|#([1-9])/g, (all, n: string | undefined) => (n ? `#${Number(n) + 2}` : all));
+        const sized = (size: string) => shifted.replace(/\\delimsize(?![A-Za-z@])\s*/g, size);
+        if (uncertain || highestParameter(inner) > arity) shadow(name.name, uncertain ? `\\${name.name} is defined under a condition` : `\\${name.name} uses more arguments than it takes`);
+        else added = addMacro(context, {
+          name: name.name, arity: arity + 2, spec: [{ type: "s" }, { type: "o" }, ...Array.from({ length: arity }, () => ({ type: "m" as const }))], mathOnly: true, pos, file: context.file,
+          body: `${pre}\\IfBooleanTF{#1}{\\left${open} ${sized("\\middle")} \\right${close}}{\\IfNoValueTF{#2}{\\mathopen{${open}}${sized("")}\\mathclose{${close}}}{\\mathopen{#2${open}}${sized("#2")}\\mathclose{#2${close}}}}${post}`,
         }, "new");
       }
     } else if (command === "newlist") {
@@ -735,8 +1055,56 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     } else if (command === "theoremstyle") {
       const style = readGroupAt(source, index);
       if (style) end = style.end;
-      const value = style?.content.trim();
-      if (value === "plain" || value === "definition" || value === "remark") context.theoremStyle = value;
+      const value = style ? theoremStyleNamed(defs, style.content.trim()) : null;
+      if (value) context.theoremStyle = value;
+    } else if (command === "newtheoremstyle" || command === "declaretheoremstyle") {
+      // amsthm's `\newtheoremstyle{named}{space}{space}{bodyfont}{indent}{headfont}{punct}{space}{spec}` (2211.14219) and
+      // thmtools' `\declaretheoremstyle[bodyfont=…]{name}`: read as the amsthm style they look like (their fonts).
+      const keys = command === "declaretheoremstyle" ? readOptionalAt(source, index) : null;
+      const nameGroup = readGroupAt(source, keys?.end ?? index);
+      if (!nameGroup) continue;
+      let style: TheoremStyle;
+      if (command === "declaretheoremstyle") {
+        const values = keyValues(keys?.content ?? "");
+        end = nameGroup.end;
+        style = values.has("bodyfont") || values.has("headfont") ? styleOfFonts(values.get("bodyfont") ?? "\\itshape", values.get("headfont") ?? "\\bfseries") : "plain";
+      } else {
+        const groups: string[] = [];
+        for (let at = nameGroup.end, n = 0; n < 8; n++) {
+          const group = readGroupAt(source, at);
+          if (!group) break;
+          groups.push(group.content);
+          at = group.end;
+          end = group.end;
+        }
+        if (groups.length < 8) continue;
+        style = styleOfFonts(groups[2], groups[4]);
+      }
+      let styles = documentTheoremStyles.get(defs);
+      if (!styles) documentTheoremStyles.set(defs, styles = new Map());
+      styles.set(nameGroup.content.trim(), style);
+    } else if (command === "declaretheorem") {
+      // thmtools' `\declaretheorem[name=Theorem, numberwithin=section, sibling=theorem, style=definition]{lemma}`
+      // (2204.14024); the name is the environment's, capitalised, when none is given.
+      const before = readOptionalAt(source, index);
+      const names = readGroupAt(source, before?.end ?? index);
+      if (!names) continue;
+      const after = before ? null : readOptionalAt(source, names.end);
+      end = after?.end ?? names.end;
+      const values = keyValues(before?.content ?? after?.content ?? "");
+      const title = values.get("name") ?? values.get("title") ?? values.get("heading");
+      const within = values.get("numberwithin") ?? values.get("parent") ?? values.get("within");
+      const sibling = values.get("sibling") ?? values.get("numberlike") ?? values.get("sharenumber");
+      const styleName = values.get("style");
+      const style = styleName ? theoremStyleNamed(defs, styleName) : context.theoremStyle;
+      for (const name of names.content.split(",").map((part) => part.trim()).filter(Boolean)) {
+        // A style the reader does not know (one a class makes): the theorem's look is not known.
+        if (uncertain || !style) { note(defs.unsupported, name, uncertain ? `${name} is defined under a condition` : `${name} uses a theorem style the Visual mode does not know`); defs.theorems.delete(name); continue; }
+        defs.theorems.set(name, {
+          name, title: title ?? name.charAt(0).toUpperCase() + name.slice(1), counter: sibling || name,
+          within: sibling ? undefined : within || undefined, numbered: !/^(?:no|false)$/i.test(values.get("numbered") ?? ""), style,
+        });
+      }
     } else if (command === "newtheorem") {
       const nameGroup = readGroupAt(source, index);
       if (!nameGroup) continue;
@@ -777,13 +1145,20 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       const plural = singular && readGroupAt(source, singular.end);
       if (type && singular && plural) {
         end = plural.end;
+        // Under a condition the reader cannot evaluate, the names may not apply: cleveref's own are kept.
         const key = command === "Crefname" ? `${type.content.trim()}:capital` : type.content.trim();
-        defs.crefNames.set(key, { singular: singular.content, plural: plural.content, capital: command === "Crefname" });
+        if (uncertain) note(defs.unsupported, key, `\\${command}{${type.content.trim()}} is set under a condition`);
+        else defs.crefNames.set(key, { singular: singular.content, plural: plural.content, capital: command === "Crefname" });
       }
     } else if (command === "documentclass") {
       const options = readOptionalAt(source, index);
       const name = readGroupAt(source, options?.end ?? index);
-      if (name) { end = name.end; defs.documentClass = name.content.trim(); }
+      if (name) {
+        end = name.end;
+        defs.documentClass = name.content.trim();
+        // The class's options, which its `\DeclareOption`s and every package's see.
+        defs.classOptions = options ? options.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) : [];
+      }
     } else if (command === "usepackage" || command === "RequirePackage") {
       const packageOptions = readOptionalAt(source, index);
       const names = readGroupAt(source, packageOptions?.end ?? index);
@@ -838,8 +1213,82 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         end = value.end;
         defs.colors.set(name.content.trim(), { model: model ? model.content.trim() : "", value: value.content.trim() });
       }
+    } else if (command === "loop") {
+      // Plain TeX's `\loop … \repeat` (2410.03413 makes `\frakA`… in one): `\repeat` closes the `\unless\ifnum` in it, so
+      // read as code it would leave every later definition under a condition. Its body is skipped whole.
+      const close = loopEnd(source, index);
+      if (close < 0) continue;
+      end = close;
+    } else if (command === "DeclareOption" || command === "ProcessOptions") {
+      // A package's or class's option (ICML's `\DeclareOption{accepted}{\gdef\isaccepted{1}}`): its code runs at
+      // `\ProcessOptions` when the option is given (`\usepackage[accepted]{icml2020}`), maybe when how the package is
+      // loaded is not known, and not otherwise.
+      if (command === "ProcessOptions") {
+        for (const option of pendingOptions.splice(0)) {
+          const extents = defs.extents.length;
+          readLatexDefinitions(option.text, defs, { file: context.file, offset: option.offset, bodyStart: option.offset < context.offset + context.bodyStart ? option.text.length + 1 : 0, filePos: context.filePos, uncertain: option.uncertain });
+          defs.extents.length = extents;
+        }
+        continue;
+      }
+      const option = starred ? null : readGroupAt(source, index);
+      const body = readGroupAt(source, option?.end ?? index);
+      if (!body) continue;
+      end = body.end;
+      const given = starred ? false : optionGiven(context, option!.content.trim());
+      if (given !== false) pendingOptions.push({ text: body.content, offset: context.offset + skipSpace(source, option!.end) + 1, uncertain: uncertain || given === null });
+    } else if (command === "DeclareMathAlphabet") {
+      // `\DeclareMathAlphabet{\mathbfsf}{OT1}{cmss}{bx}{n}`: drawn with the KaTeX alphabet of that font's look.
+      const name = readCommandName(source, index);
+      const font: string[] = [];
+      for (let at = name?.end ?? index, n = 0; name && n < 4; n++) {
+        const group = readGroupAt(source, at);
+        if (!group) break;
+        font.push(group.content);
+        at = group.end;
+        end = group.end;
+      }
+      if (!name || font.length < 4) continue;
+      const body = mathAlphabetBody(font[0], font[1], font[2], font[3]);
+      if (uncertain || !body) shadow(name.name, uncertain ? `\\${name.name} is defined under a condition` : `\\${name.name} is a math alphabet the Visual mode does not have`);
+      else added = addMacro(context, { name: name.name, arity: 1, body, mathOnly: true, pos, file: context.file }, "new");
+    } else if (command === "DeclareMathSymbol" || command === "mathchardef") {
+      // `\DeclareMathSymbol{\R}{\mathalpha}{AMSb}{"52}` and `\mathchardef\mhyphen="2D`: a symbol of a font, by position.
+      const name = readCommandName(source, index);
+      if (!name) continue;
+      let symbol: string | null = null;
+      if (command === "DeclareMathSymbol") {
+        const groups: string[] = [];
+        for (let at = name.end, n = 0; n < 3; n++) {
+          const group = readGroupAt(source, at) ?? readArgumentAt(source, at);
+          if (!group) break;
+          groups.push(group.content.trim());
+          at = group.end;
+          end = group.end;
+        }
+        if (groups.length < 3) continue;
+        symbol = mathSymbolBody(groups[0], groups[1], texNumber(groups[2]));
+      } else {
+        const value = /^\s*=?\s*("[0-9A-Fa-f]+|'[0-7]+|[0-9]+|`\\?.)/.exec(source.slice(name.end, name.end + 40));
+        if (!value) continue;
+        end = name.end + value[0].length;
+        const code = texNumber(value[1]);
+        const family = (code >> 8) & 15;
+        if (code < 0x8000 && family <= 3) symbol = mathSymbolBody(["mathord", "mathop", "mathbin", "mathrel", "mathopen", "mathclose", "mathpunct", "mathalpha"][code >> 12], ["operators", "letters", "symbols", "largesymbols"][family], code & 255);
+      }
+      if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
+      // A package's numbers made with `\mathchardef` (`\@mmm=3000`) are no symbols: not drawn, not listed.
+      else if (!symbol && command === "mathchardef") added = addMacro(context, { name: name.name, arity: 0, body: "", pos, file: context.file, unsupported: true }, "renew");
+      else if (!symbol) shadow(name.name, `\\${name.name} is a symbol of a font the Visual mode does not have`);
+      else added = addMacro(context, { name: name.name, arity: 0, body: symbol, mathOnly: true, pos, file: context.file }, "renew");
     }
 
+    if (added && definerOf(added) && !definers.has(added.name)) {
+      definers.add(added.name);
+      const last = pattern.lastIndex;
+      pattern = definitionPattern(definers);
+      pattern.lastIndex = last;
+    }
     if (added && !global) (scanner.innermost()?.locals ?? []).push(added);
     if (broken && context.file === undefined) defs.extents.push({ from: context.offset + start, to: context.offset + source.length, broken: true });
     if (end !== null) {
@@ -868,6 +1317,7 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}:${type.paragraph ? "p" : ""}${type.math ? "m" : ""}`);
   for (const [name, kind] of defs.lists ?? []) parts.push(`list:${name}:${kind}`);
   for (const [level, options] of defs.listOptions ?? []) parts.push(`listopt:${level}:${options}`);
+  for (const [name, list] of defs.switches ?? []) parts.push(`switch:${name}:${list.map((setting) => `${setting.value}@${setting.pos}-${setting.end ?? ""}`).join(",")}`);
   return hashString(parts.join("\u0000"));
 }
 
@@ -919,6 +1369,37 @@ export function macroAt(defs: LatexDefinitions, name: string, pos: number): Late
   return null;
 }
 
+/** The state of the `\newif` switch `name` at `pos` in the open file: true or false, null when not known, undefined for no switch. */
+export function switchAt(defs: LatexDefinitions, name: string, pos: number): boolean | null | undefined {
+  const list = defs.switches?.get(name);
+  if (!list) return undefined;
+  for (let i = list.length - 1; i >= 0; i--) if (list[i].pos <= pos && (list[i].end === undefined || pos < list[i].end!)) return list[i].value;
+  return null;
+}
+
+/** What decides a conditional at `pos` in the open file (conditionals.ts): constants, switches, and in a formula or not. */
+export function conditionalFacts(defs: LatexDefinitions, pos: number, math?: boolean): ConditionalFacts {
+  return {
+    constant: (name) => constantOf(macroAt(defs, name, pos)),
+    defined: (name) => { const macro = macroAt(defs, name, pos); return macro && !macro.unsupported && !macro.alias ? true : undefined; },
+    switchState: (name) => switchAt(defs, name, pos),
+    math,
+  };
+}
+
+const factsKeys = new WeakMap<LatexDefinitions, string>();
+
+/** What conditionals may read in `defs` (constants, switches, the names defined), equal when they decide the same. */
+export function conditionalFactsKey(defs: LatexDefinitions) {
+  let key = factsKeys.get(defs);
+  if (key !== undefined) return key;
+  const parts: string[] = [];
+  for (const [name, list] of defs.macros) parts.push(`${name}=${list.map((macro) => constantOf(macro) ?? (macro.unsupported || macro.alias ? "?" : "")).join(",")}`);
+  for (const [name, list] of defs.switches ?? []) parts.push(`${name}:${list.map((setting) => setting.value).join(",")}`);
+  factsKeys.set(defs, key = parts.join("\u0000"));
+  return key;
+}
+
 /** The definition body starting at `pos` in the open file, by binary search; null when none does (a broken definition has none). */
 export function definitionExtentAt(defs: LatexDefinitions, pos: number) {
   const extents = defs.extents;
@@ -960,8 +1441,9 @@ export function mapLatexDefinitions(defs: LatexDefinitions, changes: PositionMap
   const environments = new Map<string, LatexEnvironmentDefinition>();
   for (const [name, env] of defs.environments) environments.set(name, env.pos < 0 ? env : { ...env, pos: map(env.pos) });
   const note = (item: LatexDefinitionNote) => (item.file !== undefined ? item : { ...item, pos: map(item.pos) });
+  const switches = defs.switches && new Map([...defs.switches].map(([name, list]) => [name, list.map((setting) => (setting.pos < 0 && setting.end === undefined ? setting : { ...setting, pos: map(setting.pos), end: setting.end === undefined ? undefined : map(setting.end) }))]));
   return {
-    ...defs, macros, environments,
+    ...defs, macros, environments, ...(switches ? { switches } : {}),
     extents: defs.extents.map((extent) => ({ from: map(extent.from), to: map(extent.to), ...(extent.broken ? { broken: true } : {}) })),
     problems: defs.problems.map(note), unsupported: defs.unsupported.map(note),
   };
