@@ -577,6 +577,10 @@ export type FigureContent = {
   unnumbered?: boolean;
   /** Unnumbered notes under the caption (subcaption's `\subcaption*{Notes: …}`). */
   notes?: string[];
+  /** Framed text (a `tcolorbox` of prompts in a `table*`): its title and its LaTeX, `\tcblower` dividing it. */
+  boxes?: Array<{ title: string | null; body: string }>;
+  /** Labels put over the images (a `picture` of `\put`s, overpic's), drawn in the PDF only. */
+  overlay?: boolean;
   /** An algorithm float's prose before its lines, drawn above them. */
   intro?: string;
   /** Where the number is recorded relative to the widget: the environment's start, or its panel's. */
@@ -640,12 +644,22 @@ export class FigureWidget extends VisualWidget {
         body.append(frame);
       }
       for (const drawing of content.drawings ?? []) {
-        // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is.
+        // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is, or the
+        // package that draws it ("diagram:tikz-cd").
         const placeholder = el("span", "cm-vis-figure-drawing");
-        placeholder.append(el("span", "cm-vis-figure-drawing-name", drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
+        const diagram = /^diagram:(.*)$/.exec(drawing)?.[1];
+        placeholder.append(el("span", "cm-vis-figure-drawing-name", diagram ? `Diagram (${diagram})` : drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
         placeholder.append(el("span", "cm-vis-figure-drawing-note", "Drawn in the PDF"));
         body.append(placeholder);
       }
+      for (const box of content.boxes ?? []) {
+        // A framed box's text, its parts divided where `\tcblower` is.
+        const frame = el("div", "cm-vis-figure-box");
+        if (box.title) frame.append(renderLatexInto("div", "cm-vis-figure-box-title", box.title, fragmentContext(view, content.captionPos)));
+        for (const part of box.body.split(/\\tcblower(?![A-Za-z@])/)) frame.append(renderLatexInto("div", "cm-vis-figure-box-part", part.trim(), fragmentContext(view, content.captionPos)));
+        body.append(frame);
+      }
+      if (content.overlay) body.append(el("div", "cm-vis-figure-overlay", "+ overlay (labels drawn in the PDF)"));
       for (const tabular of content.tabulars ?? []) body.append(renderTableGrid(view, tabular.source, () => {
         const pos = start();
         return pos === null ? null : pos + tabular.offset;
@@ -678,10 +692,13 @@ export class FigureWidget extends VisualWidget {
         row.append(element);
       }
       // The float's own caption, if it has one besides the panels'.
-      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined };
+      // Its notes are under the panels, whether its caption is above or below them (the cannabis paper's figures).
+      const notesBelow = spec.caption === null || spec.captionAbove;
+      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined, notes: notesBelow ? undefined : spec.notes };
       if (spec.caption !== null && spec.captionAbove) draw(own, dom);
       dom.append(row);
       if (spec.caption !== null && !spec.captionAbove) draw(own, dom);
+      else if (spec.notes?.length) dom.append(...spec.notes.map((note) => renderLatexInto("div", "cm-vis-figure-note", note, fragmentContext(view, spec.captionPos))));
     } else draw(spec, dom);
     refreshable(dom, view, (target) => {
       const pos = widgetPos(target, dom);
