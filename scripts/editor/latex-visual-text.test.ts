@@ -353,6 +353,20 @@ Rotated.
   assert.match(text, /Rotated\./);
 });
 
+test("a line with text after its layout commands is not folded: only the commands are hidden", () => {
+  const doc = String.raw`\begin{document}
+\noindent{\bf Note:} the rest.
+\medskip Next \par after.
+\end{document}
+`;
+  const state = visualState(doc);
+  assert.ok(!constructs(state).some((construct) => construct.startsWith("layout:")), constructs(state).join(" "));
+  const text = bodyText(doc);
+  assert.match(text, /Note: the rest\./);
+  assert.match(text, /Next ↵ after\./);
+  assert.doesNotMatch(text, /\\noindent|\\medskip|\\par/);
+});
+
 test("B6-22: braces around a whole footnote print nothing", () => {
   const text = bodyText(String.raw`\begin{document}
 Text\footnote{{An aside.}} and more.

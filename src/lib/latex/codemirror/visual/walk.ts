@@ -1649,9 +1649,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return undefined;
     }
     // thm-restate's `\promisemonoids*`: the restatable theorem of that name printed again, drawn as its heading.
-    const restated = !args.length && ctrl.name === "CtrlSeq" ? restatablesIn(doc).get(text.slice(1)) : undefined;
+    const restated = !args.length && ctrl.name === "CtrlSeq" && read(state, ctrl.to, ctrl.to + 1) === "*" ? restatablesIn(doc).get(text.slice(1)) : undefined;
     const restatedTheorem = restated && defs.theorems.get(restated.env);
-    if (restated && restatedTheorem && read(state, ctrl.to, ctrl.to + 1) === "*") {
+    if (restated && restatedTheorem) {
       const end = ctrl.to + 1;
       const span = aloneOnLines(doc, node.from, end);
       const range = span ?? { from: node.from, to: end };
