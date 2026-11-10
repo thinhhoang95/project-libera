@@ -404,3 +404,114 @@ Bytes & 1\phn--\phn9 & 11--19\tablenotemark{a} \\
   // Outside AASTeX the commands are not known: the figure stays source.
   assert.equal(drawnFloats(plots.replace("aastex701", "article")), 0);
 });
+
+test("hep-th 2611.10539, cond-mat 2611.08102: revtex's ruledtabular is a ruled table with its label-first caption; widetext is transparent", () => {
+  const doc = inDocument(String.raw`\begin{table*}[!ht]
+\caption{\label{tab:params}Parameters of the reference flows. Lengths in cells, $c_s$ the speed.}
+\begin{ruledtabular}
+\begin{tabular}{lcc}
+Flow & $L$ & $T$\\
+\hline
+Shear & 64 & 100\\
+\end{tabular}
+\end{ruledtabular}
+\end{table*}
+\begin{widetext}
+Wide text.
+\end{widetext}`, "\\documentclass{revtex4-2}\n");
+  assert.equal(drawnFloats(doc), 1);
+  const { text, html } = mounted(doc);
+  assert.match(text, /Table 1: Parameters of the reference flows\. Lengths in cells, cs.* the speed\.FlowLTShear64100Wide text\./);
+  assert.match(html, /cm-vis-table-ruled/);
+  assert.doesNotMatch(text, /tab:params|ruledtabular|widetext/);
+});
+
+test("stat.ME 2611.09678: a caption macro that boxes the table (\\tbl{caption}{tabular or \\input}) draws the table; \\begingroup lines fold", () => {
+  const doc = inDocument(String.raw`\begin{table}[htbp]\small
+\tbl{Networks and observation design.}
+{\begin{tabular}{lrr}\toprule
+ & EMA & Chicago\\\midrule
+Zones & 74 & 387\\\bottomrule
+\end{tabular}}
+\label{tab:networks}
+\end{table}
+\begin{table}[htbp]
+\tbl{Primary comparisons.}{\input{tables/tab_primary.tex}}
+\label{tab:primary}
+\end{table}
+\begingroup\footnotesize\setlength{\tabcolsep}{4pt}
+Text.
+\endgroup`, "\\newcommand{\\tbl}[2]{\\caption{#1}\\noindent\\makebox[\\linewidth]{#2}}\n");
+  assert.equal(drawnFloats(doc), 2);
+  const { text, raw } = mounted(doc);
+  assert.match(text, /Table 1: Networks and observation design\.EMAChicagoZones74387Table 2: Primary comparisons\.tables\/tab_primary\.tex.*Text\.$/);
+  assert.doesNotMatch(text, /begingroup|endgroup|tabcolsep/);
+  assert.deepEqual(raw.filter((item) => item.trim()), []);
+  // A caption macro writing more than a box of its arguments stays source.
+  const other = inDocument("\\begin{table}\n\\tbl{Caption}{\\begin{tabular}{l}\nx \\\\\n\\end{tabular}}\n\\end{table}", "\\newcommand{\\tbl}[2]{\\caption{#1}Text \\makebox{#2}}\n");
+  assert.equal(drawnFloats(other), 0);
+});
+
+test("cs.CL 2611.11838: boxes of text around a \\dimexpr-wide minipage, written out or by a macro, are drawn as framed text in a figure", () => {
+  const doc = inDocument(String.raw`\begin{figure}[t]
+\centering
+\setlength{\fboxsep}{4pt}
+\begin{minipage}{\linewidth}
+\noindent\colorbox{promptcolor}{%
+\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax}
+\raggedright
+\textbf{Prompt:} When was the \emph{current Dalai Lama} born?
+\end{minipage}}
+
+\genbox{basecolor}{No intervention}{%
+There is \textbf{no ambiguity}.
+}
+\end{minipage}
+\caption{Qualitative evaluation.}
+\label{fig:dalai}
+\end{figure}
+\begin{figure}
+\fbox{\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax}
+Some prompt text.
+\end{minipage}}
+\caption{Framed.}
+\end{figure}`, String.raw`\usepackage{xcolor}
+\newcommand{\genbox}[3]{%
+    \vspace{0.2em}
+    \noindent\colorbox{#1}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax}
+    \raggedright
+    \textbf{#2:} {\itshape #3}
+    \end{minipage}}%
+}
+`);
+  assert.equal(drawnFloats(doc), 2);
+  const { text, html, raw } = mounted(doc);
+  assert.match(text, /Prompt: When was the current Dalai Lama born\?\s*No intervention:\s*There is no ambiguity\.\s*Figure 1: Qualitative evaluation\.Some prompt text\.Figure 2: Framed\./);
+  assert.equal((html.match(/cm-vis-figure-box"/g) ?? []).length, 3);
+  assert.deepEqual(raw.filter((item) => item.trim()), []);
+});
+
+test("layout and numbering state in the body folds away: \\appendix, \\renewcommand{\\the…}, \\setcounter, \\twocolumn, \\frenchspacing (stat.ME 2611.09678, cs.CL 2611.11838)", () => {
+  const doc = inDocument(String.raw`\frenchspacing
+Text.
+\clearpage
+\appendix
+\renewcommand{\thesection}{A\arabic{section}}
+\renewcommand{\theequation}{S\arabic{equation}}
+\setcounter{equation}{0}
+\section{More}
+\begin{equation}x=1\label{eq:s}\end{equation}
+\twocolumn
+\renewcommand{\foo}{bar}
+\twocolumn[Kept text]`);
+  // Only another command's definition and a `\twocolumn` with text stay source.
+  const { text } = mounted(doc);
+  assert.match(text, /Text\.A1\W*More/);
+  assert.match(text, /\\renewcommand\{\\foo\}\{bar\}\\twocolumn\[Kept text\]$/);
+  assert.doesNotMatch(text, /frenchspacing|clearpage|appendix|thesection|theequation|setcounter|twocolumn\\/);
+  // Numbering reads the lines that folded away.
+  const state = visualState(doc);
+  const numbering = computeLatexNumbering(syntaxTree(state), (from, to) => state.doc.sliceString(from, to), visualDefinitions(state));
+  assert.equal(numbering.labels.get("eq:s")?.number, "S1");
+});

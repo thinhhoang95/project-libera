@@ -142,13 +142,19 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   frontmatter: 0, mainmatter: 0, backmatter: 0, tableofcontents: 0, listoffigures: 0, listoftables: 0, listoftodos: 0, FloatBarrier: 0, restoregeometry: 0,
   balance: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
   startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0,
-  // `\appendix` prints nothing (its sections are lettered, numbering.ts); nor do AASTeX's `\restartappendixnumbering` and `\startlongtable`.
-  appendix: 0, restartappendixnumbering: 0, startlongtable: 0,
+  // AASTeX's `\restartappendixnumbering` and `\startlongtable` print nothing.
+  restartappendixnumbering: 0, startlongtable: 0,
   tiny: 0, scriptsize: 0, footnotesize: 0, small: 0, normalsize: 0, large: 0, Large: 0, LARGE: 0, huge: 0, Huge: 0,
   vspace: 1, addvspace: 1, setstretch: 1, linespread: 1, thispagestyle: 1, pagestyle: 1, pagenumbering: 1, newgeometry: 1, tikzset: 1, pgfplotsset: 1,
   hypersetup: 1, captionsetup: 1, sisetup: 1, lstset: 1, enlargethispage: 1, hyphenation: 1, ccsdesc: 1,
   setlength: 2, addtolength: 2, colorlet: 2, definecolor: 3, addcontentsline: 3, printcontents: 3,
+  // State the numbering reads (numbering.ts): `\appendix`, `\setcounter{equation}{0}`, and a counter's format
+  // (`\renewcommand{\theequation}{S\arabic{equation}}`, only a `\the…` one). Column and spacing switches, TeX groups.
+  appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
+  begingroup: 0, endgroup: 0,
 };
+/** Layout-line commands whose `[…]` is text, not an option (ICML's `\twocolumn[\icmltitle{…}…]`): such a line stays. */
+const LAYOUT_LINE_TEXT_OPTION = /^(?:onecolumn|twocolumn)$/;
 
 /** The lines from `from` (the first thing on its line) that hold only layout commands with their arguments, or null. */
 function layoutLine(state: EditorState, from: number): { from: number; to: number } | null {
@@ -164,8 +170,11 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
     if (!command || count === undefined) return null;
     i += command[0].length;
     if (command[1] === "vskip") { i += PRIMITIVE_GLUE.exec(text.slice(i))?.[0].length ?? 0; continue; }
+    // `\renewcommand` of a counter's format only (`{\thesection}` or `\thesection`).
+    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\the[A-Za-z]+\s*\}|\\the[A-Za-z]+(?![A-Za-z]))/.test(text.slice(i, i + 60))) return null;
     const optional = /^[ \t]*\[/.exec(text.slice(i));
     if (optional) {
+      if (LAYOUT_LINE_TEXT_OPTION.test(command[1])) return null;
       const group = readOptional(text, i + optional[0].length - 1, TEX_GROUPS);
       if (!group) return null;
       i = group.end;
@@ -175,7 +184,7 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
       if (space.includes("\n\n")) return null;
       const at = i + space.length;
       // `\setlength\parindent{0pt}`: an unbraced length.
-      const unbraced = k === 0 && /^(?:setlength|addtolength)$/.test(command[1]) ? /^\\[A-Za-z@]+/.exec(text.slice(at, at + 60)) : null;
+      const unbraced = k === 0 && /^(?:setlength|addtolength|renewcommand)$/.test(command[1]) ? /^\\[A-Za-z@]+/.exec(text.slice(at, at + 60)) : null;
       if (unbraced) { i = at + unbraced[0].length; continue; }
       const group = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
       if (!group) return null;
@@ -186,7 +195,7 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
 }
 
 /** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
-const INLINE_LAYOUT = /^\\(?:noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft)$/;
+const INLINE_LAYOUT = /^\\(?:noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing)$/;
 /** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
@@ -273,6 +282,8 @@ const TEXT_BLOCKS: Record<string, string> = {
   keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords",
   // amsmath's `subequations` (numbering 3a, 3b): its equations are drawn on their own, and its lines fold away.
   subequations: "cm-vis-sized",
+  // revtex's `widetext` (text set across both columns): layout, whose lines fold away.
+  widetext: "cm-vis-sized",
   // `\begin{small} … \end{small}`: a size, which draws nothing; its lines fold away.
   ...Object.fromEntries(["tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge"].map((size) => [size, "cm-vis-sized"])),
 };
@@ -594,19 +605,32 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   if (aastexTitle && aastexTitle.from < from && from < aastexTitle.to) consumed.push([aastexTitle.from, aastexTitle.to]);
 
   /** A use of a macro that writes a figure's caption (`\mycap{…}` for `\caption{…}`), maybe with a label: the caption's text. */
-  const captionMacro = (use: SyntaxNode): string | null => {
+  const captionMacro = (use: SyntaxNode): CaptionMacroUse | null => {
     const ctrl = use.firstChild;
     const name = ctrl ? read(state, ctrl.from + 1, ctrl.to) : "";
-    if (!name || !structureMacroNames(defs).has(name) || !macroAt(defs, name, use.from)) return null;
+    const macro = name && structureMacroNames(defs).has(name) ? macroAt(defs, name, use.from) : null;
+    if (!macro) return null;
     // An argument the parser ends early (`\mycap{{ figure.}` with its `}` lines after `\end{figure}`) is read past the
     // float in the text: the caption would swallow `\end{figure}`, and a brace typed far below would make it one.
     if (use.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError)) return null;
     const expansion = expandLatexMacroUse(read(state, use.from, Math.min(doc.length, use.from + 4000)), defs, { mode: "text", pos: use.from });
     if (!expansion) return null;
     const parts = topConstructs(expansion.text);
-    if (parts[0]?.name !== "Caption" || parts.length > 2 || (parts.length === 2 && parts[1].name !== "Label")) return null;
+    if (parts[0]?.name !== "Caption") return null;
     const range = argumentInner(parts[0].getChild("TextArgument") ?? parts[0]);
-    return range ? expansion.text.slice(range.from, range.to) : null;
+    if (!range) return null;
+    const text = expansion.text.slice(range.from, range.to);
+    if (parts.length === 1 || (parts.length === 2 && parts[1].name === "Label")) return { text, body: [] };
+    // `\tbl{caption}{\begin{tabular}…}` for `\caption{#1}\noindent\makebox[\linewidth]{#2}` (the OD estimation paper):
+    // the caption, and the arguments put in a box after it, which are the float's content (checked and drawn as such).
+    const plan = captionBoxPlan(macro);
+    if (!plan) return null;
+    const body: SyntaxNode[] = [];
+    for (const [index, argument] of use.getChildren("TextArgument").entries()) {
+      if (plan.body.has(index + 1)) body.push(argument);
+      else if (!plan.caption.has(index + 1)) return null;
+    }
+    return { text, body };
   };
 
   const readNode = (start: number, end: number) => read(state, start, end);
@@ -794,6 +818,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // The grammar may end a definition early (`\newcommand*`): its name and body that follow are source too.
         const extent = DEFINITION_NODES.has(name) ? definitionExtentAt(defs, ref.from) : null;
         if (extent && extent.to > ref.to) consumed.push([ref.from, extent.to]);
+        // `\renewcommand{\theequation}{S\arabic{equation}}` in the body: a counter's format, which numbering reads; its
+        // line folds away as other layout lines do.
+        if (name === "RenewCommand" && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !isConsumed(ref)) {
+          const line = layoutLine(state, ref.from);
+          if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
+        }
         return false;
       }
       if (env.preambleEnd > 0 && ref.to <= env.preambleEnd) return false;
@@ -2290,7 +2320,7 @@ function boxUse(node: SyntaxNode, state: EditorState) {
  * labels, comments and layout commands. Text, other commands and sub-figures
  * are not drawn by it, so such a float stays source (its parts render on their own).
  */
-function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefinitions, captionMacro: (use: SyntaxNode) => string | null) {
+function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefinitions, captionMacro: (use: SyntaxNode) => CaptionMacroUse | null) {
   const content = node.getChild("Content");
   if (!content) return true;
   // algorithm2e's statements are the float's body: covered when they can be read.
@@ -2342,6 +2372,13 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     if (name === "Input" || name === "Include") return false;
     // `\[ \input{dict.tikz} \]`, a tikz-cd diagram in a formula: a drawing too.
     if (mathDrawing(ref.node, state)) return false;
+    // A box of text around a minipage (`\colorbox{c}{\begin{minipage}{\dimexpr…\relax}…}`): a framed box of text.
+    if (name === "ColorBoxCommand") {
+      const box = textBoxUse(ref.node, state, defs);
+      if (box) noteUntil = Math.max(noteUntil, ref.from + box.end);
+      else covered = false;
+      return false;
+    }
     if (name === "UnknownCommand") {
       const ctrl = ref.node.firstChild;
       const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
@@ -2368,12 +2405,18 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       // `\subfigure[caption]{…}`: a panel, its caption in brackets and its content checked as the float's.
       if (isSubFloatCommand(ref.node, readState)) { panel(ref.node); return false; }
       // caption's `\captionof{table}{…}`, KOMA's `\captionabove{…}`, and a macro that writes the caption (`\mycap{…}`), are captions.
-      if (CAPTION_OF.test(command) || KOMA_CAPTION.test(command) || captionMacro(ref.node) !== null) { caption(ref.node); return false; }
+      if (CAPTION_OF.test(command) || KOMA_CAPTION.test(command)) { caption(ref.node); return false; }
+      // A caption macro's content arguments (`\tbl{caption}{\begin{tabular}…}`) are checked as the float's content.
+      const written = captionMacro(ref.node);
+      if (written) { caption(ref.node); for (const argument of written.body) argument.cursor().iterate(visit); return false; }
       // `\resizebox{\linewidth}{!}{\input{fig}}`: a drawing, scaled.
       if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel, defs, notesFrom)) covered = false; return false; }
       // Layout with what it takes (`\vskip 0.15in`, `\vspace*{2pt}`, `\setlength\tabcolsep{3pt}`, `\aboverulesep = 2mm`,
       // acmart's `\Description{…}`): none of it is drawn, so none of it is content.
       if (FIGURE_LAYOUT.test(command) || SIZE_COMMAND.test(command) || FLOAT_LENGTHS.test(command)) { noteUntil = Math.max(noteUntil, layoutExtent(state, ctrl!.to, command)); return false; }
+      // `\fbox{\begin{minipage}…}`, or a macro writing such a box (cs.CL 2611.11838's `\genbox{color}{title}{text}`).
+      const box = textBoxUse(ref.node, state, defs);
+      if (box) { noteUntil = Math.max(noteUntil, ref.from + box.end); return false; }
       if (!layoutMacro(ref.node, state, defs)) covered = false;
       return false;
     }
@@ -2384,8 +2427,9 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { covered = false; return false; }
       if (env === "tikzpicture" || TABULAR_NAMES.test(env)) return false;
       if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state, defs)) covered = false; return false; }
-      // adjustbox's `\begin{adjustbox}{width=\linewidth}` and threeparttable: around the content, which is checked.
-      if (env === "adjustbox" || env === "threeparttable" || env === "ThreePartTable") return undefined;
+      // adjustbox's `\begin{adjustbox}{width=\linewidth}`, threeparttable and revtex's `ruledtabular` (drawn as the
+      // grid's rules): around the content, which is checked.
+      if (env === "adjustbox" || env === "threeparttable" || env === "ThreePartTable" || env === "ruledtabular") return undefined;
       // overpic: an image with text put over it, drawn without the overlay; a `picture` puts labels over the images
       // around it (Neyshabur's `\begin{picture}(0,0)\put(-162,90){$\ell_2$ norm}…`), noted as an overlay.
       if (env === "overpic" || env === "picture") return false;
@@ -2518,6 +2562,90 @@ function layoutMacro(node: SyntaxNode, state: EditorState, defs: LatexDefinition
   return !!use && layoutOnly(use.text);
 }
 
+/** A use of a macro that writes a float's caption: the caption's text, and the arguments it puts after it as content. */
+type CaptionMacroUse = { text: string; body: SyntaxNode[] };
+/** Boxes a caption macro may put its content in (`\makebox[\linewidth]{#2}`), up to the group that holds it. */
+const CONTENT_BOXES = /\\(?:makebox|framebox|parbox|resizebox\*?|scalebox|adjustbox|mbox|centerline|hbox(?:\s*to\s*\\[A-Za-z@]+)?)\s*(?:\[[^\]]*\]\s*|\{[^{}#]*\}\s*)*(?=\{)/g;
+const captionBoxPlans = new WeakMap<object, { caption: Set<number>; body: Set<number> } | null>();
+/**
+ * A caption macro whose body is `\caption{#1}` followed by layout and a box around other arguments
+ * (`\caption{#1}\noindent\makebox[\linewidth]{#2}`): which arguments are the caption's and which the content's; null otherwise.
+ */
+function captionBoxPlan(macro: { body: string; optional?: string; spec?: unknown; arity: number }) {
+  if (captionBoxPlans.has(macro)) return captionBoxPlans.get(macro)!;
+  let plan: { caption: Set<number>; body: Set<number> } | null = null;
+  const head = macro.optional === undefined && !macro.spec ? /^\s*\\caption\s*(?:\[[^\]]*\]\s*)?\{/.exec(macro.body) : null;
+  const group = head ? readGroup(macro.body, head[0].length - 1, TEX_GROUPS) : null;
+  if (head && group) {
+    const caption = new Set([...macro.body.slice(0, group.end).matchAll(/#(\d)/g)].map((match) => Number(match[1])));
+    const rest = macro.body.slice(group.end)
+      .replace(/\\label\s*\{[^{}]*\}/g, "")
+      .replace(CONTENT_BOXES, "")
+      .replace(/\\([A-Za-z@]+)(?![A-Za-z@])/g, (whole, name: string) => (FIGURE_LAYOUT.test(`\\${name}`) || SIZE_COMMAND.test(`\\${name}`) ? "" : whole))
+      .replace(/[{}\s]/g, "");
+    const body = new Set([...rest.matchAll(/#(\d)/g)].map((match) => Number(match[1])));
+    // Only parameters are left, each its own, none also in the caption.
+    if (body.size && /^(?:#\d)+$/.test(rest) && rest.length === body.size * 2 && [...body].every((n) => !caption.has(n))) plan = { caption, body };
+  }
+  captionBoxPlans.set(macro, plan);
+  return plan;
+}
+
+/** Boxes around a minipage of text: `\colorbox{c}{…}`, `\fcolorbox{f}{c}{…}`, `\fbox{…}`, `\framebox[w][s]{…}`. */
+const TEXT_BOX = /^\\(?:colorbox\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}|fcolorbox\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*\{[^{}]*\}|fbox|framebox\s*(?:\[[^\]]*\]\s*){0,2})\s*\{/;
+/** Layout before a box of text (a macro's `\vspace{0.2em}\noindent`). */
+const BOX_LAYOUT = /^(?:\s|%[^\n]*(?:\n|$)|\\(?:noindent|par|medskip|smallskip|bigskip|centering|vfill|hfill)(?![A-Za-z@])|\\[vh]space\*?\s*\{[^{}]*\})*/;
+
+/**
+ * A box of text at the start of `text`, after layout: a box holding one minipage and nothing else
+ * (`\colorbox{promptcolor}{%\n\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax} … \end{minipage}}`). The minipage's
+ * width is the box's business (a `\dimexpr`, `\linewidth`): only its text is drawn. Its text and where the box ends; null otherwise.
+ */
+function textBoxAt(text: string): { body: string; end: number } | null {
+  const at = BOX_LAYOUT.exec(text)![0].length;
+  const head = TEXT_BOX.exec(text.slice(at, at + 200));
+  const group = head ? readGroup(text, at + head[0].length - 1, TEX_GROUPS) : null;
+  if (!group) return null;
+  const inner = stripTexComments(group.content);
+  const begin = /^\s*\\begin\s*\{minipage\}/.exec(inner);
+  if (!begin) return null;
+  let i = begin[0].length;
+  for (let open = /^\s*\[/.exec(inner.slice(i)); open; open = /^\s*\[/.exec(inner.slice(i))) {
+    const optional = readOptional(inner, i + open[0].length - 1, TEX_GROUPS);
+    if (!optional) return null;
+    i = optional.end;
+  }
+  const widthOpen = /^\s*\{/.exec(inner.slice(i));
+  const width = widthOpen ? readGroup(inner, i + widthOpen[0].length - 1, TEX_GROUPS) : null;
+  const end = /\\end\s*\{minipage\}\s*$/.exec(inner);
+  if (!width || !end) return null;
+  const body = inner.slice(width.end, end.index);
+  return balancedEnvironments(body) ? { body: body.trim(), end: group.end } : null;
+}
+
+/**
+ * A box of text in a float (`\colorbox{…}{\begin{minipage}…}`, `\fbox{…}`, or a use of a document macro that writes one,
+ * cs.CL 2611.11838's `\genbox{color}{title}{text}`): its text and its length from the node's start; null otherwise.
+ */
+function textBoxUse(node: SyntaxNode, state: EditorState, defs: LatexDefinitions): { body: string; end: number } | null {
+  if (node.name === "ColorBoxCommand") {
+    const box = textBoxAt(read(state, node.from, node.to));
+    return box && box.end === node.to - node.from ? box : null;
+  }
+  const ctrl = node.name === "UnknownCommand" ? node.firstChild : null;
+  const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
+  if (!command) return null;
+  const isBox = /^\\(?:fbox|framebox|fcolorbox)$/.test(command);
+  const macro = isBox ? null : macroAt(defs, command.slice(1), node.from);
+  if (!isBox && (!macro || !/\\begin\s*\{minipage\}/.test(macro.body))) return null;
+  const window = read(state, node.from, Math.min(state.doc.length, node.from + 20000));
+  if (isBox) return textBoxAt(window);
+  const use = expandLatexMacroUse(window, defs, { mode: "text", pos: node.from });
+  const box = use ? textBoxAt(use.text) : null;
+  // Nothing but space and comments after the box in the expansion.
+  return use && box && !stripTexComments(use.text.slice(box.end)).trim() ? { body: box.body, end: use.length } : null;
+}
+
 /** Whether LaTeX is only layout a float may hold: lengths, `\renewcommand{\arraystretch}{…}`, sizes, `\centering`, space. */
 function layoutOnly(text: string) {
   return !text
@@ -2581,7 +2709,7 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
 }
 
 /** What ends a float's content: a grid, a drawing, an image, an included file or a caption. */
-const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox|tikzcd|quantikz|circuitikz|pchstack|pcvstack|tcolorbox|mdframed)\}|\\\]|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\plotone\s*\{[^{}]*\}|\\plottwo\s*\{[^{}]*\}\s*\{[^{}]*\}|\\(?:input|include|includestandalone|c?tikzfig)\s*\{[^{}]*\}|\\caption(?:of|above|below|aboveof|belowof)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
+const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|ruledtabular|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox|tikzcd|quantikz|circuitikz|pchstack|pcvstack|tcolorbox|mdframed)\}|\\\]|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\plotone\s*\{[^{}]*\}|\\plottwo\s*\{[^{}]*\}\s*\{[^{}]*\}|\\(?:input|include|includestandalone|c?tikzfig)\s*\{[^{}]*\}|\\caption(?:of|above|below|aboveof|belowof)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
 
 /**
  * Where a float's notes start: after its last grid, image, included file or caption. Text from there to the end is the
@@ -2656,7 +2784,7 @@ function floatNotes(node: SyntaxNode, state: EditorState, range?: { from: number
     .replace(/\\begin\s*\{picture\}[\s\S]*?\\end\s*\{picture\}/g, " ")
     .replace(/\\(?:singlespace|onehalfspace|doublespace|singlespacing|onehalfspacing|doublespacing)(?![A-Za-z@])/g, " ")
     .replace(/\\label\s*\{[^{}]*\}/g, "")
-    .replace(/\\(?:begin|end)\s*\{(?:tablenotes|threeparttable|ThreePartTable|singlespace|onehalfspace|doublespace|spacing|minipage|footnotesize|small|scriptsize|flushleft|center|justify|adjustbox)\}(?:\s*\[[^\]]*\])?(?:\s*\{[^{}]*\})?/g, " ")
+    .replace(/\\(?:begin|end)\s*\{(?:tablenotes|threeparttable|ThreePartTable|ruledtabular|singlespace|onehalfspace|doublespace|spacing|minipage|footnotesize|small|scriptsize|flushleft|center|justify|adjustbox)\}(?:\s*\[[^\]]*\])?(?:\s*\{[^{}]*\})?/g, " ")
     .replace(/\\(?:vspace|hspace)\*?\s*\{[^{}]*\}|\\rule\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{[^{}]*\}|\\setlength\s*\{?\\[A-Za-z@]+\}?\s*\{[^{}]*\}/g, " ")
     .replace(/\\floatfoot\s*\{/g, "{")
     // AASTeX's notes under a `table`: `\tablenotetext{a}{…}` after its mark, `\tablecomments{…}` and `\tablerefs{…}` after theirs.
@@ -2776,7 +2904,7 @@ function captionSegments(own: Collected, floatFrom: number): FigureContent[] {
  * up where numbering records them: at the float, at a minipage panel, at an
  * algorithm, or at a `\captionof` outside a panel.
  */
-function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: LatexDefinitions, expand: (text: string) => string | null, captionMacro: (use: SyntaxNode) => string | null, kind: FigureContent["kind"]): FigureSpec | null {
+function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: LatexDefinitions, expand: (text: string) => string | null, captionMacro: (use: SyntaxNode) => CaptionMacroUse | null, kind: FigureContent["kind"]): FigureSpec | null {
   if (!figureCovered(node, state, defs, captionMacro)) return null;
   const readState = (from: number, to: number) => read(state, from, to);
   const algorithm2e = algorithm2eSpec(node, state, defs);
@@ -2810,11 +2938,23 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     const found = (at: number) => { content.firstContent = Math.min(content.firstContent, at); };
     /** AASTeX's `\epsscale{…}`: the width of the plots after it. */
     let scale = 1;
-    root.cursor().iterate((ref) => {
+    /** The end of the last box of text read (a macro's arguments the parser left beside it are part of it). */
+    let boxUntil = -1;
+    const step = (ref: SyntaxNodeRef): boolean | undefined => {
       const name = ref.name;
-      if (name === "Comment") return false;
+      if (name === "Comment" || ref.from < boxUntil) return false;
       // A panel is content of its own: the float's caption after the panels is below them.
       if (ref.from !== root.from && skipPanels && isPanel(ref.node)) { found(ref.from); return false; }
+      // A box of text around a minipage (`\colorbox{c}{\begin{minipage}…}`, `\fbox{…}`, a macro writing one): framed text.
+      if ((name === "ColorBoxCommand" || name === "UnknownCommand") && ref.from < notesFrom) {
+        const box = textBoxUse(ref.node, state, defs);
+        if (box) {
+          (content.boxes ??= []).push({ title: null, body: box.body });
+          boxUntil = ref.from + box.end;
+          found(ref.from);
+          return false;
+        }
+      }
       if (name === "UnknownCommand") {
         const ctrl = ref.node.firstChild;
         const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
@@ -2845,7 +2985,12 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
           return false;
         }
         const written = captionMacro(ref.node);
-        if (written !== null) { content.caption = written; content.captionPos = ref.from; return false; }
+        if (written !== null) {
+          content.caption = written.text;
+          content.captionPos = ref.from;
+          for (const argument of written.body) argument.cursor().iterate(step);
+          return false;
+        }
         // `\subcaption*{Notes: …}`: a note under the caption (its group may follow the command outside its node).
         if (command === "\\subcaption" && ctrl && read(state, ctrl.to, ctrl.to + 1) === "*") {
           const note = starredNote(state, ctrl.to);
@@ -2944,8 +3089,10 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         else {
           // Rows written through the document's macros are drawn from their expansion (read-only).
           const built = macroBuiltTabular(source, expand, defs.columnTypes);
-          const tabular = built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from };
+          const tabular: NonNullable<FigureContent["tabulars"]>[number] = built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from };
           if (!parseTabular(tabular.source, 0, defs.columnTypes)?.rows.length) valid = false;
+          // revtex's `ruledtabular`: double rules above and below the grid.
+          for (let parent = ref.node.parent; parent && parent.from > root.from; parent = parent.parent) if (parent.name === "Environment" && environmentName(parent, readState) === "ruledtabular") { tabular.ruled = true; break; }
           content.tabulars!.push(tabular);
         }
         found(ref.from);
@@ -2970,7 +3117,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         return false;
       }
       return undefined;
-    });
+    };
+    root.cursor().iterate(step);
     content.numberOffset = numberAt - node.from;
     content.captionAbove = !subCommand && content.caption !== null && content.captionPos < content.firstContent;
     // algorithm2e sets its caption on top in the ruled styles and below otherwise, wherever it is written.
@@ -2985,7 +3133,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       const intro = algorithmIntro(node, state);
       if (intro) content.intro = intro;
     }
-    if (root === node) {
+    // algorithm2e's statements are the float's body, not notes after its caption (cs.DS 2611.09172's caption on top).
+    if (root === node && !algorithm2e) {
       const notes = floatNotes(node, state);
       const before = notesBefore && floatNotes(node, state, notesBefore);
       if (before) content.notes = [...(content.notes ?? []), before];
@@ -2998,6 +3147,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
   node.cursor().iterate((ref) => {
     if (ref.from === node.from) return undefined;
     if (ref.name === "Comment") return false;
+    // The minipage in a box of text (`\fbox{\begin{minipage}…}`) is the box's, not a panel.
+    if (ref.name === "ColorBoxCommand" || (ref.name === "UnknownCommand" && textBoxUse(ref.node, state, defs))) return false;
     if (isPanel(ref.node)) { panels.push(ref.node); return false; }
     return undefined;
   });
