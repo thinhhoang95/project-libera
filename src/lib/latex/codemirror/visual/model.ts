@@ -115,16 +115,17 @@ function touchesGroups(tr: Transaction) {
 const discardingKey = (state: EditorState) => `${[...discardingMacros(visualDefinitions(state)).keys()].join(",")}\u0000${conditionalFactsKey(visualDefinitions(state))}`;
 
 /** What `\iffalse … \fi` and uses of macros that discard their arguments leave out (structure.ts `disabledRegions`): kept in step with edits. */
-export const disabledField = StateField.define<Array<{ from: number; to: number }>>({
+export const disabledField = StateField.define<Array<{ from: number; to: number; braced?: boolean }>>({
   create: (state) => disabledRegions(state.doc.toString(), discardingMacros(visualDefinitions(state)), visualDefinitions(state)),
   update(value, tr) {
     const discarding = discardingMacros(visualDefinitions(tr.state));
     const recompute = () => disabledRegions(tr.state.doc.toString(), discarding, visualDefinitions(tr.state));
     if (discardingKey(tr.startState) !== discardingKey(tr.state)) return recompute();
     if (!tr.docChanged) return value;
-    if (touchesConditionals(tr) || (discarding.size && touchesGroups(tr))) return recompute();
+    // A braced test's branches (`\iftoggle{t}{…}{…}`, structure.ts) end at their braces, as a discarding macro's arguments do.
+    if (touchesConditionals(tr) || ((discarding.size || value.some((region) => region.braced)) && touchesGroups(tr))) return recompute();
     if (!value.length) return value;
-    return value.map((region) => ({ from: tr.changes.mapPos(region.from, 1), to: tr.changes.mapPos(region.to, -1) })).filter((region) => region.to > region.from);
+    return value.map((region) => ({ ...region, from: tr.changes.mapPos(region.from, 1), to: tr.changes.mapPos(region.to, -1) })).filter((region) => region.to > region.from);
   },
 });
 
@@ -169,7 +170,7 @@ export function noteBodyStart(tr: Transaction) {
 }
 
 /** Commands that define something, or that change which definitions TeX runs (conditionals, groups, verbatim). */
-const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|declare|def|gdef|edef|xdef|let|mathchardef|setboolean|loop|repeat|unless|ProcessOptions|ExecuteOptions|[A-Za-z@]+(?:true|false)(?![A-Za-z@])|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage|input|graphicspath|alg(?:new|renew)command|algdef|algblock|algtext|SetKw|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
+const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|declare|def|gdef|edef|xdef|let|mathchardef|setboolean|set(?:bool|toggle)|not(?:toggle|bool)|PassOptions|loop|repeat|unless|ProcessOptions|ExecuteOptions|[A-Za-z@]+(?:true|false)(?![A-Za-z@])|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|(?:New|Renew|Provide)Expandable|documentclass|usepackage|input|graphicspath|alg(?:new|renew)command|algdef|algblock|algtext|SetKw|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
 
 function computeDefinitions(state: EditorState, sources: readonly MacroSource[]): LatexDefinitions {
   return collectLatexDefinitions(sources, { text: state.doc.toString(), bodyStart: bodyStartIn(state.doc) });

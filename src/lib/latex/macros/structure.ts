@@ -1,4 +1,4 @@
-import { decideConditional, evaluateTexConditionals, opensConditional, type ConditionalFacts } from "./conditionals";
+import { BRACED_CONDITIONAL, decideBracedConditional, decideConditional, evaluateTexConditionals, opensConditional, type ConditionalFacts } from "./conditionals";
 import { conditionalFacts, conditionalFactsKey, definitionExtentAround, definitionExtentAt, macroAt, switchAt, type LatexDefinitions, type LatexMacro } from "./definitions";
 
 /* Macros that write a document's structure: `\newcommand{\mysec}[1]{\section{#1}}`,
@@ -133,7 +133,7 @@ export const MATH_ENVIRONMENT = /^(?:equation|align|alignat|flalign|gather|multl
 
 /** TeX's conditionals, which each need a `\fi`; `\newif\ifdraft` adds `\ifdraft`. (`\iftoggle`, `\ifthenelse` take arguments and need none.) */
 const PRIMITIVE_IFS = new Set(["if", "ifx", "ifnum", "ifdim", "ifodd", "iftrue", "iffalse", "ifcase", "ifdefined", "ifcsname", "ifmmode", "ifvmode", "ifhmode", "ifinner", "ifvoid", "ifhbox", "ifvbox", "ifeof", "iffontchar", "ifincsname", "ifpdf"]);
-const disabledCache = new Map<string, { names: string; regions: Array<{ from: number; to: number }> }>();
+const disabledCache = new Map<string, { names: string; regions: Array<{ from: number; to: number; braced?: boolean }> }>();
 const discardCache = new WeakMap<LatexDefinitions, ReadonlyMap<string, number>>();
 
 /**
@@ -190,11 +190,11 @@ function groupsEnd(text: string, at: number, count: number) {
  * their arguments (`\cut{…}` with `\newcommand{\cut}[1]{}`), through their
  * arguments. Neither numbered nor drawn.
  */
-export function disabledRegions(text: string, discarding: ReadonlyMap<string, number> = new Map(), defs?: LatexDefinitions): Array<{ from: number; to: number }> {
+export function disabledRegions(text: string, discarding: ReadonlyMap<string, number> = new Map(), defs?: LatexDefinitions): Array<{ from: number; to: number; braced?: boolean }> {
   const used = [...discarding.keys()].filter((name) => text.includes(`\\${name}`));
   const comments = text.includes("\\begin{comment}");
   // With the document's definitions, any conditional may be decided (`\ifnum\llncs=0`, a `\newif` switch).
-  if (!(defs ? /\\if/ : /\\if(?:false|x|num)?(?![A-Za-z@])/).test(text) && !used.length && !comments) return [];
+  if (!(defs ? /\\if|\\not(?:toggle|bool)/ : /\\if(?:false|x|num)?(?![A-Za-z@])/).test(text) && !used.length && !comments) return [];
   const names = `${used.join(",")}\u0000${defs ? `${conditionalFactsKey(defs)}\u0000${defs.fingerprint}` : ""}`;
   const cached = disabledCache.get(text);
   if (cached && cached.names === names) return cached.regions;
@@ -262,21 +262,38 @@ function staticallyFalse(text: string, at: number, name: string) {
  */
 function falseRegions(text: string, defs?: LatexDefinitions) {
   if (!defs) return staticFalseRegions(text);
-  const regions: Array<{ from: number; to: number }> = [];
+  const regions: Array<{ from: number; to: number; braced?: boolean }> = [];
   const declared = new Set([...text.matchAll(/\\newif\s*\\(if[A-Za-z@]+)/g)].map((match) => match[1]));
   const switches: Pick<ConditionalFacts, "switchState"> = { switchState: (name) => (declared.has(name) ? null : switchAt(defs, name, Number.MAX_SAFE_INTEGER)) };
   /** Open conditionals, innermost last; `from`: where the region it leaves out started (-1 when none is open). */
   const stack: Array<{ value: boolean | null; inElse: boolean; from: number }> = [];
   // Escaped characters (`\%`, `\\`) first: they are no comment and no command.
-  const token = /\\[^A-Za-z@]|%[^\n]*|\\(unless|if[A-Za-z@]*|fi|else|or|repeat)(?![A-Za-z@])/g;
+  const token = /\\[^A-Za-z@]|%[^\n]*|\\(unless|if[A-Za-z@]*|not(?:toggle|bool)|fi|else|or|repeat)(?![A-Za-z@])/g;
   let unless = -1;
+  /** The branches braced tests do not take, ahead of the scan: skipped whole. */
+  const untaken: Array<{ from: number; to: number }> = [];
   for (let match = token.exec(text); match; match = token.exec(text)) {
     const name = match[1];
     if (!name) continue;
+    const skip = untaken.find((range) => range.from <= match!.index && match!.index < range.to);
+    if (skip) { token.lastIndex = skip.to; continue; }
     const extent = definitionExtentAround(defs, match.index);
     if (extent) { token.lastIndex = Math.max(token.lastIndex, extent.to); continue; }
     const end = match.index + match[0].length;
     if (name === "unless") { unless = match.index; continue; }
+    if (BRACED_CONDITIONAL.test(name)) {
+      // etoolbox's and ifthen's tests (`\iftoggle{long}{…}{…}`), decided as `\iffalse` is: the test and the branch not
+      // taken are left out, the branch taken is drawn (inside a branch left out, nothing is decided).
+      const decided = stack.some((open) => open.from >= 0) ? null : decideBracedConditional(text, end, name, conditionalFacts(defs, match.index));
+      if (decided && decided.value !== null) {
+        const taken = decided.value ? decided.yes : decided.no;
+        regions.push({ from: match.index, to: taken.from + 1, braced: true }, { from: taken.to - 1, to: decided.no.to, braced: true });
+        if (decided.value) untaken.push({ from: decided.no.from, to: decided.no.to });
+        token.lastIndex = taken.from + 1;
+      }
+      unless = -1;
+      continue;
+    }
     // `\newif\ifarxiv` names a switch: no conditional opens there.
     if (name.startsWith("if") && /\\newif\s*$/.test(text.slice(Math.max(0, match.index - 16), match.index))) { unless = -1; continue; }
     const left = stack.some((open) => open.from >= 0);

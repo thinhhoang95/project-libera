@@ -7,7 +7,7 @@ import { readCtable } from "../codemirror/visual/table-model";
 import { disabledRegions, discardingMacros, isPairMacro, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, regionContaining, structureMacroNames, usesStructureMacro } from "./structure";
 
 /** Definitions whose body is not run where it is written: nothing in it is counted. */
-const DEFINITION_START = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|[gex]?def|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment)(?![A-Za-z@])/;
+const DEFINITION_START = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|[gex]?def|(?:New|Renew|Provide|Declare)(?:Expandable)?DocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment)(?![A-Za-z@])/;
 
 /* Numbers as the PDF will show them (docs/latex-visual-editor-plan.md §7.7):
  * one pass over the headings, equations, figures, tables, theorems,
