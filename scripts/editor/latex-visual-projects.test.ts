@@ -457,5 +457,3 @@ test("a chapter's start is the same when the project is numbered again after an 
     assert.deepEqual(await start("nb", extra), await start(`fresh${index}`, extra));
   }
 });
-
-void collectLatexDefinitions;
