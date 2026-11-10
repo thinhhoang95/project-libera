@@ -213,9 +213,43 @@ export type NumberingOptions = {
   includes?: ((name: string) => IncludedFile | null) | null;
 };
 
+/** Whether a text has a `\chapter` outside comments: only classes with chapters define it. */
+function usesChapters(text: string) {
+  return text.includes("\\chapter") && /\\chapter\*?\s*[[{]/.test(stripTexComments(text));
+}
+
+/**
+ * Whether the document is numbered by chapters: a known class, or one that defines `\chapter` (a custom class
+ * built on amsbook or book), which the document shows by using it, here or in a file it includes.
+ */
+function chapterNumbered(tree: Tree, read: Read, defs: LatexDefinitions, options: NumberingOptions) {
+  if (CHAPTER_CLASSES.test(defs.documentClass ?? "")) return true;
+  if (usesChapters(read(0, tree.length))) return true;
+  if (!options.includes) return false;
+  let found = false;
+  let looked = 0;
+  tree.iterate({
+    enter(ref) {
+      if (found || looked >= 40) return false;
+      if (ref.name !== "Input" && ref.name !== "Include") return undefined;
+      const argument = ref.node.getChild("InputArgument") ?? ref.node.getChild("IncludeArgument");
+      const file = argument ? options.includes?.(read(argument.from + 1, argument.to - 1).trim()) : null;
+      looked++;
+      if (file && usesChapters(file.read(0, file.tree.length))) found = true;
+      return false;
+    },
+  });
+  return found;
+}
+
+/** A counter format's text as typeset: primes written in math (`1$^\prime$`, BJS's assumptions) are ′. */
+function plainFormatText(text: string) {
+  return text.replace(/\$\s*(?:\^\s*(?:\\prime|\{\s*\\prime\s*\})|')\s*\$/g, "′").replace(/\\ensuremath\s*\{\s*\^\s*\\prime\s*\}/g, "′");
+}
+
 /** Numbers the document. `read` gives the text of a range of the document `tree` belongs to. */
 export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinitions, options: NumberingOptions = {}): LatexNumbering {
-  const chapters = CHAPTER_CLASSES.test(defs.documentClass ?? "");
+  const chapters = chapterNumbered(tree, read, defs, options);
   const counters = new Map<string, number>(Object.entries(options.start?.counters ?? {}));
   // `\setcounter{secnumdepth}{n}` in the body is a counter; in the preamble, a definition.
   const secnumdepth = () => (counters.has("secnumdepth") ? counters.get("secnumdepth")! : defs.secnumdepth ?? (chapters ? 2 : 3));
@@ -248,14 +282,20 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   };
   const step = (name: string) => { counters.set(name, value(name) + 1); reset(name); };
   const formatting = new Set<string>();
+  /**
+   * Where in the open file numbering has got to: a counter is printed with the `\the…` definition in force
+   * there, as TeX does (an appendix's `\renewcommand{\thesection}{B}` does not reach back to the introduction).
+   * In an included file or a macro's expansion, the position of the `\input` or the macro use.
+   */
+  let here = 0;
   /** A document's own `\renewcommand{\theequation}{…}`: its counter commands evaluated, "?" when it uses anything else. */
   const customFormat = (name: string): string | undefined => {
-    const macro = macroAt(defs, `the${name}`, Number.MAX_SAFE_INTEGER);
+    const macro = macroAt(defs, `the${name}`, here);
     if (!macro) return undefined;
     if (macro.arity || macro.unsupported || formatting.has(name)) return "?";
     formatting.add(name);
     try {
-      const text = macro.body.replace(/\\(arabic|roman|Roman|alph|Alph)\s*\{\s*([A-Za-z@]+)\s*\}|\\the([A-Za-z@]+)|\\relax|[{}]/g, (_whole, style?: "arabic" | "roman" | "Roman" | "alph" | "Alph", counter?: string, other?: string) => {
+      const text = plainFormatText(macro.body).replace(/\\(arabic|roman|Roman|alph|Alph)\s*\{\s*([A-Za-z@]+)\s*\}|\\the([A-Za-z@]+)|\\relax|[{}]/g, (_whole, style?: "arabic" | "roman" | "Roman" | "alph" | "Alph", counter?: string, other?: string) => {
         if (style && counter) return formatCounterValue(value(counter), style);
         if (other) return format(other);
         return "";
@@ -321,6 +361,9 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     const entryCount = entries.length;
     const savedLabels = new Map(labels);
     const savedRead = read;
+    // Positions in the included file start again at 0: what the open file skips (a definition's body) is not there.
+    const savedSkip = skipUntil;
+    skipUntil = -1;
     included.add(name);
     includeDepth++;
     read = file.read;
@@ -328,6 +371,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       file.tree.iterate(visitor);
     } finally {
       read = savedRead;
+      skipUntil = savedSkip;
       includeDepth--;
       included.delete(name);
       entries.length = entryCount;
@@ -432,6 +476,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   const visitor: Parameters<Tree["iterate"]>[0] = {
     enter(ref) {
       if (ref.from < skipUntil) return false;
+      if (!macroHost && !includeDepth) here = ref.from;
       const name = ref.name;
       // `\iffalse … \fi`: what starts inside is not counted; a node running past the `\fi` is entered for what follows it.
       if (disabled.length && !macroHost && !includeDepth) {

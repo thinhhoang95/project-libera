@@ -95,8 +95,12 @@ export type LatexDefinitions = {
   columnTypes: Map<string, LatexColumnType>;
   /** xcolor's `\definecolor{name}{model}{value}`, and `\colorlet{name}{color}` (model "", value the colour it names). */
   colors: Map<string, { model: string; value: string }>;
-  /** Where the open file's definitions are (absolute ranges, in order), so edits inside one re-read them. */
-  extents: Array<{ from: number; to: number }>;
+  /**
+   * Where the open file's definitions are (absolute ranges, in order), so edits inside one re-read them.
+   * `broken`: a definition without its body, which runs to the end so any later edit may complete it; it is
+   * no body to skip (what follows it is still the document).
+   */
+  extents: Array<{ from: number; to: number; broken?: boolean }>;
   /** Definitions that are wrong (a body using `#3` with two arguments). */
   problems: LatexDefinitionNote[];
   /** Definitions in forms the Visual mode does not render. */
@@ -117,8 +121,19 @@ const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustComma
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
 
-type Frame = { kind: "brace" | "group" | "env"; locals: LatexMacro[] };
+/** `keep`: a group whose definitions TeX runs at the top level later (`\AtBeginDocument{…}`), so they do not end with it. */
+type Frame = { kind: "brace" | "group" | "env"; locals: LatexMacro[]; keep?: boolean };
 type Branch = "run" | "skip" | "unknown";
+
+/** TeX's own conditionals (and engine tests): each is closed by a `\fi`. */
+const PRIMITIVE_CONDITIONALS = new Set([
+  "if", "ifx", "ifcat", "ifnum", "ifdim", "ifodd", "ifvmode", "ifhmode", "ifmmode", "ifinner", "ifvoid", "ifhbox", "ifvbox", "ifeof", "ifcase",
+  "ifdefined", "ifcsname", "iffontchar", "ifincsname", "ifpdfprimitive", "ifabsnum", "ifabsdim", "ifpdf", "ifxetex", "ifluatex", "ifPDFTeX", "ifpdftex", "ifvtex", "iftutex",
+]);
+/** etoolbox's tests of a command (`\ifdef\foo{yes}{no}`): macros with arguments, not conditionals. */
+const COMMAND_TESTS = /^if(?:def|undef|cs)[a-z]*$/;
+/** Commands whose argument TeX runs later at the top level: what it defines is not local to its braces. */
+const DEFERRED_TOP_LEVEL = /^(?:AtBeginDocument|AtEndPreamble|AfterEndPreamble|AtEndOfClass|AtEndOfPackage)$/;
 
 /**
  * A forward pass over TeX source, in step with the definition reader: what
@@ -131,6 +146,10 @@ class TexScanner {
   pos = 0;
   private frames: Frame[] = [];
   private conditionals: Array<{ first: Branch; second: Branch; inElse: boolean }> = [];
+  /** Conditionals the source makes with `\newif\iffoo`: closed by `\fi` whatever follows them. */
+  private newifs = new Set<string>();
+  /** Where the next `{` opens a group run later at the top level (`\AtBeginDocument{`). */
+  private deferredBrace = -1;
   private static SPECIAL = /[\\{}%]/g;
   constructor(readonly source: string) {}
 
@@ -156,7 +175,15 @@ class TexScanner {
     let index = this.frames.length - 1;
     if (kind) while (index >= 0 && this.frames[index].kind !== kind) index--;
     if (index < 0) return;
-    for (const frame of this.frames.splice(index)) for (const macro of frame.locals) macro.end ??= at;
+    for (const frame of this.frames.splice(index)) if (!frame.keep) for (const macro of frame.locals) macro.end ??= at;
+  }
+
+  /** Whether `\name` opens a conditional that a `\fi` closes; etoolbox's and biblatex's `\ifbool{…}{…}{…}` are macros. */
+  private opensConditional(name: string) {
+    if (PRIMITIVE_CONDITIONALS.has(name) || this.newifs.has(name)) return true;
+    if (COMMAND_TESTS.test(name)) return false;
+    // `\ifbool{x}`, `\iffieldundef{x}`, `\ifnumequal{a}{b}`: a test taking braced arguments.
+    return !/^\s*\{/.test(this.source.slice(this.pos, this.pos + 40));
   }
 
   private environmentName(at: number) {
@@ -182,8 +209,10 @@ class TexScanner {
       if (char === "{" || char === "}") {
         this.pos = at + 1;
         if (skipping) continue;
-        if (char === "{") this.frames.push({ kind: "brace", locals: [] });
-        else this.close("brace", at);
+        if (char === "{") {
+          const keep = at === this.deferredBrace;
+          this.frames.push(keep ? { kind: "brace", locals: [], keep } : { kind: "brace", locals: [] });
+        } else this.close("brace", at);
         continue;
       }
       const word = /^\\(?:([A-Za-z@]+)|[\s\S]?)/.exec(source.slice(at, at + 64))!;
@@ -194,7 +223,7 @@ class TexScanner {
       if (name === "else") { const top = this.conditionals[this.conditionals.length - 1]; if (top) top.inElse = true; continue; }
       if (name === "iffalse") { this.conditionals.push({ first: "skip", second: "run", inElse: false }); continue; }
       if (name === "iftrue") { this.conditionals.push({ first: "run", second: "skip", inElse: false }); continue; }
-      if (/^if/.test(name) && name !== "ifthenelse") {
+      if (/^if/.test(name) && name !== "ifthenelse" && this.opensConditional(name)) {
         // Under a false branch TeX only counts conditionals; elsewhere one it cannot evaluate.
         this.conditionals.push(skipping ? { first: "skip", second: "skip", inElse: false } : { first: "unknown", second: "unknown", inElse: false });
         continue;
@@ -202,8 +231,11 @@ class TexScanner {
       if (skipping) continue;
       if (name === "newif") {
         // `\newif\iffoo` defines a conditional; it does not open one.
-        const next = /^\s*\\[A-Za-z@]+/.exec(source.slice(this.pos, this.pos + 80));
-        if (next) this.pos += next[0].length;
+        const next = /^\s*\\([A-Za-z@]+)/.exec(source.slice(this.pos, this.pos + 80));
+        if (next) { this.pos += next[0].length; this.newifs.add(next[1]); }
+      } else if (DEFERRED_TOP_LEVEL.test(name)) {
+        const open = /^\s*\{/.exec(source.slice(this.pos, this.pos + 40));
+        if (open) this.deferredBrace = this.pos + open[0].length - 1;
       } else if (name === "verb" || name === "lstinline") {
         let index = this.pos;
         if (source[index] === "*") index++;
@@ -415,7 +447,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     const starred = source[index] === "*";
     if (starred) index++;
     const pos = effectivePos(context, start);
-    const global = GLOBAL_DEFINITIONS.test(command) || /\\global\s*$/.test(source.slice(Math.max(0, start - 24), start));
+    // `\global\def`, and LyX's `\global\long\def` (prefixes can come in any order).
+    const global = GLOBAL_DEFINITIONS.test(command) || /\\global\s*(?:\\(?:long|protected|outer)\s*)*$/.test(source.slice(Math.max(0, start - 48), start));
     /** The end of what this definition reads; its body is not run now, so the scanner jumps over it. */
     let end: number | null = null;
     /** A definition without its body: any edit after it may complete it. */
@@ -427,7 +460,16 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       added = addMacro(context, { name, arity: 0, body: "", pos, file: context.file, unsupported: true }, "renew");
     };
 
-    if (command === "newcommand" || command === "renewcommand" || command === "providecommand" || command === "DeclareRobustCommand") {
+    if (/^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/.test(command) && /\\WithSuffix\s*$/.test(source.slice(Math.max(0, start - 24), start))) {
+      // suffix's `\WithSuffix\newcommand\foo*{…}` defines what `\foo*` does; `\foo` itself keeps its meaning. The body
+      // is skipped (it is not run here), and the suffix is no missing body.
+      const name = readCommandName(source, index);
+      if (!name) continue;
+      const open = /^[^{\\]{0,8}\{/.exec(source.slice(name.end, name.end + 12));
+      const body = open ? readGroup(source, name.end + open[0].length - 1, TEX_GROUPS) : null;
+      if (body) end = body.end;
+      note(defs.unsupported, name.name, `\\${name.name} has a variant made with \\WithSuffix`);
+    } else if (command === "newcommand" || command === "renewcommand" || command === "providecommand" || command === "DeclareRobustCommand") {
       const name = readCommandName(source, index);
       if (!name) continue;
       index = name.end;
@@ -644,7 +686,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     }
 
     if (added && !global) (scanner.innermost()?.locals ?? []).push(added);
-    if (broken && context.file === undefined) defs.extents.push({ from: context.offset + start, to: context.offset + source.length });
+    if (broken && context.file === undefined) defs.extents.push({ from: context.offset + start, to: context.offset + source.length, broken: true });
     if (end !== null) {
       if (context.file === undefined) defs.extents.push({ from: context.offset + start, to: context.offset + end });
       // A definition's body is not run now: neither its groups nor its conditionals count.
@@ -720,20 +762,20 @@ export function macroAt(defs: LatexDefinitions, name: string, pos: number): Late
   return null;
 }
 
-/** The definition extent starting at `pos` in the open file, by binary search; null when none does. */
+/** The definition body starting at `pos` in the open file, by binary search; null when none does (a broken definition has none). */
 export function definitionExtentAt(defs: LatexDefinitions, pos: number) {
   const extents = defs.extents;
   let low = 0;
   let high = extents.length - 1;
   while (low <= high) {
     const middle = (low + high) >> 1;
-    if (extents[middle].from === pos) return extents[middle];
+    if (extents[middle].from === pos) return extents[middle].broken ? null : extents[middle];
     if (extents[middle].from < pos) low = middle + 1; else high = middle - 1;
   }
   return null;
 }
 
-/** The definition extent around `pos` (from < pos < to), if any. */
+/** The definition body around `pos` (from < pos < to), if any; a broken definition's extent holds no body. */
 export function definitionExtentAround(defs: LatexDefinitions, pos: number) {
   const extents = defs.extents;
   let low = 0;
@@ -744,7 +786,7 @@ export function definitionExtentAround(defs: LatexDefinitions, pos: number) {
     if (extents[middle].from < pos) { found = middle; low = middle + 1; } else high = middle - 1;
   }
   const extent = found >= 0 ? extents[found] : null;
-  return extent && extent.to > pos ? extent : null;
+  return extent && !extent.broken && extent.to > pos ? extent : null;
 }
 
 type PositionMapper = { mapPos: (pos: number, assoc?: number) => number };
@@ -763,7 +805,7 @@ export function mapLatexDefinitions(defs: LatexDefinitions, changes: PositionMap
   const note = (item: LatexDefinitionNote) => (item.file !== undefined ? item : { ...item, pos: map(item.pos) });
   return {
     ...defs, macros, environments,
-    extents: defs.extents.map((extent) => ({ from: map(extent.from), to: map(extent.to) })),
+    extents: defs.extents.map((extent) => ({ from: map(extent.from), to: map(extent.to), ...(extent.broken ? { broken: true } : {}) })),
     problems: defs.problems.map(note), unsupported: defs.unsupported.map(note),
   };
 }
