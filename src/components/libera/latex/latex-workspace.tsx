@@ -295,11 +295,12 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   // the main file's `.bbl`, the main file's own `thebibliography` (a chapter's citations), and this file's.
   const compiledBibPaths = useMemo(() => {
     const paths: string[] = [];
+    // A `.bbl` is not a LaTeX file type (it is not edited): it is found among all the notebook's files.
     const bbl = rootPath.replace(/\.(?:tex|ltx)$/i, ".bbl");
-    if (bbl !== rootPath && knownLatexPaths.has(bbl)) paths.push(bbl);
+    if (bbl !== rootPath && files.some((file) => file.path === bbl)) paths.push(bbl);
     if (rootPath !== filePath) paths.push(rootPath);
     return paths;
-  }, [filePath, knownLatexPaths, rootPath]);
+  }, [filePath, files, rootPath]);
   const compiledBibKey = compiledBibPaths.map((path) => `${path}@${fileUpdatedAt.get(path) ?? ""}`).join("|");
   const [compiledBibEntries, setCompiledBibEntries] = useState<BibEntrySummary[]>([]);
   useEffect(() => {
