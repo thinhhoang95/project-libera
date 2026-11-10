@@ -13,6 +13,10 @@ import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirro
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
 import { readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 import { computeLatexNumbering, referenceText } from "../../src/lib/latex/macros/numbering";
+import { readBibEntries, readCompiledBibliography, readLatexBibliographyReferences } from "../../src/lib/latex/project";
+import { citationStyle, citationText, type BibLookup } from "../../src/lib/latex/codemirror/visual/references";
+import { latexProjectField } from "../../src/lib/latex/codemirror/editing";
+import { EMPTY_AUX, parseLatexAux } from "../../src/lib/latex/aux-file";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -249,4 +253,125 @@ By \crefrange{eq:1}{eq:3} and \Crefrange{eq:1}{eq:2}, done.
   const text = visibleText(source);
   assert.match(text, /By eqs\. \(1\) to \(3\) and Equations \(1\) to \(2\), done\./);
   assert.doesNotMatch(text, /\{eq:3\}|\{eq:2\}/);
+});
+
+/** A lookup over entries as the project hands them over (a `.bib`'s first, compiled ones after). */
+function lookup(entries: ReturnType<typeof readCompiledBibliography>): BibLookup {
+  return (key) => {
+    const matches = entries.filter((entry) => entry.key === key);
+    const compiled = matches.find((entry) => entry.label !== undefined || entry.citeAuthor !== undefined || entry.number !== undefined);
+    const entry = matches[0];
+    return entry ? { author: entry.author ?? compiled?.author, year: entry.year ?? compiled?.year, title: entry.title, citeAuthor: compiled?.citeAuthor, label: compiled?.label, number: compiled?.number } : null;
+  };
+}
+
+const NATBIB_BBL = String.raw`\begin{thebibliography}{2}
+\bibitem[Jones et~al.(1990)Jones, Baker, and Williams]{jon90} Jones.
+\bibitem[Smith(1991)]{smi91} Smith.
+\end{thebibliography}`;
+
+test("B6-15/B5-16: a numeric style prints numbers: the compiled .bbl over the .bib, natbib's numbers option, an author–year .aux", () => {
+  // The .bib entry comes first in the project's list, the numeric .bbl's label wins.
+  const bib = readBibEntries(String.raw`@article{vaswani, author = {Vaswani, Ashish and Shazeer, Noam and Parmar, Niki}, title = {Attention}, year = {2017}}`);
+  const bbl = readCompiledBibliography(String.raw`\begin{thebibliography}{10}
+\bibitem{other} Other.
+\bibitem{vaswani} Ashish Vaswani. \newblock Attention.
+\end{thebibliography}`);
+  const project = latexProjectField.init(() => ({ labels: [], bibEntries: [...bib, ...bbl], files: [] }));
+  const text = visibleText("\\documentclass{article}\n\\begin{document}\nAs in \\cite{vaswani}.\n\\end{document}\n", [project]);
+  assert.match(text, /As in \[2\]\./);
+  assert.doesNotMatch(text, /Vaswani et al\./);
+  // natbib with `numbers`: an author–year .bbl prints the entries' places, \citet the authors and the number.
+  const numbers = citationStyle(readLatexDefinitions("\\usepackage[numbers]{natbib}"));
+  const natbib = readCompiledBibliography(NATBIB_BBL);
+  assert.equal(citationText({ command: "\\citep", keys: ["smi91", "jon90"] }, EMPTY_AUX, lookup(natbib), numbers), "[2, 1]");
+  assert.equal(citationText({ command: "\\citet", keys: ["jon90"], post: "p.~5" }, EMPTY_AUX, lookup(natbib), numbers), "Jones et al. [1, p. 5]");
+  // Without it, natbib's .aux numbers its author–year entries too: the authors win (SDID's "Athey et al. [13]").
+  const aux = parseLatexAux(String.raw`\bibcite{athey2019}{{13}{2019}{{Athey et~al.}}{{Athey, Bayati, Imbens, and Qu}}}
+\bibcite{lv2023}{{5}{2023{\natexlab{a}}}{{Lv et~al.}}{{Lv, Yan, and Qiu}}}
+\bibcite{plain}{3}`);
+  const authorYear = citationStyle(readLatexDefinitions("\\usepackage{natbib}"));
+  const none = lookup([]);
+  assert.equal(citationText({ command: "\\citet", keys: ["athey2019"] }, aux, none, authorYear), "Athey et\u00a0al. (2019)");
+  assert.equal(citationText({ command: "\\citep", keys: ["athey2019"] }, aux, none, authorYear), "[Athey et\u00a0al. 2019]");
+  assert.equal(citationText({ command: "\\citet", keys: ["athey2019"] }, aux, none, numbers), "Athey et\u00a0al. [13]");
+  // natbib's \natexlab in the .aux year (GaLore's "2023\natexlaba").
+  assert.equal(citationText({ command: "\\citep", keys: ["lv2023"] }, aux, none, authorYear), "[Lv et\u00a0al. 2023a]");
+  // A numeric style's .aux (plain.bst): a number, without authors.
+  assert.equal(citationText({ command: "\\cite", keys: ["plain"] }, aux, none, authorYear), "[3]");
+});
+
+test("B4-12/B4-14: textual citations keep their notes; apacite's \\citeA and natbib's author–year \\cite name the authors", () => {
+  const natbib = lookup(readCompiledBibliography(NATBIB_BBL));
+  const style = citationStyle(readLatexDefinitions("\\usepackage[authoryear]{natbib}"));
+  // As pdflatex prints them (natbib, authoryear).
+  assert.equal(citationText({ command: "\\citet", keys: ["jon90"], post: "p.~5" }, EMPTY_AUX, natbib, style), "Jones et al. (1990, p. 5)");
+  assert.equal(citationText({ command: "\\citet", keys: ["jon90"], pre: "see", post: "p.~5" }, EMPTY_AUX, natbib, style), "Jones et al. (see 1990, p. 5)");
+  assert.equal(citationText({ command: "\\citep", keys: ["jon90"], pre: "see", post: "ch.~2" }, EMPTY_AUX, natbib, style), "[see Jones et al. 1990, ch. 2]");
+  assert.equal(citationText({ command: "\\cite", keys: ["jon90"] }, EMPTY_AUX, natbib, style), "Jones et al. (1990)");
+  assert.equal(citationText({ command: "\\citet", keys: ["jon90", "smi91"] }, EMPTY_AUX, natbib, style), "Jones et al. (1990); Smith (1991)");
+  // Without natbib, \cite is parenthetical; apacite's \citeA is textual.
+  assert.equal(citationText({ command: "\\cite", keys: ["jon90"] }, EMPTY_AUX, natbib), "[Jones et al. 1990]");
+  assert.equal(citationText({ command: "\\citeA", keys: ["smi91"] }, EMPTY_AUX, natbib), "Smith (1991)");
+  const text = visibleText("\\documentclass{article}\n\\usepackage{apacite}\n\\begin{document}\nIn line with \\citeA[p.~3]{smi91}.\n\\end{document}\n", [latexProjectField.init(() => ({ labels: [], bibEntries: readCompiledBibliography(NATBIB_BBL), files: [] }))]);
+  assert.match(text, /In line with Smith \(1991, p\. 3\)\./);
+});
+
+test("B4-15: apacite's .bbl gives the cited authors, the year (with its letter) and the title", () => {
+  const entries = readCompiledBibliography(String.raw`\begin{thebibliography}{}
+
+\bibitem [\protect \citeauthoryear {%
+Aaronson%
+}{%
+Aaronson%
+}{%
+{\protect \APACyear {2001}}%
+}]{%
+aaronson2001}
+\APACinsertmetastar {%
+aaronson2001}%
+\begin{APACrefauthors}%
+Aaronson, D.%
+\end{APACrefauthors}%
+\unskip\
+\newblock
+\APACrefYearMonthDay{2001}{2}{}.
+\newblock
+{\BBOQ}\APACrefatitle {Price Pass-Through and the Minimum Wage} {Price
+  pass-through and the minimum wage}.{\BBCQ}
+
+\bibitem [\protect \citeauthoryear {%
+Aizpurua-Olaizola%
+, Soydaner%
+\ \BBA {} Usobiaga%
+}{%
+Aizpurua-Olaizola%
+\ \protect \BOthers {.}}{%
+{\protect \APACyear {2016}{\protect \BCnt {1}}}%
+}]{%
+aiz2016}
+Text.
+
+\bibitem [\protect \citeauthoryear {%
+Allegretto%
+\ \BBA {} Reich%
+}{%
+Allegretto%
+\ \BBA {} Reich%
+}{%
+{\protect \APACyear {2018}}%
+}]{%
+reich2018}
+Text.
+\end{thebibliography}`);
+  assert.deepEqual(entries.map((entry) => [entry.key, entry.citeAuthor, entry.year]), [
+    ["aaronson2001", "Aaronson", "2001"], ["aiz2016", "Aizpurua-Olaizola et al.", "2016a"], ["reich2018", "Allegretto and Reich", "2018"],
+  ]);
+  assert.equal(entries[0].title, "Price Pass-Through and the Minimum Wage");
+  assert.equal(citationText({ command: "\\citeA", keys: ["reich2018"] }, EMPTY_AUX, lookup(entries)), "Allegretto and Reich (2018)");
+});
+
+test("B7-27: a .bib named twice, or a key twice in it, is read once", () => {
+  assert.deepEqual(readLatexBibliographyReferences(String.raw`\ifnum\x=1 \bibliography{abbrev3,crypto} \else \bibliography{abbrev3,crypto} \fi`), ["abbrev3.bib", "crypto.bib"]);
+  assert.deepEqual(readBibEntries("@article{a, title={One}}\n@misc{a, title={Two}}\n@book{b, title={Three}}").map((entry) => [entry.key, entry.title]), [["a", "One"], ["b", "Three"]]);
 });
