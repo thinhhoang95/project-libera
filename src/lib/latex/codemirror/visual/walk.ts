@@ -1042,7 +1042,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (stray && !takesArguments) headerEnd = inside && inside.to <= stray.from ? inside.to : begin.getChild("EnvNameGroup")?.to ?? begin.to;
     if (inside && inside.to <= headerEnd) { const range = argumentInner(inside); note = range ? read(state, range.from, range.to) : null; }
     else if (!stray) {
-      const after = readOptional(read(state, begin.to, Math.min(doc.length, begin.to + 400)), 0, TEX_GROUPS);
+      // TeX skips spaces and one line end before the `[` (Callaway & Sant'Anna's `\begin{assumption}` with
+      // `[Irreversibility of Treatment]` on the next line); a blank line ends the search.
+      const tail = read(state, begin.to, Math.min(doc.length, begin.to + 400));
+      const gap = /^[ \t]*(?:\r?\n[ \t]*)?/.exec(tail)![0].length;
+      const after = tail[gap] === "[" ? readOptional(tail, gap, TEX_GROUPS) : null;
       if (after && (theorem || name === "proof")) { note = after.content; headerEnd = begin.to + after.end; }
     }
     let userArgs: string[] | null = null;

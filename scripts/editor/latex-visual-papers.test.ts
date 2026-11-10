@@ -993,6 +993,15 @@ Card, D. and A.~B. Krueger.
   assert.doesNotMatch(cells, /\\begin\{(?:minipage|itemize)\}|\\item|\\emph/);
 });
 
+test("a theorem's note on the line after \\begin is its note; after a blank line it is text (Callaway & Sant'Anna)", () => {
+  const preamble = "\\newtheorem{assumption}{Assumption}\n\\begin{document}\n";
+  const next = visibleText(`${preamble}\\begin{assumption}\n[Irreversibility of Treatment]\\label{ass:irrev} Units stay treated.\n\\end{assumption}\n\\end{document}\n`);
+  assert.match(next, /Assumption 1 \(Irreversibility of Treatment\)/);
+  assert.doesNotMatch(next, /\[Irreversibility/);
+  const blank = visibleText(`${preamble}\\begin{assumption}\n\n[Not a note] Text.\n\\end{assumption}\n\\end{document}\n`);
+  assert.match(blank, /\[Not a note\]/);
+});
+
 test("an array drawn on its own keeps its column specification (Featherweight Go's \\begin{array}{l} in rules)", () => {
   const doc = "\\begin{document}\n\\begin{array}{cc}\na & b \\\\\nc & d\n\\end{array}\n\\end{document}\n";
   assert.equal(constructs(visualState(doc)).some((item) => item.startsWith("math:")), true);
