@@ -103,12 +103,13 @@ Boxed words.
   // A listing written in the float is drawn as code (the text round's code blocks): a placeholder would hide the code.
   assert.match(text, /x = 1/);
   assert.doesNotMatch(text, /Code \(lstlisting\)/);
-  assert.match(text, /Framed text \(framed\)/);
   assert.match(text, /Tree \(forest\)/);
   assert.match(text, /Chemical structure \(chemfig\)/);
   assert.match(text, /Figure 1: Many things/);
-  assert.deepEqual(raw, ["\\mystery{x} \\another"], "two unknown commands on one line: one source line");
-  assert.doesNotMatch(text, /Boxed words|NP/, "a placeholder shows its name, not a drawing of its content");
+  // Framed text is prose: it stays visible as source (a placeholder would hide the words), apart from the other parts.
+  assert.deepEqual(raw, ["\\begin{framed}\nBoxed words.\n\\end{framed}", "\\mystery{x} \\another"], "framed text and two unknown commands on one line: source parts, the commands one line");
+  assert.doesNotMatch(text, /Framed text \(framed\)/);
+  assert.doesNotMatch(text, /NP/, "a drawing's placeholder shows its name, not a drawing of its content");
 });
 
 test("\\includesvg is an image, \\subimport a drawing from its file, and a \\subcaptionbox in a float is a panel", () => {

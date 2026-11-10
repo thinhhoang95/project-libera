@@ -2921,7 +2921,8 @@ type SourcePart = { from: number; to: number; name?: string };
 
 /** Things a float may hold that are known but drawn only in the PDF: shown as a placeholder naming them. */
 const SOURCE_PLACEHOLDERS: Record<string, string> = {
-  forest: "Tree (forest)", framed: "Framed text (framed)", shaded: "Shaded text (framed)", leftbar: "Text with a bar (framed)", snugshade: "Shaded text (framed)",
+  // `framed`, `shaded` and `leftbar` hold prose: a placeholder would hide the text, so they are source parts (visible, editable).
+  forest: "Tree (forest)",
   lstlisting: "Code (lstlisting)", minted: "Code (minted)", "\\chemfig": "Chemical structure (chemfig)", "\\Tree": "Tree (qtree)", "\\lstinputlisting": "Code (lstinputlisting)",
   "\\inputminted": "Code (minted)", dirtree: "Directory tree (dirtree)", "\\dirtree": "Directory tree (dirtree)", "\\schemestart": "Reaction scheme (chemfig)",
 };
