@@ -227,7 +227,10 @@ export function readSiunitx(source: string, at: number): { latex: string; end: n
   return { latex, end: i };
 }
 
-const SIUNITX_IN_MATH = /\\(?:SI|si|num|qty|unit|ang|SIrange|numrange|qtyrange|SIlist|numlist|qtylist|degree|celsius|micro|percent)(?![A-Za-z@])/;
+/** The siunitx commands drawn in running text (as a small formula). */
+export const SIUNITX_TEXT = /^\\(?:SI|si|num|qty|unit|ang|SIrange|numrange|qtyrange|SIlist|numlist|qtylist|degree|celsius|micro|percent)$/;
+
+const SIUNITX_IN_MATH =/\\(?:SI|si|num|qty|unit|ang|SIrange|numrange|qtyrange|SIlist|numlist|qtylist|degree|celsius|micro|percent)(?![A-Za-z@])/;
 
 /** A formula with the siunitx commands it reads written out; the ones it cannot read are left (KaTeX then fails on them). */
 export function siunitxForKatex(latex: string) {

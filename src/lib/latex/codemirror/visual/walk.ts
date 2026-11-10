@@ -9,6 +9,7 @@ import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
+import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { disabledField } from "./model";
 import { citationNoteText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
@@ -1812,6 +1813,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (macro) return macroUse(node, name);
     const drawn = packageCommand(node, ctrl, text, args);
     if (drawn !== null) return drawn;
+    if (SIUNITX_TEXT.test(text)) {
+      const unit = siunitxInText(node);
+      if (unit !== null) return unit;
+    }
     // `\bibitem[label]{key}` in `thebibliography`: its marker, `[n]` in order or the label it gives.
     if (text === "\\bibitem") {
       const keyArgument = args.find((arg) => !arg.optional);
@@ -1864,6 +1869,18 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     return undefined;
+  }
+
+  /** siunitx's `\SI{12.5}{\kilo\meter}` (and `\num`, `\si`, …) in text: drawn as KaTeX draws it in a formula; null when not read (source). */
+  function siunitxInText(node: SyntaxNode): false | null {
+    if (!structural || hasDirectError(node)) return null;
+    const unit = readSiunitx(read(state, node.from, Math.min(doc.length, node.from + 2000)), 0);
+    const html = unit ? renderKatex(unit.latex, false) : null;
+    if (!unit || !html) return null;
+    const to = node.from + unit.end;
+    emit({ kind: "math", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new MathWidget(html, false, false, read(state, node.from, to), false, 0, to - node.from) }] });
+    consumed.push([node.from, to]);
+    return false;
   }
 
   /**

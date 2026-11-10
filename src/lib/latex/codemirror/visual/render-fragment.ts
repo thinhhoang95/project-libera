@@ -5,6 +5,7 @@ import type { LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros } from "../../macros/expand";
 import { numberingEntryAt, type LatexNumbering } from "../../macros/numbering";
 import { katexForEnvironment, RAISE, renderKatex } from "./math-render";
+import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { citationStyle, citationText, referenceChipText, referencesInMath, type BibLookup } from "./references";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 
@@ -471,6 +472,12 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         return;
       }
       if (text === "\\today") { parent.appendChild(document.createTextNode(todayText())); return; }
+      // siunitx's `\SI{12.5}{\kilo\meter}` in a caption or cell: drawn as in a formula (when read whole within the command).
+      if (SIUNITX_TEXT.test(text)) {
+        const unit = readSiunitx(read(node.from, node.to), 0);
+        const html = unit && unit.end === node.to - node.from ? renderKatex(unit.latex, false) : null;
+        if (html) { const span = element("span", "cm-vis-fragment-math"); span.innerHTML = html; parent.appendChild(span); return; }
+      }
       // pifont's `\ding{51}` (and `\cmark`, `\xmark` written with it): the dingbat.
       if (text === "\\ding") {
         const argument = commandArguments(node).find((arg) => !arg.optional);
