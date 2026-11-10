@@ -3167,6 +3167,17 @@ html.dark .libera-workspace-region[data-ai-active="true"] .libera-ai-glow { opac
 .cm-vis-heading-number { color: var(--muted-foreground); }
 .cm-vis-runin { font-weight: 700; }
 .libera-latex-visual .cm-line.cm-vis-collapsed { font-size: 0; line-height: 0; height: 6px; overflow: hidden; }
+/* A block widget's vertical margin lies outside the box CodeMirror measures: its height map would drift by it, and clicks
+   and arrow keys further down would land lines away from where they point. Around a block widget, space is padding. */
+.libera-latex-visual .cm-content > :not(.cm-line) { margin-block: 0 !important; }
+.libera-latex-visual .cm-content > :is(.cm-vis-title-block, .cm-vis-tabular, .cm-vis-code-block, .cm-vis-contents) { display: flow-root; }
+.libera-latex-visual .cm-content > .cm-vis-title-block { padding-block: .8em 1.4em; }
+.libera-latex-visual .cm-content > :is(.cm-vis-tabular, .cm-vis-code-block, .cm-vis-contents) { padding-block: .4em; }
+.libera-latex-visual .cm-content > .cm-vis-columns { padding-block: .3em; }
+/* Framed boxes keep their frame tight: the space is the padding of the lines beside them. */
+.libera-latex-visual .cm-content > .cm-line:has(+ .cm-vis-figure) { padding-bottom: .5em; }
+.libera-latex-visual .cm-content > .cm-vis-figure + .cm-line { padding-top: .5em; }
+.libera-latex-visual .cm-content > .cm-vis-preamble + .cm-line { padding-top: .7em; }
 .cm-vis-math { cursor: pointer; border-radius: 4px; }
 .cm-vis-math-inline { padding-inline: 1px; }
 .cm-vis-math-display { display: block; padding: .35em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
