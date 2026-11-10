@@ -790,8 +790,15 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         case "Maketitle": {
           if (!structural) return false;
           const title = readTitleParts(state, node.from, defs.documentClass);
-          const span = aloneOnLines(doc, node.from, node.to);
+          // `\title{…}`, `\author{…}` and `\date{…}` written in the body right before `\maketitle`: what the title block
+          // shows, folded into it (Alt-click shows their source).
+          const bodyStart = Math.max(0, env.preambleEnd);
+          const run = node.from > bodyStart ? titleDeclarationsStart(read(state, bodyStart, node.from)) : null;
+          // Only within this walk's range, so the construct does not start before what is being built.
+          const declarations = run !== null && bodyStart + run >= from ? bodyStart + run : null;
+          const span = aloneOnLines(doc, declarations ?? node.from, node.to) ?? aloneOnLines(doc, node.from, node.to);
           const range = span ?? { from: node.from, to: node.to };
+          if (range.from < node.from) consumed.push([range.from, node.from]);
           emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TitleWidget(title.title, title.author, title.date, range.to - range.from, title.abstract) }] });
           return false;
         }
@@ -2003,6 +2010,40 @@ function frontMatterParts(text: string): { title: string | null; author: string 
   }
   if (title === null && !authors.length) return null;
   return { title, author: authors.length ? authors.join(" \\and ") : null, date };
+}
+
+/** What may come right before `\maketitle` and is shown by it: the title block's declarations. */
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors)$/;
+
+/**
+ * Where the run of title declarations that ends `text` starts (`text` is the body up to `\maketitle`), or null when
+ * something else comes right before `\maketitle`. Comments and spaces between them are part of the run.
+ */
+function titleDeclarationsStart(text: string): number | null {
+  let runStart: number | null = null;
+  let i = 0;
+  while (i < text.length) {
+    const space = /^\s+/.exec(text.slice(i, i + 400));
+    if (space) { i += space[0].length; continue; }
+    if (text[i] === "%") { const end = text.indexOf("\n", i); i = end < 0 ? text.length : end + 1; continue; }
+    const command = /^\\([A-Za-z@]+)\*?/.exec(text.slice(i, i + 60));
+    const start = i;
+    let end = -1;
+    if (command) {
+      end = i + command[0].length;
+      for (;;) {
+        const at = end + (/^[ \t]*/.exec(text.slice(end, end + 40))?.[0].length ?? 0);
+        const group = text[at] === "[" ? readOptional(text, at, TEX_GROUPS) : text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
+        if (!group) break;
+        end = group.end;
+      }
+    }
+    if (command && TITLE_DECLARATIONS.test(command[1])) { runStart ??= start; i = end; continue; }
+    // Anything else ends the run: the declarations after it may still make one.
+    runStart = null;
+    i = command ? end : i + 1;
+  }
+  return runStart;
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart. */

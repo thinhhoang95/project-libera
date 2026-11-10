@@ -588,6 +588,29 @@ See Exercise~\ref{ex:odd}.
   assert.equal(number(doc).labels.get("ex:odd")?.number, "1.1");
 });
 
+test("title declarations written in the body right before \\maketitle are folded into the title block (DiD, SDID, Carlini & Wagner)", () => {
+  const doc = String.raw`\documentclass{article}
+\begin{document}
+
+\title{Towards Evaluating the Robustness \\ of Neural Networks}
+\author{Nicholas Carlini \qquad David Wagner \\ University of California, Berkeley}
+% the date is empty
+\date{}
+
+\maketitle
+
+\section{Introduction}
+\end{document}
+`;
+  const text = visibleText(doc);
+  assert.doesNotMatch(text, /\\title|\\author|\\date/);
+  assert.match(text, /Towards Evaluating the Robustness/);
+  assert.match(text, /Nicholas Carlini/);
+  // Something else between them and \maketitle: they stay source.
+  const other = visibleText(doc.replace("\\date{}", "\\date{}\n\\setlength{\\parskip}{0pt}"));
+  assert.match(other, /\\title/);
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);
