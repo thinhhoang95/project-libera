@@ -1783,6 +1783,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function packageCommand(node: SyntaxNode, ctrl: SyntaxNode, text: string, args: ReturnType<typeof commandArguments>): false | undefined | null {
     const mandatory = args.filter((arg) => !arg.optional);
     const first = mandatory[0] && argumentInner(mandatory[0].node);
+    // `\ensuremath{…}` in text (lhs2TeX's `\ensuremath{\Conid{C}}`, 2610.41832): its argument, as an inline formula.
+    if (text === "\\ensuremath" && first && args[0] === mandatory[0] && !read(state, ctrl.to, first.from - 1).trim() && !hasDirectError(node)) {
+      const expanded = expandLatexMacros(read(state, first.from, first.to), defs, { mode: "math", pos: node.from });
+      const html = expanded.ok ? renderKatex(withReferences(expanded.text), false) : null;
+      if (!html) return undefined;
+      const end = mandatory[0].node.to;
+      emit({ kind: "math", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new MathWidget(html, false, false, read(state, node.from, end), false, 0, end - node.from, referenced(expanded.text)) }] });
+      consumed.push([node.from, end]);
+      return false;
+    }
     // A line holding only layout folds away.
     if (Object.hasOwn(LAYOUT_LINE_ARGS, text.slice(1))) {
       const line = layoutLine(state, node.from);
@@ -2062,7 +2072,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (!balancedEnvironments(use.text)) return undefined;
     const to = node.from + use.length;
     const fingerprint = use.used.join(",");
-    const ensure = /^\s*\\ensuremath\s*\{([\s\S]*)\}\s*$/.exec(use.text);
+    // AASTeX's `\newcommand{\css}{\ensuremath{\mathrm{CS}_{2}}\xspace}` (2611.08676): the trailing `\xspace` is a space,
+    // which the text after the use already has.
+    const ensure = /^\s*\\ensuremath\s*\{([\s\S]*)\}\s*(?:\\xspace\s*)?$/.exec(use.text);
     if (ensure || (needsMathMode(use.text) && macroAt(defs, name, node.from)?.mathOnly)) {
       // A math macro used in text through \ensuremath: drawn as a formula.
       const latex = ensure ? ensure[1] : use.text;

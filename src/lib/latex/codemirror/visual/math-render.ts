@@ -51,7 +51,92 @@ export const KATEX_MACROS: Record<string, string> = {
   "\\sqsupsetneq": "\\mathrel{\\underset{\\neq}{\\sqsupset}}",
   // TeX's null delimiter width, in cmathml's `\left.\kern-\nulldelimiterspace` (Larrauri & Živný's `\Crestrict`).
   "\\nulldelimiterspace": "1.2pt",
+  // AASTeX's solar and Earth symbols (2611.08676's `\left(…\right)_{\sun}`).
+  "\\sun": "\\odot",
+  "\\earth": "\\oplus",
+  // TeX's delimiters KaTeX lacks (2611.11568's `\Big\arrowvert`): the bars they draw. `\bracevert`, a brace's middle
+  // piece, is a thicker bar in TeX.
+  "\\arrowvert": "\\vert",
+  "\\Arrowvert": "\\Vert",
+  "\\bracevert": "\\vert",
+  // The slashed package's Feynman slash (2611.11568's `\slashed{k}`, `\slashed n_1`): a `/` centred over the
+  // argument, as slashed.sty sets it. The outer clap moves half the argument's width in, the inner one centres the slash.
+  "\\slashed": "{\\mathclap{\\hphantom{#1}\\mathclap{/}}#1}",
 };
+
+/** TeX's `\ooalign` rows (`\crcr` or `\cr` at the top level of its group). */
+function ooalignRows(content: string) {
+  const rows: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "\\") {
+      const name = /^\\(?:[A-Za-z@]+|.)/.exec(content.slice(i, i + 16))?.[0] ?? "\\";
+      if (depth === 0 && (name === "\\cr" || name === "\\crcr")) { rows.push(content.slice(from, i)); from = i + name.length; }
+      i += name.length - 1;
+    }
+  }
+  rows.push(content.slice(from));
+  return rows.map((row) => row.trim()).filter((row, index, all) => row || index < all.length - 1);
+}
+
+/** An `\ooalign` row as math: `$…$`, or plain characters (`/`); null for anything else. */
+function ooalignCell(row: string) {
+  const math = /^\$([^$]*)\$$/.exec(row);
+  if (math) return math[1];
+  return /^[^\\{}$&#%^_~]+$/.test(row) ? `\\text{${row}}` : null;
+}
+
+/**
+ * Plain TeX's overlay `\ooalign{\hfil/\hfil\crcr$k$}` (2611.11568's `\Slash`): two rows, one centred with `\hfil`
+ * on both sides, drawn on top of each other, the centred one over the middle of the other. Other overlays (both or
+ * neither row centred, boxes, more rows) are left: KaTeX then fails and the formula stays source.
+ */
+function ooalignForKatex(latex: string) {
+  return replaceGroups(latex, /\\ooalign\s*/g, (content) => {
+    const rows = ooalignRows(content);
+    const centred = rows.map((row) => /^\\(?:hfill?|hss)(?![A-Za-z])\s*([\s\S]*?)\s*\\(?:hfill?|hss)$/.exec(row)?.[1]);
+    const cells = rows.map((row, index) => ooalignCell(centred[index] ?? row));
+    const over = centred.findIndex((row) => row !== undefined);
+    if (rows.length !== 2 || cells.includes(null) || over < 0 || centred[1 - over] !== undefined) return `\\ooalign{${content}}`;
+    const base = cells[1 - over]!;
+    return `{\\mathclap{\\hphantom{${base}}\\mathclap{${cells[over]}}}${base}}`;
+  });
+}
+
+/** Text in small capitals as KaTeX can draw it: lower-case runs as smaller capitals; commands and `$…$` kept as written. */
+function smallCaps(text: string) {
+  let out = "";
+  for (let i = 0; i < text.length;) {
+    const char = text[i];
+    if (char === "\\") {
+      const name = /^\\(?:[A-Za-z@]+|.)/.exec(text.slice(i, i + 64))?.[0] ?? "\\";
+      out += name;
+      i += name.length;
+    } else if (char === "$") {
+      const end = text.indexOf("$", i + 1);
+      const to = end < 0 ? text.length : end + 1;
+      out += text.slice(i, to);
+      i = to;
+    } else if (/[a-z]/.test(char)) {
+      const run = /^[a-z]+/.exec(text.slice(i))![0];
+      out += `{\\small ${run.toUpperCase()}}`;
+      i += run.length;
+    } else {
+      out += char;
+      i++;
+    }
+  }
+  return out;
+}
+
+/** `\textsc{…}` as `\text{…}` in small capitals, also around commands and formulas (algorithm2e's `\textsc{Fetch($T.\nodes[i]$)}`). */
+function textscForKatex(latex: string): string {
+  return replaceGroups(latex, /\\textsc(?![A-Za-z@])\s*/g, (content) => `\\text{${smallCaps(content.includes("\\textsc") ? textscForKatex(content) : content)}}`);
+}
 
 /** mathtools' small matrices with delimiters, which KaTeX lacks: its `smallmatrix` between those delimiters. */
 const SMALL_MATRICES: Record<string, [string, string]> = {
@@ -234,7 +319,11 @@ const UNBRACED_ARGUMENT = /\\(hat|widehat|tilde|widetilde|bar|overline|underline
 export function forKatex(latex: string) {
   // `\raise.17ex\hbox{…}` (Mask R-CNN's `\app`, a raised ∼): KaTeX has no \raise or \lower; the box is drawn in place.
   let out = latex.includes("\\raise") || latex.includes("\\lower") ? latex.replace(RAISE, "") : latex;
-  if (out.includes("\\textsc")) out = out.replace(/\\textsc\s*\{([^{}]*)\}/g, (_, text: string) => `\\text{${text.replace(/[a-z]+/g, (run) => `{\\small ${run.toUpperCase()}}`)}}`);
+  if (out.includes("\\textsc")) out = textscForKatex(out);
+  if (out.includes("\\ooalign")) out = ooalignForKatex(out);
+  // booktabs' rules in a formula's array (2611.11191's `\begin{array}…\toprule … \midrule`): KaTeX's `\hline`.
+  // `\addlinespace` is space between rows; `\cmidrule` (a partial rule, which KaTeX cannot draw) stays: source.
+  if (/\\(?:toprule|midrule|bottomrule|addlinespace)(?![A-Za-z@])/.test(out)) out = out.replace(/\\(?:toprule|midrule|bottomrule)(?![A-Za-z@])(?:\s*\[[^\]]*\])?/g, "\\hline ").replace(/\\addlinespace(?![A-Za-z@])(?:\s*\[[^\]]*\])?/g, "");
   if (/\\[a-z]+\s*\\(?:math|text|operatorname|boldsymbol|bm)/.test(out)) out = out.replace(UNBRACED_ARGUMENT, "\\$1{$2}");
   if (out.includes("\\inferrule")) out = inferrulesForKatex(out);
   // tikzmark's `\tikzmarknode[draw=red]{name}{content}` (Self-RAG's framed Retrieve tokens): its content.
