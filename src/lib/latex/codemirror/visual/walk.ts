@@ -13,7 +13,7 @@ import { disabledField } from "./model";
 import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
-import { macroBuiltTabular, parseTabular, readLongTable } from "./table-model";
+import { macroBuiltTabular, parseTabular, readCtable, readLongTable } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
   ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
@@ -1064,6 +1064,25 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (inner && !hasDirectError(node) && !read(state, ctrl.to, argument.node.from).trim()) {
         const to = argument.node.to;
         if (structural) emit({ kind: "index", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ChipWidget("index", text, [read(state, inner.from, inner.to).trim()], {}, to - node.from) }] });
+        return false;
+      }
+    }
+    // The ctable package's `\ctable[caption={…}]{spec}{notes}{rows}`: a table float, drawn read-only (Callaway & Sant'Anna).
+    if (text === "\\ctable") {
+      const table = readCtable(read(state, node.from, Math.min(doc.length, node.from + 40000)));
+      if (table && parseTabular(table.tabular, 0, defs.columnTypes)) {
+        const end = node.from + table.length;
+        const span = aloneOnLines(doc, node.from, end);
+        const range = span ?? { from: node.from, to: end };
+        consumed.push([node.from, end]);
+        if (structural) {
+          const spec: FigureSpec = {
+            images: [], tabulars: [{ source: table.tabular, offset: node.from - range.from, readOnly: true }], caption: table.caption, captionPos: node.from,
+            captionAbove: table.caption !== null && !table.captionBelow, kind: "table", numberOffset: node.from - range.from, notes: table.notes.length ? table.notes : undefined,
+            env: "ctable", start: range.from, length: range.to - range.from,
+          };
+          emit({ kind: "figure", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(spec) }] });
+        }
         return false;
       }
     }

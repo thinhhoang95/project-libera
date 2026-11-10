@@ -3,6 +3,7 @@ import { latexParser as parser } from "../codemirror/latex-parser";
 import { hashString } from "../../macros/core";
 import { definitionExtentAt, macroAt, type LatexDefinitions } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse } from "./expand";
+import { readCtable } from "../codemirror/visual/table-model";
 import { disabledRegions, discardingMacros, isPairMacro, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, regionContaining, structureMacroNames, usesStructureMacro } from "./structure";
 
 /** Definitions whose body is not run where it is written: nothing in it is counted. */
@@ -551,6 +552,18 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             numberSubCaption(kind, node, defs.packages.includes("subfigure") ? (letter) => `(${letter})` : undefined);
           }
           return;
+        }
+        // The ctable package's `\ctable[caption={…},label=…]{…}{…}{…}`: a captioned table, numbered where it is.
+        if (command === "\\ctable" && !includeDepth && !macroHost) {
+          const table = readCtable(read(node.from, Math.min(tree.length, node.from + 40000)));
+          if (table && table.caption !== null) {
+            step("table");
+            const number = format("table");
+            entries.push({ pos: node.from, kind: "table", number });
+            if (table.label) labels.set(table.label.trim(), { number, kind: "table", pos: node.from });
+          }
+          if (table) skipUntil = node.from + table.length;
+          return false;
         }
         if (command === "\\appendix") {
           appendix = true;

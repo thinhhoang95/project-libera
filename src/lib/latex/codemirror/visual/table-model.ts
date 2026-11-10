@@ -4,6 +4,8 @@
  * environments. Rule lines are recorded but are not cells, and
  * `\multicolumn{n}{spec}{…}` is one cell spanning n columns. */
 
+import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
+
 export type TableCell = {
   /** The cell's text, trimmed, as a source range (absolute). */
   from: number;
@@ -57,6 +59,69 @@ const TABULAR_NEWLINE = /^\\tabularnewline(?![A-Za-z@])/;
 const RULE = /^\\(?:noalign(?![A-Za-z@])\s*\{[^}]*\}|(?:hline|toprule|midrule|bottomrule|addlinespace)(?![A-Za-z@])(\s*\[[^\]]*\])?|(?:cmidrule|cline)(?![A-Za-z@])(\s*\([^)]*\))?(\s*\[[^\]]*\])?(\s*\{[^}]*\})?|specialrule(?![A-Za-z@])(\s*\{[^}]*\}){0,3})/;
 
 /** The column letters of a specification, without rules, `@{…}`, `>{…}`, `p{…}` widths and repeats expanded. */
+/** A `ctable` read from its source: caption, label, the table as a tabular, its notes, and the command's length. */
+export type CtableReading = { caption: string | null; label: string | null; captionBelow: boolean; tabular: string; notes: string[]; length: number };
+
+/** Options of a `key=value` list, split at commas outside braces (`caption={A, B}`). */
+function keyValues(text: string) {
+  const values = new Map<string, string>();
+  let depth = 0;
+  let start = 0;
+  const add = (part: string) => {
+    const at = part.indexOf("=");
+    const key = (at < 0 ? part : part.slice(0, at)).trim();
+    if (!key) return;
+    const value = at < 0 ? "" : part.slice(at + 1).trim();
+    values.set(key, /^\{[\s\S]*\}$/.test(value) ? value.slice(1, -1) : value);
+  };
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "\\") { i++; continue; }
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") depth--;
+    else if (text[i] === "," && depth === 0) { add(text.slice(start, i)); start = i + 1; }
+  }
+  add(text.slice(start));
+  return values;
+}
+
+/**
+ * The ctable package's `\ctable[caption={…},label=…]{spec}{notes}{rows}` (Callaway & Sant'Anna's tables), as a
+ * tabular: `\FL` is the top rule, `\ML` a row end and a mid rule, `\LL` a row end and the bottom rule, `\NN` a row
+ * end; the notes are its `\tnote[mark]{text}`s. `source` starts at the command; null when it is not one.
+ */
+export function readCtable(source: string): CtableReading | null {
+  const head = /^\\ctable\s*/.exec(source);
+  if (!head) return null;
+  let i = head[0].length;
+  const skip = () => { while (/\s/.test(source[i] ?? "")) i++; };
+  const options = source[i] === "[" ? readOptional(source, i, TEX_GROUPS) : null;
+  if (options) { i = options.end; skip(); }
+  const groups: string[] = [];
+  for (let n = 0; n < 3; n++) {
+    skip();
+    const group = source[i] === "{" ? readGroup(source, i, TEX_GROUPS) : null;
+    if (!group) return null;
+    groups.push(group.content);
+    i = group.end;
+  }
+  const [spec, notesText, rows] = groups;
+  const values = keyValues(options?.content ?? "");
+  const notes: string[] = [];
+  for (const match of notesText.matchAll(/\\tnote\s*(?:\[([^\]]*)\])?\s*\{/g)) {
+    const group = readGroup(notesText, (match.index ?? 0) + match[0].length - 1, TEX_GROUPS);
+    if (group) notes.push(`${match[1] ? `${match[1]} ` : ""}${group.content.trim()}`);
+  }
+  const body = rows
+    .replace(/\\FL(?![A-Za-z@])/g, "\\toprule ")
+    .replace(/\\ML(?![A-Za-z@])/g, "\\\\ \\midrule ")
+    .replace(/\\LL(?![A-Za-z@])/g, "\\\\ \\bottomrule ")
+    .replace(/\\NN(?![A-Za-z@])/g, "\\\\ ");
+  return {
+    caption: values.get("caption") ?? null, label: values.get("label") ?? null, captionBelow: values.has("botcap"),
+    tabular: `\\begin{tabular}{${spec}}${body}\\end{tabular}`, notes, length: i,
+  };
+}
+
 export function parseColumnSpec(spec: string, types?: ColumnTypes) {
   return columnSpans(spec, 0, types)?.map((column) => column.letter) ?? [];
 }

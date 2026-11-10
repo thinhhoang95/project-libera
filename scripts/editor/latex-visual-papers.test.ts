@@ -671,6 +671,28 @@ $\\inferrule{a}{b}$ inline too.
   assert.match(text, /r-field/i);
 });
 
+test("ctable's tables are drawn and numbered, with their notes (Callaway & Sant'Anna)", () => {
+  const doc = String.raw`\documentclass{article}
+\usepackage{ctable}
+\begin{document}
+\begin{table}\caption{Earlier}\begin{tabular}{l}x\end{tabular}\end{table}
+\ctable[caption={Summary Statistics for Main Dataset},label=tab:ss, pos=t,notespar]{lcccc}{\tnote[]{\textit{Notes}: Summary statistics for counties.}}{\FL
+\multicolumn{1}{l}{}&\multicolumn{1}{c}{Treated}&\multicolumn{1}{c}{Untreated}&\multicolumn{1}{c}{Diff.}&\multicolumn{1}{c}{P-val}\ML
+~~Midwest&0.59&0.34&0.25&0.00\NN
+~~South&0.27&0.59&-0.32&0.00\LL
+}
+See Table~\ref{tab:ss}.
+\end{document}
+`;
+  assert.equal(number(doc).labels.get("tab:ss")?.number, "2");
+  assert.equal(constructs(visualState(doc)).filter((item) => item.startsWith("figure:")).length, 2);
+  const text = visibleText(doc);
+  assert.doesNotMatch(text, /\\ctable|\\FL|\\NN|\\ML|\\LL/);
+  assert.match(text, /Table 2: Summary Statistics for Main Dataset/);
+  assert.match(text, /Midwest/);
+  assert.match(text, /Notes: Summary statistics for counties\./);
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);
