@@ -8,7 +8,7 @@ import { resolveRelativeNotebookPath } from "../../project";
 import { applyEquationNumbers, renderKatex } from "./math-render";
 import { preambleOpenField, togglePreamble, visualAux, visualConfig, visualDefinitions, visualNumbering } from "./model";
 import { latexProjectField } from "../editing";
-import { bibLookup, citationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
+import { bibLookup, citationStyle, citationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
 import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./render-fragment";
 import { cssColor } from "./symbols";
 import { parseTabular } from "./table-model";
@@ -197,7 +197,7 @@ export class ChipWidget extends VisualWidget {
     if (this.kind === "label") return this.keys[0];
     // makeidx's `sort@shown!sub` entries: what each level shows.
     if (this.kind === "index") return this.keys[0].split("!").map((level) => level.slice(level.lastIndexOf("@") + 1).replace(/\|.*$/, "")).join(" › ");
-    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state));
+    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyle(visualDefinitions(view.state)));
     return stateReferenceText(view.state, this.command, this.keys);
   }
   toDOM(view: EditorView) {

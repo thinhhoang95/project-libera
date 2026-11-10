@@ -55,5 +55,5 @@ export async function chapterNumberingStart(
   const whole = await expand(rootText, bodyStartOf(rootText), 0, null);
   const all = computeLatexNumbering(parser.parse(whole.text), (from, to) => whole.text.slice(from, to), defs);
   const labels = [...all.labels].map(([key, target]): [string, LabelTarget] => [key, { ...target, pos: -1 }]);
-  return { counters: numbering.counters, appendix: numbering.appendix, labels };
+  return { counters: numbering.counters, appendix: numbering.appendix, mainmatter: numbering.mainmatter, labels };
 }

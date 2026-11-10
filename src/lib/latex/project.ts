@@ -128,9 +128,10 @@ export function readLatexLabels(source: string) {
 
 /**
  * `citeAuthor`: the authors as a citation prints them ("Callaway and Sant'Anna", "Abadie et al."), when a compiled
- * bibliography gives them; `label`: the label a numeric or alphabetic style prints ("12", "Vas17").
+ * bibliography gives them; `label`: the label a numeric or alphabetic style prints ("12", "Vas17"); `number`: an
+ * author–year entry's place in the list, which natbib's `numbers` option prints instead.
  */
-export type BibEntrySummary = { key: string; type: string; title?: string; author?: string; year?: string; citeAuthor?: string; label?: string };
+export type BibEntrySummary = { key: string; type: string; title?: string; author?: string; year?: string; citeAuthor?: string; label?: string; number?: string };
 
 /**
  * A BibTeX field's value, braces kept: `{…}` matched at any depth, `"…"` up to the closing quote outside braces
@@ -157,10 +158,13 @@ function bibFieldValue(body: string, name: string) {
 export function readBibEntries(source: string): BibEntrySummary[] {
   const entries: BibEntrySummary[] = [];
   const pattern = /@([a-zA-Z]+)\s*[{(]\s*([^,\s{}()]+)\s*,/g;
+  // BibTeX keeps the first of entries with one key (and warns); completion lists it once.
+  const seen = new Set<string>();
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(source))) {
     const type = match[1].toLowerCase();
-    if (type === "comment" || type === "string" || type === "preamble") continue;
+    if (type === "comment" || type === "string" || type === "preamble" || seen.has(match[2])) continue;
+    seen.add(match[2]);
     const body = source.slice(match.index + match[0].length, match.index + match[0].length + 4000);
     const field = (name: string) => bibFieldValue(body, name)?.replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
     entries.push({ key: match[2], type, title: field("title"), author: field("author"), year: field("year") ?? body.match(/\byear\s*=\s*(\d{4})/i)?.[1] });
@@ -172,6 +176,36 @@ export function readBibEntries(source: string): BibEntrySummary[] {
 function bibText(text: string) {
   // natbib's `\natexlab{a}` is the year's letter (1975a).
   return text.replace(/\\natexlab\s*\{([^{}]*)\}/g, "$1").replace(/\\bibinitperiod|\\bibinithyphendelim|\\bibnamedelim[a-z]/g, (match) => (match === "\\bibinitperiod" ? "." : match === "\\bibinithyphendelim" ? "-" : " ")).replace(/~/g, " ").replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
+}
+
+/** `\citeauthoryear{full}{short}{year}`'s short names and year, read as balanced groups; null without it. */
+function citeAuthorYear(text: string): [string, string] | null {
+  const at = /\\citeauthoryear\s*/.exec(text);
+  if (!at) return null;
+  const groups: string[] = [];
+  let index = at.index + at[0].length;
+  for (let n = 0; n < 3; n++) {
+    while (/\s/.test(text[index] ?? "")) index++;
+    const group = readGroup(text, index);
+    if (!group) return null;
+    groups.push(group.content);
+    index = group.end;
+  }
+  return [groups[1], groups[2]];
+}
+
+/**
+ * apacite's markup in a `.bbl` as the citation prints it: `\BOthers {.}` "et al.", `\BBA` "and", `\APACyear {2001}`,
+ * and `\BCnt {1}` the year's letter (2001a).
+ */
+function apaciteText(text: string) {
+  return text
+    .replace(/\\protect\s*/g, "")
+    .replace(/\\BOthers\s*\{[^{}]*\}/g, "et al.")
+    .replace(/\\BBA[AB]?(?![A-Za-z@])\s*(?:\{\})?/g, "and")
+    .replace(/\\BCnt(?:ND|IP)?\s*\{(\d+)\}/g, (_, count: string) => String.fromCharCode(96 + Math.min(26, Math.max(1, Number(count)))))
+    .replace(/\\APACyear\s*/g, "")
+    .replace(/\\ /g, " ");
 }
 
 /** The authors a citation prints, from surnames: "Sun", "Sun and Abraham", "Sun et al.". */
@@ -249,7 +283,7 @@ export function readCompiledBibliography(source: string): BibEntrySummary[] {
       const key = year && group(year.end);
       if (!names || !year || !key) continue;
       const cited = bibText((match[1] ?? names.content).replace(/\\harvardand\\?\s*/g, "and "));
-      entries.push({ key: key.content.trim(), type: "bibitem", citeAuthor: cited, year: bibText(year.content) });
+      entries.push({ key: key.content.trim(), type: "bibitem", citeAuthor: cited, year: bibText(year.content), number: String(entries.length + 1) });
     }
     return entries;
   }
@@ -267,22 +301,26 @@ export function readCompiledBibliography(source: string): BibEntrySummary[] {
     const following = list.slice(item.end, items[index + 1]?.index ?? list.length);
     // The title: the block after the first \newblock, when the style writes them.
     const blocks = following.split(/\\newblock\b/);
-    // ACM's style marks the title (`\showarticletitle{…}`) and its fields (`\bibinfo{booktitle}{…}`).
-    const marked = /\\showarticletitle\s*\{((?:[^{}]|\{[^{}]*\})*)\}/.exec(following)?.[1];
+    // ACM's style marks the title (`\showarticletitle{…}`) and its fields (`\bibinfo{booktitle}{…}`); apacite's is
+    // `\APACrefatitle {Title} {title}` (`\APACrefbtitle` for a book).
+    const marked = /\\(?:showarticletitle|APACref[ab]title)\s*\{((?:[^{}]|\{[^{}]*\})*)\}/.exec(following)?.[1];
     const block = marked ?? (blocks.length > 1 ? blocks[1] : null);
     const title = block ? bibText(block.replace(/\\bibinfo\s*\{[^{}]*\}/g, "").replace(/\\(?:em|it|bf|textit|emph|textbf|bibfield|showarticletitle)\b\s*/g, "")).replace(/[.,]\s*$/, "") || undefined : undefined;
     const optional = item[1]?.trim().replace(/^\{([\s\S]*)\}$/, "$1");
     const entry: BibEntrySummary = { key: item[2].trim(), type: "bibitem", title };
-    // ACM's `\protect\citeauthoryear{Full names}{Short names}{Year}`.
-    const acm = optional ? /\\citeauthoryear\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}/.exec(optional) : null;
+    // ACM's and apacite's `\protect\citeauthoryear{Full names}{Short names}{Year}` (groups at any depth: apacite's
+    // year is `{\protect \APACyear {2001}}`).
+    const acm = optional ? citeAuthorYear(optional) : null;
     // natbib: `Short authors(Year)Full authors`.
     const natbib = optional && !acm ? /^([\s\S]*?)\s*\(\s*([^()]*?)\s*\)\s*([\s\S]*)$/.exec(optional) : null;
     if (acm) {
-      entry.citeAuthor = bibText(acm[2].replace(/\\mbox\s*/g, ""));
-      entry.year = bibText(acm[3]);
+      entry.citeAuthor = bibText(apaciteText(acm[0].replace(/\\mbox\s*/g, "")));
+      entry.year = bibText(apaciteText(acm[1]));
+      entry.number = String(index + 1);
     } else if (natbib && natbib[1].trim()) {
       entry.citeAuthor = bibText(natbib[1]);
       entry.year = bibText(natbib[2]);
+      entry.number = String(index + 1);
     } else entry.label = optional ? bibText(optional) : String(index + 1);
     entries.push(entry);
   });
@@ -297,7 +335,8 @@ export function readLatexBibliographyReferences(source: string) {
     references.push(...match[1].split(",").map((name) => name.trim()).filter(Boolean).map((name) => (/\.bib$/i.test(name) ? name : `${name}.bib`)));
   }
   for (const match of text.matchAll(/\\addbibresource\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) references.push(match[1].trim());
-  return references;
+  // A file named twice (`\bibliography{…}` in both branches of a conditional, as in 2410.03413) is read once.
+  return [...new Set(references)];
 }
 
 export function latexDocumentTemplate(title: string) {

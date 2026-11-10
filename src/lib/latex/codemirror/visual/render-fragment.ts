@@ -5,7 +5,7 @@ import type { LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros } from "../../macros/expand";
 import type { LatexNumbering } from "../../macros/numbering";
 import { katexForEnvironment, RAISE, renderKatex } from "./math-render";
-import { citationText, referenceChipText, referencesInMath, type BibLookup } from "./references";
+import { citationStyle, citationText, referenceChipText, referencesInMath, type BibLookup } from "./references";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 
 /* A static renderer for short LaTeX: captions, macro expansions, theorem
@@ -326,7 +326,7 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       const keyText = keys ? read(keys.from, keys.to).replace(/^\{|\}$/g, "") : "";
       const optionals = node.getChildren("OptionalArgument").map((arg) => read(arg.from + 1, arg.to - 1));
       const chip = element("span", "cm-vis-chip cm-vis-cite");
-      chip.textContent = citationText({ command: read(ctrl.from, ctrl.to), keys: keyText.split(",").map((key) => key.trim()).filter(Boolean), pre: optionals.length > 1 ? optionals[0] : undefined, post: optionals.at(-1) }, context.aux, context.bib);
+      chip.textContent = citationText({ command: read(ctrl.from, ctrl.to), keys: keyText.split(",").map((key) => key.trim()).filter(Boolean), pre: optionals.length > 1 ? optionals[0] : undefined, post: optionals.at(-1) }, context.aux, context.bib, citationStyle(context.defs));
       parent.appendChild(chip);
       return;
     }
@@ -374,7 +374,7 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         const inner = argument && argumentInner(argument.node);
         if (inner) {
           const chip = element("span", "cm-vis-chip cm-vis-cite");
-          chip.textContent = citationText({ command: CITE_ALIASES[text], keys: read(inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean) }, context.aux, context.bib);
+          chip.textContent = citationText({ command: CITE_ALIASES[text], keys: read(inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean) }, context.aux, context.bib, citationStyle(context.defs));
           parent.appendChild(chip);
           return;
         }

@@ -1,6 +1,6 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { latexParser as parser } from "../codemirror/latex-parser";
-import { hashString } from "../../macros/core";
+import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import { definitionExtentAt, macroAt, type LatexDefinitions } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse } from "./expand";
 import { readCtable } from "../codemirror/visual/table-model";
@@ -14,7 +14,7 @@ const DEFINITION_START = /^\\(?:newcommand|renewcommand|providecommand|DeclareRo
  * footnotes and counter commands of the tree, in document order, with each
  * \label bound to the last number stepped before it in its environment. */
 
-export type NumberingKind = "section" | "equation" | "figure" | "table" | "algorithm" | "theorem" | "footnote" | "item";
+export type NumberingKind = "section" | "equation" | "figure" | "table" | "algorithm" | "theorem" | "footnote" | "item" | "listing";
 
 export type NumberingEntry = {
   /** Start of the construct: the sectioning command, the environment, the footnote. */
@@ -30,7 +30,12 @@ export type NumberingEntry = {
   env?: string;
 };
 
-export type LabelTarget = { number: string; kind: NumberingKind | "page"; pos: number; env?: string; title?: string };
+/**
+ * `type`: what cleveref calls the label when it is not its kind ("chapter", "subsection", "appendix" after `\appendix`,
+ * a `\crefalias`'s type); `anchor`: what hyperref's `\autoref` calls it when not its kind ("chapter", "subsection", and
+ * "appendix" for an appendix's chapters, or sections in an article).
+ */
+export type LabelTarget = { number: string; kind: NumberingKind | "page"; pos: number; env?: string; title?: string; type?: string; anchor?: string };
 
 export type LatexNumbering = {
   entries: NumberingEntry[];
@@ -38,6 +43,8 @@ export type LatexNumbering = {
   /** Counter values at the end, to continue in a file included after this one. */
   counters: Record<string, number>;
   appendix: boolean;
+  /** False after book's `\frontmatter` or `\backmatter` (until `\mainmatter`): chapters there are not numbered. */
+  mainmatter?: boolean;
   /** Equal for equal numbering, so number widgets can tell when to update. */
   fingerprint: string;
 };
@@ -64,9 +71,13 @@ function alph(value: number) {
   return out;
 }
 
-export function formatCounterValue(value: number, style: "arabic" | "roman" | "Roman" | "alph" | "Alph") {
+/** LaTeX's `\fnsymbol`: the footnote symbols of a title's notes (`\renewcommand{\thefootnote}{\fnsymbol{footnote}}`). */
+const FOOTNOTE_SYMBOLS = ["*", "†", "‡", "§", "¶", "‖", "**", "††", "‡‡"];
+
+export function formatCounterValue(value: number, style: "arabic" | "roman" | "Roman" | "alph" | "Alph" | "fnsymbol") {
   // Out of range for letters and numerals (TeX would stop with an error): shown as a number, without the work.
-  if (style === "arabic" || !Number.isSafeInteger(value) || value < 1 || ((style === "roman" || style === "Roman") && value > 4999)) return String(value);
+  if (style === "arabic" || !Number.isSafeInteger(value) || value < 1 || ((style === "roman" || style === "Roman") && value > 4999) || (style === "fnsymbol" && value > 9)) return String(value);
+  if (style === "fnsymbol") return FOOTNOTE_SYMBOLS[value - 1];
   if (style === "roman") return roman(value);
   if (style === "Roman") return roman(value).toUpperCase();
   if (style === "alph") return alph(value);
@@ -89,6 +100,11 @@ export const FLOAT_KINDS: Record<string, "figure" | "table" | "algorithm"> = {
   table: "table", "table*": "table", wraptable: "table", sidewaystable: "table", "sidewaystable*": "table", SCtable: "table",
   algorithm: "algorithm", "algorithm*": "algorithm",
 };
+
+/** KOMA-Script's `\captionabove` and `\captionbelow`: a float's `\caption`. */
+export const KOMA_CAPTION = /^\\caption(?:above|below)$/;
+/** caption's `\captionof{table}{…}` and KOMA-Script's `\captionaboveof` and `\captionbelowof`. */
+export const CAPTION_OF = /^\\caption(?:above|below)?of$/;
 
 /** The kind of float an environment node is (its `\caption` numbers a figure, table or algorithm), or null. */
 export function floatKind(node: SyntaxNode, read: Read): "figure" | "table" | "algorithm" | null {
@@ -200,6 +216,26 @@ function stripTitle(text: string) {
   return text.replace(/\\(?:textbf|textit|emph|texttt|textsc|mathrm|mbox|textrm|textsf)\s*/g, "").replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
 }
 
+/** A `key=value` list (`caption={A, B},label=lst:x`): the values without their outer braces, by key. */
+function keyValues(text: string) {
+  const values = new Map<string, string>();
+  const add = (part: string) => {
+    const equals = part.indexOf("=");
+    if (equals > 0) values.set(part.slice(0, equals).trim(), part.slice(equals + 1).trim().replace(/^\{([\s\S]*)\}$/, "$1").trim());
+  };
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\") i++;
+    else if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "," && depth === 0) { add(text.slice(start, i)); start = i + 1; }
+  }
+  add(text.slice(start));
+  return values;
+}
+
 /** What a label after `\refstepcounter{counter}` refers to: `\refstepcounter{table}` makes a table label. */
 function counterKind(counter: string): NumberingKind {
   if (SECTION_COUNTERS.includes(counter) || counter === "part") return "section";
@@ -212,6 +248,7 @@ export type NumberingStart = {
   /** Counter values where the file is included (a chapter of a main file). */
   counters: Record<string, number>;
   appendix: boolean;
+  mainmatter?: boolean;
   /** The numbers of the labels in the whole document (other chapters' too), without positions: references to them resolve. */
   labels?: Array<[string, LabelTarget]>;
 };
@@ -279,7 +316,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   // The counters printed with their parent's number first (`\thefigure` is `\thechapter.\arabic{figure}` in a book);
   // resetting is separate: a book's footnotes restart each chapter but print alone.
   const prefix = new Map<string, string>([...defs.counterPrefix]);
-  if (chapters) for (const name of ["equation", "figure", "table", "footnote"]) if (!within.has(name)) { within.set(name, "chapter"); if (name !== "footnote") prefix.set(name, "chapter"); }
+  if (chapters) for (const name of ["equation", "figure", "table", "footnote", "lstlisting"]) if (!within.has(name)) { within.set(name, "chapter"); if (name !== "footnote") prefix.set(name, "chapter"); }
   for (const theorem of defs.theorems.values()) if (theorem.within && theorem.counter === theorem.name) { within.set(theorem.name, theorem.within); prefix.set(theorem.name, theorem.within); }
   for (let i = 1; i < SECTION_COUNTERS.length; i++) { within.set(SECTION_COUNTERS[i], SECTION_COUNTERS[i - 1]); prefix.set(SECTION_COUNTERS[i], SECTION_COUNTERS[i - 1]); }
   if (!chapters) { within.delete("section"); prefix.delete("section"); }
@@ -295,6 +332,29 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     }
   }
   let appendix = options.start?.appendix ?? false;
+  /**
+   * book's `\frontmatter` and `\backmatter` number no chapter (a thesis's Preface, a book's Index) and `\mainmatter`
+   * numbers them again, from 1 (the front matter's stepped nothing); memoir's number no heading at all (secnumdepth -10).
+   */
+  let mainmatter = options.start?.mainmatter ?? true;
+  const memoir = defs.documentClass === "memoir";
+  /** cleveref's `\crefalias{section}{appsec}`: a counter's labels are referred to as that type from here on (Econometrica's appendices). */
+  const crefAliases = new Map<string, string>();
+  /** Whether `\appendix` ran (not the appendix package's `appendices`, which leaves cleveref's types alone). */
+  let cleverefAppendix = !!options.start?.appendix;
+  /**
+   * What `\cref` and `\autoref` call a heading's label: its counter, or the type a `\crefalias` gives it; after
+   * `\appendix`, cleveref's "appendix" ("subappendix" a level down) and hyperref's "appendix" at the top level.
+   */
+  const headingNames = (counter: string): { type?: string; anchor?: string } => {
+    const levels = chapters ? ["chapter", "section", "subsection", "subsubsection"] : ["section", "subsection", "subsubsection"];
+    const depth = appendix ? levels.indexOf(counter) : -1;
+    const plain = cleverefAppendix && depth >= 0 ? `${"sub".repeat(depth)}appendix` : counter;
+    const type = crefAliases.get(plain) ?? plain;
+    const anchor = depth === 0 ? "appendix" : counter;
+    // A section's are its kind's: left out.
+    return { ...(type !== "section" ? { type } : {}), ...(anchor !== "section" ? { anchor } : {}) };
+  };
   /** Open `subequations` environments: their equations are numbered 3a, 3b. */
   const subequations: Array<{ node: number; parent: string; saved: number }> = [];
 
@@ -320,8 +380,9 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     if (macro.arity || macro.unsupported || formatting.has(name)) return "?";
     formatting.add(name);
     try {
-      const text = plainFormatText(macro.body).replace(/\\(arabic|roman|Roman|alph|Alph)\s*\{\s*([A-Za-z@]+)\s*\}|\\the([A-Za-z@]+)|\\relax|[{}]/g, (_whole, style?: "arabic" | "roman" | "Roman" | "alph" | "Alph", counter?: string, other?: string) => {
-        if (style && counter) return formatCounterValue(value(counter), style);
+      // `\fnsymbol{footnote}` and LaTeX's internal `\@fnsymbol\c@footnote` too.
+      const text = plainFormatText(macro.body).replace(/\\@?(arabic|roman|Roman|alph|Alph|fnsymbol)\s*(?:\{\s*([A-Za-z@]+)\s*\}|\\c@([A-Za-z@]+))|\\the([A-Za-z@]+)|\\relax|[{}]/g, (_whole, style?: "arabic" | "roman" | "Roman" | "alph" | "Alph" | "fnsymbol", counter?: string, internal?: string, other?: string) => {
+        if (style && (counter ?? internal)) return formatCounterValue(value((counter ?? internal)!), style);
         if (other) return format(other);
         return "";
       });
@@ -453,6 +514,24 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     // The panel shows its letter: "(a)".
     entries.push({ pos: at.from, kind, number: letter });
   };
+  /** listings' `[caption={…},label=lst:x]`: a caption numbers the listing ("Listing 1", 1.1 in a book), `title=` does not. */
+  const numberListing = (node: SyntaxNode, optionText: string) => {
+    const options = keyValues(optionText.replace(/^\s*\[|\]\s*$/g, ""));
+    if (!options.get("caption")) return;
+    step("lstlisting");
+    const number = format("lstlisting");
+    entries.push({ pos: node.from, kind: "listing", number });
+    const label = options.get("label");
+    if (label) labels.set(label, { number, kind: "listing", pos: node.from, type: crefAliases.get("lstlisting") ?? "listing", anchor: "lstlisting" });
+  };
+  /** `\footnote[5]`'s number: 5 as `\thefootnote` prints it (a symbol under `\fnsymbol`), the counter left as it is. */
+  const footnoteNumber = (text: string) => {
+    const given = text.trim();
+    if (!/^\d+$/.test(given)) return given;
+    const saved = value("footnote");
+    counters.set("footnote", Number(given));
+    try { return format("footnote"); } finally { counters.set("footnote", saved); }
+  };
   /** What `\iffalse … \fi` and macros that discard their arguments (`\cut{…}`) leave out of the document: not numbered. */
   const disabled = includeDepth ? [] : disabledRegions(mainRead(0, tree.length), discardingMacros(defs));
   /** Nodes entered (for what follows the `\fi` inside them) but not counted themselves: by name and start. */
@@ -524,6 +603,15 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       }
       const kindOfFloat = name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" ? floatKind(node, read) : null;
       if (kindOfFloat) floats.push({ from: ref.from, kind: kindOfFloat, number: null, count: 0, waiting: [] });
+      if (name === "VerbatimEnvironment" && environmentName(node, read) === "lstlisting") {
+        // `\begin{lstlisting}[caption={…},label=lst:x]`: the options start its (verbatim) content.
+        const content = node.getChild("Content");
+        const head = content ? read(content.from, Math.min(content.to, content.from + 2000)) : "";
+        const open = /^[ \t]*\[/.exec(head);
+        const options = open ? readOptional(head, open[0].length - 1) : null;
+        if (options) numberListing(node, options.content);
+        return false;
+      }
       if (name === "Comment" || name === "VerbatimEnvironment" || name === "TikzPictureEnvironment") return false;
       if (name === "Input" || name === "Include") { numberIncluded(node); return false; }
       if (name in SECTION_LEVELS) {
@@ -536,21 +624,24 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const titleNode = command.getChild("SectioningArgument");
         const title = titleNode ? stripTitle(read(titleNode.from + 1, titleNode.to - 1)) : "";
         let number: string | null = null;
-        if (counter && !starred && level <= secnumdepth()) {
+        if (counter && !starred && level <= secnumdepth() && (mainmatter || (level !== 0 && !memoir))) {
           step(counter);
           number = format(counter);
         }
         entries.push({ pos: command.from, kind: "section", number, level });
-        if (number) setTarget({ number, kind: "section", pos: command.from, title });
+        if (number) setTarget({ number, kind: "section", pos: command.from, title, ...headingNames(counter!) });
         return;
       }
-      if (name === "UnknownCommand") {
+      // KOMA-Script's `\captionabove{…}` and `\captionbelow{…}` are a float's `\caption`, only set differently (the
+      // KOMA minimum-wage paper's figures and tables).
+      const komaCaption = name === "UnknownCommand" && node.firstChild?.name === "CtrlSeq" && KOMA_CAPTION.test(read(node.firstChild.from, node.firstChild.to));
+      if (name === "UnknownCommand" && !komaCaption) {
         const ctrl = node.firstChild;
         if (!ctrl || ctrl.name !== "CtrlSeq") return;
         const command = read(ctrl.from, ctrl.to);
         if (structureNames.size && numberMacroUse(node, command)) return false;
-        if (command === "\\captionof" && read(ctrl.to, ctrl.to + 1) !== "*") {
-          // caption's `\captionof{table}{…}`: a caption outside a float, numbered where it is (or at its minipage).
+        if (CAPTION_OF.test(command) && read(ctrl.to, ctrl.to + 1) !== "*") {
+          // caption's `\captionof{table}{…}` (KOMA's `\captionaboveof`): a caption outside a float, numbered where it is (or at its minipage).
           const kind = FLOAT_KINDS[argumentText(node, 0)?.trim() ?? ""];
           if (kind) {
             let at: [SyntaxNode, boolean] = [node, false];
@@ -583,10 +674,25 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         }
         if (command === "\\appendix") {
           appendix = true;
+          cleverefAppendix = true;
           appendixAt = Math.min(appendixAt, here);
           const top = chapters ? "chapter" : "section";
           counters.set(top, 0);
           reset(top);
+        } else if (command === "\\frontmatter" || command === "\\mainmatter" || command === "\\backmatter") {
+          if (chapters) mainmatter = command === "\\mainmatter";
+        } else if (command === "\\crefalias") {
+          const counter = argumentText(node, 0)?.trim();
+          const type = argumentText(node, 1)?.trim();
+          if (counter && type) crefAliases.set(counter, type);
+        } else if (command === "\\lstinputlisting") {
+          // listings' `\lstinputlisting[caption={…},label=lst:x]{file}`: a numbered listing when it has a caption.
+          const optional = node.getChild("OptionalArgument");
+          if (optional) numberListing(node, read(optional.from, optional.to));
+        } else if (command === "\\footnotetext") {
+          // The text of the last `\footnotemark`'s note, with its number (or `[n]`'s): nothing is stepped.
+          const optional = read(ctrl.to, ctrl.to + 1) === "[" ? node.getChild("OptionalArgument") : null;
+          entries.push({ pos: node.from, kind: "footnote", number: optional ? footnoteNumber(read(optional.from + 1, optional.to - 1)) : format("footnote") });
         } else if (command === "\\numberwithin" || command === "\\counterwithin" || command === "\\counterwithout") {
           // In the body, from here on (SimCLR's `\counterwithin{figure}{section}` after `\appendix`); the preamble's are read with the definitions.
           const counter = argumentText(node, 0)?.trim();
@@ -618,11 +724,13 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             if (command === "\\refstepcounter") setTarget(itemTarget(list, node.from));
           } else if (counter) {
             step(counter);
-            if (command === "\\refstepcounter") setTarget({ number: format(counter), kind: counterKind(counter), pos: node.from, env: counter });
+            if (command === "\\refstepcounter") setTarget({ number: format(counter), kind: counterKind(counter), pos: node.from, env: counter, ...(counterKind(counter) === "section" ? headingNames(counter) : crefAliases.has(counter) ? { type: crefAliases.get(counter) } : {}) });
           }
         } else if (command === "\\footnotemark") {
-          // A bare \footnotemark steps the counter; one with [n] does not.
-          if (read(ctrl.to, ctrl.to + 1) !== "[") step("footnote");
+          // A bare \footnotemark steps the counter; one with [n] does not. Its mark shows the number, as `\footnote`'s does.
+          const optional = read(ctrl.to, ctrl.to + 1) === "[" ? node.getChild("OptionalArgument") : null;
+          if (!optional) step("footnote");
+          entries.push({ pos: node.from, kind: "footnote", number: optional ? footnoteNumber(read(optional.from + 1, optional.to - 1)) : format("footnote") });
         }
         return;
       }
@@ -633,7 +741,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const optional = node.getChild("OptionalArgument");
         const counter = name === "FootnoteCommand" ? "footnote" : "endnote";
         let number: string;
-        if (optional) number = read(optional.from + 1, optional.to - 1).trim();
+        if (optional) number = counter === "footnote" ? footnoteNumber(read(optional.from + 1, optional.to - 1)) : read(optional.from + 1, optional.to - 1).trim();
         else { step(counter); number = format(counter); }
         entries.push({ pos: node.from, kind: "footnote", number });
         // A label in the note's text refers to the note (LaTeX sets \@currentlabel there), until the note ends.
@@ -654,6 +762,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const expanded = expandLatexMacros(body, defs, { mode: "math", pos: node.from });
           if (expanded.ok) body = stripTexComments(expanded.text);
         }
+        // A `\footnotemark` in a formula's text (Econometrica's displays, their `\footnotetext` after it) is a footnote.
+        for (let marks = body.match(/\\footnotemark(?![A-Za-z@])(?!\s*\[)/g)?.length ?? 0; marks > 0; marks--) step("footnote");
         /**
          * Counter commands in a formula row step the counter (`\addtocounter{equation}{1}`), and a `\tag{\theequation}`
          * after them is the counter's number: a row numbered by hand (VAE's `\eqnr` in `align*`), drawn with a number slot.
@@ -664,10 +774,12 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             if (command === "stepcounter" || command === "refstepcounter") step(counter);
             else if (amount !== undefined) counters.set(counter, command === "setcounter" ? Number(amount) : value(counter) + Number(amount));
           }
-          const tag = /\\tag\*?\s*\{([^}]*)\}/.exec(row);
-          if (!tag) return null;
-          const counted = /^\s*\\theequation\s*$/.test(tag[1]);
-          return { number: counted ? format("equation") : tag[1], tagged: !counted };
+          // Read with its braces: `\tag{$\mathcal{I}$}` (Econometrica's) is "$\mathcal{I}$", which a reference draws.
+          const open = /\\tag\*?\s*\{/.exec(row);
+          const tag = open ? readGroup(row, open.index + open[0].length - 1, TEX_GROUPS)?.content.trim() : undefined;
+          if (tag === undefined) return null;
+          const counted = /^\s*\\theequation\s*$/.test(tag);
+          return { number: counted ? format("equation") : tag, tagged: !counted };
         };
         if (name === "EquationEnvironment") {
           let number: string | null = null;
@@ -710,7 +822,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         scopes.push({ node: node.from, target: currentTarget() });
         return;
       }
-      if (name === "Caption") {
+      if (name === "Caption" || komaCaption) {
         // `\caption*{…}` numbers nothing.
         const ctrl = node.firstChild;
         if (ctrl && read(ctrl.to, ctrl.to + 1) === "*") return false;
@@ -753,9 +865,11 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           lists.push({ enumerate, count: 0, depth, template: optional ? read(optional.from + 1, optional.to - 1) : options ? options.replace(/\\the([A-Za-z]+)/g, (_, counter: string) => format(counter)) : null });
           return;
         }
-        // The appendix package's `appendices` environment letters its sections, as `\appendix` does.
-        if (env === "appendices") {
+        // The appendix package's `appendices` environment letters its sections, as `\appendix` does; so does
+        // `\begin{appendix}`, which runs `\appendix` (the KOMA minimum-wage paper's sections 7–18 are A–L).
+        if (env === "appendices" || env === "appendix") {
           appendix = true;
+          if (env === "appendix") cleverefAppendix = true;
           appendixAt = Math.min(appendixAt, here);
           const top = chapters ? "chapter" : "section";
           counters.set(top, 0);
@@ -834,9 +948,9 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   // Everything a widget can show: numbers, titles, kinds, positions.
   const fingerprint = hashString(JSON.stringify([
     entries.map((entry) => [entry.pos, entry.kind, entry.number, entry.rows ?? null, entry.tagged ?? null, entry.level ?? null, entry.env ?? null]),
-    [...labels].map(([key, target]) => [key, target.number, target.kind, target.pos, target.env ?? null, target.title ?? null]),
+    [...labels].map(([key, target]) => [key, target.number, target.kind, target.pos, target.env ?? null, target.title ?? null, target.type ?? null, target.anchor ?? null]),
   ]));
-  return { entries, labels, counters: Object.fromEntries(counters), appendix, fingerprint };
+  return { entries, labels, counters: Object.fromEntries(counters), appendix, mainmatter, fingerprint };
 }
 
 /** The entry of a construct starting at `pos`, by binary search. */
@@ -859,23 +973,79 @@ export function numberingEntryAt(numbering: LatexNumbering, pos: number, kind?: 
   return null;
 }
 
-const CREF_NAMES: Record<string, [string, string, string, string]> = {
-  section: ["section", "sections", "Section", "Sections"],
-  equation: ["eq.", "eqs.", "Equation", "Equations"],
-  figure: ["fig.", "figs.", "Figure", "Figures"],
-  table: ["table", "tables", "Table", "Tables"],
-  algorithm: ["algorithm", "algorithms", "Algorithm", "Algorithms"],
-  footnote: ["footnote", "footnotes", "Footnote", "Footnotes"],
-  item: ["item", "items", "Item", "Items"],
-  theorem: ["theorem", "theorems", "Theorem", "Theorems"],
+/** cleveref's English names by type (singular, plural); `\cref` abbreviates equations and figures unless `noabbrev`. */
+const CREF_NAMES: Record<string, [string, string]> = {
+  section: ["section", "sections"], chapter: ["chapter", "chapters"], part: ["part", "parts"], appendix: ["appendix", "appendices"],
+  equation: ["equation", "equations"], figure: ["figure", "figures"], table: ["table", "tables"], algorithm: ["algorithm", "algorithms"],
+  listing: ["listing", "listings"], footnote: ["footnote", "footnotes"], item: ["item", "items"], theorem: ["theorem", "theorems"],
+  line: ["line", "lines"], page: ["page", "pages"],
 };
+const CREF_ABBREVIATIONS: Record<string, [string, string]> = { equation: ["eq.", "eqs."], figure: ["fig.", "figs."] };
+/** hyperref's `\autoref` names by counter (`\sectionautorefname` is "section"); `\algorithmname` and listings' for theirs. */
+const AUTOREF_NAMES: Record<string, string> = {
+  equation: "Equation", footnote: "footnote", item: "item", figure: "Figure", table: "Table", part: "Part", appendix: "Appendix",
+  chapter: "chapter", section: "section", subsection: "subsection", subsubsection: "subsubsection", paragraph: "paragraph",
+  subparagraph: "subparagraph", theorem: "Theorem", page: "page", algorithm: "Algorithm", lstlisting: "Listing", listing: "Listing",
+};
+
+const upperFirst = (text: string) => (text ? text[0].toUpperCase() + text.slice(1) : text);
+const lowerFirst = (text: string) => (text ? text[0].toLowerCase() + text.slice(1) : text);
+
+/** cleveref's type of a label: its `type`, a theorem's environment, else its kind (an item is `enumi`'s "item"). */
+function crefType(target: LabelTarget | null) {
+  if (!target) return "section";
+  return target.type ?? (target.kind === "theorem" && target.env ? target.env : target.kind);
+}
+
+/** The built-in names a type falls back to: a subsection's are a section's, a sub-appendix's an appendix's. */
+function crefFamily(type: string) {
+  if (/^(?:sub)*section$|^(?:sub)?paragraph$/.test(type)) return "section";
+  if (/^(?:sub)+appendix$/.test(type)) return "appendix";
+  if (/^enum(?:i|ii|iii|iv)$/.test(type)) return "item";
+  if (type === "lstlisting") return "listing";
+  return type;
+}
+
+/** A label's number in a cleveref list: an equation's in parentheses. */
+function crefNumber(target: LabelTarget | null, number: string) {
+  return crefFamily(crefType(target)) === "equation" ? `(${number})` : number;
+}
+
+/** "2.3" as [2, 3] and "A.1" as [1, 1], to sort and find ranges; null for anything else ("3a", "II", "1′"). */
+function numberParts(number: string) {
+  const parts = number.split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : /^[A-Z]$/.test(part) ? part.charCodeAt(0) - 64 : Number.NaN));
+  return parts.some(Number.isNaN) ? null : parts;
+}
+
+/**
+ * cleveref's list of one type's numbers: sorted, three or more consecutive ones as a range ("(1) to (3)"), joined with
+ * "," and "and"; `plural` when it names more than one.
+ */
+function crefRuns(items: Array<{ target: LabelTarget | null; number: string }>) {
+  const parsed = items.map((item) => ({ ...item, parts: numberParts(item.number) }));
+  const sortable = parsed.every((item) => item.parts);
+  if (sortable) parsed.sort((a, b) => {
+    for (let i = 0; i < Math.max(a.parts!.length, b.parts!.length); i++) if ((a.parts![i] ?? -1) !== (b.parts![i] ?? -1)) return (a.parts![i] ?? -1) - (b.parts![i] ?? -1);
+    return 0;
+  });
+  const next = (a: number[], b: number[]) => a.length === b.length && a.every((value, i) => (i < a.length - 1 ? value === b[i] : value + 1 === b[i]));
+  const runs: string[] = [];
+  for (let i = 0; i < parsed.length;) {
+    let end = i;
+    while (sortable && end + 1 < parsed.length && next(parsed[end].parts!, parsed[end + 1].parts!)) end++;
+    if (end - i >= 2) { runs.push(`${crefNumber(parsed[i].target, parsed[i].number)} to ${crefNumber(parsed[end].target, parsed[end].number)}`); i = end + 1; }
+    else { runs.push(crefNumber(parsed[i].target, parsed[i].number)); i++; }
+  }
+  const text = runs.length > 2 ? `${runs.slice(0, -1).join(", ")} and ${runs.at(-1)}` : runs.join(" and ");
+  return { text, plural: items.length > 1 };
+}
 
 /** fancyref's label prefixes and the words its `\fref` prints. */
 const FANCYREF_NAMES: Record<string, string> = {
   sec: "section", chap: "chapter", fig: "figure", tab: "table", eq: "equation", enum: "item", fn: "footnote", part: "part",
 };
 
-/** What a reference command shows for a label: `\ref` "2.1", `\eqref` "(3)", `\cref` "fig. 1", `\Cref` "Figure 1", `\autoref` "Figure 1". */
+/** What a reference command shows for a label: `\ref` "2.1", `\eqref` "(3)", `\cref` "fig. 1", `\Cref` "Figure 1", `\autoref` "section 2". */
 export function referenceText(command: string, targets: Array<LabelTarget | null>, defs: LatexDefinitions, keys: string[]) {
   const name = command.replace(/^\\/, "").replace(/\*$/, "");
   const numbers = targets.map((target, index) => target?.number ?? `??${keys[index] ? "" : ""}`);
@@ -890,19 +1060,58 @@ export function referenceText(command: string, targets: Array<LabelTarget | null
     const number = word === "equation" ? `(${numbers[0]})` : numbers[0];
     return `${name === "Fref" ? word[0].toUpperCase() + word.slice(1) : word} ${number}`;
   }
-  if (name === "cref" || name === "Cref" || name === "autoref" || name === "Autoref" || name === "cpageref") {
-    const capital = name !== "cref";
-    const kind = first?.kind ?? "section";
-    const theorem = kind === "theorem" && first?.env ? defs.theorems.get(first.env) : null;
-    const custom = defs.crefNames.get(capital ? `${theorem?.name ?? kind}:capital` : theorem?.name ?? kind) ?? defs.crefNames.get(theorem?.name ?? kind);
-    const builtin = CREF_NAMES[kind === "page" ? "section" : kind] ?? CREF_NAMES.section;
-    const plural = targets.length > 1;
-    let label = custom ? (plural ? custom.plural : custom.singular)
-      : theorem ? theorem.title + (plural ? "s" : "")
-        : name.startsWith("auto") || name.startsWith("Auto") ? builtin[2] : builtin[(capital ? 2 : 0) + (plural ? 1 : 0)];
-    if (capital && label) label = label[0].toUpperCase() + label.slice(1);
-    const list = kind === "equation" && !name.startsWith("auto") && !name.startsWith("Auto") ? numbers.map((number) => `(${number})`) : numbers;
-    return `${label} ${list.length > 2 ? `${list.slice(0, -1).join(", ")} and ${list.at(-1)}` : list.join(" and ")}`;
+  // hyperref's `\autoref`: the counter's name ("section 2", "Figure 1", "Appendix A"), or the document's `\sectionautorefname`.
+  if (name === "autoref" || name === "Autoref") {
+    return targets.map((target, index) => {
+      const theorem = target?.kind === "theorem" && target.env ? defs.theorems.get(target.env) : null;
+      const anchor = target?.anchor ?? (theorem ? theorem.name : target?.kind ?? "section");
+      const own = macroAt(defs, `${anchor}autorefname`, Number.MAX_SAFE_INTEGER);
+      const word = (own && !own.arity && !/\\/.test(own.body) ? own.body.replace(/[{}]/g, "").trim() : null) ?? theorem?.title ?? AUTOREF_NAMES[anchor] ?? "";
+      const text = word ? `${word} ${numbers[index]}` : numbers[index];
+      return name === "Autoref" ? upperFirst(text) : text;
+    }).join(", ");
+  }
+  // cleveref: `\cref{fig:a,tab:b}` is "fig. 1 and table 2", `\Cref` capitalises the first name, `\crefrange{a}{b}` is
+  // "eqs. (1) to (3)"; its `capitalise` and `noabbrev` options and `\crefname{type}{…}{…}` change the names.
+  if (/^(?:cref|Cref|crefrange|Crefrange|cpageref|Cpageref|labelcref|namecref|nameCref|lcnamecref)$/.test(name)) {
+    const options = defs.packageOptions.get("cleveref") ?? [];
+    const capitalise = options.includes("capitalise") || options.includes("capitalize");
+    const abbreviate = !options.includes("noabbrev");
+    const word = (target: LabelTarget | null, plural: boolean, upper: boolean) => {
+      const type = crefType(target);
+      const pick = (names: { singular: string; plural: string }) => (plural ? names.plural : names.singular);
+      const own = defs.crefNames.get(upper ? `${type}:capital` : type);
+      if (own) return upper ? upperFirst(pick(own)) : pick(own);
+      // Only `\Crefname` given: `\cref` lowercases its first letter; only `\crefname`: `\Cref` capitalises it.
+      const other = defs.crefNames.get(upper ? type : `${type}:capital`);
+      if (other) return upper ? upperFirst(pick(other)) : capitalise ? pick(other) : lowerFirst(pick(other));
+      const theorem = target?.kind === "theorem" && target.env ? defs.theorems.get(target.env) : null;
+      if (theorem) return (upper ? upperFirst : (text: string) => text)(theorem.title + (plural ? "s" : ""));
+      const family = crefFamily(type);
+      const names = CREF_NAMES[family] ?? CREF_NAMES[target?.kind ?? "section"] ?? CREF_NAMES.section;
+      if (upper) return upperFirst(names[plural ? 1 : 0]);
+      const short = abbreviate ? CREF_ABBREVIATIONS[family] ?? names : names;
+      return capitalise ? upperFirst(short[plural ? 1 : 0]) : short[plural ? 1 : 0];
+    };
+    const upper = name[0] === "C" || name === "nameCref";
+    if (name === "namecref" || name === "nameCref") return word(first, false, upper);
+    if (name === "lcnamecref") return lowerFirst(word(first, false, true));
+    const items = targets.map((target, index) => ({ target, number: numbers[index] }));
+    if (name === "labelcref") return crefRuns(items).text;
+    if ((name === "crefrange" || name === "Crefrange") && items.length === 2) {
+      return `${word(first, true, upper)} ${crefNumber(first, numbers[0])} to ${crefNumber(targets[1], numbers[1])}`;
+    }
+    // Grouped by name, in the order each first appears ("fig. 1, eqs. (1) and (2), and table 1").
+    const groups = new Map<string, typeof items>();
+    for (const item of items) {
+      const key = word(item.target, false, false);
+      groups.set(key, [...(groups.get(key) ?? []), item]);
+    }
+    const parts = [...groups.values()].map((group, index) => {
+      const runs = crefRuns(group);
+      return `${word(group[0].target, runs.plural, upper && index === 0)} ${runs.text}`;
+    });
+    return parts.length > 2 ? `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}` : parts.join(" and ");
   }
   return numbers.join(", ");
 }
