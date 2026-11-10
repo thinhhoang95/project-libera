@@ -151,6 +151,32 @@ test("deleting a heading at the start of the document leaves no heading size on 
 
 /* ---- `\c` typed at a line's end ------------------------------------------------------------------------------ */
 
+test("typing a backslash before a newline leaves the caret on its line for the next key", () => {
+  const view = mountView("\n\\", 0);
+  view.dispatch(view.state.replaceSelection("\\"), { userEvent: "input.type" });
+  assert.equal(view.state.doc.toString(), "\\\n\\");
+  assert.deepEqual(lines(view), ["\\", "\\"]);
+  const caret = view.domAtPos(view.state.selection.main.head);
+  assert.equal(view.posAtDOM(caret.node, caret.offset), 1);
+  view.dispatch(view.state.replaceSelection("c"), { userEvent: "input.type" });
+  assert.equal(view.state.doc.toString(), "\\c\n\\");
+  view.destroy();
+});
+
+test("typing a backslash before whitespace or punctuation keeps the caret after it", () => {
+  for (const next of [" ", "\t", "%", "\\"]) {
+    const doc = `Text${next}more`;
+    const view = mountView(doc, 4);
+    view.dispatch(view.state.replaceSelection("\\"), { userEvent: "input.type" });
+    assert.deepEqual(lines(view), [`Text\\${next}more`]);
+    const caret = view.domAtPos(view.state.selection.main.head);
+    assert.equal(view.posAtDOM(caret.node, caret.offset), 5);
+    view.dispatch(view.state.replaceSelection("c"), { userEvent: "input.type" });
+    assert.equal(view.state.doc.toString(), `Text\\c${next}more`);
+    view.destroy();
+  }
+});
+
 test("\\c typed at the end of a line stays \\c (no cedilla on the next line's letter) and completes to \\cite", () => {
   const doc = "Some text \\c\nBody here.\n";
   const view = mountView(doc, 0);

@@ -1262,7 +1262,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return false;
         }
         case "LineBreak": {
-          if (structural) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "never", replaces: [{ from: node.from, to: node.to, widget: new LineBreakWidget() }] });
+          // Typing before an existing backslash can leave the caret between the two backslashes.
+          if (structural) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "strict", replaces: [{ from: node.from, to: node.to, widget: new LineBreakWidget() }] });
           return false;
         }
         case "Tilde": {
@@ -2106,7 +2107,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       }
       const symbol = CONTROL_SYMBOLS[text];
       if (symbol !== undefined && symbol !== "") {
-        emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "never", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new SymbolWidget(symbol, text) }] });
+        // A backslash typed before an existing space, newline or symbol leaves the caret inside the token.
+        emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "strict", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new SymbolWidget(symbol, text) }] });
       } else if (symbol === "" && structural) {
         // `\@` (Normalizing Flows' `RNN\@.`), `\/` and `\!` typeset nothing: hidden, shown again at the cursor.
         emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to }] });
