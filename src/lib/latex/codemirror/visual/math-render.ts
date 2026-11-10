@@ -25,7 +25,21 @@ export const KATEX_MACROS: Record<string, string> = {
   // relsize's one-step larger and smaller formulas (YOLO's `\mathlarger{\mathbbm{1}}`).
   "\\mathlarger": "{\\large #1}",
   "\\mathsmaller": "{\\small #1}",
+  // Spacing and robustness commands that draw nothing in a formula: the italic correction (O'Donnell's
+  // `\Var` is `\mathop{\bf Var\/}`), `\protect`, xspace's `\xspace`, `\@` and `\leavevmode`.
+  "\\/": "",
+  "\\protect": "",
+  "\\xspace": "",
+  "\\@": "",
+  "\\leavevmode": "",
+  "\\ensuremath": "#1",
 };
+
+/** mathtools' small matrices with delimiters, which KaTeX lacks: its `smallmatrix` between those delimiters. */
+const SMALL_MATRICES: Record<string, [string, string]> = {
+  psmallmatrix: ["(", ")"], bsmallmatrix: ["[", "]"], Bsmallmatrix: ["\\{", "\\}"], vsmallmatrix: ["|", "|"], Vsmallmatrix: ["\\|", "\\|"],
+};
+const SMALL_MATRIX = /\\(begin|end)\s*\{([pbBvV]smallmatrix)\}/g;
 
 const COUNTER_COMMANDS = /\\(?:addtocounter|setcounter)\s*\{[^{}]*\}\s*\{[^{}]*\}|\\(?:stepcounter|refstepcounter)\s*\{[^{}]*\}/g;
 const COUNTED_TAG = /\\tag\*?\s*\{\s*\\theequation\s*\}/;
@@ -65,6 +79,14 @@ export function forKatex(latex: string) {
   let out = latex.includes("\\raise") || latex.includes("\\lower") ? latex.replace(RAISE, "") : latex;
   if (out.includes("\\textsc")) out = out.replace(/\\textsc\s*\{([^{}]*)\}/g, (_, text: string) => `\\text{${text.replace(/[a-z]+/g, (run) => `{\\small ${run.toUpperCase()}}`)}}`);
   if (/\\[a-z]+\s*\\(?:math|text|operatorname|boldsymbol|bm)/.test(out)) out = out.replace(UNBRACED_ARGUMENT, "\\$1{$2}");
+  // `\begin{psmallmatrix}…\end{psmallmatrix}` (Borusyak et al.'s rank conditions): `smallmatrix` in parentheses.
+  if (out.includes("smallmatrix")) {
+    out = out.replace(SMALL_MATRIX, (whole, side: string, env: string) => {
+      const [left, right] = SMALL_MATRICES[env] ?? [];
+      if (!left) return whole;
+      return side === "begin" ? `\\left${left}\\begin{smallmatrix}` : `\\end{smallmatrix}\\right${right}`;
+    });
+  }
   return out;
 }
 

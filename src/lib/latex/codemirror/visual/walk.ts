@@ -670,7 +670,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           for (let parent = node.parent; parent; parent = parent.parent) if (MATH_CONTAINERS.has(parent.name)) return false;
           const formed = wellFormedEnvironment(node, state);
           if (!formed || !formed.content) return false;
-          const body = read(state, formed.content.from, formed.content.to);
+          // The environment's own arguments (`\begin{array}{cc}`, `\begin{alignat}{2}`), which the grammar keeps in
+          // BeginEnv: KaTeX needs them in front of the body.
+          const begin = node.getChild("BeginEnv");
+          const nameGroup = begin?.getChild("EnvNameGroup");
+          const args = begin && nameGroup ? read(state, nameGroup.to, begin.to) : "";
+          const body = (args.trim() ? args.trim() : "") + read(state, formed.content.from, formed.content.to);
           const source = katexForEnvironment(formed.name, body);
           const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: node.from });
           // Rows numbered by hand (`\addtocounter{equation}{1}\tag{\theequation}`) are numbered rows.

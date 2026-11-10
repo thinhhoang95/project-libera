@@ -10,6 +10,8 @@ import { latexParser as parser } from "../../src/lib/latex/codemirror/latex-pars
 import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
 import { columnSpans } from "../../src/lib/latex/codemirror/visual/table-model";
+import { renderKatex } from "../../src/lib/latex/codemirror/visual/math-render";
+import { expandLatexMacros } from "../../src/lib/latex/macros/expand";
 import { macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 import { computeLatexNumbering, numberingEntryAt } from "../../src/lib/latex/macros/numbering";
 
@@ -205,4 +207,57 @@ test("a repeated column specification is bounded by its count, even when it repe
   assert.ok(performance.now() - started < 50);
   assert.deepEqual(columnSpans("*{3}{c}")?.map((column) => column.letter), ["c", "c", "c"]);
   assert.deepEqual(columnSpans("l*{2}{}r")?.map((column) => column.letter), ["l", "r"]);
+});
+
+/** A formula as the Visual mode draws it: the document's macros expanded, then KaTeX; null when it stays source. */
+function drawn(preamble: string, formula: string) {
+  const defs = readLatexDefinitions(`${preamble}\n\\begin{document}\\end{document}`);
+  const expanded = expandLatexMacros(formula, defs, { mode: "math", pos: 0 });
+  return expanded.ok ? renderKatex(expanded.text, false) : null;
+}
+
+test("the italic correction \\/ and \\protect draw nothing in a formula (O'Donnell's \\Var and \\Ex)", () => {
+  const preamble = String.raw`\newcommand{\Ex}{\mathop{\bf E\/}}\newcommand{\Var}{\mathop{\bf Var\/}}\newcommand{\Tinf}{\protect\mathbf{I}}`;
+  assert.ok(drawn(preamble, String.raw`\Var[f] \leq \Tinf[f]`));
+  assert.ok(drawn(preamble, String.raw`\Ex_{x}[f(x)]`));
+});
+
+test("mathtools' psmallmatrix and the other delimited small matrices are drawn (Borusyak et al.'s rank condition)", () => {
+  for (const env of ["psmallmatrix", "bsmallmatrix", "Bsmallmatrix", "vsmallmatrix", "Vsmallmatrix"]) {
+    assert.ok(drawn("", String.raw`\text{rank}\left(\begin{${env}}Z_1 \\ Z_0\end{${env}}\right)`), env);
+  }
+});
+
+test("mathtools' \\DeclarePairedDelimiter macros expand at their three sizes (Synthetic DiD's \\smallabs)", () => {
+  const preamble = String.raw`\usepackage{mathtools}\DeclarePairedDelimiter\set{\{}{\}}\DeclarePairedDelimiter{\smallabs}{\lvert}{\rvert}`;
+  const defs = readLatexDefinitions(`${preamble}\n\\begin{document}\\end{document}`);
+  const expand = (text: string) => expandLatexMacros(text, defs, { mode: "math", pos: 0 }).text;
+  assert.equal(expand(String.raw`\smallabs{x}`), String.raw`\mathopen{\lvert}x\mathclose{\rvert}`);
+  assert.equal(expand(String.raw`\smallabs*{\frac{a}{b}}`), String.raw`\left\lvert \frac{a}{b} \right\rvert`);
+  assert.equal(expand(String.raw`\smallabs[\big]{x}`), String.raw`\mathopen{\big\lvert}x\mathclose{\big\rvert}`);
+  for (const formula of [String.raw`\smallabs{x}`, String.raw`\smallabs*{x}`, String.raw`\smallabs[\Big]{x}`, String.raw`\set{x : x > 0}`]) assert.ok(drawn(preamble, formula), formula);
+});
+
+test("pgffor loops that define a macro per letter are read as those macros (the max-flow paper's \\mB and \\cG)", () => {
+  const preamble = String.raw`\usepackage{pgffor}
+\foreach \x in {A,...,Z}{%
+	\expandafter\xdef\csname m\x\endcsname{\noexpand\mathbf{\x}}
+}
+\foreach \x in {a,b,c}{\expandafter\xdef\csname v\x\endcsname{\noexpand\boldsymbol{\x}}}`;
+  const defs = readLatexDefinitions(`${preamble}\n\\begin{document}\\end{document}`);
+  assert.equal(macroAt(defs, "mB", 0)?.body, "\\mathbf{B}");
+  assert.equal(macroAt(defs, "mZ", 0)?.body, "\\mathbf{Z}");
+  assert.equal(macroAt(defs, "vc", 0)?.body, "\\boldsymbol{c}");
+  assert.equal(macroAt(defs, "vd", 0), null);
+  assert.ok(drawn(preamble, String.raw`\mB^\top \bf = \vb`.replace("\\bf", "f")));
+  // A loop that does something else, or expands what it should not, is not read.
+  const other = readLatexDefinitions(String.raw`\foreach \x in {1,...,3}{\node at (\x,0) {\x};}
+\foreach \x in {A,B}{\expandafter\xdef\csname m\x\endcsname{\mathbf{\x}}}
+\begin{document}\end{document}`);
+  assert.equal(other.macros.size, 0);
+});
+
+test("an array drawn on its own keeps its column specification (Featherweight Go's \\begin{array}{l} in rules)", () => {
+  const doc = "\\begin{document}\n\\begin{array}{cc}\na & b \\\\\nc & d\n\\end{array}\n\\end{document}\n";
+  assert.equal(constructs(visualState(doc)).some((item) => item.startsWith("math:")), true);
 });

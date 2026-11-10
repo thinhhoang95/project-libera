@@ -116,7 +116,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -343,6 +343,75 @@ function parseXparseSpec(spec: string): XparseArgument[] | null {
   return args;
 }
 
+/** The names a pgffor list gives: letters written out (`A,B,C`) and letter ranges (`A,...,Z`); null for anything else. */
+function foreachItems(list: string): string[] | null {
+  const items = list.split(",").map((item) => item.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < items.length; i++) {
+    if (items[i] === "..." || items[i] === "\\ldots") {
+      const from = out[out.length - 1];
+      const to = items[i + 1];
+      if (!from || !to || !/^[A-Za-z]$/.test(from) || !/^[A-Za-z]$/.test(to) || to.charCodeAt(0) <= from.charCodeAt(0)) return null;
+      for (let code = from.charCodeAt(0) + 1; code < to.charCodeAt(0); code++) out.push(String.fromCharCode(code));
+      continue;
+    }
+    if (!/^[A-Za-z]+$/.test(items[i])) return null;
+    out.push(items[i]);
+  }
+  return out.length && out.length <= 64 ? out : null;
+}
+
+/**
+ * A pgffor loop whose body only defines one global macro per item, by name: `\foreach \x in {A,...,Z}{\expandafter\xdef
+ * \csname m\x\endcsname{\noexpand\mathbf{\x}}}`. The macros it makes (`\mA` is `\mathbf{A}`), or null when the loop is
+ * anything else. An `\xdef` body may hold only `\noexpand`ed commands and the loop variable (else what it expands to
+ * depends on other definitions); a `\gdef` body may not use the variable (it is not replaced when defining).
+ */
+function readForeachDefinitions(source: string, index: number): { end: number; macros: Array<{ name: string; body: string }> } | null {
+  const head = /^\s*\\([A-Za-z]+)\s+in\s*\{([^{}]*)\}\s*/.exec(source.slice(index, index + 240));
+  if (!head) return null;
+  const variable = head[1];
+  const items = foreachItems(head[2]);
+  const group = items ? readGroup(source, index + head[0].length, TEX_GROUPS) : null;
+  if (!items || !group) return null;
+  const body = group.content.replace(/(^|[^\\])%[^\n]*/g, "$1");
+  const definition = new RegExp(String.raw`\s*\\expandafter\s*(\\global\s*)?\\([gex]?def)\s*\\csname\s*([A-Za-z@]*)\s*\\${variable}(?![A-Za-z@])\s*([A-Za-z@]*)\s*\\endcsname\s*`, "y");
+  const variableUse = new RegExp(String.raw`\\${variable}(?![A-Za-z@])`, "g");
+  const templates: Array<{ prefix: string; suffix: string; body: string; expanded: boolean }> = [];
+  let at = 0;
+  while (at < body.length) {
+    if (!body.slice(at).trim()) break;
+    definition.lastIndex = at;
+    const match = definition.exec(body);
+    if (!match) return null;
+    const kind = match[2];
+    const value = readGroup(body, definition.lastIndex, TEX_GROUPS);
+    if (!value) return null;
+    const global = !!match[1] || kind === "gdef" || kind === "xdef";
+    // A local definition is made in the loop's group and gone after it: nothing to read.
+    if (global) {
+      const expanded = kind === "xdef" || kind === "edef";
+      if (expanded) {
+        // Every command other than the variable is protected by \noexpand.
+        const unprotected = value.content.replace(/\\noexpand\s*\\[A-Za-z@]+/g, "").replace(variableUse, "");
+        if (/\\[A-Za-z@]/.test(unprotected)) return null;
+      } else if (variableUse.test(value.content)) return null;
+      variableUse.lastIndex = 0;
+      templates.push({ prefix: match[3], suffix: match[4], body: value.content, expanded });
+    }
+    at = value.end;
+  }
+  if (!templates.length) return null;
+  const macros: Array<{ name: string; body: string }> = [];
+  for (const item of items) {
+    for (const template of templates) {
+      const text = template.expanded ? template.body.replace(/\\noexpand\s*/g, "").replace(variableUse, item) : template.body;
+      macros.push({ name: `${template.prefix}${item}${template.suffix}`, body: text });
+    }
+  }
+  return { end: group.end, macros };
+}
+
 /** Another file whose definitions apply, and where it is read: by the open file (`loadedBy: ""`), by another source, or first (no `loadedBy`). */
 export type DefinitionSource = {
   path: string;
@@ -490,7 +559,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       }
     } else if (command === "def" || command === "gdef" || command === "edef" || command === "xdef") {
       const name = readCommandName(source, index);
-      if (!name || source[skipSpace(source, index)] === "{") continue;
+      // `\xdef\csname m\x\endcsname{…}` defines a name made at run time, not `\csname`.
+      if (!name || source[skipSpace(source, index)] === "{" || name.name === "csname") continue;
       index = name.end;
       const open = source.indexOf("{", index);
       if (open < 0) continue;
@@ -537,6 +607,35 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       end = body.end;
       if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
       else added = addMacro(context, { name: name.name, arity: 0, body: `\\operatorname${starred ? "*" : ""}{${body.content}}`, mathOnly: true, pos, file: context.file }, "new");
+    } else if (command === "DeclarePairedDelimiter") {
+      // mathtools' `\DeclarePairedDelimiter\abs{\lvert}{\rvert}`: `\abs{x}` at normal size, `\abs*{x}` grown to fit,
+      // `\abs[\big]{x}` at a size given. An xparse macro with a star, an optional size and the content.
+      const name = readCommandName(source, index);
+      if (!name) continue;
+      const left = readGroupAt(source, name.end);
+      const right = left && readGroupAt(source, left.end);
+      if (!left || !right) { note(defs.problems, name.name, `\\${name.name} needs its two delimiters`); broken = true; }
+      else {
+        end = right.end;
+        const open = left.content.trim();
+        const close = right.content.trim();
+        if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
+        else added = addMacro(context, {
+          name: name.name, arity: 3, spec: [{ type: "s" }, { type: "o" }, { type: "m" }], mathOnly: true, pos, file: context.file,
+          body: `\\IfBooleanTF{#1}{\\left${open} #3 \\right${close}}{\\IfNoValueTF{#2}{\\mathopen{${open}}#3\\mathclose{${close}}}{\\mathopen{#2${open}}#3\\mathclose{#2${close}}}}`,
+        }, "new");
+      }
+    } else if (command === "foreach") {
+      // pgffor's loop that defines one macro per letter (`\foreach \x in {A,...,Z}{\expandafter\xdef\csname m\x\endcsname
+      // {\noexpand\mathbf{\x}}}`, `\mA` … `\mZ` in many theory papers): read as the macros it makes. Any other loop is not
+      // a definition and is left alone.
+      const loop = readForeachDefinitions(source, index);
+      if (!loop) continue;
+      end = loop.end;
+      for (const macro of loop.macros) {
+        if (uncertain) shadow(macro.name, `\\${macro.name} is defined under a condition`);
+        else addMacro(context, { name: macro.name, arity: 0, body: macro.body, pos, file: context.file }, "renew");
+      }
     } else if (/DocumentCommand$/.test(command)) {
       const name = readCommandName(source, index);
       if (!name) continue;

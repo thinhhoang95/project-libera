@@ -120,8 +120,21 @@ export function substituteArguments(body: string, args: string[]) {
   return joined ? joinTokens(out, rest) : out + rest;
 }
 
-/** xparse's tests on arguments: `\IfBooleanTF`, `\IfNoValueTF`, `\IfValueTF` and their one-branch forms. */
+/**
+ * xparse's tests on arguments: `\IfBooleanTF`, `\IfNoValueTF`, `\IfValueTF` and their one-branch forms. A chosen
+ * branch may hold another test (`\IfBooleanTF{#1}{…}{\IfNoValueTF{#2}{…}{…}}`, mathtools' paired delimiters):
+ * evaluated again, a few levels deep.
+ */
 function evaluateConditionals(text: string) {
+  for (let level = 0; level < 4 && text.includes("\\If"); level++) {
+    const next = evaluateConditionalsOnce(text);
+    if (next === text) break;
+    text = next;
+  }
+  return text;
+}
+
+function evaluateConditionalsOnce(text: string) {
   if (!text.includes("\\If")) return text;
   const pattern = /\\(IfBooleanTF|IfBooleanT|IfBooleanF|IfNoValueTF|IfNoValueT|IfNoValueF|IfValueTF|IfValueT|IfValueF)(?![A-Za-z])/g;
   let output = "";
