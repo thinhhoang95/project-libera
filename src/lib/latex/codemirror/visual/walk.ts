@@ -285,6 +285,40 @@ function environmentCode(code: string) {
   return code.replace(LAYOUT_NOISE, (_, item?: string) => (item !== undefined ? item : "")).replace(/\s+/g, " ").trim();
 }
 
+/** Commands a user environment's code may keep that its header draws: text styles, sizes, colours, symbols, references. */
+const DRAWABLE_CODE = /^\\(?:textbf|textit|emph|textsc|textsf|texttt|textrm|textup|textsl|textmd|underline|textcolor|color|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge|bf|it|em|sc|sf|tt|rm|sl|ldots|dots|textellipsis|quad|qquad|S|P|dag|ddag|textbullet|textendash|textemdash|ref|eqref|cite|label|footnote|thanks|LaTeX|TeX)$/;
+const DRAWABLE_SYMBOLS = new Set(["\\", ",", " ", "%", "&", "#", "_", "{", "}", "$", "@"]);
+
+/**
+ * What a user environment's code shows in its header ("" when it shows nothing), or null when it holds more than
+ * text: conditionals, counters, glue and boxes of a size (Julia's `jinput`, `\ifx#1\relax…\vskip2ex…minipage…`), which
+ * a header would show half-read. Then the `\begin` stays as source, and the body is drawn.
+ */
+function drawableEnvironmentCode(code: string): string | null {
+  const text = environmentCode(code);
+  // Formulas are drawn by KaTeX; around them, text and the commands above.
+  const outside = text.replace(/\$[^$]*\$/g, "");
+  for (const match of outside.matchAll(/\\([A-Za-z@]+|[^A-Za-z@])/g)) {
+    if (match[1].length === 1 && !/[A-Za-z@]/.test(match[1]) ? !DRAWABLE_SYMBOLS.has(match[1]) : !DRAWABLE_CODE.test(`\\${match[1]}`)) return null;
+  }
+  if (/#\d/.test(outside)) return null;
+  // Lengths and glue left by commands the noise filter removed (`\vskip2ex plus .2ex`, `{.19\textwidth}`).
+  if (/(?:^|[^A-Za-z])-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp)(?![A-Za-z])|(?:^|\s)(?:plus|minus)\s/.test(outside)) return null;
+  return text;
+}
+
+/**
+ * The named-theorem idiom (O'Donnell's `\newenvironment{named}[1]{\renewcommand{\theoremname}{#1}\begin{namedtheorem}}`
+ * with `\newtheorem*{namedtheorem}{\theoremname}`): an unnumbered theorem whose heading is the argument. Null otherwise.
+ */
+function namedTheorem(code: string, defs: LatexDefinitions) {
+  const match = /^\s*\\(?:re)?newcommand\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\\begin\s*\{([^{}]+)\}\s*$/.exec(code);
+  if (!match) return null;
+  const theorem = defs.theorems.get(match[4].trim());
+  if (!theorem || theorem.numbered || theorem.title.replace(/\\protect\s*/g, "").trim() !== `\\${match[1] ?? match[2]}`) return null;
+  return { theorem, title: match[3].trim() };
+}
+
 type ListContext = { node: SyntaxNode; variant: "bullet" | "number" | "description"; depth: number; count: number; template: string | null };
 
 /**
@@ -898,15 +932,27 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return undefined;
     }
     if (user) {
-      const beginCode = environmentCode(userArgs ? substituteArguments(user.begin, userArgs) : user.begin);
-      const endCode = environmentCode(user.end);
+      const code = userArgs ? substituteArguments(user.begin, userArgs) : user.begin;
+      const named = namedTheorem(code, defs);
+      if (named) {
+        const span = aloneOnLines(doc, begin.from, headerEnd);
+        if (structural) {
+          emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: new EnvironmentHeaderWidget("theorem", named.title, null, null, 0) }] });
+          collapseLine(formed.end, "env-end");
+        }
+        if (formed.content && formed.content.to > headerEnd) emit({ kind: "env-body", from: headerEnd, to: formed.end.from, reveal: "never", replaces: [], marks: [{ from: headerEnd, to: formed.end.from, class: THEOREM_STYLE_CLASSES[named.theorem.style] }] });
+        return undefined;
+      }
+      // null: code the header cannot draw, whose `\begin` or `\end` stays as source; "": code that draws nothing.
+      const beginCode = drawableEnvironmentCode(code);
+      const endCode = drawableEnvironmentCode(user.end);
       if (structural) {
         const span = aloneOnLines(doc, begin.from, headerEnd);
         if (beginCode) emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: new EnvironmentHeaderWidget("user", beginCode, null, null, 0) }] });
-        else collapseLine(begin, "env-begin", span ? undefined : { from: begin.from, to: headerEnd });
+        else if (beginCode === "") collapseLine(begin, "env-begin", span ? undefined : { from: begin.from, to: headerEnd });
         const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
         if (endCode) emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(endCode) }] });
-        else collapseLine(formed.end, "env-end");
+        else if (endCode === "") collapseLine(formed.end, "env-end");
       }
       return undefined;
     }
@@ -1209,7 +1255,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const header: ExpandedEnvironmentSpec["header"] = theorem ? { variant: "theorem", title: theorem.title, note, numbered: !!theorem.numbered }
         : envName === "proof" ? { variant: "proof", title: note ?? "Proof", note: null, numbered: false }
           : envName === "abstract" ? { variant: "abstract", title: "Abstract", note: null, numbered: false }
-            : user && environmentCode(user.begin) ? { variant: "user", title: environmentCode(user.begin)!, note: null, numbered: false } : null;
+            : user && drawableEnvironmentCode(user.begin) ? { variant: "user", title: drawableEnvironmentCode(user.begin)!, note: null, numbered: false } : null;
+      // An environment whose code the header cannot draw stays source, as when it is written out.
+      if (!theorem && user && drawableEnvironmentCode(user.begin) === null) return false;
       const className = theorem ? THEOREM_STYLE_CLASSES[theorem.style] : envName === "proof" ? "cm-vis-proof" : envName === "abstract" ? "cm-vis-abstract" : null;
       spec = { header, body: rest.trim(), items: null, className, length: range.to - range.from };
     }

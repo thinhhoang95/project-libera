@@ -2,7 +2,9 @@ import "./setup.cjs";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { JSDOM } from "jsdom";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { setNumbering, visualDefinitions } from "../../src/lib/latex/codemirror/visual/model";
+import { refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-language";
@@ -39,11 +41,14 @@ function constructs(state: EditorState) {
   return list;
 }
 
-/** The text a mounted Visual mode shows for `doc` (widgets' text included). */
+/** The text a mounted Visual mode shows for `doc` (widgets' text included), numbered as the app numbers it. */
 function visibleText(doc: string) {
   const parent = document.createElement("div");
   document.body.append(parent);
   const view = new EditorView({ state: visualState(doc), parent });
+  const numbering = computeLatexNumbering(syntaxTree(view.state), (from, to) => view.state.doc.sliceString(from, to), visualDefinitions(view.state));
+  view.dispatch({ effects: setNumbering.of(numbering) });
+  refreshVisualWidgets(view);
   const text = view.contentDOM.textContent ?? "";
   view.destroy();
   parent.remove();
@@ -255,6 +260,68 @@ test("pgffor loops that define a macro per letter are read as those macros (the 
 \foreach \x in {A,B}{\expandafter\xdef\csname m\x\endcsname{\mathbf{\x}}}
 \begin{document}\end{document}`);
   assert.equal(other.macros.size, 0);
+});
+
+test("a title's \\begingroup\\renewcommand\\thefootnote{}…\\endgroup draws only its footnote mark (Synthetic DiD)", () => {
+  const doc = String.raw`\documentclass{article}
+\title{Synthetic Difference in Differences \begingroup \renewcommand\thefootnote{}\footnote{We thank the referees.}\endgroup}
+\author{Dmitry Arkhangelsky}
+\begin{document}
+\maketitle
+Text.
+\end{document}
+`;
+  const text = visibleText(doc);
+  // The `\title{…}` line is source; the title \maketitle draws comes after it.
+  const drawnTitle = text.slice(text.lastIndexOf("Synthetic Difference in Differences"));
+  assert.match(drawnTitle, /^Synthetic Difference in Differences\s*\*/);
+  assert.doesNotMatch(drawnTitle, /begingroup|renewcommand|thefootnote|endgroup/);
+});
+
+test("a user environment whose code holds conditionals, counters and glue is not drawn half-read: its \\begin stays source (Julia's jinput)", () => {
+  const preamble = String.raw`\newcounter{jcounter}
+\newenvironment{jinput}[1][]{\ifx#1\relax\else\setcounter{jcounter}{#1}\addtocounter{jcounter}{-1}\fi\refstepcounter{jcounter}\ttfamily\hspace*{-.7in}\noindent\begin{minipage}[t]{.19\textwidth}\vskip2ex\hspace*{\fill}\textcolor{incolor}{In[\arabic{jcounter}]: }\end{minipage}\begin{minipage}[t]{.8\textwidth}\vskip-0ex\begin{shaded}}{\end{shaded}\end{minipage}\par}
+\newenvironment{note}{\noindent\textbf{Note.}}{\par}`;
+  const doc = `${preamble}\n\\begin{document}\n\\begin{jinput}\nA = rand(3,3)\n\\end{jinput}\n\n\\begin{note}\nRead this.\n\\end{note}\n\\end{document}\n`;
+  const text = visibleText(doc);
+  assert.match(text, /A = rand\(3,3\)/);
+  assert.doesNotMatch(text, /textwidth|2ex|plus|arabic|jcounter\}/);
+  assert.match(text, /\\begin\{jinput\}/);
+  // An environment whose code is text is still drawn with its header.
+  assert.match(text, /Note\./);
+  assert.doesNotMatch(text, /\\begin\{note\}/);
+});
+
+test("the named-theorem idiom draws its argument as the heading, not the \\renewcommand (O'Donnell's named)", () => {
+  const preamble = String.raw`\newtheorem*{namedtheorem}{\theoremname}
+\newcommand{\theoremname}{testing}
+\newenvironment{named}[1]{ \renewcommand{\theoremname}{#1} \begin{namedtheorem}} {\end{namedtheorem}}`;
+  const doc = `${preamble}\n\\begin{document}\n\\begin{named}{Poincar\\'{e} Inequality}\nFor any $f$, $\\mathrm{Var}[f] \\leq I[f]$.\n\\end{named}\n\\end{document}\n`;
+  const text = visibleText(doc);
+  assert.match(text, /Poincar(?:é|\\'\{e\}) Inequality/);
+  assert.doesNotMatch(text, /renewcommand|testing/);
+});
+
+test("LyX's theorem names (\\protect\\assumptionname) and \\let\\ref\\Cref in \\AtBeginDocument draw as in the PDF (Borusyak et al.)", () => {
+  const doc = String.raw`\documentclass{article}
+\usepackage{cleveref}
+\newtheorem{assumption}{\protect\assumptionname}
+\AtBeginDocument{
+\Crefname{assumption}{Assumption}{Assumptions}%
+\let\ref\Cref
+}
+\providecommand{\assumptionname}{Assumption}
+\begin{document}
+\begin{assumption}[Parallel trends]\label{assu:A1}One.\end{assumption}
+\begin{assumption}\label{assu:A2}Two.\end{assumption}
+Under \ref{assu:A1,assu:A2} and \ref{assu:A2}.
+\end{document}
+`;
+  const text = visibleText(doc);
+  assert.match(text, /Assumption 1/);
+  assert.doesNotMatch(text, /assumptionname/);
+  assert.match(text, /Assumptions 1 and 2/);
+  assert.doesNotMatch(text, /\?/);
 });
 
 test("an array drawn on its own keeps its column specification (Featherweight Go's \\begin{array}{l} in rules)", () => {

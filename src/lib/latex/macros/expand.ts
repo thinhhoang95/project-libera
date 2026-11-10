@@ -159,6 +159,9 @@ function evaluateConditionalsOnce(text: string) {
 
 type Context = { defs: LatexDefinitions; pos: number; used: Set<string>; mode: "math" | "text"; /** Expansions left: bounds the work, not only the result (a macro chain that ends in nothing). */ budget: number };
 
+/** A definition command and the name it defines (`\renewcommand{\x}`, `\def\x`, `\let\x`): copied as they are. */
+const DEFINING = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator)\*?\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)/;
+
 /** The use of a macro at `index` (which holds a backslash), expanded, or null when it is not a usable macro. */
 function expandUse(source: string, index: number, context: Context, depth: number): { text: string; end: number } | null | false {
   const match = /^\\([A-Za-z@]+)/.exec(source.slice(index, index + 80));
@@ -247,6 +250,10 @@ function expandText(source: string, context: Context, depth: number): string | n
         continue;
       }
     }
+    // The name a definition defines is not used there: `\renewcommand{\theoremname}{#1}` in an environment's code
+    // stays as written (O'Donnell's `named`), not `\renewcommand{testing}{…}`.
+    const defining = DEFINING.exec(source.slice(i, i + 120));
+    if (defining) { i += defining[0].length - 1; continue; }
     const math = closer !== null || outer === "math";
     context.mode = math ? "math" : outer;
     const result = expandUse(source, i, context, depth);

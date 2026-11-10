@@ -27,7 +27,10 @@ export type FragmentContext = {
 };
 
 /** Commands that print nothing here: spacing helpers that only matter to TeX's line breaking. */
-const INVISIBLE = new Set(["\\xspace", "\\ignorespaces", "\\unskip", "\\relax", "\\protect", "\\nobreak", "\\null", "\\leavevmode", "\\strut", "\\raggedright", "\\raggedleft", "\\arraybackslash", "\\selectfont"]);
+const INVISIBLE = new Set(["\\xspace", "\\ignorespaces", "\\unskip", "\\relax", "\\protect", "\\nobreak", "\\null", "\\leavevmode", "\\strut", "\\raggedright", "\\raggedleft", "\\arraybackslash", "\\selectfont", "\\begingroup", "\\endgroup", "\\bgroup", "\\egroup"]);
+/** Definitions and counter commands in a title or caption (`\begingroup\renewcommand\thefootnote{}\footnote{…}\endgroup`): they print nothing. */
+const DEFINITION_NODES = new Set(["NewCommand", "RenewCommand", "NewEnvironment", "RenewEnvironment", "Def", "Let", "NewTheoremCommand", "TheoremStyleCommand"]);
+const PRINTS_NOTHING = /^\\(?:setcounter|addtocounter|stepcounter|refstepcounter|providecommand|renewcommand|newcommand|def|gdef|edef|xdef|let)$/;
 /** Layout inside a drawn caption, cell or title (not in text, where it stays as source): vertical space and settings draw nothing… */
 const VERTICAL_LAYOUT = /^\\(?:vspace|vskip|smallskip|medskip|bigskip|vfill|addvspace|newpage|clearpage|pagebreak|noindent|par|fontsize|setlength|addtolength|linespread|baselineskip)\*?$/;
 /** …and horizontal space is a space. */
@@ -181,6 +184,7 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   const renderNode = (parent: Node, node: SyntaxNode): void => {
     const name = node.name;
     if (node.type.isError) { parent.appendChild(raw(read(node.from, node.to))); return; }
+    if (DEFINITION_NODES.has(name)) return;
     switch (name) {
       case "Comment": return;
       case "Whitespace": case "NewLine": parent.appendChild(document.createTextNode(" ")); return;
@@ -324,6 +328,8 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         return;
       }
       if (INVISIBLE.has(text) || VERTICAL_LAYOUT.test(text)) return;
+      // A counter command with its arguments, or a definition the grammar did not name (`\renewcommand\thefootnote{}`).
+      if (PRINTS_NOTHING.test(text)) return;
       if (HORIZONTAL_SPACE.test(text)) { parent.appendChild(document.createTextNode(" ")); return; }
       if (BOXES.has(text)) {
         const argument = commandArguments(node).filter((arg) => !arg.optional).at(-1);
