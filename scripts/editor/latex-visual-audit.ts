@@ -225,7 +225,7 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
     from: bodyFrom, to: bodyTo,
     enter: (node) => {
       if (!MATH_NODES.has(node.name)) return;
-      if (isInLatexComment(doc, node.from) || covered(node.from)) return false;
+      if (isInLatexComment(doc, node.from) || covered(node.from) || faded(node.from)) return false;
       const whole = doc.slice(node.from, node.to);
       const inner = node.node.getChild("DisplayMath")?.getChild("Math") ?? node.node.getChild("InlineMath")?.getChild("Math") ?? node.node.getChild("Math");
       let latex = inner ? doc.slice(inner.from, inner.to) : "";
