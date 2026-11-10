@@ -6,7 +6,7 @@ import { expandLatexMacros } from "../../macros/expand";
 import type { LatexNumbering } from "../../macros/numbering";
 import { katexForEnvironment, RAISE, renderKatex } from "./math-render";
 import { citationText, referenceChipText, referencesInMath, type BibLookup } from "./references";
-import { circledText, CONTROL_SYMBOLS, cssColor, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
+import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 
 /* A static renderer for short LaTeX: captions, macro expansions, theorem
  * names, table cells and the title block (docs/latex-visual-editor-plan.md
@@ -36,7 +36,7 @@ const VERTICAL_LAYOUT = /^\\(?:vspace|vskip|smallskip|medskip|bigskip|vfill|addv
 /** …and horizontal space is a space. */
 const HORIZONTAL_SPACE = /^\\(?:hspace|hskip|hfill|hfil|enskip|enspace)\*?$/;
 /** Boxes that print their (last) argument: `\mbox{…}`, `\rlap{$^*$}`, `\multirow{2}{*}{…}`, `\rotatebox{90}{…}`. */
-const BOXES = new Set(["\\mbox", "\\hbox", "\\makebox", "\\fbox", "\\framebox", "\\rlap", "\\llap", "\\text", "\\textnormal", "\\textup", "\\textrm", "\\textmd", "\\textsl", "\\centerline", "\\multirow", "\\rotatebox", "\\raisebox", "\\scalebox", "\\resizebox", "\\parbox", "\\makecell", "\\shortstack"]);
+const BOXES = new Set(["\\mbox", "\\hbox", "\\makebox", "\\fbox", "\\framebox", "\\rlap", "\\llap", "\\text", "\\textnormal", "\\textup", "\\textrm", "\\textmd", "\\textsl", "\\centerline", "\\multirow", "\\rotatebox", "\\raisebox", "\\scalebox", "\\resizebox", "\\parbox", "\\makecell", "\\shortstack", "\\tikzmarknode", "\\pbox", "\\titlecap"]);
 /** Citation commands of other bibliography styles, as the natbib command they act like (ACL's `\newcite` is `\citet`). */
 export const CITE_ALIASES: Record<string, string> = { "\\newcite": "\\citet", "\\shortcite": "\\cite", "\\citeN": "\\citet", "\\citeNP": "\\citep", "\\citealtNP": "\\citealt" };
 
@@ -335,6 +335,13 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         return;
       }
       if (text === "\\today") { parent.appendChild(document.createTextNode(todayText())); return; }
+      // pifont's `\ding{51}` (and `\cmark`, `\xmark` written with it): the dingbat.
+      if (text === "\\ding") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        const inner = argument && argumentInner(argument.node);
+        const char = inner ? DINGBATS[read(inner.from, inner.to).trim()] : undefined;
+        if (char) { parent.appendChild(document.createTextNode(char)); return; }
+      }
       // xspace: a space, unless punctuation, a closing brace, a footnote or the end follows (`\bert{} is` → "BERT is").
       if (text === "\\xspace") {
         const after = source.slice(ctrl!.to).replace(/^\s+/, "");

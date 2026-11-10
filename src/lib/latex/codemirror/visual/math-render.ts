@@ -152,6 +152,12 @@ export function forKatex(latex: string) {
   if (out.includes("\\textsc")) out = out.replace(/\\textsc\s*\{([^{}]*)\}/g, (_, text: string) => `\\text{${text.replace(/[a-z]+/g, (run) => `{\\small ${run.toUpperCase()}}`)}}`);
   if (/\\[a-z]+\s*\\(?:math|text|operatorname|boldsymbol|bm)/.test(out)) out = out.replace(UNBRACED_ARGUMENT, "\\$1{$2}");
   if (out.includes("\\inferrule")) out = inferrulesForKatex(out);
+  // tikzmark's `\tikzmarknode[draw=red]{name}{content}` (Self-RAG's framed Retrieve tokens): its content.
+  if (out.includes("\\tikzmark")) out = out.replace(/\\tikzmarknode\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}/g, "").replace(/\\tikzmark\s*\{[^{}]*\}/g, "");
+  // Vertical space in a formula (SimPO's `\vspace{-0.5em}` before `\end{equation}`): the page's layout, not the formula.
+  if (/\\(?:vspace|vskip|smallskip|medskip|bigskip|noindent)(?![A-Za-z])/.test(out)) {
+    out = out.replace(/\\vspace\*?\s*\{[^{}]*\}|\\vskip\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp)(?:\s*(?:plus|minus)\s*-?\s*[\d.]+\s*(?:pt|em|ex|in|cm|mm|bp|fil+))*|\\(?:smallskip|medskip|bigskip|noindent)(?![A-Za-z])/g, "");
+  }
   // `\begin{psmallmatrix}…\end{psmallmatrix}` (Borusyak et al.'s rank conditions): `smallmatrix` in parentheses.
   if (out.includes("smallmatrix")) {
     out = out.replace(SMALL_MATRIX, (whole, side: string, env: string) => {

@@ -25,6 +25,14 @@ export const SYMBOL_COMMANDS: Record<string, string> = {
   "\\enspace": " ", "\\thinspace": " ", "\\nobreakspace": " ", "\\slash": "/", "\\textvisiblespace": "␣",
 };
 
+/** pifont's `\ding{n}` (Zapf Dingbats) used in papers: ticks and crosses in comparison tables, stars, circled numbers. */
+export const DINGBATS: Record<string, string> = {
+  "51": "✓", "52": "✔", "53": "✕", "54": "✖", "55": "✗", "56": "✘", "70": "✦", "72": "★", "73": "☆", "108": "●", "109": "❍", "110": "■", "111": "❏",
+  "113": "❑", "115": "▲", "116": "▼", "117": "◆", "118": "❖", "228": "➤", "232": "➨", "43": "☛",
+  ...Object.fromEntries(Array.from({ length: 10 }, (_, n) => [String(172 + n), String.fromCodePoint(0x2460 + n)])),
+  ...Object.fromEntries(Array.from({ length: 10 }, (_, n) => [String(182 + n), String.fromCodePoint(0x2776 + n)])),
+};
+
 const ACCENTS: Record<string, string> = {
   "'": "́", "`": "̀", "^": "̂", "\"": "̈", "~": "̃", "=": "̄", ".": "̇",
   "u": "̆", "v": "̌", "H": "̋", "c": "̧", "k": "̨", "r": "̊", "d": "̣", "b": "̱",

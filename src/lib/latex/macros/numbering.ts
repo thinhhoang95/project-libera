@@ -85,7 +85,7 @@ export function environmentName(node: SyntaxNode, read: Read) {
 
 /** Floats a `\caption` numbers, by environment name: starred, wrapped and sideways forms and `algorithm` included. */
 export const FLOAT_KINDS: Record<string, "figure" | "table" | "algorithm"> = {
-  figure: "figure", "figure*": "figure", wrapfigure: "figure", sidewaysfigure: "figure", "sidewaysfigure*": "figure", SCfigure: "figure",
+  figure: "figure", "figure*": "figure", wrapfigure: "figure", sidewaysfigure: "figure", "sidewaysfigure*": "figure", SCfigure: "figure", teaserfigure: "figure",
   table: "table", "table*": "table", wraptable: "table", sidewaystable: "table", "sidewaystable*": "table", SCtable: "table",
   algorithm: "algorithm", "algorithm*": "algorithm",
 };

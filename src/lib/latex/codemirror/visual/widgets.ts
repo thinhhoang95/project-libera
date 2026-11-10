@@ -751,7 +751,9 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   const dynamic: Array<{ td: HTMLElement; text: string; from: number }> = [];
   // `\newcolumntype` letters align as their definition does.
   // tabulary's `C` and `R` align as `c` and `r` (unless the document defines them).
-  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" || column === "C" ? "center" : column === "r" || column === "R" ? "right" : "left"));
+  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" || column === "C" ? "center" : column === "r" || column === "R" || column === "D" ? "right" : "left"));
+  // dcolumn's `D{.}{.}{3.2}` cells (and `>{$}c<{$}`) are formulas: `1.41^{***}` has its stars raised.
+  const formulas = model.columns.map((column) => column === "D" || !!types.get(column)?.math);
   // As in TeX, only paragraph columns (`p{…}`, `m{…}`, `b{…}`, tabularx's `X`, tabulary's `L C R J`) wrap; the
   // others are one line, so a wide table scrolls instead of breaking "2.46" into "2." and "46" (Carlini & Wagner).
   const wraps = model.columns.map((column) => (types.has(column) ? !!types.get(column)!.paragraph : /^[pmbXLCRJ]$/.test(column)));
@@ -794,7 +796,8 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
         td.style.verticalAlign = "middle";
         for (let at = column; at < column + cell.span; at++) rowsCovered.set(at, Number(multirow[1]) - 1);
       }
-      td.append(renderLatexFragment(text, context));
+      const formula = cell.span === 1 && formulas[column] && text.trim() && !text.includes("$") && !/^\s*\\multi(?:column|row)/.test(text);
+      td.append(renderLatexFragment(formula ? `$${text.trim()}$` : text, context));
       if (text.includes("\\")) dynamic.push({ td, text, from: cell.contentFrom ?? cell.from });
       td.dataset.row = String(rowIndex);
       td.dataset.cell = String(cellIndex);

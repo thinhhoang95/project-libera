@@ -12,7 +12,7 @@ import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "
 import { disabledField } from "./model";
 import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
-import { circledText, CONTROL_SYMBOLS, cssColor, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
+import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, parseTabular, readCtable, readLongTable } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
@@ -85,7 +85,38 @@ const OVERRIDABLE = new Set([
 /** Built-in environments drawn by the walk, which `\renewenvironment` may change. */
 const ENVIRONMENT_NODES = new Set(["FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "EquationEnvironment", "EquationArrayEnvironment"]);
 /** What may be in a figure or table besides its images, tables, caption and label, and still be drawn as one. */
-const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|definecolor|colorlet|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline|fontsize|selectfont|newcolumntype|arraybackslash|[;,:!])$/;
+const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|setlength|definecolor|colorlet|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|hfill|vfill|hspace\*?|vspace\*?|vskip|hskip|vglue|hglue|kern|par|medskip|smallskip|bigskip|noindent|quad|qquad|captionsetup|addvspace|newline|fontsize|selectfont|newcolumntype|arraybackslash|center|endcenter|Description|[;,:!])$/;
+/**
+ * What a macro's expansion may hold only as TeX programming: building names, appending to macros, global and expanded
+ * definitions, box registers, and conditionals other than the `\ifx` of cvpr's `\onedot` (which the renderer reads).
+ */
+const TEX_PROGRAMMING = /\\(?:expandafter|csname|endcsname|noexpand|g@addto@macro|@for|@ifnextchar|@ifstar|typeout|gdef|xdef|edef|newif|setbox|advance|multiply|divide|ifdefined|ifcsname|ifnum|ifdim|ifcase|if@[A-Za-z@]*|PackageError|PackageWarning|ClassError)(?![A-Za-z@])|\\if(?!x(?![A-Za-z@]))[a-z]{3,}[A-Za-z@]*/;
+/** Lengths a float sets for its table or caption (`\aboverulesep = 2mm`, `\tabcolsep=3pt`): layout. */
+const FLOAT_LENGTHS = /^\\(?:tabcolsep|arraycolsep|arrayrulewidth|aboverulesep|belowrulesep|doublerulesep|extrarowheight|abovecaptionskip|belowcaptionskip|textfloatsep|intextsep|columnsep|parskip|parindent)$/;
+const GLUE = String.raw`-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|\\[A-Za-z@]+)`;
+/** `\vskip 0.15in plus 2pt minus 1pt`, `\kern-3pt`: TeX's glue after a primitive. */
+const PRIMITIVE_GLUE = new RegExp(String.raw`^\s*${GLUE}(?:\s*(?:plus|minus)\s*(?:${GLUE}|-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*fil+))*`);
+
+/**
+ * Where a layout command's arguments end, from `at` (just after its name): a star, a primitive's glue, an unbraced
+ * `\setlength\tabcolsep{3pt}`, a length assignment `= 2mm`, or the group of `\Description{…}`.
+ */
+function layoutExtent(state: EditorState, at: number, command: string) {
+  const text = read(state, at, Math.min(state.doc.length, at + 400));
+  let i = text[0] === "*" ? 1 : 0;
+  const rest = () => text.slice(i);
+  if (/^\\(?:vskip|hskip|vglue|hglue|kern)$/.test(command)) i += PRIMITIVE_GLUE.exec(rest())?.[0].length ?? 0;
+  // `\vspace*{2pt}`: the star keeps the grammar from attaching the group, which follows as text.
+  else if (/^\\(?:vspace|hspace|addvspace)$/.test(command)) i += /^\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
+  else if (/^\\(?:setlength|addtolength)$/.test(command)) i += /^\s*\\[A-Za-z@]+\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
+  else if (FLOAT_LENGTHS.test(command)) i += new RegExp(String.raw`^\s*=?\s*${GLUE}`).exec(rest())?.[0].length ?? 0;
+  else if (command === "\\Description") {
+    const open = /^\s*(?:\[[^\]]*\]\s*)?\{/.exec(rest());
+    const group = open ? readGroup(text, i + open[0].length - 1, TEX_GROUPS) : null;
+    if (group) i = group.end;
+  }
+  return at + i;
+}
 /** Definitions the grammar parses as unknown commands. */
 const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname)$/;
 const SECTION_CLASSES: Record<string, string> = {
@@ -1067,6 +1098,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
+    // pifont's `\ding{51}`: the dingbat (✓, ✗, ★, ①).
+    if (text === "\\ding") {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      const inner = argument && argumentInner(argument.node);
+      const char = inner ? DINGBATS[read(state, inner.from, inner.to).trim()] : undefined;
+      if (char && argument) {
+        if (structural) emit({ kind: "symbol", from: node.from, to: argument.node.to, reveal: "touch", replaces: [{ from: node.from, to: argument.node.to, widget: new SymbolWidget(char, read(state, node.from, argument.node.to)) }] });
+        return false;
+      }
+    }
     // The ctable package's `\ctable[caption={…}]{spec}{notes}{rows}`: a table float, drawn read-only (Callaway & Sant'Anna).
     if (text === "\\ctable") {
       const table = readCtable(read(state, node.from, Math.min(doc.length, node.from + 40000)));
@@ -1190,6 +1231,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const symbol = CONTROL_SYMBOLS[text];
       if (symbol !== undefined && symbol !== "") {
         emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "never", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new SymbolWidget(symbol, text) }] });
+      } else if (symbol === "" && structural) {
+        // `\@` (Normalizing Flows' `RNN\@.`), `\/` and `\!` typeset nothing: hidden, shown again at the cursor.
+        emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to }] });
       }
       return false;
     }
@@ -1432,6 +1476,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const use = expandLatexMacroUse(source, defs, { mode: "text", pos: node.from });
     // A macro that only sets layout (`\tablestyle{2pt}{1.1}`) stays as written, as layout commands do.
     if (!use || (use.text.trim() && layoutOnly(use.text))) return undefined;
+    // A macro whose expansion is TeX programming (ICML's `\icmlauthor`: `\g@addto@macro`, `\csname`, flags made with
+    // `\newif`) would be drawn as raw tokens, worse than its use: it stays as written.
+    if (TEX_PROGRAMMING.test(use.text)) return undefined;
     const to = node.from + use.length;
     const fingerprint = use.used.join(",");
     const ensure = /^\s*\\ensuremath\s*\{([\s\S]*)\}\s*$/.exec(use.text);
@@ -1551,7 +1598,9 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (command === "\\captionof" || captionMacro(ref.node) !== null) { caption(ref.node); return false; }
       // `\resizebox{\linewidth}{!}{\input{fig}}`: a drawing, scaled.
       if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel, defs)) covered = false; return false; }
-      if (FIGURE_LAYOUT.test(command) || SIZE_COMMAND.test(command)) return false;
+      // Layout with what it takes (`\vskip 0.15in`, `\vspace*{2pt}`, `\setlength\tabcolsep{3pt}`, `\aboverulesep = 2mm`,
+      // acmart's `\Description{…}`): none of it is drawn, so none of it is content.
+      if (FIGURE_LAYOUT.test(command) || SIZE_COMMAND.test(command) || FLOAT_LENGTHS.test(command)) { noteUntil = Math.max(noteUntil, layoutExtent(state, ctrl!.to, command)); return false; }
       if (!layoutMacro(ref.node, state, defs)) covered = false;
       return false;
     }

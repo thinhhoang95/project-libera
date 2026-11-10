@@ -179,16 +179,34 @@ function groupsEnd(text: string, at: number, count: number) {
  */
 export function disabledRegions(text: string, discarding: ReadonlyMap<string, number> = new Map()): Array<{ from: number; to: number }> {
   const used = [...discarding.keys()].filter((name) => text.includes(`\\${name}`));
-  if (!/\\if(?:false|x|num)?(?![A-Za-z@])/.test(text) && !used.length) return [];
+  const comments = text.includes("\\begin{comment}");
+  if (!/\\if(?:false|x|num)?(?![A-Za-z@])/.test(text) && !used.length && !comments) return [];
   const names = used.join(",");
   const cached = disabledCache.get(text);
   if (cached && cached.names === names) return cached.regions;
-  const regions = [...falseRegions(text), ...discardedRegions(text, used, discarding)].sort((a, b) => a.from - b.from);
+  const regions = [...falseRegions(text), ...discardedRegions(text, used, discarding), ...(comments ? commentRegions(text) : [])].sort((a, b) => a.from - b.from);
   // Only the outermost: a `\cut{…}` inside `\iffalse` is left out with it.
   const outer = regions.filter((region, index) => !regions.some((other, at) => at !== index && other.from <= region.from && other.to >= region.to && (at < index || other.from !== region.from || other.to !== region.to)));
   if (disabledCache.size > 8) disabledCache.clear();
   disabledCache.set(text, { names, regions: outer });
   return outer;
+}
+
+/**
+ * The comment package's `\begin{comment} … \end{comment}`: text the document leaves out (Monotone Additive Statistics
+ * keeps 26 KB of dropped proofs in them), drawn faded and not numbered, as `\iffalse` is.
+ */
+function commentRegions(text: string) {
+  const regions: Array<{ from: number; to: number }> = [];
+  const begin = /%[^\n]*|\\begin\s*\{comment\}/g;
+  for (let match = begin.exec(text); match; match = begin.exec(text)) {
+    if (match[0][0] === "%" || (match.index > 0 && text[match.index - 1] === "\\")) continue;
+    const end = text.indexOf("\\end{comment}", match.index + match[0].length);
+    if (end < 0) break;
+    regions.push({ from: match.index, to: end + "\\end{comment}".length });
+    begin.lastIndex = end + "\\end{comment}".length;
+  }
+  return regions;
 }
 
 /** Uses of the discarding macros `names`, through their arguments, outside comments. */

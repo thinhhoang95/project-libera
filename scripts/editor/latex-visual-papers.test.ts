@@ -757,6 +757,61 @@ Body.\footnote{a}
   assert.equal(number(sub).labels.get("fwd")?.number, "1a");
 });
 
+test("batches 3, 5 and 6: template packages, float layout, spacing in formulas, dingbats, dashed rules, dcolumn, comments", async () => {
+  // A template's natbib.sty (ICLR, ACL) does not hide natbib's commands from the Visual mode.
+  const natbib = readLatexDefinitions(String.raw`\DeclareRobustCommand\citep{\begingroup\NAT@swatrue\let\NAT@ctype\z@\NAT@partrue\@ifstar{\NAT@fulltrue\NAT@citetp}{\NAT@fullfalse\NAT@citetp}}
+\newcommand\cref{\@cref{cref}}`, undefined, { file: "natbib.sty" });
+  assert.equal(macroAt(natbib, "citep", 0), null);
+  assert.equal(macroAt(natbib, "cref", 0), null);
+  // With hyperref, a preamble \renewcommand{\ref}{\hyperref} is undone at \begin{document}; one in \AtBeginDocument is not.
+  assert.equal(macroAt(readLatexDefinitions(String.raw`\usepackage{hyperref}\renewcommand{\ref}{\hyperref}\begin{document}\end{document}`), "ref", 0), null);
+  assert.equal(macroAt(readLatexDefinitions(String.raw`\usepackage{hyperref}\AtBeginDocument{\let\ref\Cref}\begin{document}\end{document}`), "ref", 0)?.alias, true);
+  // Floats with ICML's \vskip, \vspace*, an unbraced \setlength, a length assignment and acmart's \Description are drawn whole.
+  for (const layout of ["\\vskip 0.15in", "\\vspace*{2pt}", "\\setlength\\tabcolsep{3pt}", "\\aboverulesep = 2mm", "\\Description{A plot of the agents.}", "\\vskip -0.1in plus 2pt"]) {
+    const doc = `\\begin{document}\n\\begin{table}\n\\caption{Results}\n${layout}\n\\centering\n\\begin{tabular}{lc}\na & 1 \\\\\n\\end{tabular}\n\\end{table}\n\\end{document}\n`;
+    assert.equal(constructs(visualState(doc)).some((item) => item.startsWith("figure:")), true, layout);
+  }
+  // Vertical space in a formula (SimPO's definitions) and tikzmark nodes (Self-RAG's tokens) are drawn.
+  assert.ok(drawn("", String.raw`p(y)=\frac{1}{|y|}\log\pi(y). \vspace{-0.5em}`));
+  assert.ok(drawn("", String.raw`p(\tikzmarknode[draw=red,thick]{test}{\textbf{Retrieve}} = 1)`));
+  // pifont's dingbats, in text and in cells; arydshln's dashed rules are rules.
+  const ding = String.raw`\newcommand{\cmark}{\ding{51}}
+\begin{document}
+Yes \ding{51}, no \ding{55}.
+\begin{tabular}{lc}
+A & \cmark \\ \hdashline
+\multicolumn{2}{l}{\it Training} \\ \cdashline{1-2}
+B & \ding{55} \\
+\end{tabular}
+\end{document}
+`;
+  const text = visibleText(ding);
+  assert.doesNotMatch(text, /\\ding|\\hdashline|\\cdashline|\\multicolumn/);
+  assert.match(text, /Yes ✓, no ✗/);
+  // dcolumn's D columns: a grid, with the stars of a coefficient raised.
+  const dcolumn = String.raw`\usepackage{dcolumn}
+\begin{document}
+\begin{tabular}{l*{2}{D{.}{.}{3.2}}}
+Minimum wage & 1.41^{***} & 0.20 \\
+\end{tabular}
+\end{document}
+`;
+  const table = visibleText(dcolumn);
+  assert.doesNotMatch(table, /D\{\.\}|\^\{\*\*\*\}|\\begin\{tabular\}/);
+  assert.match(table, /Minimum wage/);
+  // The comment package's environment is left out (faded), as \iffalse is, and not numbered.
+  const comment = String.raw`\begin{document}
+\section{Kept}
+\begin{comment}
+\section{Dropped}
+\end{comment}
+\section{Next}\label{next}
+\end{document}`;
+  assert.equal(number(comment).labels.get("next")?.number, "2");
+  // Control symbols that typeset nothing are hidden in text.
+  assert.doesNotMatch(visibleText("\\begin{document}\nRNN\\@. Done.\n\\end{document}\n"), /\\@/);
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);

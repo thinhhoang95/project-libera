@@ -62,7 +62,7 @@ export type LatexTheoremDefinition = {
 export type LatexDefinitionNote = { pos: number; file?: string; name: string; message: string };
 
 /** `paragraph`: a column whose cells wrap, as `p{…}` and tabularx's `X` do; the others are one line. */
-export type LatexColumnType = { arity: number; align: "left" | "center" | "right"; paragraph?: boolean };
+export type LatexColumnType = { arity: number; align: "left" | "center" | "right"; paragraph?: boolean; math?: boolean };
 
 /** How a `\newcolumntype` body aligns: `>{\centering}`, `>{\raggedleft}`, or its base column (`c`, `r`). */
 function columnTypeAlign(body: string): LatexColumnType["align"] {
@@ -166,6 +166,11 @@ class TexScanner {
       if (state === "unknown") unknown = true;
     }
     return unknown ? "unknown" : "run";
+  }
+
+  /** Whether the reader is inside a group run later at the top level (`\AtBeginDocument{…}`). */
+  deferred() {
+    return this.frames.some((frame) => frame.keep);
   }
 
   /** The innermost open group, which ends a local definition made now. */
@@ -443,7 +448,8 @@ type ReadOptions = {
   load?: (key: string, at: number) => void;
 };
 
-type ReadContext = { defs: LatexDefinitions; file?: string; offset: number; bodyStart: number; filePos: number; theoremStyle: TheoremStyle };
+/** `deferred`: the definition being read is in `\AtBeginDocument{…}` (it runs after the packages' own hooks). */
+type ReadContext = { defs: LatexDefinitions; file?: string; offset: number; bodyStart: number; filePos: number; theoremStyle: TheoremStyle; deferred?: boolean };
 
 function effectivePos(context: ReadContext, index: number) {
   // Definitions in the preamble or in other files apply to the whole body.
@@ -465,6 +471,10 @@ function selfReferent(name: string, body: string) {
 const DRAWN_BUILTINS = new Set([
   "part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph", "appendix",
   "title", "author", "date", "thanks", "and", "maketitle", "caption", "label", "ref", "eqref", "cite", "footnote", "footnotemark", "footnotetext",
+  // Citations and references, which a template's own natbib.sty or hyperref.sty defines (ICLR's and ACL's ship natbib.sty).
+  "citep", "citet", "citealt", "citealp", "citeauthor", "Citeauthor", "citeyear", "citeyearpar", "Citet", "Citep", "Citealt", "Citealp", "citenum", "citetext",
+  "textcite", "Textcite", "parencite", "Parencite", "autocite", "Autocite", "footcite", "nocite",
+  "cref", "Cref", "crefrange", "Crefrange", "autoref", "Autoref", "nameref", "pageref", "vref", "vpageref",
   "textbf", "textit", "textsl", "textsc", "texttt", "textsf", "textrm", "textup", "textmd", "textnormal", "emph", "underline", "textsuperscript", "textsubscript",
   "tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge",
   "rm", "bf", "it", "sl", "sc", "tt", "sf", "em", "includegraphics", "href", "url", "item",
@@ -483,6 +493,9 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // The same restyling written in the document (Mask R-CNN's `\renewcommand\paragraph{\@startsection{paragraph}…}`):
   // the kernel's page machinery, not something to draw.
   if (DRAWN_BUILTINS.has(macro.name) && /\\@(?:startsection|setfontsize|setsize|dottedtocline|xpt|ixpt)(?![A-Za-z@])/.test(macro.body)) return null;
+  // hyperref sets `\ref` and `\pageref` again at `\begin{document}`: a preamble redefinition (a thesis's
+  // `\renewcommand{\ref}{\hyperref}`) is undone, so the references are drawn as references.
+  if ((macro.name === "ref" || macro.name === "pageref") && macro.pos < 0 && !context.deferred && context.defs.packages.includes("hyperref")) return null;
   // Formula commands built from box arithmetic (the TeX.SX `\widebar`: `\@ifnextchar`, `\setbox`, `\mathaccent"0362`),
   // which expanding cannot follow: KaTeX draws a near equivalent (math-render.ts).
   if (BOX_BUILT.has(macro.name) && /\\(?:@ifnextchar|setbox|mathaccent|wide@bar)(?![A-Za-z])/.test(macro.body)) return null;
@@ -520,6 +533,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     // Inside a comment, verbatim text or `\verb`, or in a branch TeX skips: not run.
     if (scanner.pos > start || scanner.branch() === "skip") { if (scanner.pos > pattern.lastIndex) pattern.lastIndex = scanner.pos; continue; }
     const uncertain = scanner.branch() === "unknown";
+    context.deferred = scanner.deferred();
     let index = start + match[0].length;
     const command = match[1];
     const note = (list: LatexDefinitionNote[], name: string, message: string) => list.push({ pos: context.offset + start, file: context.file, name, message });
@@ -805,7 +819,13 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         // Its base column, without the `>{…}`, `<{…}` and `@{…}` parts: `p{#1}`, `m{…}`, `b{…}` or `X` wrap.
         const base = body.content.replace(/[<>@!]\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, "");
         const paragraph = /(?:^|[^\\A-Za-z])[pmb]\s*\{|(?:^|[^\\A-Za-z])X(?![A-Za-z])/.test(base);
-        defs.columnTypes.set(letter.content.trim(), { arity: Number.isInteger(arity) && arity >= 0 && arity <= 9 ? arity : 0, align: columnTypeAlign(body.content), ...(paragraph ? { paragraph } : {}) });
+        // Cells typeset as formulas: dcolumn's `D{.}{.}{#1}` (aligned on the decimal point) and `>{$}c<{$}`.
+        const decimal = /(?:^|[^\\A-Za-z])D\s*\{/.test(base);
+        const math = decimal || />\s*\{\s*\$\s*\}/.test(body.content);
+        defs.columnTypes.set(letter.content.trim(), {
+          arity: Number.isInteger(arity) && arity >= 0 && arity <= 9 ? arity : 0, align: decimal ? "right" : columnTypeAlign(body.content),
+          ...(paragraph ? { paragraph } : {}), ...(math ? { math } : {}),
+        });
       }
     } else if (command === "definecolor" || command === "colorlet") {
       // `\definecolor{myred}{RGB}{89,10,10}`, `\colorlet{accent}{red!60}`: names `\textcolor` and `\color` draw.
@@ -843,7 +863,7 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   parts.push(defs.documentClass ?? "", String(defs.secnumdepth ?? ""), defs.graphicsPaths.join("|"));
   for (const [name, list] of defs.packageOptions) parts.push(`pkg:${name}:${list.join(",")}`);
   for (const [name, color] of defs.colors) parts.push(`color:${name}:${color.model}:${color.value}`);
-  for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}:${type.paragraph ? "p" : ""}`);
+  for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}:${type.paragraph ? "p" : ""}${type.math ? "m" : ""}`);
   for (const [name, kind] of defs.lists ?? []) parts.push(`list:${name}:${kind}`);
   for (const [level, options] of defs.listOptions ?? []) parts.push(`listopt:${level}:${options}`);
   return hashString(parts.join("\u0000"));

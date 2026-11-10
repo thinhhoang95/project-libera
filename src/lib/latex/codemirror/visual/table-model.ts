@@ -56,7 +56,9 @@ const TABULAR_NEWLINE = /^\\tabularnewline(?![A-Za-z@])/;
  * A rule and its own arguments: `\hline`, booktabs' `\toprule[w]` and `\addlinespace[l]` take no group, so a group
  * after them (`\hline` then `{\small Random} & …` on the next line) is the next row's first cell.
  */
-const RULE = /^\\(?:noalign(?![A-Za-z@])\s*\{[^}]*\}|(?:hline|toprule|midrule|bottomrule|addlinespace)(?![A-Za-z@])(\s*\[[^\]]*\])?|(?:cmidrule|cline)(?![A-Za-z@])(\s*\([^)]*\))?(\s*\[[^\]]*\])?(\s*\{[^}]*\})?|specialrule(?![A-Za-z@])(\s*\{[^}]*\}){0,3})/;
+// arydshln's `\hdashline` and `\cdashline{1-2}`, makecell's `\Xhline{1pt}` and `\Cline`, hhline's `\hhline{|=|=|}`, and
+// colortbl's `\arrayrulecolor{…}` are rules too (Self-RAG's ablation tables).
+const RULE = /^\\(?:noalign(?![A-Za-z@])\s*\{[^}]*\}|(?:hline|toprule|midrule|bottomrule|addlinespace|hdashline|firsthline|lasthline)(?![A-Za-z@])(\s*\[[^\]]*\])?|(?:cmidrule|cline|cdashline|Cline|Xhline|hhline|arrayrulecolor)(?![A-Za-z@])(\s*\([^)]*\))?(\s*\[[^\]]*\])?(\s*\{[^}]*\})?(\s*\{[^}]*\})?|specialrule(?![A-Za-z@])(\s*\{[^}]*\}){0,3})/;
 
 /** The column letters of a specification, without rules, `@{…}`, `>{…}`, `p{…}` widths and repeats expanded. */
 /** A `ctable` read from its source: caption, label, the table as a tabular, its notes, and the command's length. */
@@ -129,7 +131,8 @@ export function parseColumnSpec(spec: string, types?: ColumnTypes) {
 /** Most columns a specification may expand to; a larger one (nested `*{64}{…}` repeats) is left as source. */
 const MAX_COLUMNS = 256;
 /** Arguments each column type takes: `p{2cm}`, `w{l}{2cm}`. */
-const COLUMN_ARGUMENTS: Record<string, number> = { p: 1, m: 1, b: 1, w: 2, W: 2 };
+/** Arguments of the column letters that take them; dcolumn's `D{.}{.}{3.2}` takes three (its cells are formulas). */
+const COLUMN_ARGUMENTS: Record<string, number> = { p: 1, m: 1, b: 1, w: 2, W: 2, D: 3 };
 
 /**
  * Each column of a specification with its whole source span: the letter, its
