@@ -1,4 +1,5 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
+import { packageMacros } from "./packages";
 
 /* The document's own definitions, read the way TeX would read them, for the
  * Visual mode (docs/latex-visual-editor-plan.md §7). Only forms whose meaning
@@ -35,6 +36,8 @@ export type LatexMacro = {
   /** `\providecommand`: does nothing when the command already exists, which for LaTeX's own commands the reader cannot know. */
   provided?: boolean;
   file?: string;
+  /** Written by the Visual mode for a package the document loads (macros/packages.ts), not by the document. */
+  package?: string;
   fingerprint: string;
 };
 
@@ -794,6 +797,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           if (!trimmed) continue;
           defs.packages.push(trimmed);
           if (packageOptions) defs.packageOptions.set(trimmed, packageOptions.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean));
+          // What a package not in the project defines (complexity's `\NP`, physics' `\abs`); a copy in the project, read next, wins.
+          for (const { replaces, ...macro } of packageMacros(trimmed, defs.packageOptions.get(trimmed) ?? [])) if (replaces || !defs.macros.get(macro.name)?.length) addMacro(context, { ...macro, pos, file: context.file, package: trimmed }, "renew");
           options.load?.(loadKey("package", trimmed), start);
         }
       }
@@ -969,7 +974,10 @@ export function mapLatexDefinitions(defs: LatexDefinitions, changes: PositionMap
 
 /** How many macros and environments a summary counts (the latest definition of each name). */
 export function definitionCounts(defs: LatexDefinitions) {
-  return { macros: defs.macros.size, environments: defs.environments.size, theorems: defs.theorems.size, packages: new Set(defs.packages).size };
+  // A package's commands (complexity's 300 classes) are not the document's macros.
+  let macros = 0;
+  for (const list of defs.macros.values()) if (!list[list.length - 1].package) macros++;
+  return { macros, environments: defs.environments.size, theorems: defs.theorems.size, packages: new Set(defs.packages).size };
 }
 
 /** `\input`, `\include` and `\subfile` targets in a source (comments skipped), in order, with positions. */

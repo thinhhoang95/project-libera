@@ -1071,7 +1071,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: header }] });
         if (name === "proof") {
           const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
-          emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(null) }] });
+          // amsthm's end mark (□, or the document's `\renewcommand{\qedsymbol}{$\blacksquare$}`); ∎ without it.
+          const qed = macroAt(defs, "qedsymbol", formed.end.from) ? "\\qedsymbol" : null;
+          emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(qed) }] });
         } else collapseLine(formed.end, "env-end");
       }
       const styleClass = theorem ? THEOREM_STYLE_CLASSES[theorem.style] : name === "abstract" ? "cm-vis-abstract" : acknowledgments ? "cm-vis-acknowledgments" : "cm-vis-proof";

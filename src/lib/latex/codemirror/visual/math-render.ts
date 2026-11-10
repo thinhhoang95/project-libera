@@ -36,6 +36,18 @@ export const KATEX_MACROS: Record<string, string> = {
   "\\ensuremath": "#1",
   // The TeX.SX `\widebar` (a bar sized to its argument, built from box arithmetic the reader leaves out): a bar.
   "\\widebar": "\\overline{#1}",
+  // amsmath's capital accents (a macro paper's `\Tilde{\pi}_1`), which KaTeX lacks: the accents they are.
+  "\\Bar": "\\bar", "\\Tilde": "\\tilde", "\\Hat": "\\hat", "\\Check": "\\check", "\\Acute": "\\acute",
+  "\\Grave": "\\grave", "\\Dot": "\\dot", "\\Ddot": "\\ddot", "\\Breve": "\\breve", "\\Vec": "\\vec",
+  // amsthm's `\qedhere` at the end of a display in a proof (2204.14024): the proof's end mark is drawn at
+  // `\end{proof}`, so it draws nothing here; `\qed` is the end mark itself.
+  "\\qedhere": "",
+  "\\qed": "\\square",
+  // stmaryrd/mathabx's ⋤ and ⋥ (Larrauri & Živný's `\lneqsg`), which KaTeX lacks: the relation over ≠, as drawn.
+  "\\sqsubsetneq": "\\mathrel{\\underset{\\neq}{\\sqsubset}}",
+  "\\sqsupsetneq": "\\mathrel{\\underset{\\neq}{\\sqsupset}}",
+  // TeX's null delimiter width, in cmathml's `\left.\kern-\nulldelimiterspace` (Larrauri & Živný's `\Crestrict`).
+  "\\nulldelimiterspace": "1.2pt",
 };
 
 /** mathtools' small matrices with delimiters, which KaTeX lacks: its `smallmatrix` between those delimiters. */
@@ -139,6 +151,76 @@ export function mathparForKatex(body: string) {
 /** TeX's `\raise<dimen>` and `\lower<dimen>` before a box. */
 export const RAISE = /\\(?:raise|lower)\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:ex|em|pt|mm|cm|in|bp|mu)\s*/g;
 
+/** `\cmd` and its `{…}` argument at each match of `pattern` (which ends where the group opens), replaced; a use whose group does not close is left. */
+function replaceGroups(latex: string, pattern: RegExp, replace: (content: string) => string) {
+  let out = "";
+  let at = 0;
+  for (let match: RegExpExecArray | null; (match = pattern.exec(latex));) {
+    const group = latex[pattern.lastIndex] === "{" ? readGroup(latex, pattern.lastIndex, TEX_GROUPS) : null;
+    if (!group) continue;
+    out += latex.slice(at, match.index) + replace(group.content);
+    at = pattern.lastIndex = group.end;
+  }
+  return out + latex.slice(at);
+}
+
+/** Where the `close` matching the `open` at `from` is (same brace depth, nested pairs counted), or -1. */
+function delimiterEnd(latex: string, from: number, open: string, close: string) {
+  let depth = 0;
+  let nested = 0;
+  for (let i = from + 1; i < latex.length; i++) {
+    const char = latex[i];
+    if (char === "\\") { i++; continue; }
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (depth === 0 && char === close && nested === 0) return i;
+    else if (depth === 0 && char === open && open !== close) nested++;
+    else if (depth === 0 && char === close) nested--;
+  }
+  return -1;
+}
+
+const QUANTITY = /\\physics@(qty|mqty|smqty)\s*(\\(?:big|Big|bigg|Bigg)(?![A-Za-z@])\s*)?/g;
+const MATRICES: Record<string, string> = { "{": "matrix", "(": "pmatrix", "[": "bmatrix", "|": "vmatrix" };
+const SMALL_DELIMITERS: Record<string, [string, string]> = { "{": ["", ""], "(": ["\\left(", "\\right)"], "[": ["\\left[", "\\right]"], "|": ["\\left\\lvert", "\\right\\rvert"] };
+
+/**
+ * physics' commands that read delimiters, as its definitions write them (macros/packages.ts): `\qty(…)`, `\qty[…]`,
+ * `\qty{…}` and `\qty|…|` sized to their content (or by `\big` and the like), `\mqty(…)` matrices, and `\bra{a}\ket{b}`
+ * as one bracket ⟨a|b⟩. A use it cannot read keeps its marker, which KaTeX does not know: the formula stays source.
+ */
+function physicsForKatex(latex: string): string {
+  let out = latex.replace(/\\right\\rvert\\physics@bra\s*\\physics@ket\\left\\lvert/g, "\\middle\\vert ").replace(/\\rvert\\physics@bra\s*\\physics@ket\\lvert/g, "\\vert ");
+  // A sized bra before an unsized ket (or the reverse): physics joins them unsized, which is not written out here.
+  if (/\\physics@bra\s*\\physics@ket/.test(out)) return out;
+  out = out.replace(/\\physics@(?:bra|ket)(?![A-Za-z@])/g, "");
+  if (!out.includes("\\physics@")) return out;
+  let result = "";
+  let at = 0;
+  QUANTITY.lastIndex = 0;
+  for (let match: RegExpExecArray | null; (match = QUANTITY.exec(out));) {
+    const start = QUANTITY.lastIndex;
+    const open = out[start];
+    const close = open === "(" ? ")" : open === "[" ? "]" : open === "|" ? "|" : open === "{" ? "}" : "";
+    const end = open === "{" ? (readGroup(out, start, TEX_GROUPS)?.end ?? 0) - 1 : close ? delimiterEnd(out, start, open, close) : -1;
+    const [, kind, size] = match;
+    if (end < 0 || (size && kind !== "qty")) continue;
+    const content = physicsForKatex(out.slice(start + 1, end));
+    let drawn: string;
+    if (kind === "qty") {
+      const [left, right] = open === "{" ? ["\\{", "\\}"] : open === "|" ? ["\\lvert", "\\rvert"] : [open, close];
+      const sizing = size?.trim();
+      drawn = sizing ? `${sizing}l${left} ${content}${sizing}r${right}` : `\\left${left} ${content}\\right${right}`;
+    } else if (kind === "mqty") drawn = `\\begin{${MATRICES[open]}}${content}\\end{${MATRICES[open]}}`;
+    else drawn = `${SMALL_DELIMITERS[open][0]}\\begin{smallmatrix}${content}\\end{smallmatrix}${SMALL_DELIMITERS[open][1]}`;
+    result += out.slice(at, match.index) + drawn;
+    at = QUANTITY.lastIndex = end + 1;
+  }
+  return result + out.slice(at);
+}
+
+const SIZE_ENVIRONMENT = /\\(?:begin|end)\s*\{(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)\}/g;
+
 /** An accent or font whose argument is a command with its own group (`\widehat\mathrm{x}`): TeX reads it, KaTeX does not. */
 const UNBRACED_ARGUMENT = /\\(hat|widehat|tilde|widetilde|bar|overline|underline|vec|dot|ddot|check|breve|acute|grave|mathring|overrightarrow|overleftarrow|boldsymbol|bm|sqrt)\s*(\\(?:math[a-z]+|text[a-z]*|operatorname|boldsymbol|bm)\s*\{(?:[^{}]|\{[^{}]*\})*\})/g;
 
@@ -166,6 +248,16 @@ export function forKatex(latex: string) {
       return side === "begin" ? `\\left${left}\\begin{smallmatrix}` : `\\end{smallmatrix}\\right${right}`;
     });
   }
+  if (out.includes("\\physics@")) out = physicsForKatex(out);
+  // graphicx's `\scalebox{0.4}[1]{${=}$}` (2204.14024's `\eq`): its content, a text box as in LaTeX, unscaled.
+  if (out.includes("\\scalebox")) out = replaceGroups(out, /\\scalebox\s*\{[^{}]*\}\s*(?:\[[^\]]*\]\s*)?/g, (content) => `\\text{${content}}`);
+  // amsmath's `\intertext{where}` between an align's rows (a natural-gradient derivation's), which KaTeX lacks: the
+  // text as a row of its own, unnumbered, before the row it opens.
+  if (out.includes("intertext")) out = replaceGroups(out, /\\(?:short)?intertext\s*/g, (content) => `\\text{${content}}\\notag\\\\`);
+  // `\begin{small}` around a display's body (a book's `equation*`): a text size, which does not apply in a formula.
+  if (/\\(?:begin|end)\s*\{(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)\}/.test(out)) out = out.replace(SIZE_ENVIRONMENT, "");
+  // `\nulldelimiterspace=0pt` sets the width (KATEX_MACROS has its value for `\kern-\nulldelimiterspace`): not drawn.
+  if (out.includes("\\nulldelimiterspace")) out = out.replace(/\\nulldelimiterspace\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|mu|bp|mm|cm|in)|\\setlength\s*\{?\s*\\nulldelimiterspace\s*\}?\s*\{[^{}]*\}/g, "");
   return out;
 }
 
