@@ -37,6 +37,7 @@ import { LatexPdfPreview, type PdfHighlightRequest, type PdfZoom } from "./latex
 import { closeLatexPdfWindow, openLatexPdfWindow, registerLatexPdfWindowHandlers, sendLatexPdfHighlight, useLatexPdfWindowOpen } from "./latex-pdf-window";
 import { LatexSnippetDialog, type LatexSnippetDialogRequest } from "./latex-snippet-dialog";
 import { beginDocumentIndex } from "@/lib/latex/document-begin";
+import type { LatexImageSupport } from "./latex-image-drop";
 
 type LatexWorkspaceProps = {
   tab: OpenTab;
@@ -56,6 +57,8 @@ type LatexWorkspaceProps = {
   collab?: SharedCodeMirrorSource;
   /** The user's math markers (Preferences → Markdown), for Markdown pasted into the editor. */
   mathMarkers?: MathMarkerSettings;
+  /** Uploads into a notebook folder: images pasted or dropped into the editor are saved with it. */
+  onUploadFiles?: (notebook: string, files: File[], destinationPath?: string, options?: { throwOnError?: boolean }) => Promise<LiberaFileNode[]>;
 };
 
 const AUTO_COMPILE_DELAY_MS = 1200;
@@ -98,7 +101,7 @@ function stagedDraft(other: OpenTab): string | null {
   return other.draft === other.saved ? null : other.draft;
 }
 
-export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab, mathMarkers }: LatexWorkspaceProps) {
+export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab, mathMarkers, onUploadFiles }: LatexWorkspaceProps) {
   const filePath = tab.file.path;
   const notebook = tab.file.notebook;
   const viewState = tab.viewState?.latex;
@@ -258,6 +261,18 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     .map((file) => ({ path: file.path.slice(directory.length + 1), kind: fileKind(file) }))
     .filter((file) => file.kind !== "other")
     .sort((left, right) => left.path.localeCompare(right.path)), [directory, filePath, files]);
+
+  // Pasted and dropped images are uploaded like files added in the explorer, then shown in a figure.
+  const uploadRef = useRef(onUploadFiles);
+  useEffect(() => { uploadRef.current = onUploadFiles; });
+  const imageSupport = useMemo<LatexImageSupport | undefined>(() => (!onUploadFiles ? undefined : {
+    files: files.map((file) => file.path),
+    save: async (directory, file) => {
+      const [saved] = await uploadRef.current!(directory.split("/")[0], [file], directory, { throwOnError: true });
+      if (!saved) throw new Error("The image could not be saved.");
+      return saved.path;
+    },
+  }), [files, onUploadFiles]);
 
   const bibPaths = useMemo(() => {
     const rootDirectory = rootPath.split("/").slice(0, -1).join("/");
@@ -631,6 +646,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       rootPath={rootPath}
       mathMarkers={mathMarkers}
       engine={engineSetting}
+      images={isTex ? imageSupport : undefined}
     />
   );
 
@@ -698,6 +714,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
               missingInMainFile={missingInMainFile}
               onNotice={setNotice}
               fontSizePx={fontSizePx}
+              visualMode={editorMode === "visual"}
             />
           </>
         ) : (

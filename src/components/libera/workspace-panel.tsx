@@ -183,6 +183,8 @@ type WorkspacePanelProps = {
   onInsertMarkdownTable: (rows: number, columns: number) => void;
   onShiftMarkdownList: (direction: "indent" | "outdent") => void;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
+  /** Uploads files into a notebook folder; the LaTeX editor saves pasted and dropped images with it. */
+  onUploadFiles?: (notebook: string, files: File[], destinationPath?: string, options?: { throwOnError?: boolean }) => Promise<LiberaFileNode[]>;
   /** Shows another image from the same folder in this image tab. */
   onShowImage?: (file: LiberaFileNode) => void;
   onSaveEditedImageCopy?: (sourcePath: string, edits: PhotoEdits) => Promise<void>;
@@ -584,6 +586,7 @@ const PANEL_CALLBACKS = [
   "onInsertMarkdownTable",
   "onShiftMarkdownList",
   "onOpenFile",
+  "onUploadFiles",
   "onShowImage",
   "onSaveEditedImageCopy",
   "onSave",
@@ -689,6 +692,7 @@ function WorkspacePanelContent({
   onInsertMarkdownTable,
   onShiftMarkdownList,
   onOpenFile,
+  onUploadFiles,
   onShowImage,
   onSaveEditedImageCopy,
   onSave,
@@ -1871,6 +1875,7 @@ function WorkspacePanelContent({
           onSave={onSave}
           onSetViewState={updateLatexViewState}
           onOpenFile={onOpenFile}
+          onUploadFiles={onUploadFiles}
           mathMarkers={markdownPreferences}
         />
       ) : activeTab.file.fileType === "text" ? (
