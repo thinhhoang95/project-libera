@@ -5,6 +5,7 @@ import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { isInLatexComment } from "../../macros/definitions";
 import { visualConfig, visualDefinitions } from "./model";
 import { ACCUMULATING_AUTHORS, LIPICS } from "./walk";
+import { editableLines, frontMatterDetails } from "./front-matter";
 import { setTitleHooks, type TitleElement, type TitlePart } from "./widgets";
 
 /* Editing the title block in place. `\maketitle` draws `\title`, `\author`
@@ -14,7 +15,7 @@ import { setTitleHooks, type TitleElement, type TitlePart } from "./widgets";
  * it; saving writes only the characters that changed, as one undo step. */
 
 export type SourceSpan = { from: number; to: number };
-export type TitleSources = { title: SourceSpan | null; authors: SourceSpan[]; date: SourceSpan | null; abstract: SourceSpan | null };
+export type TitleSources = { title: SourceSpan | null; authors: SourceSpan[]; date: SourceSpan | null; abstract: SourceSpan | null; lines: SourceSpan[] };
 
 /** Each use of `\name` in `text` (outside comments), with up to `maxGroups` of its `{…}` arguments, as document ranges of their contents. */
 function commandUses(text: string, offset: number, name: string, maxGroups = 1) {
@@ -75,7 +76,7 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
   const last = (uses: SourceSpan[][]) => uses.at(-1)?.[0] ?? null;
   // ICML's `\twocolumn[\icmltitle{…} \icmlauthor{Name}{aff} …]`: the names (affiliations are keys into `\icmlaffiliation`).
   if (/\\icmltitle(?![A-Za-z@])/.test(block)) {
-    return { title: last(commandUses(block, from, "icmltitle")), authors: commandUses(block, from, "icmlauthor").map((groups) => groups[0]), date: null, abstract: null };
+    return { title: last(commandUses(block, from, "icmltitle")), authors: commandUses(block, from, "icmlauthor").map((groups) => groups[0]), date: null, abstract: null, lines: [] };
   }
   // imsart's and elsarticle's `frontmatter`: the commands in it.
   const frontMatter = /^\\begin\s*\{frontmatter\}/.test(block);
@@ -98,8 +99,14 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
     const end = /\\end\s*\{abstract\}/.exec(text.slice(contentFrom));
     if (end) abstract = trimmed(state, { from: contentFrom, to: contentFrom + end.index });
   }
+  // sn-jnl's `\abstract{…}` command.
+  abstract ??= last(commandUses(scope, base, "abstract"));
+  if (abstract) abstract = trimmed(state, abstract);
   const span = (found: SourceSpan | null) => (found ? trimmed(state, found) : null);
-  return { title: span(last(commandUses(scope, base, "title"))), authors, date: span(last(commandUses(scope, base, "date"))), abstract };
+  // A class's affiliations, emails, institutes and notes, in the order the block numbers them.
+  const details = frontMatterDetails(scope, base, documentClass, authors.length, frontMatter);
+  const lines = details ? editableLines(details).map((line) => line.source!) : [];
+  return { title: span(last(commandUses(scope, base, "title"))), authors, date: span(last(commandUses(scope, base, "date"))), abstract, lines };
 }
 
 /** Whether the view may be edited through the title block (a viewer, a read-only tab, or a closed view may not). */
@@ -116,7 +123,7 @@ export function minimalChange(from: number, now: string, text: string) {
   return { from: from + start, to: from + now.length - end, insert: text.slice(start, text.length - end) };
 }
 
-const LABELS: Record<TitlePart, string> = { title: "Title", author: "Author", date: "Date", abstract: "Abstract" };
+const LABELS: Record<TitlePart, string> = { title: "Title", author: "Author", date: "Date", abstract: "Abstract", line: "Line" };
 
 /**
  * An open part editor. Its source range and the block's start are mapped through every change (a collaborator's
@@ -160,11 +167,11 @@ function editPart(view: EditorView, block: TitleElement, part: TitlePart, index:
   if (!block.isConnected) return true;
   const target = block.querySelectorAll<HTMLElement>(`[data-title-part="${part}"]`)[index];
   if (!target) return false;
-  const sources = titleSources(view.state, blockStart, blockStart + (block.liberaTitleLength ?? 0));
+  const sources = titleSources(view.state, blockStart, blockStart + (block.liberaTitleScope ?? block.liberaTitleLength ?? 0));
   // An author list the block reads differently from its source (a macro that writes `\and`): edited as source instead.
   const span = part === "author"
     ? (sources.authors.length === block.querySelectorAll(`[data-title-part="author"]`).length ? sources.authors[index] : null)
-    : sources[part];
+    : part === "line" ? sources.lines[index] ?? null : sources[part];
   if (!span) return false;
 
   const original = resume?.original ?? view.state.sliceDoc(span.from, span.to);

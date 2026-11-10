@@ -21,6 +21,7 @@ import {
   RestatedTheoremWidget, restatablesIn, TodoWidget,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
+import { detailsView, frontMatterDetails } from "./front-matter";
 
 /* One walk over the syntax tree that recognises constructs
  * (docs/latex-visual-editor-plan.md §3–4). Each construct says which markup
@@ -153,6 +154,8 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0,
   // AASTeX's `\restartappendixnumbering` and `\startlongtable` print nothing.
   restartappendixnumbering: 0, startlongtable: 0,
+  // MNRAS's `\bsp` (a typesetting note on the last page) and its page range and year metadata.
+  bsp: 0, pagerange: 1, pubyear: 1,
   tiny: 0, scriptsize: 0, footnotesize: 0, small: 0, normalsize: 0, large: 0, Large: 0, LARGE: 0, huge: 0, Huge: 0,
   vspace: 1, addvspace: 1, setstretch: 1, linespread: 1, thispagestyle: 1, pagestyle: 1, pagenumbering: 1, newgeometry: 1, tikzset: 1, pgfplotsset: 1,
   hypersetup: 1, captionsetup: 1, sisetup: 1, lstset: 1, enlargethispage: 1, hyphenation: 1, ccsdesc: 1,
@@ -288,7 +291,7 @@ const TEXT_BLOCKS: Record<string, string> = {
   // setspace's line spacing and pdflscape's rotated pages: layout, whose lines fold away (applied economics papers).
   singlespace: "cm-vis-sized", onehalfspace: "cm-vis-sized", doublespace: "cm-vis-sized", spacing: "cm-vis-sized", landscape: "cm-vis-sized",
   // Keywords under an abstract (JMLR, SIAM, IEEE).
-  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords",
+  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords",
   // amsmath's `subequations` (numbering 3a, 3b): its equations are drawn on their own, and its lines fold away.
   subequations: "cm-vis-sized",
   // revtex's `widetext` (text set across both columns): layout, whose lines fold away.
@@ -1138,7 +1141,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (range.from < node.from) consumed.push([range.from, Math.min(node.from, range.to)]);
           // An abstract and keywords in the run are printed with the title (amsart's abstract before `\maketitle`).
           const inRun = folded ? run : null;
-          const widget = new TitleWidget(title.title, title.author, title.date, range.to - range.from, inRun?.abstract ?? title.abstract, [...title.notes, ...(inRun?.notes ?? [])]);
+          // With a command left as source in the run, the block ends before it but its parts are read up to `\maketitle`.
+          const widget = new TitleWidget(title.title, title.author, title.date, range.to - range.from, inRun?.abstract ?? title.abstract, [...title.notes, ...(inRun?.notes ?? [])], title.details, gaps.length ? end - range.from : null);
           emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget }] });
           if (folded && gaps.length) {
             gaps.forEach((gap, index) => {
@@ -1358,13 +1362,26 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     const parts = frontMatterParts(read(state, formed.begin.to, stop));
     if (!parts) return undefined;
-    let end = stop;
-    while (end > formed.begin.to && /\s/.test(read(state, end - 1, end))) end--;
-    const span = aloneOnLines(doc, formed.begin.from, end);
+    const trimEnd = (start: number, end: number) => { while (end > start && /\s/.test(read(state, end - 1, end))) end--; return end; };
+    const end = trimEnd(formed.begin.to, stop);
+    // A command left as source (one the class's front matter does not hold here): the block ends before the first,
+    // each stays source, and the commands between and after them fold away (title-edit reads up to `end`).
+    const gaps = parts.unknown.map((gap) => ({ from: formed.begin.to + gap.from, to: formed.begin.to + gap.to }));
+    const span = aloneOnLines(doc, formed.begin.from, gaps.length ? trimEnd(formed.begin.to, gaps[0].from) : end);
     if (!span) return undefined;
+    const rests = gaps.map((gap, index) => {
+      const restEnd = trimEnd(gap.to, index + 1 < gaps.length ? gaps[index + 1].from : end);
+      let restStart = gap.to;
+      while (restStart < restEnd && /\s/.test(read(state, restStart, restStart + 1))) restStart++;
+      return restEnd > restStart ? aloneOnLines(doc, restStart, restEnd) : null;
+    });
     consumed.push([span.from, span.to]);
+    for (const rest of rests) if (rest) consumed.push([rest.from, rest.to]);
     if (structural) {
-      emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(parts.title, parts.author, parts.date, span.to - span.from) }] });
+      const authorCount = parts.author ? parts.author.split(/\\(?:and|And|AND)(?![A-Za-z])/).filter((piece) => piece.trim()).length : 0;
+      const details = detailsView(frontMatterDetails(read(state, formed.begin.to, stop), formed.begin.to, defs.documentClass ?? "", authorCount, true));
+      emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(parts.title, parts.author, parts.date, span.to - span.from, null, [], details, gaps.length ? end - span.from : null) }] });
+      for (const rest of rests) if (rest) collapseLine(rest, "title-rest");
       collapseLine(formed.end, "env-end");
     }
     return undefined;
@@ -1522,6 +1539,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to + 1, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to + 1, widget: new ExampleMarkerWidget(text === "\\a" || text === "\\b") }] });
       consumed.push([node.from, ctrl.to + 1]);
       return false;
+    }
+    // The separators between keywords: llncs's and svjour3's `\keywords{a \and b}` (a centred dot), elsarticle's `\sep` (a comma).
+    if ((text === "\\and" || (text === "\\sep" && defs.documentClass === "elsarticle")) && !commandArguments(node).length && structural) {
+      let inKeywords = text === "\\sep";
+      for (let parent = node.parent; parent && !inKeywords; parent = parent.parent) {
+        if (parent.name === "UnknownCommand" && parent.firstChild && read(state, parent.firstChild.from, parent.firstChild.to) === "\\keywords") inKeywords = true;
+      }
+      if (inKeywords) {
+        // "First \sep Second" is "First, Second": the space before `\sep` goes with it.
+        const from = text === "\\sep" ? ctrl.from - (/[ \t]*$/.exec(read(state, Math.max(doc.lineAt(ctrl.from).from, ctrl.from - 20), ctrl.from))?.[0].length ?? 0) : ctrl.from;
+        emit({ kind: "symbol", from, to: ctrl.to, reveal: "touch", replaces: [{ from, to: ctrl.to, widget: new SymbolWidget(text === "\\sep" ? "," : "·", text) }] });
+        return false;
+      }
     }
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
     if (text === "\\printbibliography") {
@@ -3259,17 +3289,23 @@ function frontMatterAuthor(author: string) {
 }
 
 /** The title block a `frontmatter` environment's commands give, or null when it holds anything else. */
-function frontMatterParts(text: string): { title: string | null; author: string | null; date: string | null } | null {
-  const source = stripTexComments(text);
+function frontMatterParts(text: string): { title: string | null; author: string | null; date: string | null; unknown: Array<{ from: number; to: number }> } | null {
+  // Comments blanked, so offsets are the text's.
+  const source = text.replace(/(^|[^\\])((?:\\\\)*)(%[^\n]*)/g, (_, before: string, escapes: string, comment: string) => before + escapes + " ".repeat(comment.length));
   let title: string | null = null;
   let date: string | null = null;
   const authors: string[] = [];
+  // Commands the class's front matter does not hold here, each alone on its lines: they stay source, the rest is drawn.
+  const unknown: Array<{ from: number; to: number }> = [];
   let i = 0;
   while (i < source.length) {
     const space = /^\s+/.exec(source.slice(i, i + 200));
     if (space) { i += space[0].length; continue; }
     const command = /^\\([A-Za-z@]+)\*?/.exec(source.slice(i, i + 60));
-    if (!command || !FRONT_MATTER_COMMANDS.test(command[1])) return null;
+    if (!command || /^(?:begin|end|par|item)$/.test(command[1])) return null;
+    const start = i;
+    const known = FRONT_MATTER_COMMANDS.test(command[1]);
+    if (!known && (!/^[ \t]*$/.test(source.slice(source.lastIndexOf("\n", i - 1) + 1, i)))) return null;
     i += command[0].length;
     const args: string[] = [];
     for (;;) {
@@ -3280,12 +3316,17 @@ function frontMatterParts(text: string): { title: string | null; author: string 
       if (source[at] === "{") { const group = readGroup(source, at, TEX_GROUPS); if (!group) return null; args.push(group.content); i = group.end; continue; }
       break;
     }
+    if (!known) {
+      if (!/^[ \t]*(?:\n|$)/.test(source.slice(i, i + 200))) return null;
+      unknown.push({ from: start, to: i });
+      continue;
+    }
     if (command[1] === "title") title = args.at(-1) ?? title;
     else if (command[1] === "author") authors.push(frontMatterAuthor(args.at(-1) ?? ""));
     else if (command[1] === "date") date = args.at(-1) ?? date;
   }
   if (title === null && !authors.length) return null;
-  return { title, author: authors.length ? authors.join(" \\and ") : null, date };
+  return { title, author: authors.length ? authors.join(" \\and ") : null, date, unknown };
 }
 
 /** AASTeX's front matter commands: the title block's, its metadata (printed small or not at all), and space. */
@@ -3398,7 +3439,9 @@ function icmlTitle(block: string): { title: string | null; author: string | null
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract)$/;
+/** What ends a run of title declarations rather than staying source inside it: text, sections, environments. */
+const RUN_ENDERS = /^(?:begin|end|part|chapter|section|subsection|subsubsection|paragraph|subparagraph|item|maketitle|par|noindent|indent|bibliography|printbibliography|appendix|label|footnote|textbf|textit|emph|cite|ref|includegraphics|caption)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
 const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/;
 /**
@@ -3449,6 +3492,10 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
   let keywords: string[] = [];
   let subjclass: string[] = [];
   let ccs: string[] = [];
+  // Commands the run does not know, each alone on its lines (revtex's `\pacs{…}` in a class not read here): they stay
+  // source, and the declarations around them stay in the block (they are kept once a declaration follows, or `\maketitle`).
+  let unknown: Array<{ from: number; to: number }> = [];
+  const keep = () => { if (run && unknown.length) run.gaps.push(...unknown); unknown = []; };
   let i = 0;
   while (i < text.length) {
     const space = /^\s+/.exec(text.slice(i, i + 400));
@@ -3462,6 +3509,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
       const close = new RegExp(String.raw`\\end\s*\{${env}\}`).exec(text.slice(i));
       if (close) {
         const end = i + close.index + close[0].length;
+        keep();
         run ??= { start, gaps: [], abstract: null, notes: [] };
         if (env === "teaserfigure") run.gaps.push({ from: start, to: end });
         if (env === "abstract") run.abstract = stripTexComments(text.slice(i + begin[0].length, i + close.index)).trim();
@@ -3485,10 +3533,13 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
       }
     }
     if (command && (TITLE_DECLARATIONS.test(command[1]) || TITLE_DEFINITIONS.test(command[1]))) {
+      keep();
       run ??= { start, gaps: [], abstract: null, notes: [] };
       if (command[1] === "keywords" && groups.length) keywords.push(groups.at(-1)!.trim());
       if (command[1] === "subjclass" && groups.length) subjclass.push(groups.at(-1)!.trim());
       if (command[1] === "ccsdesc" && groups.length) ccs.push(groups.at(-1)!.trim());
+      // sn-jnl's abstract is a command: `\abstract{…}`.
+      if (command[1] === "abstract" && groups.length) run.abstract = stripTexComments(groups.at(-1)!).trim();
       i = end;
       continue;
     }
@@ -3496,23 +3547,32 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
     // or passes on only declarations, is part of the run.
     const kind = command && groups.length === 1 ? wrapper?.(command[1]) : null;
     if (kind && (kind === "discard" || !groups[0].trim() || titleDeclarationsStart(groups[0], abstractWithTitle, wrapper)?.start === groups[0].search(/\S/))) {
+      keep();
       run ??= { start, gaps: [], abstract: null, notes: [] };
       i = end;
       continue;
     }
     // A file the run includes (acmart's abstract in `\input{abstract}`) is drawn on its own, as a teaser figure is.
     if (run && command && /^(?:input|include)$/.test(command[1]) && groups.length === 1) {
+      keep();
       run.gaps.push({ from: start, to: end });
       i = end;
       continue;
     }
+    if (run && command && !RUN_ENDERS.test(command[1]) && /^[ \t]*$/.test(text.slice(text.lastIndexOf("\n", start - 1) + 1, start)) && /^[ \t]*(?:%[^\n]*)?(?:\n|$)/.test(text.slice(end, end + 200))) {
+      unknown.push({ from: start, to: end });
+      i = end;
+      continue;
+    }
     // Anything else ends the run: the declarations after it may still make one.
+    unknown = [];
     run = null;
     keywords = [];
     subjclass = [];
     ccs = [];
     i = command ? end : i + 1;
   }
+  keep();
   if (run) run.notes = titleNotes(keywords, subjclass, ccs);
   return run;
 }
@@ -3548,7 +3608,8 @@ function lipicsAuthors(text: string) {
 
 /** The arguments of every `\command[…]{…}` in `text`, outside comments, in order. */
 function commandGroups(text: string, command: string) {
-  const pattern = new RegExp(`\\\\${command}(?![A-Za-z@])\\s*(?:\\[[^\\]]*\\])?\\s*\\{`, "g");
+  // sn-jnl's corresponding author is `\author*[1]{…}`.
+  const pattern = new RegExp(`\\\\${command}(?![A-Za-z@])\\*?\\s*(?:\\[[^\\]]*\\])?\\s*\\{`, "g");
   const found: string[] = [];
   for (const match of text.matchAll(pattern)) {
     const lineStart = text.lastIndexOf("\n", match.index ?? 0) + 1;
@@ -3582,5 +3643,8 @@ function scanTitleParts(text: string, documentClass: string | null) {
   const notes = titleNotes(commandGroups(preamble, "keywords"), commandGroups(preamble, "subjclass"), commandGroups(preamble, "ccsdesc"));
   // A date written with TeX's clock (1812.09970's `\ifcase\month\or January\or …\fi \number\year`) is not read: not shown.
   const date = last("date");
-  return { title: last("title"), author, date: date && /\\(?:ifcase|month|year|day|number)(?![A-Za-z@])/.test(date) ? null : date, abstract, notes };
+  // A class's affiliations, emails, institutes and notes (front-matter.ts).
+  const authorCount = author ? author.split(/\\(?:and|And|AND)(?![A-Za-z])/).filter((piece) => piece.trim()).length : 0;
+  const details = detailsView(frontMatterDetails(text, 0, documentClass ?? "", authorCount));
+  return { title: last("title"), author, date: date && /\\(?:ifcase|month|year|day|number)(?![A-Za-z@])/.test(date) ? null : date, abstract, notes, details };
 }
