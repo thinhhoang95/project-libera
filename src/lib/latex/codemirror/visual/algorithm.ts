@@ -261,6 +261,9 @@ const IGNORED_2E: Record<string, number> = {
   caption: 1, label: 1, vspace: 1, IncMargin: 1, DecMargin: 1, SetAlFnt: 1, SetAlCapFnt: 1, SetAlCapNameFnt: 1, SetAlCapSty: 1, SetAlCapSkip: 1,
   SetArgSty: 1, SetFuncSty: 1, SetKwSty: 1, SetCommentSty: 1, SetDataSty: 1, SetProgSty: 1, SetVlineSkip: 1, TitleOfAlgo: 1, RestyleAlgo: 1,
   SetInd: 2, SetNlSty: 3, SetAlgorithmName: 3,
+  // The font and margins set at the algorithm's start (cs.DS 2611.09172's `\fontsize{9pt}{9.5pt}\selectfont`,
+  // `\setlength{\algomargin}{0em}`): layout.
+  fontsize: 2, selectfont: 0, setlength: 2, SetAlgoNlRelativeSize: 1, SetNlSkip: 1,
 };
 const INPUTS_2E: Record<string, string> = { KwIn: "Input:", KwOut: "Output:", KwData: "Data:", KwResult: "Result:" };
 const LOOPS_2E: Record<string, string> = { For: "for", ForEach: "foreach", ForAll: "forall", While: "while" };
@@ -297,6 +300,8 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
   const inputs = new Map<string, string>();
   const keywords = new Map<string, string>();
   const blocks = new Map<string, { begin: string; end: string }>();
+  /** `\SetKwFor{parFor}{parallel-for}{do}{endfor}`: loops of the document's own, written as `\For`. */
+  const loops = new Map<string, { lead: string; trail: string; end: string }>();
   let failed = false;
   /** `\Indp` and `\Indm` (GaLore's code box): levels added to the lines after them. */
   let shift = 0;
@@ -316,13 +321,29 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
   const read = (text: string, depth: number) => {
     let pending = "";
     let i = 0;
-    const push = (line: Omit<AlgorithmLine, "depth" | "numbered"> & { numbered?: boolean }) => lines.push({ depth: depth + shift, numbered: true, ...line, text: words(line.text) });
+    const push = (line: Omit<AlgorithmLine, "depth" | "numbered"> & { numbered?: boolean }) => {
+      // A document keyword written with LaTeX (`\SetKwFor{hnode}{A \heavynode{} maintains}{}{}`) is drawn as LaTeX, in bold.
+      if (line.lead && /[\\${]/.test(line.lead)) line = { ...line, lead: undefined, text: `\\textbf{${line.lead}} ${line.text}`.trim() };
+      lines.push({ depth: depth + shift, numbered: true, ...line, text: words(line.text) });
+    };
     const flush = (comment?: string) => {
       const text = pending.replace(/\s+/g, " ").trim();
       pending = "";
       if (text || comment !== undefined) push({ text, comment });
     };
     const end = () => { if (ends) push({ lead: "end", text: "" }); };
+    /**
+     * The statements of a one-line form (`\lIf{$E$ is empty}{\Return $T$ \tcp*[f]{Unchanged}}`), read as statements
+     * are, on one line: their text and comment; null (the algorithm stays source) when they hold a block.
+     */
+    const inline = (body: string): { text: string; comment?: string } | null => {
+      const mark = lines.length;
+      read(body, depth);
+      const added = lines.splice(mark);
+      if (failed || added.some((line) => line.lead || line.rule || line.depth !== depth + shift)) { failed = true; return null; }
+      const comment = [...added].reverse().find((line) => line.comment !== undefined)?.comment;
+      return { text: added.map((line) => line.text).filter(Boolean).join("; "), ...(comment !== undefined ? { comment } : {}) };
+    };
     /**
      * algorithm2e's side comment before a block's arguments: `\For(\tcp*[f]{Re-set sparsifiers}){c}{…}`,
      * `\ForEach(\label{l:x}){c}{…}`. Its comment text (labels draw nothing), "" when there is none, or null when the
@@ -390,15 +411,17 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
       if (command in IGNORED_2E) { args(IGNORED_2E[command], command === "caption"); continue; }
       const input = INPUTS_2E[command] ?? inputs.get(command);
       if (input) { flush(); const [value] = args(1) ?? []; if (value !== undefined) push({ lead: input, text: value, numbered: false }); continue; }
-      if (command in LOOPS_2E) {
+      const loop = command in LOOPS_2E ? null : loops.get(command);
+      if (command in LOOPS_2E || loop) {
         flush();
         const side = sideComment();
         if (side === null) { failed = true; break; }
         const parts = args(2);
         if (!parts) break;
-        push({ lead: LOOPS_2E[command], text: parts[0], trail: "do", ...(side ? { comment: side } : {}) });
+        push({ lead: loop ? loop.lead : LOOPS_2E[command], text: parts[0], trail: loop ? loop.trail : "do", ...(side ? { comment: side } : {}) });
         read(parts[1], depth + 1);
-        end();
+        if (!loop) end();
+        else if (ends && loop.end) push({ lead: loop.end, text: "" });
         continue;
       }
       if (command === "Repeat") {
@@ -448,10 +471,19 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
         const parts = args(2);
         if (!parts) break;
         const loop = LINE_LOOPS_2E[command];
-        push({ lead: loop ?? (command === "lIf" ? "if" : "else if"), text: `${parts[0]} \\textbf{${loop ? "do" : "then"}} ${parts[1]}` });
+        const statement = inline(parts[1]);
+        if (!statement) break;
+        push({ lead: loop ?? (command === "lIf" ? "if" : "else if"), text: `${parts[0]} \\textbf{${loop ? "do" : "then"}} ${statement.text}`, ...(statement.comment !== undefined ? { comment: statement.comment } : {}) });
         continue;
       }
-      if (command === "lElse") { flush(); const parts = args(1); if (parts) push({ lead: "else", text: parts[0] }); continue; }
+      if (command === "lElse") {
+        flush();
+        const parts = args(1);
+        const statement = parts && inline(parts[0]);
+        if (!statement) break;
+        push({ lead: "else", text: statement.text, ...(statement.comment !== undefined ? { comment: statement.comment } : {}) });
+        continue;
+      }
       const block = command === "Begin" ? { begin: "begin", end: "end" } : blocks.get(command);
       if (block) {
         flush();
@@ -472,7 +504,14 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
         if (program.end) push({ lead: program.end, text: "" });
         continue;
       }
-      if (command === "KwRet" || command === "Return") { const [value] = args(1) ?? []; pending += `\\textbf{return} ${value ?? ""}`; continue; }
+      if (command === "KwRet" || command === "Return") {
+        // A keyword: `\Return{x}` and `\Return $x$` both print "return x".
+        let at = i;
+        while (/\s/.test(text[at] ?? "")) at++;
+        const [value] = text[at] === "{" ? args(1) ?? [] : [];
+        pending += `\\textbf{return} ${value ?? ""}`;
+        continue;
+      }
       if (command === "KwTo") { pending += "\\textbf{to} "; continue; }
       if (command === "tcp" || command === "tcc") {
         // A comment: on the statement it follows (`x\; \tcp*{c}`), or on a line of its own.
@@ -488,6 +527,7 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
       if (command === "SetKwInOut" || command === "SetKwInput") { const parts = args(2); if (parts) inputs.set(name(parts[0]), `${parts[1]}:`); continue; }
       if (command === "SetKw" || command === "SetKwData") { const parts = args(2); if (parts) keywords.set(name(parts[0]), command === "SetKw" ? `\\textbf{${parts[1]}}` : parts[1]); continue; }
       if (command === "SetKwBlock") { const parts = args(3); if (parts) blocks.set(name(parts[0]), { begin: parts[1], end: parts[2] }); continue; }
+      if (command === "SetKwFor") { const parts = args(4); if (parts) loops.set(name(parts[0]), { lead: parts[1], trail: parts[2], end: parts[3] }); continue; }
       const fn = functions.get(command);
       if (fn !== undefined) {
         let at = i;
@@ -500,6 +540,9 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
       const keyword = keywords.get(command);
       if (keyword !== undefined) { pending += `${keyword} `; continue; }
       // A statement it does not know (another package's, or the document's own): the algorithm stays source.
+      // Definitions made in the algorithm (cs.DS 2611.09172's `\let\oldnl\nl \newcommand{\nlnonumber}{…}`, unnumbering
+      // lines) change how it prints in ways not read here: it stays source.
+      if (/^(?:let|g?def|edef|xdef|newcommand|renewcommand|providecommand|csname)$/.test(command)) { failed = true; break; }
       if (command === "Indp" || command === "Indm") { flush(); shift = Math.max(0, shift + (command === "Indp" ? 1 : -1)); continue; }
       if (/^[A-Z]/.test(command) && !TEXT_CAPITALS.test(command)) {
         // The document's own statement macro (GaLore's `\PyCode{…}`): its expansion, read in its place.

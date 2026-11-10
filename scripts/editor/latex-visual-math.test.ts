@@ -278,3 +278,34 @@ ${body}
   // A capitalised command that is no macro of the document still keeps the algorithm source.
   assert.equal(parseAlgorithm2e(String.raw`\Unknown{x}\;`, { numbered: false, ends: false }, () => null), null);
 });
+
+test("algorithm2e (cs.DS 2611.09172): \\SetKwFor loops with side comments, \\lIf with \\Return and \\tcp*, \\Return without braces, the font and margin set at the start", () => {
+  const spec = parseAlgorithm2e(String.raw`\fontsize{9pt}{9.5pt}\selectfont
+\setlength{\algomargin}{0em}
+\caption{Batch Insertion\label{algo:insert}}
+\SetKwFor{parFor}{parallel-for}{do}{endfor}
+\SetKwProg{MyFunc}{Function}{}{end}
+\DontPrintSemicolon
+\MyFunc{\upshape{\textsc{InsertSorted$(T,E)$}}}{
+  \lIf{$E$ is empty}{\Return $T$ \tcp*[f]{Unchanged}\label{line:empty}}
+  \parFor(\tcp*[f]{Recursively insert}){$i\gets 0$ to $b-1$}{
+    $U[i]\gets x$
+  }
+  \Return $H$
+}`, { numbered: true, ends: true });
+  assert.deepEqual(spec?.lines.map((line) => [line.depth, line.lead ?? "", line.text, line.trail ?? "", line.comment ?? ""].join("|")), [
+    "0|Function|\\upshape{\\textsc{InsertSorted$(T,E)$}}||",
+    "1|if|$E$ is empty \\textbf{then} \\textbf{return} $T$||Unchanged",
+    "1|parallel-for|$i\\gets 0$ to $b-1$|do|Recursively insert",
+    "2||$U[i]\\gets x$||",
+    "1|endfor|||",
+    "1||\\textbf{return} $H$||",
+    "0|end|||",
+  ]);
+  // A keyword written with LaTeX is drawn as LaTeX, in bold.
+  const latexLead = parseAlgorithm2e(String.raw`\SetKwFor{hnode}{A \heavynode{} maintains}{}{}\hnode{}{x\;}`, { numbered: false, ends: false });
+  assert.deepEqual(latexLead?.lines.map((line) => `${line.lead ?? ""}|${line.text}`), ["|\\textbf{A \\heavynode{} maintains}", "|x"]);
+  // A block inside a one-line form is not one line, and definitions in the algorithm change how it prints: it stays source.
+  assert.equal(parseAlgorithm2e(String.raw`\lIf{c}{\If{d}{x}}`, { numbered: false, ends: false }), null);
+  assert.equal(parseAlgorithm2e(String.raw`\let\oldnl\nl x\;`, { numbered: false, ends: false }), null);
+});
