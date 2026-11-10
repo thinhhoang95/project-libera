@@ -747,7 +747,9 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     } else if (command === "numberwithin" || command === "counterwithin") {
       const counter = readGroupAt(source, index);
       const within = counter && readGroupAt(source, counter.end);
-      if (counter && within) {
+      // One in the body applies from where it is: numbering reads it there (not the end of the document's numbers).
+      if (counter && within && pos >= 0) end = within.end;
+      else if (counter && within) {
         end = within.end;
         defs.counterWithin.set(counter.content.trim(), within.content.trim());
         // `\counterwithin*` resets only; the others also print the parent's number first.

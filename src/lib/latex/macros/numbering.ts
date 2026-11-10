@@ -254,6 +254,16 @@ function chapterNumbered(tree: Tree, read: Read, defs: LatexDefinitions, options
   return found;
 }
 
+/**
+ * The value of a `\setcounter` amount: a number, or `\value{c}` (with sums: `\value{figtemp}+1`), as SIAM's insets save
+ * and restore the figure counter; NaN for anything else.
+ */
+function counterExpression(text: string, value: (name: string) => number) {
+  const replaced = text.replace(/\\value\s*\{\s*([A-Za-z@*]+)\s*\}|\\c@([A-Za-z@]+)/g, (_, name?: string, internal?: string) => String(value((name ?? internal)!))).replace(/\s+/g, "");
+  if (!/^[-+]?\d+(?:[-+]\d+)*$/.test(replaced)) return Number.NaN;
+  return replaced.match(/[-+]?\d+/g)!.reduce((sum, term) => sum + Number(term), 0);
+}
+
 /** A counter format's text as typeset: primes written in math (`1$^\prime$`, BJS's assumptions) are ′. */
 function plainFormatText(text: string) {
   return text.replace(/\$\s*(?:\^\s*(?:\\prime|\{\s*\\prime\s*\})|')\s*\$/g, "′").replace(/\\ensuremath\s*\{\s*\^\s*\\prime\s*\}/g, "′");
@@ -300,10 +310,13 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
    * In an included file or a macro's expansion, the position of the `\input` or the macro use.
    */
   let here = 0;
+  /** Where `\appendix` was: a `\thesection` made before it (a class's `\def\thesection{\arabic{section}}`) gives way to letters. */
+  let appendixAt = options.start?.appendix ? 0 : Number.POSITIVE_INFINITY;
   /** A document's own `\renewcommand{\theequation}{…}`: its counter commands evaluated, "?" when it uses anything else. */
   const customFormat = (name: string): string | undefined => {
     const macro = macroAt(defs, `the${name}`, here);
     if (!macro) return undefined;
+    if (appendix && name === (chapters ? "chapter" : "section") && macro.pos < appendixAt) return undefined;
     if (macro.arity || macro.unsupported || formatting.has(name)) return "?";
     formatting.add(name);
     try {
@@ -488,7 +501,10 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
 
   const visitor: Parameters<Tree["iterate"]>[0] = {
     enter(ref) {
-      if (ref.from < skipUntil) return false;
+      // What a macro region or a definition covers is numbered already (or not at all); a node running past its end
+      // (the parser resyncing after a stray `\end{equation}` written by `\eequation`) is entered for what follows.
+      if (ref.from < skipUntil && ref.to <= skipUntil) return false;
+      if (ref.from < skipUntil) { passive.add(`${ref.name}@${ref.from}`); return undefined; }
       if (!macroHost && !includeDepth) here = ref.from;
       const name = ref.name;
       // `\iffalse … \fi`: what starts inside is not counted; a node running past the `\fi` is entered for what follows it.
@@ -567,12 +583,27 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         }
         if (command === "\\appendix") {
           appendix = true;
+          appendixAt = Math.min(appendixAt, here);
           const top = chapters ? "chapter" : "section";
           counters.set(top, 0);
           reset(top);
+        } else if (command === "\\numberwithin" || command === "\\counterwithin" || command === "\\counterwithout") {
+          // In the body, from here on (SimCLR's `\counterwithin{figure}{section}` after `\appendix`); the preamble's are read with the definitions.
+          const counter = argumentText(node, 0)?.trim();
+          const parent = argumentText(node, 1)?.trim();
+          // A counter within itself, directly or through others, is an error in TeX: not applied (stepping must stay finite).
+          let cycle = counter === parent;
+          for (let up = parent ? within.get(parent) : undefined, guard = 0; up !== undefined && !cycle && guard < 32; up = within.get(up), guard++) cycle = up === counter;
+          if (counter && parent && !cycle) {
+            if (command === "\\counterwithout") { within.delete(counter); prefix.delete(counter); }
+            else {
+              within.set(counter, parent);
+              if (!(command === "\\counterwithin" && read(ctrl.to, ctrl.to + 1) === "*")) prefix.set(counter, parent);
+            }
+          }
         } else if (command === "\\setcounter" || command === "\\addtocounter") {
           const counter = argumentText(node, 0)?.trim();
-          const amount = Number(argumentText(node, 1)?.trim());
+          const amount = counterExpression(argumentText(node, 1) ?? "", value);
           if (counter && Number.isFinite(amount)) {
             counters.set(counter, command === "\\setcounter" ? amount : value(counter) + amount);
             // An enumerate counter: the list's next item continues from it.
@@ -595,6 +626,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         }
         return;
       }
+      // `\maketitle` starts the footnotes again: the title's notes are marked with symbols (Monotone Additive Statistics).
+      if (name === "Maketitle") { counters.set("footnote", 0); return false; }
       if (name === "FootnoteCommand" || name === "EndnoteCommand") {
         // `\footnote[5]{…}` prints 5 and steps nothing; endnotes have their own counter.
         const optional = node.getChild("OptionalArgument");
@@ -693,7 +726,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           }
           if (parent.name !== "FigureEnvironment" && parent.name !== "TableEnvironment" && parent.name !== "Environment") continue;
           const env = environmentName(parent, readParent) ?? "";
-          if (env === "subfigure" || env === "subtable") { numberSubCaption(env === "subtable" ? "table" : "figure", parent); return false; }
+          // Inside, a `\label` refers to the panel (Normalizing Flows' `\caption{Forward\label{fwd}}`): the caption is entered.
+          if (env === "subfigure" || env === "subtable") { numberSubCaption(env === "subtable" ? "table" : "figure", parent); return undefined; }
           if (env === "minipage") { panel ??= [parent, outer]; continue; }
           const kind = floatKind(parent, readParent);
           if (!kind) continue;
@@ -722,6 +756,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         // The appendix package's `appendices` environment letters its sections, as `\appendix` does.
         if (env === "appendices") {
           appendix = true;
+          appendixAt = Math.min(appendixAt, here);
           const top = chapters ? "chapter" : "section";
           counters.set(top, 0);
           reset(top);

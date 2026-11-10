@@ -693,6 +693,70 @@ See Table~\ref{tab:ss}.
   assert.match(text, /Notes: Summary statistics for counties\./);
 });
 
+test("batch 3 numbering: macro regions, appendix letters, body \\counterwithin, \\value, title footnotes, sub-caption labels", () => {
+  // SIAM's environment macros (\bequation … \end{equation}): what follows a region is numbered.
+  const pairs = String.raw`\newcommand{\bequation}{\begin{equation}}
+\newcommand{\bfigure}{\begin{figure}}
+\begin{document}
+\section{One}
+\bequation\label{b} y \end{equation}
+\bfigure\includegraphics{c}\caption{C}
+\end{figure}
+\subsection{Two}\label{s2}
+\begin{equation}\label{e} z \end{equation}
+\section{Three}\label{s3}
+\end{document}`;
+  const regions = number(pairs).labels;
+  assert.equal(regions.get("s2")?.number, "1.1");
+  assert.equal(regions.get("e")?.number, "2");
+  assert.equal(regions.get("s3")?.number, "2");
+  // A class's \def\thesection before \appendix gives way to letters (ICML, JMLR).
+  const appendix = String.raw`\def\thesection{\arabic{section}}
+\begin{document}
+\section{Intro}\label{i}
+\appendix
+\section{Details}\label{a}
+\end{document}`;
+  assert.equal(number(appendix).labels.get("i")?.number, "1");
+  assert.equal(number(appendix).labels.get("a")?.number, "A");
+  // \counterwithin in the body applies from there (SimCLR's figures after \appendix).
+  const within = String.raw`\begin{document}
+\section{Intro}
+\begin{figure}\caption{Main}\label{f1}\end{figure}
+\appendix
+\counterwithin{figure}{section}
+\section{More}
+\begin{figure}\caption{Extra}\label{f2}\end{figure}
+\end{document}`;
+  assert.equal(number(within).labels.get("f1")?.number, "1");
+  assert.equal(number(within).labels.get("f2")?.number, "A.1");
+  // \setcounter{c}{\value{d}} (SIAM's insets save and restore the figure counter).
+  const saved = String.raw`\newcounter{figtemp}
+\begin{document}
+\begin{figure}\caption{A}\label{fa}\end{figure}
+\setcounter{figtemp}{\value{figure}}\setcounter{figure}{0}
+\begin{figure}\caption{Inset}\end{figure}
+\setcounter{figure}{\value{figtemp}}
+\begin{figure}\caption{B}\label{fb}\end{figure}
+\end{document}`;
+  assert.equal(number(saved).labels.get("fb")?.number, "2");
+  // A footnote in the title does not count: \maketitle starts them again.
+  const title = String.raw`\title{T\footnote{x}}
+\begin{document}
+\maketitle
+Body.\footnote{a}
+\end{document}`;
+  assert.deepEqual(number(title).entries.filter((entry) => entry.kind === "footnote").map((entry) => entry.number), ["1", "1"]);
+  // A label inside a sub-figure's caption (Normalizing Flows).
+  const sub = String.raw`\begin{document}
+\begin{figure}
+\begin{subfigure}{0.4\textwidth}\includegraphics{a}\caption{Forward\label{fwd}}\end{subfigure}
+\caption{Flows}\label{flows}
+\end{figure}
+\end{document}`;
+  assert.equal(number(sub).labels.get("fwd")?.number, "1a");
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);
