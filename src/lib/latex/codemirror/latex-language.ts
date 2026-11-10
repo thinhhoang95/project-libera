@@ -1,9 +1,9 @@
-import { foldService, indentNodeProp, indentUnit, LRLanguage, syntaxHighlighting, type TreeIndentContext } from "@codemirror/language";
+import { defineLanguageFacet, foldService, indentNodeProp, indentUnit, Language, languageDataProp, syntaxHighlighting, type TreeIndentContext } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 import { styleTags, tags } from "@lezer/highlight";
 // The parser module itself: the package root would also bundle its linter,
 // completion, tooltips and data tables, none of which Libera uses.
-import { latexParser as parser } from "./latex-parser";
+import { latexParser as parser, PreambleSafeParser } from "./latex-parser";
 import { bibtexLanguage, latexFoldRange, latexHighlightStyle, latexLanguage as streamLatexLanguage } from "./language";
 
 /* `.tex` files are parsed by codemirror-lang-latex (AGPL-3.0-or-later, based
@@ -74,16 +74,19 @@ export const latexIndentation = indentNodeProp.add({
   "Group NonEmptyGroup TextArgument": nested(/^\s*\}/),
 });
 
-export const latexTreeLanguage = LRLanguage.define({
-  name: "latex",
-  parser: parser.configure({ props: [latexStyleTags, latexIndentation] }),
-  languageData: {
-    commentTokens: { line: "%" },
-    indentOnInput: /^\s*(?:\\end\{?|\})$/,
-    closeBrackets: { brackets: ["{", "[", "(", "$"], before: ")]}$:;>,." },
-    wordChars: "@:-",
-  },
+// A plain Language over the parser that keeps a preamble group left open from swallowing the body (latex-parser.ts).
+const latexLanguageData = defineLanguageFacet({
+  commentTokens: { line: "%" },
+  indentOnInput: /^\s*(?:\\end\{?|\})$/,
+  closeBrackets: { brackets: ["{", "[", "(", "$"], before: ")]}$:;>,." },
+  wordChars: "@:-",
 });
+export const latexTreeLanguage = new Language(
+  latexLanguageData,
+  new PreambleSafeParser(parser.configure({ props: [latexStyleTags, latexIndentation, languageDataProp.add((type) => (type.isTop ? latexLanguageData : undefined))] })),
+  [],
+  "latex",
+);
 
 /** "stream" keeps the previous line tokenizer for `.tex` (no Visual mode). */
 export type LatexParserChoice = "tree" | "stream";
