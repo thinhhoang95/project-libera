@@ -1,3 +1,4 @@
+import { completionStatus } from "@codemirror/autocomplete";
 import { syntaxTree } from "@codemirror/language";
 import { EditorSelection, EditorState, Prec, type Extension, type SelectionRange, type Transaction } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
@@ -135,10 +136,30 @@ const revealHere: Command = (view) => {
 };
 
 /**
- * Cursor positions that would put typing in the wrong place: after a
- * heading's hidden `}` (typing would leave the heading), and before a
- * bullet. The cursor moves to the nearest good position, in the direction it
- * was going.
+ * Enter at the end of a heading's title (only its `}`, and a `\label` after
+ * it, left on the line) leaves the heading: a new line after it, as in a word
+ * processor, not a line break inside the braces.
+ */
+const leaveHeading: Command = (view) => {
+  const { state } = view;
+  const range = state.selection.main;
+  if (state.readOnly || !range.empty || state.selection.ranges.length > 1 || completionStatus(state) === "active") return false;
+  let heading = false;
+  state.field(structuralField, false)?.extents.between(range.head, range.head, (from, to, mark) => {
+    if (mark.kind === "heading" && from < range.head && to > range.head) heading = true;
+  });
+  const line = state.doc.lineAt(range.head);
+  if (!heading || !/^\}\s*(?:\\label\s*\{[^{}]*\}\s*)?$/.test(state.sliceDoc(range.head, line.to))) return false;
+  view.dispatch({ changes: { from: line.to, insert: "\n" }, selection: { anchor: line.to + 1 }, scrollIntoView: true, userEvent: "input" });
+  return true;
+};
+
+/**
+ * Cursor positions that would put typing in the wrong place: before a
+ * bullet (the cursor moves to the nearest good position, in the direction it
+ * was going), and a click past the end of a drawn heading, which lands before
+ * its hidden `}` (it goes after it: the heading shows its source, with the
+ * cursor at the end of its line, as a click there in the source would put it).
  */
 const cursorFixes = EditorState.transactionFilter.of((tr: Transaction) => {
   if (tr.docChanged || !tr.selection) return tr;
@@ -146,6 +167,7 @@ const cursorFixes = EditorState.transactionFilter.of((tr: Transaction) => {
   if (!value) return tr;
   const state = tr.startState;
   const previous = state.selection.main.head;
+  const pointer = tr.isUserEvent("select.pointer");
   let changed = false;
   const ranges = tr.selection.ranges.map((range): SelectionRange => {
     if (!range.empty) return range;
@@ -156,10 +178,9 @@ const cursorFixes = EditorState.transactionFilter.of((tr: Transaction) => {
       if (target !== head) return;
       const construct = constructOf(state, decoration.spec.cid, from);
       if (!construct) return;
-      if (construct.kind === "heading" && !decoration.spec.widget && to === head && to === construct.to) {
-        // From the clamp point, moving on goes to the next line; anything else lands before the `}`.
-        const line = state.doc.lineAt(head);
-        target = previous === from && head > previous && head === line.to && line.to < state.doc.length ? line.to + 1 : from;
+      if (construct.kind === "heading" && pointer && !decoration.spec.widget && from === head && to === construct.to
+        && to === state.doc.lineAt(head).to && !value.revealed.has(decoration.spec.cid)) {
+        target = to;
       } else if (construct.kind === "item" && from === head && from === state.doc.lineAt(from).from && to > from) {
         const line = state.doc.lineAt(from);
         target = previous === to && head < previous && line.from > 0 ? line.from - 1 : to;
@@ -204,7 +225,7 @@ export function visualKeys(): Extension {
       { key: "Mod-Shift-t", run: toggleLatexFormat("texttt") },
       { key: "Backspace", run: selectBeforeDelete(false) },
       { key: "Delete", run: selectBeforeDelete(true) },
-      { key: "Enter", run: openSelected },
+      { key: "Enter", run: (view) => openSelected(view) || leaveHeading(view) },
       { key: "Alt-Enter", run: revealHere },
     ])),
     cursorFixes,

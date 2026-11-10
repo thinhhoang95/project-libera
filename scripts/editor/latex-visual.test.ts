@@ -1464,10 +1464,12 @@ test("the innermost construct at the cursor shows its source, by its policy", ()
   const doc = "\\section{Intro \\textbf{bold}}\n\nText $x^2$ here.\n\\begin{itemize}\n\\item one\n\\end{itemize}\n";
   const view = mount(doc);
   const moveTo = (pos: number) => view.dispatch({ selection: { anchor: pos } });
+  // A heading shows its source while the cursor is on its line (it was: only from its line start to its `{`, its
+  // markup hidden while its title was typed).
   moveTo(at(view, "bold", 2));
-  assert.deepEqual(revealedKinds(view.state), ["style"], "bold inside a heading reveals only the bold markup");
+  assert.deepEqual(revealedKinds(view.state), ["heading", "style"], "bold inside a heading reveals the bold markup and the heading's");
   moveTo(at(view, "Intro", 2));
-  assert.deepEqual(revealedKinds(view.state), [], "typing in a heading keeps its markup hidden");
+  assert.deepEqual(revealedKinds(view.state), ["heading"], "typing in a heading shows its markup");
   moveTo(0);
   assert.deepEqual(revealedKinds(view.state), ["heading"], "the line start reveals the heading command");
   moveTo(at(view, "$x"));
@@ -1518,13 +1520,17 @@ test("Backspace selects a formula before deleting it, and typing after \\ldots k
   view.destroy();
 });
 
-test("the cursor stays before a heading's hidden brace", () => {
+test("the cursor goes after a heading's brace, where the heading shows its source", () => {
+  // Was: the cursor was clamped before the hidden `}` (and moving on went to the next line), so typing could not
+  // leave the heading. Now the heading shows its source with the cursor on its line, and the cursor stays after `}`.
   const doc = "\\section{Title}\\label{sec:t}\nNext";
   const view = mount(doc);
   view.dispatch({ selection: { anchor: doc.indexOf("\nNext") } });
-  assert.equal(view.state.selection.main.head, doc.indexOf("}"), "clamped before the }");
-  view.dispatch({ selection: { anchor: doc.indexOf("\nNext") } });
-  assert.equal(view.state.selection.main.head, doc.indexOf("Next"), "moving on from there goes to the next line");
+  assert.equal(view.state.selection.main.head, doc.indexOf("\nNext"), "after the } and the label");
+  assert.deepEqual(revealedKinds(view.state), ["heading"]);
+  view.dispatch({ selection: { anchor: doc.indexOf("Next") } });
+  assert.equal(view.state.selection.main.head, doc.indexOf("Next"), "moving on goes to the next line");
+  assert.deepEqual(revealedKinds(view.state), []);
   view.destroy();
 });
 

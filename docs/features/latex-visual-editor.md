@@ -36,14 +36,14 @@ Switch with **Editor Mode → Visual** or **Source** in the file menu (the ⋯ b
 | `thebibliography` (a `.bbl` written into the file) | A **References** heading (**Bibliography** in book and report classes), then each `\bibitem` as a hanging `[1]`, `[2]`… (or the `[label]` it gives; natbib's author–year labels are not shown, as in the PDF). `\newblock` is hidden and the entries' `{\em …}` parts are styled. |
 | `\maketitle` | The title, authors and date; click one to edit it (see Title block) |
 | The preamble | A folded block: **Preamble · article · 12 packages · 8 macros · 2 theorem types**. Click it (or press Enter on it) to see the source. Text after `\begin{document}` on the same line stays visible. |
-| `\%`, `\&`, `\ldots`, `--`, `---`, ` `` ''`, `~`, accents such as `\'e`, `\LaTeX`, `\today` | The characters they typeset. An accent shows its source while the cursor touches it, so `\c` typed on the way to `\cite` is not drawn as a cedilla. |
+| `\%`, `\&`, `\ldots`, `--`, `---`, ` `` ''`, `~`, accents such as `\'e`, `\LaTeX`, `\today` | The characters they typeset. An accent shows its source while the cursor touches it, so `\c` typed on the way to `\cite` is not drawn as a cedilla; one whose letter is on the next line (`\c` at a line's end) stays source. |
 
 Anything else stays as LaTeX: unknown commands, unclosed braces, environments missing their `\end` or ending with the wrong one, a `tikzpicture` outside a figure, comments. A command with broken braces stays as source, but formulas and formatting inside it still render, so one stray brace does not undo the rest of the page.
 
 ## Seeing and editing the source
 
 - **Inline formatting** (bold, links, footnotes) shows its markup while the cursor touches it.
-- **Headings** are edited in place with their markup hidden. Put the cursor at the start of the line (Home) to see `\section{…}`.
+- **Headings** show their source (`\section{…}`, at the text's size) while the cursor is on their line, and are drawn once it leaves; a click on a drawn heading shows it too. A run-in `\paragraph{…}` shows it while the cursor touches it.
 - **Formulas, chips, figures and tables** stay drawn with the cursor at their edge, and move, select and delete as one block. Backspace next to one selects it first; a second Backspace deletes it.
 - **Alt+Enter** shows the source of whatever is at the cursor (a bullet, a symbol) until the cursor leaves it. Alt-click does the same on a widget.
 - **Text** uses the visual editors' settings, as the TipTap editor does: the typeface of the visual theme (Preferences → Markdown → Themes) and the Markdown text size and line height. The triangle above the text sets the page width, shared with the Markdown editors.
@@ -77,7 +77,7 @@ Spelling is checked in the Visual mode only (the toolbar's Check spelling button
 
 ### Keyboard details
 
-- At the end of a heading the cursor stays before the hidden `}`, so typing stays in the heading; moving right from there goes to the next line.
+- Enter at the end of a heading's title (only its `}` and a `\label` after it on the line) starts a new line after the heading. A click past the end of a drawn heading puts the cursor after its `}`.
 - The cursor never lands before a bullet.
 - A letter typed right after a hidden `\ldots` gets a space first, so the command keeps its name (at every cursor).
 - Select a reference chip and press Enter to go to its label.

@@ -38,6 +38,12 @@ const ALIAS_FAMILIES: Record<string, RegExp> = {
   Ref: /^\\(?:[A-Za-z]*ref|autoref|nameref)$/i,
 };
 
+/** The accent at the start of `text` (`\'e`, `\c c`) when its letter is on the same line, else null. */
+function sameLineAccent(text: string) {
+  const accent = readAccent(text);
+  return accent && !text.slice(0, accent.length).includes("\n") ? accent : null;
+}
+
 export type RevealPolicy = "touch" | "strict" | "line" | "never" | "toggle";
 
 export type Replace = { from: number; to: number; widget?: WidgetType; block?: boolean; side?: number };
@@ -49,13 +55,12 @@ export type Construct = {
   from: number;
   to: number;
   reveal: RevealPolicy;
-  /** "line" policy: the cursor in [from, lead] reveals; with `wholeLine`, anywhere on its lines. */
-  lead?: number;
+  /** "line" policy: with `wholeLine`, the cursor anywhere on the construct's lines reveals it. */
   wholeLine?: boolean;
   replaces: Replace[];
-  /** Line classes that apply only while the construct is drawn (collapsed `\begin` lines). */
+  /** Line classes that apply only while the construct is drawn (collapsed `\begin` lines, a heading's size). */
   hiddenLines?: LineStyle[];
-  /** Styles that stay while the source shows (bold text, heading size). */
+  /** Styles that stay while the source shows (bold text). */
   marks?: Mark[];
   lines?: LineStyle[];
 };
@@ -920,14 +925,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (label) consumed.push([label.from, label.to]);
         // \paragraph and \subparagraph are run-in: only the title is a heading, the text after it is not.
         const runIn = name === "Paragraph" || name === "SubParagraph";
+        // With the cursor on its lines (a run-in heading: in it or at either edge), the heading is its source at the
+        // text's size, so is what is typed after its `}`; it is drawn once the cursor is out.
         emit({
-          kind: "heading", from: command.from, to: end, reveal: "line", lead: inner.from,
+          kind: "heading", from: command.from, to: end, ...(runIn ? { reveal: "touch" as const } : { reveal: "line" as const, wholeLine: true }),
           replaces: structural ? [
             { from: command.from, to: inner.from, widget: new HeadingNumberWidget(SECTION_CLASSES[name], read(state, command.from, inner.from)) },
             { from: inner.to, to: end },
           ] : [],
           marks: runIn ? [{ from: inner.from, to: inner.to, class: "cm-vis-runin" }] : undefined,
-          lines: runIn ? undefined : [{ from: command.from, to: inner.to, class: `cm-vis-heading ${SECTION_CLASSES[name]}` }],
+          hiddenLines: runIn ? undefined : [{ from: command.from, to: inner.to, class: `cm-vis-heading ${SECTION_CLASSES[name]}` }],
         });
         return;
       }
@@ -1315,11 +1322,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const book = /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
     const span = aloneOnLines(doc, begin.from, headerEnd);
     const from = span?.from ?? begin.from;
-    // As for a heading: the widget in the structural layer, the line style in both.
+    // As for a heading: the widget, and the line style while it is drawn.
     emit({
       kind: "heading", from, to: headerEnd, reveal: "line", wholeLine: true,
       replaces: structural ? [{ from, to: headerEnd, widget: new MacroHeadingWidget(book ? "Bibliography" : "References", headerEnd - from) }] : [],
-      lines: [{ from, to: headerEnd, class: `cm-vis-heading ${book ? "cm-vis-h0" : "cm-vis-h1"}` }],
+      hiddenLines: [{ from, to: headerEnd, class: `cm-vis-heading ${book ? "cm-vis-h0" : "cm-vis-h1"}` }],
     });
     if (structural) collapseLine(formed.end, "env-end");
     // IEEEtran's .bbl opens with definitions for its entries (`\providecommand{\url}[1]{#1}`, `\csname url@samestyle\endcsname`,
@@ -2088,9 +2095,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return undefined;
     }
     // Accents show their source while the cursor touches them: `\c` typed before `This` is
-    // already `\c T` (Ţ), but the writer is usually on the way to `\cite`.
+    // already `\c T` (Ţ), but the writer is usually on the way to `\cite`. One whose letter is on the next line stays
+    // source: `\c` typed at a line's end would pull the next line's first letter up into it, out of sight.
     if (ctrl.name === "CtrlSym") {
-      const accent = readAccent(read(state, node.from, Math.min(doc.length, node.from + 8)));
+      const accent = sameLineAccent(read(state, node.from, Math.min(doc.length, node.from + 8)));
       if (accent) {
         symbolsUntil = node.from + accent.length;
         emit({ kind: "symbol", from: node.from, to: node.from + accent.length, reveal: "touch", replaces: [{ from: node.from, to: node.from + accent.length, widget: new SymbolWidget(accent.char, read(state, node.from, node.from + accent.length)) }] });
@@ -2110,7 +2118,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const args = commandArguments(node);
     const emptyArgs = args.every((arg) => !arg.optional && read(state, arg.node.from, arg.node.to).replace(/\s/g, "") === "{}");
     if (emptyArgs && args.length) end = args[args.length - 1].node.to;
-    const accent = readAccent(read(state, node.from, Math.min(doc.length, node.from + 8)));
+    const accent = sameLineAccent(read(state, node.from, Math.min(doc.length, node.from + 8)));
     if (accent && /^\\[uvHckrdb]$/.test(text)) {
       symbolsUntil = node.from + accent.length;
       emit({ kind: "symbol", from: node.from, to: node.from + accent.length, reveal: "touch", replaces: [{ from: node.from, to: node.from + accent.length, widget: new SymbolWidget(accent.char, read(state, node.from, node.from + accent.length)) }] });
@@ -2435,11 +2443,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const title = inner(first.getChild("SectioningCommand")?.getChild("SectioningArgument") ?? null);
       if (title === null) return null;
       const runIn = first.name === "Paragraph" || first.name === "SubParagraph";
-      // As for a heading written out: the widget in the structural layer, the line style in both.
+      // As for a heading written out: the widget, and the line style while it is drawn.
       emit({
         kind: "heading", from: node.from, to, reveal: "strict",
         replaces: structural ? [{ from: node.from, to, widget: new MacroHeadingWidget(title, to - node.from) }] : [],
-        lines: runIn ? undefined : [{ from: node.from, to, class: `cm-vis-heading ${SECTION_CLASSES[first.name]}` }],
+        hiddenLines: runIn ? undefined : [{ from: node.from, to, class: `cm-vis-heading ${SECTION_CLASSES[first.name]}` }],
       });
       return done();
     }
