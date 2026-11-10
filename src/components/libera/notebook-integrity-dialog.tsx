@@ -196,7 +196,7 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
       </>}
       onClose={onClose}
     >
-      {fixError && <p role="alert" className="mb-2 text-sm text-destructive">{fixError}</p>}
+      {fixError && <p role="alert" className="mb-2 text-sm text-destructive [overflow-wrap:anywhere]">{fixError}</p>}
       {fixed && !plan && !cleanup && <FixedSummary result={fixed} />}
       {cleaned && !cleanup && <CleanedSummary result={cleaned} />}
       {plan && <RepairPlanView plan={plan} />}
@@ -206,8 +206,8 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
         <progress className="h-1.5 w-full accent-primary" max={progress?.total ?? 1} value={progress ? progress.index : 0} aria-label="Checks done" />
       </div>}
       {!cleanup && !plan && stopped && <p role="status" className="py-4 text-sm text-muted-foreground">The check was stopped. Nothing was changed.</p>}
-      {!cleanup && !plan && error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      {!cleanup && !plan && report && <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
+      {!cleanup && !plan && error && <p role="alert" className="text-sm text-destructive [overflow-wrap:anywhere]">{error}</p>}
+      {!cleanup && !plan && report && <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm [overflow-wrap:anywhere]">
         <p role="status" className={`font-medium ${partial.length ? "rounded-lg border border-amber-500/40 bg-amber-500/10 p-2" : ""}`}>{summary}</p>
         {report.checks.map((check) => {
           const findings = report.findings.filter((finding) => finding.check === check.id)
@@ -249,14 +249,14 @@ function FindingRow({ finding, file, onOpenFile }: { finding: IntegrityFinding; 
 }
 
 function FixedSummary({ result }: { result: RepairResult }) {
-  return <div role="status" className="mb-3 rounded-lg border border-border p-2 text-sm">
+  return <div role="status" className="mb-3 rounded-lg border border-border p-2 text-sm [overflow-wrap:anywhere]">
     <p className="font-medium">{result.moved.length ? `The records of ${plural(result.moved.length, "file")} now follow ${result.moved.length === 1 ? "it" : "them"}.` : "No records were moved."}</p>
     {result.problems.map((problem) => <p key={problem} className="text-xs text-destructive">{problem}</p>)}
   </div>;
 }
 
 function CleanedSummary({ result }: { result: CleanupResult }) {
-  return <div role="status" className="mb-3 rounded-lg border border-border p-2 text-sm">
+  return <div role="status" className="mb-3 rounded-lg border border-border p-2 text-sm [overflow-wrap:anywhere]">
     <p className="font-medium">{result.cleared ? `${plural(result.cleared, "stale item")} removed.` : "Nothing was removed."}</p>
     {result.problems.map((problem) => <p key={problem} className="text-xs text-destructive">{problem}</p>)}
   </div>;
@@ -264,7 +264,7 @@ function CleanedSummary({ result }: { result: CleanupResult }) {
 
 function CleanupPlanView({ plan, lost, understood, onUnderstood }: { plan: CleanupPlan; lost: number; understood: boolean; onUnderstood: (value: boolean) => void }) {
   const items = [...plan.items].sort((a, b) => Number(b.lost) - Number(a.lost) || a.path.localeCompare(b.path));
-  return <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
+  return <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm [overflow-wrap:anywhere]">
     {lost > 0 && <div role="note" className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2">
       <p className="flex gap-2">
         <AlertCircle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
@@ -299,7 +299,7 @@ function unmatchedReason(item: RepairUnmatched) {
 }
 
 function RepairPlanView({ plan }: { plan: RepairPlan }) {
-  return <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm">
+  return <div className="max-h-[60vh] space-y-3 overflow-auto pr-1 text-sm [overflow-wrap:anywhere]">
     <p role="note" className="flex gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2">
       <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
       <span>Files are matched by name only. If a file below is a different file that happens to have the same name, it gets these records. Links in notes are not changed.</span>
