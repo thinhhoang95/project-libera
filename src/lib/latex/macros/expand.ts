@@ -69,6 +69,10 @@ export function readMacroArguments(source: string, index: number, macro: Pick<La
       } else if (argument.type === "o" || argument.type === "O") {
         const optional = readOptional(source, at, TEX_GROUPS);
         if (optional) { args.push(optional.content); index = optional.end; } else args.push(argument.type === "O" ? (argument as Extract<XparseArgument, { type: "O" }>).default : NO_VALUE);
+      } else if (argument.type === "g" || argument.type === "G") {
+        // An optional argument in braces: present only when a `{` comes next.
+        const group = source[at] === "{" ? readGroup(source, at, TEX_GROUPS) : null;
+        if (group) { args.push(group.content); index = group.end; } else args.push(argument.type === "G" ? (argument as Extract<XparseArgument, { type: "G" }>).default : NO_VALUE);
       } else {
         const read = readUndelimited(source, index);
         if (!read) return null;
@@ -168,7 +172,7 @@ const DEFINING = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustComm
 /** The use of a macro at `index` (which holds a backslash), expanded, or null when it is not a usable macro. */
 function expandUse(source: string, index: number, context: Context, depth: number): { text: string; end: number } | null | false {
   // A control word, or a control symbol the document defines (GRF's `\newcommand{\1}{\mathbf{1}}`).
-  const match = /^\\([A-Za-z@]+|[0-9!*+|<>?])/.exec(source.slice(index, index + 80));
+  const match = /^\\([A-Za-z@]+|[0-9!*+|<>?()[\]])/.exec(source.slice(index, index + 80));
   if (!match) return null;
   const macro = macroAt(context.defs, match[1], context.pos);
   if (!macro) return null;
@@ -245,7 +249,8 @@ function expandText(source: string, context: Context, depth: number): string | n
       }
     }
     // A control symbol, unless the document defines it (`\newcommand{\1}{\mathbf{1}}`): then it is a macro use.
-    if (!/[A-Za-z@]/.test(next) && !(/[0-9!*+|<>?]/.test(next) && macroAt(context.defs, next, context.pos))) {
+    // SIAM's `\renewcommand{\(}{\left(}`: `\(` and `\)` are the document's delimiters, not math switches.
+    if (!/[A-Za-z@]/.test(next) && !(/[0-9!*+|<>?()[\]]/.test(next) && macroAt(context.defs, next, context.pos))) {
       if (outer === "text") {
         if (closer === null && (next === "(" || next === "[")) closer = next === "(" ? "\\)" : "\\]";
         else if (closer !== null && closer === `\\${next}`) closer = null;
@@ -311,7 +316,7 @@ export function expandLatexMacroUse(source: string, defs: LatexDefinitions, opti
 }
 
 /** Commands that only make sense in math, so a text expansion containing them (outside math) cannot be drawn as text. */
-const MATH_ONLY = /\\(?:math[a-z]+|frac|dfrac|tfrac|sqrt|sum|prod|int|oint|lim|infty|partial|nabla|cdot|cdots|ldots(?=[_^])|times|le|ge|leq|geq|neq|approx|equiv|sim|pm|mp|in|notin|subset|subseteq|cup|cap|forall|exists|to|rightarrow|leftarrow|mapsto|left|right|big[lr]?|Big[lr]?|operatorname|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|hat|bar|vec|tilde|dot|overline|underline(?=\s*\{.*[_^])|boldsymbol|parallel|top|bot)(?![A-Za-z])/;
+const MATH_ONLY = /\\(?:math[a-z]+|frac|dfrac|tfrac|sqrt|sum|prod|int|oint|lim|infty|partial|nabla|cdot|cdots|ldots(?=[_^])|times|le|ge|leq|geq|neq|approx|equiv|sim|pm|mp|in|notin|subset|subseteq|cup|cap|forall|exists|to|rightarrow|leftarrow|mapsto|left|right|big[lr]?|Big[lr]?|operatorname|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|hat|widehat|bar|vec|tilde|widetilde|check|breve|acute|grave|ddot|dot|overline|overbrace|underbrace|underline(?=\s*\{.*[_^])|boldsymbol|bm|mathbb|parallel|top|bot|langle|rangle|lVert|rVert|lvert|rvert)(?![A-Za-z])/;
 
 /** Whether text-mode LaTeX uses math syntax outside `$…$`, `\(…\)` and `\ensuremath{…}`. */
 export function needsMathMode(text: string) {

@@ -134,7 +134,9 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   // `\raise.17ex\hbox{…}`: the box, in place.
   // A box's optional position, height and alignment (`\parbox[b][0.25\textwidth][c]{w}{…}`, Generalized Random Forests'
   // figure cells) set its layout, not what it shows: without them, the box is `\parbox{w}{…}`, drawn by its content.
-  const source = withoutConditionals(expansion.text).replace(RAISE, "").replace(/\\(parbox|makebox|framebox)((?:\s*\[[^\][]*\])+)/g, "\\$1").replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
+  // `\emph {x}`: a space before the argument, which TeX skips (the grammar does not).
+  const source = withoutConditionals(expansion.text).replace(RAISE, "").replace(/\\(parbox|makebox|framebox)((?:\s*\[[^\][]*\])+)/g, "\\$1")
+    .replace(/\\(emph|textbf|textit|textsc|texttt|textsf|textrm|underline)\s+\{/g, "\\$1{").replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
   const tree = parser.parse(source);
   const read = (from: number, to: number) => source.slice(from, to);
   /** A formula's LaTeX with its references written as their numbers, as the text's formulas have them. */
@@ -290,6 +292,17 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       return;
     }
     if (name === "KnownEnvironment") { renderRange(parent, node.from, node.to, node); return; }
+    // A minipage in a cell (Normalizing Flows' tables): its content. A list in it: an item per line, after a bullet.
+    if (name === "Environment" && /^\\begin\s*\{minipage\}/.test(read(node.from, node.from + 20))) {
+      const content = node.getChild("Content");
+      if (content) { renderRange(parent, content.from, content.to, content); return; }
+    }
+    if (name === "ListEnvironment") {
+      const content = node.getChild("Content");
+      if (content) { renderRange(parent, content.from, content.to, content); return; }
+    }
+    if (name === "Item") { parent.appendChild(element("br")); parent.appendChild(document.createTextNode("• ")); return; }
+    if (name === "BeginEnv" || name === "EndEnv") return;
     // `\multicolumn{2}{c}{…}` outside a table cell: its text.
     if (name === "MultiColumn") {
       const argument = node.getChildren("TextArgument").at(-1) ?? node.getChildren("ShortTextArgument").at(-1);
@@ -421,6 +434,20 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         if (char) { parent.appendChild(document.createTextNode(char)); return; }
       }
       if (text === "\\and" || text === "\\And" || text === "\\AND") { parent.appendChild(element("span", "cm-vis-author-sep")); return; }
+      // threeparttable's `\tnote{a}` in a cell: the note's mark, raised.
+      if (text === "\\tnote") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) { const mark = element("sup"); renderArgument(mark, argument.node); parent.appendChild(mark); return; }
+      }
+      // JMLR's author block: `\name A \email a@b \AND \name B \addr Institution`.
+      if (text === "\\name") return;
+      if (text === "\\addr") { parent.appendChild(element("br")); return; }
+      if (text === "\\email") {
+        parent.appendChild(element("br"));
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) { const mail = element("span", "cm-vis-tt"); renderArgument(mail, argument.node); parent.appendChild(mail); }
+        return;
+      }
       if (text === "\\thanks") { parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" })); return; }
       if (text === "\\footnotemark") { parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" })); return; }
       if (text === "\\ensuremath") {

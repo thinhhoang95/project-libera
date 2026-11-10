@@ -10,7 +10,8 @@ import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/co
  * with their group (`{…}`, `\begingroup…\endgroup`, an environment). */
 
 /** An xparse argument: mandatory, optional (with a default), or a star. */
-export type XparseArgument = { type: "m" } | { type: "o" } | { type: "O"; default: string } | { type: "s" };
+/** `g`/`G{default}`: an optional argument in braces (the paper's `\E{X}` or `\E{X}{\mu}`), as `o`/`O` are in brackets. */
+export type XparseArgument = { type: "m" } | { type: "o" } | { type: "O"; default: string } | { type: "s" } | { type: "g" } | { type: "G"; default: string };
 
 export type LatexMacro = {
   name: string;
@@ -341,10 +342,11 @@ function parseXparseSpec(spec: string): XparseArgument[] | null {
     if (char === "m") args.push({ type: "m" });
     else if (char === "o") args.push({ type: "o" });
     else if (char === "s") args.push({ type: "s" });
-    else if (char === "O") {
+    else if (char === "g") args.push({ type: "g" });
+    else if (char === "O" || char === "G") {
       const group = readGroup(spec, index + 1);
       if (!group) return null;
-      args.push({ type: "O", default: group.content });
+      args.push({ type: char, default: group.content });
       index = group.end;
       continue;
     } else return null;
@@ -688,7 +690,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       else {
         end = body.end;
         const spec = parseXparseSpec(specGroup.content);
-        if (!spec) shadow(name.name, `\\${name.name} uses argument types other than m, o, O and s`);
+        if (!spec) shadow(name.name, `\\${name.name} uses argument types other than m, o, O, g, G and s`);
         else if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
         else added = addMacro(context, { name: name.name, arity: spec.length, spec, body: body.content, pos, file: context.file },
           command.startsWith("Provide") ? "provide" : command.startsWith("New") ? "new" : "renew");
@@ -706,7 +708,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         const specGroup = readGroupAt(source, index);
         if (!specGroup) continue;
         const parsed = parseXparseSpec(specGroup.content);
-        if (!parsed) { note(defs.unsupported, name, `${name} uses argument types other than m, o, O and s`); supported = false; }
+        if (!parsed) { note(defs.unsupported, name, `${name} uses argument types other than m, o, O, g, G and s`); supported = false; }
         spec = parsed ?? undefined;
         arity = parsed?.length ?? 0;
         index = specGroup.end;

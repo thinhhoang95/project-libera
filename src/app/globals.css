@@ -3209,6 +3209,12 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .libera-latex-visual .cm-line.cm-vis-abstract-line { padding-inline: 2.5em; font-size: .94em; }
 .libera-latex-visual .cm-line.cm-vis-quote { padding-left: 2.2em; box-shadow: inset 3px 0 0 var(--border); }
 .libera-latex-visual .cm-line.cm-vis-center { text-align: center; }
+.libera-latex-visual .cm-line.cm-vis-keywords { font-size: .92em; padding-inline: 1.2em; }
+.cm-vis-references { padding: .4em 0; cursor: default; }
+.cm-vis-references-heading { font-size: 1.25em; font-weight: 700; margin-bottom: .4em; }
+.cm-vis-references-item { padding-left: 2.8em; text-indent: -2.8em; margin: .15em 0; font-size: .95em; }
+.cm-vis-references-label { display: inline-block; min-width: 2.8em; text-indent: 0; color: var(--muted-foreground); }
+.cm-vis-references-note { color: var(--muted-foreground); font-style: italic; font-size: .92em; }
 .libera-latex-visual .cm-line.cm-vis-flushright { text-align: right; }
 .cm-vis-figure { margin: .5em 0; padding: .7em .8em .5em; border: 1px solid var(--border); border-radius: 10px; text-align: center; cursor: pointer; }
 .cm-vis-figure:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }

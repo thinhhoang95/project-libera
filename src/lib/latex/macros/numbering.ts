@@ -870,6 +870,11 @@ const CREF_NAMES: Record<string, [string, string, string, string]> = {
   theorem: ["theorem", "theorems", "Theorem", "Theorems"],
 };
 
+/** fancyref's label prefixes and the words its `\fref` prints. */
+const FANCYREF_NAMES: Record<string, string> = {
+  sec: "section", chap: "chapter", fig: "figure", tab: "table", eq: "equation", enum: "item", fn: "footnote", part: "part",
+};
+
 /** What a reference command shows for a label: `\ref` "2.1", `\eqref` "(3)", `\cref` "fig. 1", `\Cref` "Figure 1", `\autoref` "Figure 1". */
 export function referenceText(command: string, targets: Array<LabelTarget | null>, defs: LatexDefinitions, keys: string[]) {
   const name = command.replace(/^\\/, "").replace(/\*$/, "");
@@ -878,6 +883,13 @@ export function referenceText(command: string, targets: Array<LabelTarget | null
   if (name === "eqref") return numbers.map((number) => `(${number})`).join(", ");
   if (name === "pageref" || name === "vpageref") return targets.map((target) => (target?.kind === "page" ? target.number : "?")).join(", ");
   if (name === "nameref") return first?.title ?? numbers[0];
+  // fancyref's `\fref{sec:intro}` and `\Fref{fig:a}`: the word comes from the label's prefix.
+  if (name === "fref" || name === "Fref") {
+    const word = FANCYREF_NAMES[keys[0]?.split(":")[0] ?? ""];
+    if (!word) return numbers.join(", ");
+    const number = word === "equation" ? `(${numbers[0]})` : numbers[0];
+    return `${name === "Fref" ? word[0].toUpperCase() + word.slice(1) : word} ${number}`;
+  }
   if (name === "cref" || name === "Cref" || name === "autoref" || name === "Autoref" || name === "cpageref") {
     const capital = name !== "cref";
     const kind = first?.kind ?? "section";

@@ -17,7 +17,7 @@ import { macroBuiltTabular, parseTabular, readCtable, readLongTable } from "./ta
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
   ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, type FigureSpec,
+  ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
 } from "./widgets";
 
 /* One walk over the syntax tree that recognises constructs
@@ -91,6 +91,17 @@ const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|setlen
  * definitions, box registers, and conditionals other than the `\ifx` of cvpr's `\onedot` (which the renderer reads).
  */
 const TEX_PROGRAMMING = /\\(?:expandafter|csname|endcsname|noexpand|g@addto@macro|@for|@ifnextchar|@ifstar|typeout|gdef|xdef|edef|newif|setbox|advance|multiply|divide|ifdefined|ifcsname|ifnum|ifdim|ifcase|if@[A-Za-z@]*|PackageError|PackageWarning|ClassError)(?![A-Za-z@])|\\if(?!x(?![A-Za-z@]))[a-z]{3,}[A-Za-z@]*/;
+/** Whether every `\begin{x}` in a text is closed by its `\end{x}` in it, in order. */
+function balancedEnvironments(text: string) {
+  if (!text.includes("\\begin") && !text.includes("\\end")) return true;
+  const open: string[] = [];
+  for (const match of text.matchAll(/\\(begin|end)\s*\{([^{}]*)\}/g)) {
+    if (match[1] === "begin") open.push(match[2].trim());
+    else if (open.pop() !== match[2].trim()) return false;
+  }
+  return open.length === 0;
+}
+
 /** Lengths a float sets for its table or caption (`\aboverulesep = 2mm`, `\tabcolsep=3pt`): layout. */
 const FLOAT_LENGTHS = /^\\(?:tabcolsep|arraycolsep|arrayrulewidth|aboverulesep|belowrulesep|doublerulesep|extrarowheight|abovecaptionskip|belowcaptionskip|textfloatsep|intextsep|columnsep|parskip|parindent)$/;
 const GLUE = String.raw`-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|\\[A-Za-z@]+)`;
@@ -143,6 +154,10 @@ const TEXT_BLOCKS: Record<string, string> = {
   appendices: "cm-vis-appendices",
   // `tabbing`: lines of text with tab stops (`\=`, `\>`), drawn as gaps (Featherweight Go's proofs).
   tabbing: "cm-vis-tabbing",
+  // setspace's line spacing and pdflscape's rotated pages: layout, whose lines fold away (applied economics papers).
+  singlespace: "cm-vis-sized", onehalfspace: "cm-vis-sized", doublespace: "cm-vis-sized", spacing: "cm-vis-sized", landscape: "cm-vis-sized",
+  // Keywords under an abstract (JMLR, SIAM, IEEE).
+  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords",
   // `\begin{small} … \end{small}`: a size, which draws nothing; its lines fold away.
   ...Object.fromEntries(["tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge"].map((size) => [size, "cm-vis-sized"])),
 };
@@ -152,10 +167,16 @@ const HANDLED = new Set([
   "FootnoteCommand", "EndnoteCommand", "DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment",
   "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "Item", "Environment",
   "EndEnv", "Maketitle", "IncludeGraphics", "LineBreak", "Tilde", "Normal", "UnknownCommand", "Group",
+  "BibliographyCommand", "BibliographyStyleCommand",
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
 const LAYOUT_NOISE = /\\(?:par|noindent|indent|medskip|smallskip|bigskip|hfill|vfill|null|ignorespaces|unskip|relax|nopagebreak|newline|centering|raggedright|raggedleft|normalfont|itshape|upshape|bfseries|mdseries|rmfamily|sffamily|ttfamily)(?![A-Za-z])|\\[vh]space\*?\s*\{[^}]*\}|\\(?:begin|end)\s*\{[^}]*\}(?:\[[^\]]*\])?|\\item(?:\[([^\]]*)\])?/g;
+
+/** What a reference list is headed: the book classes' "Bibliography", else "References". */
+function bibliographyHeading(defs: LatexDefinitions) {
+  return /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "") ? "Bibliography" : "References";
+}
 
 /** The range of whole lines `[from, to]` covers, when nothing else is on them. */
 export function aloneOnLines(doc: Text, from: number, to: number) {
@@ -713,6 +734,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "DollarMath": case "BracketMath": case "ParenMath": {
           if (!structural) return false;
+          // `\renewcommand{\(}{\left(}` (SIAM): `\(…\)` are the document's own delimiters, not a formula.
+          if ((name === "ParenMath" && macroAt(defs, "(", node.from)) || (name === "BracketMath" && macroAt(defs, "[", node.from))) return undefined;
           for (let parent = node.parent; parent; parent = parent.parent) if (MATH_CONTAINERS.has(parent.name)) return false;
           if (hasDirectError(node) || node.lastChild?.type.isError) return false;
           const displayNode = node.getChild("DisplayMath");
@@ -816,8 +839,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return environment(node);
         }
         case "EndEnv": {
-          // `\end{document}`: its environment starts in the preamble, so the end line is its own construct.
-          if (node.parent?.name === "DocumentEnvironment" && structural && !hasDirectError(node)) collapseLine(node, "document-end");
+          // `\end{document}`: its environment starts in the preamble, so the end line is its own construct. Only that one:
+          // a stray `\end{equation}` the parser took as the document's end (SIAM's redefined `\(`) stays visible.
+          if (node.parent?.name === "DocumentEnvironment" && structural && !hasDirectError(node) && /^\\end\s*\{document\}/.test(read(state, node.from, node.to))) collapseLine(node, "document-end");
           return false;
         }
         case "Maketitle": {
@@ -833,6 +857,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const range = span ?? { from: node.from, to: node.to };
           if (range.from < node.from) consumed.push([range.from, node.from]);
           emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TitleWidget(title.title, title.author, title.date, range.to - range.from, title.abstract) }] });
+          return false;
+        }
+        case "BibliographyCommand": {
+          // `\bibliography{refs}`: the References list it prints (from the compiled `.bbl`), on its own lines only.
+          const argument = node.getChild("BibliographyArgument");
+          const inner = argument && argumentInner(argument);
+          const span = aloneOnLines(doc, node.from, node.to);
+          if (!structural || !inner || !span || hasDirectError(node)) return false;
+          emit({ kind: "bibliography", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new BibliographyListWidget(bibliographyHeading(defs), read(state, inner.from, inner.to).trim(), span.to - span.from) }] });
+          return false;
+        }
+        case "BibliographyStyleCommand": {
+          // `\bibliographystyle{plain}` prints nothing: its own line folds away.
+          if (structural && !hasDirectError(node) && aloneOnLines(doc, node.from, node.to)) collapseLine(node, "bibliography-style");
           return false;
         }
         case "IncludeGraphics": {
@@ -1086,6 +1124,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
     const text = read(state, ctrl.from, ctrl.to);
+    // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
+    if (text === "\\printbibliography") {
+      const end = commandArguments(node).filter((arg) => arg.optional).at(-1)?.node.to ?? ctrl.to;
+      const span = aloneOnLines(doc, node.from, end);
+      if (!span || hasDirectError(node) || macroAt(defs, "printbibliography", node.from)) return undefined;
+      const options = read(state, ctrl.to, end);
+      const title = /\btitle\s*=\s*\{?([^,{}\]]+)/.exec(options)?.[1]?.trim();
+      if (structural) emit({ kind: "bibliography", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new BibliographyListWidget(title ?? bibliographyHeading(defs), "", span.to - span.from) }] });
+      return false;
+    }
     // `\index{social choice}` and `\glossary{…}`: entries for the back of the book, a small grey tag where they are
     // (O'Donnell's book has one every few lines).
     if (text === "\\index" || text === "\\glossary") {
@@ -1095,6 +1143,38 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (inner && !hasDirectError(node) && !read(state, ctrl.to, argument.node.from).trim()) {
         const to = argument.node.to;
         if (structural) emit({ kind: "index", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ChipWidget("index", text, [read(state, inner.from, inner.to).trim()], {}, to - node.from) }] });
+        return false;
+      }
+    }
+    // ICML's title block: `\twocolumn[\icmltitle{…} \begin{icmlauthorlist}\icmlauthor{Name}{aff}…\end{icmlauthorlist}
+    // \icmlaffiliation{aff}{Institution} …]`, drawn as the title block it prints; `\printAffiliationsAndNotice` with it.
+    if (text === "\\twocolumn" || text === "\\printAffiliationsAndNotice") {
+      const after = read(state, ctrl.to, Math.min(doc.length, ctrl.to + 20000));
+      if (text === "\\printAffiliationsAndNotice") {
+        const group = /^\s*\{/.exec(after) ? readGroup(after, after.indexOf("{"), TEX_GROUPS) : null;
+        const end = ctrl.to + (group?.end ?? 0);
+        if (structural) emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end }] });
+        return false;
+      }
+      const open = /^\s*\[/.exec(after);
+      const block = open ? readOptional(after, open[0].length - 1, TEX_GROUPS) : null;
+      const icml = block ? icmlTitle(block.content) : null;
+      if (block && icml) {
+        const end = ctrl.to + block.end;
+        const span = aloneOnLines(doc, node.from, end);
+        const range = span ?? { from: node.from, to: end };
+        consumed.push([range.from, range.to]);
+        if (structural) emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TitleWidget(icml.title, icml.author, null, range.to - range.from) }] });
+        return false;
+      }
+    }
+    // fancyref's `\Fref{sec:x}` (the grammar knows only `\fref` as a reference): a reference chip.
+    if (text === "\\Fref" || text === "\\fref") {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      const inner = argument && argumentInner(argument.node);
+      if (inner && argument && !hasDirectError(node)) {
+        const keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
+        if (structural && keys.length) emit({ kind: "ref", from: node.from, to: argument.node.to, reveal: "strict", replaces: [{ from: node.from, to: argument.node.to, widget: new ChipWidget("ref", text, keys, {}, argument.node.to - node.from) }] });
         return false;
       }
     }
@@ -1402,6 +1482,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const envName = environmentName(env, readText);
     const content = env.getChild("Content");
     if (!envName || !env.getChild("EndEnv")) return false;
+    // A float or grid written by macros (SIAM's `\bfigure…\efigure`): drawn as a plain body it would show its `\caption`
+    // as text, without its number; it stays source, with its parts drawn on their own.
+    if (envName in FLOAT_KINDS || /^(?:figure|table|algorithm)\*?$/.test(envName) || TABULAR_NAMES.test(envName)) return false;
     const body = content ? text.slice(content.from, content.to) : "";
     const span = aloneOnLines(doc, from, to);
     const range = span ?? { from, to };
@@ -1479,6 +1562,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // A macro whose expansion is TeX programming (ICML's `\icmlauthor`: `\g@addto@macro`, `\csname`, flags made with
     // `\newif`) would be drawn as raw tokens, worse than its use: it stays as written.
     if (TEX_PROGRAMMING.test(use.text)) return undefined;
+    // Half of an environment written by a macro that is not a recognised pair (SIAM's `\bequalin` opens equation* and
+    // aligned): a widget would show `\begin{…}` as text; the use stays as written.
+    if (!balancedEnvironments(use.text)) return undefined;
     const to = node.from + use.length;
     const fingerprint = use.used.join(",");
     const ensure = /^\s*\\ensuremath\s*\{([\s\S]*)\}\s*$/.exec(use.text);
@@ -1552,6 +1638,8 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
   const proseBefore = algorithmProseLimit(node, state);
   /** The end of a `\subcaption*{…}` note's group, whose text is drawn as the note. */
   let noteUntil = -1;
+  /** Where the float's notes start (after its last image, grid or caption): text from there is drawn as a note. */
+  const notesFrom = floatNotesStart(node, state);
   /** Captions per container (the float, or the panel the caption is in). */
   const captions = new Map<number, number>();
   const caption = (at: SyntaxNode) => {
@@ -1573,6 +1661,8 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     if (ref.type.isError) { covered = false; return false; }
     // A listing or `\verb` text is visible content the figure widget cannot draw: replacing the float would hide it.
     if (VISIBLE_SKIPPED.has(name)) { covered = false; return false; }
+    // The notes after the last image, grid or caption (tablenotes, a notes minipage, `\floatfoot`, a "Notes:" paragraph).
+    if (ref.from >= notesFrom && name !== "EndEnv") return false;
     if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "BlankLine" || name === "LineBreak" || name === "Tilde") return false;
     if (name === "IncludeGraphics" || name === "Label" || name === "TabularEnvironment" || name === "SetLengthCommand" || name === "Centering") return false;
     if (name === "Caption") { caption(ref.node); return false; }
@@ -1611,8 +1701,8 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { covered = false; return false; }
       if (env === "tikzpicture" || TABULAR_NAMES.test(env)) return false;
       if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state)) covered = false; return false; }
-      // adjustbox's `\begin{adjustbox}{width=\linewidth}`: a size around the content, which is checked.
-      if (env === "adjustbox") return undefined;
+      // adjustbox's `\begin{adjustbox}{width=\linewidth}` and threeparttable: around the content, which is checked.
+      if (env === "adjustbox" || env === "threeparttable" || env === "ThreePartTable") return undefined;
       // overpic: an image with text put over it, drawn without the overlay.
       if (env === "overpic") return false;
       if (env !== "center" && !SIZE_ENVIRONMENTS.has(env) && !PANEL_ENVIRONMENTS.has(env)) covered = false;
@@ -1779,6 +1869,57 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
     return false;
   });
   return only;
+}
+
+/** What ends a float's content: a grid, a drawing, an image, an included file or a caption. */
+const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox)\}|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\(?:input|include|includestandalone)\s*\{[^{}]*\}|\\caption(?:of)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
+
+/**
+ * Where a float's notes start: after its last grid, image, included file or caption. Text from there to the end is the
+ * notes applied economics puts under its tables and figures; infinity when the float has no such content.
+ */
+function floatNotesStart(node: SyntaxNode, state: EditorState) {
+  const begin = node.getChild("BeginEnv");
+  const end = node.getChild("EndEnv");
+  if (!begin || !end) return Number.POSITIVE_INFINITY;
+  const text = read(state, begin.to, end.from);
+  let last = -1;
+  for (const match of text.matchAll(FLOAT_CONTENT_END)) {
+    let stop = (match.index ?? 0) + match[0].length;
+    // A caption ends with its argument's closing brace.
+    if (match[0].endsWith("{") && /^\\caption/.test(match[0])) {
+      const group = readGroup(text, stop - 1, TEX_GROUPS);
+      if (!group) return Number.POSITIVE_INFINITY;
+      stop = group.end;
+    }
+    last = Math.max(last, stop);
+  }
+  return last < 0 ? Number.POSITIVE_INFINITY : begin.to + last;
+}
+
+/** The notes of a float as text to draw: what follows its content, without layout, labels and environment markup; null when nothing is left. */
+function floatNotes(node: SyntaxNode, state: EditorState) {
+  const from = floatNotesStart(node, state);
+  const end = node.getChild("EndEnv");
+  if (!Number.isFinite(from) || !end || from >= end.from) return null;
+  let text = stripTexComments(read(state, from, end.from));
+  // A `\subcaption*{…}` note is drawn as one already.
+  for (let at = text.search(/\\subcaption\*\s*\{/); at >= 0; at = text.search(/\\subcaption\*\s*\{/)) {
+    const group = readGroup(text, text.indexOf("{", at), TEX_GROUPS);
+    if (!group) break;
+    text = text.slice(0, at) + text.slice(group.end);
+  }
+  text = text
+    .replace(/\\label\s*\{[^{}]*\}/g, "")
+    .replace(/\\(?:begin|end)\s*\{(?:tablenotes|threeparttable|ThreePartTable|singlespace|onehalfspace|doublespace|spacing|minipage|footnotesize|small|scriptsize|flushleft|center|justify|adjustbox)\}(?:\s*\[[^\]]*\])?(?:\s*\{[^{}]*\})?/g, " ")
+    .replace(/\\(?:vspace|hspace)\*?\s*\{[^{}]*\}|\\rule\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{[^{}]*\}|\\setlength\s*\{?\\[A-Za-z@]+\}?\s*\{[^{}]*\}/g, " ")
+    .replace(/\\floatfoot\s*\{/g, "{")
+    .replace(/\\item\s*\[([^\]]*)\]/g, " $1 ")
+    .replace(/\\item(?![A-Za-z@])/g, " ")
+    .replace(/\\(?:par|bigskip|medskip|smallskip|noindent|centering|justifying|raggedright|raggedleft|footnotesize|small|scriptsize|linebreak|newline|vfill|hfill)(?![A-Za-z@])/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text && !/^[{}\s]*$/.test(text) ? text : null;
 }
 
 /** The group after a starred command at `at` (`\subcaption*{…}`): its text and where it ends; null without one. */
@@ -2021,6 +2162,10 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       const intro = algorithmIntro(node, state);
       if (intro) content.intro = intro;
     }
+    if (root === node) {
+      const notes = floatNotes(node, state);
+      if (notes) content.notes = [...(content.notes ?? []), notes];
+    }
     return content;
   };
 
@@ -2109,8 +2254,21 @@ function frontMatterParts(text: string): { title: string | null; author: string 
   return { title, author: authors.length ? authors.join(" \\and ") : null, date };
 }
 
+/** ICML's title block in `\twocolumn[…]`: the title, and each author with their affiliations' names; null when it is not one. */
+function icmlTitle(block: string): { title: string | null; author: string | null } | null {
+  const title = commandGroups(block, "icmltitle").at(-1) ?? null;
+  if (title === null) return null;
+  const affiliations = new Map<string, string>();
+  for (const match of block.matchAll(/\\icmlaffiliation\s*\{([^{}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g)) affiliations.set(match[1].trim(), match[2].trim());
+  const authors = [...block.matchAll(/\\icmlauthor\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{([^{}]*)\}/g)].map((match) => {
+    const places = match[2].split(",").map((key) => affiliations.get(key.trim())).filter((place): place is string => !!place);
+    return places.length ? `${match[1].trim()} \\\\ {\\small ${places.join("; ")}}` : match[1].trim();
+  });
+  return { title, author: authors.length ? authors.join(" \\and ") : null };
+}
+
 /** What may come right before `\maketitle` and is shown by it: the title block's declarations. */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip)$/;
 
 /**
  * Where the run of title declarations that ends `text` starts (`text` is the body up to `\maketitle`), or null when

@@ -7,7 +7,8 @@ import { numberingEntryAt, type NumberingKind } from "../../macros/numbering";
 import { resolveRelativeNotebookPath } from "../../project";
 import { applyEquationNumbers, renderKatex } from "./math-render";
 import { preambleOpenField, togglePreamble, visualAux, visualConfig, visualDefinitions, visualNumbering } from "./model";
-import { bibLookup, citationText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
+import { latexProjectField } from "../editing";
+import { bibLookup, citationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
 import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./render-fragment";
 import { cssColor } from "./symbols";
 import { parseTabular } from "./table-model";
@@ -961,6 +962,43 @@ export class TitleWidget extends VisualWidget {
   }
   ignoreEvent() { return true; }
   get estimatedHeight() { return 120; }
+}
+
+/**
+ * `\bibliography{refs}` and `\printbibliography`: a References heading and the list a compiled bibliography gives
+ * (the main file's `.bbl`), in its order; without one, a note that the PDF has the list.
+ */
+export class BibliographyListWidget extends VisualWidget {
+  constructor(readonly heading: string, readonly files: string, readonly length: number) { super(`${heading}\u0000${files}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = el("div", "cm-vis-references");
+    const render = (target: EditorView) => {
+      dom.replaceChildren(el("div", "cm-vis-references-heading", this.heading));
+      const entries = (target.state.field(latexProjectField, false)?.bibEntries ?? []).filter((entry) => entry.label !== undefined || entry.citeAuthor !== undefined);
+      if (!entries.length) {
+        dom.append(el("div", "cm-vis-references-note", `Listed in the PDF${this.files ? ` (from ${this.files})` : ""}`));
+        return;
+      }
+      const numeric = entries.every((entry) => entry.label && /^\d+$/.test(entry.label));
+      const sorted = numeric ? [...entries].sort((a, b) => Number(a.label) - Number(b.label)) : entries;
+      for (const entry of sorted) {
+        const line = el("div", "cm-vis-references-item");
+        const who = entry.author ? plainTexText(entry.author.split(/\s+and\s+/).join(", ")) : entry.citeAuthor ? plainTexText(entry.citeAuthor) : "";
+        line.append(el("span", "cm-vis-references-label", entry.label ? `[${entry.label}]` : ""), document.createTextNode([who, entry.title ? plainTexText(entry.title) : "", entry.year ?? ""].filter(Boolean).join(". ") + "."));
+        dom.append(line);
+      }
+    };
+    render(view);
+    refreshable(dom, view, render);
+    dom.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const from = widgetPos(view, dom);
+      if (from !== null) revealSourceAt(view, from, from + this.length);
+    });
+    return dom;
+  }
+  ignoreEvent() { return true; }
 }
 
 /** The opening of a theorem, proof, abstract or user environment, drawn as its heading. */

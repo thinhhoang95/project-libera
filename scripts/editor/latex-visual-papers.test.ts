@@ -16,8 +16,9 @@ import { renderKatex } from "../../src/lib/latex/codemirror/visual/math-render";
 import { parseAlgorithm2e } from "../../src/lib/latex/codemirror/visual/algorithm";
 import { expandLatexMacros } from "../../src/lib/latex/macros/expand";
 import { macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
-import { readCompiledBibliography } from "../../src/lib/latex/project";
+import { readBibEntries, readCompiledBibliography } from "../../src/lib/latex/project";
 import { citationText } from "../../src/lib/latex/codemirror/visual/references";
+import { latexProjectField } from "../../src/lib/latex/codemirror/editing";
 import { EMPTY_AUX } from "../../src/lib/latex/aux-file";
 import { computeLatexNumbering, numberingEntryAt } from "../../src/lib/latex/macros/numbering";
 import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
@@ -47,10 +48,10 @@ function constructs(state: EditorState) {
 }
 
 /** The text a mounted Visual mode shows for `doc` (widgets' text included), numbered as the app numbers it. */
-function visibleText(doc: string) {
+function visibleText(doc: string, extra: Extension[] = []) {
   const parent = document.createElement("div");
   document.body.append(parent);
-  const view = new EditorView({ state: visualState(doc), parent });
+  const view = new EditorView({ state: visualState(doc, extra), parent });
   const numbering = computeLatexNumbering(syntaxTree(view.state), (from, to) => view.state.doc.sliceString(from, to), visualDefinitions(view.state));
   view.dispatch({ effects: setNumbering.of(numbering) });
   refreshVisualWidgets(view);
@@ -488,9 +489,10 @@ All tuning parameters are pre-specified, including the number of trees $B$.
   const text = visibleText(prose);
   assert.match(text, /All tuning parameters are pre-specified, including the number of trees/);
   assert.doesNotMatch(text, /\\justify|\\vspace|\\caption/);
-  // Prose after the lines is not drawn by the widget: the float stays source.
+  // Prose after the lines is the float's note, drawn under it.
   const after = prose.replace("\\end{algorithmic}\n", "\\end{algorithmic}\nMore text after.\n");
-  assert.equal(constructs(visualState(after)).some((item) => item.startsWith("figure:")), false);
+  assert.equal(constructs(visualState(after)).some((item) => item.startsWith("figure:")), true);
+  assert.match(visibleText(after), /More text after\./);
 });
 
 test("a box's optional arguments do not leave it raw in a table cell (GRF's \\parbox[b][0.25\\textwidth][c]{…}{…})", () => {
@@ -812,6 +814,81 @@ Minimum wage & 1.41^{***} & 0.20 \\
   assert.doesNotMatch(visibleText("\\begin{document}\nRNN\\@. Done.\n\\end{document}\n"), /\\@/);
 });
 
+test("rest of batch 3: float notes, threeparttable, xparse g, bib accents, natexlab, fancyref, ICML and JMLR titles, redefined \\(", () => {
+  // Applied economics' notes: a paragraph, a notes minipage, threeparttable's tablenotes.
+  const notes = [
+    "\\caption{Effects}\n\\begin{tabular}{lc}\na & 1 \\\\\n\\end{tabular}\n\\vspace{1mm}\n\\begin{singlespace}\\noindent\\footnotesize\\textit{Notes}: Standard errors in parentheses.\\end{singlespace}",
+    "\\caption{Effects}\n\\begin{tabular}{lc}\na & 1 \\\\\n\\end{tabular}\n\\begin{minipage}{\\textwidth}\\footnotesize Notes: Standard errors in parentheses.\\end{minipage}",
+    "\\begin{threeparttable}\n\\caption{Effects}\n\\begin{tabular}{lc}\na & 1\\tnote{a} \\\\\n\\end{tabular}\n\\begin{tablenotes}\\item[a] Standard errors in parentheses.\\end{tablenotes}\n\\end{threeparttable}",
+  ];
+  for (const body of notes) {
+    const doc = `\\begin{document}\n\\begin{table}\n${body}\n\\end{table}\n\\end{document}\n`;
+    assert.equal(constructs(visualState(doc)).some((item) => item.startsWith("figure:")), true, body);
+    const text = visibleText(doc);
+    assert.match(text, /Standard errors in parentheses\./);
+    assert.match(text, /Table 1: Effects/);
+    assert.doesNotMatch(text, /\\begin\{|\\footnotesize|\\item|\\tnote/);
+  }
+  // xparse's g arguments (Monotone Additive Statistics' \E{X} and \E{X}{\mu}).
+  const xparse = String.raw`\DeclareDocumentCommand\E{ m g }{\mathbb{E}\IfNoValueTF{#2}{}{_{#2}}\left[#1\right]}`;
+  assert.ok(drawn(xparse, String.raw`\log\E{e^{aX}}`));
+  assert.ok(drawn(xparse, String.raw`\E{X}{\mu} = 0`));
+  // .bib values with \" accents and nested braces; \natexlab in compiled years.
+  const bib = readBibEntries(String.raw`@article{fuchs2009, author = {Fuchs-Sch\"undeln, Nicola and Sch\"undeln, Matthias}, title = {{The {Long} title}}, year = 2009}
+@article{hyv, author = "Hyv\"arinen, Aapo", year = "1999"}`);
+  assert.equal(bib[0].author, "Fuchs-Sch\\\"undeln, Nicola and Sch\\\"undeln, Matthias");
+  assert.equal(bib[1].author, "Hyv\\\"arinen, Aapo");
+  const natexlab = readCompiledBibliography(String.raw`\begin{thebibliography}{2}
+\bibitem[{Bickel and Lehmann(1975{\natexlab{a}})}]{bl75}
+Bickel.
+\end{thebibliography}`);
+  assert.equal(natexlab[0].year, "1975a");
+  // fancyref.
+  const fancy = String.raw`\begin{document}
+\section{Intro}\label{sec:intro}
+See \fref{sec:intro} and \Fref{sec:intro}.
+\end{document}`;
+  assert.match(visibleText(fancy), /See section 1 and Section 1\./);
+  // ICML's title block and JMLR's author block.
+  const icml = String.raw`\begin{document}
+\twocolumn[
+\icmltitle{A Simple Framework for Contrastive Learning}
+\begin{icmlauthorlist}
+\icmlauthor{Ting Chen}{goo}
+\icmlauthor{Simon Kornblith}{goo}
+\end{icmlauthorlist}
+\icmlaffiliation{goo}{Google Research, Brain Team}
+\vskip 0.3in
+]
+\printAffiliationsAndNotice{}
+Text.
+\end{document}
+`;
+  const icmlText = visibleText(icml);
+  assert.match(icmlText, /A Simple Framework for Contrastive Learning/);
+  assert.match(icmlText, /Ting Chen/);
+  assert.match(icmlText, /Google Research, Brain Team/);
+  assert.doesNotMatch(icmlText, /\\icml|\\twocolumn|\\printAffiliations/);
+  const jmlr = String.raw`\documentclass{article}
+\title{Normalizing Flows}
+\author{\name George Papamakarios \email gpapamak@google.com \\ \addr DeepMind}
+\editor{Ryan Adams}
+\begin{document}
+\maketitle
+\end{document}
+`;
+  const jmlrText = visibleText(jmlr);
+  assert.doesNotMatch(jmlrText.slice(jmlrText.lastIndexOf("Normalizing Flows")), /\\name|\\email|\\addr|\\editor/);
+  assert.match(jmlrText, /George Papamakarios/);
+  // SIAM's \renewcommand{\(}{\left(}: the parentheses are drawn, not a formula.
+  const siam = String.raw`\renewcommand{\(}{\left(}\renewcommand{\)}{\right)}
+\begin{document}
+Then $x\(y\)$ holds.
+\end{document}`;
+  assert.ok(drawn(String.raw`\renewcommand{\(}{\left(}\renewcommand{\)}{\right)}`, String.raw`\log\(\frac{2}{\eta}\)`));
+  assert.doesNotMatch(visibleText(siam), /\\end\{document\}x/);
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);
@@ -876,6 +953,44 @@ Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio.
 \end{thebibliography}`);
   assert.equal(numeric[1].title, "Neural machine translation by jointly learning to align and translate");
   assert.equal(cite("\\cite", ["bahdanau2014neural", "layernorm2016"], numeric), "[2, 1]");
+});
+
+test("\\bibliography and \\printbibliography draw the compiled reference list; layout blocks, keywords and cells read as text", () => {
+  const entries = readCompiledBibliography(String.raw`\begin{thebibliography}{2}
+\bibitem{layernorm2016}
+Jimmy~Lei Ba, Jamie~Ryan Kiros, and Geoffrey~E Hinton.
+\newblock Layer normalization.
+\bibitem[Card and Krueger(1994)]{card1994}
+Card, D. and A.~B. Krueger.
+\end{thebibliography}`);
+  const project = latexProjectField.init(() => ({ labels: [], bibEntries: entries, files: [] }));
+  const doc = "\\documentclass{article}\n\\begin{document}\nText.\n\\bibliographystyle{plain}\n\\bibliography{refs,more}\n\\end{document}\n";
+  const kinds = constructs(visualState(doc)).map((item) => item.split(":")[0]);
+  assert.ok(kinds.includes("bibliography"));
+  assert.ok(kinds.includes("bibliography-style"));
+  const text = visibleText(doc, [project]);
+  assert.match(text, /References/);
+  assert.match(text, /\[1\]Layer normalization\./);
+  assert.match(text, /Card and Krueger\. 1994\./);
+  assert.doesNotMatch(text, /\\bibliography/);
+  // Without a compiled bibliography: a note, not an empty list.
+  assert.match(visibleText(doc), /Listed in the PDF \(from refs,more\)/);
+  const biblatex = "\\documentclass{book}\n\\begin{document}\nText.\n\\printbibliography[title={Works Cited}]\n\\end{document}\n";
+  assert.match(visibleText(biblatex), /Works Cited/);
+  assert.match(visibleText(biblatex.replace("[title={Works Cited}]", "")), /Bibliography/);
+  // Not alone on its line: source.
+  assert.ok(!constructs(visualState("\\begin{document}\nSee \\bibliography{refs} here.\n\\end{document}\n")).some((item) => item.startsWith("bibliography")));
+  // setspace's blocks and keywords: their text, without the environment markup.
+  const blocks = visibleText("\\begin{document}\n\\begin{doublespace}\nSpaced text.\n\\end{doublespace}\n\\begin{IEEEkeywords}\nlearning, graphs\n\\end{IEEEkeywords}\n\\end{document}\n");
+  assert.match(blocks, /Spaced text\./);
+  assert.match(blocks, /learning, graphs/);
+  assert.doesNotMatch(blocks, /\\begin\{(?:doublespace|IEEEkeywords)\}/);
+  // A list in a minipage in a table cell, and `\emph {x}` with a space before its group.
+  const cells = visibleText("\\begin{document}\n\\begin{tabular}{ll}\nA & \\begin{minipage}{3cm}\\begin{itemize}\\item First\\item Second\\end{itemize}\\end{minipage} \\\\\nB & an \\emph {emphasised} word \\\\\n\\end{tabular}\n\\end{document}\n");
+  assert.match(cells, /First/);
+  assert.match(cells, /Second/);
+  assert.match(cells, /an emphasised word/);
+  assert.doesNotMatch(cells, /\\begin\{(?:minipage|itemize)\}|\\item|\\emph/);
 });
 
 test("an array drawn on its own keeps its column specification (Featherweight Go's \\begin{array}{l} in rules)", () => {

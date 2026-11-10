@@ -1,5 +1,5 @@
 /** LaTeX project helpers shared by the editor and the build. Pure functions. */
-import { readGroup } from "../macros/core";
+import { readGroup, readOptional, TEX_GROUPS } from "../macros/core";
 
 export const LATEX_ENGINES = ["pdflatex", "xelatex", "lualatex"] as const;
 export type LatexEngine = (typeof LATEX_ENGINES)[number];
@@ -132,6 +132,27 @@ export function readLatexLabels(source: string) {
  */
 export type BibEntrySummary = { key: string; type: string; title?: string; author?: string; year?: string; citeAuthor?: string; label?: string };
 
+/**
+ * A BibTeX field's value, braces kept: `{…}` matched at any depth, `"…"` up to the closing quote outside braces
+ * (an accent written `\"u` inside, as in `Fuchs-Sch\"undeln`, is part of it).
+ */
+function bibFieldValue(body: string, name: string) {
+  const start = new RegExp(`(?:^|[,\\s])${name}\\s*=\\s*`, "i").exec(body);
+  if (!start) return undefined;
+  const at = start.index + start[0].length;
+  if (body[at] === "{") return readGroup(body, at)?.content;
+  if (body[at] !== "\"") return undefined;
+  let depth = 0;
+  for (let i = at + 1; i < body.length; i++) {
+    const char = body[i];
+    if (char === "\\") { i++; continue; }
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "\"" && depth === 0) return body.slice(at + 1, i);
+  }
+  return undefined;
+}
+
 /** Entry keys and a short description from BibTeX sources, for `\cite` completion. */
 export function readBibEntries(source: string): BibEntrySummary[] {
   const entries: BibEntrySummary[] = [];
@@ -140,8 +161,8 @@ export function readBibEntries(source: string): BibEntrySummary[] {
   while ((match = pattern.exec(source))) {
     const type = match[1].toLowerCase();
     if (type === "comment" || type === "string" || type === "preamble") continue;
-    const body = source.slice(match.index + match[0].length, match.index + match[0].length + 2000);
-    const field = (name: string) => body.match(new RegExp(`\\b${name}\\s*=\\s*[{"]((?:[^{}"]|\\{[^{}]*\\})*)[}"]`, "i"))?.[1].replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
+    const body = source.slice(match.index + match[0].length, match.index + match[0].length + 4000);
+    const field = (name: string) => bibFieldValue(body, name)?.replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
     entries.push({ key: match[2], type, title: field("title"), author: field("author"), year: field("year") ?? body.match(/\byear\s*=\s*(\d{4})/i)?.[1] });
   }
   return entries;
@@ -149,7 +170,8 @@ export function readBibEntries(source: string): BibEntrySummary[] {
 
 /** A TeX group's text without its braces and spacing (`{Sant'Anna}` → Sant'Anna). */
 function bibText(text: string) {
-  return text.replace(/\\bibinitperiod|\\bibinithyphendelim|\\bibnamedelim[a-z]/g, (match) => (match === "\\bibinitperiod" ? "." : match === "\\bibinithyphendelim" ? "-" : " ")).replace(/~/g, " ").replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
+  // natbib's `\natexlab{a}` is the year's letter (1975a).
+  return text.replace(/\\natexlab\s*\{([^{}]*)\}/g, "$1").replace(/\\bibinitperiod|\\bibinithyphendelim|\\bibnamedelim[a-z]/g, (match) => (match === "\\bibinitperiod" ? "." : match === "\\bibinithyphendelim" ? "-" : " ")).replace(/~/g, " ").replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
 }
 
 /** The authors a citation prints, from surnames: "Sun", "Sun and Abraham", "Sun et al.". */
@@ -231,9 +253,18 @@ export function readCompiledBibliography(source: string): BibEntrySummary[] {
     }
     return entries;
   }
-  const items = [...list.matchAll(/\\bibitem\s*(?:\[((?:[^[\]{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\])?\s*\{([^{}]+)\}/g)];
+  // Each `\bibitem[label]{key}`, the label read with its braces at any depth (natbib's `{…(1975{\natexlab{a}})}`).
+  const items: Array<{ index: number; end: number; 1: string | undefined; 2: string }> = [];
+  for (const match of list.matchAll(/\\bibitem(?![A-Za-z@])\s*/g)) {
+    let at = (match.index ?? 0) + match[0].length;
+    const optional = list[at] === "[" ? readOptional(list, at, TEX_GROUPS) : null;
+    if (optional) at = optional.end;
+    while (/\s/.test(list[at] ?? "")) at++;
+    const key = list[at] === "{" ? readGroup(list, at) : null;
+    if (key && !/[{}]/.test(key.content)) items.push({ index: match.index ?? 0, end: key.end, 1: optional?.content, 2: key.content });
+  }
   items.forEach((item, index) => {
-    const following = list.slice((item.index ?? 0) + item[0].length, items[index + 1]?.index ?? list.length);
+    const following = list.slice(item.end, items[index + 1]?.index ?? list.length);
     // The title: the block after the first \newblock, when the style writes them.
     const blocks = following.split(/\\newblock\b/);
     // ACM's style marks the title (`\showarticletitle{…}`) and its fields (`\bibinfo{booktitle}{…}`).
