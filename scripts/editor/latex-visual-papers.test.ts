@@ -529,6 +529,38 @@ See Theorem~\ref{thm:static}.
   assert.match(text, /Spanners via/);
 });
 
+test("formulas in captions and algorithm steps expand math macros, resolve references and keep broken delimiters as source", () => {
+  const preamble = String.raw`\documentclass{article}
+\usepackage{amsmath,algorithm2e}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\newcommand{\p}[1]{\left(#1\right)}`;
+  // Synthetic DiD's Algorithm 1: a displayed formula with \argmin in a statement.
+  const algorithm = `${preamble}
+\\begin{document}
+\\begin{algorithm}[t]
+\\KwData{$Y, W$}
+Compute the estimator \\begin{equation*}\\hat\\tau = \\argmin_{\\tau}\\p{x - \\tau}\\end{equation*}\\;
+\\caption{SDID}
+\\end{algorithm}
+\\end{document}
+`;
+  const text = visibleText(algorithm);
+  assert.doesNotMatch(text, /\\argmin|\\begin\{equation\*\}/);
+  // A reference in a caption's formula shows its number; a broken formula stays source.
+  const caption = String.raw`\documentclass{article}
+\begin{document}
+\begin{equation}a=b\label{e}\end{equation}
+\begin{figure}
+\includegraphics{x.png}
+\caption{Weights $w_{\ref{e}}$ and a broken $x formula.}
+\end{figure}
+\end{document}
+`;
+  const drawn = visibleText(caption);
+  assert.doesNotMatch(drawn, /\\ref/);
+  assert.match(drawn, /\$x formula/);
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);

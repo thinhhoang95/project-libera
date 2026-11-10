@@ -123,9 +123,14 @@ export const REFERENCE_IN_MATH = /\\(?:eq|auto|Auto|c|C)?ref\b/;
 
 /** A formula with its references written as their numbers, for KaTeX. */
 export function withReferenceNumbers(latex: string, state: EditorState) {
+  return referencesInMath(latex, visualNumbering(state), visualAux(state), visualDefinitions(state));
+}
+
+/** A formula with its references written as their numbers, from numbering, `.aux` and definitions (captions, cells). */
+export function referencesInMath(latex: string, numbering: LatexNumbering, aux: LatexAuxData, defs: LatexDefinitions) {
   if (!REFERENCE_IN_MATH.test(latex)) return latex;
   return latex.replace(/\\(eq|auto|Auto|c|C)?ref\*?\s*\{([^{}]*)\}/g, (_, kind: string | undefined, keys: string) => {
-    const text = stateReferenceText(state, `\\${kind ?? ""}ref`, keys.split(",").map((key) => key.trim()).filter(Boolean));
+    const text = referenceChipText(`\\${kind ?? ""}ref`, keys.split(",").map((key) => key.trim()).filter(Boolean), numbering, aux, defs);
     return `\\text{${text.replace(/[\\{}_#%&$^~]/g, (char) => `\\${char}`)}}`;
   });
 }

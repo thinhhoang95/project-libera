@@ -159,6 +159,9 @@ function evaluateConditionalsOnce(text: string) {
 
 type Context = { defs: LatexDefinitions; pos: number; used: Set<string>; mode: "math" | "text"; /** Expansions left: bounds the work, not only the result (a macro chain that ends in nothing). */ budget: number };
 
+/** Environments whose body is a formula. */
+const MATH_ENVIRONMENT_NAMES = /^(?:equation|align|alignat|flalign|gather|multline|eqnarray|displaymath|math)\*?$/;
+
 /** A definition command and the name it defines (`\renewcommand{\x}`, `\def\x`, `\let\x`): copied as they are. */
 const DEFINING = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator)\*?\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)/;
 
@@ -229,6 +232,17 @@ function expandText(source: string, context: Context, depth: number): string | n
     }
     if (char !== "\\") continue;
     const next = source[i + 1] ?? "";
+    // A math environment in text (`\begin{equation*}…\end{equation*}` in an algorithm's statement): its body is math,
+    // as between dollars, so math-only macros (`\DeclareMathOperator`) expand in it.
+    if (outer === "text" && (next === "b" || next === "e")) {
+      const environment = /^\\(begin|end)\s*\{([A-Za-z]+\*?)\}/.exec(source.slice(i, i + 40));
+      if (environment && MATH_ENVIRONMENT_NAMES.test(environment[2])) {
+        if (environment[1] === "begin" && closer === null) closer = `\\end{${environment[2]}}`;
+        else if (environment[1] === "end" && closer === `\\end{${environment[2]}}`) closer = null;
+        i += environment[0].length - 1;
+        continue;
+      }
+    }
     if (!/[A-Za-z@]/.test(next)) {
       if (outer === "text") {
         if (closer === null && (next === "(" || next === "[")) closer = next === "(" ? "\\)" : "\\]";

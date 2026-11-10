@@ -5,7 +5,7 @@ import type { LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros } from "../../macros/expand";
 import type { LatexNumbering } from "../../macros/numbering";
 import { katexForEnvironment, RAISE, renderKatex } from "./math-render";
-import { citationText, referenceChipText, type BibLookup } from "./references";
+import { citationText, referenceChipText, referencesInMath, type BibLookup } from "./references";
 import { circledText, CONTROL_SYMBOLS, cssColor, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 
 /* A static renderer for short LaTeX: captions, macro expansions, theorem
@@ -137,6 +137,8 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   const source = withoutConditionals(expansion.text).replace(RAISE, "").replace(/\\(parbox|makebox|framebox)((?:\s*\[[^\][]*\])+)/g, "\\$1").replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
   const tree = parser.parse(source);
   const read = (from: number, to: number) => source.slice(from, to);
+  /** A formula's LaTeX with its references written as their numbers, as the text's formulas have them. */
+  const inMath = (latex: string) => referencesInMath(latex, context.numbering, context.aux, context.defs);
 
   const renderRange = (parent: Node, from: number, to: number, container: SyntaxNode) => {
     let at = from;
@@ -198,7 +200,9 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       case "DollarMath": case "ParenMath": case "BracketMath": {
         const display = name === "BracketMath" || !!node.getChild("DisplayMath");
         const math = display && name === "DollarMath" ? node.getChild("DisplayMath")!.getChild("Math") : (node.getChild("InlineMath")?.getChild("Math") ?? node.getChild("Math"));
-        const html = math ? renderKatex(read(math.from, math.to), false) : null;
+        // A formula whose delimiters are broken (`$x` without its closing `$`) is not drawn, as in the text.
+        const broken = hasDirectError(node) || (math?.parent && hasDirectError(math.parent));
+        const html = math && !broken ? renderKatex(inMath(read(math.from, math.to)), false) : null;
         if (!html) { parent.appendChild(raw(read(node.from, node.to))); return; }
         const span = element("span", "cm-vis-fragment-math");
         span.innerHTML = html;
@@ -274,7 +278,10 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       const env = /^\\begin\s*\{([^}]*)\}/.exec(read(node.from, node.to))?.[1];
       const begin = node.getChild("BeginEnv");
       const end = node.getChild("EndEnv");
-      const html = env && begin && end ? renderKatex(katexForEnvironment(env, read(begin.to, end.from)).latex, true) : null;
+      // `\begin{equation}…\end{align}` and broken delimiters stay source.
+      const closing = end ? /^\\end\s*\{([^}]*)\}/.exec(read(end.from, end.to))?.[1] : undefined;
+      const formed = env && begin && end && closing?.trim() === env.trim() && !hasDirectError(node) && !hasDirectError(begin) && !hasDirectError(end);
+      const html = formed ? renderKatex(inMath(katexForEnvironment(env, read(begin.to, end.from)).latex), true) : null;
       if (html) {
         const span = element("span", "cm-vis-fragment-math cm-vis-fragment-display");
         span.innerHTML = html;
