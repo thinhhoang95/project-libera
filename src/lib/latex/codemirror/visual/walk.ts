@@ -20,6 +20,7 @@ import {
   ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget,
 } from "./widgets";
+import { beginDocumentIndex } from "../../document-begin";
 
 /* One walk over the syntax tree that recognises constructs
  * (docs/latex-visual-editor-plan.md §3–4). Each construct says which markup
@@ -3171,7 +3172,7 @@ function scanTitleParts(text: string, documentClass: string | null) {
   const last = (command: string) => commandGroups(text, command).at(-1) ?? null;
   const authors = LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author");
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
-  const bodyStart = /\\begin\s*\{document\}/.exec(text)?.index ?? -1;
+  const bodyStart = beginDocumentIndex(text);
   const abstract = bodyStart > 0 ? /\\begin\s*\{abstract\}([\s\S]*?)\\end\s*\{abstract\}/.exec(stripTexComments(text.slice(0, bodyStart)))?.[1].trim() ?? null : null;
   // Keywords and classifications in the preamble (LIPIcs', acmart's): small lines of the block. Those in the body are
   // the title run's (titleDeclarationsStart), so they are not shown twice.

@@ -11,7 +11,8 @@ import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-langu
 import { latexParser as parser } from "../../src/lib/latex/codemirror/latex-parser";
 import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
-import { collectLatexDefinitions, loadKey, macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
+import { bodyStartOf, collectLatexDefinitions, loadKey, macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
+import { findBeginDocument } from "../../src/lib/latex/document-begin";
 import { computeLatexNumbering, type NumberingStart } from "../../src/lib/latex/macros/numbering";
 import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
 
@@ -493,4 +494,25 @@ test("a chapter's start is the same when the project is numbered again after an 
   for (const [index, extra] of ["\\chapter{Extra}\\label{ch:extra}", "\\section{S}\\begin{theorem}t\\end{theorem}", ""].entries()) {
     assert.deepEqual(await start("nb", extra), await start(`fresh${index}`, extra));
   }
+});
+
+test("the body starts at the first \\begin{document} outside a comment (AASTeX 7's template comment, astro-ph.GA 2611.08676)", () => {
+  const doc = String.raw`\documentclass[twocolumn]{aastex701}
+%% This is the end of the preamble.  Indicate the beginning of the
+%% manuscript itself with \begin{document}.
+\newcommand{\vdag}{(v)^\dagger}
+\newcommand{\kdwarf}{K dwarf}
+\begin{document}
+\title{Volatile Abundances}
+\section{Introduction}
+A \kdwarf{} host.
+\end{document}
+`;
+  assert.equal(bodyStartOf(doc), doc.indexOf("\\begin{document}\n\\title") + "\\begin{document}".length);
+  assert.equal(findBeginDocument("% \\begin{document}\n"), null);
+  assert.equal(findBeginDocument("100\\% \\begin{document}")?.index, 6);
+  const text = visibleText(doc);
+  assert.match(text, /Preamble/);
+  assert.match(text, /A K dwarf host\./);
+  assert.doesNotMatch(text, /\\newcommand|manuscript itself/);
 });

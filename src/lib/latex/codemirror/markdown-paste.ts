@@ -12,6 +12,7 @@ import { resolveLatexEngine, stripLatexComments } from "../project";
 import type { MathMarkerSettings } from "../../math-markers";
 import { latexProjectField } from "./editing";
 import { macroSourcesField } from "./visual/model";
+import { findBeginDocument } from "../document-begin";
 
 /* Pasting Markdown in a `.tex` file, in Source and Visual mode
  * (docs/latex-markdown-paste-plan.md §1, §5, §8). This part is synchronous
@@ -112,17 +113,6 @@ export function trackRange(view: EditorView, from: number, to: number, { before 
 
 /* ---- Context ---------------------------------------------------------------- */
 
-/** `\begin{document}` that is not in a comment: its start, and where the body starts. */
-function documentBegin(head: string): { index: number; end: number } | null {
-  for (const match of head.matchAll(/\\begin\s*\{document\}/g)) {
-    const lineStart = head.lastIndexOf("\n", match.index) + 1;
-    const prefix = head.slice(lineStart, match.index);
-    if (stripLatexComments(prefix) !== prefix) continue;
-    return { index: match.index, end: match.index + match[0].length };
-  }
-  return null;
-}
-
 /** Whether a paste at `pos` must stay as typed: math, verbatim, comments, the preamble. */
 export function pasteStaysLiteral(state: EditorState, pos: number) {
   for (let node: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) {
@@ -130,7 +120,7 @@ export function pasteStaysLiteral(state: EditorState, pos: number) {
     // Right after a formula's closing delimiter is outside it; a comment runs to the end of its line.
     if (node.name === "Comment" ? pos > node.from : pos > node.from && pos < node.to) return true;
   }
-  const begin = documentBegin(state.doc.sliceString(0, Math.min(state.doc.length, 400_000)));
+  const begin = findBeginDocument(state.doc.sliceString(0, Math.min(state.doc.length, 400_000)));
   return !!begin && pos < begin.end;
 }
 
@@ -341,7 +331,7 @@ function closeGroup(text: string, index: number) {
  */
 export function preambleInsertPoint(state: EditorState): number | null {
   const head = state.doc.sliceString(0, Math.min(state.doc.length, 400_000));
-  const begin = documentBegin(head);
+  const begin = findBeginDocument(head);
   if (!begin) return null;
   const preamble = head.slice(0, begin.index);
   const commandEnd = (pattern: RegExp) => {

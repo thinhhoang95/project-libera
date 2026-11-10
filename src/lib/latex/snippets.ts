@@ -1,6 +1,8 @@
 /** Saved LaTeX snippets and the insert templates of the LaTeX toolbar. Pure
  * text helpers, shared by the editor, the toolbar and the tests. */
 
+import { beginDocumentIndex } from "./document-begin";
+
 export type LatexSnippet = { id: string; name: string; body: string };
 
 /** Removes the indentation the selected lines share, so a snippet saved from
@@ -39,7 +41,7 @@ function stripComments(text: string) {
 export function preambleOf(doc: string) {
   const start = doc.search(/\\documentclass\b/);
   if (start < 0) return null;
-  const end = doc.search(/\\begin\s*\{document\}/);
+  const end = beginDocumentIndex(doc);
   return end < 0 ? null : { from: start, to: end };
 }
 

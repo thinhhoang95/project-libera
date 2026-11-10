@@ -10,6 +10,7 @@
  */
 
 import { scanCitations } from "../references/citation-syntax";
+import { findBeginDocument } from "../latex/document-begin";
 
 export const CHUNK_TARGET_CHARS = 1100;
 export const CHUNK_MAX_CHARS = 1800;
@@ -362,7 +363,7 @@ export function chunkLatex(source: string, fileName = ""): SourceChunk[] {
   }
 
   const headings = latexHeadings(source);
-  const documentStart = /\\begin\s*\{document\}/.exec(source);
+  const documentStart = findBeginDocument(source);
   if (documentStart && !headings.some((heading) => heading.offset <= documentStart.index)) {
     // The preamble has no headings of its own.
     const lineStart = source.lastIndexOf("\n", documentStart.index - 1) + 1;

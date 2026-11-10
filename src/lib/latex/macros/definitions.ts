@@ -1,6 +1,7 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import { packageMacros, readAlgorithmBlock } from "./packages";
 import { decideConditional, type ConditionalFacts } from "./conditionals";
+import { findBeginDocument } from "../document-begin";
 
 /* The document's own definitions, read the way TeX would read them, for the
  * Visual mode (docs/latex-visual-editor-plan.md §7). Only forms whose meaning
@@ -1460,9 +1461,7 @@ export function collectLatexDefinitions(sources: readonly DefinitionSource[], op
 
 /** Where the document body starts: after `\begin{document}`, or 0 for a chapter file without one. */
 export function bodyStartOf(source: string) {
-  const match = /\\begin\s*\{document\}/.exec(source);
-  if (!match || inComment(source, match.index)) return 0;
-  return match.index + match[0].length;
+  return findBeginDocument(source)?.end ?? 0;
 }
 
 /** The definition of `name` that applies at `pos` in the open file (a local one only inside its group). */
