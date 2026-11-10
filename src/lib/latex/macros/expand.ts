@@ -228,6 +228,16 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   // `\renewcommand{\emph}[1]{\textcolor{red}{\oldemph{#1}}}`) stands for the original, not the redefinition.
   if (macro.alias && new RegExp(String.raw`\\${match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z@])`).test(macroAt(context.defs, macro.body.slice(1), context.pos)?.body ?? "")) return { text: macro.body, end: read.end };
   let body = evaluateConditionals(substituteArguments(macro.body, read.args));
+  // `\newcommand{\foo}{\@ifstar{\foo@star}{\foo@plain}}`: the starred or plain form, by whether a `*` follows the use.
+  let end = read.end;
+  const star = !macro.arity && !macro.spec ? /^\s*\\@ifstar(?![A-Za-z@])/.exec(body) : null;
+  if (star) {
+    const starred = readUndelimited(body, star[0].length);
+    const plain = starred && readUndelimited(body, starred.end);
+    if (!plain || body.slice(plain.end).trim()) return false;
+    const at = skipSpaces(source, end);
+    if (source[at] === "*") { body = starred.value; end = at + 1; } else body = plain.value;
+  }
   // TeX's conditionals and ifthen's `\ifthenelse` that are decided here (estout's `\sym` takes its `\ifmmode` branch).
   if (body.includes("\\if") || /\\not(?:toggle|bool)/.test(body)) {
     const facts = conditionalFacts(context.defs, context.pos, context.mode === "math");
@@ -236,9 +246,9 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   const inner = expandText(body, context, depth + 1);
   if (inner === null) return false;
   // A control word right after the expansion must not run into it (`\x y` → `\alpha y`, not `\alphay`).
-  const next = source[read.end] ?? "";
+  const next = source[end] ?? "";
   const glue = /[A-Za-z@]$/.test(inner) && /\\[A-Za-z@]+$/.test(inner) && /[A-Za-z@]/.test(next) ? " " : "";
-  return { text: inner + glue, end: read.end };
+  return { text: inner + glue, end };
 }
 
 /** Math commands whose next token is their argument (accents, fonts, roots, fractions), and `^`/`_`. */
