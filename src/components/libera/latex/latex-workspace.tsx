@@ -261,6 +261,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     .map((file) => ({ path: file.path.slice(directory.length + 1), kind: fileKind(file) }))
     .filter((file) => file.kind !== "other")
     .sort((left, right) => left.path.localeCompare(right.path)), [directory, filePath, files]);
+  /** Every file beside the document, of any kind: what a missing `\input` or image is checked against (definition diagnostics). */
+  const projectPaths = useMemo(() => files.filter((file) => file.path.startsWith(`${directory}/`)).map((file) => file.path.slice(directory.length + 1)), [directory, files]);
 
   // Pasted and dropped images are uploaded like files added in the explorer, then shown in a figure.
   const uploadRef = useRef(onUploadFiles);
@@ -451,8 +453,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not turn on references.bib."));
   }, [notebook]);
   const project = useMemo<LatexProjectData>(
-    () => ({ labels: otherLabels, bibEntries: allBibEntries, files: projectFiles, libraryEntries, hasBibliography, enableBibMirror }),
-    [allBibEntries, otherLabels, projectFiles, libraryEntries, hasBibliography, enableBibMirror],
+    () => ({ labels: otherLabels, bibEntries: allBibEntries, files: projectFiles, allPaths: projectPaths, libraryEntries, hasBibliography, enableBibMirror }),
+    [allBibEntries, otherLabels, projectFiles, projectPaths, libraryEntries, hasBibliography, enableBibMirror],
   );
 
   /** Of packages a chapter file could not load itself, those its main file lacks too. */

@@ -1,5 +1,5 @@
 import { TreeFragment, type Tree } from "@lezer/common";
-import { latexParser as parser } from "../codemirror/latex-parser";
+import { latexDocumentParser as parser } from "../codemirror/latex-parser";
 import { resolveRelativeNotebookPath } from "../project";
 import { bodyStartOf, isInLatexComment, macroAt, readLatexDefinitions, readLatexInputs, type LatexDefinitions, type LatexInput } from "./definitions";
 import { computeLatexNumbering, type LabelTarget, type LatexNumbering, type NumberingStart } from "./numbering";

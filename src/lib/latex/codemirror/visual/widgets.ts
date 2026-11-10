@@ -679,6 +679,11 @@ export type FigureContent = {
   captionOffset?: number;
   /** A panel's width (a minipage's `0.48\linewidth`, a `\subcaptionbox`'s width) as CSS. */
   width?: string;
+  /**
+   * A float a macro writes (macro-provenance.ts): where the caption's text is, relative to the widget, when it is the
+   * call's argument. A click on the caption puts the cursor there, to edit just that argument.
+   */
+  captionSource?: { from: number; to: number };
 };
 
 export type FigureSpec = FigureContent & {
@@ -1014,6 +1019,17 @@ export class FigureWidget extends VisualWidget {
       if (content.kind === "algorithm" && !content.sub) {
         text.dataset.algorithmCaption = "true";
         Object.assign(text, { liberaCaption: { caption: content.caption, range: () => { const pos = start(); return pos === null ? null : { from: pos, to: pos + spec.length }; } } });
+      }
+      const source = content.captionSource;
+      if (source && content.captionOffset === undefined) {
+        text.classList.add("cm-vis-caption-argument");
+        text.addEventListener("mousedown", (event) => {
+          if (event.button !== 0 || event.altKey) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const at = widgetPos(view, dom);
+          if (at !== null) editKeysAt(view, at + source.from);
+        });
       }
       caption.append(label, text);
       captions.push({ content, label, text });

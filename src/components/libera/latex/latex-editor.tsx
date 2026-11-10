@@ -22,6 +22,7 @@ import type { MarkdownPasteDialogRequest } from "./latex-markdown-paste-dialog";
 import { getMarkdownPasteOptions, loadMarkdownPasteOptions, saveMarkdownPasteOptions } from "./latex-paste-options-store";
 import { LatexPasteNotice } from "./latex-paste-notice";
 import type { LatexDiagnostic } from "@/lib/latex/build";
+import { latexDefinitionDiagnostics } from "@/lib/latex/codemirror/visual/diagnostics";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { locateTextHint, type SynctexTextHint } from "@/lib/latex/synctex-text";
 import { latexCompletionSource, latexFormattingKeymap, latexInputHandler, latexProjectField, setLatexProject, syncEnvironmentNames, type LatexProjectData } from "@/lib/latex/codemirror/editing";
@@ -519,7 +520,7 @@ export function LatexEditor({
         // The agent's changes under manual review; shared tabs get suggestions instead.
         ...(binding ? [] : [agentReviewCodeMirror(initialRef.current.documentPath, { outside: (transaction) => transaction.annotation(Transaction.remote) === true })]),
         latexSyncExtension(),
-        ...(isTex ? [latexMathPreview(), latexVisualState()] : []),
+        ...(isTex ? [latexMathPreview(), latexVisualState(), latexDefinitionDiagnostics()] : []),
         // Pending suggestions and AI changes stay visible as source in the Visual mode.
         visualRevealRanges.of((target) => [...(target.field(reviewHunksField, false) ?? []), ...previewSuggestions(target)]),
         // So does LaTeX with a compile error, so its underline is not hidden with the markup.
