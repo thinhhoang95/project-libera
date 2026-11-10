@@ -504,6 +504,31 @@ test("a box's optional arguments do not leave it raw in a table cell (GRF's \\pa
   assert.doesNotMatch(text, /\\parbox|textwidth/);
 });
 
+test("thmtools' restatable is drawn and numbered as the theorem it names; \\texorpdfstring shows its TeX (max-flow paper)", () => {
+  const doc = String.raw`\documentclass{article}
+\usepackage{thmtools,thm-restate}
+\newtheorem{theorem}{Theorem}
+\begin{document}
+\section{Spanners via \texorpdfstring{$\ell_1$}{l1} embeddings}
+\begin{theorem}\label{thm:first}First.\end{theorem}
+\begin{restatable}[Static embedding]{theorem}{staticEmbedding}
+\label{thm:static}
+Every graph has a spanner.
+\end{restatable}
+See Theorem~\ref{thm:static}.
+\end{document}
+`;
+  const numbering = number(doc);
+  assert.equal(numbering.labels.get("thm:static")?.number, "2");
+  const text = visibleText(doc);
+  assert.match(text, /Theorem 2/);
+  assert.match(text, /Static embedding/);
+  assert.match(text, /Every graph has a spanner\./);
+  assert.doesNotMatch(text, /\\begin\{restatable\}|staticEmbedding/);
+  assert.doesNotMatch(text, /texorpdfstring|\bl1\b/);
+  assert.match(text, /Spanners via/);
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);

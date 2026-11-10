@@ -4,7 +4,7 @@ import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
-import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, stripTexComments } from "../../macros/numbering";
+import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, restatableTheorem, stripTexComments } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
@@ -911,6 +911,22 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const name = formed.name;
     if (name === "thebibliography") return bibliography(node, formed);
     if (name === "frontmatter") return frontMatter(formed);
+    // thmtools' `\begin{restatable}[note]{theorem}{name}`: the theorem it names, with its heading over the whole opening.
+    if (name === "restatable" || name === "restatable*") {
+      const restated = restatableTheorem(node, readNode);
+      const restatedTheorem = restated ? defs.theorems.get(restated.env) : undefined;
+      if (!restated || !restatedTheorem) return undefined;
+      const headerEnd = node.from + restated.length;
+      consumed.push([formed.begin.from, headerEnd]);
+      const span = aloneOnLines(doc, formed.begin.from, headerEnd);
+      if (structural) {
+        const header = new EnvironmentHeaderWidget("theorem", restatedTheorem.title, restated.note, restatedTheorem.numbered ? "theorem" : null, 0);
+        emit({ kind: "env-header", from: span?.from ?? formed.begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? formed.begin.from, to: headerEnd, widget: header }] });
+        collapseLine(formed.end, "env-end");
+      }
+      if (formed.content && formed.content.to > headerEnd) emit({ kind: "env-body", from: headerEnd, to: formed.end.from, reveal: "never", replaces: [], marks: [{ from: headerEnd, to: formed.end.from, class: THEOREM_STYLE_CLASSES[restatedTheorem.style] }] });
+      return undefined;
+    }
     const theorem = defs.theorems.get(name);
     const user = defs.environments.get(name);
     const block = TEXT_BLOCKS[name];
@@ -1010,6 +1026,17 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const to = argument.node.to;
         if (structural) emit({ kind: "index", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ChipWidget("index", text, [read(state, inner.from, inner.to).trim()], {}, to - node.from) }] });
         return false;
+      }
+    }
+    // hyperref's `\texorpdfstring{$\ell_1$}{l1}` in a heading: the TeX the page shows; the bookmark's text is hidden.
+    if (text === "\\texorpdfstring") {
+      const args = commandArguments(node).filter((arg) => !arg.optional);
+      const first = args[0] && argumentInner(args[0].node);
+      if (first && args.length === 2 && !hasDirectError(node)) {
+        const end = args[1].node.to;
+        consumed.push([first.to, end]);
+        emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: structural ? [{ from: node.from, to: first.from }, { from: first.to, to: end }] : [] });
+        return undefined;
       }
     }
     // `\setcounter{enumi}{3}` in a list: its next item is 4.

@@ -96,6 +96,15 @@ export function floatKind(node: SyntaxNode, read: Read): "figure" | "table" | "a
   return FLOAT_KINDS[env] ?? (node.name === "FigureEnvironment" && !/^sub/.test(env) ? "figure" : node.name === "TableEnvironment" && !/^sub/.test(env) ? "table" : null);
 }
 
+/**
+ * thmtools' `\begin{restatable}[note]{theorem}{name}`: the theorem environment it typesets, its note and where its
+ * opening ends (relative to the environment's start); null for any other environment.
+ */
+export function restatableTheorem(node: SyntaxNode, read: Read) {
+  const head = /^\\begin\s*\{restatable\*?\}\s*(?:\[((?:[^\][{}]|\{[^{}]*\})*)\])?\s*\{([^{}]+)\}\s*\{([^{}]+)\}/.exec(read(node.from, Math.min(node.to, node.from + 600)));
+  return head ? { env: head[2].trim(), note: head[1]?.trim() || null, name: head[3].trim(), length: head[0].length } : null;
+}
+
 /** `longtable` and `xltabular`: tables that are their own float, with a caption and head and foot rows. */
 export function isLongTable(node: SyntaxNode, read: Read) {
   return /^(?:longtable|xltabular)\*?$/.test(environmentName(node, read) ?? "");
@@ -703,7 +712,9 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           setTarget({ number: parent, kind: "equation", pos: node.from });
           return;
         }
-        const theorem = defs.theorems.get(env);
+        // thmtools' restatable typesets the theorem it names.
+        const restated = env === "restatable" || env === "restatable*" ? restatableTheorem(node, read) : null;
+        const theorem = defs.theorems.get(restated?.env ?? env);
         if (theorem) {
           let number: string | null = null;
           if (theorem.numbered) {
@@ -711,8 +722,9 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             step(counter);
             number = format(counter);
           }
-          entries.push({ pos: node.from, kind: "theorem", number, env });
-          if (number) setTarget({ number, kind: "theorem", pos: node.from, env });
+          const theoremEnv = restated?.env ?? env;
+          entries.push({ pos: node.from, kind: "theorem", number, env: theoremEnv });
+          if (number) setTarget({ number, kind: "theorem", pos: node.from, env: theoremEnv });
         }
         return;
       }
