@@ -193,7 +193,7 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
 }
 
 /** Math commands whose next token is their argument (accents, fonts, roots, fractions), and `^`/`_`. */
-const ARGUMENT_COMMANDS = "hat|widehat|tilde|widetilde|bar|overline|underline|vec|dot|ddot|dddot|check|breve|acute|grave|mathring|overrightarrow|overleftarrow|mathbf|mathrm|mathit|mathsf|mathtt|mathcal|mathbb|mathfrak|mathscr|mathnormal|boldsymbol|bm|pmb|sqrt|frac|dfrac|tfrac|cfrac|binom|dbinom|tbinom|operatorname|text";
+const ARGUMENT_COMMANDS = "hat|widehat|tilde|widetilde|bar|overline|underline|vec|dot|ddot|dddot|check|breve|acute|grave|mathring|Hat|Tilde|Bar|Vec|Dot|Ddot|Check|Breve|Acute|Grave|overrightarrow|overleftarrow|mathbf|mathrm|mathit|mathsf|mathtt|mathcal|mathbb|mathfrak|mathscr|mathnormal|boldsymbol|bm|pmb|sqrt|frac|dfrac|tfrac|cfrac|binom|dbinom|tbinom|operatorname|text";
 /** What ends right before a macro use that is an argument: such a command, `^`, `_`, or a fraction's first argument. */
 const ARGUMENT_BEFORE = new RegExp(String.raw`(?:\\(?:${ARGUMENT_COMMANDS})|[\^_]|\\(?:frac|dfrac|tfrac|cfrac|binom|dbinom|tbinom)\s*(?:\{(?:[^{}]|\{[^{}]*\})*\}|\\[A-Za-z@]+|[^\s{}\\]))\s*$`);
 
@@ -316,7 +316,7 @@ export function expandLatexMacroUse(source: string, defs: LatexDefinitions, opti
 }
 
 /** Commands that only make sense in math, so a text expansion containing them (outside math) cannot be drawn as text. */
-const MATH_ONLY = /\\(?:math[a-z]+|frac|dfrac|tfrac|sqrt|sum|prod|int|oint|lim|infty|partial|nabla|cdot|cdots|ldots(?=[_^])|times|le|ge|leq|geq|neq|approx|equiv|sim|pm|mp|in|notin|subset|subseteq|cup|cap|forall|exists|to|rightarrow|leftarrow|mapsto|left|right|big[lr]?|Big[lr]?|operatorname|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|hat|widehat|bar|vec|tilde|widetilde|check|breve|acute|grave|ddot|dot|overline|overbrace|underbrace|underline(?=\s*\{.*[_^])|boldsymbol|bm|mathbb|parallel|top|bot|langle|rangle|lVert|rVert|lvert|rvert)(?![A-Za-z])/;
+const MATH_ONLY = /\\(?:math[a-z]+|frac|dfrac|tfrac|sqrt|sum|prod|int|oint|lim|infty|partial|nabla|cdot|cdots|ldots(?=[_^])|times|le|ge|leq|geq|neq|approx|equiv|sim|pm|mp|in|notin|subset|subseteq|cup|cap|forall|exists|to|rightarrow|leftarrow|mapsto|left|right|big[lr]?|Big[lr]?|operatorname|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|hat|widehat|bar|vec|tilde|widetilde|check|breve|acute|grave|ddot|dot|Hat|Bar|Vec|Tilde|Check|Breve|Acute|Grave|Ddot|Dot|overline|overbrace|underbrace|underline(?=\s*\{.*[_^])|boldsymbol|bm|mathbb|parallel|top|bot|langle|rangle|lVert|rVert|lvert|rvert)(?![A-Za-z])/;
 
 /** Whether text-mode LaTeX uses math syntax outside `$…$`, `\(…\)` and `\ensuremath{…}`. */
 export function needsMathMode(text: string) {

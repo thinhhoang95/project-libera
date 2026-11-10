@@ -169,7 +169,7 @@ export function noteBodyStart(tr: Transaction) {
 }
 
 /** Commands that define something, or that change which definitions TeX runs (conditionals, groups, verbatim). */
-const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|def|gdef|edef|xdef|let|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage|input|graphicspath|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
+const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|def|gdef|edef|xdef|let|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage|input|graphicspath|alg(?:new|renew)command|algdef|algblock|algtext|SetKw|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
 
 function computeDefinitions(state: EditorState, sources: readonly MacroSource[]): LatexDefinitions {
   return collectLatexDefinitions(sources, { text: state.doc.toString(), bodyStart: bodyStartIn(state.doc) });

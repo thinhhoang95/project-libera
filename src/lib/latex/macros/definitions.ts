@@ -1,4 +1,5 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
+import { packageMacros, readAlgorithmBlock } from "./packages";
 
 /* The document's own definitions, read the way TeX would read them, for the
  * Visual mode (docs/latex-visual-editor-plan.md §7). Only forms whose meaning
@@ -35,6 +36,8 @@ export type LatexMacro = {
   /** `\providecommand`: does nothing when the command already exists, which for LaTeX's own commands the reader cannot know. */
   provided?: boolean;
   file?: string;
+  /** Written by the Visual mode for a package the document loads (macros/packages.ts), not by the document. */
+  package?: string;
   fingerprint: string;
 };
 
@@ -148,7 +151,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|newacronym|acro|newglossaryentry|DeclareAcronym)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -563,7 +566,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     const uncertain = scanner.branch() === "unknown";
     context.deferred = scanner.deferred();
     let index = start + match[0].length;
-    const command = match[1];
+    // algorithmicx's `\algnewcommand{\LineComment}[1]{\State …}` is `\newcommand` (and `\algrenewcommand` is `\renewcommand`).
+    const command = match[1] === "algnewcommand" ? "newcommand" : match[1] === "algrenewcommand" ? "renewcommand" : match[1];
     const note = (list: LatexDefinitionNote[], name: string, message: string) => list.push({ pos: context.offset + start, file: context.file, name, message });
     const starred = source[index] === "*";
     if (starred) index++;
@@ -820,6 +824,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           if (!trimmed) continue;
           defs.packages.push(trimmed);
           if (packageOptions) defs.packageOptions.set(trimmed, packageOptions.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean));
+          // What a package not in the project defines (complexity's `\NP`, physics' `\abs`); a copy in the project, read next, wins.
+          for (const { replaces, ...macro } of packageMacros(trimmed, defs.packageOptions.get(trimmed) ?? [])) if (replaces || !defs.macros.get(macro.name)?.length) addMacro(context, { ...macro, pos, file: context.file, package: trimmed }, "renew");
           options.load?.(loadKey("package", trimmed), start);
         }
       }
@@ -888,6 +894,30 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         if (values && command === "DeclareAcronym" && values.has("short") && values.has("long")) entry = { short: values.get("short")!, long: values.get("long")!, shortPlural: values.get("short-plural-form"), longPlural: values.get("long-plural-form") };
       }
       if (key && entry) (defs.acronyms ??= new Map()).set(key.content.trim(), entry);
+    } else if (command === "algdef" || command === "algblockdefx" || command === "algblock" || command === "algtext") {
+      // algorithmicx's blocks (2411.02681's `\algblockdefx[ON]{Blk}{EndBlk}[1]{#1}{}`): commands for algorithm.ts to read.
+      const block = readAlgorithmBlock(source, index, command, starred, (name) => macroAt(defs, name, Number.MAX_SAFE_INTEGER));
+      if (block) {
+        end = block.end;
+        if (!uncertain) for (const macro of block.macros) addMacro(context, { ...macro, pos, file: context.file }, "renew");
+      }
+    } else if (/^SetKw(?:Function|InOut|Input|Prog|Data|Block)?$/.test(command)) {
+      // algorithm2e's keywords declared before an algorithm (`\SetKwInOut{Input}{Input}` in a preamble): macros whose
+      // body is the declaration, which an algorithm reads first (walk.ts); in text and formulas their uses stay source.
+      const count = command === "SetKwProg" ? 4 : command === "SetKwBlock" ? 3 : 2;
+      const groups: string[] = [];
+      let at = index;
+      while (groups.length < count) {
+        const group = readGroupAt(source, at);
+        if (!group) break;
+        groups.push(group.content);
+        at = group.end;
+      }
+      const name = /^\s*\\?([A-Za-z@]+)\s*$/.exec(groups[0] ?? "")?.[1];
+      if (name && groups.length === count) {
+        end = at;
+        if (!uncertain) added = addMacro(context, { name, arity: 0, body: source.slice(start, at), mathOnly: true, pos, file: context.file, package: "algorithm2e" }, "renew");
+      }
     }
 
     if (added && !global) (scanner.innermost()?.locals ?? []).push(added);
@@ -1020,7 +1050,10 @@ export function mapLatexDefinitions(defs: LatexDefinitions, changes: PositionMap
 
 /** How many macros and environments a summary counts (the latest definition of each name). */
 export function definitionCounts(defs: LatexDefinitions) {
-  return { macros: defs.macros.size, environments: defs.environments.size, theorems: defs.theorems.size, packages: new Set(defs.packages).size };
+  // A package's commands (complexity's 300 classes) are not the document's macros.
+  let macros = 0;
+  for (const list of defs.macros.values()) if (!list[list.length - 1].package) macros++;
+  return { macros, environments: defs.environments.size, theorems: defs.theorems.size, packages: new Set(defs.packages).size };
 }
 
 /** `\input`, `\include` and `\subfile` targets in a source (comments skipped), in order, with positions. */
