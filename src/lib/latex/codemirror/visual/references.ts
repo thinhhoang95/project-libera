@@ -5,6 +5,7 @@ import { referenceText, type LabelTarget, type LatexNumbering } from "../../macr
 import { latexProjectField } from "../editing";
 import { visualAux, visualDefinitions, visualNumbering } from "./model";
 import { readGroup } from "../../../macros/core";
+import { colorsForKatex } from "./math-render";
 import { CONTROL_SYMBOLS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES } from "./symbols";
 
 /* What citation and reference chips say (docs/latex-visual-editor-plan.md §3). */
@@ -304,6 +305,8 @@ export function withReferenceNumbers(latex: string, state: EditorState) {
 
 /** A formula with its references written as their numbers, from numbering, `.aux` and definitions (captions, cells). */
 export function referencesInMath(latex: string, numbering: LatexNumbering, aux: LatexAuxData, defs: LatexDefinitions) {
+  // The document's `\definecolor` names in the formula, as colours KaTeX takes.
+  if (defs.colors.size) latex = colorsForKatex(latex, defs.colors);
   if (!REFERENCE_IN_MATH.test(latex)) return latex;
   return latex.replace(/\\(eq|auto|Auto|c|C)?ref\*?\s*\{([^{}]*)\}/g, (_, kind: string | undefined, keys: string) => {
     const text = referenceChipText(`\\${kind ?? ""}ref`, keys.split(",").map((key) => key.trim()).filter(Boolean), numbering, aux, defs);

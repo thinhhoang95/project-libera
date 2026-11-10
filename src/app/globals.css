@@ -3180,6 +3180,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-math:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .cm-vis-math .katex .eqn-num[data-vis-num]::before { content: "(" attr(data-vis-num) ")"; counter-increment: none; }
 .cm-vis-math .katex .eqn-num:not([data-vis-num])::before { content: ""; counter-increment: none; }
+/* A row of a formula KaTeX could not read, shown as its source (the other rows drawn). */
+.cm-vis-math .katex .cm-vis-math-source { font-family: var(--font-mono); font-size: .72em; color: var(--muted-foreground); background: color-mix(in srgb, var(--muted) 60%, transparent); border-radius: 3px; padding: 0 .3em; white-space: pre-wrap; }
 .cm-vis-chip { display: inline-block; padding: 0 .4em; border-radius: .4em; background: var(--latex-visual-chip); color: var(--latex-visual-chip-text); font-family: var(--font-sans); font-size: .78em; line-height: 1.55; white-space: nowrap; vertical-align: .05em; cursor: pointer; }
 .cm-vis-cite { background: var(--latex-visual-cite); color: var(--latex-visual-cite-text); }
 .cm-vis-label { background: var(--muted); color: var(--muted-foreground); }

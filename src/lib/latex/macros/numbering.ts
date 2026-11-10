@@ -54,7 +54,7 @@ export const EMPTY_NUMBERING: LatexNumbering = { entries: [], labels: new Map(),
 const SECTION_LEVELS: Record<string, number> = { Book: -2, Part: -1, Chapter: 0, Section: 1, SubSection: 2, SubSubSection: 3, Paragraph: 4, SubParagraph: 5 };
 const SECTION_COUNTERS = ["chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph"];
 const CHAPTER_CLASSES = /^(?:book|report|memoir|scrbook|scrreprt|amsbook|thesis|ut-thesis|mitthesis)$/;
-const NUMBERED_EQUATIONS = new Set(["equation", "multline"]);
+const NUMBERED_EQUATIONS = new Set(["equation", "multline", "dmath", "dseries"]);
 const NUMBERED_ROWS = new Set(["align", "alignat", "flalign", "gather", "eqnarray", "IEEEeqnarray", "subeqnarray"]);
 const MATH_CONTAINERS = new Set(["DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment", "Math"]);
 
@@ -884,9 +884,18 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       if (name === "EquationEnvironment" || name === "EquationArrayEnvironment") {
         // Inner environments (aligned, cases, matrices) are part of an outer formula.
         for (let parent = node.parent; parent; parent = parent.parent) if (MATH_CONTAINERS.has(parent.name)) return false;
-        const env = environmentName(node, read) ?? "";
+        let env = environmentName(node, read) ?? "";
+        // empheq numbers as the environment it names (`\begin{empheq}[left=…]{align}`).
+        if (env === "empheq") {
+          const begin = node.getChild("BeginEnv");
+          const group = begin?.getChild("EnvNameGroup");
+          env = (begin && group && /\{\s*([A-Za-z]+\*?)\s*(?:=\s*\d+\s*)?\}\s*$/.exec(read(group.to, begin.to))?.[1]) || env;
+        }
         const base = env.replace(/\*$/, "");
-        const starred = env.endsWith("*");
+        // breqn's `dgroup*` leaves its `dmath`s unnumbered.
+        let inStarredGroup = false;
+        for (let parent = node.parent; parent && (base === "dmath" || base === "dseries"); parent = parent.parent) if (parent.name === "Environment" && environmentName(parent, read) === "dgroup*") { inStarredGroup = true; break; }
+        const starred = env.endsWith("*") || inStarredGroup;
         const content = node.getChild("Content");
         // Commented-out \tag, \label and \nonumber do nothing.
         let body = stripTexComments(content ? read(content.from, content.to) : "");
@@ -918,7 +927,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           let number: string | null = null;
           const tag = rowTag(body);
           if (tag) number = tag.number;
-          else if (NUMBERED_EQUATIONS.has(base) && !starred && !/\\(?:nonumber|notag)\b/.test(body)) { step("equation"); number = format("equation"); }
+          else if (NUMBERED_EQUATIONS.has(base) && !starred && !/\\(?:nonumber|notag|IEEEnonumber)\b/.test(body)) { step("equation"); number = format("equation"); }
           entries.push({ pos: node.from, kind: "equation", number, rows: [number], tagged: [!!tag?.tagged] });
           for (const match of body.matchAll(/\\label\s*\{([^}]*)\}/g)) if (number) labels.set(match[1].trim(), { number, kind: "equation", pos: node.from });
         } else {
@@ -930,7 +939,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             const tag = rowTag(row);
             let number: string | null = null;
             if (tag) number = tag.number;
-            else if (numbered && !/\\(?:nonumber|notag)\b/.test(row)) { step("equation"); number = format("equation"); }
+            else if (numbered && !/\\(?:nonumber|notag|IEEEnonumber)\b/.test(row)) { step("equation"); number = format("equation"); }
             tagged.push(!!tag?.tagged);
             waiting.push(...[...row.matchAll(/\\label\s*\{([^}]*)\}/g)].map((match) => match[1].trim()));
             if (number) {
