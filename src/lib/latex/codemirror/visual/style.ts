@@ -5,7 +5,7 @@ import type { SyntaxNode } from "@lezer/common";
 import { environmentName } from "../../macros/numbering";
 import { definitionsField, visualDefinitions } from "./model";
 import { structuralField } from "./structural";
-import { walkConstructs } from "./walk";
+import { boxEnvironments, walkConstructs } from "./walk";
 
 /* The style layer (docs/latex-visual-editor-plan.md §4): marks and line
  * classes for what is on screen, recomputed from the tree as the viewport
@@ -47,7 +47,7 @@ function build(view: EditorView): DecorationSet {
       if (STYLE_CONTAINERS.has(node.name)) from = Math.min(from, node.from);
       else if (node.name === "Environment") {
         const name = environmentName(node, (start, end) => state.doc.sliceString(start, end));
-        if (name && (defs.theorems.has(name) || name === "proof" || name === "abstract" || /^(?:quote|quotation|verse|center|flushleft|flushright)$/.test(name))) from = Math.min(from, node.from);
+        if (name && (defs.theorems.has(name) || name === "proof" || name === "abstract" || /^(?:quote|quotation|verse|center|flushleft|flushright)$/.test(name) || boxEnvironments(state.doc).has(name))) from = Math.min(from, node.from);
       }
     }
     walkConstructs({

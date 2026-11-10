@@ -777,13 +777,43 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   const wraps = model.columns.map((column) => (types.has(column) ? !!types.get(column)!.paragraph : /^[pmbXLCRJ]$/.test(column)));
   /** Columns a `\multirow` above still covers, and for how many more rows. */
   const rowsCovered = new Map<number, number>();
+  /** The rules of rows not drawn, drawn above the next row; whether the last such row closes the table. */
+  let carried: string[] = [];
+  let closing = false;
   model.rows.forEach((row, rowIndex) => {
+    const rulesBefore = [...carried, ...row.rulesBefore];
+    carried = [];
+    // stargazer's `\\[-1.8ex]\hline` and `\hline \\[-1.8ex]`: empty rows a negative space pulls up to nothing in the
+    // PDF (the Grammarly paper's tables); their rules go to the next row.
+    if (row.breakAt !== null && row.cells.every((cell) => !cell.text.trim()) && /^\\\\\*?\s*\[\s*-/.test(source.slice(row.breakAt, row.to)) && ![...rowsCovered.values()].some((count) => count > 0)) {
+      if (rowIndex + 1 < model.rows.length) { carried = rulesBefore; return; }
+      if (rulesBefore.length) { closing = true; return; }
+    }
     const tr = el("tr", "cm-vis-table-row");
     // `\addlinespace` is space, not a line; `\noalign{…}` sets up the line after it (a thicker one: Mask R-CNN's `\shline`).
-    const lines = row.rulesBefore.filter((rule) => !/^\\(?:addlinespace|noalign)/.test(rule));
-    const thick = row.rulesBefore.some((rule) => /^\\noalign\s*\{[^}]*\\arrayrulewidth\s*[\d.]+\s*pt/.test(rule));
+    const lines = rulesBefore.filter((rule) => !/^\\(?:addlinespace|noalign)/.test(rule));
+    const thick = rulesBefore.some((rule) => /^\\noalign\s*\{[^}]*\\arrayrulewidth\s*[\d.]+\s*pt/.test(rule));
     if (lines.length) tr.classList.add(thick || lines.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
-    if (row.rulesBefore.some((rule) => /^\\addlinespace/.test(rule))) tr.classList.add("cm-vis-row-spaced");
+    if (rulesBefore.some((rule) => /^\\addlinespace/.test(rule))) tr.classList.add("cm-vis-row-spaced");
+    // Rows read from another file (`\input{./tables/summary_stats_post.tex} \\`, the Grammarly paper): a placeholder row.
+    const input = row.cells.length === 1 ? /^\\(?:input|include)\s*\{([^{}]+)\}$/.exec(row.cells[0].text.trim()) : null;
+    if (input) {
+      const name = input[1].trim().replace(/^\.\//, "");
+      // Not a cell of the grid: the cell editor and keys leave it alone.
+      const td = el("td", "cm-vis-table-input", `Rows from ${/\.[A-Za-z]+$/.test(name) ? name : `${name}.tex`}`) as HTMLTableCellElement;
+      td.colSpan = Math.max(1, model.columns.length);
+      const cell = row.cells[0];
+      td.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const base = start();
+        if (base !== null) revealSourceAt(view, readOnly ? base : base + cell.from, readOnly ? base + readOnlyLength! : base + cell.to);
+      });
+      tr.append(td);
+      table.append(tr);
+      return;
+    }
     let column = 0;
     row.cells.forEach((cell, cellIndex) => {
       // An empty cell under a `\multirow` above is part of it.
@@ -844,7 +874,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
     });
     table.append(tr);
   });
-  if (model.rulesAfter.length) table.classList.add("cm-vis-table-closed");
+  if (model.rulesAfter.length || closing) table.classList.add("cm-vis-table-closed");
   if (dynamic.length) {
     refreshable(table, view, (target) => {
       const base = start();

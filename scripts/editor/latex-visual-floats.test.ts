@@ -246,3 +246,107 @@ test("B7-22: quantikz circuits, tikz-cd diagrams and a TikZ file input in a form
   const equation = inDocument("\\begin{equation}\\begin{tikzcd} A \\arrow[r] & B \\end{tikzcd}\\label{eq:cospan}\\end{equation}");
   assert.equal(constructs(visualState(equation)).some((item) => item.startsWith("math:")), false);
 });
+
+test("B6-11: a tcolorbox, an mdframed and a \\newtcolorbox box in the text are framed lines, with the title and \\tcblower", () => {
+  const doc = inDocument(String.raw`\begin{tcolorbox}[title=Prompt for QA]
+Answer the question.
+\tcblower
+Question: x
+\end{tcolorbox}
+\begin{mdframed}
+Framed text.
+\end{mdframed}
+\begin{prompt}[NarrativeQA]
+You are given a story.
+\end{prompt}`, "\\newtcolorbox{prompt}[1][]{colback=gray!5, title=#1}\n");
+  const { text, html } = mounted(doc);
+  assert.match(text, /Prompt for QAAnswer the question\.Question: xFramed text\.NarrativeQAYou are given a story\./);
+  assert.doesNotMatch(text, /\\begin|\\end|tcblower/);
+  // Three frames, each with a first and a last line.
+  assert.equal((html.match(/cm-vis-box-first/g) ?? []).length, 3);
+  assert.equal((html.match(/cm-vis-box-last/g) ?? []).length, 3);
+  assert.equal((html.match(/cm-vis-box-lower/g) ?? []).length, 1);
+});
+
+test("B6-16: CVPR's teaser in \\twocolumn[{…}] and \\captionof outside floats are numbered captions", () => {
+  const teaser = String.raw`\title{Depth Anything}
+\begin{document}
+\twocolumn[{
+\maketitle
+\begin{center}
+    \captionsetup{type=figure}
+    \includegraphics[width=1.0\textwidth, height=3.5cm]{figure/teaser.png}\vspace{-1mm}\\
+    \captionof{figure}{Our model exhibits impressive generalization.}
+    \label{fig:teaser}
+\end{center}
+}]
+Text after.
+\end{document}
+`;
+  const shown = mounted(teaser);
+  assert.match(shown.text, /Depth Anythingfigure\/teaser\.pngFigure 1: Our model exhibits impressive generalization\.Text after\./);
+  assert.doesNotMatch(shown.text, /twocolumn|\\begin|captionof|\}\]/);
+  const loose = inDocument(String.raw`\begin{center}
+\includegraphics[width=0.5\textwidth]{plot.png}
+\captionof{figure}{A figure without a float.}
+\label{fig:loose}
+\end{center}
+\begin{minipage}{\linewidth}
+\captionof{table}{Panel table}
+\begin{tabular}{ll}
+a & b \\
+\end{tabular}
+\end{minipage}
+\captionof{figure}{Alone on its line.}`);
+  assert.equal(drawnFloats(loose), 3);
+  assert.match(mounted(loose).text, /plot\.pngFigure 1: A figure without a float\.Table 1: Panel tableabFigure 2: Alone on its line\./);
+});
+
+test("B4-13: estout's \\newcolumntype{.} column, repeated with *{3}{.}, is read and aligned as dcolumn's", () => {
+  const doc = inDocument("\\begin{tabular}{l*{3}{.}}\nx & 1.5 & 2.25 & 3.0 \\\\\n\\end{tabular}", "\\newcolumntype{.}{D{.}{.}{-1}}\n");
+  assert.equal(constructs(visualState(doc)).filter((item) => item.startsWith("table:")).length, 1);
+  assert.equal((mounted(doc).html.match(/text-align: right/g) ?? []).length, 3);
+});
+
+test("B4-19: commented-out row lines between and after rows are no rows", () => {
+  for (const body of ["a & b \\\\\n% c & d \\\\\ne & f \\\\", "a & b \\\\\ne & f \\\\\n% c & d \\\\\n\\hline", "a & b \\\\ % c & d \\\\\ne & f % g"]) {
+    const { html, raw } = mounted(inDocument(`\\begin{tabular}{ll}\n${body}\n\\end{tabular}`));
+    assert.equal((html.match(/<tr/g) ?? []).length, 2, body);
+    assert.deepEqual(raw, []);
+  }
+});
+
+test("B4-20: a row read from another file (\\input{rows.tex} in the tabular) is a placeholder row", () => {
+  const doc = inDocument("\\begin{tabular}{lcc}\n\\toprule\n& A & B \\\\\n\\hline\n  \\input{./tables/summary_stats_post.tex} \\\\\nx & 1 & 2 \\\\\n\\bottomrule\n\\end{tabular}");
+  const { text, raw, html } = mounted(doc);
+  assert.match(text, /ABRows from tables\/summary_stats_post\.texx12/);
+  assert.deepEqual(raw, []);
+  assert.match(html, /colspan="3"/);
+});
+
+test("B4-29..34: stargazer's \\\\[-1.8ex] rows, \\rotatebox in cells, and a tabular of rules only", () => {
+  const stargazer = inDocument(String.raw`\begin{table}[!htbp] \centering
+  \caption{Effects}
+\begin{tabular}{@{\extracolsep{5pt}}lcc}
+\\[-1.8ex]\hline
+\hline \\[-1.8ex]
+ & \multicolumn{2}{c}{\textit{Dependent variable:}} \\
+\cline{2-3}
+\\[-1.8ex] & (1) & (2)\\
+\hline \\[-1.8ex]
+ Trt & 0.090$^{*}$ & 0.133 \\
+\hline \\[-1.8ex]
+\end{tabular}
+\end{table}`);
+  const { html, text } = mounted(stargazer);
+  // Three rows of text, no empty ones; the last rule closes the table.
+  assert.equal((html.match(/<tr/g) ?? []).length, 3);
+  assert.match(text, /Table 1: EffectsDependent variable:\(1\)\(2\)Trt0\.090∗0\.133/);
+  assert.match(html, /cm-vis-table-closed/);
+  const rotated = mounted(inDocument("\\begin{tabular}{lc}\n\\multirow{2}{*}{\\rotatebox[origin=c]{90}{Start age}} & a \\\\\n\\rotatebox{90}{Up} & b \\\\\n\\end{tabular}"));
+  assert.match(rotated.text, /Start ageaUpb/);
+  assert.deepEqual(rotated.raw, []);
+  // Rules only: nothing to draw, it stays source.
+  const rules = inDocument("\\begin{tabular}{ll}\n\\hline\n\\hline\n\\end{tabular}");
+  assert.equal(constructs(visualState(rules)).some((item) => item.startsWith("table:")), false);
+});

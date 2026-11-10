@@ -181,7 +181,8 @@ export function columnSpans(spec: string, depth = 0, types?: ColumnTypes): Array
       i = bodyEnd;
       continue;
     }
-    if (/[A-Za-z]/.test(char)) {
+    // A letter, or a column type the document gives another character (estout's `\newcolumntype{.}{D{.}{.}{-1}}`).
+    if (/[A-Za-z]/.test(char) || types?.has(char)) {
       let end = i + 1;
       for (let n = 0; n < (types?.get(char)?.arity ?? COLUMN_ARGUMENTS[char] ?? 0); n++) {
         const close = matchingBrace(spec, end);
@@ -351,7 +352,8 @@ export function parseTabular(source: string, offset = 0, types?: ColumnTypes): T
   const tail = source.slice(cellStart, bodyTo);
   const rulesAfter: string[] = [];
   if (cells.length || tail.trim()) {
-    let rest = tail.trim();
+    // A commented-out row before the closing rule (`% c & d \\` then `\hline`) is no row.
+    let rest = withoutComments(tail).trim();
     if (!cells.length) {
       for (let rule = RULE.exec(rest); rule; rule = RULE.exec(rest)) { rulesAfter.push(rule[0].trim()); rest = rest.slice(rule[0].length).trimStart(); }
     }

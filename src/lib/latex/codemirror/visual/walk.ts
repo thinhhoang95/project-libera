@@ -515,7 +515,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const source = read(state, node.from, node.to);
     // Rows written through the document's macros are drawn from their expansion (read-only).
     const built = macroBuiltTabular(source, expandRowsAt(node.from), defs.columnTypes);
-    if (!built && !parseTabular(source, 0, defs.columnTypes)) return undefined;
+    // A tabular of rules only (`\hline\hline`) draws nothing to show: it stays source.
+    if (!built && !parseTabular(source, 0, defs.columnTypes)?.rows.length) return undefined;
     const span = aloneOnLines(doc, node.from, node.to);
     const range = span ?? { from: node.from, to: node.to };
     emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TableWidget(built ?? source, node.from - range.from, range.to - range.from, !!built) }] });
@@ -838,6 +839,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (kind && !defs.theorems.has(environmentName(node, readNode) ?? "")) return drawFloat(node, kind);
           // `tabular*` and `tabulary` are tabulars the grammar does not name.
           if (isTabular(node, readNode)) return drawTabular(node);
+          // A figure set without a float (`\begin{center}\includegraphics{…}\captionof{figure}{…}\end{center}`): drawn as one.
+          const captioned = captionofBlock(node);
+          if (captioned && drawFloat(node, captioned) === false) return false;
+          // tcolorbox's and mdframed's boxes, and the document's own (`\newtcolorbox`): a frame around their lines.
+          if (boxEnvironments(doc).has(environmentName(node, readNode) ?? "") && !defs.environments.has(environmentName(node, readNode) ?? "")) return drawBox(node);
           return environment(node);
         }
         case "EndEnv": {
@@ -974,6 +980,45 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const last = doc.lineAt(formed.end.from).number - 1;
       if (last >= first) emit({ kind: "list-body", from: node.from, to: node.to, reveal: "never", replaces: [], lines: [{ from: doc.line(first).from, to: doc.line(last).to, class: `cm-vis-list cm-vis-list-d${Math.min(6, list.depth)}` }] });
     }
+    return undefined;
+  }
+
+  /** The kind a `center` or `minipage` outside floats captions with its `\captionof{figure}{…}`, else null. */
+  function captionofBlock(node: SyntaxNode): FigureContent["kind"] | null {
+    if (!structural || !/^(?:center|minipage|flushleft|flushright)$/.test(environmentName(node, readNode) ?? "")) return null;
+    for (let parent = node.parent; parent; parent = parent.parent) {
+      if (parent.name === "FigureEnvironment" || parent.name === "TableEnvironment" || (parent.name === "Environment" && floatKind(parent, readNode))) return null;
+    }
+    const match = /\\captionof\s*\{\s*([A-Za-z]+)\s*\}/.exec(stripTexComments(read(state, node.from, node.to)));
+    return match ? FLOAT_KINDS[match[1]] ?? null : null;
+  }
+
+  /**
+   * A tcolorbox or mdframed box in the text (a `\newtcolorbox` of the document too): a frame around its lines, its
+   * title (`title=…`) as its first line; its `\begin` and `\end` lines fold away. One whose `\begin` or `\end` shares
+   * its line with text stays source, its content drawn as text.
+   */
+  function drawBox(node: SyntaxNode): undefined {
+    const formed = wellFormedEnvironment(node, state);
+    const use = formed && boxUse(node, state);
+    if (!formed || !use) return undefined;
+    const beginSpan = aloneOnLines(doc, formed.begin.from, use.end);
+    const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
+    if (!beginSpan || !endSpan || doc.lineAt(beginSpan.from).number !== doc.lineAt(beginSpan.to).number) return undefined;
+    consumed.push([formed.begin.from, use.end]);
+    if (structural) {
+      const header = { from: beginSpan.from, to: beginSpan.to };
+      if (use.title) emit({ kind: "env-header", ...header, reveal: "line", wholeLine: true, replaces: [{ ...header, widget: new EnvironmentHeaderWidget("user", `\\textbf{${use.title}}`, null, null, 0) }] });
+      else emit({ kind: "env-begin", ...header, reveal: "line", wholeLine: true, replaces: [header], hiddenLines: [{ ...header, class: "cm-vis-collapsed" }] });
+      collapseLine(formed.end, "env-end");
+    }
+    // The framed lines: the title's, then the content's (the first and last close the frame).
+    const first = doc.lineAt(beginSpan.to).number + (use.title ? 0 : 1);
+    const last = doc.lineAt(endSpan.from).number - 1;
+    if (last < first) return undefined;
+    const lines: LineStyle[] = [{ from: doc.line(first).from, to: doc.line(last).to, class: "cm-vis-box" }, { from: doc.line(first).from, to: doc.line(first).from, class: "cm-vis-box-first" }, { from: doc.line(last).from, to: doc.line(last).from, class: "cm-vis-box-last" }];
+    if (use.title) lines.push({ from: beginSpan.from, to: beginSpan.from, class: "cm-vis-box-title" });
+    emit({ kind: "env-body", from: use.end, to: formed.end.from, reveal: "never", replaces: [], lines });
     return undefined;
   }
 
@@ -1169,6 +1214,30 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (structural) emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TitleWidget(icml.title, icml.author, null, range.to - range.from) }] });
         return false;
       }
+      // CVPR's `\twocolumn[{\maketitle \begin{center}…\captionof{figure}{…}\end{center}}]`: the title (its `\maketitle`
+      // is walked as usual), then the teaser figure, numbered at its `\captionof`; the wrapper's opening folds away.
+      const groupAt = block ? block.content.search(/\S/) : -1;
+      const group = block && block.content[groupAt] === "{" ? readGroup(block.content, groupAt, TEX_GROUPS) : null;
+      const teaser = group && !block!.content.slice(group.end).trim() ? teaserFigure(group.content) : null;
+      if (block && teaser) {
+        const inner = ctrl.to + open![0].length + groupAt + 1;
+        const end = ctrl.to + block.end;
+        const opening = aloneOnLines(doc, node.from, inner);
+        const span = aloneOnLines(doc, inner + teaser.from, end);
+        if (opening && span && !hasDirectError(node)) {
+          consumed.push([span.from, span.to]);
+          if (structural) {
+            emit({ kind: "env-begin", from: opening.from, to: opening.to, reveal: "line", wholeLine: true, replaces: [opening], hiddenLines: [{ ...opening, class: "cm-vis-collapsed" }] });
+            const spec: FigureSpec = {
+              env: "teaser", images: teaser.images.map((image) => ({ path: imagePath(image.path, doc), width: image.width })), caption: teaser.caption.text,
+              captionPos: inner + teaser.caption.at, captionAbove: false, kind: teaser.caption.kind, numberOffset: inner + teaser.caption.at - span.from,
+              start: span.from, length: span.to - span.from, base: graphicsBase(state),
+            };
+            emit({ kind: "figure", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new FigureWidget(spec) }] });
+          }
+          return undefined;
+        }
+      }
     }
     // fancyref's `\Fref{sec:x}` (the grammar knows only `\fref` as a reference): a reference chip.
     if (text === "\\Fref" || text === "\\fref") {
@@ -1208,6 +1277,28 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         return false;
       }
+    }
+    // caption's `\captionof{figure}{…}` on its own lines outside a drawn float: its caption, numbered where it is (or
+    // at its minipage, as numbering.ts numbers it).
+    if (text === "\\captionof" && structural && read(state, ctrl.to, ctrl.to + 1) !== "*") {
+      const [type, body] = commandArguments(node).filter((arg) => !arg.optional).map((arg) => argumentInner(arg.node));
+      const kind = type ? FLOAT_KINDS[read(state, type.from, type.to).trim()] : undefined;
+      const span = aloneOnLines(doc, node.from, node.to);
+      if (kind && body && span && !hasDirectError(node)) {
+        let at = node.from;
+        for (let parent = node.parent; parent; parent = parent.parent) if (parent.name === "Environment" && environmentName(parent, readNode) === "minipage") { at = parent.from; break; }
+        const spec: FigureSpec = {
+          env: "captionof", images: [], caption: read(state, body.from, body.to), captionPos: body.from, captionAbove: false, kind,
+          numberOffset: at - span.from, start: span.from, length: span.to - span.from,
+        };
+        emit({ kind: "figure", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new FigureWidget(spec) }] });
+        return false;
+      }
+    }
+    // tcolorbox's `\tcblower` between a box's upper and lower parts (Self-RAG's instructions and demonstrations): a dashed line.
+    if (text === "\\tcblower") {
+      if (structural) emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new SymbolWidget("", text, "cm-vis-symbol cm-vis-box-lower") }] });
+      return false;
     }
     // A tab stop in `tabbing` (`\=` sets one, `\>` moves to the next, `\+`/`\-` indent): a gap, as the stops line up.
     if (/^\\[=><+-]$/.test(text) && insideEnvironment(node, "tabbing")) {
@@ -1666,7 +1757,7 @@ function mathDrawing(node: SyntaxNode, state: EditorState) {
  * as written in the open file, per document version: their names, with the title their options give.
  */
 const boxCache = new WeakMap<Text, Map<string, { title: string | null; arity: number }>>();
-function boxEnvironments(doc: Text) {
+export function boxEnvironments(doc: Text) {
   let boxes = boxCache.get(doc);
   if (boxes) return boxes;
   boxes = new Map([["tcolorbox", { title: null, arity: 0 }], ["mdframed", { title: null, arity: 0 }]]);
@@ -2011,7 +2102,10 @@ function floatNotesStart(node: SyntaxNode, state: EditorState) {
     let stop = (match.index ?? 0) + match[0].length;
     // A caption ends with its argument's closing brace.
     if (match[0].endsWith("{") && /^\\caption/.test(match[0])) {
-      const group = readGroup(text, stop - 1, TEX_GROUPS);
+      let group = readGroup(text, stop - 1, TEX_GROUPS);
+      // `\captionof{figure}{…}`: its text is the second group.
+      const next = group && /^\\captionof/.test(match[0]) ? /^\s*\{/.exec(text.slice(group.end)) : null;
+      if (group && next) group = readGroup(text, group.end + next[0].length - 1, TEX_GROUPS);
       if (!group) return Number.POSITIVE_INFINITY;
       stop = group.end;
     }
@@ -2304,7 +2398,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
           // Rows written through the document's macros are drawn from their expansion (read-only).
           const built = macroBuiltTabular(source, expand, defs.columnTypes);
           const tabular = built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from };
-          if (!parseTabular(tabular.source, 0, defs.columnTypes)) valid = false;
+          if (!parseTabular(tabular.source, 0, defs.columnTypes)?.rows.length) valid = false;
           content.tabulars!.push(tabular);
         }
         found(ref.from);
@@ -2381,6 +2475,34 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     panels: segments ?? (parts.length ? parts.map(strip) : undefined),
     stacked: segments ? true : undefined,
   };
+}
+
+/**
+ * A teaser figure set without a float after `\maketitle` in `\twocolumn[{…}]` (CVPR's, Depth Anything's): `\begin{center}`,
+ * images, `\captionsetup{type=figure}`, space, a `\captionof{figure}{…}` and a label, read from `text` (the grammar does
+ * not read environments in an optional argument). Offsets are in `text`; null when it holds anything else.
+ */
+function teaserFigure(text: string) {
+  // Comments blanked out, keeping offsets.
+  const blank = text.replace(/(^|[^\\])((?:\\\\)*)%[^\n]*/g, (comment, before: string, slashes: string) => before + slashes + " ".repeat(comment.length - before.length - slashes.length));
+  const title = /\\maketitle(?![A-Za-z@])\s*/.exec(blank);
+  const from = title ? (title.index ?? 0) + title[0].length : /^\s*/.exec(blank)![0].length;
+  let rest = blank.slice(from);
+  const images: Array<{ path: string; width?: string }> = [];
+  let caption: { text: string; at: number; kind: FigureContent["kind"] } | null = null;
+  const captionof = /\\captionof\s*\{\s*(figure|table)\s*\}\s*\{/.exec(rest);
+  if (captionof) {
+    const open = (captionof.index ?? 0) + captionof[0].length - 1;
+    const group = readGroup(rest, open, TEX_GROUPS);
+    if (!group) return null;
+    caption = { text: group.content, at: from + (captionof.index ?? 0), kind: FLOAT_KINDS[captionof[1]] ?? "figure" };
+    rest = rest.slice(0, captionof.index) + rest.slice(group.end);
+  }
+  rest = rest.replace(/\\includegraphics\s*(?:\[([^\]]*)\])?\s*\{([^{}]*)\}/g, (_, options: string | undefined, path: string) => { images.push({ path: path.trim(), width: graphicsWidth(options ?? null) }); return " "; });
+  const left = rest
+    .replace(/\\(?:begin|end)\s*\{center\}|\\(?:captionsetup|label)\s*\{[^{}]*\}|\\[vh]space\*?\s*\{[^{}]*\}|\\\\(?:\[[^\]]*\])?|\\(?:centering|par|noindent|hfill|medskip|smallskip|bigskip)(?![A-Za-z@])/g, " ")
+    .trim();
+  return !left && caption && images.length ? { from, images, caption } : null;
 }
 
 /** `\title`, `\author` and `\date` from the document, for `\maketitle`. */
