@@ -121,6 +121,21 @@ a & 18.10 \\
   assert.deepEqual(raw.filter((item) => item.trim()), []);
 });
 
+test("B4-05: notes written between a table and a caption at its end (\\par\\vspace… Notes: …) are drawn under the caption", () => {
+  const doc = inDocument("\\begin{table}\n\\centering\n\\begin{tabular}{lc}\na & 1 \\\\\n\\end{tabular}\n\\par\\vspace{2mm} \\footnotesize Notes: Standard errors in parentheses.\n\\caption{Effects}\n\\label{tab:x}\n\\end{table}");
+  assert.equal(drawnFloats(doc), 1);
+  assert.match(mounted(doc).text, /a1Table 1: EffectsNotes: Standard errors in parentheses\.$/);
+  // A label and space there are no note.
+  const plain = inDocument("\\begin{figure}\n\\includegraphics{a.png}\n\\label{fig:a}\n\\vspace{-2mm}\n\\caption{Only a label before}\n\\end{figure}");
+  assert.match(mounted(plain).text, /a\.pngFigure 1: Only a label before$/);
+});
+
+test("B4-30: \\captionsetup[figure]{name=…} and \\renewcommand{\\tablename} rename the captions' labels", () => {
+  const doc = inDocument("\\begin{figure}\n\\includegraphics{a.png}\n\\caption{Renamed}\n\\end{figure}\n\\begin{table}\n\\caption{Also}\n\\begin{tabular}{l}\nx \\\\\n\\end{tabular}\n\\end{table}",
+    "\\captionsetup[figure]{labelfont={bf},labelsep=period,name={Fig.}}\n\\renewcommand{\\tablename}{Tab.}\n");
+  assert.match(mounted(doc).text, /Fig\. 1: Renamed.*Tab\. 1: Also/);
+});
+
 test("B4-05: acmart's \\Description and \\singlespace after a float's content are not notes", () => {
   const doc = inDocument("\\begin{figure}\n\\includegraphics{map.png}\n\\caption{The map}\n\\Description{The labeled map of the game world.}\n\\singlespace\n\\end{figure}");
   const { text, raw } = mounted(doc);
@@ -346,6 +361,9 @@ test("B4-29..34: stargazer's \\\\[-1.8ex] rows, \\rotatebox in cells, and a tabu
   const rotated = mounted(inDocument("\\begin{tabular}{lc}\n\\multirow{2}{*}{\\rotatebox[origin=c]{90}{Start age}} & a \\\\\n\\rotatebox{90}{Up} & b \\\\\n\\end{tabular}"));
   assert.match(rotated.text, /Start ageaUpb/);
   assert.deepEqual(rotated.raw, []);
+  // A square turned by 45° in the text (the Econometrica paper's end of an example) is a diamond; other turns stay source.
+  const diamond = mounted(inDocument("End. \\rotatebox[origin=c]{45}{$\\square$}\n\nNext \\rotatebox{90}{word}."));
+  assert.match(diamond.text, /End\. ◇Next \\rotatebox\{90\}\{word\}\./);
   // Rules only: nothing to draw, it stays source.
   const rules = inDocument("\\begin{tabular}{ll}\n\\hline\n\\hline\n\\end{tabular}");
   assert.equal(constructs(visualState(rules)).some((item) => item.startsWith("table:")), false);

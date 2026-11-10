@@ -1295,6 +1295,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
+    // `\rotatebox[origin=c]{45}{$\square$}`, a square turned into a diamond (the end of the Econometrica paper's examples): ◇.
+    if (text === "\\rotatebox" && structural) {
+      const [angle, content] = commandArguments(node).filter((arg) => !arg.optional).map((arg) => { const inner = argumentInner(arg.node); return inner ? read(state, inner.from, inner.to).trim() : null; });
+      if (angle === "45" && content && /^\$\s*\\(?:square|Box)\s*\$$/.test(content) && !hasDirectError(node)) {
+        emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to, widget: new SymbolWidget("◇", read(state, node.from, node.to)) }] });
+        return false;
+      }
+    }
     // tcolorbox's `\tcblower` between a box's upper and lower parts (Self-RAG's instructions and demonstrations): a dashed line.
     if (text === "\\tcblower") {
       if (structural) emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new SymbolWidget("", text, "cm-vis-symbol cm-vis-box-lower") }] });
@@ -1833,6 +1841,7 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
   let noteUntil = -1;
   /** Where the float's notes start (after its last image, grid or caption): text from there is drawn as a note. */
   const notesFrom = floatNotesStart(node, state);
+  const notesBefore = notesBeforeCaption(node, state);
   /** Captions per container (the float, or the panel the caption is in). */
   const captions = new Map<number, number>();
   const caption = (at: SyntaxNode) => {
@@ -1858,6 +1867,8 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     if (VISIBLE_SKIPPED.has(name)) { covered = false; return false; }
     // The notes after the last image, grid or caption (tablenotes, a notes minipage, `\floatfoot`, a "Notes:" paragraph).
     if (ref.from >= notesFrom && name !== "EndEnv") return false;
+    // Notes between the content and a caption at the end.
+    if (notesBefore && ref.from >= notesBefore.from && ref.to <= notesBefore.to) return false;
     if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "BlankLine" || name === "LineBreak" || name === "Tilde") return false;
     if (name === "IncludeGraphics" || name === "Label" || name === "TabularEnvironment" || name === "SetLengthCommand" || name === "Centering") return false;
     if (name === "Caption") { caption(ref.node); return false; }
@@ -2117,15 +2128,38 @@ function floatNotesStart(node: SyntaxNode, state: EditorState) {
   return last < 0 ? Number.POSITIVE_INFINITY : begin.to + last;
 }
 
+/**
+ * Notes written between a float's content and a caption at its end (a table, then `\par\vspace{2mm} Notes: …`, then
+ * `\caption{…}`): their range, drawn as notes under the caption; null when there is no text there.
+ */
+function notesBeforeCaption(node: SyntaxNode, state: EditorState) {
+  const begin = node.getChild("BeginEnv");
+  const end = node.getChild("EndEnv");
+  if (!begin || !end) return null;
+  const text = read(state, begin.to, end.from);
+  let content = -1;
+  const captions: number[] = [];
+  for (const match of text.matchAll(FLOAT_CONTENT_END)) {
+    if (/^\\caption/.test(match[0])) captions.push(match.index ?? 0);
+    else content = Math.max(content, (match.index ?? 0) + match[0].length);
+  }
+  const caption = captions.find((at) => at >= content);
+  if (content < 0 || caption === undefined || captions.some((at) => at < content)) return null;
+  const range = { from: begin.to + content, to: begin.to + caption };
+  // Words, not only commands (`\includegraphics{a}\foo\caption{C}` holds something the widget does not draw).
+  const notes = floatNotes(node, state, range);
+  return notes && /[A-Za-z]{2}/.test(notes.replace(/\\[A-Za-z@]+/g, "")) ? range : null;
+}
+
 /** Commands in a float's notes whose group is not note text. */
 const NOTE_GROUPS = /\\(?:subcaption\*|Description|captionsetup)\s*(?:\[[^\]]*\]\s*)?\{/;
 
 /** The notes of a float as text to draw: what follows its content, without layout, labels and environment markup; null when nothing is left. */
-function floatNotes(node: SyntaxNode, state: EditorState) {
-  const from = floatNotesStart(node, state);
-  const end = node.getChild("EndEnv");
-  if (!Number.isFinite(from) || !end || from >= end.from) return null;
-  let text = stripTexComments(read(state, from, end.from));
+function floatNotes(node: SyntaxNode, state: EditorState, range?: { from: number; to: number }) {
+  const from = range?.from ?? floatNotesStart(node, state);
+  const to = range?.to ?? node.getChild("EndEnv")?.from;
+  if (!Number.isFinite(from) || to === undefined || from >= to) return null;
+  let text = stripTexComments(read(state, from, to));
   // A `\subcaption*{…}` note is drawn as one already; acmart's `\Description{…}` (a screen reader's text) and
   // `\captionsetup{…}` print nothing.
   for (let at = text.search(NOTE_GROUPS); at >= 0; at = text.search(NOTE_GROUPS)) {
@@ -2262,6 +2296,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
   const isPanel = (candidate: SyntaxNode) => (candidate.name === "Environment" && environmentName(candidate, readState) === "minipage") || isSubFloat(candidate, readState) || isSubFloatCommand(candidate, readState);
   let valid = true;
   const notesFrom = floatNotesStart(node, state);
+  const notesBefore = notesBeforeCaption(node, state);
 
   /** The content of a float or panel at `root`, leaving out the panels inside it (`skipPanels`). */
   const collect = (root: SyntaxNode, defaultKind: FigureContent["kind"], skipPanels: boolean): Collected => {
@@ -2326,7 +2361,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         const diagram = diagramDrawing(ref.node, state);
         if (diagram) { content.drawings!.push(diagram); content.places.drawings.push(ref.from); found(ref.from); return false; }
         // floatrow's `\floatfoot{…}` before the caption (one after the content is read with the notes).
-        if (command === "\\floatfoot" && ctrl && ref.from < notesFrom) {
+        if (command === "\\floatfoot" && ctrl && ref.from < notesFrom && !(notesBefore && ref.from >= notesBefore.from && ref.from < notesBefore.to)) {
           const note = groupAfter(state, ctrl.to);
           if (note) (content.notes ??= []).push(note.text);
           return false;
@@ -2440,6 +2475,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     }
     if (root === node) {
       const notes = floatNotes(node, state);
+      const before = notesBefore && floatNotes(node, state, notesBefore);
+      if (before) content.notes = [...(content.notes ?? []), before];
       if (notes) content.notes = [...(content.notes ?? []), notes];
     }
     return content;

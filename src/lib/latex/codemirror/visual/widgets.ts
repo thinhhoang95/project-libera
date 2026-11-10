@@ -602,6 +602,29 @@ export type FigureSpec = FigureContent & {
 
 const FLOAT_LABELS = { figure: "Figure", table: "Table", algorithm: "Algorithm" };
 
+/**
+ * The names the open file gives its floats, per document version: caption's `\captionsetup[figure]{name={Fig.}}`
+ * (the cannabis paper's "Fig. 1") and `\renewcommand{\figurename}{Fig.}`. A name holding a command is not read.
+ */
+const floatNameCache = new WeakMap<EditorView["state"]["doc"], Partial<Record<FigureContent["kind"], string>>>();
+function floatNames(doc: EditorView["state"]["doc"]) {
+  let names = floatNameCache.get(doc);
+  if (names) return names;
+  names = {};
+  const text = doc.toString();
+  if (/\\(?:captionsetup|renewcommand)/.test(text)) {
+    const plain = text.replace(/(^|[^\\])%[^\n]*/g, "$1");
+    for (const match of plain.matchAll(/\\captionsetup\s*\[\s*(figure|table|algorithm)\s*\]\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g)) {
+      const name = /(?:^|,)\s*name\s*=\s*(?:\{([^{}]*)\}|([^,]*))/.exec(match[2]);
+      const value = (name?.[1] ?? name?.[2])?.trim();
+      if (value && !value.includes("\\")) names[match[1] as FigureContent["kind"]] = value;
+    }
+    for (const match of plain.matchAll(/\\renewcommand\s*\{?\s*\\(figure|table|algorithm)name\s*\}?\s*\{([^{}\\]*)\}/g)) names[match[1] as FigureContent["kind"]] = match[2].trim();
+  }
+  floatNameCache.set(doc, names);
+  return names;
+}
+
 /** The lines of an algorithm, numbered and indented as the algorithmic package sets them. */
 function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
   const list = el("div", "cm-vis-algorithm");
@@ -706,7 +729,7 @@ export class FigureWidget extends VisualWidget {
         const entry = pos === null || content.unnumbered ? null : numberingEntryAt(visualNumbering(target.state), pos + content.numberOffset, content.kind);
         label.textContent = content.unnumbered ? ""
           : content.sub ? (entry?.number ? `(${entry.number}) ` : "")
-          : `${FLOAT_LABELS[content.kind]}${entry?.number ? ` ${entry.number}` : ""}${content.kind === "algorithm" ? " " : ": "}`;
+          : `${floatNames(target.state.doc)[content.kind] || FLOAT_LABELS[content.kind]}${entry?.number ? ` ${entry.number}` : ""}${content.kind === "algorithm" ? " " : ": "}`;
         // References and citations in the caption follow numbering and the .aux too.
         if (content.caption !== null && content.caption.includes("\\")) {
           const captionPos = pos === null ? content.captionPos : pos + spec.numberOffset + (content.captionPos - spec.start);
