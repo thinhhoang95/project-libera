@@ -69,12 +69,15 @@ const key = (name: string, init: Record<string, unknown> = {}) => new dom.window
 /* ---- 1. A float stays drawn around what it cannot draw ---------------------------------------------------------- */
 
 test("\\rowcolors before a tabular in a table float: a source line inside the drawn float, caption and grid drawn", () => {
-  const doc = inDocument("\\begin{table}\n\\centering\n\\rowcolors{2}{gray!10}{white}\n\\begin{tabular}{ll}\na & b \\\\\nc & d \\\\\n\\end{tabular}\n\\caption[Short]{A table}\n\\label{tab:a}\n\\end{table}");
+  // The tables round reads `\rowcolors` as the grid's alternating fills, so it is no longer a source part; an unknown
+  // command next to it stands for the part the float cannot draw.
+  const doc = inDocument("\\begin{table}\n\\centering\n\\rowcolors{1}{gray!10}{white}\n\\mytablesetup{2pt}\n\\begin{tabular}{ll}\na & b \\\\\nc & d \\\\\n\\end{tabular}\n\\caption[Short]{A table}\n\\label{tab:a}\n\\end{table}");
   assert.equal(drawnFloats(doc), 1);
   const { text, raw, html } = mounted(doc);
   assert.match(text, /Table 1: A table/);
   assert.match(html, /cm-vis-table-cell/);
-  assert.deepEqual(raw, ["\\rowcolors{2}{gray!10}{white}"]);
+  assert.match(html, /data-fill/, "\\rowcolors is understood: alternating row fills");
+  assert.deepEqual(raw, ["\\mytablesetup{2pt}"]);
   assert.match(html, /cm-vis-figure-source-before/, "drawn above the grid, where it is written");
 });
 
@@ -133,15 +136,16 @@ test("a part shown as source in a minipage panel stays in that panel", () => {
 });
 
 test("clicking a part shown as source edits only that part; Enter writes the changed characters as one undo step", async () => {
-  const doc = inDocument("\\begin{table}\n\\rowcolors{2}{gray!10}{white}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n\\caption{T}\n\\end{table}");
+  // An unknown command is the part shown as source (`\rowcolors` is understood since the tables round).
+  const doc = inDocument("\\begin{table}\n\\mytablesetup{gray!10}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n\\caption{T}\n\\end{table}");
   const view = mountView(doc, [history()]);
   const part = view.contentDOM.querySelector<HTMLElement>(".cm-vis-figure-source")!;
   part.dispatchEvent(mouse("mousedown"));
   const area = part.querySelector("textarea")!;
   assert.ok(area, "an editor opens over the part");
-  assert.equal(area.value, "\\rowcolors{2}{gray!10}{white}");
+  assert.equal(area.value, "\\mytablesetup{gray!10}");
   assert.ok(view.contentDOM.querySelector(".cm-vis-table-cell"), "the rest of the float stays drawn");
-  area.value = "\\rowcolors{2}{gray!20}{white}";
+  area.value = "\\mytablesetup{gray!20}";
   area.dispatchEvent(new dom.window.Event("input"));
   area.dispatchEvent(key("Enter"));
   assert.equal(view.state.doc.toString(), doc.replace("gray!10", "gray!20"));
