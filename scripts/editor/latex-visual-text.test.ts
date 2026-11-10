@@ -314,3 +314,167 @@ Our images exhibit three advantages.
   assert.doesNotMatch(text, /inparaenum|compactitem|CJK|UTF8|gbsn/);
   assert.match(text, /阅读以下文字/);
 });
+
+test("M-13/B7-25/B4-21/B5-32/B6-23/B3-25: lines holding only layout fold away; layout inside a line is hidden", () => {
+  const doc = String.raw`\documentclass{book}
+\definecolor{myred}{RGB}{200,0,0}
+\begin{document}
+\frontmatter
+\tableofcontents
+\mainmatter
+\onehalfspacing
+\chapter{Intro}
+First paragraph.
+\par
+\medskip\noindent
+\vspace*{-0.3cm} % tighter
+\setlength{\parindent}{0pt}
+\definecolor{accent}{RGB}{10,20,30}
+\tikzset{
+  every node/.style={draw}
+}
+\justifying
+\noindent Second paragraph\vspace{2pt} goes on\newline here.
+\afterpage{\clearpage
+Rotated.
+}
+\begin{subequations}
+\begin{equation}a=b\end{equation}
+\end{subequations}
+\backmatter
+\end{document}
+`;
+  const state = visualState(doc);
+  const layout = constructs(state).filter((construct) => construct.startsWith("layout:")).length;
+  assert.ok(layout >= 10, constructs(state).join(" "));
+  const text = bodyText(doc);
+  assert.doesNotMatch(text, /\\(?:frontmatter|tableofcontents|mainmatter|onehalfspacing|par|medskip|noindent|vspace|setlength|definecolor|tikzset|justifying|afterpage|clearpage|backmatter)\b|subequations|every node|2pt/);
+  assert.match(text, /Second paragraph goes on/);
+  assert.match(text, /Rotated\./);
+});
+
+test("B6-22: braces around a whole footnote print nothing", () => {
+  const text = bodyText(String.raw`\begin{document}
+Text\footnote{{An aside.}} and more.
+\end{document}
+`);
+  assert.match(text, /An aside\./);
+  assert.doesNotMatch(text, /\{An aside\.\}/);
+});
+
+test("B5-29: todonotes' \\todo and \\missingfigure are note chips", () => {
+  const chips = mounted(String.raw`\begin{document}
+Text\todo{check this claim} more text.
+\todo[inline]{Rewrite $x$.}
+\missingfigure{The pipeline}
+\end{document}
+`, (content) => [...content.querySelectorAll(".cm-vis-todo")].map((chip) => chip.textContent ?? ""));
+  assert.equal(chips.length, 3);
+  assert.equal(chips[0], "To do: check this claim");
+  assert.match(chips[1], /^To do: Rewrite .*x.*\.$/);
+  assert.equal(chips[2], "Missing figure: The pipeline");
+});
+
+test("B5-15: glossaries' and acronym's commands print their entries' forms", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\usepackage[acronym]{glossaries}
+\newacronym{gpu}{GPU}{graphics processing unit}
+\newglossaryentry{gauss}{name={Gaussian}, description={a distribution}}
+\begin{document}
+We train on a \gls{gpu}; \Gls{gauss}s are smooth; \acrlong{gpu}; \glspl{gpu}; \acrfull{gpu}.
+A \ac{CNN} and \acl{CNN} and \acp{CNN}; \gls{unknown}.
+\begin{acronym}
+\acro{CNN}{Convolutional Neural Network}
+\end{acronym}
+\end{document}
+`);
+  assert.match(text, /on a GPU; Gaussians are smooth; graphics processing unit; GPUs; graphics processing unit \(GPU\)\./);
+  assert.match(text, /A CNN and Convolutional Neural Network and CNNs;/);
+  // An entry the document does not define stays as written.
+  assert.match(text, /\\gls\{unknown\}/);
+});
+
+test("B6-18/B7-20: thm-restate's \\name* is drawn as the restated theorem's heading, with its number (Larrauri & Živný)", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\usepackage{thm-restate}
+\newtheorem{theorem}{Theorem}
+\begin{document}
+\begin{theorem}First.\end{theorem}
+\begin{restatable}[Main]{theorem}
+{promisemonoids}\label{th:promisemonoids}
+Let $M_1$ be a monoid.
+\end{restatable}
+We prove it.
+
+\promisemonoids*
+
+\begin{proof}Done.\end{proof}
+\end{document}
+`);
+  assert.match(text, /Theorem 2 \(Main, restated\)\./);
+  assert.doesNotMatch(text, /\\promisemonoids/);
+});
+
+test("B4-17/B5-31: eurosym's \\euro and \\EUR in text and formulas; \\raisebox around an inline icon; \\censor and \\nicefrac in cells", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\usepackage{eurosym}
+\begin{document}
+A wage of \euro{8.50}, \EUR{12} per hour.
+Tools: \raisebox{-0.1cm}{\protect\includegraphics[width=0.3cm]{figures/book.png}} and more.
+\begin{tabular}{ll}
+/r/\censor{......}51y & \nicefrac{1}{2} \\
+\end{tabular}
+\end{document}
+`);
+  assert.match(text, /A wage of €8\.50, € ?12 per hour/);
+  assert.doesNotMatch(text, /\\euro|\\EUR|\\raisebox|-0\.1cm|\\censor|\\nicefrac/);
+  const katex = mounted(String.raw`\begin{document}
+$\euro 8.50$
+\end{document}
+`, (content) => content.querySelector(".katex")?.textContent ?? "");
+  assert.match(katex, /€/);
+});
+
+test("B5-27: IEEEtran's bibliography definitions fold away, and its spacing macros in entries print nothing (Membership Inference)", () => {
+  const text = bodyText(String.raw`\begin{document}
+\begin{thebibliography}{10}
+\providecommand{\url}[1]{#1}
+\csname url@samestyle\endcsname
+\providecommand{\newblock}{\relax}
+\providecommand{\bibinfo}[2]{#2}
+\providecommand{\BIBentrySTDinterwordspacing}{\spaceskip=0pt\relax}
+\providecommand{\BIBentryALTinterwordstretchfactor}{4}
+\providecommand{\BIBentryALTinterwordspacing}{\spaceskip=\fontdimen2\font plus
+\BIBentryALTinterwordstretchfactor\fontdimen3\font minus
+  \fontdimen4\font\relax}
+\providecommand{\BIBdecl}{\relax}
+\BIBdecl
+
+\bibitem{abadi2016deep}
+\BIBentryALTinterwordspacing
+M.~Abadi, Deep learning with differential privacy, in \emph{{CCS}}, 2016.
+\BIBentrySTDinterwordspacing
+\end{thebibliography}
+\end{document}
+`);
+  assert.doesNotMatch(text, /providecommand|csname|BIBdecl|spaceskip|BIBentry/);
+  assert.match(text, /Abadi/);
+});
+
+test("B5-30/B3-25: \\keywords in the text is drawn with its label; a CCSXML block folds away", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\begin{document}
+\begin{abstract}
+We develop a command.
+
+\keywords{many instruments, two-stage least squares.}
+\end{abstract}
+\begin{CCSXML}
+<ccs2012>
+</ccs2012>
+\end{CCSXML}
+\end{document}
+`);
+  assert.match(text, /Keywords: many instruments, two-stage least squares\./);
+  assert.doesNotMatch(text, /\\keywords|ccs2012/);
+});

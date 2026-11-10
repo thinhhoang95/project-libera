@@ -11,13 +11,14 @@ import { latexParser } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { disabledField } from "./model";
 import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
-import { argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
+import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, parseTabular, readCtable, readLongTable } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
   ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
   ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  RestatedTheoremWidget, restatablesIn, TodoWidget,
 } from "./widgets";
 
 /* One walk over the syntax tree that recognises constructs
@@ -128,6 +129,112 @@ function layoutExtent(state: EditorState, at: number, command: string) {
   }
   return at + i;
 }
+/**
+ * Commands that set layout, spacing, page style or metadata and print nothing where they are, with the `{…}` arguments each
+ * reads: a line holding only these folds away, as a `\begin` line does (M-13, B7-25, B4-21, B5-32, B6-23). `\medskip\noindent`,
+ * `\vspace{-0.3cm}`, `\onehalfspacing`, `\tikzset{…}`, `\frontmatter`, `\tableofcontents`, acmart's `\ccsdesc[500]{…}`.
+ */
+const LAYOUT_LINE_ARGS: Record<string, number> = {
+  par: 0, noindent: 0, indent: 0, smallskip: 0, medskip: 0, bigskip: 0, vfill: 0, newpage: 0, clearpage: 0, cleardoublepage: 0, pagebreak: 0, nopagebreak: 0,
+  newline: 0, linebreak: 0, onehalfspacing: 0, doublespacing: 0, singlespacing: 0, justifying: 0, raggedright: 0, raggedleft: 0, centering: 0,
+  frontmatter: 0, mainmatter: 0, backmatter: 0, tableofcontents: 0, listoffigures: 0, listoftables: 0, listoftodos: 0, FloatBarrier: 0, restoregeometry: 0,
+  balance: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
+  startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0,
+  tiny: 0, scriptsize: 0, footnotesize: 0, small: 0, normalsize: 0, large: 0, Large: 0, LARGE: 0, huge: 0, Huge: 0,
+  vspace: 1, addvspace: 1, setstretch: 1, linespread: 1, thispagestyle: 1, pagestyle: 1, pagenumbering: 1, newgeometry: 1, tikzset: 1, pgfplotsset: 1,
+  hypersetup: 1, captionsetup: 1, sisetup: 1, lstset: 1, enlargethispage: 1, hyphenation: 1, ccsdesc: 1,
+  setlength: 2, addtolength: 2, colorlet: 2, definecolor: 3, addcontentsline: 3, printcontents: 3,
+};
+
+/** The lines from `from` (the first thing on its line) that hold only layout commands with their arguments, or null. */
+function layoutLine(state: EditorState, from: number): { from: number; to: number } | null {
+  const line = state.doc.lineAt(from);
+  if (read(state, line.from, from).trim()) return null;
+  const text = read(state, from, Math.min(state.doc.length, from + 4000));
+  let i = 0;
+  for (;;) {
+    i += /^[ \t]*/.exec(text.slice(i))![0].length;
+    if (i >= text.length || text[i] === "\n" || text[i] === "\r" || text[i] === "%") break;
+    const command = /^\\([A-Za-z@]+)\*?/.exec(text.slice(i, i + 60));
+    const count = command && Object.hasOwn(LAYOUT_LINE_ARGS, command[1]) ? LAYOUT_LINE_ARGS[command[1]] : undefined;
+    if (!command || count === undefined) return null;
+    i += command[0].length;
+    if (command[1] === "vskip") { i += PRIMITIVE_GLUE.exec(text.slice(i))?.[0].length ?? 0; continue; }
+    const optional = /^[ \t]*\[/.exec(text.slice(i));
+    if (optional) {
+      const group = readOptional(text, i + optional[0].length - 1, TEX_GROUPS);
+      if (!group) return null;
+      i = group.end;
+    }
+    for (let k = 0; k < count; k++) {
+      const space = /^\s*/.exec(text.slice(i))![0];
+      if (space.includes("\n\n")) return null;
+      const at = i + space.length;
+      // `\setlength\parindent{0pt}`: an unbraced length.
+      const unbraced = k === 0 && /^(?:setlength|addtolength)$/.test(command[1]) ? /^\\[A-Za-z@]+/.exec(text.slice(at, at + 60)) : null;
+      if (unbraced) { i = at + unbraced[0].length; continue; }
+      const group = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
+      if (!group) return null;
+      i = group.end;
+    }
+  }
+  return i > 0 ? { from: line.from, to: state.doc.lineAt(Math.min(state.doc.length, from + i)).to } : null;
+}
+
+/** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
+const INLINE_LAYOUT = /^\\(?:noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft)$/;
+/** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
+const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2 };
+/** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
+const SPACING_ONLY = /^\s*(?:\\x?spaceskip\s*=[^]*?\\relax\s*|\\relax\s*)+$/;
+
+/**
+ * Where a run of definitions at the start of `text` is (`\providecommand{\x}[1]{#1}`, `\def\x{…}`, `\let\x\y`,
+ * `\csname …\endcsname`, `\BIBdecl`, comments): from its first to the end of its last, or null when it does not start there.
+ */
+function definitionsPrelude(text: string): { from: number; to: number } | null {
+  let i = 0;
+  let from = -1;
+  let to = -1;
+  for (;;) {
+    i += /^\s*/.exec(text.slice(i))![0].length;
+    if (i >= text.length) break;
+    if (text[i] === "%") { const end = text.indexOf("\n", i); i = end < 0 ? text.length : end; continue; }
+    const command = /^\\([A-Za-z@]+)\*?/.exec(text.slice(i, i + 60));
+    if (!command) break;
+    const start = i;
+    i += command[0].length;
+    if (/^(?:providecommand|newcommand|renewcommand|def|gdef|let)$/.test(command[1])) {
+      const name = /^\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)(?:#\d)*/.exec(text.slice(i, i + 80));
+      if (!name) break;
+      i += name[0].length;
+      if (command[1] === "let") {
+        const target = /^\s*=?\s*\\(?:[A-Za-z@]+|.)/.exec(text.slice(i, i + 80));
+        if (!target) break;
+        i += target[0].length;
+      } else {
+        for (let open = /^\s*\[/.exec(text.slice(i)); open; open = /^\s*\[/.exec(text.slice(i))) {
+          const optional = readOptional(text, i + open[0].length - 1, TEX_GROUPS);
+          if (!optional) return null;
+          i = optional.end;
+        }
+        const open = /^\s*\{/.exec(text.slice(i));
+        const body = open ? readGroup(text, i + open[0].length - 1, TEX_GROUPS) : null;
+        if (!body) return null;
+        i = body.end;
+      }
+    } else if (command[1] === "csname") {
+      const end = text.indexOf("\\endcsname", i);
+      if (end < 0) break;
+      i = end + "\\endcsname".length;
+    } else if (!/^(?:BIBdecl|relax)$/.test(command[1])) break;
+    if (from < 0) from = start;
+    to = i;
+  }
+  // Only when nothing else comes before the first item.
+  return from >= 0 && !text.slice(to).replace(/%[^\n]*/g, "").trim() ? { from, to } : null;
+}
+
 /** Definitions the grammar parses as unknown commands. */
 const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname)$/;
 const SECTION_CLASSES: Record<string, string> = {
@@ -169,7 +276,7 @@ const HANDLED = new Set([
   "FootnoteCommand", "EndnoteCommand", "DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment",
   "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "Item", "Environment",
   "EndEnv", "Maketitle", "IncludeGraphics", "LineBreak", "Tilde", "Normal", "UnknownCommand", "Group",
-  "BibliographyCommand", "BibliographyStyleCommand",
+  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand",
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
@@ -737,9 +844,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const argument = node.getChild("TextArgument");
           const inner = argument && argumentInner(argument);
           if (!inner || hasDirectError(node)) return;
+          // `\footnote{{…}}`: braces around the whole note print nothing (B6-22); a group opened by a switch is drawn as one.
+          const body = read(state, inner.from, inner.to);
+          const lead = /^\s*/.exec(body)![0].length;
+          const group = body[lead] === "{" && body[lead + 1] !== "\\" ? readGroup(body, lead, TEX_GROUPS) : null;
+          const braces = structural && group && !body.slice(group.end).trim() ? [{ from: inner.from + lead, to: inner.from + lead + 1 }, { from: inner.from + group.end - 1, to: inner.from + group.end }] : [];
           emit({
             kind: "footnote", from: node.from, to: node.to, reveal: "touch",
-            replaces: structural ? [{ from: node.from, to: inner.from, widget: new FootnoteMarkWidget() }, { from: inner.to, to: node.to }] : [],
+            replaces: structural ? [{ from: node.from, to: inner.from, widget: new FootnoteMarkWidget() }, ...braces, { from: inner.to, to: node.to }] : [],
             marks: [{ from: inner.from, to: inner.to, class: "cm-vis-footnote" }],
           });
           return;
@@ -932,6 +1044,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           }
           return false;
         }
+        case "Centering": case "SetLengthCommand": {
+          // `\centering` or `\setlength{\parindent}{0pt}` on a line of layout: it folds away (M-13).
+          const line = structural ? layoutLine(state, node.from) : null;
+          if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
+          return false;
+        }
         case "UnknownCommand":
           return unknownCommand(node);
       }
@@ -964,6 +1082,15 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       lines: [{ from, to: headerEnd, class: `cm-vis-heading ${book ? "cm-vis-h0" : "cm-vis-h1"}` }],
     });
     if (structural) collapseLine(formed.end, "env-end");
+    // IEEEtran's .bbl opens with definitions for its entries (`\providecommand{\url}[1]{#1}`, `\csname url@samestyle\endcsname`,
+    // `\BIBdecl`): they print nothing, so their lines fold away (Membership Inference, B5-27).
+    const firstItem = /\\bibitem(?![A-Za-z@])/.exec(read(state, headerEnd, formed.end.from));
+    const prelude = firstItem ? definitionsPrelude(read(state, headerEnd, headerEnd + firstItem.index)) : null;
+    const preludeSpan = prelude && aloneOnLines(doc, headerEnd + prelude.from, headerEnd + prelude.to);
+    if (preludeSpan) {
+      consumed.push([preludeSpan.from, preludeSpan.to]);
+      if (structural) collapseLine(preludeSpan, "bibliography-prelude");
+    }
     if (formed.content) {
       const first = doc.lineAt(Math.min(doc.length, headerEnd + 1)).number + 1;
       const last = doc.lineAt(formed.end.from).number - 1;
@@ -1382,6 +1509,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (DEFINITION_COMMANDS.test(text)) return skipDefinition(node);
     const macro = macroAt(defs, name, node.from);
     if (macro) return macroUse(node, name);
+    const drawn = packageCommand(node, ctrl, text, args);
+    if (drawn !== null) return drawn;
     // `\bibitem[label]{key}` in `thebibliography`: its marker, `[n]` in order or the label it gives.
     if (text === "\\bibitem") {
       const keyArgument = args.find((arg) => !arg.optional);
@@ -1433,6 +1562,104 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     return undefined;
+  }
+
+  /**
+   * Package commands of the text (group D2 of the paper batches): layout lines and layout in text, text wrappers,
+   * eurosym's sign, todonotes' notes, acronyms, keywords and thm-restate's restated theorems. Structural layer only;
+   * null when `node` is none of these, or one it cannot read (it stays source).
+   */
+  function packageCommand(node: SyntaxNode, ctrl: SyntaxNode, text: string, args: ReturnType<typeof commandArguments>): false | undefined | null {
+    const mandatory = args.filter((arg) => !arg.optional);
+    const first = mandatory[0] && argumentInner(mandatory[0].node);
+    // A line holding only layout folds away.
+    if (Object.hasOwn(LAYOUT_LINE_ARGS, text.slice(1))) {
+      const line = layoutLine(state, node.from);
+      if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); return false; }
+    }
+    // In a line of text, `\newline` and `\par` are breaks; space and layout commands print nothing (`\vspace{2pt}`, `\noindent`).
+    if (text === "\\newline" || text === "\\par") {
+      emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "never", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new LineBreakWidget() }] });
+      return undefined;
+    }
+    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip)$/.test(text) && !hasDirectError(node)) {
+      const end = layoutExtent(state, ctrl.to, text);
+      if (end > ctrl.to || /skip$/.test(text)) {
+        const horizontal = /^\\h/.test(text);
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end, widget: horizontal ? new SymbolWidget(" ", read(state, node.from, end)) : undefined }] });
+        consumed.push([node.from, end]);
+        return undefined;
+      }
+    }
+    if (INLINE_LAYOUT.test(text)) {
+      let textFrom = ctrl.to;
+      while (textFrom < doc.length && / |\t/.test(read(state, textFrom, textFrom + 1))) textFrom++;
+      // A group the parser hung on it (`\onehalfspacing{…}`) is text: its braces are hidden too.
+      const group = mandatory[0] && mandatory[0].node.from === textFrom ? first : null;
+      emit({ kind: "symbol", from: node.from, to: group ? mandatory[0].node.to : textFrom, reveal: "touch", replaces: group ? [{ from: node.from, to: group.from }, { from: group.to, to: mandatory[0].node.to }] : [{ from: node.from, to: textFrom }] });
+      return undefined;
+    }
+    // `\afterpage{…}` (a landscape table after this page) and `\raisebox{-0.1cm}{\protect\includegraphics…}` (Generative Agents'
+    // inline icons): what they hold, drawn as the text around it.
+    const wrapped = TEXT_WRAPPERS[text];
+    if (wrapped && mandatory.length === wrapped && !hasDirectError(node)) {
+      const content = argumentInner(mandatory[wrapped - 1].node);
+      if (content) {
+        const end = mandatory[wrapped - 1].node.to;
+        emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: content.from }, { from: content.to, to: end }] });
+        consumed.push([node.from, content.from]);
+        return undefined;
+      }
+    }
+    // eurosym's `\euro{8.50}` and `\EUR{8.50}` (the minimum-wage paper): the sign, before the amount (after it with `right`).
+    if ((text === "\\euro" || text === "\\EUR") && mandatory.length === 1 && first && !hasDirectError(node)) {
+      const end = mandatory[0].node.to;
+      const right = text === "\\EUR" && defs.packageOptions.get("eurosym")?.includes("right");
+      const sign = (label: string, from: number, to: number) => ({ from, to, widget: new SymbolWidget(label, read(state, node.from, end)) });
+      emit({
+        kind: "symbol", from: node.from, to: end, reveal: "touch",
+        replaces: right ? [{ from: node.from, to: first.from }, sign(" €", first.to, end)] : [sign(text === "\\EUR" ? "€ " : "€", node.from, first.from), { from: first.to, to: end }],
+      });
+      consumed.push([node.from, first.from]);
+      return undefined;
+    }
+    // todonotes' `\todo[inline]{…}` and `\missingfigure{…}`: a note chip with its text.
+    if ((text === "\\todo" || text === "\\missingfigure") && first && !hasDirectError(node)) {
+      const end = mandatory[0].node.to;
+      emit({ kind: "todo", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new TodoWidget(text === "\\todo" ? "To do" : "Missing figure", read(state, first.from, first.to), end - node.from) }] });
+      consumed.push([node.from, end]);
+      return false;
+    }
+    // `\gls{gpu}`, `\acrlong{gpu}`, `\ac{CNN}`: the form of the entry they print, as a macro's text.
+    if (first && ctrl.name === "CtrlSeq") {
+      const starred = read(state, ctrl.to, ctrl.to + 1) === "*";
+      const printed = acronymText(defs, text, read(state, first.from, first.to));
+      if (printed !== null && !starred && !hasDirectError(node)) {
+        const end = mandatory[0].node.to;
+        emit({ kind: "macro", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new MacroWidget(text.slice(1), printed, end - node.from, "acronym") }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
+    // `\keywords{…}` in the text (an abstract's, Stata Journal): "Keywords:" and the keywords.
+    if (text === "\\keywords" && mandatory.length === 1 && first && !hasDirectError(node)) {
+      const end = mandatory[0].node.to;
+      emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: first.from, widget: new SymbolWidget("Keywords: ", "\\keywords", "cm-vis-keywords-label") }, { from: first.to, to: end }] });
+      consumed.push([node.from, first.from]);
+      return undefined;
+    }
+    // thm-restate's `\promisemonoids*`: the restatable theorem of that name printed again, drawn as its heading.
+    const restated = !args.length && ctrl.name === "CtrlSeq" ? restatablesIn(doc).get(text.slice(1)) : undefined;
+    const restatedTheorem = restated && defs.theorems.get(restated.env);
+    if (restated && restatedTheorem && read(state, ctrl.to, ctrl.to + 1) === "*") {
+      const end = ctrl.to + 1;
+      const span = aloneOnLines(doc, node.from, end);
+      const range = span ?? { from: node.from, to: end };
+      emit({ kind: "env-header", from: range.from, to: range.to, reveal: "line", wholeLine: true, replaces: [{ from: range.from, to: range.to, widget: new RestatedTheoremWidget(text.slice(1), restatedTheorem.title, restated.note, !!restatedTheorem.numbered) }] });
+      consumed.push([range.from, range.to]);
+      return false;
+    }
+    return null;
   }
 
   /**
@@ -1607,6 +1834,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return undefined;
     }
     const use = expandLatexMacroUse(source, defs, { mode: "text", pos: node.from });
+    // A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing` in its references, B5-27) prints nothing.
+    if (use && structural && SPACING_ONLY.test(use.text)) {
+      const to = node.from + use.length;
+      emit({ kind: "symbol", from: node.from, to, reveal: "touch", replaces: [{ from: node.from, to }] });
+      consumed.push([node.from, to]);
+      return false;
+    }
     // A macro that only sets layout (`\tablestyle{2pt}{1.1}`) stays as written, as layout commands do.
     if (!use || (use.text.trim() && layoutOnly(use.text))) return undefined;
     // A macro whose expansion is TeX programming (ICML's `\icmlauthor`: `\g@addto@macro`, `\csname`, flags made with

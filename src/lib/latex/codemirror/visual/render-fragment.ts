@@ -45,6 +45,34 @@ const LAYOUT_ARITY: Record<string, number> = { "\\vspace": 1, "\\hspace": 1, "\\
 const PRIMITIVE_SKIP = /\\([vh])skip(?![A-Za-z@])\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|px|\\[A-Za-z@]+)(?:\s*(?:plus|minus)\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|fil+|\\[A-Za-z@]+))*/g;
 /** Boxes that print their (last) argument: `\mbox{…}`, `\rlap{$^*$}`, `\multirow{2}{*}{…}`, `\rotatebox{90}{…}`. */
 const BOXES = new Set(["\\mbox", "\\hbox", "\\makebox", "\\fbox", "\\framebox", "\\rlap", "\\llap", "\\text", "\\textnormal", "\\textup", "\\textrm", "\\textmd", "\\textsl", "\\centerline", "\\multirow", "\\rotatebox", "\\raisebox", "\\scalebox", "\\resizebox", "\\parbox", "\\makecell", "\\shortstack", "\\tikzmarknode", "\\pbox", "\\titlecap"]);
+/**
+ * The glossaries, acronym and acro packages' commands, as the form of an entry they print: `\gls{gpu}` "GPU",
+ * `\acrlong{gpu}` "graphics processing unit", `\acf{CNN}` "Convolutional Neural Network (CNN)". `\gls` and `\ac`
+ * print the full form at the first use, which a drawing of one place cannot tell: they show the short form.
+ */
+const ACRONYM_COMMANDS: Record<string, { form: "short" | "long" | "full"; plural?: boolean; capital?: boolean }> = {
+  "\\gls": { form: "short" }, "\\Gls": { form: "short", capital: true }, "\\glspl": { form: "short", plural: true }, "\\Glspl": { form: "short", plural: true, capital: true },
+  "\\glstext": { form: "short" }, "\\Glstext": { form: "short", capital: true }, "\\glsentryshort": { form: "short" }, "\\glsentrylong": { form: "long" },
+  "\\acrshort": { form: "short" }, "\\Acrshort": { form: "short", capital: true }, "\\acrshortpl": { form: "short", plural: true },
+  "\\acrlong": { form: "long" }, "\\Acrlong": { form: "long", capital: true }, "\\acrlongpl": { form: "long", plural: true }, "\\Acrlongpl": { form: "long", plural: true, capital: true },
+  "\\acrfull": { form: "full" }, "\\Acrfull": { form: "full", capital: true }, "\\acrfullpl": { form: "full", plural: true },
+  "\\ac": { form: "short" }, "\\Ac": { form: "short", capital: true }, "\\acp": { form: "short", plural: true }, "\\Acp": { form: "short", plural: true, capital: true },
+  "\\acs": { form: "short" }, "\\acsp": { form: "short", plural: true }, "\\acl": { form: "long" }, "\\Acl": { form: "long", capital: true },
+  "\\aclp": { form: "long", plural: true }, "\\Aclp": { form: "long", plural: true, capital: true }, "\\acf": { form: "full" }, "\\Acf": { form: "full", capital: true },
+  "\\acfp": { form: "full", plural: true }, "\\Acfp": { form: "full", plural: true, capital: true },
+};
+
+/** What an acronym command prints for `key` (LaTeX), or null when it is not one or the entry is not defined. */
+export function acronymText(defs: LatexDefinitions, command: string, key: string) {
+  const use = ACRONYM_COMMANDS[command.replace(/\*$/, "")];
+  const entry = use ? defs.acronyms?.get(key.trim()) : undefined;
+  if (!use || !entry) return null;
+  const short = use.plural ? entry.shortPlural ?? `${entry.short}s` : entry.short;
+  const long = use.plural ? entry.longPlural ?? `${entry.long}s` : entry.long;
+  const text = use.form === "short" ? short : use.form === "long" ? long : `${long} (${short})`;
+  return use.capital ? text.replace(/^[a-z]/, (letter) => letter.toUpperCase()) : text;
+}
+
 /** Citation commands of other bibliography styles, as the natbib command they act like (ACL's `\newcite` is `\citet`). */
 export const CITE_ALIASES: Record<string, string> = { "\\newcite": "\\citet", "\\shortcite": "\\cite", "\\citeN": "\\citet", "\\citeNP": "\\citep", "\\citealtNP": "\\citealt" };
 
@@ -444,6 +472,21 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
           parent.appendChild(chip);
           return;
         }
+      }
+      // `\gls{gpu}`, `\ac{CNN}`: the form of the entry they print (an entry written with another one stays as written).
+      if (text in ACRONYM_COMMANDS) {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        const inner = argument && argumentInner(argument.node);
+        const printed = inner ? acronymText(context.defs, text, read(inner.from, inner.to)) : null;
+        if (printed !== null && !/\\(?:gls|Gls|ac|Ac)/.test(printed)) { parent.appendChild(renderLatexFragment(printed, context)); return; }
+      }
+      // eurosym's `\EUR{8.50}` ("€ 8.50", or "8.50 €" with its `right` option) and `\euro{8.50}`, the sign before a group (a wage in a cell).
+      if (text === "\\EUR" || (text === "\\euro" && commandArguments(node).length)) {
+        const right = text === "\\EUR" && context.defs.packageOptions.get("eurosym")?.includes("right");
+        if (!right) parent.appendChild(document.createTextNode(text === "\\EUR" ? "€\u2009" : "€"));
+        renderExtra(parent, node, 0);
+        if (right) parent.appendChild(document.createTextNode("\u2009€"));
+        return;
       }
       if (SIZE_COMMAND.test(text) && !commandArguments(node).length) return;
       // ulem's underlines and strike-out.

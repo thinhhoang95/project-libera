@@ -36,6 +36,9 @@ export const KATEX_MACROS: Record<string, string> = {
   "\\ensuremath": "#1",
   // The TeX.SX `\widebar` (a bar sized to its argument, built from box arithmetic the reader leaves out): a bar.
   "\\widebar": "\\overline{#1}",
+  // eurosym's sign in a formula (the minimum-wage paper's `$\euro 8.50$`).
+  "\\euro": "\\text{€}",
+  "\\EUR": "\\text{€}\\,#1",
 };
 
 /** mathtools' small matrices with delimiters, which KaTeX lacks: its `smallmatrix` between those delimiters. */
