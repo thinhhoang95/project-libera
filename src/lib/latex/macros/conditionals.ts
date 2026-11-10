@@ -25,9 +25,9 @@ const PRIMITIVE_CONDITIONALS = new Set([
 /** etoolbox's tests of a command (`\ifdef\foo{yes}{no}`): macros with arguments, not conditionals. */
 const COMMAND_TESTS = /^if(?:def|undef|cs)[a-z]*$/;
 
-/** Whether `\name` (its name ending at `at`) opens a conditional that a `\fi` closes; `\ifbool{x}{…}{…}` and `\ifthenelse` are macros. */
+/** Whether `\name` (its name ending at `at`) opens a conditional that a `\fi` closes; `\ifbool{x}{…}{…}` and `\ifthenelse` are macros, `\iff` an arrow. */
 export function opensConditional(name: string, text: string, at: number, facts?: Pick<ConditionalFacts, "switchState">) {
-  if (!name.startsWith("if") || name === "ifthenelse") return false;
+  if (!name.startsWith("if") || name === "ifthenelse" || name === "iff") return false;
   if (PRIMITIVE_CONDITIONALS.has(name) || facts?.switchState?.(name) !== undefined) return true;
   if (COMMAND_TESTS.test(name)) return false;
   return !/^\s*\{/.test(text.slice(at, at + 40));

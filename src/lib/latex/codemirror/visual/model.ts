@@ -169,7 +169,7 @@ export function noteBodyStart(tr: Transaction) {
 }
 
 /** Commands that define something, or that change which definitions TeX runs (conditionals, groups, verbatim). */
-const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|declare|def|gdef|edef|xdef|let|mathchardef|setboolean|loop|repeat|unless|ProcessOptions|[A-Za-z@]+(?:true|false)(?![A-Za-z@])|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage|input|graphicspath|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
+const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|declare|def|gdef|edef|xdef|let|mathchardef|setboolean|loop|repeat|unless|ProcessOptions|ExecuteOptions|[A-Za-z@]+(?:true|false)(?![A-Za-z@])|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|documentclass|usepackage|input|graphicspath|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
 
 function computeDefinitions(state: EditorState, sources: readonly MacroSource[]): LatexDefinitions {
   return collectLatexDefinitions(sources, { text: state.doc.toString(), bodyStart: bodyStartIn(state.doc) });

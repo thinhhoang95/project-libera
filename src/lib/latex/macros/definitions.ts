@@ -133,7 +133,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|loop|DeclareOption|ProcessOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -276,7 +276,8 @@ class TexScanner {
       if (name === "iffalse") { this.conditionals.push({ first: "skip", second: "run", inElse: false }); continue; }
       if (name === "iftrue") { this.conditionals.push({ first: "run", second: "skip", inElse: false }); continue; }
       if (name === "unless") { this.unless = this.pos; continue; }
-      if (/^if/.test(name) && name !== "ifthenelse" && this.opensConditional(name)) {
+      // (`\iff` is the formula's arrow, not a conditional.)
+      if (/^if/.test(name) && name !== "ifthenelse" && name !== "iff" && this.opensConditional(name)) {
         // Under a false branch TeX only counts conditionals. Elsewhere one is decided when what it tests is known
         // (`\ifnum\llncs=0` after `\def\llncs{0}`, `\if0`, a `\newif` switch), else it is unknown.
         const decided = !skipping && this.facts ? decideConditional(source, this.pos, name, this.facts) : null;
@@ -768,6 +769,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
   if (options.uncertain) scanner.assumeUncertain();
   /** The code of the options given, run at `\ProcessOptions`. */
   const pendingOptions: Array<{ text: string; offset: number; uncertain: boolean }> = [];
+  /** Every option's code, by name, for `\ExecuteOptions`. */
+  const declaredOptions = new Map<string, { text: string; offset: number }>();
   // Conditionals are decided by what is defined where the reader is (TeX reads the file in this order).
   const here = () => context.offset + scanner.pos;
   const latest = (name: string) => {
@@ -1219,24 +1222,37 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       const close = loopEnd(source, index);
       if (close < 0) continue;
       end = close;
-    } else if (command === "DeclareOption" || command === "ProcessOptions") {
+    } else if (command === "DeclareOption" || command === "ProcessOptions" || command === "ExecuteOptions") {
       // A package's or class's option (ICML's `\DeclareOption{accepted}{\gdef\isaccepted{1}}`): its code runs at
       // `\ProcessOptions` when the option is given (`\usepackage[accepted]{icml2020}`), maybe when how the package is
-      // loaded is not known, and not otherwise.
+      // loaded is not known, and not otherwise; the defaults (`\ExecuteOptions{oneside,final}`) run where they are.
+      const run = (option: { text: string; offset: number }, maybe: boolean) => {
+        const extents = defs.extents.length;
+        readLatexDefinitions(option.text, defs, { file: context.file, offset: option.offset, bodyStart: option.offset < context.offset + context.bodyStart ? option.text.length + 1 : 0, filePos: context.filePos, uncertain: maybe });
+        defs.extents.length = extents;
+      };
       if (command === "ProcessOptions") {
-        for (const option of pendingOptions.splice(0)) {
-          const extents = defs.extents.length;
-          readLatexDefinitions(option.text, defs, { file: context.file, offset: option.offset, bodyStart: option.offset < context.offset + context.bodyStart ? option.text.length + 1 : 0, filePos: context.filePos, uncertain: option.uncertain });
-          defs.extents.length = extents;
-        }
+        for (const option of pendingOptions.splice(0)) run(option, option.uncertain);
         continue;
       }
-      const option = starred ? null : readGroupAt(source, index);
-      const body = readGroupAt(source, option?.end ?? index);
-      if (!body) continue;
-      end = body.end;
-      const given = starred ? false : optionGiven(context, option!.content.trim());
-      if (given !== false) pendingOptions.push({ text: body.content, offset: context.offset + skipSpace(source, option!.end) + 1, uncertain: uncertain || given === null });
+      if (command === "ExecuteOptions") {
+        const list = readGroupAt(source, index);
+        if (!list) continue;
+        end = list.end;
+        for (const name of list.content.split(",").map((part) => part.trim())) {
+          const option = declaredOptions.get(name);
+          if (option) run(option, uncertain);
+        }
+      } else {
+        const option = starred ? null : readGroupAt(source, index);
+        const body = readGroupAt(source, option?.end ?? index);
+        if (!body) continue;
+        end = body.end;
+        const given = starred ? false : optionGiven(context, option!.content.trim());
+        const code = { text: body.content, offset: context.offset + skipSpace(source, option?.end ?? index) + 1 };
+        if (option) declaredOptions.set(option.content.trim(), code);
+        if (given !== false) pendingOptions.push({ ...code, uncertain: uncertain || given === null });
+      }
     } else if (command === "DeclareMathAlphabet") {
       // `\DeclareMathAlphabet{\mathbfsf}{OT1}{cmss}{bx}{n}`: drawn with the KaTeX alphabet of that font's look.
       const name = readCommandName(source, index);

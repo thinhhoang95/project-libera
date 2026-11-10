@@ -123,8 +123,28 @@ test("B7-04: \\ifnum on a \\def'd or \\newcommand'd flag is decided: one branch 
   assert.equal(numbering.labels.has("short"), false);
   assert.equal(numbering.labels.get("app")?.number, "2");
   assert.deepEqual(leftOut(source).map((text) => text.slice(0, 13)), ["\\ifnum\\llncs=", "\\else\n\\begin{"]);
+  // `\iff` is an arrow, not a conditional the `\fi` would close.
+  assert.deepEqual(leftOut(String.raw`\def\llncs{0}\begin{document}\ifnum\llncs=1 $a\iff b$\fi\end{document}`), [String.raw`\ifnum\llncs=1 $a\iff b$\fi`]);
   // A test on what the reader does not know (a counter) stays undecided: nothing is left out.
   assert.deepEqual(leftOut(String.raw`\begin{document}\ifnum\value{page}=1 A\else B\fi\end{document}`), []);
+});
+
+test("B7-04: a branch left out inside a paragraph's line fades only its own text, not the line", () => {
+  const source = String.raw`\def\llncs{0}
+\begin{document}
+We prove it in section~2 \ifnum\llncs=1 (short)\else (full)\fi and then more.
+\end{document}`;
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  const view = new EditorView({ state: visualState(source), parent });
+  try {
+    const line = [...view.contentDOM.querySelectorAll(".cm-line")].find((element) => element.textContent?.includes("We prove"));
+    assert.ok(line && !line.classList.contains("cm-vis-disabled"));
+    assert.deepEqual([...line.querySelectorAll(".cm-vis-disabled-text")].map((element) => element.textContent), ["\\ifnum\\llncs=1 (short)\\else"]);
+  } finally {
+    view.destroy();
+    parent.remove();
+  }
 });
 
 test("B7-02: a plain TeX \\loop … \\repeat does not put later definitions under a condition (2410.03413's macros_basic.tex)", () => {
@@ -178,6 +198,25 @@ test("B3-03: a package's options decide what it defines (ICML's \\DeclareOption{
   assert.match(expand("", String.raw`\who{Alice}`) ?? "", /\\ifdefined/);
 });
 
+test("B3-03: a package's default options (\\ExecuteOptions) set its switches before the options given", () => {
+  const sty = String.raw`\newif\if@twoside
+\DeclareOption{oneside}{\@twosidefalse}
+\DeclareOption{twoside}{\@twosidetrue}
+\ExecuteOptions{twoside}
+\ProcessOptions
+\newcommand{\sides}{\if@twoside two\else one\fi}`;
+  const sides = (options: string) => {
+    const main = `\\usepackage${options}{pages}\n\\begin{document}\\end{document}`;
+    const defs = collectLatexDefinitions([{ path: "nb/pages.sty", text: sty, loadedBy: "", key: "package:pages" }], { text: main });
+    return expandLatexMacroUse(String.raw`\sides`, defs, { mode: "text", pos: main.length })?.text;
+  };
+  assert.equal(sides(""), "two");
+  assert.equal(sides("[oneside]"), "one");
+  // Read without its loader, the options are not known: the switch is not either.
+  const alone = collectLatexDefinitions([{ path: "nb/pages.sty", text: sty }], { text: "\\begin{document}\\end{document}" });
+  assert.match(expandLatexMacroUse(String.raw`\sides`, alone, { mode: "text" })?.text ?? "", /\\if@twoside/);
+});
+
 test("B4-16: estout's \\sym takes its \\ifmmode branch: a superscript formula in text, a superscript in math", () => {
   const preamble = String.raw`\def\sym#1{\ifmmode^{#1}\else\(^{#1}\)\fi}`;
   const defs = readLatexDefinitions(`${preamble}\n\\begin{document}\\end{document}`);
@@ -215,6 +254,7 @@ test("M-12: a date written with \\ifcase\\month shows no month list or stray tok
 Body.
 \end{document}`);
   assert.ok(!/January\s*February/.test(text), text);
+  assert.ok(!/\\number|\\year|\\month/.test(text), text);
 });
 
 test("B7-01: thmtools' \\declaretheorem is read: name, numberwithin, sibling, numbered=no, style, the default name", () => {

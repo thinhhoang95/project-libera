@@ -3252,6 +3252,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-algorithm-comment { margin-left: .8em; color: var(--muted-foreground); }
 /* `\iffalse … \fi`: left out of the document, so faded. */
 .libera-latex-visual .cm-line.cm-vis-disabled { opacity: .45; }
+/* A branch left out inside a paragraph's line (`\ifnum\llncs=1 short\else full\fi`): only its text. */
+.libera-latex-visual .cm-vis-disabled-text { opacity: .45; }
 .cm-vis-rm { font-style: normal; font-weight: 400; }
 .cm-vis-image-placeholder, .cm-vis-image-loading { display: inline-block; padding: 1.6em 1.2em; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted-foreground); font-family: var(--font-sans); font-size: 12px; }
 .cm-vis-tabular { margin: .4em 0; overflow-x: auto; cursor: pointer; }

@@ -373,6 +373,30 @@ function namedTheorem(code: string, defs: LatexDefinitions) {
   return { theorem, title: match[3].trim() };
 }
 
+/**
+ * How a region left out is faded: the lines it holds whole, and only its own text on a line it shares with text that
+ * is drawn (2410.03413's `… section~2 \ifnum\llncs=1 (short)\else (full)\fi.` in a paragraph).
+ */
+function disabledStyle(doc: Text, region: { from: number; to: number }): Pick<Construct, "lines" | "marks"> {
+  const first = doc.lineAt(region.from);
+  const last = doc.lineAt(region.to);
+  const before = !!doc.sliceString(first.from, region.from).trim();
+  const after = !!doc.sliceString(region.to, last.to).trim();
+  const marks: Mark[] = [];
+  let wholeFrom = region.from;
+  let wholeTo = region.to;
+  if (before || (first.number === last.number && after)) {
+    marks.push({ from: region.from, to: first.number === last.number ? region.to : first.to, class: "cm-vis-disabled-text" });
+    if (first.number === last.number) return { marks };
+    wholeFrom = first.to + 1;
+  }
+  if (after) {
+    marks.push({ from: last.from, to: region.to, class: "cm-vis-disabled-text" });
+    wholeTo = last.from - 1;
+  }
+  return { lines: wholeTo >= wholeFrom ? [{ from: wholeFrom, to: wholeTo, class: "cm-vis-disabled" }] : [], marks };
+}
+
 type ListContext = { node: SyntaxNode; variant: "bullet" | "number" | "description"; depth: number; count: number; template: string | null };
 
 /**
@@ -407,7 +431,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   const disabled = (state.field(disabledField, false) ?? []).filter((region) => region.to > from && region.from < to);
   for (const region of disabled) {
     consumed.push([region.from, region.to]);
-    if (region.from >= from) emit({ kind: "disabled", from: region.from, to: region.to, reveal: "never", replaces: [], lines: [{ from: region.from, to: region.to, class: "cm-vis-disabled" }] });
+    if (region.from >= from) emit({ kind: "disabled", from: region.from, to: region.to, reveal: "never", replaces: [], ...disabledStyle(doc, region) });
   }
   /** The disabled region a node starts in: nothing is drawn for it, though what follows the `\fi` inside it is. */
   const startsDisabled = (pos: number) => disabled.find((region) => region.from <= pos && pos < region.to);
@@ -2333,5 +2357,7 @@ function scanTitleParts(text: string, documentClass: string | null) {
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
   const bodyStart = /\\begin\s*\{document\}/.exec(text)?.index ?? -1;
   const abstract = bodyStart > 0 ? /\\begin\s*\{abstract\}([\s\S]*?)\\end\s*\{abstract\}/.exec(stripTexComments(text.slice(0, bodyStart)))?.[1].trim() ?? null : null;
-  return { title: last("title"), author, date: last("date"), abstract };
+  // A date written with TeX's clock (1812.09970's `\ifcase\month\or January\or …\fi \number\year`) is not read: not shown.
+  const date = last("date");
+  return { title: last("title"), author, date: date && /\\(?:ifcase|month|year|day|number)(?![A-Za-z@])/.test(date) ? null : date, abstract };
 }
