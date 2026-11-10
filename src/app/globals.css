@@ -3291,6 +3291,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-fragment-math.cm-vis-fragment-display { display: block; margin: .3em 0; text-align: center; }
 /* `\rule{2em}{0.4pt}`: a bar (a zero-width strut draws nothing). */
 .cm-vis-rule-bar { display: inline-block; max-width: 100%; background: currentColor; vertical-align: baseline; }
+/* revtex's `ruledtabular`: double rules above and below the grid. */
+.cm-vis-table.cm-vis-table-ruled { border-top: 3px double currentColor; border-bottom: 3px double currentColor; }
 .cm-vis-table.cm-vis-table-closed { border-bottom: 1.5px solid currentColor; }
 .cm-vis-table-cell:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .cm-vis-table-cell[contenteditable="true"] { outline: 2px solid var(--ring); outline-offset: -2px; background: var(--background); font-family: var(--font-mono); font-size: .86em; white-space: pre-wrap; cursor: text; }

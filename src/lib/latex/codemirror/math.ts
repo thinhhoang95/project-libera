@@ -1,4 +1,5 @@
 import type { EditorState } from "@codemirror/state";
+import { beginDocumentIndex } from "../document-begin";
 
 /* Math is never allowed to span a paragraph break, so finding the math
  * around a position only needs the current paragraph. */
@@ -84,7 +85,7 @@ export function isInsideMath(state: EditorState, pos: number) {
 /** Simple `\newcommand` macros from the preamble, for the KaTeX preview. */
 export function readPreviewMacros(source: string) {
   const macros: Record<string, string> = {};
-  const preambleEnd = source.search(/\\begin\s*\{document\}/);
+  const preambleEnd = beginDocumentIndex(source);
   const preamble = preambleEnd > 0 ? source.slice(0, preambleEnd) : source.slice(0, 20_000);
   for (const match of preamble.matchAll(/\\(?:re)?newcommand\*?\s*\{?(\\[a-zA-Z]+)\}?\s*(?:\[(\d)\])?\s*\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}/g)) {
     macros[match[1]] = match[3];

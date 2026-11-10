@@ -124,6 +124,124 @@ export function readCtable(source: string): CtableReading | null {
   };
 }
 
+/** An AASTeX `deluxetable` read from its source: caption (where it is), labels, `\tablenum`, the table as a tabular, its notes. */
+export type DeluxeTableReading = { caption: string | null; captionAt: number; labels: string[]; number: string | null; tabular: string; notes: string[] };
+
+/** AASTeX's commands in a deluxetable's rows, as what they print: a digit's or a point's width, "no data", a note's mark. */
+function deluxeCells(text: string, columns: number) {
+  return text
+    .replace(/\\phn(?![A-Za-z@])\s*/g, "\u2007")
+    .replace(/\\phd(?![A-Za-z@])\s*/g, "\u2008")
+    .replace(/\\phm\s*\{/g, "\\phantom{")
+    .replace(/\\nodata(?![A-Za-z@])\s*/g, "$\\cdots$")
+    .replace(/\\tablenotemark\s*\{/g, "\\textsuperscript{")
+    .replace(/\\tableline(?![A-Za-z@])/g, "\\hline")
+    .replace(/\\(?:nl|nextline)(?![A-Za-z@])/g, "\\\\")
+    .replace(/\\colhead\s*\{/g, "\\multicolumn{1}{c}{")
+    // A heading across the table: `\sidehead{…}` on the left, `\cutinhead{…}` centred between rules.
+    .replace(/\\(sidehead|cutinhead)\s*\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}/g, (_, command: string, heading: string) => command === "sidehead"
+      ? `\\multicolumn{${columns}}{l}{${heading}} \\\\`
+      : `\\hline \\multicolumn{${columns}}{c}{${heading}} \\\\ \\hline`);
+}
+
+/**
+ * AASTeX's `\begin{deluxetable}{spec}` (2611.08676's tables): `\tablecaption{…}`, `\tablehead{\colhead{…} & …}` and
+ * layout before `\startdata`, its rows up to `\enddata`, then `\tablenotetext{a}{…}`, `\tablecomments{…}` and
+ * `\tablerefs{…}`. Read as a tabular with AASTeX's rules (two above the head, one under it and one at the end), and
+ * the notes as the class prints them. `source` is the whole environment; null for anything else in it (it stays source).
+ */
+export function readDeluxeTable(source: string): DeluxeTableReading | null {
+  const head = /^\\begin\s*\{(deluxetable\*?)\}\s*(?:\[[^\]]*\]\s*)?\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}(?:\s*\[[^\]]*\])?/.exec(source);
+  if (!head) return null;
+  const end = new RegExp(String.raw`\\end\s*\{${head[1].replace("*", "\\*")}\}\s*$`).exec(source);
+  if (!end) return null;
+  const spec = head[2];
+  // AASTeX's `D` columns split numbers at their point over two columns (with `\decimals`): not read here.
+  const columns = parseColumnSpec(spec);
+  if (!columns.length || columns.includes("D")) return null;
+  // Comments blanked out, keeping offsets (a `\%` is text).
+  const body = source.slice(0, end.index).replace(/(^|[^\\])((?:\\\\)*)%[^\n]*/g, (comment, before: string, slashes: string) => before + slashes + " ".repeat(comment.length - before.length - slashes.length));
+  let caption: string | null = null;
+  let captionAt = -1;
+  let number: string | null = null;
+  let headRows: string | null = null;
+  let rows: string | null = null;
+  const labels: string[] = [];
+  const notes: string[] = [];
+  const withoutLabels = (text: string) => text.replace(/\\label\s*\{([^{}]*)\}/g, (_, key: string) => { labels.push(key.trim()); return ""; }).trim();
+  let i = head[0].length;
+  const group = () => {
+    const open = /^\s*\{/.exec(body.slice(i, i + 200));
+    const read = open ? readGroup(body, i + open[0].length - 1, TEX_GROUPS) : null;
+    if (read) i = read.end;
+    return read;
+  };
+  while (i < body.length) {
+    const space = /^\s+/.exec(body.slice(i, i + 400));
+    if (space) { i += space[0].length; continue; }
+    const command = /^\\([A-Za-z@]+)\*?/.exec(body.slice(i, i + 60));
+    if (!command) return null;
+    const at = i;
+    i += command[0].length;
+    switch (command[1]) {
+      case "tablecaption": {
+        const text = group();
+        if (!text) return null;
+        caption = withoutLabels(text.content);
+        captionAt = at;
+        break;
+      }
+      case "tablehead": {
+        const text = group();
+        if (!text) return null;
+        headRows = text.content.trim().replace(/\\\\\s*$/, "");
+        break;
+      }
+      case "tablenum": {
+        const text = group();
+        if (!text) return null;
+        number = text.content.trim();
+        break;
+      }
+      case "tablewidth": case "tabletypesize": case "tablecolumns": case "label": {
+        const text = group();
+        if (!text) return null;
+        if (command[1] === "label") labels.push(text.content.trim());
+        break;
+      }
+      case "tablenotetext": {
+        const mark = group();
+        const text = mark && group();
+        if (!mark || !text) return null;
+        notes.push(mark.content.trim() ? `\\textsuperscript{${mark.content.trim()}}${withoutLabels(text.content)}` : withoutLabels(text.content));
+        break;
+      }
+      case "tablecomments": case "tablerefs": {
+        const text = group();
+        if (!text) return null;
+        notes.push(`\\textsc{${command[1] === "tablerefs" ? "References" : "Note"}}---${withoutLabels(text.content)}`);
+        break;
+      }
+      case "startdata": {
+        const stop = /\\enddata(?![A-Za-z@])/.exec(body.slice(i));
+        if (!stop || rows !== null) return null;
+        rows = body.slice(i, i + stop.index).trim();
+        i += stop.index + stop[0].length;
+        break;
+      }
+      // Layout: centring, rotation, the decimal alignment of `D` columns (refused above), a long table's breaks.
+      case "centering": case "rotate": case "decimals": case "tablebreak": case "startlongtable": break;
+      default: return null;
+    }
+  }
+  if (rows === null) return null;
+  const lines = [`\\hline\\hline`];
+  if (headRows !== null && headRows) lines.push(`${deluxeCells(headRows, columns.length)} \\\\ \\hline`);
+  const data = deluxeCells(rows, columns.length).replace(/\\\\\s*(?:\\hline\s*)*$/, "");
+  lines.push(`${data} \\\\ \\hline`);
+  return { caption, captionAt, labels, number, tabular: `\\begin{tabular}{${spec}}\n${lines.join("\n")}\n\\end{tabular}`, notes };
+}
+
 export function parseColumnSpec(spec: string, types?: ColumnTypes) {
   return columnSpans(spec, 0, types)?.map((column) => column.letter) ?? [];
 }

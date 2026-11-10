@@ -6,20 +6,21 @@ import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, 
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { CAPTION_OF, enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
-import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
+import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { disabledField } from "./model";
-import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
+import { citationNoteText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
-import { macroBuiltTabular, parseTabular, readCtable, readLongTable } from "./table-model";
+import { macroBuiltTabular, parseTabular, readCtable, readDeluxeTable, readLongTable } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
   ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget,
 } from "./widgets";
+import { beginDocumentIndex } from "../../document-begin";
 
 /* One walk over the syntax tree that recognises constructs
  * (docs/latex-visual-editor-plan.md §3–4). Each construct says which markup
@@ -91,7 +92,7 @@ const FIGURE_LAYOUT = /^\\(?:centering|raggedright|raggedleft|addtolength|setlen
  * What a macro's expansion may hold only as TeX programming: building names, appending to macros, global and expanded
  * definitions, box registers, and conditionals other than the `\ifx` of cvpr's `\onedot` (which the renderer reads).
  */
-const TEX_PROGRAMMING = /\\(?:expandafter|csname|endcsname|noexpand|g@addto@macro|@for|@ifnextchar|@ifstar|typeout|gdef|xdef|edef|newif|setbox|advance|multiply|divide|ifdefined|ifcsname|ifnum|ifdim|ifcase|if@[A-Za-z@]*|PackageError|PackageWarning|ClassError)(?![A-Za-z@])|\\if(?!x(?![A-Za-z@]))[a-z]{3,}[A-Za-z@]*/;
+const TEX_PROGRAMMING = /\\(?:expandafter|csname|endcsname|noexpand|g@addto@macro|@for|@ifnextchar|@ifstar|typeout|gdef|xdef|edef|newif|setbox|advance|multiply|divide|ifdefined|ifcsname|ifnum|ifdim|ifcase|if@[A-Za-z@]*|PackageError|PackageWarning|ClassError)(?![A-Za-z@])|\\if(?!x(?![A-Za-z@]))[a-z]{3,}[A-Za-z@]*|\\ifx(?![A-Za-z@])(?!\s*\\@let@token)/;
 /** Whether every `\begin{x}` in a text is closed by its `\end{x}` in it, in order. */
 function balancedEnvironments(text: string) {
   if (!text.includes("\\begin") && !text.includes("\\end")) return true;
@@ -104,6 +105,14 @@ function balancedEnvironments(text: string) {
 }
 
 /** Lengths a float sets for its table or caption (`\aboverulesep = 2mm`, `\tabcolsep=3pt`): layout. */
+/** linguex's example (`\ex.`, `\exg.` with a gloss, `\exi.`) and part (`\a.`, `\b.`) markers. */
+const LINGUEX_MARKER = /^\\(?:ex|exg|exi|a|b)$/;
+
+/** Whether a citation's notes can be printed as text (`[\emph{inter alia}]`); one that cannot leaves the citation source. */
+function notesUnderstood(notes: { pre?: string; post?: string }) {
+  return [notes.pre, notes.post].every((note) => !note || citationNoteText(note) !== null);
+}
+
 const FLOAT_LENGTHS = /^\\(?:tabcolsep|arraycolsep|arrayrulewidth|aboverulesep|belowrulesep|doublerulesep|extrarowheight|abovecaptionskip|belowcaptionskip|textfloatsep|intextsep|columnsep|parskip|parindent)$/;
 const GLUE = String.raw`-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|\\[A-Za-z@]+)`;
 /** `\vskip 0.15in plus 2pt minus 1pt`, `\kern-3pt`: TeX's glue after a primitive. */
@@ -142,11 +151,19 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   frontmatter: 0, mainmatter: 0, backmatter: 0, tableofcontents: 0, listoffigures: 0, listoftables: 0, listoftodos: 0, FloatBarrier: 0, restoregeometry: 0,
   balance: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
   startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0,
+  // AASTeX's `\restartappendixnumbering` and `\startlongtable` print nothing.
+  restartappendixnumbering: 0, startlongtable: 0,
   tiny: 0, scriptsize: 0, footnotesize: 0, small: 0, normalsize: 0, large: 0, Large: 0, LARGE: 0, huge: 0, Huge: 0,
   vspace: 1, addvspace: 1, setstretch: 1, linespread: 1, thispagestyle: 1, pagestyle: 1, pagenumbering: 1, newgeometry: 1, tikzset: 1, pgfplotsset: 1,
   hypersetup: 1, captionsetup: 1, sisetup: 1, lstset: 1, enlargethispage: 1, hyphenation: 1, ccsdesc: 1,
   setlength: 2, addtolength: 2, colorlet: 2, definecolor: 3, addcontentsline: 3, printcontents: 3,
+  // State the numbering reads (numbering.ts): `\appendix`, `\setcounter{equation}{0}`, and a counter's format
+  // (`\renewcommand{\theequation}{S\arabic{equation}}`, only a `\the…` one). Column and spacing switches, TeX groups.
+  appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
+  begingroup: 0, endgroup: 0,
 };
+/** Layout-line commands whose `[…]` is text, not an option (ICML's `\twocolumn[\icmltitle{…}…]`): such a line stays. */
+const LAYOUT_LINE_TEXT_OPTION = /^(?:onecolumn|twocolumn)$/;
 
 /** The lines from `from` (the first thing on its line) that hold only layout commands with their arguments, or null. */
 function layoutLine(state: EditorState, from: number): { from: number; to: number } | null {
@@ -162,8 +179,11 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
     if (!command || count === undefined) return null;
     i += command[0].length;
     if (command[1] === "vskip") { i += PRIMITIVE_GLUE.exec(text.slice(i))?.[0].length ?? 0; continue; }
+    // `\renewcommand` of a counter's format only (`{\thesection}` or `\thesection`).
+    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\the[A-Za-z]+\s*\}|\\the[A-Za-z]+(?![A-Za-z]))/.test(text.slice(i, i + 60))) return null;
     const optional = /^[ \t]*\[/.exec(text.slice(i));
     if (optional) {
+      if (LAYOUT_LINE_TEXT_OPTION.test(command[1])) return null;
       const group = readOptional(text, i + optional[0].length - 1, TEX_GROUPS);
       if (!group) return null;
       i = group.end;
@@ -173,7 +193,7 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
       if (space.includes("\n\n")) return null;
       const at = i + space.length;
       // `\setlength\parindent{0pt}`: an unbraced length.
-      const unbraced = k === 0 && /^(?:setlength|addtolength)$/.test(command[1]) ? /^\\[A-Za-z@]+/.exec(text.slice(at, at + 60)) : null;
+      const unbraced = k === 0 && /^(?:setlength|addtolength|renewcommand)$/.test(command[1]) ? /^\\[A-Za-z@]+/.exec(text.slice(at, at + 60)) : null;
       if (unbraced) { i = at + unbraced[0].length; continue; }
       const group = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
       if (!group) return null;
@@ -184,7 +204,7 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
 }
 
 /** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
-const INLINE_LAYOUT = /^\\(?:noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft)$/;
+const INLINE_LAYOUT = /^\\(?:noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing)$/;
 /** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
@@ -271,6 +291,8 @@ const TEXT_BLOCKS: Record<string, string> = {
   keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords",
   // amsmath's `subequations` (numbering 3a, 3b): its equations are drawn on their own, and its lines fold away.
   subequations: "cm-vis-sized",
+  // revtex's `widetext` (text set across both columns): layout, whose lines fold away.
+  widetext: "cm-vis-sized",
   // `\begin{small} … \end{small}`: a size, which draws nothing; its lines fold away.
   ...Object.fromEntries(["tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge"].map((size) => [size, "cm-vis-sized"])),
 };
@@ -506,14 +528,18 @@ function drawableEnvironmentCode(code: string): string | null {
 
 /**
  * The named-theorem idiom (O'Donnell's `\newenvironment{named}[1]{\renewcommand{\theoremname}{#1}\begin{namedtheorem}}`
- * with `\newtheorem*{namedtheorem}{\theoremname}`): an unnumbered theorem whose heading is the argument. Null otherwise.
+ * with `\newtheorem*{namedtheorem}{\theoremname}`): an unnumbered theorem whose heading is the argument, or holds it
+ * (math.CO 2611.11191's restated `\newtheorem*{teoremarepinner}{Theorem \theteoremarepnum}` with
+ * `\renewcommand{\theteoremarepnum}{\ref{r:#1}}`: "Theorem 1.1"). Null otherwise.
  */
 function namedTheorem(code: string, defs: LatexDefinitions) {
   const match = /^\s*\\(?:re)?newcommand\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\\begin\s*\{([^{}]+)\}\s*$/.exec(code);
   if (!match) return null;
   const theorem = defs.theorems.get(match[4].trim());
-  if (!theorem || theorem.numbered || theorem.title.replace(/\\protect\s*/g, "").trim() !== `\\${match[1] ?? match[2]}`) return null;
-  return { theorem, title: match[3].trim() };
+  const title = theorem?.title.replace(/\\protect\s*/g, "").trim() ?? "";
+  const use = new RegExp(String.raw`\\${match[1] ?? match[2]}(?![A-Za-z@])`, "g");
+  if (!theorem || theorem.numbered || title.match(use)?.length !== 1) return null;
+  return { theorem, title: title.replace(use, () => match[3].trim()) };
 }
 
 /** `inline`: a list run into its paragraph (paralist's `inparaenum`), whose lines are not indented. */
@@ -584,21 +610,40 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   }
   /** The disabled region a node starts in: nothing is drawn for it, though what follows the `\fi` inside it is. */
   const startsDisabled = (pos: number) => disabled.find((region) => region.from <= pos && pos < region.to);
+  // AASTeX's front matter, which the class prints without `\maketitle`: a title block over its lines. A walk that starts
+  // inside them leaves them to the walk that draws the block.
+  // (From the file's start without a body start: the run is the one right before the abstract, wherever that is.)
+  const aastexFront = AASTEX.test(defs.documentClass ?? "") ? aastexFrontMatterIn(doc, Math.max(0, env.preambleEnd), defs.documentClass!) : null;
+  const aastexTitle = aastexFront && aloneOnLines(doc, aastexFront.from, aastexFront.to) ? aastexFront : null;
+  if (aastexTitle && aastexTitle.from < from && from < aastexTitle.to) consumed.push([aastexTitle.from, aastexTitle.to]);
 
   /** A use of a macro that writes a figure's caption (`\mycap{…}` for `\caption{…}`), maybe with a label: the caption's text. */
-  const captionMacro = (use: SyntaxNode): string | null => {
+  const captionMacro = (use: SyntaxNode): CaptionMacroUse | null => {
     const ctrl = use.firstChild;
     const name = ctrl ? read(state, ctrl.from + 1, ctrl.to) : "";
-    if (!name || !structureMacroNames(defs).has(name) || !macroAt(defs, name, use.from)) return null;
+    const macro = name && structureMacroNames(defs).has(name) ? macroAt(defs, name, use.from) : null;
+    if (!macro) return null;
     // An argument the parser ends early (`\mycap{{ figure.}` with its `}` lines after `\end{figure}`) is read past the
     // float in the text: the caption would swallow `\end{figure}`, and a brace typed far below would make it one.
     if (use.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError)) return null;
     const expansion = expandLatexMacroUse(read(state, use.from, Math.min(doc.length, use.from + 4000)), defs, { mode: "text", pos: use.from });
     if (!expansion) return null;
     const parts = topConstructs(expansion.text);
-    if (parts[0]?.name !== "Caption" || parts.length > 2 || (parts.length === 2 && parts[1].name !== "Label")) return null;
+    if (parts[0]?.name !== "Caption") return null;
     const range = argumentInner(parts[0].getChild("TextArgument") ?? parts[0]);
-    return range ? expansion.text.slice(range.from, range.to) : null;
+    if (!range) return null;
+    const text = expansion.text.slice(range.from, range.to);
+    if (parts.length === 1 || (parts.length === 2 && parts[1].name === "Label")) return { text, body: [] };
+    // `\tbl{caption}{\begin{tabular}…}` for `\caption{#1}\noindent\makebox[\linewidth]{#2}` (the OD estimation paper):
+    // the caption, and the arguments put in a box after it, which are the float's content (checked and drawn as such).
+    const plan = captionBoxPlan(macro);
+    if (!plan) return null;
+    const body: SyntaxNode[] = [];
+    for (const [index, argument] of use.getChildren("TextArgument").entries()) {
+      if (plan.body.has(index + 1)) body.push(argument);
+      else if (!plan.caption.has(index + 1)) return null;
+    }
+    return { text, body };
   };
 
   const readNode = (start: number, end: number) => read(state, start, end);
@@ -786,10 +831,22 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // The grammar may end a definition early (`\newcommand*`): its name and body that follow are source too.
         const extent = DEFINITION_NODES.has(name) ? definitionExtentAt(defs, ref.from) : null;
         if (extent && extent.to > ref.to) consumed.push([ref.from, extent.to]);
+        // `\renewcommand{\theequation}{S\arabic{equation}}` in the body: a counter's format, which numbering reads; its
+        // line folds away as other layout lines do.
+        if (name === "RenewCommand" && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !isConsumed(ref)) {
+          const line = layoutLine(state, ref.from);
+          if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
+        }
         return false;
       }
       if (env.preambleEnd > 0 && ref.to <= env.preambleEnd) return false;
       if (consumed.length && isConsumed(ref)) return false;
+      if (aastexTitle && ref.from === aastexTitle.from && ref.to <= aastexTitle.to && ref.from >= from) {
+        const span = aloneOnLines(doc, aastexTitle.from, aastexTitle.to)!;
+        consumed.push([span.from, span.to]);
+        if (structural) emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(aastexTitle.title, aastexTitle.author, null, span.to - span.from, null, aastexTitle.notes) }] });
+        return false;
+      }
       // A node starting before an `\iffalse`'s `\fi` and running past it (`\iffalse \section{A} \fi more`): only what follows is drawn.
       if (disabled.length && startsDisabled(ref.from)) return undefined;
       // Most nodes are text and argument holders: go inside without building a node object.
@@ -987,6 +1044,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (alias?.alias && ALIAS_FAMILIES[name].test(alias.body)) command = alias.body + (command.endsWith("*") ? "*" : "");
           const optionals = node.getChildren("OptionalArgument").map((arg) => { const range = argumentInner(arg); return range ? read(state, range.from, range.to) : ""; });
           const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+          if (!notesUnderstood(notes)) return false;
           // cleveref's `\crefrange{a}{b}`: the grammar ends it after `{a}`; the chip takes the second key's group too.
           let to = node.to;
           if (/^\\[cC]refrange\*?$/.test(command)) {
@@ -1032,6 +1090,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (name === "KnownEnvironment") return;
           // A list of the document's own (enumitem's `\newlist`): drawn as the lists the grammar knows.
           if (defs.lists?.has(environmentName(node, readNode) ?? "") || PARALIST[environmentName(node, readNode) ?? ""]) return drawList(node);
+          // AASTeX's `deluxetable`: a table float of its own commands; one it cannot read stays as it was.
+          if (/^deluxetable\*?$/.test(environmentName(node, readNode) ?? "") && !defs.environments.has(environmentName(node, readNode)!)) return drawDeluxeTable(node) ?? environment(node);
           // `table*`, `algorithm` and the other floats the grammar does not name; a theorem the document calls
           // `algorithm` (`\newtheorem{algorithm}{Algorithm}`, Callaway & Sant'Anna's bootstrap) is the document's own.
           const kind = floatKind(node, readNode);
@@ -1057,8 +1117,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           // `\title{…}`, `\author{…}` and `\date{…}` written in the body right before `\maketitle`: what the title block
           // shows, folded into it (Alt-click shows their source).
           const bodyStart = Math.max(0, env.preambleEnd);
-          const run = node.from > bodyStart ? titleDeclarationsStart(read(state, bodyStart, node.from), ABSTRACT_WITH_TITLE.test(defs.documentClass ?? "")) : null;
-          // Only within this walk's range, so the construct does not start before what is being built.
+          const run = titleRun(state, defs, bodyStart, node.from);
+          // Only within this walk's range, so the construct does not start before what is being built (the structural
+          // layer widens a range holding `\maketitle` back to titleRunStart).
           const declarations = run && bodyStart + run.start >= from ? bodyStart + run.start : null;
           // acmart's teaser figure among them is drawn on its own: the block ends before it, and the rest up to `\maketitle` folds away.
           const gaps = declarations !== null ? run!.gaps.map((gap) => ({ from: bodyStart + gap.from, to: bodyStart + gap.to })) : [];
@@ -1067,9 +1128,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             while (end > start && /\s/.test(read(state, end - 1, end))) end--;
             return { start, end };
           };
-          const blockEnd = gaps.length ? trimmed(declarations!, gaps[0].from).end : node.to;
+          // A comment after `\maketitle` on its line (cs.LO 2610.41832's `\maketitle%[E]`) is part of its line.
+          const commentLine = doc.lineAt(node.to);
+          const end = /^[ \t]*%/.test(read(state, node.to, commentLine.to)) ? commentLine.to : node.to;
+          const blockEnd = gaps.length ? trimmed(declarations!, gaps[0].from).end : end;
           const folded = declarations !== null ? aloneOnLines(doc, declarations, blockEnd) : null;
-          const span = folded ?? aloneOnLines(doc, node.from, node.to);
+          const span = folded ?? aloneOnLines(doc, node.from, end);
           const range = span ?? { from: node.from, to: node.to };
           if (range.from < node.from) consumed.push([range.from, Math.min(node.from, range.to)]);
           // An abstract and keywords in the run are printed with the title (amsart's abstract before `\maketitle`).
@@ -1089,8 +1153,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           // `\bibliography{refs}`: the References list it prints (from the compiled `.bbl`), on its own lines only.
           const argument = node.getChild("BibliographyArgument");
           const inner = argument && argumentInner(argument);
-          const span = aloneOnLines(doc, node.from, node.to);
+          // AASTeX's `\bibliography{refs}{}` takes an empty group after it, which prints nothing.
+          const empty = /^[ \t]*\{\s*\}/.exec(read(state, node.to, Math.min(doc.length, node.to + 20)));
+          const span = aloneOnLines(doc, node.from, node.to + (empty?.[0].length ?? 0));
           if (!structural || !inner || !span || hasDirectError(node)) return false;
+          if (empty) consumed.push([node.to, node.to + empty[0].length]);
           emit({ kind: "bibliography", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new BibliographyListWidget(bibliographyHeading(defs), read(state, inner.from, inner.to).trim(), span.to - span.from) }] });
           return false;
         }
@@ -1216,6 +1283,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (last >= first) emit({ kind: "list-body", from: node.from, to: node.to, reveal: "never", replaces: [], lines: [{ from: doc.line(first).from, to: doc.line(last).to, class: `cm-vis-list cm-vis-list-d${Math.min(6, list.depth)}` }] });
     }
     return undefined;
+  }
+
+  /** AASTeX's `deluxetable` (2611.08676): its caption, rows and notes as a table float, drawn read-only; null when it cannot be read. */
+  function drawDeluxeTable(node: SyntaxNode): false | null {
+    if (!wellFormedEnvironment(node, state)) return null;
+    const table = readDeluxeTable(read(state, node.from, node.to));
+    if (!table || !parseTabular(table.tabular, 0, defs.columnTypes)?.rows.length) return null;
+    if (!structural) return false;
+    const span = aloneOnLines(doc, node.from, node.to);
+    const range = span ?? { from: node.from, to: node.to };
+    const spec: FigureSpec = {
+      env: "deluxetable", images: [], tabulars: [{ source: table.tabular, offset: node.from - range.from, readOnly: true }], caption: table.caption,
+      captionPos: table.captionAt >= 0 ? node.from + table.captionAt : node.from, captionAbove: true, kind: "table", numberOffset: node.from - range.from,
+      notes: table.notes.length ? table.notes : undefined, start: range.from, length: range.to - range.from,
+    };
+    emit({ kind: "figure", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(spec) }] });
+    return false;
   }
 
   /** The kind a `center` or `minipage` outside floats captions with its `\captionof{figure}{…}`, else null. */
@@ -1433,6 +1517,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
     const text = read(state, ctrl.from, ctrl.to);
+    // linguex's numbered examples (cs.CL 2611.11838): `\ex.` is "(1)", its parts `\a.` and `\b.` are "a.", "b.".
+    if (LINGUEX_MARKER.test(text) && read(state, ctrl.to, ctrl.to + 1) === "." && defs.packages.includes("linguex") && !macroAt(defs, text.slice(1), node.from)) {
+      if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to + 1, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to + 1, widget: new ExampleMarkerWidget(text === "\\a" || text === "\\b") }] });
+      consumed.push([node.from, ctrl.to + 1]);
+      return false;
+    }
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
     if (text === "\\printbibliography") {
       const end = commandArguments(node).filter((arg) => arg.optional).at(-1)?.node.to ?? ctrl.to;
@@ -1746,6 +1836,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
         const optionals = args.filter((arg) => arg.optional).map((arg) => { const range = argumentInner(arg.node); return range ? read(state, range.from, range.to) : ""; });
         const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+        if (!notesUnderstood(notes)) return false;
         const end = keysArgument.node.to;
         emit({ kind: "cite", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new ChipWidget("cite", CITE_ALIASES[text], keys, notes, end - node.from) }] });
         return false;
@@ -1783,6 +1874,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function packageCommand(node: SyntaxNode, ctrl: SyntaxNode, text: string, args: ReturnType<typeof commandArguments>): false | undefined | null {
     const mandatory = args.filter((arg) => !arg.optional);
     const first = mandatory[0] && argumentInner(mandatory[0].node);
+    // `\ensuremath{…}` in text (lhs2TeX's `\ensuremath{\Conid{C}}`, 2610.41832): its argument, as an inline formula.
+    if (text === "\\ensuremath" && first && args[0] === mandatory[0] && !read(state, ctrl.to, first.from - 1).trim() && !hasDirectError(node)) {
+      const expanded = expandLatexMacros(read(state, first.from, first.to), defs, { mode: "math", pos: node.from });
+      const html = expanded.ok ? renderKatex(withReferences(expanded.text), false) : null;
+      if (!html) return undefined;
+      const end = mandatory[0].node.to;
+      emit({ kind: "math", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new MathWidget(html, false, false, read(state, node.from, end), false, 0, end - node.from, referenced(expanded.text)) }] });
+      consumed.push([node.from, end]);
+      return false;
+    }
     // A line holding only layout folds away.
     if (Object.hasOwn(LAYOUT_LINE_ARGS, text.slice(1))) {
       const line = layoutLine(state, node.from);
@@ -1858,6 +1959,27 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: first.from, widget: new SymbolWidget("Keywords: ", "\\keywords", "cm-vis-keywords-label") }, { from: first.to, to: end }] });
       consumed.push([node.from, first.from]);
       return undefined;
+    }
+    if (AASTEX.test(defs.documentClass ?? "") && first && !hasDirectError(node)) {
+      // AASTeX's `\uat{Planet hosting stars}{1242}` in the keywords: the Unified Astronomy Thesaurus concept, then its number.
+      const id = text === "\\uat" && mandatory.length === 2 ? argumentInner(mandatory[1].node) : null;
+      if (id) {
+        const end = mandatory[1].node.to;
+        emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: first.from }, { from: first.to, to: end, widget: new SymbolWidget(` (${read(state, id.from, id.to).trim()})`, read(state, node.from, end)) }] });
+        consumed.push([node.from, first.from]);
+        return undefined;
+      }
+      // `\facilities{Gemini:South, LDT}` and `\software{…}`: a paragraph after its label, as the class prints them; a
+      // `\facility{HST}` in the list is its name.
+      const label = mandatory.length === 1 ? AASTEX_LABELS[text] : undefined;
+      if (label !== undefined) {
+        const end = mandatory[0].node.to;
+        let listed = false;
+        for (let parent = node.parent; parent && !listed; parent = parent.parent) listed = parent.name === "UnknownCommand" && !!parent.firstChild && read(state, parent.firstChild.from, parent.firstChild.to) === "\\facilities";
+        emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: first.from, widget: listed && text === "\\facility" ? undefined : new SymbolWidget(label, text, "cm-vis-keywords-label") }, { from: first.to, to: end }] });
+        consumed.push([node.from, first.from]);
+        return undefined;
+      }
     }
     // thm-restate's `\promisemonoids*`: the restatable theorem of that name printed again, drawn as its heading.
     const restated = !args.length && ctrl.name === "CtrlSeq" && read(state, ctrl.to, ctrl.to + 1) === "*" ? restatablesIn(doc).get(text.slice(1)) : undefined;
@@ -2019,8 +2141,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // An argument the parser ends early (at a blank line or a heading: an unclosed brace) is read
     // further in the text than the tree shows: drawn from the text, the use would change with
     // edits the tree does not tie to it. Its parts are drawn on their own.
-    if (node.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError)) return undefined;
-    if (structureMacroNames(defs).has(name)) {
+    // A wrapper whose argument holds a paragraph heading (q-bio.NC 2610.36484's `\rev{\paragraph{Version.} …}`) is one:
+    // when its body only passes the argument on or styles it, it is read from the text to its closing brace in the same
+    // paragraph (argumentGroups), and the argument's parts are drawn on their own.
+    const broken = node.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError);
+    if (broken && !/^\s*\{\s*\\(?:paragraph|subparagraph)\*?\s*\{/.test(read(state, node.from + 1 + name.length, Math.min(doc.length, node.from + name.length + 40)))) return undefined;
+    if (!broken && structureMacroNames(defs).has(name)) {
       const drawn = structuralMacroUse(node, name);
       if (drawn !== null) return drawn;
     }
@@ -2029,6 +2155,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const macro = macroAt(defs, name, node.from)!;
     const plan = transparentPlan(macro, defs);
     const groups = plan ? argumentGroups(source, node.from, 1 + name.length, macro.arity) : null;
+    if (broken && !(plan && groups)) return undefined;
     if (plan && groups) {
       const end = groups[groups.length - 1].close + 1;
       const replaces: Replace[] = [];
@@ -2062,7 +2189,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (!balancedEnvironments(use.text)) return undefined;
     const to = node.from + use.length;
     const fingerprint = use.used.join(",");
-    const ensure = /^\s*\\ensuremath\s*\{([\s\S]*)\}\s*$/.exec(use.text);
+    // AASTeX's `\newcommand{\css}{\ensuremath{\mathrm{CS}_{2}}\xspace}` (2611.08676): the trailing `\xspace` is a space,
+    // which the text after the use already has.
+    const ensure = /^\s*\\ensuremath\s*\{([\s\S]*)\}\s*(?:\\xspace\s*)?$/.exec(use.text);
     if (ensure || (needsMathMode(use.text) && macroAt(defs, name, node.from)?.mathOnly)) {
       // A math macro used in text through \ensuremath: drawn as a formula.
       const latex = ensure ? ensure[1] : use.text;
@@ -2221,7 +2350,7 @@ function boxUse(node: SyntaxNode, state: EditorState) {
  * labels, comments and layout commands. Text, other commands and sub-figures
  * are not drawn by it, so such a float stays source (its parts render on their own).
  */
-function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefinitions, captionMacro: (use: SyntaxNode) => string | null) {
+function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefinitions, captionMacro: (use: SyntaxNode) => CaptionMacroUse | null) {
   const content = node.getChild("Content");
   if (!content) return true;
   // algorithm2e's statements are the float's body: covered when they can be read.
@@ -2273,10 +2402,19 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     if (name === "Input" || name === "Include") return false;
     // `\[ \input{dict.tikz} \]`, a tikz-cd diagram in a formula: a drawing too.
     if (mathDrawing(ref.node, state)) return false;
+    // A box of text around a minipage (`\colorbox{c}{\begin{minipage}{\dimexpr…\relax}…}`): a framed box of text.
+    if (name === "ColorBoxCommand") {
+      const box = textBoxUse(ref.node, state, defs);
+      if (box) noteUntil = Math.max(noteUntil, ref.from + box.end);
+      else covered = false;
+      return false;
+    }
     if (name === "UnknownCommand") {
       const ctrl = ref.node.firstChild;
       const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
       if (command === "\\includestandalone" || diagramDrawing(ref.node, state)) return false;
+      // AASTeX's `\plotone{file}`, `\plottwo{a}{b}` and the `\epsscale{…}` they are drawn at.
+      if (aastexPlot(command, ref.node, state, defs)) return false;
       // floatrow's `\floatfoot{Notes: …}`, wherever it is: a note under the caption.
       if (command === "\\floatfoot") {
         const note = groupAfter(state, ctrl!.to);
@@ -2297,12 +2435,18 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       // `\subfigure[caption]{…}`: a panel, its caption in brackets and its content checked as the float's.
       if (isSubFloatCommand(ref.node, readState)) { panel(ref.node); return false; }
       // caption's `\captionof{table}{…}`, KOMA's `\captionabove{…}`, and a macro that writes the caption (`\mycap{…}`), are captions.
-      if (CAPTION_OF.test(command) || KOMA_CAPTION.test(command) || captionMacro(ref.node) !== null) { caption(ref.node); return false; }
+      if (CAPTION_OF.test(command) || KOMA_CAPTION.test(command)) { caption(ref.node); return false; }
+      // A caption macro's content arguments (`\tbl{caption}{\begin{tabular}…}`) are checked as the float's content.
+      const written = captionMacro(ref.node);
+      if (written) { caption(ref.node); for (const argument of written.body) argument.cursor().iterate(visit); return false; }
       // `\resizebox{\linewidth}{!}{\input{fig}}`: a drawing, scaled.
       if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel, defs, notesFrom)) covered = false; return false; }
       // Layout with what it takes (`\vskip 0.15in`, `\vspace*{2pt}`, `\setlength\tabcolsep{3pt}`, `\aboverulesep = 2mm`,
       // acmart's `\Description{…}`): none of it is drawn, so none of it is content.
       if (FIGURE_LAYOUT.test(command) || SIZE_COMMAND.test(command) || FLOAT_LENGTHS.test(command)) { noteUntil = Math.max(noteUntil, layoutExtent(state, ctrl!.to, command)); return false; }
+      // `\fbox{\begin{minipage}…}`, or a macro writing such a box (cs.CL 2611.11838's `\genbox{color}{title}{text}`).
+      const box = textBoxUse(ref.node, state, defs);
+      if (box) { noteUntil = Math.max(noteUntil, ref.from + box.end); return false; }
       if (!layoutMacro(ref.node, state, defs)) covered = false;
       return false;
     }
@@ -2313,8 +2457,9 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { covered = false; return false; }
       if (env === "tikzpicture" || TABULAR_NAMES.test(env)) return false;
       if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state, defs)) covered = false; return false; }
-      // adjustbox's `\begin{adjustbox}{width=\linewidth}` and threeparttable: around the content, which is checked.
-      if (env === "adjustbox" || env === "threeparttable" || env === "ThreePartTable") return undefined;
+      // adjustbox's `\begin{adjustbox}{width=\linewidth}`, threeparttable and revtex's `ruledtabular` (drawn as the
+      // grid's rules): around the content, which is checked.
+      if (env === "adjustbox" || env === "threeparttable" || env === "ThreePartTable" || env === "ruledtabular") return undefined;
       // overpic: an image with text put over it, drawn without the overlay; a `picture` puts labels over the images
       // around it (Neyshabur's `\begin{picture}(0,0)\put(-162,90){$\ell_2$ norm}…`), noted as an overlay.
       if (env === "overpic" || env === "picture") return false;
@@ -2423,6 +2568,19 @@ function rowMacroNames(defs: LatexDefinitions) {
   return names;
 }
 
+/** AASTeX's classes (aastex631, aastex7, aastex701), and emulateapj, which has its commands. */
+export const AASTEX = /^(?:aastex\d*|emulateapj)$/;
+/** AASTeX's labelled paragraphs at the end of a paper, by command. */
+const AASTEX_LABELS: Record<string, string> = { "\\facilities": "Facilities: ", "\\facility": "Facility: ", "\\software": "Software: " };
+
+/** AASTeX's `\plotone{file}`, `\plottwo{a}{b}` or `\epsscale{x}`, written whole, in its class and not redefined. */
+function aastexPlot(command: string, node: SyntaxNode, state: EditorState, defs: LatexDefinitions) {
+  const arity = command === "\\plotone" || command === "\\epsscale" ? 1 : command === "\\plottwo" ? 2 : 0;
+  if (!arity || !AASTEX.test(defs.documentClass ?? "") || macroAt(defs, command.slice(1), node.from) || hasDirectError(node)) return false;
+  const args = commandArguments(node);
+  return args.length === arity && args.every((arg) => !arg.optional && !!argumentInner(arg.node));
+}
+
 /** Commands that scale or turn what their last argument draws. */
 const DRAWING_WRAPPERS = /^\\(?:resizebox\*?|scalebox|rotatebox|reflectbox|raisebox|adjustbox|centerline)$/;
 /** A use of a document macro that only sets layout (Mask R-CNN's `\tablestyle{4pt}{1.05}`: a column gap, row stretch and size). */
@@ -2432,6 +2590,90 @@ function layoutMacro(node: SyntaxNode, state: EditorState, defs: LatexDefinition
   if (!name || !macroAt(defs, name, node.from)) return false;
   const use = expandLatexMacroUse(read(state, node.from, Math.min(state.doc.length, node.from + 400)), defs, { mode: "text", pos: node.from });
   return !!use && layoutOnly(use.text);
+}
+
+/** A use of a macro that writes a float's caption: the caption's text, and the arguments it puts after it as content. */
+type CaptionMacroUse = { text: string; body: SyntaxNode[] };
+/** Boxes a caption macro may put its content in (`\makebox[\linewidth]{#2}`), up to the group that holds it. */
+const CONTENT_BOXES = /\\(?:makebox|framebox|parbox|resizebox\*?|scalebox|adjustbox|mbox|centerline|hbox(?:\s*to\s*\\[A-Za-z@]+)?)\s*(?:\[[^\]]*\]\s*|\{[^{}#]*\}\s*)*(?=\{)/g;
+const captionBoxPlans = new WeakMap<object, { caption: Set<number>; body: Set<number> } | null>();
+/**
+ * A caption macro whose body is `\caption{#1}` followed by layout and a box around other arguments
+ * (`\caption{#1}\noindent\makebox[\linewidth]{#2}`): which arguments are the caption's and which the content's; null otherwise.
+ */
+function captionBoxPlan(macro: { body: string; optional?: string; spec?: unknown; arity: number }) {
+  if (captionBoxPlans.has(macro)) return captionBoxPlans.get(macro)!;
+  let plan: { caption: Set<number>; body: Set<number> } | null = null;
+  const head = macro.optional === undefined && !macro.spec ? /^\s*\\caption\s*(?:\[[^\]]*\]\s*)?\{/.exec(macro.body) : null;
+  const group = head ? readGroup(macro.body, head[0].length - 1, TEX_GROUPS) : null;
+  if (head && group) {
+    const caption = new Set([...macro.body.slice(0, group.end).matchAll(/#(\d)/g)].map((match) => Number(match[1])));
+    const rest = macro.body.slice(group.end)
+      .replace(/\\label\s*\{[^{}]*\}/g, "")
+      .replace(CONTENT_BOXES, "")
+      .replace(/\\([A-Za-z@]+)(?![A-Za-z@])/g, (whole, name: string) => (FIGURE_LAYOUT.test(`\\${name}`) || SIZE_COMMAND.test(`\\${name}`) ? "" : whole))
+      .replace(/[{}\s]/g, "");
+    const body = new Set([...rest.matchAll(/#(\d)/g)].map((match) => Number(match[1])));
+    // Only parameters are left, each its own, none also in the caption.
+    if (body.size && /^(?:#\d)+$/.test(rest) && rest.length === body.size * 2 && [...body].every((n) => !caption.has(n))) plan = { caption, body };
+  }
+  captionBoxPlans.set(macro, plan);
+  return plan;
+}
+
+/** Boxes around a minipage of text: `\colorbox{c}{…}`, `\fcolorbox{f}{c}{…}`, `\fbox{…}`, `\framebox[w][s]{…}`. */
+const TEXT_BOX = /^\\(?:colorbox\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}|fcolorbox\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*\{[^{}]*\}|fbox|framebox\s*(?:\[[^\]]*\]\s*){0,2})\s*\{/;
+/** Layout before a box of text (a macro's `\vspace{0.2em}\noindent`). */
+const BOX_LAYOUT = /^(?:\s|%[^\n]*(?:\n|$)|\\(?:noindent|par|medskip|smallskip|bigskip|centering|vfill|hfill)(?![A-Za-z@])|\\[vh]space\*?\s*\{[^{}]*\})*/;
+
+/**
+ * A box of text at the start of `text`, after layout: a box holding one minipage and nothing else
+ * (`\colorbox{promptcolor}{%\n\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax} … \end{minipage}}`). The minipage's
+ * width is the box's business (a `\dimexpr`, `\linewidth`): only its text is drawn. Its text and where the box ends; null otherwise.
+ */
+function textBoxAt(text: string): { body: string; end: number } | null {
+  const at = BOX_LAYOUT.exec(text)![0].length;
+  const head = TEXT_BOX.exec(text.slice(at, at + 200));
+  const group = head ? readGroup(text, at + head[0].length - 1, TEX_GROUPS) : null;
+  if (!group) return null;
+  const inner = stripTexComments(group.content);
+  const begin = /^\s*\\begin\s*\{minipage\}/.exec(inner);
+  if (!begin) return null;
+  let i = begin[0].length;
+  for (let open = /^\s*\[/.exec(inner.slice(i)); open; open = /^\s*\[/.exec(inner.slice(i))) {
+    const optional = readOptional(inner, i + open[0].length - 1, TEX_GROUPS);
+    if (!optional) return null;
+    i = optional.end;
+  }
+  const widthOpen = /^\s*\{/.exec(inner.slice(i));
+  const width = widthOpen ? readGroup(inner, i + widthOpen[0].length - 1, TEX_GROUPS) : null;
+  const end = /\\end\s*\{minipage\}\s*$/.exec(inner);
+  if (!width || !end) return null;
+  const body = inner.slice(width.end, end.index);
+  return balancedEnvironments(body) ? { body: body.trim(), end: group.end } : null;
+}
+
+/**
+ * A box of text in a float (`\colorbox{…}{\begin{minipage}…}`, `\fbox{…}`, or a use of a document macro that writes one,
+ * cs.CL 2611.11838's `\genbox{color}{title}{text}`): its text and its length from the node's start; null otherwise.
+ */
+function textBoxUse(node: SyntaxNode, state: EditorState, defs: LatexDefinitions): { body: string; end: number } | null {
+  if (node.name === "ColorBoxCommand") {
+    const box = textBoxAt(read(state, node.from, node.to));
+    return box && box.end === node.to - node.from ? box : null;
+  }
+  const ctrl = node.name === "UnknownCommand" ? node.firstChild : null;
+  const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
+  if (!command) return null;
+  const isBox = /^\\(?:fbox|framebox|fcolorbox)$/.test(command);
+  const macro = isBox ? null : macroAt(defs, command.slice(1), node.from);
+  if (!isBox && (!macro || !/\\begin\s*\{minipage\}/.test(macro.body))) return null;
+  const window = read(state, node.from, Math.min(state.doc.length, node.from + 20000));
+  if (isBox) return textBoxAt(window);
+  const use = expandLatexMacroUse(window, defs, { mode: "text", pos: node.from });
+  const box = use ? textBoxAt(use.text) : null;
+  // Nothing but space and comments after the box in the expansion.
+  return use && box && !stripTexComments(use.text.slice(box.end)).trim() ? { body: box.body, end: use.length } : null;
 }
 
 /** Whether LaTeX is only layout a float may hold: lengths, `\renewcommand{\arraystretch}{…}`, sizes, `\centering`, space. */
@@ -2497,7 +2739,7 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
 }
 
 /** What ends a float's content: a grid, a drawing, an image, an included file or a caption. */
-const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox|tikzcd|quantikz|circuitikz|pchstack|pcvstack|tcolorbox|mdframed)\}|\\\]|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\(?:input|include|includestandalone|c?tikzfig)\s*\{[^{}]*\}|\\caption(?:of|above|below|aboveof|belowof)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
+const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|ruledtabular|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox|tikzcd|quantikz|circuitikz|pchstack|pcvstack|tcolorbox|mdframed)\}|\\\]|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\plotone\s*\{[^{}]*\}|\\plottwo\s*\{[^{}]*\}\s*\{[^{}]*\}|\\(?:input|include|includestandalone|c?tikzfig)\s*\{[^{}]*\}|\\caption(?:of|above|below|aboveof|belowof)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
 
 /**
  * Where a float's notes start: after its last grid, image, included file or caption. Text from there to the end is the
@@ -2572,9 +2814,12 @@ function floatNotes(node: SyntaxNode, state: EditorState, range?: { from: number
     .replace(/\\begin\s*\{picture\}[\s\S]*?\\end\s*\{picture\}/g, " ")
     .replace(/\\(?:singlespace|onehalfspace|doublespace|singlespacing|onehalfspacing|doublespacing)(?![A-Za-z@])/g, " ")
     .replace(/\\label\s*\{[^{}]*\}/g, "")
-    .replace(/\\(?:begin|end)\s*\{(?:tablenotes|threeparttable|ThreePartTable|singlespace|onehalfspace|doublespace|spacing|minipage|footnotesize|small|scriptsize|flushleft|center|justify|adjustbox)\}(?:\s*\[[^\]]*\])?(?:\s*\{[^{}]*\})?/g, " ")
+    .replace(/\\(?:begin|end)\s*\{(?:tablenotes|threeparttable|ThreePartTable|ruledtabular|singlespace|onehalfspace|doublespace|spacing|minipage|footnotesize|small|scriptsize|flushleft|center|justify|adjustbox)\}(?:\s*\[[^\]]*\])?(?:\s*\{[^{}]*\})?/g, " ")
     .replace(/\\(?:vspace|hspace)\*?\s*\{[^{}]*\}|\\rule\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{[^{}]*\}|\\setlength\s*\{?\\[A-Za-z@]+\}?\s*\{[^{}]*\}/g, " ")
     .replace(/\\floatfoot\s*\{/g, "{")
+    // AASTeX's notes under a `table`: `\tablenotetext{a}{…}` after its mark, `\tablecomments{…}` and `\tablerefs{…}` after theirs.
+    .replace(/\\tablenotetext\s*\{([^{}]*)\}\s*\{/g, (_, mark: string) => (mark.trim() ? `\\textsuperscript{${mark.trim()}}{` : "{"))
+    .replace(/\\table(comments|refs)\s*\{/g, (_, kind: string) => `\\textsc{${kind === "refs" ? "References" : "Note"}}---{`)
     .replace(/\\item\s*\[([^\]]*)\]/g, " $1 ")
     .replace(/\\item(?![A-Za-z@])/g, " ")
     .replace(/\\(?:par|bigskip|medskip|smallskip|noindent|centering|justifying|raggedright|raggedleft|footnotesize|small|scriptsize|linebreak|newline|vfill|hfill)(?![A-Za-z@])/g, " ")
@@ -2689,7 +2934,7 @@ function captionSegments(own: Collected, floatFrom: number): FigureContent[] {
  * up where numbering records them: at the float, at a minipage panel, at an
  * algorithm, or at a `\captionof` outside a panel.
  */
-function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: LatexDefinitions, expand: (text: string) => string | null, captionMacro: (use: SyntaxNode) => string | null, kind: FigureContent["kind"]): FigureSpec | null {
+function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: LatexDefinitions, expand: (text: string) => string | null, captionMacro: (use: SyntaxNode) => CaptionMacroUse | null, kind: FigureContent["kind"]): FigureSpec | null {
   if (!figureCovered(node, state, defs, captionMacro)) return null;
   const readState = (from: number, to: number) => read(state, from, to);
   const algorithm2e = algorithm2eSpec(node, state, defs);
@@ -2721,11 +2966,25 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       if (bracket) { content.caption = inner ? read(state, inner.from, inner.to) : ""; content.captionPos = inner?.from ?? bracket.from; }
     }
     const found = (at: number) => { content.firstContent = Math.min(content.firstContent, at); };
-    root.cursor().iterate((ref) => {
+    /** AASTeX's `\epsscale{…}`: the width of the plots after it. */
+    let scale = 1;
+    /** The end of the last box of text read (a macro's arguments the parser left beside it are part of it). */
+    let boxUntil = -1;
+    const step = (ref: SyntaxNodeRef): boolean | undefined => {
       const name = ref.name;
-      if (name === "Comment") return false;
+      if (name === "Comment" || ref.from < boxUntil) return false;
       // A panel is content of its own: the float's caption after the panels is below them.
       if (ref.from !== root.from && skipPanels && isPanel(ref.node)) { found(ref.from); return false; }
+      // A box of text around a minipage (`\colorbox{c}{\begin{minipage}…}`, `\fbox{…}`, a macro writing one): framed text.
+      if ((name === "ColorBoxCommand" || name === "UnknownCommand") && ref.from < notesFrom) {
+        const box = textBoxUse(ref.node, state, defs);
+        if (box) {
+          (content.boxes ??= []).push({ title: null, body: box.body });
+          boxUntil = ref.from + box.end;
+          found(ref.from);
+          return false;
+        }
+      }
       if (name === "UnknownCommand") {
         const ctrl = ref.node.firstChild;
         const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
@@ -2756,7 +3015,12 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
           return false;
         }
         const written = captionMacro(ref.node);
-        if (written !== null) { content.caption = written; content.captionPos = ref.from; return false; }
+        if (written !== null) {
+          content.caption = written.text;
+          content.captionPos = ref.from;
+          for (const argument of written.body) argument.cursor().iterate(step);
+          return false;
+        }
         // `\subcaption*{Notes: …}`: a note under the caption (its group may follow the command outside its node).
         if (command === "\\subcaption" && ctrl && read(state, ctrl.to, ctrl.to + 1) === "*") {
           const note = starredNote(state, ctrl.to);
@@ -2772,6 +3036,17 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         }
         const diagram = diagramDrawing(ref.node, state);
         if (diagram) { content.drawings!.push(diagram); content.places.drawings.push(ref.from); found(ref.from); return false; }
+        // AASTeX's `\plotone{file}` (the column's width, times `\epsscale`) and `\plottwo{a}{b}` (half of it each).
+        if (aastexPlot(command, ref.node, state, defs)) {
+          const files = ref.node.getChildren("TextArgument").map((argument) => { const inner = argumentInner(argument); return inner ? read(state, inner.from, inner.to).trim() : ""; });
+          if (command === "\\epsscale") { scale = Number(files[0]) || 1; return false; }
+          for (const file of files) {
+            content.images.push({ path: imagePath(file, state.doc), width: `${Math.min(100, (command === "\\plotone" ? 100 : 50) * scale)}%` });
+            content.places.images.push(ref.from);
+          }
+          found(ref.from);
+          return false;
+        }
         // floatrow's `\floatfoot{…}` before the caption (one after the content is read with the notes).
         if (command === "\\floatfoot" && ctrl && ref.from < notesFrom && !(notesBefore && ref.from >= notesBefore.from && ref.from < notesBefore.to)) {
           const note = groupAfter(state, ctrl.to);
@@ -2844,8 +3119,10 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         else {
           // Rows written through the document's macros are drawn from their expansion (read-only).
           const built = macroBuiltTabular(source, expand, defs.columnTypes);
-          const tabular = built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from };
+          const tabular: NonNullable<FigureContent["tabulars"]>[number] = built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from };
           if (!parseTabular(tabular.source, 0, defs.columnTypes)?.rows.length) valid = false;
+          // revtex's `ruledtabular`: double rules above and below the grid.
+          for (let parent = ref.node.parent; parent && parent.from > root.from; parent = parent.parent) if (parent.name === "Environment" && environmentName(parent, readState) === "ruledtabular") { tabular.ruled = true; break; }
           content.tabulars!.push(tabular);
         }
         found(ref.from);
@@ -2870,7 +3147,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         return false;
       }
       return undefined;
-    });
+    };
+    root.cursor().iterate(step);
     content.numberOffset = numberAt - node.from;
     content.captionAbove = !subCommand && content.caption !== null && content.captionPos < content.firstContent;
     // algorithm2e sets its caption on top in the ruled styles and below otherwise, wherever it is written.
@@ -2885,7 +3163,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       const intro = algorithmIntro(node, state);
       if (intro) content.intro = intro;
     }
-    if (root === node) {
+    // algorithm2e's statements are the float's body, not notes after its caption (cs.DS 2611.09172's caption on top).
+    if (root === node && !algorithm2e) {
       const notes = floatNotes(node, state);
       const before = notesBefore && floatNotes(node, state, notesBefore);
       if (before) content.notes = [...(content.notes ?? []), before];
@@ -2898,6 +3177,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
   node.cursor().iterate((ref) => {
     if (ref.from === node.from) return undefined;
     if (ref.name === "Comment") return false;
+    // The minipage in a box of text (`\fbox{\begin{minipage}…}`) is the box's, not a panel.
+    if (ref.name === "ColorBoxCommand" || (ref.name === "UnknownCommand" && textBoxUse(ref.node, state, defs))) return false;
     if (isPanel(ref.node)) { panels.push(ref.node); return false; }
     return undefined;
   });
@@ -3007,6 +3288,99 @@ function frontMatterParts(text: string): { title: string | null; author: string 
   return { title, author: authors.length ? authors.join(" \\and ") : null, date };
 }
 
+/** AASTeX's front matter commands: the title block's, its metadata (printed small or not at all), and space. */
+const AASTEX_DECLARATIONS = /^(?:title|shorttitle|shortauthors|author|affiliation|altaffiliation|email|correspondingauthor|collaboration|nocollaboration|received|revised|accepted|published|submitjournal|journalinfo|doi|watermark|setwatermarkfontsize|AuthorCollaborationLimit|keywords|vspace|vskip|and|thanks)$/;
+
+type AastexFrontMatter = { from: number; to: number; title: string | null; author: string | null; notes: Array<[string, string]> };
+
+/**
+ * AASTeX's front matter (2611.08676), which the class prints without `\maketitle`: the run of `\title`, `\author[orcid=…]{…}`,
+ * `\affiliation{…}`, `\email[show]{…}` and `\correspondingauthor{…}` that ends `text` (the body up to the abstract).
+ * Each author is drawn with their affiliations under the name; the corresponding author, the emails the class shows
+ * (all of them before AASTeX 7, only `[show]` ones since) and keywords are small lines. Offsets are in `text`; null when
+ * something else comes right before the abstract, or the run has no title or author.
+ */
+function aastexFrontMatter(text: string, documentClass: string): AastexFrontMatter | null {
+  type Declaration = { name: string; optional: string | null; groups: string[] };
+  let run: { start: number; end: number; items: Declaration[] } | null = null;
+  let i = 0;
+  while (i < text.length) {
+    const space = /^\s+/.exec(text.slice(i, i + 400));
+    if (space) { i += space[0].length; continue; }
+    if (text[i] === "%") { const end = text.indexOf("\n", i); i = end < 0 ? text.length : end + 1; continue; }
+    const start = i;
+    const command = /^\\([A-Za-z@]+)\*?/.exec(text.slice(i, i + 60));
+    let end = command ? i + command[0].length : i + 1;
+    const item: Declaration = { name: command?.[1] ?? "", optional: null, groups: [] };
+    if (command) {
+      for (;;) {
+        const at = end + (/^[ \t]*\n?[ \t]*/.exec(text.slice(end, end + 40))?.[0].length ?? 0);
+        const group = text[at] === "[" ? readOptional(text, at, TEX_GROUPS) : text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
+        if (!group) break;
+        if (text[at] === "{") item.groups.push(group.content.trim());
+        else item.optional ??= group.content.trim();
+        end = group.end;
+      }
+    }
+    if (command && AASTEX_DECLARATIONS.test(command[1])) {
+      run ??= { start, end, items: [] };
+      run.items.push(item);
+      run.end = end;
+    } else run = null;
+    i = end;
+  }
+  if (!run) return null;
+  // Before AASTeX 7 every `\email` is printed; since, only `\email[show]{…}`.
+  const allEmails = /^aastex6\d*$/.test(documentClass) || documentClass === "emulateapj";
+  let title: string | null = null;
+  const authors: Array<{ name: string; places: string[] }> = [];
+  const emails: string[] = [];
+  const notes: Array<[string, string]> = [];
+  const keywords: string[] = [];
+  for (const item of run.items) {
+    const last = item.groups.at(-1);
+    if (last === undefined) continue;
+    if (item.name === "title") title = last;
+    else if (item.name === "author") authors.push({ name: last, places: [] });
+    else if (item.name === "affiliation" || item.name === "altaffiliation") {
+      // An affiliation is its author's: one before any author is not read.
+      if (!authors.length) return null;
+      authors.at(-1)!.places.push(last);
+    } else if (item.name === "email") { if (allEmails || /^\s*show\s*$/.test(item.optional ?? "")) emails.push(last); }
+    else if (item.name === "correspondingauthor") notes.push(["Corresponding author", last]);
+    else if (item.name === "collaboration") notes.push(["Collaboration", last]);
+    else if (item.name === "keywords") keywords.push(last);
+  }
+  if (title === null && !authors.length) return null;
+  if (emails.length) notes.push([emails.length > 1 ? "Emails" : "Email", emails.join(", ")]);
+  if (keywords.length) notes.push(["Keywords", keywords.join(", ")]);
+  const author = authors.length ? authors.map(({ name, places }) => [name, ...places.map((place) => `{\\small ${place}}`)].join(" \\\\ ")).join(" \\and ") : null;
+  return { from: run.start, to: run.end, title, author, notes };
+}
+
+/** AASTeX's front matter in the body (cached per document version), at document positions; null when there is none. */
+const aastexFrontCache = new WeakMap<Text, { bodyStart: number; documentClass: string; front: AastexFrontMatter | null }>();
+function aastexFrontMatterIn(doc: Text, bodyStart: number, documentClass: string) {
+  const cached = aastexFrontCache.get(doc);
+  if (cached && cached.bodyStart === bodyStart && cached.documentClass === documentClass) return cached.front;
+  let front: AastexFrontMatter | null = null;
+  const body = doc.sliceString(bodyStart, Math.min(doc.length, bodyStart + 60_000));
+  let stop = -1;
+  let titled = false;
+  for (const match of body.matchAll(/\\begin\s*\{abstract\}|\\section\*?\s*[[{]|\\maketitle(?![A-Za-z@])/g)) {
+    if (isInLatexComment(body, match.index ?? 0)) continue;
+    if (match[0].startsWith("\\maketitle")) titled = true;
+    else if (stop < 0) stop = match.index ?? 0;
+  }
+  // With a `\maketitle` the title block is drawn there.
+  if (stop > 0 && !titled) {
+    const found = aastexFrontMatter(body.slice(0, stop), documentClass);
+    if (found) front = { ...found, from: bodyStart + found.from, to: bodyStart + found.to };
+  }
+  aastexFrontCache.set(doc, { bodyStart, documentClass, front });
+  return front;
+}
+
 /** ICML's title block in `\twocolumn[…]`: the title, and each author with their affiliations' names; null when it is not one. */
 function icmlTitle(block: string): { title: string | null; author: string | null } | null {
   const title = commandGroups(block, "icmltitle").at(-1) ?? null;
@@ -3024,16 +3398,16 @@ function icmlTitle(block: string): { title: string | null; author: string | null
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
 const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/;
 /**
  * Environments among them: an abstract the class prints with the title (acmart's, amsart's), acmart's CCS metadata,
  * and its teaser figure, which is drawn on its own (the title block stops before it).
  */
-const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure)$/;
+const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl)$/;
+const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp)$/;
 
 type TitleRun = {
   start: number;
@@ -3042,6 +3416,20 @@ type TitleRun = {
   abstract: string | null;
   notes: Array<[string, string]>;
 };
+
+/** The run of title declarations before `\maketitle` at `pos`, in the body from `bodyStart`. */
+function titleRun(state: EditorState, defs: LatexDefinitions, bodyStart: number, pos: number) {
+  if (pos <= bodyStart) return null;
+  const wrapper = (name: string) => { const macro = macroAt(defs, name, pos); return macro ? macroPassThrough(macro, defs) : null; };
+  return titleDeclarationsStart(read(state, bodyStart, pos), ABSTRACT_WITH_TITLE.test(defs.documentClass ?? ""), wrapper);
+}
+
+/** Where the title block of `\maketitle` at `pos` starts when it folds declarations before it, or null. */
+export function titleRunStart(state: EditorState, defs: LatexDefinitions, preambleEnd: number, pos: number) {
+  const bodyStart = Math.max(0, preambleEnd);
+  const run = titleRun(state, defs, bodyStart, pos);
+  return run ? bodyStart + run.start : null;
+}
 
 /** What `\keywords`, `\subjclass` and `\ccsdesc` add to a title block, as its small lines (label, LaTeX). */
 function titleNotes(keywords: string[], subjclass: string[], ccs: string[]): Array<[string, string]> {
@@ -3056,7 +3444,7 @@ function titleNotes(keywords: string[], subjclass: string[], ccs: string[]): Arr
  * The run of title declarations that ends `text` (`text` is the body up to `\maketitle`): where it starts, the abstract
  * and notes in it; null when something else comes right before `\maketitle`. Comments and spaces between them are part of the run.
  */
-function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleRun | null {
+function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper?: (name: string) => "discard" | "identity" | null): TitleRun | null {
   let run: TitleRun | null = null;
   let keywords: string[] = [];
   let subjclass: string[] = [];
@@ -3104,6 +3492,20 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleR
       i = end;
       continue;
     }
+    // A version switch around declarations (cs.DS 2611.09172's `\iffullversion{ \title{…} }`): one that prints nothing,
+    // or passes on only declarations, is part of the run.
+    const kind = command && groups.length === 1 ? wrapper?.(command[1]) : null;
+    if (kind && (kind === "discard" || !groups[0].trim() || titleDeclarationsStart(groups[0], abstractWithTitle, wrapper)?.start === groups[0].search(/\S/))) {
+      run ??= { start, gaps: [], abstract: null, notes: [] };
+      i = end;
+      continue;
+    }
+    // A file the run includes (acmart's abstract in `\input{abstract}`) is drawn on its own, as a teaser figure is.
+    if (run && command && /^(?:input|include)$/.test(command[1]) && groups.length === 1) {
+      run.gaps.push({ from: start, to: end });
+      i = end;
+      continue;
+    }
     // Anything else ends the run: the declarations after it may still make one.
     run = null;
     keywords = [];
@@ -3115,8 +3517,8 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleR
   return run;
 }
 
-/** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs. */
-export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?)$/;
+/** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX, Cambridge's jfp. */
+export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj)$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
 export const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
 
@@ -3171,7 +3573,7 @@ function scanTitleParts(text: string, documentClass: string | null) {
   const last = (command: string) => commandGroups(text, command).at(-1) ?? null;
   const authors = LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author");
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
-  const bodyStart = /\\begin\s*\{document\}/.exec(text)?.index ?? -1;
+  const bodyStart = beginDocumentIndex(text);
   const abstract = bodyStart > 0 ? /\\begin\s*\{abstract\}([\s\S]*?)\\end\s*\{abstract\}/.exec(stripTexComments(text.slice(0, bodyStart)))?.[1].trim() ?? null : null;
   // Keywords and classifications in the preamble (LIPIcs', acmart's): small lines of the block. Those in the body are
   // the title run's (titleDeclarationsStart), so they are not shown twice.

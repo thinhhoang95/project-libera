@@ -11,6 +11,7 @@ import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-langu
 import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
 import { computeLatexNumbering } from "../../src/lib/latex/macros/numbering";
+import { titleSources } from "../../src/lib/latex/codemirror/visual/title-edit";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -490,4 +491,137 @@ We develop a command.
 `);
   assert.match(text, /Keywords: many instruments, two-stage least squares\./);
   assert.doesNotMatch(text, /\\keywords|ccs2012/);
+});
+
+test("2611.08676: AASTeX's front matter is a title block without \\maketitle; UAT keywords, facilities, software and \\bibliography{x}{} are drawn", () => {
+  const source = String.raw`\documentclass[twocolumn]{aastex701}
+\begin{document}
+
+\title{Expanding the Volatile Abundance Inventory}
+
+%% the class needs an email for each author
+\correspondingauthor{David R. Coria}
+
+\author[orcid=0000-0002-1221-5346, gname=David, sname='Coria']{David R. Coria}
+\affiliation{Department of Physics \& Astronomy, University of New Mexico}
+\affiliation{University of Kansas}
+\email[show]{drcoria@unm.edu}
+
+\author[gname=Ian,sname=Crossfield]{Ian J. M. Crossfield}
+\affiliation{Instituto de Alta Investigaci{\'o}n}
+\email{ianc@ku.edu}
+
+% \author[gname=givenname, sname=surname]{full_name}
+\begin{abstract}
+Few abundances are known.
+\end{abstract}
+
+\keywords{\uat{Planet hosting stars}{1242} --- \uat{Hot Jupiters}{753}}
+
+\section{Introduction}
+Text.
+
+\facilities{Gemini:South, \facility{LDT}}
+
+\software{TurboSpectrum}
+
+\bibliography{kdwarfs}{}
+\end{document}
+`;
+  const state = visualState(source);
+  const title = constructs(state).find((item) => item.startsWith("title:"));
+  assert.ok(title);
+  const text = bodyText(source);
+  assert.match(text, /Expanding the Volatile Abundance InventoryDavid R\. Coria\s*Department of Physics & Astronomy, University of New Mexico\s*University of KansasIan J\. M\. Crossfield\s*Instituto de Alta Investigación/);
+  // Only the email AASTeX 7 shows (`[show]`); the corresponding author, small.
+  assert.match(text, /Corresponding author: David R\. CoriaEmail: drcoria@unm\.edu/);
+  assert.doesNotMatch(text, /ianc@ku\.edu|orcid|\\correspondingauthor|\\affiliation/);
+  assert.match(text, /Keywords: Planet hosting stars \(1242\) — Hot Jupiters \(753\)/);
+  assert.match(text, /Facilities: Gemini:South, LDT/);
+  assert.match(text, /Software: TurboSpectrum/);
+  assert.match(text, /References/);
+  assert.doesNotMatch(text, /\\uat|\\facilit|\\software|\\bibliography/);
+  // The block's parts open in the title editor: the title and each author's name.
+  const [, from, to] = title.split(":").map(Number);
+  const sources = titleSources(state, from, to);
+  assert.equal(sources.title && state.sliceDoc(sources.title.from, sources.title.to), "Expanding the Volatile Abundance Inventory");
+  assert.deepEqual(sources.authors.map((span) => state.sliceDoc(span.from, span.to)), ["David R. Coria", "Ian J. M. Crossfield"]);
+  assert.equal(mounted(source, (content) => content.querySelectorAll("[data-title-part=author]").length), 2);
+  // Before AASTeX 7 every email is printed; with a \maketitle the block is drawn there, as for other classes.
+  assert.match(bodyText(source.replace("aastex701", "aastex631")), /Emails: drcoria@unm\.edu, ianc@ku\.edu/);
+  assert.equal(constructs(visualState(source.replace("\\begin{abstract}", "\\maketitle\n\\begin{abstract}"))).filter((item) => item.startsWith("title:")).length, 1);
+});
+
+test("a citation note prints its emphasis, font switches and spacing as text (cs.CL 2611.11838, math.AG 2611.08810)", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\begin{document}
+Probing \citep[\emph{inter alia}]{hewitt,tenney} and \cite[{\rm I\hspace{-.01em}I\hspace{-.01em}I}. 7.1 and~8.2]{Stichtenoth}.
+Kept: \cite[\unknownmacro{x}]{other}.
+\end{document}
+`);
+  assert.match(text, /hewitt; tenney, inter alia\]/);
+  assert.match(text, /\[Stichtenoth, III\. 7\.1 and 8\.2\]/);
+  assert.doesNotMatch(text, /\\emph|\\rm|\\hspace/);
+  // A note with a command that is not understood leaves its citation as source.
+  assert.match(text, /\\cite\[\\unknownmacro\{x\}\]\{other\}/);
+});
+
+test("linguex's examples are numbered (1), (2) with lettered parts, and referable (cs.CL 2611.11838)", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\usepackage{linguex}
+\begin{document}
+See (\ref{ex:p}), (\ref{ex:q}) and (\ref{ex:pb}).
+
+\ex.\label{ex:p}
+\textbf{Original:} I'm afraid the cat was hit.
+\a. First reading.
+\b.\label{ex:pb} Second reading.
+
+\ex.\label{ex:q} Plain example.
+
+\exg. Dit is een voorbeeld.\\
+This is an example.
+\end{document}
+`);
+  assert.match(text, /See \(1\), \(2\) and \(1b\)\./);
+  assert.match(text, /\(1\)\s*ex:p\s*Original: I'm afraid/);
+  assert.match(text, /a\. First reading\.\s*b\.\s*ex:pb Second reading\./);
+  assert.match(text, /\(2\)\s*ex:q Plain example\./);
+  assert.match(text, /\(3\) Dit is een voorbeeld\./);
+  assert.doesNotMatch(text, /\\ex|\\a\.|\\b\./);
+});
+
+test("Cambridge's jfp front matter folds into the title block, also when a long document is built in pieces (cs.LO 2610.41832)", () => {
+  const doc = String.raw`\documentclass[nolinenum]{jfp}
+\begin{document}
+\journaltitle{arxiv}
+\cpr{The Author(s),}
+\doival{10.1017/xxxxx}
+\newcommand{\shorttitle}{Pareto climate economics}
+\lefttitle{Botta, Jansson, Richter}
+\righttitle{\shorttitle}
+\totalpg{\pageref{lastpage01}}
+\jnlDoiYr{2026}
+\title{Pareto climate economics: optimism and pessimism}
+\begin{authgrp}
+\author{NICOLA BOTTA} \affiliation{Potsdam Institute for Climate Impact Research.
+  (\email{botta@pik-potsdam.de})}
+%
+\author{PATRIK JANSSON}
+\affiliation{Chalmers University of Technology. (\email{patrikj@chalmers.se})}
+\end{authgrp}
+\begin{abstract}
+${"We argue that simple models help. ".repeat(80)}
+\end{abstract}
+\maketitle%[E]
+\section{Introduction}
+${"Body text of the paper. ".repeat(600)}
+\end{document}
+`;
+  const state = visualState(doc);
+  assert.ok(constructs(state).includes(`title:${doc.indexOf("\\journaltitle")}:${doc.indexOf("%[E]") + 4}`));
+  const text = bodyText(doc);
+  assert.match(text, /Pareto climate economics: optimism and pessimism/);
+  assert.match(text, /NICOLA BOTTA.*PATRIK JANSSON/);
+  assert.doesNotMatch(text, /\\journaltitle|\\cpr|\\doival|\\jnlDoiYr|\\author|authgrp|\\affiliation|\\email/);
 });

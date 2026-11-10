@@ -29,6 +29,7 @@
     "lint": "eslint",
     "bench:ink": "node --import tsx scripts/editor/ink-bench.ts",
     "bench:latex-visual": "node --require ./scripts/editor/setup.cjs --import tsx scripts/editor/latex-visual-bench.ts",
+    "audit:latex-visual": "node --require ./scripts/editor/setup.cjs --import tsx scripts/editor/latex-visual-audit.ts",
     "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs",
     "search:download-model": "node scripts/download-embeddinggemma.cjs",
     "models:download": "node --import tsx scripts/download-models.ts",

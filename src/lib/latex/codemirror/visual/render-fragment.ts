@@ -623,8 +623,8 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         if (char) { parent.appendChild(document.createTextNode(char)); return; }
       }
       if (text === "\\and" || text === "\\And" || text === "\\AND") { parent.appendChild(element("span", "cm-vis-author-sep")); return; }
-      // threeparttable's `\tnote{a}` in a cell: the note's mark, raised.
-      if (text === "\\tnote") {
+      // threeparttable's `\tnote{a}` in a cell (AASTeX's `\tablenotemark{a}`): the note's mark, raised.
+      if (text === "\\tnote" || text === "\\tablenotemark") {
         const argument = commandArguments(node).find((arg) => !arg.optional);
         if (argument) { const mark = element("sup"); renderArgument(mark, argument.node); parent.appendChild(mark); return; }
       }

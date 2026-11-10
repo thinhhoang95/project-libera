@@ -1,5 +1,5 @@
-import { decideConditional, opensConditional, type ConditionalFacts } from "./conditionals";
-import { conditionalFacts, conditionalFactsKey, definitionExtentAround, definitionExtentAt, macroAt, switchAt, type LatexDefinitions } from "./definitions";
+import { decideConditional, evaluateTexConditionals, opensConditional, type ConditionalFacts } from "./conditionals";
+import { conditionalFacts, conditionalFactsKey, definitionExtentAround, definitionExtentAt, macroAt, switchAt, type LatexDefinitions, type LatexMacro } from "./definitions";
 
 /* Macros that write a document's structure: `\newcommand{\mysec}[1]{\section{#1}}`,
  * `\newcommand{\step}{\item}`, `\newcommand{\nl}{\\}`, `\newcommand{\beq}{\begin{equation}}`.
@@ -146,10 +146,22 @@ export function discardingMacros(defs: LatexDefinitions): ReadonlyMap<string, nu
   const found = new Map<string, number>();
   for (const [name, list] of defs.macros) {
     // (`\providecommand` does nothing for a command LaTeX already has: it discards nothing.)
-    if (list.length && list.every((macro) => macro.arity >= 1 && macro.optional === undefined && !macro.spec && !macro.unsupported && !macro.alias && !macro.provided && !macro.body.includes("#"))) found.set(name, list[0].arity);
+    if (list.length && list.every((macro) => macro.arity >= 1 && macro.optional === undefined && !macro.spec && !macro.unsupported && !macro.alias && !macro.provided && (!macro.body.includes("#") || macroPassThrough(macro, defs) === "discard"))) found.set(name, list[0].arity);
   }
   discardCache.set(defs, names = found);
   return names;
+}
+
+/**
+ * What a one-argument macro prints once the conditionals in its body are decided: nothing (`discard`), or its argument
+ * unchanged (`identity`: `\newcommand{\rev}[1]{#1}`, and cs.DS 2611.09172's version switches
+ * `\newcommand{\iffullversion}[1]{{{\ifx\conference\undefined{#1}\fi}\xspace}}`); null for anything else.
+ */
+export function macroPassThrough(macro: LatexMacro, defs: LatexDefinitions): "discard" | "identity" | null {
+  if (macro.arity !== 1 || macro.optional !== undefined || macro.spec || macro.unsupported || macro.alias || macro.provided || macro.mathOnly) return null;
+  if (!/^[\s{}]*#1[\s{}]*$/.test(macro.body) && !macro.body.includes("\\if")) return null;
+  const body = evaluateTexConditionals(macro.body, conditionalFacts(defs, Number.MAX_SAFE_INTEGER)).replace(/\\xspace(?![A-Za-z@])|[{}\s]/g, "");
+  return body === "" ? "discard" : body === "#1" ? "identity" : null;
 }
 
 /** Where the `count` groups after `at` end (past spaces), skipping escaped braces and comments; -1 when one is missing. */
@@ -265,11 +277,15 @@ function falseRegions(text: string, defs?: LatexDefinitions) {
     if (extent) { token.lastIndex = Math.max(token.lastIndex, extent.to); continue; }
     const end = match.index + match[0].length;
     if (name === "unless") { unless = match.index; continue; }
+    // `\newif\ifarxiv` names a switch: no conditional opens there.
+    if (name.startsWith("if") && /\\newif\s*$/.test(text.slice(Math.max(0, match.index - 16), match.index))) { unless = -1; continue; }
     const left = stack.some((open) => open.from >= 0);
     if (name === "fi" || name === "repeat") {
       // plain TeX's `\repeat` is a `\fi`.
       const top = stack.pop();
       if (top && top.from >= 0) regions.push({ from: top.from, to: end });
+      // A decided conditional's `\fi` prints nothing either (q-bio.NC 2610.36484's `\ifarxiv\else … \fi`).
+      else if (top && top.value !== null && name === "fi") regions.push({ from: match.index, to: end });
     } else if (name === "else" || name === "or") {
       const top = stack[stack.length - 1];
       if (!top || top.inElse || name === "or") continue;
@@ -281,7 +297,10 @@ function falseRegions(text: string, defs?: LatexDefinitions) {
       const decided = left ? null : decideConditional(text, end, name, conditionalFacts(defs, match.index));
       const inverted = unless >= 0 && !text.slice(unless + 7, match.index).trim();
       const value = decided ? decided.value !== inverted : null;
-      stack.push({ value, inElse: false, from: value === false ? (inverted ? unless : match.index) : -1 });
+      const start = inverted ? unless : match.index;
+      // The test of one that is true is left out with the branch it does not take: only the branch taken is drawn.
+      if (value === true && decided) regions.push({ from: start, to: decided.end });
+      stack.push({ value, inElse: false, from: value === false ? start : -1 });
     }
     unless = -1;
   }

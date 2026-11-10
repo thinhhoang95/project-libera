@@ -1,6 +1,7 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
-import { packageMacros, readAlgorithmBlock } from "./packages";
+import { classMacros, packageMacros, readAlgorithmBlock } from "./packages";
 import { decideConditional, type ConditionalFacts } from "./conditionals";
+import { findBeginDocument } from "../document-begin";
 
 /* The document's own definitions, read the way TeX would read them, for the
  * Visual mode (docs/latex-visual-editor-plan.md §7). Only forms whose meaning
@@ -32,6 +33,8 @@ export type LatexMacro = {
   end?: number;
   /** A definition the Visual mode cannot render (`\edef`, delimited parameters, under an unknown conditional): it hides earlier meanings, and its uses stay source. */
   unsupported?: boolean;
+  /** An unsupported definition TeX certainly makes (`\def\fullversion` with delimited parameters): `\ifx\fullversion\undefined` is false. */
+  exists?: boolean;
   /** `\let\a\b` with `\b` not one of the document's macros: only a name for another command, whose arguments are unknown. */
   alias?: boolean;
   /** `\providecommand`: does nothing when the command already exists, which for LaTeX's own commands the reader cannot know. */
@@ -139,6 +142,11 @@ export type LatexDefinitions = {
    * one false, `\drafttrue` sets it. null where it is set under a condition the reader cannot evaluate.
    */
   switches?: Map<string, LatexSwitchSetting[]>;
+  /**
+   * Names whose definition is commented out (`% \def\conference`): a version switch the author turned off, which
+   * `\ifx\conference\undefined` finds undefined when nothing else defines it (cs.DS 2611.09172).
+   */
+  commentedOut?: Set<string>;
   /** `\documentclass[options]{…}`'s options. */
   classOptions?: string[];
   /**
@@ -162,7 +170,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -576,6 +584,8 @@ const DRAWN_BUILTINS = new Set([
 const PACKAGE_FILE = /\.(?:sty|cls)$/i;
 /** Formula commands the Visual mode draws itself when a document builds them from boxes (see math-render.ts's KATEX_MACROS). */
 const BOX_BUILT = new Set(["widebar"]);
+/** TeX's sized delimiters, which documents wrap for spacing (mleftright's idiom). */
+const SIZED_DELIMITERS = new Set(["left", "right", "middle"]);
 
 /** Whether `body` uses a `\let` copy of LaTeX's own `\name` (`\oldparagraph` after `\let\oldparagraph\paragraph`). */
 function callsSavedOriginal(defs: LatexDefinitions, name: string, body: string) {
@@ -603,6 +613,10 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // A drawn command wrapped around its saved self (2107.05853's `\let\oldparagraph\paragraph`
   // `\renewcommand{\paragraph}[1]{\oldparagraph{#1.}}`): LaTeX's own is drawn (a heading), without what the wrapper adds.
   if (DRAWN_BUILTINS.has(macro.name) && !macro.alias && callsSavedOriginal(context.defs, macro.name, macro.body)) return null;
+  // mleftright's spacing fix written out (2611.09172's `\let\originalleft\left`, then `\renewcommand{\left}{\mathopen{}
+  // \mathclose\bgroup\originalleft}` and `\renewcommand{\right}{\aftergroup\egroup\originalright}`): TeX's group tricks
+  // around the saved delimiter, which a formula renderer cannot run. TeX's own `\left` and `\right` are drawn.
+  if (SIZED_DELIMITERS.has(macro.name) && !macro.alias && callsSavedOriginal(context.defs, macro.name, macro.body) && /\\(?:aftergroup|bgroup|egroup|mathopen|mathclose)(?![A-Za-z@])/.test(macro.body)) return null;
   const existing = context.defs.macros.get(macro.name);
   if (mode === "provide" && existing?.length) return null;
   const fingerprint = hashString(JSON.stringify([macro.name, macro.arity, macro.optional ?? null, macro.spec ?? null, macro.body, !!macro.mathOnly, !!macro.unsupported, !!macro.alias, mode === "provide"]));
@@ -797,6 +811,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
   };
   const scanner = new TexScanner(source);
   if (options.uncertain) scanner.assumeUncertain();
+  if (source.includes("%")) for (const match of source.matchAll(/^[ \t]*%+[ \t]*\\(?:def|newcommand\s*\{?)\s*\\([A-Za-z@]+)/gm)) (defs.commentedOut ??= new Set()).add(match[1]);
   /** The code of the options given, run at `\ProcessOptions`. */
   const pendingOptions: Array<{ text: string; offset: number; uncertain: boolean }> = [];
   /** Every option's code, by name, for `\ExecuteOptions`. */
@@ -810,7 +825,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
   };
   scanner.facts = {
     constant: (name) => constantOf(latest(name)),
-    defined: (name) => { const macro = latest(name); return macro && !macro.unsupported && !macro.alias ? true : undefined; },
+    defined: (name) => definedState(defs, latest(name), name),
     switchState: (name) => {
       const list = defs.switches?.get(name);
       if (!list) return undefined;
@@ -855,7 +870,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     /** A definition that cannot be rendered still hides the earlier meaning of its name. */
     const shadow = (name: string, message: string) => {
       note(defs.unsupported, name, message);
-      added = addMacro(context, { name, arity: 0, body: "", pos, file: context.file, unsupported: true }, "renew");
+      added = addMacro(context, { name, arity: 0, body: "", pos, file: context.file, unsupported: true, ...(uncertain ? {} : { exists: true }) }, "renew");
     };
 
     if (match[1] === undefined) {
@@ -1198,6 +1213,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           defs.classOptions = options ? options.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) : [];
         }
         addClassTheorems(defs, name.content.trim(), options?.content ?? "");
+        // The class's text commands written in packages.ts (AASTeX's `\apj`); the document's own definitions win.
+        for (const { replaces, ...macro } of classMacros(name.content.trim())) if (replaces || !defs.macros.get(macro.name)?.length) addMacro(context, { ...macro, pos, file: context.file, package: name.content.trim() }, "renew");
       }
     } else if (command === "usepackage" || command === "RequirePackage") {
       const packageOptions = readOptionalAt(source, index);
@@ -1286,10 +1303,10 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         end = block.end;
         if (!uncertain) for (const macro of block.macros) addMacro(context, { ...macro, pos, file: context.file }, "renew");
       }
-    } else if (/^SetKw(?:Function|InOut|Input|Prog|Data|Block)?$/.test(command)) {
+    } else if (/^SetKw(?:Function|InOut|Input|Prog|Data|Block|For)?$/.test(command)) {
       // algorithm2e's keywords declared before an algorithm (`\SetKwInOut{Input}{Input}` in a preamble): macros whose
       // body is the declaration, which an algorithm reads first (walk.ts); in text and formulas their uses stay source.
-      const count = command === "SetKwProg" ? 4 : command === "SetKwBlock" ? 3 : 2;
+      const count = command === "SetKwProg" || command === "SetKwFor" ? 4 : command === "SetKwBlock" ? 3 : 2;
       const groups: string[] = [];
       let at = index;
       while (groups.length < count) {
@@ -1460,9 +1477,7 @@ export function collectLatexDefinitions(sources: readonly DefinitionSource[], op
 
 /** Where the document body starts: after `\begin{document}`, or 0 for a chapter file without one. */
 export function bodyStartOf(source: string) {
-  const match = /\\begin\s*\{document\}/.exec(source);
-  if (!match || inComment(source, match.index)) return 0;
-  return match.index + match[0].length;
+  return findBeginDocument(source)?.end ?? 0;
 }
 
 /** The definition of `name` that applies at `pos` in the open file (a local one only inside its group). */
@@ -1481,11 +1496,20 @@ export function switchAt(defs: LatexDefinitions, name: string, pos: number): boo
   return null;
 }
 
+/**
+ * Whether `name` is defined, for `\ifx\x\undefined` and `\ifdefined`: true for one of the document's macros, false for
+ * a name whose only definition is commented out, undefined when not known (LaTeX or a package may define it).
+ */
+function definedState(defs: LatexDefinitions, macro: LatexMacro | null | undefined, name: string) {
+  if (macro && (macro.exists || (!macro.unsupported && !macro.alias))) return true;
+  return !macro && defs.commentedOut?.has(name) ? false : undefined;
+}
+
 /** What decides a conditional at `pos` in the open file (conditionals.ts): constants, switches, and in a formula or not. */
 export function conditionalFacts(defs: LatexDefinitions, pos: number, math?: boolean): ConditionalFacts {
   return {
     constant: (name) => constantOf(macroAt(defs, name, pos)),
-    defined: (name) => { const macro = macroAt(defs, name, pos); return macro && !macro.unsupported && !macro.alias ? true : undefined; },
+    defined: (name) => definedState(defs, macroAt(defs, name, pos), name),
     switchState: (name) => switchAt(defs, name, pos),
     math,
   };
@@ -1498,8 +1522,9 @@ export function conditionalFactsKey(defs: LatexDefinitions) {
   let key = factsKeys.get(defs);
   if (key !== undefined) return key;
   const parts: string[] = [];
-  for (const [name, list] of defs.macros) parts.push(`${name}=${list.map((macro) => constantOf(macro) ?? (macro.unsupported || macro.alias ? "?" : "")).join(",")}`);
+  for (const [name, list] of defs.macros) parts.push(`${name}=${list.map((macro) => constantOf(macro) ?? (macro.exists ? "!" : macro.unsupported || macro.alias ? "?" : "")).join(",")}`);
   for (const [name, list] of defs.switches ?? []) parts.push(`${name}:${list.map((setting) => setting.value).join(",")}`);
+  if (defs.commentedOut) parts.push(`%${[...defs.commentedOut].join(",")}`);
   factsKeys.set(defs, key = parts.join("\u0000"));
   return key;
 }

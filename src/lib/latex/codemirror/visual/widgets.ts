@@ -281,6 +281,20 @@ export class ItemMarkerWidget extends VisualWidget {
   }
 }
 
+/** linguex's `\ex.` (an example: "(1)") and `\a.`, `\b.` (its parts: "a."), numbered by the numbering pass. */
+export class ExampleMarkerWidget extends VisualWidget {
+  constructor(readonly part: boolean) { super(part ? "part" : "example"); }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-item cm-vis-item-number cm-vis-item-inline cm-vis-example");
+    refreshable(dom, view, (target) => {
+      const pos = widgetPos(target, dom);
+      const number = (pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "item"))?.number ?? "";
+      dom.textContent = this.part ? `${/[a-z]+$/.exec(number)?.[0] ?? "?"}.` : `(${number || "?"})`;
+    });
+    return dom;
+  }
+}
+
 /** The hidden `\section{` of a heading, drawn as its number. */
 export class HeadingNumberWidget extends VisualWidget {
   constructor(readonly level: string, readonly markup: string) { super(`${level}\u0000${markup}`); }
@@ -579,8 +593,9 @@ function renderImage(container: HTMLElement, view: EditorView, name: string, cla
 export type FigureContent = {
   images: Array<{ path: string; width?: string }>;
   /** For tables: the tabular sources inside, with their offsets relative to the widget.
-   * `readOnly`: drawn from a reading of the source (a longtable's rows), not cell by cell from it. */
-  tabulars?: Array<{ source: string; offset: number; readOnly?: boolean }>;
+   * `readOnly`: drawn from a reading of the source (a longtable's rows), not cell by cell from it.
+   * `ruled`: inside revtex's `ruledtabular`, which rules the grid with double lines above and below. */
+  tabulars?: Array<{ source: string; offset: number; readOnly?: boolean; ruled?: boolean }>;
   /** Drawings the editor does not draw (TikZ, `\input` files): their file name, or "" for an inline picture. */
   drawings?: string[];
   /** An `algorithmic` body, as numbered lines. */
@@ -705,10 +720,14 @@ export class FigureWidget extends VisualWidget {
         body.append(frame);
       }
       if (content.overlay) body.append(el("div", "cm-vis-figure-overlay", "+ overlay (labels drawn in the PDF)"));
-      for (const tabular of content.tabulars ?? []) body.append(renderTableGrid(view, tabular.source, () => {
-        const pos = start();
-        return pos === null ? null : pos + tabular.offset;
-      }, tabular.readOnly ? spec.length - tabular.offset : undefined));
+      for (const tabular of content.tabulars ?? []) {
+        const grid = renderTableGrid(view, tabular.source, () => {
+          const pos = start();
+          return pos === null ? null : pos + tabular.offset;
+        }, tabular.readOnly ? spec.length - tabular.offset : undefined);
+        if (tabular.ruled) grid.classList.add("cm-vis-table-ruled");
+        body.append(grid);
+      }
       if (content.algorithm) {
         const lines = renderAlgorithm(content.algorithm, fragmentContext(view, content.captionPos));
         if (content.intro) {
