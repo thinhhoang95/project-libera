@@ -305,7 +305,9 @@ test("a float or minipage being typed stays source until complete and does not s
     const doc = inDocument(finished.slice(0, cut) + after);
     const state = visualState(doc, [], doc.indexOf(after));
     assert.equal(constructs(state).filter((item) => item.startsWith("figure:")).length, 0, `incomplete at ${cut}: ${JSON.stringify(finished.slice(0, cut))}`);
-    assert.ok(constructs(state).some((item) => item.startsWith("heading")), `the section after stays drawn at ${cut}`);
+    // An unclosed `{` (`\includegraphics{a`) takes what follows into its group in TeX too: only a closed one is checked.
+    const open = (finished.slice(0, cut).match(/\{/g) ?? []).length - (finished.slice(0, cut).match(/\}/g) ?? []).length;
+    if (!open) assert.ok(constructs(state).some((item) => item.startsWith("heading")), `the section after stays drawn at ${cut}`);
   }
   assert.equal(drawnFloats(inDocument(finished + after)), 1);
   const columns = "\\begin{minipage}{0.4\\linewidth}\nA\n\\end{minipage}\\hfill\n\\begin{minipage}{0.4\\linewidth}\nB\n\\end{minipage}";

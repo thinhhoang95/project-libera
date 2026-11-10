@@ -16,7 +16,7 @@ import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATU
 import { macroBuiltTabular, parseTabular, readCtable, readDeluxeTable, readLongTable } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
-  ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
+  ChipWidget, ColumnsWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
   ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget,
 } from "./widgets";
@@ -302,7 +302,7 @@ const HANDLED = new Set([
   "FootnoteCommand", "EndnoteCommand", "DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment",
   "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "Item", "Environment",
   "EndEnv", "Maketitle", "IncludeGraphics", "LineBreak", "Tilde", "Normal", "UnknownCommand", "Group",
-  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand",
+  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand", "ParBoxCommand",
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
@@ -1090,6 +1090,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return drawFloat(node, floatKind(node, readNode) ?? (name === "TableEnvironment" ? "table" : "figure"));
         }
         case "TabularEnvironment": return drawTabular(node);
+        // Side-by-side `\parbox{0.45\textwidth}{…}\hfill\parbox{…}{…}`: columns.
+        case "ParBoxCommand": {
+          const command = node.parent?.parent;
+          if (command?.name === "Command" && drawColumns(command) === false) return false;
+          break;
+        }
         case "ListEnvironment": return drawList(node);
         case "Item": {
           if (!lists.length || !structural) return false;
@@ -1115,6 +1121,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (captioned && drawFloat(node, captioned) === false) return false;
           // tcolorbox's and mdframed's boxes, and the document's own (`\newtcolorbox`): a frame around their lines.
           if (boxEnvironments(doc).has(environmentName(node, readNode) ?? "") && !defs.environments.has(environmentName(node, readNode) ?? "")) return drawBox(node);
+          // Side-by-side minipages outside floats: columns.
+          if (environmentName(node, readNode) === "minipage" && drawColumns(node) === false) return false;
           return environment(node);
         }
         case "EndEnv": {
@@ -1322,6 +1330,55 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     const match = /\\captionof\s*\{\s*([A-Za-z]+)\s*\}/.exec(stripTexComments(read(state, node.from, node.to)));
     return match ? FLOAT_KINDS[match[1]] ?? null : null;
+  }
+
+  /**
+   * Side-by-side minipages or `\parbox`es outside floats (separated by `\hfill`, `\hspace{…}`, `%` lines, not a blank
+   * line), at `item` (the run's first; a later one is covered by it): columns at their widths, drawn once for the run.
+   * False when drawn, null when not columns (a single box, one not complete, one in a group).
+   */
+  function drawColumns(item: SyntaxNode): false | null {
+    const columnOf = (candidate: SyntaxNode) => {
+      if (candidate.name === "Environment" && environmentName(candidate, readNode) === "minipage") {
+        const formed = wellFormedEnvironment(candidate, state);
+        const opening = /^\\begin\s*\{minipage\}\s*(?:\[[^\]]*\]\s*){0,3}\{[^{}]*\}/.exec(read(state, candidate.from, Math.min(candidate.to, candidate.from + 300)));
+        if (!formed || !opening || hasDirectError(candidate)) return null;
+        const from = candidate.from + opening[0].length;
+        return { from, to: Math.max(from, formed.end.from), width: minipageWidth(opening[0]) };
+      }
+      const command = candidate.name === "Command" ? candidate.firstChild?.getChild("ParBoxCommand") : null;
+      if (!command || hasDirectError(command)) return null;
+      const args = commandArguments(command).filter((arg) => !arg.optional);
+      const width = args[0] && argumentInner(args[0].node);
+      const body = args[1] && argumentInner(args[1].node);
+      if (args.length !== 2 || !width || !body) return null;
+      return { from: body.from, to: body.to, width: graphicsWidth(`width=${read(state, width.from, width.to).trim()}`) };
+    };
+    const gap = (candidate: SyntaxNode) => candidate.name === "NewLine" || candidate.name === "Whitespace" || candidate.name === "Comment"
+      || (candidate.name === "Command" && /^\\(?:hfill|hfil|hspace\*?\s*\{[^{}]*\}|quad|qquad|enspace|enskip)$/.test(read(state, candidate.from, candidate.to).trim()));
+    if (!structural) return null;
+    for (let parent = item.parent; parent; parent = parent.parent) {
+      if (parent.name === "TextArgument" || parent.name === "Group" || parent.name === "NonEmptyGroup" || parent.name === "FigureEnvironment" || parent.name === "TableEnvironment") return null;
+    }
+    let first = item;
+    for (let previous = item.prevSibling; previous && (gap(previous) || columnOf(previous)); previous = previous.prevSibling) if (!gap(previous)) first = previous;
+    const items: SyntaxNode[] = [];
+    let lastNewLine = false;
+    for (let next: SyntaxNode | null = first; next && (gap(next) || columnOf(next)); next = next.nextSibling) {
+      // A blank line between two boxes (two newlines in a row) sets them one above the other.
+      if (next.name === "NewLine") { if (lastNewLine) break; lastNewLine = true; continue; }
+      if (next.name !== "Whitespace") lastNewLine = false;
+      if (!gap(next)) items.push(next);
+    }
+    const columns = items.map(columnOf);
+    if (items.length < 2 || columns.some((column) => !column)) return null;
+    const span = aloneOnLines(doc, first.from, items.at(-1)!.to);
+    if (!span) return null;
+    if (item.from !== first.from) return false;
+    consumed.push([span.from, span.to]);
+    const spec = columns.map((column) => ({ offset: column!.from - span.from, length: column!.to - column!.from, body: read(state, column!.from, column!.to), ...(column!.width ? { width: column!.width } : {}) }));
+    emit({ kind: "columns", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new ColumnsWidget(spec, span.to - span.from, graphicsBase(state)) }] });
+    return false;
   }
 
   /**
@@ -3027,12 +3084,11 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       content.kind = defaultKind === "table" ? "table" : "figure";
       // subcaption's `\subcaptionbox[list]{caption}[width]{content}`: the caption is its first group, the width the bracket after it.
       if (read(state, root.from, root.from + 14) === "\\subcaptionbox") {
-        const [first, ...rest] = commandArguments(root);
-        const captionArg = first && !first.optional ? first : rest.find((arg) => !arg.optional);
+        const all = commandArguments(root);
+        const width = all.findIndex((arg) => !arg.optional);
+        const captionArg = all[width];
         const inner = captionArg && argumentInner(captionArg.node);
         if (inner) { content.caption = read(state, inner.from, inner.to); content.captionPos = inner.from; }
-        const all = commandArguments(root);
-        const width = all.findIndex((arg) => arg === captionArg);
         const bracket = all[width + 1]?.optional ? argumentInner(all[width + 1].node) : null;
         const css = bracket ? graphicsWidth(`width=${read(state, bracket.from, bracket.to).trim()}`) : null;
         if (css) content.width = css;

@@ -971,6 +971,119 @@ export class FigureWidget extends VisualWidget {
   get estimatedHeight() { return this.spec.kind === "figure" ? 260 : 160; }
 }
 
+/** A column of side-by-side minipages or parboxes: its content's LaTeX, where it is relative to the widget, and its width. */
+export type ColumnSpec = { offset: number; length: number; body: string; width?: string };
+
+/** A list body's items, split at `\item` outside groups and nested environments; null when text comes before the first. */
+function listItems(body: string): string[] | null {
+  const items: string[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "\\") {
+      if (body.startsWith("\\begin", i)) depth++;
+      else if (body.startsWith("\\end", i)) depth--;
+      else if (depth === 0 && /^\\item(?![A-Za-z@])/.test(body.slice(i, i + 6))) {
+        if (start < 0) { if (body.slice(0, i).trim()) return null; } else items.push(body.slice(start, i).trim());
+        start = i + 5;
+        i = start - 1;
+        continue;
+      }
+      i++;
+    }
+  }
+  if (start < 0) return null;
+  items.push(body.slice(start).trim());
+  return items;
+}
+
+/**
+ * A column's content as blocks: its lists (as lists), its tabulars (as grids, cells edited as a table's), and its text
+ * paragraphs (with formulas and images drawn, anything else shown as source, as captions are).
+ */
+function renderColumnBody(view: EditorView, dom: HTMLElement, column: HTMLElement, spec: ColumnSpec) {
+  const body = spec.body;
+  const blocks = /\\begin\s*\{(itemize|enumerate|description|tabular\*?|tabularx)\}/g;
+  let at = 0;
+  const text = (from: number, to: number) => {
+    for (const paragraph of body.slice(from, to).split(/\n[ \t]*\n/)) {
+      if (!paragraph.replace(/%[^\n]*/g, "").trim()) continue;
+      column.append(renderLatexInto("div", "cm-vis-column-block", paragraph.trim(), widgetContext(view, dom, spec.offset)));
+    }
+  };
+  for (let match = blocks.exec(body); match; match = blocks.exec(body)) {
+    // The matching `\end`, counting the same environment nested inside.
+    const name = match[1].replace("*", "\\*");
+    const pattern = new RegExp(String.raw`\\(begin|end)\s*\{${name}\}`, "g");
+    pattern.lastIndex = match.index + match[0].length;
+    let depth = 1;
+    let end = -1;
+    for (let next = pattern.exec(body); next; next = pattern.exec(body)) {
+      depth += next[1] === "begin" ? 1 : -1;
+      if (!depth) { end = next.index + next[0].length; break; }
+    }
+    if (end < 0) break;
+    text(at, match.index);
+    const source = body.slice(match.index, end);
+    if (/^tabular/.test(match[1])) {
+      const offset = spec.offset + match.index;
+      const grid = renderTableGrid(view, source, () => { const pos = widgetPos(view, dom); return pos === null ? null : pos + offset; });
+      const block = el("div", "cm-vis-column-block");
+      block.append(grid);
+      column.append(block);
+    } else {
+      const inner = source.replace(/^\\begin\s*\{[^}]*\}/, "").replace(/\\end\s*\{[^}]*\}$/, "");
+      const items = listItems(inner);
+      if (!items) column.append(renderLatexInto("div", "cm-vis-column-block", source, widgetContext(view, dom, spec.offset)));
+      else {
+        const list = el(match[1] === "enumerate" ? "ol" : "ul", "cm-vis-column-block");
+        for (const item of items) list.append(renderLatexInto("li", "", item.replace(/^\[[^\]]*\]\s*/, ""), widgetContext(view, dom, spec.offset)));
+        column.append(list);
+      }
+    }
+    at = end;
+    blocks.lastIndex = end;
+  }
+  text(at, body.length);
+}
+
+/** Side-by-side minipages or parboxes outside floats: columns at their widths; clicked, a column's LaTeX is edited in place. */
+export class ColumnsWidget extends VisualWidget {
+  constructor(readonly columns: ColumnSpec[], readonly length: number, readonly base: string) { super(JSON.stringify([columns, length, base])); }
+  toDOM(view: EditorView) {
+    const dom = el("div", "cm-vis-columns");
+    for (const spec of this.columns) {
+      const column = el("div", "cm-vis-column");
+      if (spec.width) column.style.setProperty("--vis-column-width", spec.width);
+      column.dataset.floatOffset = String(spec.offset);
+      renderColumnBody(view, dom, column, spec);
+      column.addEventListener("mousedown", (event) => {
+        const target = event.target as HTMLElement;
+        if (event.button !== 0 || target.closest(".cm-vis-float-editor, .cm-vis-table-cell")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const from = widgetPos(view, dom);
+        if (from === null) return;
+        if (event.altKey || !floatHooks?.edit(view, column, from + spec.offset, spec.body, "Column")) revealSourceAt(view, from + spec.offset, from + spec.offset + spec.length);
+      });
+      dom.append(column);
+    }
+    dom.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-column")) return;
+      event.preventDefault();
+      const from = widgetPos(view, dom);
+      if (from !== null) selectRange(view, from, from + this.length);
+    });
+    queueMicrotask(() => { if (dom.isConnected) floatHooks?.adopt?.(view, dom); });
+    return dom;
+  }
+  ignoreEvent() { return true; }
+  get estimatedHeight() { return 120; }
+}
+
 export type TableHooks = {
   /** Makes a cell editable as its LaTeX source. */
   edit: (view: EditorView, cell: HTMLElement, tableStart: () => number | null, row: number, cell_: number) => void;
