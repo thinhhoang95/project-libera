@@ -100,13 +100,15 @@ Boxed words.
 \end{figure}`);
   assert.equal(drawnFloats(doc), 1);
   const { text, raw } = mounted(doc);
-  assert.match(text, /Code \(lstlisting\)/);
+  // A listing written in the float is drawn as code (the text round's code blocks): a placeholder would hide the code.
+  assert.match(text, /x = 1/);
+  assert.doesNotMatch(text, /Code \(lstlisting\)/);
   assert.match(text, /Framed text \(framed\)/);
   assert.match(text, /Tree \(forest\)/);
   assert.match(text, /Chemical structure \(chemfig\)/);
   assert.match(text, /Figure 1: Many things/);
   assert.deepEqual(raw, ["\\mystery{x} \\another"], "two unknown commands on one line: one source line");
-  assert.doesNotMatch(text, /x = 1|Boxed words|NP/, "a placeholder shows its name, not a drawing of its content");
+  assert.doesNotMatch(text, /Boxed words|NP/, "a placeholder shows its name, not a drawing of its content");
 });
 
 test("\\includesvg is an image, \\subimport a drawing from its file, and a \\subcaptionbox in a float is a panel", () => {

@@ -15,6 +15,7 @@ import { editableLines, type FrontDetailsView, type FrontLineView } from "./fron
 import { columnSpans, parseTabular, type TableModel, type TableRow, type TableSettings } from "./table-model";
 import { algorithmLineNumbers, type AlgorithmSpec } from "./algorithm";
 import { attachDrawingPreview } from "./drawing-preview";
+import { readCodeBlock, renderCodeBlock } from "./text-commands";
 
 /* The widgets the Visual mode draws in place of LaTeX constructs
  * (docs/latex-visual-editor-plan.md §3). Widgets whose text depends on
@@ -843,7 +844,13 @@ export function floatPartPos(view: EditorView, dom: HTMLElement, part: HTMLEleme
  */
 function sourcePartElement(view: EditorView, dom: HTMLElement, part: NonNullable<FigureContent["sources"]>[number]) {
   let element: HTMLElement;
-  if (part.name) {
+  // A code listing written in the float: its code, drawn as code blocks are in the text (a placeholder would hide it).
+  const code = part.name ? readCodeBlock(part.text) : null;
+  if (code) {
+    element = el("div", "cm-vis-figure-source cm-vis-figure-source-code");
+    element.append(renderCodeBlock(code, (latex) => renderLatexFragment(latex, widgetContext(view, dom, part.offset)), null));
+    element.title = "Click to edit its source";
+  } else if (part.name) {
     element = el("span", "cm-vis-figure-drawing cm-vis-figure-source cm-vis-figure-source-named");
     element.append(el("span", "cm-vis-figure-drawing-name", part.name), el("span", "cm-vis-figure-drawing-note", "Click to edit its source"));
   } else {
