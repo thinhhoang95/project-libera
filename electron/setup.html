@@ -403,9 +403,10 @@
         .routing-body { padding: 0 16px 16px; }
       }
       /* Preferences → AI: the jump bar, the Model Pool and custom system prompts */
-      .ai-jump { background: var(--dialog-surface, #fff); display: flex; flex-wrap: wrap; gap: 2px; margin: 0 -4px 12px; padding: 4px; position: sticky; top: -20px; z-index: 5; }
-      .libera-dialog .ai-jump button { background: none; border: 0; border-radius: 999px; color: var(--muted-foreground, #71717a); cursor: pointer; font-size: 12px; font-weight: 600; padding: 4px 10px; }
+      .ai-jump { background: var(--dialog-surface, #fff); border: 1px solid var(--border, #e4e4e7); border-radius: 12px; box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground, #18181b) 6%, transparent); display: flex; flex-wrap: wrap; gap: 2px; margin: 0 0 12px; padding: 4px; position: sticky; top: -20px; z-index: 5; }
+      .libera-dialog .ai-jump button { background: none; border: 0; border-radius: 8px; color: var(--muted-foreground, #71717a); cursor: pointer; font-size: 12px; font-weight: 600; padding: 6px 12px; transition: background-color 0.15s, color 0.15s; }
       .libera-dialog .ai-jump button:hover { background: var(--muted, #f4f4f5); color: var(--foreground, #18181b); }
+      .libera-dialog .ai-jump button:focus-visible { outline: 2px solid color-mix(in srgb, var(--ring, #2563eb) 70%, transparent); outline-offset: 1px; }
       .ai-part { border-top: 1px solid var(--border, #e4e4e7); margin-top: 28px; padding-top: 20px; scroll-margin-top: 44px; }
       .settings-section .ai-part h3 { font-size: 15px; margin: 0 0 2px; }
       .ai-part .field-help { margin: 0 0 4px; }
