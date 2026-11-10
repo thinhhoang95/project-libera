@@ -1000,7 +1000,8 @@ export class FigureWidget extends VisualWidget {
       const label = el("span", "cm-vis-caption-label");
       const text = el("span", "cm-vis-caption-text");
       text.append(renderLatexFragment(content.caption, fragmentContext(view, content.captionPos)));
-      if (content.captionOffset !== undefined) {
+      // An algorithm's own caption is edited by algorithm-edit.ts (below), not by the float's caption editor.
+      if (content.captionOffset !== undefined && !(content.kind === "algorithm" && !content.sub)) {
         // Clicked, the caption's LaTeX is edited in place (its label and short title stay as written).
         const offset = content.captionOffset;
         const original = content.caption;
