@@ -98,6 +98,8 @@ export function environmentName(node: SyntaxNode, read: Read) {
 export const FLOAT_KINDS: Record<string, "figure" | "table" | "algorithm"> = {
   figure: "figure", "figure*": "figure", wrapfigure: "figure", sidewaysfigure: "figure", "sidewaysfigure*": "figure", SCfigure: "figure", teaserfigure: "figure",
   table: "table", "table*": "table", wraptable: "table", sidewaystable: "table", "sidewaystable*": "table", SCtable: "table",
+  // AASTeX's tables, captioned by `\tablecaption` (numbered at the environment).
+  deluxetable: "table", "deluxetable*": "table",
   algorithm: "algorithm", "algorithm*": "algorithm",
 };
 
@@ -402,6 +404,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   };
   const step = (name: string) => { counters.set(name, value(name) + 1); reset(name); };
   const formatting = new Set<string>();
+  /** Counters AASTeX's `\restartappendixnumbering` numbers after the appendix's letter. */
+  const appendixNumbered = new Set<string>();
   /**
    * Where in the open file numbering has got to: a counter is printed with the `\the…` definition in force
    * there, as TeX does (an appendix's `\renewcommand{\thesection}{B}` does not reach back to the introduction).
@@ -435,6 +439,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     if (name === "equation" && top) return `${top.parent}${formatCounterValue(value(name), "alph")}`;
     const custom = customFormat(name);
     if (custom !== undefined) return custom;
+    // After AASTeX's `\restartappendixnumbering`: the appendix's letter, then the number (A1).
+    if (appendixNumbered.has(name) && depth < 8) return `${format(chapters ? "chapter" : "section", depth + 1)}${value(name)}`;
     const own = name === "part" ? formatCounterValue(value(name), "Roman")
       : appendix && ((chapters && name === "chapter") || (!chapters && name === "section")) ? formatCounterValue(value(name), "Alph")
         : String(value(name));
@@ -784,6 +790,9 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const top = chapters ? "chapter" : "section";
           counters.set(top, 0);
           reset(top);
+        } else if (command === "\\restartappendixnumbering" && !macroAt(defs, "restartappendixnumbering", here)) {
+          // AASTeX's: tables, figures and equations start again, numbered after their appendix's letter (Table A1).
+          for (const counter of ["table", "figure", "equation"]) { counters.set(counter, 0); reset(counter); appendixNumbered.add(counter); }
         } else if (command === "\\frontmatter" || command === "\\mainmatter" || command === "\\backmatter") {
           if (chapters) mainmatter = command === "\\mainmatter";
         } else if (command === "\\crefalias") {
@@ -979,6 +988,16 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const top = chapters ? "chapter" : "section";
           counters.set(top, 0);
           reset(top);
+        }
+        // AASTeX's `deluxetable`: its `\tablecaption` numbers it, and every `\label` in it refers to it (2611.08676 writes
+        // one right after `\begin`); `\tablenum{A1}` gives its number instead.
+        if (/^deluxetable\*?$/.test(env) && !defs.environments.has(env)) {
+          const text = stripTexComments(read(node.from, node.to));
+          const given = /\\tablenum\s*\{([^{}]*)\}/.exec(text)?.[1].trim();
+          if (given) {
+            entries.push({ pos: node.from, kind: "table", number: given });
+            setTarget({ number: given, kind: "table", pos: node.from });
+          } else if (/\\tablecaption\s*\{/.test(text)) numberCaption("table", node, false);
         }
         if (env === "subequations") {
           // One equation number for the group, and 3a, 3b for the equations in it; a label right after the \begin is the group's.

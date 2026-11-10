@@ -193,6 +193,32 @@ export function readAlgorithmBlock(source: string, index: number, command: strin
   return { end: at, macros };
 }
 
+/** AASTeX's journal abbreviations (in its papers' `.bbl` and text: `\apj` is ApJ), by command. */
+const AAS_JOURNALS: Record<string, string> = {
+  aj: "AJ", actaa: "Acta Astron.", araa: "ARA\\&A", apj: "ApJ", apjl: "ApJL", apjs: "ApJS", ao: "Appl.~Opt.", apss: "Ap\\&SS", aap: "A\\&A",
+  aapr: "A\\&A~Rv", aaps: "A\\&AS", azh: "AZh", baas: "BAAS", caa: "Chinese Astron. Astrophys.", cjaa: "Chinese J. Astron. Astrophys.", icarus: "Icarus",
+  jcap: "J. Cosmology Astropart. Phys.", jrasc: "JRASC", memras: "MmRAS", mnras: "MNRAS", na: "New A", nar: "New A Rev.", pra: "Phys.~Rev.~A",
+  prb: "Phys.~Rev.~B", prc: "Phys.~Rev.~C", prd: "Phys.~Rev.~D", pre: "Phys.~Rev.~E", prl: "Phys.~Rev.~Lett.", pasa: "PASA", pasp: "PASP", pasj: "PASJ",
+  rmxaa: "Rev. Mexicana Astron. Astrofis.", qjras: "QJRAS", skytel: "S\\&T", solphys: "Sol.~Phys.", sovast: "Soviet~Ast.", ssr: "Space~Sci.~Rev.", zap: "ZAp",
+  nat: "Nature", iaucirc: "IAU~Circ.", aplett: "Astrophys.~Lett.", apspr: "Astrophys.~Space~Phys.~Res.", bain: "Bull.~Astron.~Inst.~Netherlands",
+  fcp: "Fund.~Cosmic~Phys.", gca: "Geochim.~Cosmochim.~Acta", grl: "Geophys.~Res.~Lett.", jcp: "J.~Chem.~Phys.", jgr: "J.~Geophys.~Res.",
+  jqsrt: "J.~Quant.~Spec.~Radiat.~Transf.", memsai: "Mem.~Soc.~Astron.~Italiana", nphysa: "Nucl.~Phys.~A", physrep: "Phys.~Rep.", physscr: "Phys.~Scr",
+  planss: "Planet.~Space~Sci.", procspie: "Proc.~SPIE", psj: "PSJ",
+};
+
+/**
+ * The text commands a document class defines that are written here (its `.cls` is rarely in the project): AASTeX's journal
+ * abbreviations, and the table spacing it also allows in text (`\phn`, a digit's width). Math symbols are math-render.ts's.
+ */
+export function classMacros(cls: string): PackageMacro[] {
+  if (!/^(?:aastex\d*|emulateapj)$/.test(cls)) return [];
+  return [
+    ...Object.entries(AAS_JOURNALS).map(([name, body]) => ({ name, arity: 0, body })),
+    { name: "phn", arity: 0, body: "\\phantom{0}" },
+    { name: "phd", arity: 0, body: "\\phantom{.}" },
+  ];
+}
+
 /** The macros package `name` defines (with the options it was loaded with), or none. */
 export function packageMacros(name: string, options: readonly string[]): PackageMacro[] {
   if (name === "complexity") return complexityMacros(options);

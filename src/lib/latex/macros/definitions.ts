@@ -1,5 +1,5 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
-import { packageMacros, readAlgorithmBlock } from "./packages";
+import { classMacros, packageMacros, readAlgorithmBlock } from "./packages";
 import { decideConditional, type ConditionalFacts } from "./conditionals";
 
 /* The document's own definitions, read the way TeX would read them, for the
@@ -1198,6 +1198,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           defs.classOptions = options ? options.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) : [];
         }
         addClassTheorems(defs, name.content.trim(), options?.content ?? "");
+        // The class's text commands written in packages.ts (AASTeX's `\apj`); the document's own definitions win.
+        for (const { replaces, ...macro } of classMacros(name.content.trim())) if (replaces || !defs.macros.get(macro.name)?.length) addMacro(context, { ...macro, pos, file: context.file, package: name.content.trim() }, "renew");
       }
     } else if (command === "usepackage" || command === "RequirePackage") {
       const packageOptions = readOptionalAt(source, index);
