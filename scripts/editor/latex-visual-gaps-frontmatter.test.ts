@@ -12,6 +12,8 @@ import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-langu
 import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
 import { computeLatexNumbering } from "../../src/lib/latex/macros/numbering";
+import { readBibEntries, readCompiledBibliography } from "../../src/lib/latex/project";
+import { latexProjectField } from "../../src/lib/latex/codemirror/editing";
 
 /* Title blocks of publishers' classes (revtex, acmart, llncs, svjour3, elsarticle, sn-jnl, IEEEtran, mnras, AAAI): what
  * each class prints besides the names, each line editable in place; a command the block does not know stays source
@@ -306,5 +308,62 @@ test("principle 2: a title block being typed stays source until complete, withou
   const view = mount(open);
   assert.equal(view.contentDOM.querySelector(".cm-vis-title-block"), null);
   assert.match(view.contentDOM.textContent ?? "", /\\title\{T\}/);
+  view.destroy();
+});
+
+/* Citations. */
+
+const BIB = readBibEntries(String.raw`@article{knuth, author = {Knuth, Donald}, title = {The Art of Programming}, year = {1968}}
+@article{lamport, author = {Lamport, Leslie}, title = {LaTeX}, year = {1986}}`);
+const NUMERIC = readCompiledBibliography(String.raw`\begin{thebibliography}{2}
+\bibitem{knuth} Knuth.
+\bibitem{lamport} Lamport.
+\end{thebibliography}`);
+const withBib = (entries: ReturnType<typeof readBibEntries>) => [latexProjectField.init(() => ({ labels: [], bibEntries: entries, files: [] }))];
+
+/** The citation chips' text, "!" before one marked missing, in order; and their tooltips. */
+function chips(body: string, extra: Extension[] = [], preamble = "") {
+  const view = mount(`\\documentclass{article}\n${preamble}\\begin{document}\n${body}\n\\end{document}\n`, extra);
+  const nodes = [...view.contentDOM.querySelectorAll<HTMLElement>(".cm-vis-cite")];
+  const found = nodes.map((chip) => `${chip.classList.contains("cm-vis-missing") ? "!" : ""}${chip.textContent}`);
+  const titles = nodes.map((chip) => chip.title);
+  view.destroy();
+  return { found, titles };
+}
+
+test("a cite key no bibliography data knows is a warning chip; with no bibliography data loaded, nothing is called missing", () => {
+  const known = chips("See \\cite{knuth} and \\cite{nobody}.", withBib(BIB));
+  assert.deepEqual(known.found, ["[Knuth 1968]", "![nobody]"]);
+  assert.match(known.titles[1], /citation not found/);
+  assert.deepEqual(chips("See \\cite{knuth} and \\cite{nobody}.").found, ["[knuth]", "[nobody]"]);
+  // A `\bibitem` written in the document is bibliography data too.
+  assert.deepEqual(chips("See \\cite{a} and \\cite{b}.\n\\begin{thebibliography}{1}\n\\bibitem{a} A.\n\\end{thebibliography}").found.slice(0, 2), ["[a]", "![b]"]);
+});
+
+test("\\onlinecite, \\citenum, \\supercite print the number; \\citealp has no brackets; \\setcitestyle{numbers} is read", () => {
+  const numeric = withBib([...BIB, ...NUMERIC]);
+  assert.deepEqual(chips("\\onlinecite{lamport} \\citenum{knuth} \\supercite{lamport} \\citealp{knuth,lamport} \\cite{knuth}", numeric).found, ["2", "1", "2", "1, 2", "[1]"]);
+  // natbib in author–year mode, switched to numbers in the document.
+  const authorYear = readCompiledBibliography(String.raw`\begin{thebibliography}{2}
+\bibitem[Knuth(1968)]{knuth} Knuth.
+\bibitem[Lamport(1986)]{lamport} Lamport.
+\end{thebibliography}`);
+  assert.deepEqual(chips("\\citep{lamport}", withBib(authorYear), "\\usepackage{natbib}\n").found, ["[Lamport 1986]"]);
+  assert.deepEqual(chips("\\citep{lamport}", withBib(authorYear), "\\usepackage{natbib}\n\\setcitestyle{numbers}\n").found, ["[2]"]);
+  assert.deepEqual(chips("\\citealt{knuth}", withBib(BIB), "\\usepackage{natbib}\n").found, ["Knuth 1968"]);
+});
+
+test("multicites draw every group; \\citetitle, \\fullcite, \\citetalias and \\Citet print what a compile prints", () => {
+  assert.deepEqual(chips("\\parencites[12]{knuth}[34]{lamport}. \\cites{knuth}{lamport}.", withBib(BIB)).found, ["[Knuth 1968, 12; Lamport 1986, 34]", "[Knuth 1968; Lamport 1986]"]);
+  const { found } = chips("\\citetitle{knuth}; \\fullcite{lamport}; \\citetalias{knuth}; \\Citet{lamport}", withBib(BIB), "\\usepackage{natbib}\n\\defcitealias{knuth}{Paper I}\n");
+  assert.deepEqual(found, ["The Art of Programming", "Lamport, Leslie. LaTeX. 1986", "Paper I", "Lamport (1986)"]);
+  // Without the entry's title, the key.
+  assert.deepEqual(chips("\\citetitle{knuth}").found, ["knuth"]);
+});
+
+test("a citation in \\text{} in a formula does not stop the formula", () => {
+  const view = mount("\\documentclass{article}\n\\begin{document}\n\\[ x = y \\text{ by \\cite{knuth}} \\]\n\\end{document}\n", withBib(BIB));
+  assert.ok(view.contentDOM.querySelector(".cm-vis-math .katex"), "the formula is drawn");
+  assert.match(view.contentDOM.querySelector(".cm-vis-math")?.textContent ?? "", /Knuth\s1968/);
   view.destroy();
 });

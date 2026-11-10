@@ -1059,9 +1059,36 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             to = node.to + second.end;
             consumed.push([node.from, to]);
           }
+          // biblatex's multicites (`\parencites[12]{a}[34]{b}`): the grammar ends at the first group; the chip takes
+          // every group after it, each with its notes (one it cannot read leaves the citation source).
+          const more: Array<{ keys: string[]; notes: { pre?: string; post?: string } }> = [];
+          if (name === "Cite" && /^\\(?:[cC]ites|[pP]arencites|[tT]extcites|[aA]utocites|[fF]ootcites|[sS]martcites|supercites)$/.test(command)) {
+            const after = read(state, node.to, Math.min(doc.length, node.to + 2000));
+            let at = 0;
+            for (;;) {
+              const optionals: string[] = [];
+              let next = at;
+              for (;;) {
+                const space = /^[ \t]*\n?[ \t]*/.exec(after.slice(next))![0].length;
+                const optional = after[next + space] === "[" ? readOptional(after, next + space) : null;
+                if (!optional || optionals.length === 2) break;
+                optionals.push(optional.content);
+                next = optional.end;
+              }
+              const space = /^[ \t]*\n?[ \t]*/.exec(after.slice(next))![0].length;
+              const group = after[next + space] === "{" ? readGroup(after, next + space) : null;
+              if (!group) break;
+              const groupKeys = group.content.split(",").map((key) => key.trim()).filter(Boolean);
+              const groupNotes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+              if (!groupKeys.length || /[{}\\]/.test(group.content) || !notesUnderstood(groupNotes)) return false;
+              more.push({ keys: groupKeys, notes: groupNotes });
+              at = group.end;
+            }
+            if (more.length) { to = node.to + at; consumed.push([node.from, to]); }
+          }
           emit({
             kind: name === "Cite" ? "cite" : "ref", from: node.from, to, reveal: "strict",
-            replaces: [{ from: node.from, to, widget: new ChipWidget(name === "Cite" ? "cite" : "ref", command, keys, notes, to - node.from) }],
+            replaces: [{ from: node.from, to, widget: new ChipWidget(name === "Cite" ? "cite" : "ref", command, keys, notes, to - node.from, more) }],
           });
           return false;
         }

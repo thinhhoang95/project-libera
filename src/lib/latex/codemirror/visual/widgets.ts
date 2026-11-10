@@ -8,7 +8,7 @@ import { resolveRelativeNotebookPath } from "../../project";
 import { applyEquationNumbers, renderKatex } from "./math-render";
 import { preambleOpenField, togglePreamble, visualAux, visualConfig, visualDefinitions, visualNumbering } from "./model";
 import { latexProjectField } from "../editing";
-import { bibLookup, citationStyle, citationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
+import { bibLookup, citationStyleFor, citationText, missingCitationKeys, multiCitationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
 import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./render-fragment";
 import { cssColor } from "./symbols";
 import { editableLines, type FrontDetailsView, type FrontLineView } from "./front-matter";
@@ -191,14 +191,16 @@ export class MathWidget extends VisualWidget {
 /** A citation, reference or label chip. */
 export class ChipWidget extends VisualWidget {
   /** `index`: an `\index{…}` or `\glossary{…}` entry, which the PDF does not show where it is: a small grey tag, as a label. */
-  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number) {
-    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}`);
+  /** `more`: a multicite's other groups (`\parencites[12]{a}[34]{b}`), each with its keys and notes. */
+  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number, readonly more: ReadonlyArray<{ keys: string[]; notes: { pre?: string; post?: string } }> = []) {
+    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}${more.length ? `\u0000${JSON.stringify(more)}` : ""}`);
   }
   private text(view: EditorView) {
     if (this.kind === "label") return this.keys[0];
     // makeidx's `sort@shown!sub` entries: what each level shows.
     if (this.kind === "index") return this.keys[0].split("!").map((level) => level.slice(level.lastIndexOf("@") + 1).replace(/\|.*$/, "")).join(" › ");
-    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyle(visualDefinitions(view.state)));
+    if (this.kind === "cite" && this.more.length) return multiCitationText(this.command, [{ keys: this.keys, notes: this.notes }, ...this.more], visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state));
+    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state));
     return stateReferenceText(view.state, this.command, this.keys);
   }
   toDOM(view: EditorView) {
@@ -229,7 +231,13 @@ export class ChipWidget extends VisualWidget {
         dom.setAttribute("aria-label", `Reference to ${text.replace(/\$/g, "")}`);
       } else if (this.kind === "cite") {
         const bib = bibLookup(target.state);
-        dom.title = this.keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : key; }).join("\n");
+        const keys = [...this.keys, ...this.more.flatMap((group) => group.keys)];
+        // A key no bibliography data knows (only once some is loaded): a warning, as a reference to an unknown label.
+        const missing = missingCitationKeys(target.state, keys);
+        dom.classList.toggle("cm-vis-missing", missing.length > 0);
+        // biblatex's `\supercite`: a superscript number.
+        dom.classList.toggle("cm-vis-cite-super", /^\\supercites?\*?$/.test(this.command) && /^[\d,\s–-]+$/.test(dom.textContent ?? ""));
+        dom.title = keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : missing.includes(key) ? `${key} (citation not found)` : key; }).join("\n");
         dom.setAttribute("aria-label", `Citation ${dom.textContent}`);
       } else {
         dom.title = `${this.command}{${this.keys[0]}}`;
