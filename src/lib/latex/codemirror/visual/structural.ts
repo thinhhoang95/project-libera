@@ -17,7 +17,7 @@ import { preambleSummary } from "./widgets";
 
 /** A construct's extent, kept in a range set so it maps through edits. */
 export class ConstructMark extends RangeValue {
-  constructor(readonly id: number, readonly kind: string, readonly reveal: RevealPolicy, readonly leadOffset: number | null, readonly wholeLine: boolean) { super(); }
+  constructor(readonly id: number, readonly kind: string, readonly reveal: RevealPolicy, readonly wholeLine: boolean) { super(); }
   eq(other: RangeValue): boolean { return other === this; }
 }
 ConstructMark.prototype.startSide = -1;
@@ -171,7 +171,7 @@ function toRanges(state: EditorState, construct: Construct, built: Built) {
       pos = current.to + 1;
     }
   }
-  built.extents.push(new ConstructMark(id, construct.kind, construct.reveal, construct.lead !== undefined ? construct.lead - construct.from : null, !!construct.wholeLine).range(construct.from, construct.to));
+  built.extents.push(new ConstructMark(id, construct.kind, construct.reveal, !!construct.wholeLine).range(construct.from, construct.to));
   built.signatures.push(`${construct.from}:${construct.to}:${construct.kind}`);
   built.maxTo = Math.max(built.maxTo, construct.to);
 }
@@ -363,7 +363,11 @@ function rebuild(state: EditorState, tree: Tree, working: Working, from: number,
   }
   const apply = (start: number, end: number, fresh: Built) => {
     const { ids } = overlapping(working.extents, start, end);
-    working.decorations = working.decorations.update({ filter: (_f, _t, value) => !ids.has(value.spec.cid), filterFrom: start, filterTo: end, add: fresh.decorations, sort: true });
+    // A decoration whose construct an edit deleted whole has no extent left (a line class at a point the deletion
+    // started at survives the mapping, as a heading's size on the line after a deleted heading): it goes too.
+    const alive = new Set<number>();
+    working.extents.between(start, end, (_f, _t, mark) => { alive.add(mark.id); });
+    working.decorations = working.decorations.update({ filter: (_f, _t, value) => !ids.has(value.spec.cid) && alive.has(value.spec.cid), filterFrom: start, filterTo: end, add: fresh.decorations, sort: true });
     working.extents = working.extents.update({ filter: (_f, _t, value) => !ids.has(value.id), filterFrom: start, filterTo: end, add: fresh.extents, sort: true });
     // Only what the parser has reached is built: the rest of a long line stays pending.
     working.pending = removePending(working.pending, start, Math.min(end, available));
@@ -468,25 +472,30 @@ function revealPolicyMatches(state: EditorState, mark: ConstructMark, from: numb
     case "touch": return selection.from <= to && selection.to >= from;
     case "strict": return selection.from > from && selection.to < to;
     case "line": {
-      if (mark.wholeLine) {
-        const first = state.doc.lineAt(from).from;
-        const last = state.doc.lineAt(to).to;
-        return selection.head >= first && selection.head <= last;
-      }
-      return mark.leadOffset !== null && selection.head >= from && selection.head <= from + mark.leadOffset;
+      if (!mark.wholeLine) return false;
+      const first = state.doc.lineAt(from).from;
+      const last = state.doc.lineAt(to).to;
+      return selection.head >= first && selection.head <= last;
     }
     default: return false;
   }
 }
 
-/** The constructs to show as source: the innermost one around each selection range, plus suggestions and forced ones. */
+/**
+ * The constructs to show as source: the innermost one around each selection range, any heading the range is in or at
+ * the edge of (its markup shows while the cursor is in its title, as in bold text in it), plus suggestions and forced ones.
+ */
 function computeRevealed(state: EditorState, value: { decorations: DecorationSet; extents: RangeSet<ConstructMark>; forced: number | null }) {
   const revealed = new Map<number, { from: number; to: number }>();
   for (const range of state.selection.ranges) {
     let best: { id: number; from: number; to: number } | null = null;
-    value.extents.between(Math.max(0, range.from - 1), Math.min(state.doc.length, range.to + 1), (from, to, mark) => {
+    // The range's lines: a "line" construct (a heading) shows its source with the cursor after it on its line.
+    const start = Math.min(range.from - 1, state.doc.lineAt(range.from).from);
+    const end = Math.max(range.to + 1, state.doc.lineAt(range.to).to);
+    value.extents.between(Math.max(0, start), Math.min(state.doc.length, end), (from, to, mark) => {
       if (value.forced === mark.id && range.head >= from && range.head <= to) { revealed.set(mark.id, { from, to }); return; }
       if (!revealPolicyMatches(state, mark, from, to, range)) return;
+      if (mark.kind === "heading") revealed.set(mark.id, { from, to });
       if (!best || to - from < best.to - best.from) best = { id: mark.id, from, to };
     });
     const found = best as { id: number; from: number; to: number } | null;
@@ -517,7 +526,8 @@ function withShown(state: EditorState, base: Omit<StructuralState, "shown" | "re
   }
   let shown = base.decorations;
   for (const [id, range] of revealed) {
-    shown = shown.update({ filter: (_f, _t, value) => value.spec.cid !== id, filterFrom: range.from, filterTo: range.to });
+    // From its line's start: a heading after text on its line has its line class there.
+    shown = shown.update({ filter: (_f, _t, value) => value.spec.cid !== id, filterFrom: state.doc.lineAt(range.from).from, filterTo: range.to });
   }
   return { ...base, shown, revealed };
 }

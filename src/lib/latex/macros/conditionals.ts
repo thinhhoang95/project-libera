@@ -193,7 +193,16 @@ export function decideConditional(text: string, at: number, name: string, facts:
   if (name === "if" || name === "ifx") return decideTokens(text, at, name, facts);
   if (name === "ifdefined") {
     const command = testToken(text, skipAfterWord(text, at));
-    return command?.command !== undefined && facts.defined?.(command.command) ? { value: true, end: command.end } : null;
+    if (command?.command === undefined) return null;
+    // `\ifdefined\undefined` (a way to comment text out) is false, as for a name known to be undefined.
+    if (/^@?undefined$/.test(command.command) || facts.defined?.(command.command) === false) return { value: false, end: command.end };
+    return facts.defined?.(command.command) ? { value: true, end: command.end } : null;
+  }
+  if (name === "ifcsname") {
+    // `\ifcsname name\endcsname`: whether the command of that name (letters) is defined.
+    const named = /^\s*([A-Za-z@]+)\s*\\endcsname(?![A-Za-z@])/.exec(text.slice(at, at + 120));
+    const state = named ? facts.defined?.(named[1]) : undefined;
+    return named && state !== undefined ? { value: state, end: skipAfterWord(text, at + named[0].length) } : null;
   }
   const state = facts.switchState?.(name);
   return state === undefined || state === null ? null : { value: state, end: skipAfterWord(text, at) };
@@ -311,22 +320,81 @@ function decideIfThenTest(test: string, facts: ConditionalFacts): boolean | null
   }
 }
 
+/**
+ * Tests that take their branches as arguments (etoolbox's and ifthen's), not closed by `\fi`: `\iftoggle{t}{yes}{no}`,
+ * `\nottoggle`, `\ifbool{b}`, `\notbool`, `\ifdef{\cmd}`, `\ifndef`, `\ifundef`, `\ifcsdef{name}`, `\ifcsundef`,
+ * `\ifdefempty{\cmd}`, and `\ifthenelse{test}`.
+ */
+export const BRACED_CONDITIONAL = /^(?:(?:if|not)(?:toggle|bool)|if(?:def|ndef|undef|csdef|csundef|defempty)|ifthenelse)$/;
+
+/** etoolbox's toggles share the switches' table (definitions.ts), under this prefix: `\newtoggle{long}` is `toggle:long`. */
+export const TOGGLE_PREFIX = "toggle:";
+
+export type BracedConditional = {
+  /** The branch it takes; null when what it tests is not known. */
+  value: boolean | null;
+  /** The `{yes}` and `{no}` groups: where each opens (its `{`) and ends (after its `}`). */
+  yes: { from: number; to: number };
+  no: { from: number; to: number };
+};
+
+/** One `{…}` group or one command after spaces: a braced test's argument. */
+function bracedArgument(text: string, at: number) {
+  let i = at;
+  while (/\s/.test(text[i] ?? "")) i++;
+  if (text[i] === "{") {
+    const group = readGroup(text, i, TEX_GROUPS);
+    return group ? { content: group.content, from: i, end: group.end } : null;
+  }
+  const command = /^\\[A-Za-z@]+/.exec(text.slice(i, i + 80));
+  return command ? { content: command[0], from: i, end: i + command[0].length } : null;
+}
+
+/**
+ * The braced test `\name` whose arguments start at `at` (just after its name): its value and its two branches; null
+ * when it is not written as one (a branch is not a group: an unfinished one being typed).
+ */
+export function decideBracedConditional(text: string, at: number, name: string, facts: ConditionalFacts): BracedConditional | null {
+  if (!BRACED_CONDITIONAL.test(name)) return null;
+  const test = bracedArgument(text, at);
+  const yes = test && bracedArgument(text, test.end);
+  const no = yes && bracedArgument(text, yes.end);
+  if (!test || !yes || !no || text[yes.from] !== "{" || text[no.from] !== "{") return null;
+  const argument = test.content.trim();
+  const command = /^\\?([A-Za-z@]+)$/.exec(argument)?.[1];
+  let value: boolean | null = null;
+  if (name === "ifthenelse") value = decideIfThenTest(test.content, facts);
+  else if (/toggle$/.test(name)) value = command ? facts.switchState?.(`${TOGGLE_PREFIX}${command}`) ?? null : null;
+  else if (/bool$/.test(name)) value = command ? facts.switchState?.(`if${command}`) ?? null : null;
+  else if (name === "ifdefempty") {
+    // Empty: a macro without arguments whose body is nothing; one whose body holds anything is not.
+    const constant = command && argument.startsWith("\\") ? facts.constant(command) : undefined;
+    value = constant !== undefined ? constant === "" : command && facts.defined?.(command) === false ? false : null;
+  } else {
+    // `\ifcsdef{name}` names the command by its letters; `\ifdef{\name}` writes it.
+    const byName = name === "ifcsdef" || name === "ifcsundef";
+    const defined = command && byName === !argument.startsWith("\\") ? facts.defined?.(command) : undefined;
+    value = defined === undefined ? null : name === "ifdef" || name === "ifcsdef" ? defined : !defined;
+  }
+  if (value !== null && name.startsWith("not")) value = !value;
+  return { value, yes: { from: yes.from, to: yes.end }, no: { from: no.from, to: no.end } };
+}
+
 /** ifthen's `\ifthenelse{test}{yes}{no}` replaced by the branch it takes, where the test is known; others stay. */
 export function evaluateIfThenElse(text: string, facts: ConditionalFacts, depth = 0): string {
-  if (!text.includes("\\ifthenelse") || depth > 8) return text;
-  const pattern = /\\ifthenelse(?![A-Za-z@])/g;
+  // (And etoolbox's braced tests: `\iftoggle{long}{L}{S}` in a macro's body.)
+  if (!/\\(?:if|not)/.test(text) || depth > 8) return text;
+  const pattern = /\\((?:if|not)[A-Za-z@]*)(?![A-Za-z@])/g;
   let output = "";
   let copied = 0;
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    const test = testGroup(text, match.index + match[0].length);
-    const yes = test && testGroup(text, test.end);
-    const no = yes && testGroup(text, yes.end);
-    if (!test || !yes || !no) continue;
-    const value = decideIfThenTest(test.content, facts);
-    if (value === null) continue;
-    output += text.slice(copied, match.index) + evaluateIfThenElse(value ? yes.content : no.content, facts, depth + 1);
-    copied = no.end;
-    pattern.lastIndex = no.end;
+    if (!BRACED_CONDITIONAL.test(match[1])) continue;
+    const decided = decideBracedConditional(text, match.index + match[0].length, match[1], facts);
+    if (!decided || decided.value === null) continue;
+    const chosen = decided.value ? decided.yes : decided.no;
+    output += text.slice(copied, match.index) + evaluateIfThenElse(text.slice(chosen.from + 1, chosen.to - 1), facts, depth + 1);
+    copied = decided.no.to;
+    pattern.lastIndex = decided.no.to;
   }
   return output + text.slice(copied);
 }

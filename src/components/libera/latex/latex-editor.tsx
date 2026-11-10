@@ -22,6 +22,7 @@ import type { MarkdownPasteDialogRequest } from "./latex-markdown-paste-dialog";
 import { getMarkdownPasteOptions, loadMarkdownPasteOptions, saveMarkdownPasteOptions } from "./latex-paste-options-store";
 import { LatexPasteNotice } from "./latex-paste-notice";
 import type { LatexDiagnostic } from "@/lib/latex/build";
+import { latexDefinitionDiagnostics } from "@/lib/latex/codemirror/visual/diagnostics";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { locateTextHint, type SynctexTextHint } from "@/lib/latex/synctex-text";
 import { latexCompletionSource, latexFormattingKeymap, latexInputHandler, latexProjectField, setLatexProject, syncEnvironmentNames, type LatexProjectData } from "@/lib/latex/codemirror/editing";
@@ -54,6 +55,12 @@ import { LatexChangeBar } from "./latex-change-bar";
 import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
 import { getLatexSnippets } from "./latex-snippets-store";
 import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "../codemirror-text-width";
+import { useMarkdownDisplayPreferences } from "../markdown-display-preferences";
+import { latexImagePaste, type LatexImageHandler } from "@/lib/latex/codemirror/image-paste";
+import { latexSpellcheck, latexSpellcheckActive } from "@/lib/latex/codemirror/spellcheck";
+import { drawingPreviewConfig, type DrawingPreviewConfig } from "@/lib/latex/codemirror/visual/drawing-preview";
+import { saveAndInsertImages, type LatexImageInsertResult, type LatexImageSupport } from "./latex-image-drop";
+import { LatexImageNotice } from "./latex-image-notice";
 
 export type LatexEditorHandle = {
   view: EditorView;
@@ -113,12 +120,32 @@ type LatexEditorProps = {
   mathMarkers?: MathMarkerSettings;
   /** The engine chosen for the build: pasted text keeps Unicode and emoji under XeLaTeX and LuaLaTeX. */
   engine?: LatexEngineSetting;
+  /** Saving pasted and dropped images into the project; without it they are left to the browser. */
+  images?: LatexImageSupport;
 };
 
 export type LatexEditorMode = "source" | "visual";
 
 const DRAFT_DELAY_MS = 250;
 const lineNumbersCompartment = new Compartment();
+const spellcheckCompartment = new Compartment();
+const drawingPreviewCompartment = new Compartment();
+
+/** A drawing compiled on its own for the Visual mode's preview (/api/latex/preview). */
+async function compileDrawingPreview(request: Parameters<DrawingPreviewConfig["compile"]>[0]) {
+  try {
+    const response = await fetch("/api/latex/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
+    if (response.ok && response.headers.get("Content-Type")?.includes("application/pdf")) return { pdf: await response.arrayBuffer() };
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    return { error: payload.error ?? "The picture could not be compiled." };
+  } catch {
+    return { error: "The preview could not be requested." };
+  }
+}
+
+function drawingPreviewExtension(rootPath: string, engine: () => string) {
+  return drawingPreviewConfig.of({ rootPath, engine, compile: compileDrawingPreview });
+}
 /** The Markdown paste dialog and its converter load on the first Markdown paste. */
 const LatexMarkdownPasteDialog = lazy(() => import("./latex-markdown-paste-dialog"));
 
@@ -194,7 +221,7 @@ function toEditorDiagnostics(state: EditorState, diagnostics: LatexDiagnostic[])
 export function LatexEditor({
   documentPath, fileName, value, fontFamily, visualFontFamily, fontSizePx, lineHeight, initialViewState, diagnostics, project, editorRef,
   onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet, collab,
-  editorMode = "source", macroSources, auxData, numberingStart, numberingIncludes, rootPath, mathMarkers, engine,
+  editorMode = "source", macroSources, auxData, numberingStart, numberingIncludes, rootPath, mathMarkers, engine, images,
 }: LatexEditorProps) {
   const compileRoot = rootPath ?? documentPath;
   const hostRef = useRef<HTMLDivElement>(null);
@@ -210,9 +237,11 @@ export function LatexEditor({
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
   const [pasteDialog, setPasteDialog] = useState<PasteDialogState | null>(null);
   const [pasteNotice, setPasteNotice] = useState<PasteNoticeState | null>(null);
+  const [imageNotice, setImageNotice] = useState<(LatexImageInsertResult & { id: number }) | null>(null);
+  const { preferences: { latexSpellcheck: spellcheckSetting } } = useMarkdownDisplayPreferences();
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath, editorMode, compileRoot });
+  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath, editorMode, compileRoot, spellcheck: spellcheckSetting });
   /** The paths the installed Visual mode resolves against, to reconfigure it when the tab is renamed or moved. */
   const visualPathsRef = useRef<string | null>(null);
   const shared = !!collab;
@@ -226,6 +255,27 @@ export function LatexEditor({
   const engineRef = useRef(engine);
   const compileRootRef = useRef(rootPath ?? documentPath);
   useLayoutEffect(() => { engineRef.current = engine; compileRootRef.current = rootPath ?? documentPath; });
+
+  /* ---- Images pasted or dropped: saved into the project, shown in a figure ---- */
+
+  const imagesRef = useRef(images);
+  useLayoutEffect(() => { imagesRef.current = images; });
+  const imageQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const imageHandlerRef = useRef<LatexImageHandler | null>(null);
+  useLayoutEffect(() => {
+    imageHandlerRef.current = {
+      onImages: (request) => {
+        const support = imagesRef.current;
+        if (!support) { request.range.release(); return; }
+        // One at a time, so two pastes never pick the same free name.
+        imageQueueRef.current = imageQueueRef.current.then(() => saveAndInsertImages(request, compileRootRef.current, support)).then(
+          (result) => { if (result.message || result.missing.length) setImageNotice({ ...result, id: Date.now() }); },
+          () => { request.range.release(); setImageNotice({ message: "The image could not be saved.", missing: [], id: Date.now() }); },
+        );
+      },
+      onRefused: (message) => setImageNotice({ message, missing: [], id: Date.now() }),
+    };
+  });
   const pasteContext = useCallback((state: EditorState, pos: number) => latexPasteContextAt(state, pos, {
     documentPath: documentPathRef.current, rootPath: compileRootRef.current, engine: engineRef.current ?? "auto",
   }), []);
@@ -458,6 +508,9 @@ export function LatexEditor({
         Prec.high(keymap.of(latexFormattingKeymap)),
         // Markdown pasted into a .tex file becomes LaTeX, in both modes (latex-markdown-paste-plan.md).
         ...(isTex ? [
+          // Before the Markdown paste: a clipboard holding only an image is a figure, not text.
+          latexImagePaste(() => (imagesRef.current ? imageHandlerRef.current : null)),
+          drawingPreviewCompartment.of(drawingPreviewExtension(initialRef.current.compileRoot, () => engineRef.current ?? "auto")),
           latexMarkdownPaste(() => markdownPasteConfig((request) => { void pasteRequestRef.current(request); }, () => mathMarkersRef.current)),
           Prec.high(markdownPasteKeymap(() => (request) => { void pasteRequestRef.current(request); }, (message) => aiErrorRef.current(message))),
         ] : []),
@@ -467,7 +520,7 @@ export function LatexEditor({
         // The agent's changes under manual review; shared tabs get suggestions instead.
         ...(binding ? [] : [agentReviewCodeMirror(initialRef.current.documentPath, { outside: (transaction) => transaction.annotation(Transaction.remote) === true })]),
         latexSyncExtension(),
-        ...(isTex ? [latexMathPreview(), latexVisualState()] : []),
+        ...(isTex ? [latexMathPreview(), latexVisualState(), latexDefinitionDiagnostics()] : []),
         // Pending suggestions and AI changes stay visible as source in the Visual mode.
         visualRevealRanges.of((target) => [...(target.field(reviewHunksField, false) ?? []), ...previewSuggestions(target)]),
         // So does LaTeX with a compile error, so its underline is not hidden with the markup.
@@ -478,7 +531,8 @@ export function LatexEditor({
         }),
         visualCompartment.of(visual ? visualExtensions(initialRef.current.documentPath, initialRef.current.compileRoot) : []),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
-        EditorView.contentAttributes.of({ "aria-label": "LaTeX source editor", spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
+        EditorView.contentAttributes.of({ "aria-label": "LaTeX source editor", autocorrect: "off", autocapitalize: "off" }),
+        spellcheckCompartment.of(latexSpellcheck(latexSpellcheckActive(initialRef.current.spellcheck, visual))),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && binding) {
             // Local and remote edits both change what the outline and the
@@ -666,6 +720,16 @@ export function LatexEditor({
     });
   }, [compileRoot, documentPath, view, visualActive]);
 
+  // Spelling is checked in the Visual mode only, when the setting is on (spellcheck.ts says why).
+  const spellcheckOn = latexSpellcheckActive(spellcheckSetting, visualActive);
+  useEffect(() => {
+    if (view) view.dispatch({ effects: spellcheckCompartment.reconfigure(latexSpellcheck(spellcheckOn)) });
+  }, [spellcheckOn, view]);
+
+  useEffect(() => {
+    if (view && isTexFile) view.dispatch({ effects: drawingPreviewCompartment.reconfigure(drawingPreviewExtension(compileRoot, () => engineRef.current ?? "auto")) });
+  }, [compileRoot, isTexFile, view]);
+
   useEffect(() => {
     if (view && macroSources && isTexFile) view.dispatch({ effects: setMacroSources.of(macroSources) });
   }, [isTexFile, macroSources, view]);
@@ -733,6 +797,9 @@ export function LatexEditor({
           onOptions={reopenPasteNotice}
           onClose={() => showPasteNotice(null)}
         />
+      ) : null}
+      {imageNotice && !pasteNotice ? (
+        <LatexImageNotice key={imageNotice.id} message={imageNotice.message} missing={imageNotice.missing} onClose={() => setImageNotice(null)} />
       ) : null}
       {view && hunks.length ? <LatexChangeBar view={view} hunks={hunks} /> : null}
     </div>

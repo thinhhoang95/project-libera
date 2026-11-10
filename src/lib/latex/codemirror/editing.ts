@@ -16,6 +16,8 @@ export type LatexProjectData = {
   bibEntries: BibEntrySummary[];
   /** Files relative to the folder of the document being edited. */
   files: LatexProjectFile[];
+  /** Every file's path relative to the document's folder, of any kind (`files` keeps those completion offers). */
+  allPaths?: string[];
   /** The notebook's References library, offered by `\cite` completion even when no `.bib` is referenced. */
   libraryEntries?: LatexLibraryEntry[];
   /** Whether the project's main file names a bibliography (`\bibliography{}` or `\addbibresource{}`). */

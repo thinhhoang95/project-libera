@@ -5,8 +5,9 @@ import type { LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros } from "../../macros/expand";
 import { numberingEntryAt, type LatexNumbering } from "../../macros/numbering";
 import { katexForEnvironment, RAISE, renderKatex } from "./math-render";
+import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { citationStyle, citationText, referenceChipText, referencesInMath, type BibLookup } from "./references";
-import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
+import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, TEXT_WRAPPERS, todayText } from "./symbols";
 
 /* A static renderer for short LaTeX: captions, macro expansions, theorem
  * names, table cells and the title block (docs/latex-visual-editor-plan.md
@@ -79,7 +80,7 @@ export function acronymText(defs: LatexDefinitions, command: string, key: string
 }
 
 /** Citation commands of other bibliography styles, as the natbib command they act like (ACL's `\newcite` is `\citet`). */
-export const CITE_ALIASES: Record<string, string> = { "\\newcite": "\\citet", "\\shortcite": "\\cite", "\\citeN": "\\citet", "\\citeNP": "\\citep", "\\citealtNP": "\\citealt" };
+export const CITE_ALIASES: Record<string, string> = { "\\newcite": "\\citet", "\\shortcite": "\\cite", "\\citeN": "\\citet", "\\citeNP": "\\citep", "\\citealtNP": "\\citealt", "\\onlinecite": "\\onlinecite", "\\Citet": "\\Citet" };
 
 /**
  * TeX's own conditionals in a macro's expansion, which a drawing cannot evaluate: the `\else`
@@ -471,6 +472,12 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         return;
       }
       if (text === "\\today") { parent.appendChild(document.createTextNode(todayText())); return; }
+      // siunitx's `\SI{12.5}{\kilo\meter}` in a caption or cell: drawn as in a formula (when read whole within the command).
+      if (SIUNITX_TEXT.test(text)) {
+        const unit = readSiunitx(read(node.from, node.to), 0);
+        const html = unit && unit.end === node.to - node.from ? renderKatex(unit.latex, false) : null;
+        if (html) { const span = element("span", "cm-vis-fragment-math"); span.innerHTML = html; parent.appendChild(span); return; }
+      }
       // pifont's `\ding{51}` (and `\cmark`, `\xmark` written with it): the dingbat.
       if (text === "\\ding") {
         const argument = commandArguments(node).find((arg) => !arg.optional);
@@ -536,6 +543,29 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
           parent.appendChild(top);
           parent.appendChild(document.createTextNode("⁄"));
           parent.appendChild(bottom);
+          return;
+        }
+      }
+      // hyperref's `\texorpdfstring{TeX}{bookmark}` in a caption or title: the TeX.
+      if (text === "\\texorpdfstring") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) { renderArgument(parent, argument.node); return; }
+      }
+      // `\hrulefill` and `\dotfill`: a line or dots across.
+      if (text === "\\hrulefill" || text === "\\dotfill") { parent.appendChild(element("span", text === "\\hrulefill" ? "cm-vis-hrulefill" : "cm-vis-dotfill")); return; }
+      // Tracked changes, soul's styles, framed boxes, `\enquote{…}` (symbols.ts): their text, styled; xcolor's `\fcolorbox`.
+      const wrapper = Object.hasOwn(TEXT_WRAPPERS, text) ? TEXT_WRAPPERS[text] : text === "\\fcolorbox" ? { args: [null, null, "cm-vis-fbox"] } : undefined;
+      if (wrapper && (!wrapper.package || context.defs.packages.includes(wrapper.package))) {
+        const parts = commandArguments(node).filter((arg) => !arg.optional);
+        if (parts.length >= wrapper.args.length) {
+          if ("open" in wrapper && wrapper.open) parent.appendChild(document.createTextNode(wrapper.open));
+          wrapper.args.forEach((className, index) => {
+            if (className === null) return;
+            const span = element("span", className || undefined);
+            renderArgument(span, parts[index].node);
+            parent.appendChild(span);
+          });
+          if ("close" in wrapper && wrapper.close) parent.appendChild(document.createTextNode(wrapper.close));
           return;
         }
       }

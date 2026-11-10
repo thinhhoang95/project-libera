@@ -338,7 +338,8 @@ test("algorithm2e (cs.DS 2611.09172): \\SetKwFor loops with side comments, \\lIf
   // A keyword written with LaTeX is drawn as LaTeX, in bold.
   const latexLead = parseAlgorithm2e(String.raw`\SetKwFor{hnode}{A \heavynode{} maintains}{}{}\hnode{}{x\;}`, { numbered: false, ends: false });
   assert.deepEqual(latexLead?.lines.map((line) => `${line.lead ?? ""}|${line.text}`), ["|\\textbf{A \\heavynode{} maintains}", "|x"]);
-  // A block inside a one-line form is not one line, and definitions in the algorithm change how it prints: it stays source.
+  // A block inside a one-line form is not one line, and definitions in the algorithm change how it prints: they are
+  // source lines (an algorithm of nothing else stays source).
   assert.equal(parseAlgorithm2e(String.raw`\lIf{c}{\If{d}{x}}`, { numbered: false, ends: false }), null);
-  assert.equal(parseAlgorithm2e(String.raw`\let\oldnl\nl x\;`, { numbered: false, ends: false }), null);
+  assert.deepEqual(parseAlgorithm2e(String.raw`\let\oldnl\nl x\;`, { numbered: false, ends: false })?.lines.map((line) => `${line.text}|${line.raw ?? false}`), ["\\let\\oldnl\\nl|true", "x|false"]);
 });

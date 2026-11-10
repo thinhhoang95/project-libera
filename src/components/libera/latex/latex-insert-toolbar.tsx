@@ -4,7 +4,7 @@ import { startCompletion } from "@codemirror/autocomplete";
 import type { EditorView } from "@codemirror/view";
 import {
   Bold, BookMarked, ChevronDown, Code, Columns2, Hash, Heading, Image as ImageIcon, Italic, Link, List,
-  Puzzle, Quote, Sigma, Superscript, Table,
+  Puzzle, Quote, Sigma, SpellCheck, Superscript, Table,
 } from "lucide-react";
 import { useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { wrapSelection, type LatexProjectFile } from "@/lib/latex/codemirror/editing";
@@ -43,13 +43,15 @@ type LatexInsertToolbarProps = {
   onNotice: (message: string) => void;
   /** The editor's text size, already scaled by the shared text zoom. */
   fontSizePx: number;
+  /** Whether the editor is in the Visual mode, the only one where spelling is checked. */
+  visualMode?: boolean;
 };
 
 /** Insert tools for .tex files, shown in the LaTeX toolbar after Recompile:
  * formatting, structure, math, floats, code, references, bibliography and
  * saved snippets. Their menus are native ones, except the table size grid. */
-export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, missingInMainFile, onNotice, fontSizePx }: LatexInsertToolbarProps) {
-  const { preferences: { textScale }, updatePreferences } = useMarkdownDisplayPreferences();
+export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, missingInMainFile, onNotice, fontSizePx, visualMode = false }: LatexInsertToolbarProps) {
+  const { preferences: { textScale, latexSpellcheck }, updatePreferences } = useMarkdownDisplayPreferences();
   const [open, setOpen] = useState<MenuId | null>(null);
   const anchors = useRef(new Map<MenuId, HTMLButtonElement>());
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -310,6 +312,20 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
         <ChevronDown aria-hidden className="h-3 w-3 opacity-70" />
       </button>
       {separator}
+      {/* Saved with the display settings. Source mode never checks: every command name would be flagged. */}
+      <button
+        type="button"
+        className="libera-latex-icon-button"
+        aria-label="Check spelling"
+        aria-pressed={latexSpellcheck}
+        disabled={!visualMode}
+        title={!visualMode ? "Spelling is checked in the Visual mode only" : latexSpellcheck ? "Check spelling: on (Visual mode)" : "Check spelling: off"}
+        style={latexSpellcheck && visualMode ? undefined : { opacity: 0.45 }}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => updatePreferences({ latexSpellcheck: !latexSpellcheck })}
+      >
+        <SpellCheck aria-hidden className={iconClass} />
+      </button>
       {/* Text size and line height share the Markdown zoom, as the editor already follows it. */}
       <span className="px-1">
         <MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (textScale / 100)} markdownZoom={textScale} onMarkdownZoomChange={(zoom) => updatePreferences({ textScale: zoom })} />

@@ -94,6 +94,8 @@ test("the sample draws every construct it recognises, and the file is not change
   assert.deepEqual(kinds(view.state), {
     preamble: 1, title: 1, "env-header": 6, "env-end": 5, "env-footer": 1, style: 6, math: 8, heading: 3, footnote: 1, symbol: 6,
     cite: 2, macro: 1, "macro-args": 1, "list-begin": 2, item: 4, "list-end": 2, ref: 6, figure: 2, "document-end": 1,
+    // The verbatim block's `\begin` and `\end` lines fold (text round); its lines stay as written, in the code face.
+    "code-begin": 1, "code-end": 1,
   });
   const content = view.contentDOM;
   assert.ok(content.querySelector(".cm-vis-preamble"), "the preamble folds into a block");
@@ -202,7 +204,10 @@ a & first \\
   const tables = [...view.contentDOM.querySelectorAll(".cm-vis-tabular table")] as HTMLElement[];
   assert.equal(tables.length, 2);
   assert.equal(tables[0].dataset.readonly, undefined, "its own cells are edited in place");
-  assert.equal(tables[1].dataset.readonly, "true");
+  // Since the tables round a macro row is drawn from its expansion row by row, and the table is not read-only as a
+  // whole: the macro rows' cells are marked as such (a click shows the call's source).
+  assert.equal(tables[1].dataset.readonly, undefined);
+  assert.equal(tables[1].querySelectorAll(".cm-vis-table-macro").length, 4);
   assert.deepEqual([...tables[1].querySelectorAll("tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent?.trim())), [["b", "second"], ["c", "third"]]);
   view.destroy();
 });
@@ -1230,7 +1235,9 @@ See \cref{tab:notation}.
   const view = mount(doc);
   const list = constructs(view.state);
   const definitions = doc.indexOf("\\newcommand{\\COrow}");
-  const bodiesEnd = doc.indexOf("\\refstepcounter");
+  // The `\refstepcounter` line (counter commands print nothing, text round) folds from its line's start, indentation
+  // included: the bodies end where that line starts.
+  const bodiesEnd = doc.lastIndexOf("\n", doc.indexOf("\\refstepcounter")) + 1;
   assert.ok(list.every((entry) => { const from = Number(entry.split(":")[1]); return from < definitions || from >= bodiesEnd; }), `nothing in definition bodies is drawn: ${list.join(" ")}`);
   const row = list.find((entry) => entry.startsWith("macro:"));
   assert.ok(row, "the row is drawn as its expansion");
@@ -1269,14 +1276,17 @@ test("a figure with content the widget does not draw stays source", () => {
   const drawn = mount("\\begin{figure}[h]\n\\centering\\small\n\\includegraphics[width=.5\\textwidth]{a}\n\\caption{C}\\label{fig:a}\n\\end{figure}");
   assert.equal(kinds(drawn.state).figure, 1);
   drawn.destroy();
-  // Sub-figures of images (one above the other, with `\\`) are panels of their figure; one holding text keeps the figure source.
+  // Sub-figures of images (one above the other, with `\\`) are panels of their figure.
   const panels = mount("\\begin{figure}\n\\begin{subfigure}{.5\\textwidth}\\includegraphics{a}\\\\\n\\includegraphics{b}\\caption{A}\\end{subfigure}\\caption{C}\n\\end{figure}");
   assert.ok(constructs(panels.state).some((entry) => entry.startsWith("figure:0:")));
   panels.destroy();
-  for (const inner of ["Some text \\includegraphics{a}\\caption{C}", "\\includegraphics{a}\\foo\\caption{C}", "\\begin{subfigure}{.5\\textwidth}K=2 \\includegraphics{a}\\caption{A}\\end{subfigure}\\caption{C}"]) {
+  // Since the floats round (principle 1) text or a command the widget does not draw no longer keeps the whole figure
+  // source: the figure is drawn and just that piece is shown as its source, inside the figure (in its panel).
+  for (const [inner, piece] of [["Some text \\includegraphics{a}\\caption{C}", "Some text"], ["\\includegraphics{a}\\foo\\caption{C}", "\\foo"], ["\\begin{subfigure}{.5\\textwidth}K=2 \\includegraphics{a}\\caption{A}\\end{subfigure}\\caption{C}", "K=2"]]) {
     const view = mount(`\\begin{figure}\n${inner}\n\\end{figure}`);
-    // (A sub-figure may still be drawn on its own.)
-    assert.ok(!constructs(view.state).some((entry) => entry.startsWith("figure:0:")), inner);
+    assert.ok(constructs(view.state).some((entry) => entry.startsWith("figure:0:")), inner);
+    const sources = [...view.contentDOM.querySelectorAll(".cm-vis-figure .cm-vis-figure-source")].map((part) => part.textContent?.trim());
+    assert.deepEqual(sources, [piece], inner);
     view.destroy();
   }
 });
@@ -1368,10 +1378,11 @@ test("cancelling a cell shows the cell's current source, and closing the view cl
   assert.equal(document.querySelector(".cm-vis-table-menu"), null, "and its menu");
 });
 
-test("MathLive gets the macros a formula's macros use, and refuses ones it would change", () => {
+test("MathLive gets the macros a formula's macros use; ones it cannot read are opaque atoms", () => {
   const view = mount("\\newcommand\\b[1][x]{#1}\\newcommand\\a{\\b}\\newcommand\\c{y}\\newcommand\\d{\\c}\nSee $\\a$ and $\\d$.");
   const doc = view.state.doc.toString();
-  assert.equal(canEditInMathLive(view, doc.indexOf("$\\a")), false, "\\a uses \\b, which has an optional argument");
+  // \a uses \b, which has an optional argument: \a is an opaque atom, written back as it is (latex-visual-gaps-math-edit.test.ts).
+  assert.equal(canEditInMathLive(view, doc.indexOf("$\\a")), true);
   assert.equal(canEditInMathLive(view, doc.indexOf("$\\d")), true);
   view.destroy();
 });
@@ -1453,10 +1464,12 @@ test("the innermost construct at the cursor shows its source, by its policy", ()
   const doc = "\\section{Intro \\textbf{bold}}\n\nText $x^2$ here.\n\\begin{itemize}\n\\item one\n\\end{itemize}\n";
   const view = mount(doc);
   const moveTo = (pos: number) => view.dispatch({ selection: { anchor: pos } });
+  // A heading shows its source while the cursor is on its line (it was: only from its line start to its `{`, its
+  // markup hidden while its title was typed).
   moveTo(at(view, "bold", 2));
-  assert.deepEqual(revealedKinds(view.state), ["style"], "bold inside a heading reveals only the bold markup");
+  assert.deepEqual(revealedKinds(view.state), ["heading", "style"], "bold inside a heading reveals the bold markup and the heading's");
   moveTo(at(view, "Intro", 2));
-  assert.deepEqual(revealedKinds(view.state), [], "typing in a heading keeps its markup hidden");
+  assert.deepEqual(revealedKinds(view.state), ["heading"], "typing in a heading shows its markup");
   moveTo(0);
   assert.deepEqual(revealedKinds(view.state), ["heading"], "the line start reveals the heading command");
   moveTo(at(view, "$x"));
@@ -1507,13 +1520,17 @@ test("Backspace selects a formula before deleting it, and typing after \\ldots k
   view.destroy();
 });
 
-test("the cursor stays before a heading's hidden brace", () => {
+test("the cursor goes after a heading's brace, where the heading shows its source", () => {
+  // Was: the cursor was clamped before the hidden `}` (and moving on went to the next line), so typing could not
+  // leave the heading. Now the heading shows its source with the cursor on its line, and the cursor stays after `}`.
   const doc = "\\section{Title}\\label{sec:t}\nNext";
   const view = mount(doc);
   view.dispatch({ selection: { anchor: doc.indexOf("\nNext") } });
-  assert.equal(view.state.selection.main.head, doc.indexOf("}"), "clamped before the }");
-  view.dispatch({ selection: { anchor: doc.indexOf("\nNext") } });
-  assert.equal(view.state.selection.main.head, doc.indexOf("Next"), "moving on from there goes to the next line");
+  assert.equal(view.state.selection.main.head, doc.indexOf("\nNext"), "after the } and the label");
+  assert.deepEqual(revealedKinds(view.state), ["heading"]);
+  view.dispatch({ selection: { anchor: doc.indexOf("Next") } });
+  assert.equal(view.state.selection.main.head, doc.indexOf("Next"), "moving on goes to the next line");
+  assert.deepEqual(revealedKinds(view.state), []);
   view.destroy();
 });
 

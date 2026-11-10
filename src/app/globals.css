@@ -3167,6 +3167,17 @@ html.dark .libera-workspace-region[data-ai-active="true"] .libera-ai-glow { opac
 .cm-vis-heading-number { color: var(--muted-foreground); }
 .cm-vis-runin { font-weight: 700; }
 .libera-latex-visual .cm-line.cm-vis-collapsed { font-size: 0; line-height: 0; height: 6px; overflow: hidden; }
+/* A block widget's vertical margin lies outside the box CodeMirror measures: its height map would drift by it, and clicks
+   and arrow keys further down would land lines away from where they point. Around a block widget, space is padding. */
+.libera-latex-visual .cm-content > :not(.cm-line) { margin-block: 0 !important; }
+.libera-latex-visual .cm-content > :is(.cm-vis-title-block, .cm-vis-tabular, .cm-vis-code-block, .cm-vis-contents) { display: flow-root; }
+.libera-latex-visual .cm-content > .cm-vis-title-block { padding-block: .8em 1.4em; }
+.libera-latex-visual .cm-content > :is(.cm-vis-tabular, .cm-vis-code-block, .cm-vis-contents) { padding-block: .4em; }
+.libera-latex-visual .cm-content > .cm-vis-columns { padding-block: .3em; }
+/* Framed boxes keep their frame tight: the space is the padding of the lines beside them. */
+.libera-latex-visual .cm-content > .cm-line:has(+ .cm-vis-figure) { padding-bottom: .5em; }
+.libera-latex-visual .cm-content > .cm-vis-figure + .cm-line { padding-top: .5em; }
+.libera-latex-visual .cm-content > .cm-vis-preamble + .cm-line { padding-top: .7em; }
 .cm-vis-math { cursor: pointer; border-radius: 4px; }
 .cm-vis-math-inline { padding-inline: 1px; }
 .cm-vis-math-display { display: block; padding: .35em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
@@ -3180,6 +3191,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-math:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .cm-vis-math .katex .eqn-num[data-vis-num]::before { content: "(" attr(data-vis-num) ")"; counter-increment: none; }
 .cm-vis-math .katex .eqn-num:not([data-vis-num])::before { content: ""; counter-increment: none; }
+/* A row of a formula KaTeX could not read, shown as its source (the other rows drawn). */
+.cm-vis-math .katex .cm-vis-math-source { font-family: var(--font-mono); font-size: .72em; color: var(--muted-foreground); background: color-mix(in srgb, var(--muted) 60%, transparent); border-radius: 3px; padding: 0 .3em; white-space: pre-wrap; }
 .cm-vis-chip { display: inline-block; padding: 0 .4em; border-radius: .4em; background: var(--latex-visual-chip); color: var(--latex-visual-chip-text); font-family: var(--font-sans); font-size: .78em; line-height: 1.55; white-space: nowrap; vertical-align: .05em; cursor: pointer; }
 .cm-vis-cite { background: var(--latex-visual-cite); color: var(--latex-visual-cite-text); }
 .cm-vis-label { background: var(--muted); color: var(--muted-foreground); }
@@ -3189,6 +3202,7 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-index { background: transparent; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px var(--border); }
 .cm-vis-index::before { content: "index "; opacity: .6; font-size: .9em; }
 .cm-vis-chip.cm-vis-missing { background: color-mix(in srgb, var(--destructive) 12%, transparent); color: var(--destructive); }
+.cm-vis-chip.cm-vis-cite-super { vertical-align: super; font-size: .72em; }
 .cm-vis-item { display: inline-block; min-width: 1.3em; margin-left: -1.7em; padding-right: .4em; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .cm-vis-item-description { margin-left: 0; min-width: 0; text-align: left; color: var(--foreground); font-weight: 700; }
 .libera-latex-visual .cm-line.cm-vis-list-d1 { padding-left: 1.9em; }
@@ -3250,8 +3264,25 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-caption-label { font-weight: 700; }
 /* Side-by-side minipages, each with its own caption. */
 .cm-vis-figure-panels { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 1em; }
-.cm-vis-figure-panel { flex: 1 1 14em; min-width: 0; }
+.cm-vis-figure-panel { flex: 1 1 var(--vis-panel-width, 14em); min-width: 0; }
 .cm-vis-figure-panels-stacked { flex-direction: column; align-items: stretch; }
+/* A part of a float not drawn (an unknown command, a listing): its source, or a placeholder naming it, in its place; clicked, edited on its own. */
+.cm-vis-figure-source { flex: 1 1 100%; box-sizing: border-box; padding: .25em .5em; border-radius: 4px; text-align: left; white-space: pre-wrap; cursor: text; }
+.cm-vis-figure-source:hover, .cm-vis-editable-part:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.cm-vis-figure-source-before { order: -1; }
+.cm-vis-figure-source-named { min-height: 3em; }
+.cm-vis-editable-part { cursor: text; border-radius: 3px; }
+.cm-vis-float-editing { display: block; text-align: left; }
+.cm-vis-float-editor { display: block; box-sizing: border-box; width: 100%; min-height: 1.9em; margin: 0; padding: .3em .5em; resize: none; overflow: hidden; border: 0; border-radius: 4px; outline: 2px solid var(--ring); background: var(--background); color: var(--foreground); font-family: var(--font-mono); font-size: .86rem; font-weight: 400; line-height: 1.45; text-align: left; white-space: pre-wrap; }
+/* `\includegraphics[trim=…,clip]`: a window over the image; `angle=…`: turned. */
+.cm-vis-image-crop { display: block; width: 100%; overflow: hidden; }
+.cm-vis-image-crop > img { display: block; max-height: none; }
+.cm-vis-image-rotated { transform-origin: center; }
+/* Side-by-side minipages and parboxes outside floats: columns at their widths. */
+.cm-vis-columns { display: flex; justify-content: space-between; align-items: flex-start; gap: 1em; margin: .3em 0; cursor: pointer; }
+.cm-vis-column { flex: 0 1 var(--vis-column-width, 48%); min-width: 0; text-align: left; }
+.cm-vis-column-block + .cm-vis-column-block { margin-top: .4em; }
+.cm-vis-column ul, .cm-vis-column ol { margin: .2em 0; padding-left: 1.4em; }
 .cm-vis-inline-image { vertical-align: middle; }
 /* An algorithm: "Algorithm 1 Caption" between rules, then its numbered, indented lines. */
 .cm-vis-figure-algorithm, .cm-vis-figure-panel:has(.cm-vis-algorithm) { text-align: left; }
@@ -3268,6 +3299,11 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-algorithm-comment { margin-left: .8em; color: var(--muted-foreground); }
 .cm-vis-algorithm-rule { margin: .2em 0 .2em 2.4em; border-top: 1px solid currentColor; }
 .cm-vis-algorithm-rule-dotted { border-top-style: dotted; }
+.cm-vis-algorithm-editable { cursor: text; border-radius: 3px; }
+.cm-vis-algorithm-editable:hover { background: var(--muted); }
+.cm-vis-algorithm-editing .cm-vis-algorithm-body { flex: 1 1 auto; min-width: 0; }
+.cm-vis-algorithm-raw { white-space: pre-wrap; }
+.cm-vis-caption-text[data-algorithm-caption] { cursor: text; }
 /* `\iffalse … \fi`: left out of the document, so faded. */
 .libera-latex-visual .cm-line.cm-vis-disabled { opacity: .45; }
 /* A branch left out inside a paragraph's line (`\ifnum\llncs=1 short\else full\fi`): only its text. */
@@ -3275,7 +3311,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-rm { font-style: normal; font-weight: 400; }
 .cm-vis-image-placeholder, .cm-vis-image-loading { display: inline-block; padding: 1.6em 1.2em; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted-foreground); font-family: var(--font-sans); font-size: 12px; }
 .cm-vis-tabular { margin: .4em 0; overflow-x: auto; cursor: pointer; }
-.cm-vis-table { margin: .2em auto; border-collapse: collapse; font-size: .92em; line-height: 1.45; }
+/* `\renewcommand{\arraystretch}{x}` sets --vis-arraystretch: taller rows. */
+.cm-vis-table { margin: .2em auto; border-collapse: collapse; font-size: .92em; line-height: calc(1.45 * var(--vis-arraystretch, 1)); }
 .cm-vis-table.cm-vis-table-nested { display: inline-table; margin: 0; font-size: inherit; vertical-align: middle; }
 .cm-vis-table-cell { padding: .18em .75em; vertical-align: top; cursor: text; }
 /* A cell of an l, c or r column is one line, as in TeX; a table wider than the page scrolls (below). */
@@ -3284,7 +3321,26 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-table-row.cm-vis-rule-heavy > td { border-top: 1.5px solid currentColor; }
 .cm-vis-table-row.cm-vis-row-spaced > td { padding-top: .5em; }
 /* colortbl's `\rowcolor` and `\cellcolor`: a faint fill of the colour, so text stays readable in every theme. */
-.cm-vis-table-row[data-fill] > td, .cm-vis-table-cell[data-fill] { background: color-mix(in srgb, var(--vis-fill) 35%, transparent); }
+/* A cell's own fill wins over its row's (`\rowcolor`, `\rowcolors`), which wins over its column's (`\columncolor`). */
+.cm-vis-table-cell[data-column-fill] { background: color-mix(in srgb, var(--vis-column-fill) 35%, transparent); }
+.cm-vis-table-row[data-fill] > td, .cm-vis-table-row > .cm-vis-table-cell[data-fill] { background: color-mix(in srgb, var(--vis-fill) 35%, transparent); }
+/* `\cline{2-3}`, `\cmidrule{2-3}`: a rule over some columns only. */
+.cm-vis-table-cell.cm-vis-cell-rule { border-top: 1px solid currentColor; }
+/* A row with more cells than the column specification: drawn, and marked. */
+.cm-vis-table-row.cm-vis-table-row-odd > td { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--destructive) 70%, transparent); }
+/* Rows written through the document's macros: drawn from their expansion, edited as source. */
+.cm-vis-table-cell.cm-vis-table-macro { cursor: pointer; }
+.cm-vis-table-selected { background: color-mix(in srgb, var(--ring) 18%, transparent); }
+/* siunitx's `S` columns: numbers padded with digit-wide spaces so their points line up. */
+.cm-vis-table-decimal { font-variant-numeric: tabular-nums; white-space: pre; }
+/* `\diagbox{below}{above}`: a cell split from its top left to its bottom right corner. */
+.cm-vis-table-diag { background-image: linear-gradient(to top right, transparent calc(50% - .5px), currentColor, transparent calc(50% + .5px)); }
+.cm-vis-diag-above { display: block; text-align: right; }
+.cm-vis-diag-below { display: block; text-align: left; }
+/* `\rotatebox{90}{…}` header: read from the bottom up (`-90`: from the top down). */
+.cm-vis-rotated { display: inline-block; writing-mode: vertical-rl; }
+.cm-vis-rotated.cm-vis-rotated-up { transform: rotate(180deg); }
+.cm-vis-table-menu-separator { height: 1px; margin: 4px 6px; background: var(--border); }
 /* stackengine's `\stackanchor{a}{b}`: its parts one above the other. */
 .cm-vis-stack { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1.15; }
 /* A displayed formula inside a caption or an algorithm's statement. */
@@ -3314,6 +3370,10 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-title-note { margin: .45em auto 0; max-width: 88%; font-size: .85em; text-align: left; }
 .cm-vis-title-note-label { font-weight: 700; }
 .cm-vis-affiliation { font-size: .88em; color: var(--muted-foreground); }
+.cm-vis-subtitle { font-size: 1.2em; font-weight: 600; margin-top: .3em; }
+.cm-vis-author-group { display: flex; flex-direction: column; align-items: center; }
+.cm-vis-title-places { margin-top: .5em; }
+.cm-vis-title-line-label { font-style: italic; }
 /* censor's `\censor{…}`: a bar as wide as the text it hides. */
 .cm-vis-censor { background: currentColor; border-radius: 1px; }
 /* todonotes' `\todo{…}` and `\missingfigure{…}`: a note chip that wraps. */
@@ -3333,10 +3393,41 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-math-editor-actions button { padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--foreground); }
 .cm-vis-math-editor-actions button.cm-vis-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
 .cm-vis-math-editor-hint { margin-right: auto; color: var(--muted-foreground); font-family: var(--font-sans); font-size: 11px; }
+.cm-vis-math-editor-status { color: var(--muted-foreground); font-family: var(--font-sans); font-size: 11px; }
+.cm-vis-math-editor-status:empty { display: none; }
+.cm-vis-math-source { display: block; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font-family: var(--font-mono, monospace); font-size: 13px; resize: vertical; }
 .cm-vis-table-menu { position: fixed; z-index: 60; min-width: 12rem; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); box-shadow: 0 10px 28px rgb(0 0 0 / .16); font-family: var(--font-sans); font-size: 12.5px; }
 .cm-vis-table-menu button { display: block; width: 100%; padding: 4px 10px; border-radius: 5px; text-align: left; color: var(--foreground); }
 .cm-vis-table-menu button:hover:not(:disabled) { background: var(--muted); }
 .cm-vis-table-menu button:disabled { opacity: .45; }
+/* Running text: tracked changes, soul, boxes, margin notes, counters, code, contents lists. */
+.cm-vis-added { color: #15803d; text-decoration: underline; text-decoration-color: color-mix(in srgb, #16a34a 70%, transparent); text-underline-offset: 2px; }
+.cm-vis-deleted { color: var(--destructive); text-decoration: line-through; }
+.cm-vis-hl { background: color-mix(in srgb, #facc15 40%, transparent); border-radius: 2px; }
+.cm-vis-change-comment, .cm-vis-margin-note { padding: 0 .35em; border-radius: .35em; background: var(--latex-visual-chip); color: var(--muted-foreground); font-family: var(--font-sans); font-size: .78em; }
+.cm-vis-margin-note::before { content: "margin: "; opacity: .7; }
+.cm-vis-so { letter-spacing: .12em; }
+.cm-vis-fbox { padding: 0 .2em; border: 1px solid currentColor; }
+.cm-vis-hfill { display: inline-block; min-width: 2em; }
+.cm-vis-hrulefill, .cm-vis-dotfill { display: inline-block; min-width: 4em; height: .6em; vertical-align: baseline; border-bottom: 1px solid currentColor; }
+.cm-vis-dotfill { border-bottom-style: dotted; border-bottom-width: 2px; }
+.cm-vis-text-drawing { cursor: pointer; }
+.cm-vis-counter.cm-vis-raw { font-size: .85em; }
+.cm-vis-code-inline { font-family: var(--font-mono); font-size: .88em; padding: 0 .2em; border-radius: .25em; background: color-mix(in srgb, var(--muted) 70%, transparent); }
+.libera-latex-visual .cm-line.cm-vis-code-line { font-family: var(--font-mono); font-size: .88em; white-space: pre; background: color-mix(in srgb, var(--muted) 55%, transparent); padding-left: 1em; }
+.cm-vis-code-caption { display: block; text-align: center; padding: .3em 0; }
+.cm-vis-code-keyword { color: #7c3aed; }
+.cm-vis-code-string { color: #b45309; }
+.cm-vis-code-comment { color: var(--muted-foreground); font-style: italic; }
+.cm-vis-code-block { margin: .4em 0; cursor: pointer; }
+.cm-vis-code-block pre.cm-vis-code { margin: 0; padding: .4em 1em; font-family: var(--font-mono); font-size: .88em; white-space: pre-wrap; background: color-mix(in srgb, var(--muted) 55%, transparent); }
+.cm-vis-contents { margin: .4em 0; cursor: pointer; }
+.cm-vis-contents-title { font-weight: 700; font-size: 1.2em; margin-bottom: .3em; }
+.cm-vis-contents-number { display: inline-block; min-width: 2.6em; padding-right: .4em; font-variant-numeric: tabular-nums; }
+.cm-vis-contents-level0 { font-weight: 700; }
+.cm-vis-contents-level1 { font-weight: 600; }
+.cm-vis-contents-level2 { padding-left: 1.5em; }
+.cm-vis-contents-level3, .cm-vis-contents-level4 { padding-left: 3em; }
 .libera-latex-editor .cm-diagnostic-warning { border-left-color: var(--latex-warning); }
 .libera-latex-editor .cm-lintRange-error { background-image: none; text-decoration: underline wavy color-mix(in srgb, var(--destructive) 75%, transparent); text-decoration-skip-ink: none; text-underline-offset: 3px; }
 .libera-latex-editor .cm-lintRange-warning { background-image: none; text-decoration: underline wavy color-mix(in srgb, var(--latex-warning) 70%, transparent); text-decoration-skip-ink: none; text-underline-offset: 3px; }

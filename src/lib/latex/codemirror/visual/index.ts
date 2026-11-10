@@ -5,9 +5,12 @@ import { closeMathSessions, mathSessionTracker } from "./math-edit";
 import { pasteHtmlAsLatex } from "./paste";
 import { closeTableSessions, installTableEditor } from "./table-edit";
 import { closeTitleSessions, installTitleEditor } from "./title-edit";
+import { closeFloatSessions, installFloatEditor } from "./float-edit";
+import { closeAlgorithmSessions, installAlgorithmEditor } from "./algorithm-edit";
 import { visualConfig, visualStateFields, type VisualConfig } from "./model";
 import { linkClicks, numberingPlugin, pendingFiller, remoteOutlines } from "./plugins";
-import { structuralField } from "./structural";
+import { rebuildVisualEffect, structuralField } from "./structural";
+import { onMathExtensionLoaded } from "./math-render";
 import { visualStylePlugin } from "./style";
 import { findBeginDocument } from "../../document-begin";
 
@@ -33,13 +36,22 @@ const widgetEditorLifecycle = ViewPlugin.define((view) => ({
     closeMathSessions(view);
     closeTableSessions(view);
     closeTitleSessions(view);
+    closeFloatSessions(view);
+    closeAlgorithmSessions(view);
   },
 }));
+
+/** Formulas left as source while a KaTeX extension loaded (mhchem's `\ce`) are drawn once it is in. */
+const mathExtensionReload = ViewPlugin.define((view) => {
+  const stop = onMathExtensionLoaded(() => view.dispatch({ effects: rebuildVisualEffect.of(null) }));
+  return { destroy: stop };
+});
 
 export function latexVisualMode(config: Partial<VisualConfig>): Extension {
   return [
     visualConfig.of(config),
     widgetEditorLifecycle,
+    mathExtensionReload,
     structuralField,
     visualStylePlugin,
     numberingPlugin,
@@ -51,6 +63,8 @@ export function latexVisualMode(config: Partial<VisualConfig>): Extension {
     pasteHtmlAsLatex,
     installTableEditor(),
     installTitleEditor(),
+    installFloatEditor(),
+    installAlgorithmEditor(),
     EditorView.editorAttributes.of({ class: "cm-latex-visual" }),
     EditorView.contentAttributes.of({ "aria-roledescription": "LaTeX visual editor" }),
   ];

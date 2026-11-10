@@ -23,6 +23,48 @@ export const SYMBOL_COMMANDS: Record<string, string> = {
   "\\oe": "œ", "\\OE": "Œ", "\\o": "ø", "\\O": "Ø", "\\aa": "å", "\\AA": "Å", "\\l": "ł", "\\L": "Ł",
   "\\LaTeX": "LaTeX", "\\TeX": "TeX", "\\LaTeXe": "LaTeX2ε", "\\BibTeX": "BibTeX", "\\quad": " ", "\\qquad": "  ",
   "\\enspace": " ", "\\thinspace": " ", "\\nobreakspace": " ", "\\slash": "/", "\\textvisiblespace": "␣",
+  // textcomp's symbols.
+  "\\texttimes": "×", "\\textdiv": "÷", "\\textpm": "±", "\\textminus": "−", "\\textonehalf": "½", "\\textonequarter": "¼", "\\textthreequarters": "¾",
+  "\\textsection": "§", "\\textparagraph": "¶", "\\textcent": "¢", "\\textyen": "¥", "\\texteuro": "€", "\\textsterling": "£", "\\textdollar": "$",
+  "\\textnumero": "№", "\\textcelsius": "℃", "\\textperthousand": "‰", "\\textasteriskcentered": "∗", "\\textquotesingle": "'", "\\textlnot": "¬",
+  "\\textohm": "Ω", "\\textleftarrow": "←", "\\textrightarrow": "→", "\\textuparrow": "↑", "\\textdownarrow": "↓", "\\textunderscore": "_",
+  "\\textbraceleft": "{", "\\textbraceright": "}", "\\textordfeminine": "ª", "\\textordmasculine": "º", "\\textsuperscriptone": "¹", "\\textmusicalnote": "♪",
+  // Letters of other alphabets.
+  "\\th": "þ", "\\TH": "Þ", "\\dh": "ð", "\\DH": "Ð", "\\ng": "ŋ", "\\NG": "Ŋ", "\\dj": "đ", "\\DJ": "Đ",
+};
+
+/**
+ * Commands that wrap text, by name: what each of their `{…}` arguments shows, in order (a class for its text, "" for
+ * plain text, null for an argument that is hidden), and what they print around it. Their markup is hidden; their text is
+ * edited in place. `package`: drawn only with that package (a name other packages also use).
+ */
+export const TEXT_WRAPPERS: Record<string, { args: Array<string | null>; open?: string; close?: string; package?: string }> = {
+  // The changes package's tracked changes.
+  "\\added": { args: ["cm-vis-added"] },
+  "\\deleted": { args: ["cm-vis-deleted"] },
+  "\\replaced": { args: ["cm-vis-added", "cm-vis-deleted"] },
+  "\\highlight": { args: ["cm-vis-hl"] },
+  "\\comment": { args: ["cm-vis-change-comment"], package: "changes" },
+  // soul's highlight, strike-out, underline, letter spacing and capitals.
+  "\\hl": { args: ["cm-vis-hl"] },
+  "\\st": { args: ["cm-vis-s"] },
+  "\\ul": { args: ["cm-vis-u"] },
+  "\\so": { args: ["cm-vis-so"] },
+  "\\caps": { args: ["cm-vis-sc"] },
+  // Boxes in the text: a framed one has a frame; the others are their text.
+  "\\fbox": { args: ["cm-vis-fbox"] },
+  "\\framebox": { args: ["cm-vis-fbox"] },
+  "\\makebox": { args: [""] },
+  "\\parbox": { args: [null, ""] },
+  // url's and hyperref's unlinked paths, in the typewriter face.
+  "\\nolinkurl": { args: ["cm-vis-tt"] },
+  "\\path": { args: ["cm-vis-tt"] },
+  // A note in the margin: a small note where it is written.
+  "\\marginpar": { args: ["cm-vis-margin-note"] },
+  "\\marginnote": { args: ["cm-vis-margin-note"] },
+  // csquotes' `\enquote{…}`: the text in quotation marks.
+  "\\enquote": { args: [""], open: "“", close: "”" },
+  // A box as wide as its content, showing nothing: a space where it is (`\phantom`), or nothing (`\vphantom`).
 };
 
 /** pifont's `\ding{n}` (Zapf Dingbats) used in papers: ticks and crosses in comparison tables, stars, circled numbers. */

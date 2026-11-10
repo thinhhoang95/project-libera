@@ -12,7 +12,7 @@ export async function PUT(request: NextRequest) {
   const optionalFinite = (value: unknown) => value === undefined || finite(value);
   if (!body || !finite(body.textWidth) || !finite(body.textScale) ||
       !optionalFinite(body.outlineExpansionLevel) || !optionalFinite(body.latexTextWidth) ||
-      !optionalFinite(body.codeTextWidth)) {
+      !optionalFinite(body.codeTextWidth) || (body.latexSpellcheck !== undefined && typeof body.latexSpellcheck !== "boolean")) {
     return jsonError("Display settings must be finite numbers.", 400);
   }
   try {

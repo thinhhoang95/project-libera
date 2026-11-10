@@ -6,7 +6,7 @@ import { JSDOM } from "jsdom";
 import { applyTexChanges, canonicalTokens, texDiff, tokenizeTex } from "../../src/lib/latex/codemirror/visual/tex-tokens";
 import { columnSpans, deleteColumn, deleteRow, insertColumn, insertRow, parseColumnSpec, parseTabular, setCellText, type TableChange } from "../../src/lib/latex/codemirror/visual/table-model";
 import { escapeLatexText, htmlToLatex } from "../../src/lib/latex/codemirror/visual/html2latex";
-import { refusalReason } from "../../src/lib/latex/codemirror/visual/math-edit";
+import { pieceReason } from "../../src/lib/latex/codemirror/visual/math-pieces";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 Object.defineProperty(globalThis, "DOMParser", { value: dom.window.DOMParser, configurable: true });
@@ -51,15 +51,13 @@ test("a diff applied to the original always typesets as the edited formula", () 
   }), { numRuns: 300 });
 });
 
-test("formulas MathLive would change are refused", () => {
-  assert.equal(refusalReason("x^2", false), null);
-  assert.ok(refusalReason("a \\\\ b", false));
-  assert.ok(refusalReason("a & b", false));
-  assert.ok(refusalReason("x \\label{eq}", false));
-  assert.ok(refusalReason("x % note", false));
-  assert.equal(refusalReason("x \\% y", false), null);
-  assert.ok(refusalReason("a\nb", false));
-  assert.ok(refusalReason("\\vect{n}", true));
+test("pieces MathLive would change are refused (`&`, `\\\\`, `\\label` and comments are split out, not refused)", () => {
+  assert.equal(pieceReason("x^2"), null);
+  assert.equal(pieceReason("x \\% y"), null);
+  assert.equal(pieceReason("a\nb"), null);
+  assert.ok(pieceReason("\\frac{a}{b % note\n}"));
+  assert.ok(pieceReason("\\left( a"));
+  assert.ok(pieceReason("{a"));
 });
 
 /* ---- Tables --------------------------------------------------------------------- */

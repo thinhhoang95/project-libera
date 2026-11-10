@@ -1,6 +1,6 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import { classMacros, packageMacros, readAlgorithmBlock } from "./packages";
-import { decideConditional, type ConditionalFacts } from "./conditionals";
+import { BRACED_CONDITIONAL, decideBracedConditional, decideConditional, TOGGLE_PREFIX, type ConditionalFacts } from "./conditionals";
 import { findBeginDocument } from "../document-begin";
 
 /* The document's own definitions, read the way TeX would read them, for the
@@ -14,7 +14,15 @@ import { findBeginDocument } from "../document-begin";
 
 /** An xparse argument: mandatory, optional (with a default), or a star. */
 /** `g`/`G{default}`: an optional argument in braces (the paper's `\E{X}` or `\E{X}{\mu}`), as `o`/`O` are in brackets. */
-export type XparseArgument = { type: "m" } | { type: "o" } | { type: "O"; default: string } | { type: "s" } | { type: "g" } | { type: "G"; default: string };
+/**
+ * `t+`: a token or not (as `s` is a star); `r()`/`R(){default}`: a required argument between two delimiters, and
+ * `d()`/`D(){default}` an optional one; `e{^_}`/`E{^_}{{a}{b}}`: embellishments, one argument per token, given in any
+ * order (`group` ties a specification's tokens together). `v` (verbatim) is not read: its uses stay source.
+ */
+export type XparseArgument = { type: "m" } | { type: "o" } | { type: "O"; default: string } | { type: "s" } | { type: "g" } | { type: "G"; default: string }
+  | { type: "t"; token: string } | { type: "r"; open: string; close: string } | { type: "d"; open: string; close: string }
+  | { type: "R"; open: string; close: string; default: string } | { type: "D"; open: string; close: string; default: string }
+  | { type: "e"; token: string; group: number; default?: string };
 
 export type LatexMacro = {
   name: string;
@@ -149,6 +157,8 @@ export type LatexDefinitions = {
   commentedOut?: Set<string>;
   /** `\documentclass[options]{…}`'s options. */
   classOptions?: string[];
+  /** `\PassOptionsToPackage{options}{name}`: options the package is loaded with when it is loaded later. */
+  passedOptions?: Map<string, string[]>;
   /**
    * Where the open file's definitions are (absolute ranges, in order), so edits inside one re-read them.
    * `broken`: a definition without its body, which runs to the end so any later edit may complete it; it is
@@ -170,14 +180,15 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
 
 /** `keep`: a group whose definitions TeX runs at the top level later (`\AtBeginDocument{…}`), so they do not end with it. */
 /** `uncertain`: code TeX may or may not run (a package option's, when how the package is loaded is not known). */
-type Frame = { kind: "brace" | "group" | "env"; locals: Array<{ end?: number; file?: string }>; keep?: boolean; uncertain?: boolean };
+/** `pass`: a braced test's branch (`\iftoggle{t}{…}{…}`), no group: its local definitions are the group's around it. */
+type Frame = { kind: "brace" | "group" | "env"; locals: Array<{ end?: number; file?: string }>; keep?: boolean; uncertain?: boolean; pass?: boolean };
 type Branch = "run" | "skip" | "unknown";
 
 /** TeX's own conditionals (and engine tests): each is closed by a `\fi`. */
@@ -209,6 +220,13 @@ class TexScanner {
   private unless = -1;
   /** Whether the group at `deferredBrace` is run only maybe (see `Frame`). */
   private deferredUncertain = false;
+  /**
+   * The branches of braced tests (`\iftoggle{t}{yes}{no}`), by where their `{` is: a branch taken is no group (etoolbox
+   * passes it on without its braces), so what it defines lasts; one not known is run maybe (true); one not taken is skipped
+   * to its end (`skipped`).
+   */
+  private branchBraces = new Map<number, boolean>();
+  private skipped = new Map<number, number>();
   /** What decides a conditional here (the definitions read so far): `\ifnum\llncs=0` with `\def\llncs{0}`. None: every test is unknown. */
   facts?: ConditionalFacts;
   /** Called where the source sets a `\newif` switch (`\newif\ifdraft`, `\drafttrue`); null under a condition not evaluated. */
@@ -255,7 +273,12 @@ class TexScanner {
     if (kind) while (index >= 0 && this.frames[index].kind !== kind) index--;
     if (index < 0) return;
     // A local definition of another file (a `\renewcommand` in a table of the main file's body) ends there, before the open file.
-    for (const frame of this.frames.splice(index)) if (!frame.keep) for (const macro of frame.locals) macro.end ??= macro.file !== undefined ? -1 : at;
+    const outer = index > 0 ? this.frames[index - 1] : null;
+    for (const frame of this.frames.splice(index)) {
+      // A braced test's branch is no group: its definitions belong to the group around it.
+      if (frame.pass) outer?.locals.push(...frame.locals);
+      else if (!frame.keep) for (const macro of frame.locals) macro.end ??= macro.file !== undefined ? -1 : at;
+    }
   }
 
   /** Whether `\name` is a `\newif` switch: made in this source or in one read before. */
@@ -300,6 +323,10 @@ class TexScanner {
         this.pos = at + 1;
         if (skipping) continue;
         if (char === "{") {
+          const skipTo = this.skipped.get(at);
+          if (skipTo !== undefined) { this.pos = Math.max(this.pos, skipTo); continue; }
+          const branch = this.branchBraces.get(at);
+          if (branch !== undefined) { this.frames.push({ kind: "brace", locals: [], pass: true,...(branch ? { uncertain: true } : {}) }); continue; }
           const keep = at === this.deferredBrace;
           this.frames.push(keep ? { kind: "brace", locals: [], keep, ...(this.deferredUncertain ? { uncertain: true } : {}) } : { kind: "brace", locals: [] });
         } else this.close("brace", at);
@@ -314,6 +341,16 @@ class TexScanner {
       if (name === "iffalse") { this.conditionals.push({ first: "skip", second: "run", inElse: false }); continue; }
       if (name === "iftrue") { this.conditionals.push({ first: "run", second: "skip", inElse: false }); continue; }
       if (name === "unless") { this.unless = this.pos; continue; }
+      if (!skipping && BRACED_CONDITIONAL.test(name)) {
+        // `\iftoggle{t}{\newcommand…}{…}`: the branch taken is read, the other skipped; both maybe when the test is not known.
+        const decided = decideBracedConditional(source, this.pos, name, this.facts ?? { constant: () => undefined });
+        if (decided) {
+          const unknown = decided.value === null;
+          if (unknown || decided.value) this.branchBraces.set(decided.yes.from, unknown); else this.skipped.set(decided.yes.from, decided.yes.to);
+          if (unknown || !decided.value) this.branchBraces.set(decided.no.from, unknown); else this.skipped.set(decided.no.from, decided.no.to);
+          continue;
+        }
+      }
       // (`\iff` is the formula's arrow, not a conditional.)
       if (/^if/.test(name) && name !== "ifthenelse" && name !== "iff" && this.opensConditional(name)) {
         // Under a false branch TeX only counts conditionals. Elsewhere one is decided when what it tests is known
@@ -340,6 +377,17 @@ class TexScanner {
         if (args && name !== "setboolean" && !(name === "provideboolean" && this.isSwitch(switchName))) { this.newifs.add(switchName); this.setSwitch(switchName, false, at); }
         else if (args?.[2] && this.isSwitch(switchName)) this.setSwitch(switchName, args[2] === "true", at);
         if (args) this.pos += args[0].length;
+      } else if (/^(?:new|provide|set)(?:toggle|bool)$|^(?:toggle|bool)(?:true|false)$/.test(name)) {
+        // etoolbox: `\newtoggle{long}` (false), `\toggletrue{long}`, `\settoggle{long}{true}`; its booleans are `\newif`
+        // switches (`\newbool{draft}` is `\ifdraft`).
+        const args = (name.startsWith("set") ? /^\s*\{\s*([A-Za-z@]+)\s*\}\s*\{\s*(true|false)\s*\}/ : /^\s*\{\s*([A-Za-z@]+)\s*\}()/).exec(source.slice(this.pos, this.pos + 120));
+        if (args) {
+          this.pos += args[0].length;
+          const switchName = name.includes("toggle") ? `${TOGGLE_PREFIX}${args[1]}` : `if${args[1]}`;
+          if (name.startsWith("new") || (name.startsWith("provide") && !this.isSwitch(switchName))) { this.newifs.add(switchName); this.setSwitch(switchName, false, at); }
+          else if (name.startsWith("set")) { if (args[2] && this.isSwitch(switchName)) this.setSwitch(switchName, args[2] === "true", at); }
+          else if (!name.startsWith("provide") && this.isSwitch(switchName)) this.setSwitch(switchName, name.endsWith("true"), at);
+        }
       } else if (DEFERRED_TOP_LEVEL.test(name)) {
         const open = /^\s*\{/.exec(source.slice(this.pos, this.pos + 40));
         if (open) this.deferBrace(this.pos + open[0].length - 1, false);
@@ -444,6 +492,45 @@ function parseXparseSpec(spec: string): XparseArgument[] | null {
       if (!group) return null;
       args.push({ type: char, default: group.content });
       index = group.end;
+      continue;
+    } else if (char === "t") {
+      // One token: a character, or a braced one (`t{+}`).
+      const token = /^(?:\{([^{}\\\s])\}|([^{}\\\s]))/.exec(spec.slice(index + 1));
+      if (!token) return null;
+      args.push({ type: "t", token: token[1] ?? token[2] });
+      index += 1 + token[0].length;
+      continue;
+    } else if (char === "r" || char === "R" || char === "d" || char === "D") {
+      // Two delimiter characters (a control sequence as a delimiter is not read), then R's and D's default.
+      const delimiters = /^([^{}\\\s])([^{}\\\s])/.exec(spec.slice(index + 1));
+      if (!delimiters || delimiters[1] === delimiters[2]) return null;
+      index += 3;
+      if (char === "R" || char === "D") {
+        const group = readGroup(spec, index);
+        if (!group) return null;
+        args.push({ type: char, open: delimiters[1], close: delimiters[2], default: group.content });
+        index = group.end;
+      } else args.push({ type: char, open: delimiters[1], close: delimiters[2] });
+      continue;
+    } else if (char === "e" || char === "E") {
+      const tokens = readGroup(spec, index + 1);
+      if (!tokens || !/^[^{}\\\s]+$/.test(tokens.content.replace(/\s/g, ""))) return null;
+      const list = [...tokens.content.replace(/\s/g, "")];
+      index = tokens.end;
+      const defaults: string[] = [];
+      if (char === "E") {
+        const group = readGroup(spec, index);
+        if (!group) return null;
+        index = group.end;
+        for (let at = 0; at < group.content.length;) {
+          const item = readGroup(group.content, at) ?? (/^\s+/.test(group.content.slice(at)) ? null : undefined);
+          if (item === undefined) return null;
+          if (item === null) { at++; continue; }
+          defaults.push(item.content);
+          at = item.end;
+        }
+      }
+      for (const [n, token] of list.entries()) args.push({ type: "e", token, group: index, ...(defaults[n] !== undefined ? { default: defaults[n] } : {}) });
       continue;
     } else return null;
     index++;
@@ -794,7 +881,7 @@ function texNumber(text: string) {
 }
 
 /** Commands whose definitions are global whatever the group (`\gdef`, and xparse's, which are made with expl3's global `\cs_new`). */
-const GLOBAL_DEFINITIONS = /^(?:gdef|xdef|DeclareMathOperator|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand)$/;
+const GLOBAL_DEFINITIONS = /^(?:gdef|xdef|DeclareMathOperator|(?:New|Renew|Provide|Declare)(?:Expandable)?DocumentCommand)$/;
 
 /**
  * Reads the definitions in `source` into `defs`. `bodyStart` is where the
@@ -1061,7 +1148,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       else {
         end = body.end;
         const spec = parseXparseSpec(specGroup.content);
-        if (!spec) shadow(name.name, `\\${name.name} uses argument types other than m, o, O, g, G and s`);
+        if (!spec) shadow(name.name, `\\${name.name} uses an argument type the Visual mode does not read (verbatim, or a processor)`);
         else if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
         else added = addMacro(context, { name: name.name, arity: spec.length, spec, body: body.content, pos, file: context.file },
           command.startsWith("Provide") ? "provide" : command.startsWith("New") ? "new" : "renew");
@@ -1079,7 +1166,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         const specGroup = readGroupAt(source, index);
         if (!specGroup) continue;
         const parsed = parseXparseSpec(specGroup.content);
-        if (!parsed) { note(defs.unsupported, name, `${name} uses argument types other than m, o, O, g, G and s`); supported = false; }
+        if (!parsed) { note(defs.unsupported, name, `${name} uses an argument type the Visual mode does not read (verbatim, or a processor)`); supported = false; }
         spec = parsed ?? undefined;
         arity = parsed?.length ?? 0;
         index = specGroup.end;
@@ -1210,11 +1297,24 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         if (name.content.trim() !== "subfiles") {
           defs.documentClass = name.content.trim();
           // The class's options, which its `\DeclareOption`s and every package's see.
-          defs.classOptions = options ? options.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) : [];
+          defs.classOptions = [...(defs.passedOptions?.get(name.content.trim()) ?? []), ...(options ? options.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) : [])];
         }
         addClassTheorems(defs, name.content.trim(), options?.content ?? "");
         // The class's text commands written in packages.ts (AASTeX's `\apj`); the document's own definitions win.
         for (const { replaces, ...macro } of classMacros(name.content.trim())) if (replaces || !defs.macros.get(macro.name)?.length) addMacro(context, { ...macro, pos, file: context.file, package: name.content.trim() }, "renew");
+      }
+    } else if (command === "PassOptionsToPackage" || command === "PassOptionsToClass") {
+      // `\PassOptionsToPackage{numbers}{natbib}` before natbib is loaded (often by a class): its options when it is.
+      const list = readGroupAt(source, index);
+      const names = list && readGroupAt(source, list.end);
+      if (list && names) {
+        end = names.end;
+        const values = list.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean);
+        for (const name of names.content.split(",").map((part) => part.trim()).filter(Boolean)) {
+          if (uncertain) { note(defs.unsupported, name, `options for ${name} are passed under a condition`); continue; }
+          const passed = defs.passedOptions ??= new Map();
+          passed.set(name, [...(passed.get(name) ?? []), ...values]);
+        }
       }
     } else if (command === "usepackage" || command === "RequirePackage") {
       const packageOptions = readOptionalAt(source, index);
@@ -1225,7 +1325,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           const trimmed = name.replace(/%[^\n]*/g, "").trim();
           if (!trimmed) continue;
           defs.packages.push(trimmed);
-          if (packageOptions) defs.packageOptions.set(trimmed, packageOptions.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean));
+          const passed = defs.passedOptions?.get(trimmed) ?? [];
+          if (packageOptions || passed.length) defs.packageOptions.set(trimmed, [...passed, ...(packageOptions?.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) ?? [])]);
           // What a package not in the project defines (complexity's `\NP`, physics' `\abs`); a copy in the project, read next, wins.
           for (const { replaces, ...macro } of packageMacros(trimmed, defs.packageOptions.get(trimmed) ?? [])) if (replaces || !defs.macros.get(macro.name)?.length) addMacro(context, { ...macro, pos, file: context.file, package: trimmed }, "renew");
           options.load?.(loadKey("package", trimmed), start);
@@ -1303,10 +1404,10 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         end = block.end;
         if (!uncertain) for (const macro of block.macros) addMacro(context, { ...macro, pos, file: context.file }, "renew");
       }
-    } else if (/^SetKw(?:Function|InOut|Input|Prog|Data|Block|For)?$/.test(command)) {
+    } else if (/^SetKw(?:Function|InOut|Input|Prog|Data|Block|For|Comment|IF|Repeat)?$/.test(command)) {
       // algorithm2e's keywords declared before an algorithm (`\SetKwInOut{Input}{Input}` in a preamble): macros whose
       // body is the declaration, which an algorithm reads first (walk.ts); in text and formulas their uses stay source.
-      const count = command === "SetKwProg" || command === "SetKwFor" ? 4 : command === "SetKwBlock" ? 3 : 2;
+      const count = command === "SetKwProg" || command === "SetKwFor" ? 4 : command === "SetKwIF" ? 8 : command === "SetKwBlock" || command === "SetKwComment" || command === "SetKwRepeat" ? 3 : 2;
       const groups: string[] = [];
       let at = index;
       while (groups.length < count) {

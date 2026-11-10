@@ -59,14 +59,54 @@ function readUndelimited(source: string, index: number): Argument | null {
   return { value: source.slice(index, index + length), end: index + length };
 }
 
+/** xparse's `r()`/`d()` argument at `index` (its opening delimiter): up to the matching close, outside braces; null when it is not closed. */
+function readDelimited(source: string, index: number, open: string, close: string): Argument | null {
+  let depth = 0;
+  for (let i = index + 1; i < source.length && i < index + 4000; i++) {
+    const char = source[i];
+    if (char === "\\") { i++; continue; }
+    if (char === "{") {
+      const group = readGroup(source, i, TEX_GROUPS);
+      if (!group) return null;
+      i = group.end - 1;
+      continue;
+    }
+    if (char === close && depth === 0) return { value: source.slice(index + 1, i), end: i + 1 };
+    if (char === open) depth++;
+    else if (char === close) depth--;
+    // A paragraph ends it unclosed.
+    else if (char === "\n" && /^\n[ \t\r]*\n/.test(source.slice(i, i + 40))) return null;
+  }
+  return null;
+}
+
 /** Reads a use's arguments after its name; null when they are not all there. */
 export function readMacroArguments(source: string, index: number, macro: Pick<LatexMacro, "arity" | "optional" | "spec">): { args: string[]; end: number } | null {
   const args: string[] = [];
   if (macro.spec) {
-    for (const argument of macro.spec) {
+    for (let n = 0; n < macro.spec.length; n++) {
+      const argument = macro.spec[n];
       const at = skipSpaces(source, index);
-      if (argument.type === "s") {
-        if (source[at] === "*") { args.push(BOOLEAN_TRUE); index = at + 1; } else args.push(BOOLEAN_FALSE);
+      if (argument.type === "s" || argument.type === "t") {
+        const token = argument.type === "s" ? "*" : argument.token;
+        if (source[at] === token) { args.push(BOOLEAN_TRUE); index = at + 1; } else args.push(BOOLEAN_FALSE);
+      } else if (argument.type === "r" || argument.type === "R" || argument.type === "d" || argument.type === "D") {
+        const read = source[at] === argument.open ? readDelimited(source, at, argument.open, argument.close) : null;
+        if (read) { args.push(read.value); index = read.end; } else if (argument.type === "r") return null;
+        else args.push(argument.type === "d" ? NO_VALUE : argument.default);
+      } else if (argument.type === "e") {
+        // The embellishments of one specification, in any order, each once: `^{a}_{b}` or `_{b}^{a}`.
+        const tokens = macro.spec.slice(n).filter((other): other is Extract<XparseArgument, { type: "e" }> => other.type === "e" && other.group === argument.group);
+        const values = new Map<string, string>();
+        for (let next = skipSpaces(source, index); tokens.some((token) => token.token === source[next] && !values.has(source[next]));) {
+          const value = readUndelimited(source, next + 1);
+          if (!value) return null;
+          values.set(source[next], value.value);
+          index = value.end;
+          next = skipSpaces(source, index);
+        }
+        for (const token of tokens) args.push(values.get(token.token) ?? token.default ?? NO_VALUE);
+        n += tokens.length - 1;
       } else if (argument.type === "o" || argument.type === "O") {
         const optional = readOptional(source, at, TEX_GROUPS);
         if (optional) { args.push(optional.content); index = optional.end; } else args.push(argument.type === "O" ? (argument as Extract<XparseArgument, { type: "O" }>).default : NO_VALUE);
@@ -188,17 +228,27 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   // `\renewcommand{\emph}[1]{\textcolor{red}{\oldemph{#1}}}`) stands for the original, not the redefinition.
   if (macro.alias && new RegExp(String.raw`\\${match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z@])`).test(macroAt(context.defs, macro.body.slice(1), context.pos)?.body ?? "")) return { text: macro.body, end: read.end };
   let body = evaluateConditionals(substituteArguments(macro.body, read.args));
+  // `\newcommand{\foo}{\@ifstar{\foo@star}{\foo@plain}}`: the starred or plain form, by whether a `*` follows the use.
+  let end = read.end;
+  const star = !macro.arity && !macro.spec ? /^\s*\\@ifstar(?![A-Za-z@])/.exec(body) : null;
+  if (star) {
+    const starred = readUndelimited(body, star[0].length);
+    const plain = starred && readUndelimited(body, starred.end);
+    if (!plain || body.slice(plain.end).trim()) return false;
+    const at = skipSpaces(source, end);
+    if (source[at] === "*") { body = starred.value; end = at + 1; } else body = plain.value;
+  }
   // TeX's conditionals and ifthen's `\ifthenelse` that are decided here (estout's `\sym` takes its `\ifmmode` branch).
-  if (body.includes("\\if")) {
+  if (body.includes("\\if") || /\\not(?:toggle|bool)/.test(body)) {
     const facts = conditionalFacts(context.defs, context.pos, context.mode === "math");
     body = evaluateTexConditionals(evaluateIfThenElse(body, facts), facts);
   }
   const inner = expandText(body, context, depth + 1);
   if (inner === null) return false;
   // A control word right after the expansion must not run into it (`\x y` → `\alpha y`, not `\alphay`).
-  const next = source[read.end] ?? "";
+  const next = source[end] ?? "";
   const glue = /[A-Za-z@]$/.test(inner) && /\\[A-Za-z@]+$/.test(inner) && /[A-Za-z@]/.test(next) ? " " : "";
-  return { text: inner + glue, end: read.end };
+  return { text: inner + glue, end };
 }
 
 /** Math commands whose next token is their argument (accents, fonts, roots, fractions), and `^`/`_`. */
@@ -324,6 +374,80 @@ export function expandLatexMacroUse(source: string, defs: LatexDefinitions, opti
   // `\etal{} show`: the empty group after a macro without arguments only keeps the space; it is part of the use.
   const empty = result && macro && !macro.arity && !macro.spec && /^\{\}/.test(source.slice(result.end, result.end + 2)) ? 2 : 0;
   return result ? { text: result.text, length: result.end + empty, used: [...context.used] } : null;
+}
+
+/**
+ * Where a piece of an expansion comes from: `[from, to)` in the expansion is the call's own text at `source` (offsets
+ * from the use's start), copied unchanged from one of its arguments. Text the definition writes has none.
+ */
+export type ExpansionSegment = { from: number; to: number; source: number };
+export type ProvenanceExpansion = { text: string; length: number; segments: ExpansionSegment[] };
+
+/** A macro's arguments at `index` with where each one's text is (a group's content, or the token); null when one is missing. */
+function readArgumentSpans(source: string, index: number, macro: Pick<LatexMacro, "arity" | "optional">) {
+  const spans: Array<{ value: string; from: number } | { value: string; from: null }> = [];
+  let remaining = macro.arity;
+  if (macro.optional !== undefined && remaining > 0) {
+    const at = skipSpaces(source, index);
+    const optional = readOptional(source, at, TEX_GROUPS);
+    if (optional) { spans.push({ value: optional.content, from: at + 1 }); index = optional.end; } else spans.push({ value: macro.optional, from: null });
+    remaining--;
+  }
+  for (; remaining > 0; remaining--) {
+    const at = skipSpaces(source, index);
+    const read = readUndelimited(source, index);
+    if (!read) return null;
+    spans.push({ value: read.value, from: source[at] === "{" ? at + 1 : at });
+    index = read.end;
+  }
+  return { spans, end: index };
+}
+
+/** Private-use characters standing for the arguments while the body is expanded. */
+const ARGUMENT_MARK = 0xe000;
+
+/**
+ * The use of a macro at the start of `source` expanded as `expandLatexMacroUse` does, with where each piece of the
+ * expansion comes from: a call's argument put in unchanged maps back to the call (editing it there edits the drawing;
+ * an argument written twice is drawn twice from the same text), and the rest is the definition's. Null when the use
+ * is not a usable macro, takes xparse arguments, or its expansion cannot be traced (its arguments are tested or split).
+ */
+export function expandMacroUseWithProvenance(source: string, defs: LatexDefinitions, options: { mode?: "math" | "text"; pos?: number } = {}): ProvenanceExpansion | null {
+  const plain = expandLatexMacroUse(source, defs, options);
+  if (!plain) return null;
+  const name = /^\\([A-Za-z@]+)/.exec(source);
+  const pos = options.pos ?? Number.MAX_SAFE_INTEGER;
+  const macro = name ? macroAt(defs, name[1], pos) : null;
+  if (!macro || macro.spec || macro.alias || /[-]/.test(source.slice(0, plain.length) + macro.body)) return null;
+  const read = readArgumentSpans(source, name![0].length, macro);
+  if (!read || read.end > plain.length) return null;
+  const context: Context = { defs, pos, used: new Set(), mode: options.mode ?? "text", budget: MAX_EXPANSIONS };
+  let body = evaluateConditionals(substituteArguments(macro.body, read.spans.map((_, n) => String.fromCharCode(ARGUMENT_MARK + n))));
+  if (body.includes("\\if") || /\\not(?:toggle|bool)/.test(body)) {
+    const facts = conditionalFacts(defs, pos, context.mode === "math");
+    body = evaluateTexConditionals(evaluateIfThenElse(body, facts), facts);
+  }
+  const inner = expandText(body, context, 1);
+  if (inner === null) return null;
+  let text = "";
+  const segments: ExpansionSegment[] = [];
+  for (let i = 0; i < inner.length; i++) {
+    const n = inner.charCodeAt(i) - ARGUMENT_MARK;
+    if (n < 0 || n >= read.spans.length) { text += inner[i]; continue; }
+    const span = read.spans[n];
+    const expanded = expandLatexMacros(span.value, defs, { mode: "text", pos });
+    if (!expanded.ok) return null;
+    if (expanded.text === span.value && span.from !== null && span.value.length) segments.push({ from: text.length, to: text.length + span.value.length, source: span.from });
+    text += expanded.text;
+  }
+  // Traced only when it is the expansion: an argument the body tests or takes apart is not followed.
+  return text === plain.text ? { text, length: plain.length, segments } : null;
+}
+
+/** Where `[from, to)` of an expansion is in the call (offsets from the use's start), when it lies in one argument copied unchanged; null otherwise. */
+export function provenanceOf(expansion: Pick<ProvenanceExpansion, "segments">, from: number, to: number) {
+  const segment = expansion.segments.find((item) => item.from <= from && to <= item.to);
+  return segment ? segment.source + (from - segment.from) : null;
 }
 
 /** Commands that only make sense in math, so a text expansion containing them (outside math) cannot be drawn as text. */

@@ -8,11 +8,14 @@ import { resolveRelativeNotebookPath } from "../../project";
 import { applyEquationNumbers, renderKatex } from "./math-render";
 import { preambleOpenField, togglePreamble, visualAux, visualConfig, visualDefinitions, visualNumbering } from "./model";
 import { latexProjectField } from "../editing";
-import { bibLookup, citationStyle, citationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
+import { bibLookup, citationStyleFor, citationText, missingCitationKeys, multiCitationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
 import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./render-fragment";
 import { cssColor } from "./symbols";
-import { parseTabular } from "./table-model";
-import type { AlgorithmSpec } from "./algorithm";
+import { editableLines, type FrontDetailsView, type FrontLineView } from "./front-matter";
+import { columnSpans, parseTabular, type TableModel, type TableRow, type TableSettings } from "./table-model";
+import { algorithmLineNumbers, type AlgorithmSpec } from "./algorithm";
+import { attachDrawingPreview } from "./drawing-preview";
+import { readCodeBlock, renderCodeBlock } from "./text-commands";
 
 /* The widgets the Visual mode draws in place of LaTeX constructs
  * (docs/latex-visual-editor-plan.md §3). Widgets whose text depends on
@@ -23,7 +26,7 @@ import type { AlgorithmSpec } from "./algorithm";
 type Refreshable = HTMLElement & { liberaVisRefresh?: (view: EditorView) => void; liberaVisAt?: number | null };
 
 /** Registers how an element updates its numbers; called once now (after mounting) and on every numbering change. */
-function refreshable(dom: HTMLElement, view: EditorView, refresh: (view: EditorView) => void) {
+export function refreshable(dom: HTMLElement, view: EditorView, refresh: (view: EditorView) => void) {
   (dom as Refreshable).liberaVisRefresh = refresh;
   dom.setAttribute("data-vis-refresh", "");
   queueMicrotask(() => { if (dom.isConnected) { (dom as Refreshable).liberaVisAt = widgetPos(view, dom); refresh(view); } });
@@ -64,13 +67,13 @@ export function fragmentContext(view: EditorView, pos?: number): FragmentContext
 }
 
 /** A fragment context at a widget's own position, so definitions written after it in the body do not apply. */
-function widgetContext(view: EditorView, dom: HTMLElement, offset = 0) {
+export function widgetContext(view: EditorView, dom: HTMLElement, offset = 0) {
   const pos = widgetPos(view, dom);
   return fragmentContext(view, pos === null ? undefined : pos + offset);
 }
 
 /** The document position a widget's DOM stands at, or null when it is not in the view. */
-function widgetPos(view: EditorView, dom: HTMLElement) {
+export function widgetPos(view: EditorView, dom: HTMLElement) {
   try {
     return dom.isConnected ? view.posAtDOM(dom) : null;
   } catch {
@@ -129,7 +132,8 @@ export function revealSourceAt(view: EditorView, from: number, to: number) {
   view.focus();
 }
 
-export type MathOpener = (view: EditorView, from: number, to: number) => boolean;
+/** `event` and `dom`: the click on the drawn formula, which picks the row or cell to open. */
+export type MathOpener = (view: EditorView, from: number, to: number, event?: MouseEvent, dom?: HTMLElement) => boolean;
 let openMathEditor: MathOpener | null = null;
 /** Set by math-edit.ts once MathLive editing is installed. */
 export function setMathOpener(opener: MathOpener | null) { openMathEditor = opener; }
@@ -179,7 +183,7 @@ export class MathWidget extends VisualWidget {
       if (from === null) return;
       event.preventDefault();
       const to = from + this.length;
-      if (event.altKey || !openMathEditor || !openMathEditor(view, from + this.numberOffset, to)) revealSourceAt(view, from + this.numberOffset, to);
+      if (event.altKey || !openMathEditor || !openMathEditor(view, from + this.numberOffset, to, event, dom)) revealSourceAt(view, from + this.numberOffset, to);
     });
     return dom;
   }
@@ -190,14 +194,16 @@ export class MathWidget extends VisualWidget {
 /** A citation, reference or label chip. */
 export class ChipWidget extends VisualWidget {
   /** `index`: an `\index{…}` or `\glossary{…}` entry, which the PDF does not show where it is: a small grey tag, as a label. */
-  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number) {
-    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}`);
+  /** `more`: a multicite's other groups (`\parencites[12]{a}[34]{b}`), each with its keys and notes. */
+  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number, readonly more: ReadonlyArray<{ keys: string[]; notes: { pre?: string; post?: string } }> = []) {
+    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}${more.length ? `\u0000${JSON.stringify(more)}` : ""}`);
   }
   private text(view: EditorView) {
     if (this.kind === "label") return this.keys[0];
     // makeidx's `sort@shown!sub` entries: what each level shows.
     if (this.kind === "index") return this.keys[0].split("!").map((level) => level.slice(level.lastIndexOf("@") + 1).replace(/\|.*$/, "")).join(" › ");
-    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyle(visualDefinitions(view.state)));
+    if (this.kind === "cite" && this.more.length) return multiCitationText(this.command, [{ keys: this.keys, notes: this.notes }, ...this.more], visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state));
+    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state));
     return stateReferenceText(view.state, this.command, this.keys);
   }
   toDOM(view: EditorView) {
@@ -228,7 +234,13 @@ export class ChipWidget extends VisualWidget {
         dom.setAttribute("aria-label", `Reference to ${text.replace(/\$/g, "")}`);
       } else if (this.kind === "cite") {
         const bib = bibLookup(target.state);
-        dom.title = this.keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : key; }).join("\n");
+        const keys = [...this.keys, ...this.more.flatMap((group) => group.keys)];
+        // A key no bibliography data knows (only once some is loaded): a warning, as a reference to an unknown label.
+        const missing = missingCitationKeys(target.state, keys);
+        dom.classList.toggle("cm-vis-missing", missing.length > 0);
+        // biblatex's `\supercite`: a superscript number.
+        dom.classList.toggle("cm-vis-cite-super", /^\\supercites?\*?$/.test(this.command) && /^[\d,\s–-]+$/.test(dom.textContent ?? ""));
+        dom.title = keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : missing.includes(key) ? `${key} (citation not found)` : key; }).join("\n");
         dom.setAttribute("aria-label", `Citation ${dom.textContent}`);
       } else {
         dom.title = `${this.command}{${this.keys[0]}}`;
@@ -266,12 +278,23 @@ export class ItemMarkerWidget extends VisualWidget {
    * `latex`: a label written with formulas or styles (`\item[$(i)$]`, `\item[\textbf{Step 1}]`), drawn as LaTeX;
    * `inline`: an item of a list run into its paragraph (paralist's `inparaenum`).
    */
-  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number, readonly flags: { latex?: boolean; inline?: boolean } = {}) {
-    super(`${variant}\u0000${depth}\u0000${label}\u0000${flags.latex ? "l" : ""}${flags.inline ? "i" : ""}`);
+  /**
+   * `numberedAt`: for an item of a list continued from another (enumitem's `resume`), where its `\item` is from the
+   * widget's start: its number comes from the numbering pass, which counts the lists before it.
+   */
+  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number, readonly flags: { latex?: boolean; inline?: boolean } = {}, readonly numberedAt: number | null = null) {
+    super(`${variant}\u0000${depth}\u0000${label}\u0000${flags.latex ? "l" : ""}${flags.inline ? "i" : ""}\u0000${numberedAt ?? ""}`);
   }
   toDOM(view: EditorView) {
     const dom = el("span", `cm-vis-item cm-vis-item-${this.variant}${this.flags.inline ? " cm-vis-item-inline" : ""}`, this.flags.latex ? undefined : this.label);
     dom.style.setProperty("--vis-depth", String(this.depth));
+    if (this.numberedAt !== null && !this.flags.latex) {
+      refreshable(dom, view, (target) => {
+        const pos = widgetPos(target, dom);
+        const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos + this.numberedAt!, "item");
+        dom.textContent = entry?.number ?? this.label;
+      });
+    }
     if (this.flags.latex) {
       const render = (target: EditorView) => dom.replaceChildren(renderLatexFragment(this.label, widgetContext(target, dom)));
       render(view);
@@ -520,14 +543,17 @@ export function graphicsBase(state: EditorView["state"]) {
   return `${config.rootPath || config.documentPath}`;
 }
 
-const pdfThumbnails = new Map<string, Promise<string | null>>();
+/** A PDF page drawn as an image, with the page's size in TeX points (what `trim` and `scale` are measured against). */
+type PdfThumbnail = { data: string; width: number; height: number };
+const pdfThumbnails = new Map<string, Promise<PdfThumbnail | null>>();
 
-async function pdfThumbnail(url: string): Promise<string | null> {
+async function pdfThumbnail(url: string, pageNumber = 1): Promise<PdfThumbnail | null> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc ||= new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
   const pdf = await pdfjs.getDocument({ url }).promise;
   try {
-    const page = await pdf.getPage(1);
+    // `page=` past the end: the first page, as a missing page is an error in TeX (the placeholder would hide the figure).
+    const page = await pdf.getPage(pageNumber <= pdf.numPages ? pageNumber : 1);
     const viewport = page.getViewport({ scale: 1 });
     const scale = Math.min(2, 900 / Math.max(1, viewport.width));
     const scaled = page.getViewport({ scale });
@@ -537,44 +563,66 @@ async function pdfThumbnail(url: string): Promise<string | null> {
     const context = canvas.getContext("2d");
     if (!context) return null;
     await page.render({ canvasContext: context, viewport: scaled }).promise;
-    return canvas.toDataURL("image/png");
+    return { data: canvas.toDataURL("image/png"), width: viewport.width, height: viewport.height };
   } finally {
     void pdf.destroy();
   }
 }
 
-const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "pdf", "svg", "gif", "webp", "eps"];
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "pdf", "svg", "gif", "webp", "eps", "ps"];
 
-/** Draws a graphics file into `container`: an image, a PDF's first page, or a labelled placeholder. */
-function renderImage(container: HTMLElement, view: EditorView, name: string, className = "cm-vis-image") {
+/**
+ * The extensions tried for a graphics file named without one: the document's `\DeclareGraphicsExtensions{.pdf,.png}`
+ * order first (per document version), then the usual ones.
+ */
+const extensionCache = new WeakMap<EditorView["state"]["doc"], string[]>();
+function graphicsExtensions(doc: EditorView["state"]["doc"]) {
+  let extensions = extensionCache.get(doc);
+  if (extensions) return extensions;
+  extensions = IMAGE_EXTENSIONS;
+  const head = doc.sliceString(0, Math.min(doc.length, 200_000));
+  if (head.includes("\\DeclareGraphicsExtensions")) {
+    const declared = /^[^%\n]*?\\DeclareGraphicsExtensions\s*\{([^{}]*)\}/m.exec(head)?.[1];
+    const listed = declared?.split(",").map((ext) => ext.trim().replace(/^\./, "").toLowerCase()).filter((ext) => /^[a-z0-9]+$/.test(ext)) ?? [];
+    if (listed.length) extensions = [...new Set([...listed, ...IMAGE_EXTENSIONS])];
+  }
+  extensionCache.set(doc, extensions);
+  return extensions;
+}
+
+/** Draws a graphics file into `container`: an image, a PDF's page (the first, or `page=`), or a labelled placeholder. */
+function renderImage(container: HTMLElement, view: EditorView, name: string, className = "cm-vis-image", style: GraphicsStyle | null = null) {
   const config = view.state.facet(visualConfig);
   const resolvedPaths = graphicsCandidates(view, name);
   const placeholder = (message: string) => {
     container.replaceChildren(el("span", "cm-vis-image-placeholder", message));
   };
   if (!resolvedPaths.length) { placeholder(`${name} (outside the notebook)`); return; }
-  const candidates = resolvedPaths.flatMap((resolved) => (/\.([a-z0-9]+)$/i.test(resolved) ? [resolved] : IMAGE_EXTENSIONS.map((ext) => `${resolved}.${ext}`)));
+  const extensions = graphicsExtensions(view.state.doc);
+  const candidates = resolvedPaths.flatMap((resolved) => (/\.([a-z0-9]+)$/i.test(resolved) ? [resolved] : extensions.map((ext) => `${resolved}.${ext}`)));
   const tryNext = (index: number) => {
     const path = candidates[index];
     if (!path) { placeholder(`${name} (not found)`); return; }
     const url = config.fileUrl(path);
     if (!url) { placeholder(name); return; }
     const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase();
-    if (ext === "eps") { placeholder(`${name} (EPS: shown in the PDF only)`); return; }
+    if (ext === "eps" || ext === "ps") { placeholder(`${name} (${ext.toUpperCase()}: shown in the PDF only)`); return; }
     if (ext === "pdf") {
-      let thumbnail = pdfThumbnails.get(url);
+      const key = style?.page ? `${url}#page=${style.page}` : url;
+      let thumbnail = pdfThumbnails.get(key);
       if (!thumbnail) {
-        thumbnail = pdfThumbnail(url).catch(() => null);
-        pdfThumbnails.set(url, thumbnail);
+        thumbnail = pdfThumbnail(url, style?.page).catch(() => null);
+        pdfThumbnails.set(key, thumbnail);
         if (pdfThumbnails.size > 60) pdfThumbnails.delete(pdfThumbnails.keys().next().value!);
       }
       container.replaceChildren(el("span", "cm-vis-image-loading", name));
-      void thumbnail.then((data) => {
-        if (!data) { pdfThumbnails.delete(url); tryNext(index + 1); return; }
+      void thumbnail.then((drawn) => {
+        if (!drawn) { pdfThumbnails.delete(key); tryNext(index + 1); return; }
         const image = el("img", className) as HTMLImageElement;
-        image.src = data;
+        image.src = drawn.data;
         image.alt = name;
         container.replaceChildren(image);
+        if (style) applyGraphicsStyle(container, image, style, drawn);
       });
       return;
     }
@@ -583,6 +631,7 @@ function renderImage(container: HTMLElement, view: EditorView, name: string, cla
     image.decoding = "async";
     image.loading = "lazy";
     image.onerror = () => tryNext(index + 1);
+    if (style) image.onload = () => applyGraphicsStyle(container, image, style, { width: image.naturalWidth, height: image.naturalHeight });
     image.src = url;
     container.replaceChildren(image);
   };
@@ -591,11 +640,13 @@ function renderImage(container: HTMLElement, view: EditorView, name: string, cla
 
 /** What one float, or one panel of it (a minipage beside another), shows. */
 export type FigureContent = {
-  images: Array<{ path: string; width?: string }>;
+  /** `options`: the `\includegraphics` options drawn besides the width (height, scale, angle, trim and clip, page). */
+  images: Array<{ path: string; width?: string; options?: string }>;
   /** For tables: the tabular sources inside, with their offsets relative to the widget.
    * `readOnly`: drawn from a reading of the source (a longtable's rows), not cell by cell from it.
-   * `ruled`: inside revtex's `ruledtabular`, which rules the grid with double lines above and below. */
-  tabulars?: Array<{ source: string; offset: number; readOnly?: boolean; ruled?: boolean }>;
+   * `ruled`: inside revtex's `ruledtabular`, which rules the grid with double lines above and below.
+   * `extras`: what the float sets for the grid (`\rowcolors`, `\arraystretch`), and rows written through macros. */
+  tabulars?: Array<{ source: string; offset: number; readOnly?: boolean; ruled?: boolean; extras?: TableExtras }>;
   /** Drawings the editor does not draw (TikZ, `\input` files): their file name, or "" for an inline picture. */
   drawings?: string[];
   /** An `algorithmic` body, as numbered lines. */
@@ -620,6 +671,20 @@ export type FigureContent = {
   intro?: string;
   /** Where the number is recorded relative to the widget: the environment's start, or its panel's. */
   numberOffset: number;
+  /**
+   * Parts the widget does not draw (an unknown command, a code listing, a forest tree), shown as their source, or as a
+   * placeholder naming them, in their place: offsets relative to the widget; `before` the drawn content or after it.
+   */
+  sources?: Array<{ offset: number; length: number; text: string; name?: string; before?: boolean }>;
+  /** Where the caption's text is relative to the widget, when it is written out there: clicked, it is edited in place. */
+  captionOffset?: number;
+  /** A panel's width (a minipage's `0.48\linewidth`, a `\subcaptionbox`'s width) as CSS. */
+  width?: string;
+  /**
+   * A float a macro writes (macro-provenance.ts): where the caption's text is, relative to the widget, when it is the
+   * call's argument. A click on the caption puts the cursor there, to edit just that argument.
+   */
+  captionSource?: { from: number; to: number };
 };
 
 export type FigureSpec = FigureContent & {
@@ -660,18 +725,86 @@ function floatNames(doc: EditorView["state"]["doc"]) {
   return names;
 }
 
-/** The lines of an algorithm, numbered and indented as the algorithmic package sets them. */
-function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
-  const list = el("div", "cm-vis-algorithm");
-  let count = 0;
-  for (const line of spec.lines) {
+/** An algorithm's lines as drawn: the spec they are read from, and where its body starts in the document now. */
+export type AlgorithmElement = HTMLElement & { liberaAlgorithm?: { spec: AlgorithmSpec; base: () => number | null } };
+
+export type AlgorithmHooks = {
+  /** Opens line `line`'s LaTeX in an editor over it; false when it cannot be edited. */
+  edit: (view: EditorView, list: AlgorithmElement, line: number) => boolean;
+  /** Insert and delete commands for a line (right-click). */
+  menu: (view: EditorView, event: MouseEvent, list: AlgorithmElement, line: number) => void;
+  /** Opens an algorithm's caption (`caption` is its LaTeX, in the float at `range`) in an editor over `text`. */
+  caption: (view: EditorView, text: HTMLElement, caption: string, range: () => { from: number; to: number } | null) => boolean;
+  /** A redrawn algorithm: continues an edit that was open in the one it replaces. */
+  adopt?: (view: EditorView, list: AlgorithmElement) => void;
+};
+let algorithmHooks: AlgorithmHooks | null = null;
+/** Set by algorithm-edit.ts. */
+export function setAlgorithmHooks(hooks: AlgorithmHooks | null) { algorithmHooks = hooks; }
+
+const algorithmEditable = (view: EditorView) => !!algorithmHooks && !view.state.readOnly && view.state.facet(visualConfig).editable();
+
+/**
+ * A click on an algorithm's line or caption: edits the line's (or caption's) LaTeX in place, or with Alt shows the
+ * line's source. False when the click is not one of these (the float is then selected as a whole).
+ */
+function algorithmClick(view: EditorView, event: MouseEvent) {
+  const target = event.target as HTMLElement;
+  if (target.closest(".cm-vis-title-editor, .cm-vis-algorithm-editor")) return true;
+  const row = target.closest<HTMLElement>("[data-algorithm-line]");
+  const list = row?.closest<AlgorithmElement>(".cm-vis-algorithm");
+  const algorithm = list?.liberaAlgorithm;
+  if (row && list && algorithm) {
+    const index = Number(row.dataset.algorithmLine);
+    const source = algorithm.spec.lines[index]?.source;
+    if (!source) return false;
+    event.preventDefault();
+    if (!event.altKey && source.exact && algorithmEditable(view) && algorithmHooks!.edit(view, list, index)) return true;
+    const base = algorithm.base();
+    if (base !== null) revealSourceAt(view, base + source.from, base + source.to);
+    return true;
+  }
+  const caption = target.closest<HTMLElement & { liberaCaption?: { caption: string; range: () => { from: number; to: number } | null } }>("[data-algorithm-caption]");
+  if (caption?.liberaCaption && !event.altKey && algorithmEditable(view)) {
+    event.preventDefault();
+    return algorithmHooks!.caption(view, caption, caption.liberaCaption.caption, caption.liberaCaption.range);
+  }
+  return false;
+}
+
+/** The lines of an algorithm, numbered and indented as the algorithmic package sets them; `base` is where its body starts. */
+function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext, view?: EditorView, base?: () => number | null) {
+  const list = el("div", "cm-vis-algorithm") as AlgorithmElement;
+  if (view && base && spec.offset !== undefined) {
+    list.liberaAlgorithm = { spec, base };
+    list.addEventListener("contextmenu", (event) => {
+      const row = (event.target as HTMLElement).closest<HTMLElement>("[data-algorithm-line]");
+      if (!row || !algorithmEditable(view)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      algorithmHooks!.menu(view, event, list, Number(row.dataset.algorithmLine));
+    });
+    queueMicrotask(() => { if (list.isConnected) algorithmHooks?.adopt?.(view, list); });
+  }
+  const numbers = algorithmLineNumbers(spec);
+  spec.lines.forEach((line, index) => {
     // `\\\hrulefill` between statements (GaLore's): a rule across the lines.
-    if (line.rule) { list.append(el("div", `cm-vis-algorithm-rule${line.rule === "dotted" ? " cm-vis-algorithm-rule-dotted" : ""}`)); continue; }
+    if (line.rule) { list.append(el("div", `cm-vis-algorithm-rule${line.rule === "dotted" ? " cm-vis-algorithm-rule-dotted" : ""}`)); return; }
     const row = el("div", "cm-vis-algorithm-line");
+    row.dataset.algorithmLine = String(index);
+    if (line.source) row.classList.add(line.source.exact ? "cm-vis-algorithm-editable" : "cm-vis-algorithm-sourced");
     row.style.setProperty("--vis-algorithm-depth", String(line.depth));
     const number = el("span", "cm-vis-algorithm-number");
-    if (line.numbered) { count++; if (spec.numberEvery && count % spec.numberEvery === 0) number.textContent = `${count}:`; }
+    const count = numbers[index];
+    if (count !== null && spec.numberEvery && count % spec.numberEvery === 0) number.textContent = `${count}:`;
     const body = el("span", "cm-vis-algorithm-body");
+    // A statement the reader does not know: its LaTeX, in the algorithm.
+    if (line.raw) {
+      body.append(el("code", "cm-vis-raw cm-vis-algorithm-raw", line.text));
+      row.append(number, body);
+      list.append(row);
+      return;
+    }
     if (line.lead) body.append(el("strong", "cm-vis-algorithm-keyword", line.lead), " ");
     body.append(renderLatexFragment(line.text, context));
     if (line.trail) body.append(" ", el("strong", "cm-vis-algorithm-keyword", line.trail));
@@ -682,8 +815,130 @@ function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
     }
     row.append(number, body);
     list.append(row);
-  }
+  });
   return list;
+}
+
+export type FloatHooks = {
+  /**
+   * Opens `target` as an editor of the LaTeX written at [from, from + original.length) (a caption's text, a part shown
+   * as source); false when it cannot (the text there changed, a read-only view).
+   */
+  edit: (view: EditorView, target: HTMLElement, from: number, original: string, label: string) => boolean;
+  /** A redrawn float or block: continues an editor that was open in the one it replaces. */
+  adopt?: (view: EditorView, dom: HTMLElement) => void;
+};
+let floatHooks: FloatHooks | null = null;
+/** Set by float-edit.ts. */
+export function setFloatHooks(hooks: FloatHooks | null) { floatHooks = hooks; }
+
+/** The document position of a widget's editable part (`data-float-offset` from the widget's start), for float-edit.ts. */
+export function floatPartPos(view: EditorView, dom: HTMLElement, part: HTMLElement) {
+  const from = widgetPos(view, dom);
+  return from === null || part.dataset.floatOffset === undefined ? null : from + Number(part.dataset.floatOffset);
+}
+
+/**
+ * A part of a float the widget does not draw: its source in monospace, or a placeholder naming what it is (a code
+ * listing, a forest tree). Clicked, its source opens in an editor of its own; the rest of the float stays drawn.
+ */
+function sourcePartElement(view: EditorView, dom: HTMLElement, part: NonNullable<FigureContent["sources"]>[number]) {
+  let element: HTMLElement;
+  // A code listing written in the float: its code, drawn as code blocks are in the text (a placeholder would hide it).
+  const code = part.name ? readCodeBlock(part.text) : null;
+  if (code) {
+    element = el("div", "cm-vis-figure-source cm-vis-figure-source-code");
+    element.append(renderCodeBlock(code, (latex) => renderLatexFragment(latex, widgetContext(view, dom, part.offset)), null));
+    element.title = "Click to edit its source";
+  } else if (part.name) {
+    element = el("span", "cm-vis-figure-drawing cm-vis-figure-source cm-vis-figure-source-named");
+    element.append(el("span", "cm-vis-figure-drawing-name", part.name), el("span", "cm-vis-figure-drawing-note", "Click to edit its source"));
+  } else {
+    element = el("code", "cm-vis-raw cm-vis-figure-source", part.text);
+    element.title = "Not drawn here: click to edit its source";
+  }
+  if (part.before) element.classList.add("cm-vis-figure-source-before");
+  element.dataset.floatOffset = String(part.offset);
+  element.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-float-editor")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const from = widgetPos(view, dom);
+    if (from === null) return;
+    const at = from + part.offset;
+    if (event.altKey || !floatHooks?.edit(view, element, at, part.text, part.name ?? "Source")) revealSourceAt(view, at, at + part.length);
+  });
+  return element;
+}
+
+/** CSS for `\includegraphics` options beyond the width: `height`, `scale`, `angle`, `trim` with `clip`, `keepaspectratio`, `page`. */
+export type GraphicsStyle = { height?: string; scale?: number; angle?: number; trim?: [number, number, number, number]; keepAspect?: boolean; page?: number };
+
+/** A TeX length in an option as CSS (`3cm`, `0.3\textheight` as a share of a page's height); undefined when not one of those. */
+function graphicsLength(value: string | undefined) {
+  if (!value) return undefined;
+  const length = /^([\d.]+)\s*(cm|mm|in|pt|em|ex|bp)$/.exec(value.trim());
+  if (length) return length[2] === "bp" ? `${Number(length[1]) * 96 / 72}px` : `${length[1]}${length[2]}`;
+  // A share of the page's height (`0.3\textheight`): of a page about 9in tall.
+  const share = /^([\d.]*)\s*\\textheight$/.exec(value.trim());
+  return share ? `${Number(share[1] || 1) * 9}in` : undefined;
+}
+
+/** The style an `\includegraphics[…]` option list asks for (its width is read with the image). */
+export function graphicsStyle(options: string): GraphicsStyle | null {
+  const values = new Map<string, string>();
+  for (const pair of options.split(",")) {
+    const [key, ...rest] = pair.split("=");
+    if (key.trim()) values.set(key.trim(), rest.join("=").trim());
+  }
+  const style: GraphicsStyle = {};
+  const height = graphicsLength(values.get("height") ?? values.get("totalheight"));
+  if (height) style.height = height;
+  const scale = Number(values.get("scale"));
+  if (values.has("scale") && Number.isFinite(scale) && scale > 0) style.scale = scale;
+  const angle = Number(values.get("angle"));
+  if (values.has("angle") && Number.isFinite(angle) && angle % 360 !== 0) style.angle = angle;
+  // `trim=l b r t` (bp) crops only with `clip` (else the image spills over its box, as TeX draws it: shown whole).
+  const clip = values.has("clip") && values.get("clip") !== "false";
+  const trim = (values.get("trim") ?? values.get("viewport"))?.split(/\s+/).map((part) => parseFloat(part));
+  if (clip && trim?.length === 4 && trim.every((part) => Number.isFinite(part) && part >= 0) && values.has("trim")) style.trim = trim as GraphicsStyle["trim"];
+  if (values.has("keepaspectratio") && values.get("keepaspectratio") !== "false") style.keepAspect = true;
+  const page = Number(values.get("page"));
+  if (Number.isInteger(page) && page > 1) style.page = page;
+  return Object.keys(style).length ? style : null;
+}
+
+/** Applies a graphics style to a drawn image once its natural size is known: `scale` and `trim` need it. */
+function applyGraphicsStyle(container: HTMLElement, image: HTMLImageElement | HTMLCanvasElement, style: GraphicsStyle, natural: { width: number; height: number }) {
+  if (style.height) {
+    image.style.height = style.height;
+    image.style.width = container.style.getPropertyValue("--vis-image-width") ? "100%" : "auto";
+    image.style.objectFit = style.keepAspect ? "contain" : "fill";
+  }
+  // A PNG's pixels are TeX's points (72 to the inch), as pdfTeX reads an image without a resolution.
+  if (style.scale && natural.width > 0 && !container.style.getPropertyValue("--vis-image-width") && !style.height) image.style.width = `${natural.width * style.scale * 96 / 72}px`;
+  if (style.trim && natural.width > 0 && natural.height > 0) {
+    // Cropped by a window over the image: its share of the image, shifted by what is trimmed at the left and top.
+    const [left, bottom, right, top] = style.trim;
+    const visibleWidth = natural.width - left - right;
+    const visibleHeight = natural.height - top - bottom;
+    if (visibleWidth > 0 && visibleHeight > 0) {
+      const crop = el("span", "cm-vis-image-crop");
+      crop.style.aspectRatio = `${visibleWidth} / ${visibleHeight}`;
+      image.style.width = `${(natural.width / visibleWidth) * 100}%`;
+      image.style.maxWidth = "none";
+      image.style.marginLeft = `${-(left / visibleWidth) * 100}%`;
+      image.style.marginTop = `${-(top / visibleWidth) * 100}%`;
+      image.replaceWith(crop);
+      crop.append(image);
+    }
+  }
+  if (style.angle) {
+    // TeX turns counterclockwise.
+    const target = image.parentElement?.classList.contains("cm-vis-image-crop") ? image.parentElement : image;
+    target.style.transform = `rotate(${-style.angle}deg)`;
+    target.classList.add("cm-vis-image-rotated");
+  }
 }
 
 /** A figure, table or algorithm environment: images, drawings, grids or lines, and numbered captions (one per panel). */
@@ -700,9 +955,12 @@ export class FigureWidget extends VisualWidget {
       for (const image of content.images) {
         const frame = el("span", "cm-vis-figure-image");
         if (image.width) frame.style.setProperty("--vis-image-width", image.width);
-        renderImage(frame, view, image.path);
+        const style = image.options ? graphicsStyle(image.options) : null;
+        renderImage(frame, view, image.path, "cm-vis-image", style);
         body.append(frame);
       }
+      // What it does not draw: its source in its place (before or after the drawn content), editable on its own.
+      for (const part of content.sources ?? []) body.append(sourcePartElement(view, dom, part));
       for (const drawing of content.drawings ?? []) {
         // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is, or the
         // package that draws it ("diagram:tikz-cd").
@@ -710,6 +968,7 @@ export class FigureWidget extends VisualWidget {
         const diagram = /^diagram:(.*)$/.exec(drawing)?.[1];
         placeholder.append(el("span", "cm-vis-figure-drawing-name", diagram ? `Diagram (${diagram})` : drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
         placeholder.append(el("span", "cm-vis-figure-drawing-note", "Drawn in the PDF"));
+        attachDrawingPreview(view, placeholder, drawing, () => { const pos = start(); return pos === null ? null : view.state.sliceDoc(pos, pos + spec.length); });
         body.append(placeholder);
       }
       for (const box of content.boxes ?? []) {
@@ -724,12 +983,16 @@ export class FigureWidget extends VisualWidget {
         const grid = renderTableGrid(view, tabular.source, () => {
           const pos = start();
           return pos === null ? null : pos + tabular.offset;
-        }, tabular.readOnly ? spec.length - tabular.offset : undefined);
+        }, tabular.readOnly ? spec.length - tabular.offset : undefined, tabular.extras);
         if (tabular.ruled) grid.classList.add("cm-vis-table-ruled");
         body.append(grid);
       }
       if (content.algorithm) {
-        const lines = renderAlgorithm(content.algorithm, fragmentContext(view, content.captionPos));
+        const offset = content.algorithm.offset;
+        const lines = renderAlgorithm(content.algorithm, fragmentContext(view, content.captionPos), view, () => {
+          const pos = start();
+          return pos === null || offset === undefined ? null : pos + offset;
+        });
         if (content.intro) {
           // The prose and the lines, one above the other (the body lays its items out in a row).
           const block = el("div", "cm-vis-algorithm-block");
@@ -744,6 +1007,38 @@ export class FigureWidget extends VisualWidget {
       const label = el("span", "cm-vis-caption-label");
       const text = el("span", "cm-vis-caption-text");
       text.append(renderLatexFragment(content.caption, fragmentContext(view, content.captionPos)));
+      // An algorithm's own caption is edited by algorithm-edit.ts (below), not by the float's caption editor.
+      if (content.captionOffset !== undefined && !(content.kind === "algorithm" && !content.sub)) {
+        // Clicked, the caption's LaTeX is edited in place (its label and short title stay as written).
+        const offset = content.captionOffset;
+        const original = content.caption;
+        text.classList.add("cm-vis-editable-part");
+        text.dataset.floatOffset = String(offset);
+        text.title = "Click to edit the caption";
+        text.addEventListener("mousedown", (event) => {
+          if (event.button !== 0 || event.altKey || event.detail >= 2 || (event.target as HTMLElement).closest(".cm-vis-float-editor")) return;
+          const from = widgetPos(view, dom);
+          if (from === null || !floatHooks?.edit(view, text, from + offset, original, "Caption")) return;
+          event.preventDefault();
+          event.stopPropagation();
+        });
+      }
+      // An algorithm's caption is edited in place (algorithm-edit.ts).
+      if (content.kind === "algorithm" && !content.sub) {
+        text.dataset.algorithmCaption = "true";
+        Object.assign(text, { liberaCaption: { caption: content.caption, range: () => { const pos = start(); return pos === null ? null : { from: pos, to: pos + spec.length }; } } });
+      }
+      const source = content.captionSource;
+      if (source && content.captionOffset === undefined) {
+        text.classList.add("cm-vis-caption-argument");
+        text.addEventListener("mousedown", (event) => {
+          if (event.button !== 0 || event.altKey) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const at = widgetPos(view, dom);
+          if (at !== null) editKeysAt(view, at + source.from);
+        });
+      }
       caption.append(label, text);
       captions.push({ content, label, text });
       if (content.captionAbove) into.append(caption, body, ...notes); else into.append(body, caption, ...notes);
@@ -752,13 +1047,19 @@ export class FigureWidget extends VisualWidget {
       const row = el("div", `cm-vis-figure-panels${spec.stacked ? " cm-vis-figure-panels-stacked" : ""}`);
       for (const panel of spec.panels) {
         const element = el("div", "cm-vis-figure-panel");
+        if (panel.width) element.style.setProperty("--vis-panel-width", panel.width);
         draw(panel, element);
         row.append(element);
+      }
+      // The float's own parts shown as source (between or around the panels).
+      for (const part of spec.sources ?? []) {
+        const element = sourcePartElement(view, dom, part);
+        if (part.before) row.prepend(element); else row.append(element);
       }
       // The float's own caption, if it has one besides the panels'.
       // Its notes are under the panels, whether its caption is above or below them (the cannabis paper's figures).
       const notesBelow = spec.caption === null || spec.captionAbove;
-      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined, notes: notesBelow ? undefined : spec.notes };
+      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined, sources: undefined, notes: notesBelow ? undefined : spec.notes };
       if (spec.caption !== null && spec.captionAbove) draw(own, dom);
       dom.append(row);
       if (spec.caption !== null && !spec.captionAbove) draw(own, dom);
@@ -779,18 +1080,134 @@ export class FigureWidget extends VisualWidget {
       }
     });
     dom.addEventListener("mousedown", (event) => {
-      if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true]")) return;
+      if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true], .cm-vis-float-editor")) return;
+      if (event.detail < 2 && algorithmClick(view, event)) return;
       event.preventDefault();
       const from = widgetPos(view, dom);
       if (from === null) return;
       if (event.altKey || event.detail >= 2) revealSourceAt(view, from + spec.numberOffset, from + spec.length);
       else selectRange(view, from, from + spec.length);
     });
+    // An editor open in the widget this one replaces (a co-author's edit redrew it) continues here.
+    queueMicrotask(() => { if (dom.isConnected) floatHooks?.adopt?.(view, dom); });
     return dom;
   }
   // The editor never handles events in here: clicks open editors, and an edited cell takes its own keys.
   ignoreEvent() { return true; }
   get estimatedHeight() { return this.spec.kind === "figure" ? 260 : 160; }
+}
+
+/** A column of side-by-side minipages or parboxes: its content's LaTeX, where it is relative to the widget, and its width. */
+export type ColumnSpec = { offset: number; length: number; body: string; width?: string };
+
+/** A list body's items, split at `\item` outside groups and nested environments; null when text comes before the first. */
+function listItems(body: string): string[] | null {
+  const items: string[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "\\") {
+      if (body.startsWith("\\begin", i)) depth++;
+      else if (body.startsWith("\\end", i)) depth--;
+      else if (depth === 0 && /^\\item(?![A-Za-z@])/.test(body.slice(i, i + 6))) {
+        if (start < 0) { if (body.slice(0, i).trim()) return null; } else items.push(body.slice(start, i).trim());
+        start = i + 5;
+        i = start - 1;
+        continue;
+      }
+      i++;
+    }
+  }
+  if (start < 0) return null;
+  items.push(body.slice(start).trim());
+  return items;
+}
+
+/**
+ * A column's content as blocks: its lists (as lists), its tabulars (as grids, cells edited as a table's), and its text
+ * paragraphs (with formulas and images drawn, anything else shown as source, as captions are).
+ */
+function renderColumnBody(view: EditorView, dom: HTMLElement, column: HTMLElement, spec: ColumnSpec) {
+  const body = spec.body;
+  const blocks = /\\begin\s*\{(itemize|enumerate|description|tabular\*?|tabularx)\}/g;
+  let at = 0;
+  const text = (from: number, to: number) => {
+    for (const paragraph of body.slice(from, to).split(/\n[ \t]*\n/)) {
+      if (!paragraph.replace(/%[^\n]*/g, "").trim()) continue;
+      column.append(renderLatexInto("div", "cm-vis-column-block", paragraph.trim(), widgetContext(view, dom, spec.offset)));
+    }
+  };
+  for (let match = blocks.exec(body); match; match = blocks.exec(body)) {
+    // The matching `\end`, counting the same environment nested inside.
+    const name = match[1].replace("*", "\\*");
+    const pattern = new RegExp(String.raw`\\(begin|end)\s*\{${name}\}`, "g");
+    pattern.lastIndex = match.index + match[0].length;
+    let depth = 1;
+    let end = -1;
+    for (let next = pattern.exec(body); next; next = pattern.exec(body)) {
+      depth += next[1] === "begin" ? 1 : -1;
+      if (!depth) { end = next.index + next[0].length; break; }
+    }
+    if (end < 0) break;
+    text(at, match.index);
+    const source = body.slice(match.index, end);
+    if (/^tabular/.test(match[1])) {
+      const offset = spec.offset + match.index;
+      const grid = renderTableGrid(view, source, () => { const pos = widgetPos(view, dom); return pos === null ? null : pos + offset; });
+      const block = el("div", "cm-vis-column-block");
+      block.append(grid);
+      column.append(block);
+    } else {
+      const inner = source.replace(/^\\begin\s*\{[^}]*\}/, "").replace(/\\end\s*\{[^}]*\}$/, "");
+      const items = listItems(inner);
+      if (!items) column.append(renderLatexInto("div", "cm-vis-column-block", source, widgetContext(view, dom, spec.offset)));
+      else {
+        const list = el(match[1] === "enumerate" ? "ol" : "ul", "cm-vis-column-block");
+        for (const item of items) list.append(renderLatexInto("li", "", item.replace(/^\[[^\]]*\]\s*/, ""), widgetContext(view, dom, spec.offset)));
+        column.append(list);
+      }
+    }
+    at = end;
+    blocks.lastIndex = end;
+  }
+  text(at, body.length);
+}
+
+/** Side-by-side minipages or parboxes outside floats: columns at their widths; clicked, a column's LaTeX is edited in place. */
+export class ColumnsWidget extends VisualWidget {
+  constructor(readonly columns: ColumnSpec[], readonly length: number, readonly base: string) { super(JSON.stringify([columns, length, base])); }
+  toDOM(view: EditorView) {
+    const dom = el("div", "cm-vis-columns");
+    for (const spec of this.columns) {
+      const column = el("div", "cm-vis-column");
+      if (spec.width) column.style.setProperty("--vis-column-width", spec.width);
+      column.dataset.floatOffset = String(spec.offset);
+      renderColumnBody(view, dom, column, spec);
+      column.addEventListener("mousedown", (event) => {
+        const target = event.target as HTMLElement;
+        if (event.button !== 0 || target.closest(".cm-vis-float-editor, .cm-vis-table-cell")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const from = widgetPos(view, dom);
+        if (from === null) return;
+        if (event.altKey || !floatHooks?.edit(view, column, from + spec.offset, spec.body, "Column")) revealSourceAt(view, from + spec.offset, from + spec.offset + spec.length);
+      });
+      dom.append(column);
+    }
+    dom.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-column")) return;
+      event.preventDefault();
+      const from = widgetPos(view, dom);
+      if (from !== null) selectRange(view, from, from + this.length);
+    });
+    queueMicrotask(() => { if (dom.isConnected) floatHooks?.adopt?.(view, dom); });
+    return dom;
+  }
+  ignoreEvent() { return true; }
+  get estimatedHeight() { return 120; }
 }
 
 export type TableHooks = {
@@ -800,6 +1217,8 @@ export type TableHooks = {
   menu: (view: EditorView, event: MouseEvent, tableStart: () => number | null, row: number, cell: number) => void;
   /** A redrawn table: continues a cell edit that was open in the table it replaces. */
   adopt?: (view: EditorView, table: TableElement) => void;
+  /** Shift-click: extends the selection of cells (for merging) to this cell. */
+  select?: (view: EditorView, cell: HTMLElement, tableStart: () => number | null, row: number, cell_: number) => void;
 };
 let tableHooks: TableHooks | null = null;
 /** Set by table-edit.ts. */
@@ -813,14 +1232,62 @@ export function isEditingCell(td: HTMLElement) {
   return td.getAttribute("contenteditable") === "true";
 }
 
+/** What a grid's surroundings set for it (`\rowcolors`, `\arraystretch`), and the rows the document's macros write (table-model.ts). */
+export type TableExtras = { settings?: TableSettings; macroRows?: Record<number, string | null> };
+
+/** A table fill: none for white, the page's own colour. */
+function tableFill(model: string | null, name: string, colors: FragmentContext["defs"]["colors"]) {
+  return !name.trim() || /^white$/i.test(name.trim()) ? null : cssColor(model, name, colors);
+}
+
+/** A partial rule (`\cline{2-3}`, `\cmidrule(lr){2-3}`, `\cdashline{1-2}`): the columns it rules. */
+const PARTIAL_RULE = /^\\(?:cline|cmidrule|cdashline)\s*(?:\([^)]*\)\s*)?(?:\[[^\]]*\]\s*)?\{\s*(\d+)\s*-\s*(\d+)\s*\}/;
+/** A number as siunitx's `S` column reads it in the simple case: a sign, digits, a decimal point, digits. */
+const DECIMAL = /^([+\-−]?)(\d*)(?:([.,])(\d*))?$/;
+/** diagbox's `\diagbox{below}{above}` (and `\backslashbox`), the whole cell. */
+const DIAGBOX = /^\\(?:diagbox|backslashbox)\s*(?:\[[^\]]*\]\s*)?\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}$/;
+/** A header turned a quarter: `\rotatebox{90}{…}`, the whole cell. */
+const ROTATED = /^\\rotatebox\s*(?:\[[^\]]*\]\s*)?\{\s*(-?\d+)\s*\}\s*\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}$/;
+const FIGURE_SPACE = " ";
+const PUNCTUATION_SPACE = " ";
+
+/** For siunitx's `S` columns: the widest integer part (with its sign) and fraction of the numbers written in them. */
+function decimalColumns(model: TableModel, types: ReadonlyMap<string, unknown>) {
+  const layouts = new Map<number, { int: number; frac: number }>();
+  model.columns.forEach((column, index) => {
+    if (column !== "S" || types.has(column)) return;
+    let int = 0;
+    let frac = 0;
+    let numbers = 0;
+    for (const row of model.rows) {
+      let at = 0;
+      for (const cell of row.cells) {
+        if (at === index && cell.span === 1) {
+          const number = DECIMAL.exec(cell.text.trim());
+          if (number && (number[2] || number[4])) {
+            numbers++;
+            int = Math.max(int, number[1].length + number[2].length);
+            frac = Math.max(frac, number[4]?.length ?? 0);
+          }
+        }
+        at += cell.span;
+      }
+    }
+    if (numbers) layouts.set(index, { int, frac });
+  });
+  return layouts;
+}
+
 /** A tabular as a grid; cells render their LaTeX, and become editable through table-edit.ts. */
 /**
  * The grid of a tabular. With `readOnlyLength`, the source is a reading of the
  * document rather than a slice of it (a longtable's rows): cells are not
  * edited, and a click shows the source of the `readOnlyLength` characters
- * from `start`.
+ * from `start`. `extras` holds what the commands around the tabular set for it,
+ * and the rows the document's macros write: those are drawn from their
+ * expansion, and a click shows their source; the other cells stay editable.
  */
-export function renderTableGrid(view: EditorView, source: string, start: () => number | null, readOnlyLength?: number) {
+export function renderTableGrid(view: EditorView, source: string, start: () => number | null, readOnlyLength?: number, extras: TableExtras = {}) {
   const types = visualDefinitions(view.state).columnTypes;
   const model = parseTabular(source, 0, types);
   const table = el("table", "cm-vis-table") as TableElement;
@@ -832,35 +1299,110 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   /** Cells whose LaTeX can show numbers, citations or macros, redrawn when those change. */
   const dynamic: Array<{ td: HTMLElement; text: string; from: number }> = [];
   // `\newcolumntype` letters align as their definition does.
-  // tabulary's `C` and `R` align as `c` and `r` (unless the document defines them).
-  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" || column === "C" ? "center" : column === "r" || column === "R" || column === "D" ? "right" : "left"));
+  // tabulary's `C` and `R` align as `c` and `r` (unless the document defines them); siunitx's `S` centres its numbers.
+  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" || column === "C" || column === "S" ? "center" : column === "r" || column === "R" || column === "D" ? "right" : "left"));
   // dcolumn's `D{.}{.}{3.2}` cells (and `>{$}c<{$}`) are formulas: `1.41^{***}` has its stars raised.
   const formulas = model.columns.map((column) => column === "D" || !!types.get(column)?.math);
   // As in TeX, only paragraph columns (`p{…}`, `m{…}`, `b{…}`, tabularx's `X`, tabulary's `L C R J`) wrap; the
   // others are one line, so a wide table scrolls instead of breaking "2.46" into "2." and "46" (Carlini & Wagner).
   const wraps = model.columns.map((column) => (types.has(column) ? !!types.get(column)!.paragraph : /^[pmbXLCRJ]$/.test(column)));
+  // `m{…}` and `b{…}` set their cells' text in the middle and at the bottom of the row.
+  const valigns = model.columns.map((column) => (types.has(column) ? null : column === "m" ? "middle" : column === "b" ? "bottom" : null));
+  // colortbl's `>{\columncolor{…}}c`: the column's fill, under a row's.
+  const spans = columnSpans(model.spec, 0, types) ?? [];
+  const columnFills = model.columns.map((_, index) => {
+    const span = spans[index];
+    const fill = span && /\\columncolor\s*(?:\[([^\]]*)\]\s*)?\{([^{}]*)\}/.exec(model.spec.slice(span.from, span.to));
+    return fill ? tableFill(fill[1] ?? null, fill[2], context.defs.colors) : null;
+  });
+  const decimals = decimalColumns(model, types);
+  const settings = extras.settings;
+  // `\renewcommand{\arraystretch}{1.5}`: taller rows.
+  if (settings?.stretch) table.style.setProperty("--vis-arraystretch", String(settings.stretch));
+  // xcolor's `\rowcolors{2}{gray!10}{white}`: odd and even rows filled faintly from the row it names.
+  const rowColors = settings?.rowColors
+    ? { start: settings.rowColors.start, odd: tableFill(null, settings.rowColors.odd, context.defs.colors), even: tableFill(null, settings.rowColors.even, context.defs.colors) }
+    : null;
   /** Columns a `\multirow` above still covers, and for how many more rows. */
   const rowsCovered = new Map<number, number>();
   /** The rules of rows not drawn, drawn above the next row; whether the last such row closes the table. */
   let carried: string[] = [];
   let closing = false;
-  model.rows.forEach((row, rowIndex) => {
+
+  // The rows to draw: the tabular's own, and for a row the document's macros write, the rows of its expansion.
+  type Shown = { row: TableRow; index: number | null; text: string; macro?: { from: number; to: number }; raw?: boolean };
+  const shown: Shown[] = [];
+  let pending: string[] = [];
+  model.rows.forEach((row, index) => {
+    const before = pending.length ? [...pending, ...row.rulesBefore] : row.rulesBefore;
+    pending = [];
+    const reading = extras.macroRows?.[index];
+    if (reading === undefined) { shown.push({ row: before === row.rulesBefore ? row : { ...row, rulesBefore: before }, index, text: source }); return; }
+    const macro = { from: row.from, to: row.to };
+    const wrapped = reading === null ? "" : `\\begin{tabular}{${model.spec}}${reading}\\end{tabular}`;
+    const sub = reading === null ? null : parseTabular(wrapped, 0, types);
+    // A row whose expansion cannot be read: its source, alone in its row.
+    if (!sub) { shown.push({ row: { ...row, rulesBefore: before }, index: null, text: source, macro, raw: true }); return; }
+    sub.rows.forEach((subRow, k) => shown.push({ row: k === 0 ? { ...subRow, rulesBefore: [...before, ...subRow.rulesBefore] } : subRow, index: null, text: wrapped, macro }));
+    if (!sub.rows.length) pending.push(...before);
+    pending.push(...sub.rulesAfter);
+  });
+  if (pending.length) closing = true;
+
+  let drawn = 0;
+  shown.forEach(({ row, index: rowIndex, text: rowSource, macro, raw }, shownIndex) => {
     const rulesBefore = [...carried, ...row.rulesBefore];
     carried = [];
     // stargazer's `\\[-1.8ex]\hline` and `\hline \\[-1.8ex]`: empty rows a negative space pulls up to nothing in the
     // PDF (the Grammarly paper's tables); their rules go to the next row.
-    if (row.breakAt !== null && row.cells.every((cell) => !cell.text.trim()) && /^\\\\\*?\s*\[\s*-/.test(source.slice(row.breakAt, row.to)) && ![...rowsCovered.values()].some((count) => count > 0)) {
-      if (rowIndex + 1 < model.rows.length) { carried = rulesBefore; return; }
+    if (row.breakAt !== null && row.cells.every((cell) => !cell.text.trim()) && /^\\\\\*?\s*\[\s*-/.test(rowSource.slice(row.breakAt, row.to)) && ![...rowsCovered.values()].some((count) => count > 0)) {
+      if (shownIndex + 1 < shown.length) { carried = rulesBefore; return; }
       if (rulesBefore.length) { closing = true; return; }
     }
     const tr = el("tr", "cm-vis-table-row");
     // `\addlinespace` is space, not a line; `\noalign{…}` sets up the line after it (a thicker one: Mask R-CNN's `\shline`).
     const lines = rulesBefore.filter((rule) => !/^\\(?:addlinespace|noalign)/.test(rule));
+    // `\cline{2-3}` and `\cmidrule{2-3}` rule only their columns.
+    const partial = lines.map((rule) => PARTIAL_RULE.exec(rule)).filter((match): match is RegExpExecArray => !!match).map((match) => [Number(match[1]) - 1, Number(match[2]) - 1] as const);
+    const full = lines.filter((rule) => !PARTIAL_RULE.test(rule));
     const thick = rulesBefore.some((rule) => /^\\noalign\s*\{[^}]*\\arrayrulewidth\s*[\d.]+\s*pt/.test(rule));
-    if (lines.length) tr.classList.add(thick || lines.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
+    if (full.length) tr.classList.add(thick || full.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
     if (rulesBefore.some((rule) => /^\\addlinespace/.test(rule))) tr.classList.add("cm-vis-row-spaced");
+    drawn++;
+    if (rowColors && drawn >= rowColors.start) {
+      const fill = drawn % 2 ? rowColors.odd : rowColors.even;
+      if (fill) { tr.style.setProperty("--vis-fill", fill); tr.dataset.fill = ""; }
+    }
+    /** Shows the source of the row a macro writes. */
+    const revealMacro = (event: MouseEvent) => {
+      if (event.button !== 0 || !macro) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const base = start();
+      if (base === null) return;
+      if (readOnly) revealSourceAt(view, base, base + readOnlyLength!);
+      else revealSourceAt(view, base + macro.from, base + macro.to);
+    };
+    if (raw && macro) {
+      const td = el("td", "cm-vis-table-cell cm-vis-table-macro") as HTMLTableCellElement;
+      td.colSpan = Math.max(1, model.columns.length);
+      td.append(el("code", "cm-vis-raw", source.slice(macro.from, macro.to)));
+      td.title = "A row written through a macro: click to edit its source";
+      td.addEventListener("mousedown", revealMacro);
+      tr.append(td);
+      table.append(tr);
+      return;
+    }
+    if (rowIndex !== null) {
+      // More cells than the column specification has (or a `\multicolumn` past its end): drawn, and marked.
+      const width = row.cells.reduce((sum, cell) => sum + cell.span, 0);
+      if (model.columns.length && width > model.columns.length) {
+        tr.classList.add("cm-vis-table-row-odd");
+        tr.title = `This row has ${width} columns; the table's specification has ${model.columns.length}`;
+      }
+    }
     // Rows read from another file (`\input{./tables/summary_stats_post.tex} \\`, the Grammarly paper): a placeholder row.
-    const input = row.cells.length === 1 ? /^\\(?:input|include)\s*\{([^{}]+)\}$/.exec(row.cells[0].text.trim()) : null;
+    const input = rowIndex !== null && row.cells.length === 1 ? /^\\(?:input|include)\s*\{([^{}]+)\}$/.exec(row.cells[0].text.trim()) : null;
     if (input) {
       const name = input[1].trim().replace(/^\.\//, "");
       // Not a cell of the grid: the cell editor and keys leave it alone.
@@ -890,7 +1432,9 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       if (cell.span > 1) td.colSpan = cell.span;
       td.style.textAlign = cell.span > 1 ? "center" : aligns[column] ?? "left";
       if (cell.span === 1 && wraps[column] === false) td.classList.add("cm-vis-table-line");
-      let text = cell.contentFrom !== undefined ? source.slice(cell.contentFrom, cell.contentTo) : cell.text;
+      if (partial.some(([first, last]) => column <= last && column + cell.span - 1 >= first)) td.classList.add("cm-vis-cell-rule");
+      if (cell.span === 1 && columnFills[column]) { td.style.setProperty("--vis-column-fill", columnFills[column]!); td.dataset.columnFill = ""; }
+      let text = cell.contentFrom !== undefined ? rowSource.slice(cell.contentFrom, cell.contentTo) : cell.text;
       // colortbl: `\rowcolor{Gray}` at a row's start fills the row, `\cellcolor{…}` its cell (faintly, under the text).
       const fill = /^\s*\\(rowcolor|cellcolor)\s*(?:\[([^\]]*)\]\s*)?\{([^{}]*)\}/.exec(text);
       if (fill) {
@@ -907,12 +1451,48 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
         td.rowSpan = Number(multirow[1]);
         td.style.verticalAlign = "middle";
         for (let at = column; at < column + cell.span; at++) rowsCovered.set(at, Number(multirow[1]) - 1);
+      } else if (cell.span === 1 && valigns[column]) td.style.verticalAlign = valigns[column]!;
+      const trimmed = text.trim();
+      const decimal = cell.span === 1 ? decimals.get(column) : undefined;
+      const number = decimal ? DECIMAL.exec(trimmed) : null;
+      const diagonal = DIAGBOX.exec(trimmed);
+      const rotated = ROTATED.exec(trimmed);
+      if (decimal && number && (number[2] || number[4])) {
+        // The number as written, padded with digit-wide spaces so the column's points line up.
+        const whole = number[1] + number[2];
+        const fraction = number[4] ?? "";
+        td.classList.add("cm-vis-table-decimal");
+        td.textContent = FIGURE_SPACE.repeat(decimal.int - whole.length) + whole + (number[3] ?? (decimal.frac ? PUNCTUATION_SPACE : "")) + fraction + FIGURE_SPACE.repeat(decimal.frac - fraction.length);
+      } else if (diagonal) {
+        // A cell split by a diagonal: the first part below it, the second above.
+        td.classList.add("cm-vis-table-diag");
+        const above = el("span", "cm-vis-diag-above");
+        above.append(renderLatexFragment(diagonal[2], context));
+        const below = el("span", "cm-vis-diag-below");
+        below.append(renderLatexFragment(diagonal[1], context));
+        td.append(above, below);
+      } else if (rotated && /^(?:90|-90|270)$/.test(rotated[1])) {
+        // A header turned a quarter, read from the bottom up (90) or the top down (-90).
+        const turned = el("span", rotated[1] === "90" ? "cm-vis-rotated cm-vis-rotated-up" : "cm-vis-rotated");
+        turned.append(renderLatexFragment(rotated[2], context));
+        td.append(turned);
+      } else {
+        const formula = cell.span === 1 && formulas[column] && trimmed && !text.includes("$") && !/^\s*\\multi(?:column|row)/.test(text);
+        td.append(renderLatexFragment(formula ? `$${trimmed}$` : text, context));
+        if (text.includes("\\")) dynamic.push({ td, text, from: macro ? macro.from : cell.contentFrom ?? cell.from });
       }
-      const formula = cell.span === 1 && formulas[column] && text.trim() && !text.includes("$") && !/^\s*\\multi(?:column|row)/.test(text);
-      td.append(renderLatexFragment(formula ? `$${text.trim()}$` : text, context));
-      if (text.includes("\\")) dynamic.push({ td, text, from: cell.contentFrom ?? cell.from });
+      if (macro) {
+        // A row the document's macros write: drawn from their expansion; a click shows the row's source.
+        td.classList.add("cm-vis-table-macro");
+        td.title = "Written through a macro: click to edit its source";
+        td.addEventListener("mousedown", revealMacro);
+        tr.append(td);
+        column += cell.span;
+        return;
+      }
       td.dataset.row = String(rowIndex);
       td.dataset.cell = String(cellIndex);
+      // A cell with a comment or a line break inside opens as its whole source.
       if (cell.sourceOnly) td.classList.add("cm-vis-table-source-only");
       td.addEventListener("mousedown", (event) => {
         if (event.button !== 0 || isEditingCell(td)) return;
@@ -923,7 +1503,9 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
           if (base !== null) revealSourceAt(view, base, base + readOnlyLength);
           return;
         }
-        if (tableHooks && !cell.sourceOnly && !event.altKey && view.state.facet(visualConfig).editable() && !view.state.readOnly) { tableHooks.edit(view, td, start, rowIndex, cellIndex); return; }
+        // Shift-click selects cells, for merging them.
+        if (event.shiftKey && tableHooks?.select) { tableHooks.select(view, td, start, rowIndex!, cellIndex); return; }
+        if (tableHooks && !event.altKey && view.state.facet(visualConfig).editable() && !view.state.readOnly) { tableHooks.edit(view, td, start, rowIndex!, cellIndex); return; }
         const base = start();
         if (base !== null) revealSourceAt(view, base + cell.from, base + cell.to + 1);
       });
@@ -931,7 +1513,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
         if (readOnly || !tableHooks || view.state.readOnly || !view.state.facet(visualConfig).editable()) return;
         event.preventDefault();
         event.stopPropagation();
-        tableHooks.menu(view, event, start, rowIndex, cellIndex);
+        tableHooks.menu(view, event, start, rowIndex!, cellIndex);
       });
       tr.append(td);
       column += cell.span;
@@ -960,7 +1542,7 @@ export function editFirstCell(view: EditorView, from: number, to: number) {
   for (const table of view.contentDOM.querySelectorAll<TableElement>(".cm-vis-table")) {
     const start = table.liberaTableStart?.();
     if (start === null || start === undefined || start < from || start >= to) continue;
-    const cell = table.querySelector<HTMLElement>(".cm-vis-table-cell:not(.cm-vis-table-source-only)");
+    const cell = table.querySelector<HTMLElement>(".cm-vis-table-cell[data-row]:not(.cm-vis-table-source-only)") ?? table.querySelector<HTMLElement>(".cm-vis-table-cell[data-row]");
     if (!cell || !table.liberaTableStart) return false;
     tableHooks.edit(view, cell, table.liberaTableStart, Number(cell.dataset.row), Number(cell.dataset.cell));
     return true;
@@ -971,15 +1553,15 @@ export function editFirstCell(view: EditorView, from: number, to: number) {
 /** A tabular outside a table environment. */
 export class TableWidget extends VisualWidget {
   /** `readOnly`: the source is a reading of the document (rows written through its macros), not a slice of it. */
-  constructor(readonly source: string, readonly offset: number, readonly length: number, readonly readOnly = false) {
-    super(`${offset}\u0000${readOnly ? 1 : 0}\u0000${source}`);
+  constructor(readonly source: string, readonly offset: number, readonly length: number, readonly readOnly = false, readonly extras?: TableExtras) {
+    super(`${offset}\u0000${readOnly ? 1 : 0}\u0000${source}${extras ? `\u0000${JSON.stringify(extras)}` : ""}`);
   }
   toDOM(view: EditorView) {
     const dom = el("div", "cm-vis-tabular");
     dom.append(renderTableGrid(view, this.source, () => {
       const pos = widgetPos(view, dom);
       return pos === null ? null : pos + this.offset;
-    }, this.readOnly ? this.length - this.offset : undefined));
+    }, this.readOnly ? this.length - this.offset : undefined, this.extras));
     dom.addEventListener("mousedown", (event) => {
       // A click in the cell being edited moves its caret.
       if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true]")) return;
@@ -1029,10 +1611,13 @@ export function preambleSummary(view: EditorView | null, defs = view ? visualDef
 }
 
 /** The parts of a title block that open in the title editor (title-edit.ts). */
-export type TitlePart = "title" | "author" | "date" | "abstract";
+export type TitlePart = "title" | "author" | "date" | "abstract" | "line";
 
-/** A drawn title block: where it starts and how long its construct is, for finding its source; and how it redraws. */
-export type TitleElement = HTMLElement & { liberaTitleStart?: () => number | null; liberaTitleLength?: number; liberaTitleRender?: () => void };
+/**
+ * A drawn title block: where it starts and how long its construct is, for finding its source; how far the source it
+ * reads goes (past the block when a command in its run stays source); and how it redraws.
+ */
+export type TitleElement = HTMLElement & { liberaTitleStart?: () => number | null; liberaTitleLength?: number; liberaTitleScope?: number; liberaTitleRender?: () => void };
 
 export type TitleHooks = {
   /** Opens the LaTeX of one part (the `index`th author) in place; false when its source cannot be found. */
@@ -1067,8 +1652,12 @@ export class TitleWidget extends VisualWidget {
    * `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`); `notes`: small
    * lines under it, as label and LaTeX (keywords, CCS concepts, subject classes).
    */
-  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null, readonly notes: ReadonlyArray<readonly [string, string]> = []) {
-    super(JSON.stringify([title, author, date, length, abstract, notes]));
+  /**
+   * `details`: a class's subtitle, each author's affiliations and emails, institutes and notes (front-matter.ts), each
+   * editable line a `line` part numbered in editableLines' order; `scope`: how far from the block's start its source goes.
+   */
+  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null, readonly notes: ReadonlyArray<readonly [string, string]> = [], readonly details: FrontDetailsView | null = null, readonly scope: number | null = null) {
+    super(JSON.stringify([title, author, date, length, abstract, notes, details, scope]));
   }
   toDOM(view: EditorView) {
     const dom: TitleElement = el("div", "cm-vis-title-block");
@@ -1084,17 +1673,37 @@ export class TitleWidget extends VisualWidget {
       if (dom.querySelector(".cm-vis-title-editor")) return;
       const context = widgetContext(target, dom);
       dom.replaceChildren();
+      const details = this.details;
+      // The class's lines, numbered as title-edit.ts finds their source.
+      const editableIndex = new Map(details ? editableLines(details).map((line, index) => [line, index] as const) : []);
+      const line = (className: string, item: FrontLineView) => {
+        const node = el("div", className);
+        if (item.label) node.append(el("span", "cm-vis-title-line-label", item.label));
+        node.append(renderLatexFragment(item.latex, context));
+        return item.editable && editableIndex.has(item) ? part(node, "line", editableIndex.get(item)!) : node;
+      };
       if (this.title !== null) { const title = part(el("div", "cm-vis-title"), "title"); title.append(renderLatexFragment(this.title, context)); dom.append(title); }
+      if (details?.subtitle) dom.append(line("cm-vis-subtitle", details.subtitle));
       if (this.author !== null) {
         const authors = el("div", "cm-vis-authors");
         let index = 0;
         for (const piece of this.author.split(/\\(?:and|And|AND)(?![A-Za-z])/)) {
           if (!piece.trim()) continue;
+          const lines = details?.authorLines[index] ?? [];
           const author = part(el("div", "cm-vis-author"), "author", index++);
           author.append(renderLatexFragment(piece.trim(), context));
-          authors.append(author);
+          if (!lines.length) { authors.append(author); continue; }
+          // The author's affiliations and emails under the name, each its own part.
+          const group = el("div", "cm-vis-author-group");
+          group.append(author, ...lines.map((item) => line("cm-vis-affiliation", item)));
+          authors.append(group);
         }
         dom.append(authors);
+      }
+      if (details?.places.length) {
+        const places = el("div", "cm-vis-title-places");
+        places.append(...details.places.map((item) => line("cm-vis-affiliation", item)));
+        dom.append(places);
       }
       if (this.date !== null) { const date = part(el("div", "cm-vis-date"), "date"); date.append(renderLatexFragment(this.date, context)); dom.append(date); }
       if (this.abstract) {
@@ -1111,9 +1720,11 @@ export class TitleWidget extends VisualWidget {
         note.append(el("span", "cm-vis-title-note-label", `${label}: `), renderLatexFragment(latex, context));
         dom.append(note);
       }
+      for (const item of details?.notes ?? []) dom.append(line("cm-vis-title-note", item));
     };
     dom.liberaTitleStart = () => widgetPos(view, dom);
     dom.liberaTitleLength = this.length;
+    if (this.scope !== null) dom.liberaTitleScope = this.scope;
     dom.liberaTitleRender = () => render(view);
     render(view);
     refreshable(dom, view, render);

@@ -202,9 +202,10 @@ test("a figure holding a code listing or \\verb text is not replaced by a figure
     "\\begin{verbatim}\nfunc main() { println(42) }\n\\end{verbatim}",
     "\\verb|func main() { println(42) }|",
   ]) {
+    // Since the floats round the figure may be drawn around the code (principle 1), but the code itself stays shown,
+    // as code or as its source, never replaced by a placeholder.
     const doc = `\\begin{document}\n\\begin{figure}\n${listing}\n\\caption{Example}\n\\end{figure}\n\\end{document}\n`;
-    assert.equal(constructs(visualState(doc)).some((item) => item.startsWith("figure:")), false, listing);
-    assert.match(visibleText(doc), /println\(42\)/);
+    assert.match(visibleText(doc), /println\(42\)/, listing);
   }
   // A figure of an image and a caption is still drawn as one.
   const image = "\\begin{document}\n\\begin{figure}\n\\includegraphics{plot.png}\n\\caption{Example}\n\\end{figure}\n\\end{document}\n";
@@ -608,9 +609,12 @@ test("title declarations written in the body right before \\maketitle are folded
   assert.doesNotMatch(text, /\\title|\\author|\\date/);
   assert.match(text, /Towards Evaluating the Robustness/);
   assert.match(text, /Nicholas Carlini/);
-  // Something else between them and \maketitle: they stay source.
-  const other = visibleText(doc.replace("\\date{}", "\\date{}\n\\setlength{\\parskip}{0pt}"));
-  assert.match(other, /\\title/);
+  // Something else between them and \maketitle: since the front-matter round (principle 1) only that command stays
+  // source, in place, and the declarations around it are still drawn (before, the whole run stayed source).
+  const other = visibleText(doc.replace("\\date{}", "\\date{}\n\\mystery{x}"));
+  assert.match(other, /\\mystery\{x\}/);
+  assert.doesNotMatch(other, /\\title|\\author/);
+  assert.match(other, /Towards Evaluating the Robustness/);
 });
 
 test("a control symbol the document defines (\\1) expands, and the TeX.SX \\widebar is drawn as a bar (Generalized Random Forests)", () => {

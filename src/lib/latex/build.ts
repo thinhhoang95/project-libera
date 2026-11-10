@@ -85,7 +85,7 @@ export function latexBuildRootFor(temporary: string, home: string) {
   return temporary.includes("~") && !home.includes("~") ? joinPath(home, ".libera-latex") : joinPath(temporary, "libera-latex");
 }
 
-const BUILD_ROOT = latexBuildRootFor(realFolder(os.tmpdir()), realFolder(homeDirectory()));
+export const BUILD_ROOT = latexBuildRootFor(realFolder(os.tmpdir()), realFolder(homeDirectory()));
 
 /* Built through functions so the Next.js file tracer cannot read these as paths
  * and glob the project folder at build time (see runtime-path.ts). */
@@ -198,7 +198,7 @@ function withLock<T>(key: string, task: () => Promise<T>) {
 
 type ProcessResult = { code: number | null; output: string; timedOut: boolean };
 
-function runProcess(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal; timeoutMs?: number }) {
+export function runProcess(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal; timeoutMs?: number }) {
   return new Promise<ProcessResult>((resolve, reject) => {
     options.signal.throwIfAborted();
     const child = spawn(command, args, {

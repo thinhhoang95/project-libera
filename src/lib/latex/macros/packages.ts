@@ -79,6 +79,21 @@ function physicsMacros(options: readonly string[]): PackageMacro[] {
   macros.push(physicsBraces("pqty", "(", ")"), physicsBraces("bqty", "[", "]"), physicsBraces("Bqty", "\\{", "\\}"), physicsBraces("vqty", "\\lvert", "\\rvert"));
   macros.push(physicsBraces("abs", "\\lvert", "\\rvert"), physicsBraces("absolutevalue", "\\lvert", "\\rvert"), physicsBraces("norm", "\\lVert", "\\rVert"));
   for (const [name, env] of [["pmqty", "pmatrix"], ["bmqty", "bmatrix"], ["vmqty", "vmatrix"], ["mdet", "vmatrix"]]) add(name, [M], `\\begin{${env}}#1\\end{${env}}`);
+  add("Pmqty", [M], "\\left(\\begin{matrix}#1\\end{matrix}\\right)");
+  // Small matrices in brackets: `\spmqty{…}`, `\sbmqty`, `\svmqty`, `\smdet`.
+  for (const [name, left, right] of [["spmqty", "(", ")"], ["sPmqty", "(", ")"], ["sbmqty", "[", "]"], ["svmqty", "\\lvert", "\\rvert"], ["smdet", "\\lvert", "\\rvert"]]) add(name, [M], `\\left${left}\\begin{smallmatrix}#1\\end{smallmatrix}\\right${right}`);
+  // Matrix contents, written out by math-render.ts: `\imat{n}`, `\zmat{m}{n}`, `\xmat{x}{m}{n}`, `\dmat[fill]{a,b}`, `\admat`, `\pmat{n}`.
+  for (const name of ["imat", "identitymatrix"]) add(name, [M], "\\physics@mat{imat}{}{#1}{}{}");
+  for (const name of ["zmat", "zeromatrix"]) add(name, [M, M], "\\physics@mat{zmat}{}{#1}{#2}{}");
+  for (const name of ["xmat", "xmatrix"]) add(name, [S, M, M, M], "\\physics@mat{\\IfBooleanTF{#1}{xmat}{xmat*}}{}{#2}{#3}{#4}");
+  for (const name of ["dmat", "diagonalmatrix"]) add(name, [O, M], "\\physics@mat{dmat}{\\IfNoValueF{#1}{#1}}{#2}{}{}");
+  for (const name of ["admat", "antidiagonalmatrix"]) add(name, [O, M], "\\physics@mat{admat}{\\IfNoValueF{#1}{#1}}{#2}{}{}");
+  for (const name of ["pmat", "paulimatrix"]) add(name, [M], "\\physics@mat{pmat}{}{#1}{}{}");
+  // `\eval{f}_a^b`, `\eval(f)|_a^b`: written out by math-render.ts, which reads the delimiters.
+  for (const name of ["eval", "evaluated"]) add(name, [S], "\\physics@eval\\IfBooleanT{#1}{*}");
+  // The principal value.
+  for (const name of ["pv", "principalvalue"]) add(name, [], "\\mathcal{P}");
+  add("PV", [], "\\operatorname{P.V.}");
   add("order", [S, M], "\\mathcal{O}\\IfBooleanTF{#1}{(#2)}{\\left(#2\\right)}");
   for (const [names, left, right] of [[["comm", "commutator"], "[", "]"], [["acomm", "acommutator", "anticommutator", "pb", "poissonbracket"], "\\{", "\\}"]] as const) {
     for (const name of names) add(name, [S, M, M], `\\IfBooleanTF{#1}{${left}#2,#3${right}}{\\left${left}#2,#3\\right${right}}`);
@@ -111,7 +126,7 @@ function physicsMacros(options: readonly string[]): PackageMacro[] {
   for (const name of ["pdv", "partialderivative", "pderivative"]) add(name, [S, O, M, G, G], derivative("\\partial", true));
   for (const name of ["fdv", "functionalderivative", "fderivative"]) add(name, [S, O, M, G], derivative("\\delta", false));
   for (const [names, symbol] of [[["dd", "differential"], d], [["var", "variation"], "\\delta"]] as const) {
-    for (const name of names) add(name, [O, G], `\\IfNoValueTF{#2}{${symbol}\\IfNoValueF{#1}{^{#1}}}{\\mathinner{${symbol}\\IfNoValueF{#1}{^{#1}}#2}}`);
+    for (const name of names) add(name, [O, G], `\\IfNoValueTF{#2}{${symbol}\\IfNoValueF{#1}{^{#1}}}{\\mathinner{${symbol}\\IfNoValueF{#1}{^{#1}}{#2}}}`);
   }
   // Dirac notation. `\bra{a}\ket{b}` is one bracket (math-render.ts joins the two at their markers).
   add("bra", [S, M], "\\IfBooleanTF{#1}{\\langle{#2}\\rvert}{\\left\\langle{#2}\\right\\rvert}\\physics@bra");
@@ -211,6 +226,22 @@ const AAS_JOURNALS: Record<string, string> = {
  * abbreviations, and the table spacing it also allows in text (`\phn`, a digit's width). Math symbols are math-render.ts's.
  */
 export function classMacros(cls: string): PackageMacro[] {
+  // IEEEtran's drop cap: `\IEEEPARstart{T}{his}` prints "This".
+  if (cls === "IEEEtran") return [{ name: "IEEEPARstart", arity: 2, body: "#1#2" }];
+  // llncs's and svjour3's marks in the title block: `\inst{1}` refers to the first institute; `\orcidID` is an icon;
+  // svjour3's `\at` starts an institute's address on its own line.
+  if (/^(?:llncs|svjour3?|svmult)$/.test(cls)) {
+    return [
+      { name: "inst", arity: 1, body: "\\textsuperscript{#1}" },
+      { name: "orcidID", arity: 1, body: "" },
+      { name: "email", arity: 1, body: cls === "llncs" ? "\\texttt{#1}" : "e-mail: #1" },
+      ...(cls === "llncs" ? [] : [{ name: "at", arity: 0, body: "\\\\" }]),
+    ];
+  }
+  // elsarticle's marks: `\tnoteref{t1}` points to a title note (☆), `\corref{cor1}` to the corresponding author (∗).
+  // Springer Nature's sn-jnl writes names and affiliations in parts (`\fnm{Alice} \sur{One}`, `\orgname{…}`): their text.
+  if (cls === "sn-jnl") return ["fnm", "sur", "spfx", "pfx", "sfx", "tanm", "dgr", "orgdiv", "orgname", "orgaddress", "street", "city", "postcode", "state", "country"].map((name) => ({ name, arity: 1, body: "#1" }));
+  if (cls === "elsarticle") return [{ name: "tnoteref", arity: 1, body: "\\textsuperscript{☆}" }, { name: "corref", arity: 1, body: "\\textsuperscript{∗}" }];
   if (!/^(?:aastex\d*|emulateapj)$/.test(cls)) return [];
   return [
     ...Object.entries(AAS_JOURNALS).map(([name, body]) => ({ name, arity: 0, body })),

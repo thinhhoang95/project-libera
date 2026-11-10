@@ -67,7 +67,7 @@ function includesAsInputs(text: string) {
 }
 
 /** Commands whose definitions last past the file a chapter of the body is in: such a file is read for them. */
-const DEFINES = /\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|xdef|let|newtheorem|theoremstyle|newenvironment|renewenvironment|DeclareMathOperator|DeclarePairedDelimiter|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewDocumentEnvironment|RenewDocumentEnvironment|newcounter|numberwithin|counterwithin|crefname|Crefname|newcolumntype|definecolor|colorlet|newlist|setlist)(?![A-Za-z@])/;
+const DEFINES = /\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|xdef|let|newtheorem|theoremstyle|newenvironment|renewenvironment|DeclareMathOperator|DeclarePairedDelimiter|(?:New|Renew|Provide|Declare)(?:Expandable)?DocumentCommand|NewDocumentEnvironment|RenewDocumentEnvironment|newtoggle|toggletrue|togglefalse|settoggle|newbool|booltrue|boolfalse|setbool|newcounter|numberwithin|counterwithin|crefname|Crefname|newcolumntype|definecolor|colorlet|newlist|setlist)(?![A-Za-z@])/;
 
 /**
  * The macro sources of a file: its main file's preamble (for a chapter), and
