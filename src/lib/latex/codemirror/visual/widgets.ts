@@ -1,4 +1,4 @@
-import { EditorSelection } from "@codemirror/state";
+import { EditorSelection, type Text } from "@codemirror/state";
 import { EditorView, WidgetType } from "@codemirror/view";
 import { hashString } from "../../../macros/core";
 import { definitionCounts } from "../../macros/definitions";
@@ -262,12 +262,21 @@ export function followReference(view: EditorView, key: string) {
 
 /** `\item`: a bullet, a number or a description label. */
 export class ItemMarkerWidget extends VisualWidget {
-  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number) {
-    super(`${variant}\u0000${depth}\u0000${label}`);
+  /**
+   * `latex`: a label written with formulas or styles (`\item[$(i)$]`, `\item[\textbf{Step 1}]`), drawn as LaTeX;
+   * `inline`: an item of a list run into its paragraph (paralist's `inparaenum`).
+   */
+  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number, readonly flags: { latex?: boolean; inline?: boolean } = {}) {
+    super(`${variant}\u0000${depth}\u0000${label}\u0000${flags.latex ? "l" : ""}${flags.inline ? "i" : ""}`);
   }
-  toDOM() {
-    const dom = el("span", `cm-vis-item cm-vis-item-${this.variant}`, this.label);
+  toDOM(view: EditorView) {
+    const dom = el("span", `cm-vis-item cm-vis-item-${this.variant}${this.flags.inline ? " cm-vis-item-inline" : ""}`, this.flags.latex ? undefined : this.label);
     dom.style.setProperty("--vis-depth", String(this.depth));
+    if (this.flags.latex) {
+      const render = (target: EditorView) => dom.replaceChildren(renderLatexFragment(this.label, widgetContext(target, dom)));
+      render(view);
+      refreshable(dom, view, render);
+    }
     return dom;
   }
 }
@@ -930,9 +939,12 @@ export function preambleSummary(view: EditorView | null, defs = view ? visualDef
 
 /** `\maketitle`: the title, authors and date from the preamble. */
 export class TitleWidget extends VisualWidget {
-  /** `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`). */
-  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null) {
-    super(JSON.stringify([title, author, date, length, abstract]));
+  /**
+   * `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`); `notes`: small
+   * lines under it, as label and LaTeX (keywords, CCS concepts, subject classes).
+   */
+  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null, readonly notes: ReadonlyArray<readonly [string, string]> = []) {
+    super(JSON.stringify([title, author, date, length, abstract, notes]));
   }
   toDOM(view: EditorView) {
     const dom = el("div", "cm-vis-title-block");
@@ -959,6 +971,11 @@ export class TitleWidget extends VisualWidget {
         body.append(renderLatexFragment(this.abstract, context));
         abstract.append(heading, body);
         dom.append(abstract);
+      }
+      for (const [label, latex] of this.notes) {
+        const note = el("div", "cm-vis-title-note");
+        note.append(el("span", "cm-vis-title-note-label", `${label}: `), renderLatexFragment(latex, context));
+        dom.append(note);
       }
     };
     render(view);
@@ -1051,6 +1068,69 @@ export class EnvironmentHeaderWidget extends VisualWidget {
     refreshable(dom, view, render);
     return dom;
   }
+}
+
+/** thmtools' `\begin{restatable}[note]{env}{name}` in a document, by name: where each is, its environment and note (per document version). */
+const restatableCache = new WeakMap<Text, Map<string, { from: number; env: string; note: string | null }>>();
+export function restatablesIn(doc: Text) {
+  let found = restatableCache.get(doc);
+  if (found) return found;
+  found = new Map();
+  const text = doc.toString();
+  for (const match of text.matchAll(/\\begin\s*\{restatable\*?\}\s*(?:\[((?:[^\][{}]|\{[^{}]*\})*)\])?\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g)) {
+    const lineStart = text.lastIndexOf("\n", match.index) + 1;
+    if (/(^|[^\\])%/.test(text.slice(lineStart, match.index))) continue;
+    if (!found.has(match[3].trim())) found.set(match[3].trim(), { from: match.index, env: match[2].trim(), note: match[1]?.trim() || null });
+  }
+  restatableCache.set(doc, found);
+  return found;
+}
+
+/**
+ * thm-restate's `\promisemonoids*` (Larrauri & Živný), printing a restatable theorem again with its number: its
+ * heading, "Theorem 1 (Main, restated)". The number is the restatable's, looked up where it is when drawn.
+ */
+export class RestatedTheoremWidget extends VisualWidget {
+  constructor(readonly name: string, readonly title: string, readonly note: string | null, readonly numbered: boolean) {
+    super(JSON.stringify([name, title, note, numbered]));
+  }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-env-header cm-vis-env-header-theorem");
+    const render = (target: EditorView) => {
+      const context = widgetContext(target, dom);
+      const at = restatablesIn(target.state.doc).get(this.name)?.from;
+      const entry = this.numbered && at !== undefined ? numberingEntryAt(visualNumbering(target.state), at, "theorem") : null;
+      const head = el("span", "cm-vis-env-title");
+      head.append(renderLatexFragment(this.title, context), document.createTextNode(entry?.number ? ` ${entry.number}` : ""));
+      const note = el("span", "cm-vis-env-note");
+      note.append(document.createTextNode(" ("));
+      if (this.note) note.append(renderLatexFragment(this.note, context), document.createTextNode(", "));
+      note.append(document.createTextNode("restated)"));
+      dom.replaceChildren(head, note, document.createTextNode(". "));
+    };
+    render(view);
+    refreshable(dom, view, render);
+    return dom;
+  }
+}
+
+/** todonotes' `\todo{…}` and `\missingfigure{…}`: a note chip with its text; a click shows the source. */
+export class TodoWidget extends VisualWidget {
+  constructor(readonly label: string, readonly latex: string, readonly length: number) { super(`${label}\u0000${latex}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-chip cm-vis-todo");
+    const render = (target: EditorView) => dom.replaceChildren(el("strong", undefined, `${this.label}: `), renderLatexFragment(this.latex, widgetContext(target, dom)));
+    render(view);
+    refreshable(dom, view, render);
+    dom.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const from = widgetPos(view, dom);
+      if (from !== null) revealSourceAt(view, from, from + this.length);
+    });
+    return dom;
+  }
+  ignoreEvent() { return true; }
 }
 
 /** The end of a proof (∎) or of a user environment (its end code). */

@@ -35,8 +35,44 @@ const PRINTS_NOTHING = /^\\(?:setcounter|addtocounter|stepcounter|refstepcounter
 const VERTICAL_LAYOUT = /^\\(?:vspace|vskip|smallskip|medskip|bigskip|vfill|addvspace|newpage|clearpage|pagebreak|noindent|par|fontsize|setlength|addtolength|linespread|baselineskip)\*?$/;
 /** …and horizontal space is a space. */
 const HORIZONTAL_SPACE = /^\\(?:hspace|hskip|hfill|hfil|enskip|enspace)\*?$/;
+/**
+ * How many `{…}` arguments a layout or counter command reads (the others read none): groups the parser hung on it
+ * after those are text. HANK's `\title{\vspace{-2.5cm}{\color{MidnightBlue} \textbf{How much…}}}` lost its title, and
+ * Envelope's `\begin{proof}[Proof of the \protect{\hyperref[…]{envelope theorem}}]` its name.
+ */
+const LAYOUT_ARITY: Record<string, number> = { "\\vspace": 1, "\\hspace": 1, "\\addvspace": 1, "\\linespread": 1, "\\fontsize": 2, "\\setcounter": 2, "\\addtocounter": 2, "\\stepcounter": 1, "\\refstepcounter": 1 };
+/** `\vskip 1em plus 2pt` and `\hskip 1em` (a 2410.03413 author is `\hskip 1em Fuyuki Kitagawa`): the primitive and its glue. */
+const PRIMITIVE_SKIP = /\\([vh])skip(?![A-Za-z@])\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|px|\\[A-Za-z@]+)(?:\s*(?:plus|minus)\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|fil+|\\[A-Za-z@]+))*/g;
 /** Boxes that print their (last) argument: `\mbox{…}`, `\rlap{$^*$}`, `\multirow{2}{*}{…}`, `\rotatebox{90}{…}`. */
 const BOXES = new Set(["\\mbox", "\\hbox", "\\makebox", "\\fbox", "\\framebox", "\\rlap", "\\llap", "\\text", "\\textnormal", "\\textup", "\\textrm", "\\textmd", "\\textsl", "\\centerline", "\\multirow", "\\rotatebox", "\\raisebox", "\\scalebox", "\\resizebox", "\\parbox", "\\makecell", "\\shortstack", "\\tikzmarknode", "\\pbox", "\\titlecap"]);
+/**
+ * The glossaries, acronym and acro packages' commands, as the form of an entry they print: `\gls{gpu}` "GPU",
+ * `\acrlong{gpu}` "graphics processing unit", `\acf{CNN}` "Convolutional Neural Network (CNN)". `\gls` and `\ac`
+ * print the full form at the first use, which a drawing of one place cannot tell: they show the short form.
+ */
+const ACRONYM_COMMANDS: Record<string, { form: "short" | "long" | "full"; plural?: boolean; capital?: boolean }> = {
+  "\\gls": { form: "short" }, "\\Gls": { form: "short", capital: true }, "\\glspl": { form: "short", plural: true }, "\\Glspl": { form: "short", plural: true, capital: true },
+  "\\glstext": { form: "short" }, "\\Glstext": { form: "short", capital: true }, "\\glsentryshort": { form: "short" }, "\\glsentrylong": { form: "long" },
+  "\\acrshort": { form: "short" }, "\\Acrshort": { form: "short", capital: true }, "\\acrshortpl": { form: "short", plural: true },
+  "\\acrlong": { form: "long" }, "\\Acrlong": { form: "long", capital: true }, "\\acrlongpl": { form: "long", plural: true }, "\\Acrlongpl": { form: "long", plural: true, capital: true },
+  "\\acrfull": { form: "full" }, "\\Acrfull": { form: "full", capital: true }, "\\acrfullpl": { form: "full", plural: true },
+  "\\ac": { form: "short" }, "\\Ac": { form: "short", capital: true }, "\\acp": { form: "short", plural: true }, "\\Acp": { form: "short", plural: true, capital: true },
+  "\\acs": { form: "short" }, "\\acsp": { form: "short", plural: true }, "\\acl": { form: "long" }, "\\Acl": { form: "long", capital: true },
+  "\\aclp": { form: "long", plural: true }, "\\Aclp": { form: "long", plural: true, capital: true }, "\\acf": { form: "full" }, "\\Acf": { form: "full", capital: true },
+  "\\acfp": { form: "full", plural: true }, "\\Acfp": { form: "full", plural: true, capital: true },
+};
+
+/** What an acronym command prints for `key` (LaTeX), or null when it is not one or the entry is not defined. */
+export function acronymText(defs: LatexDefinitions, command: string, key: string) {
+  const use = ACRONYM_COMMANDS[command.replace(/\*$/, "")];
+  const entry = use ? defs.acronyms?.get(key.trim()) : undefined;
+  if (!use || !entry) return null;
+  const short = use.plural ? entry.shortPlural ?? `${entry.short}s` : entry.short;
+  const long = use.plural ? entry.longPlural ?? `${entry.long}s` : entry.long;
+  const text = use.form === "short" ? short : use.form === "long" ? long : `${long} (${short})`;
+  return use.capital ? text.replace(/^[a-z]/, (letter) => letter.toUpperCase()) : text;
+}
+
 /** Citation commands of other bibliography styles, as the natbib command they act like (ACL's `\newcite` is `\citet`). */
 export const CITE_ALIASES: Record<string, string> = { "\\newcite": "\\citet", "\\shortcite": "\\cite", "\\citeN": "\\citet", "\\citeNP": "\\citep", "\\citealtNP": "\\citealt" };
 
@@ -135,7 +171,11 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   // A box's optional position, height and alignment (`\parbox[b][0.25\textwidth][c]{w}{…}`, Generalized Random Forests'
   // figure cells) set its layout, not what it shows: without them, the box is `\parbox{w}{…}`, drawn by its content.
   // `\emph {x}`: a space before the argument, which TeX skips (the grammar does not).
+  // `\vspace*{…}` is `\vspace{…}` here (the star keeps the grammar from attaching the group); primitive skips draw their glue as nothing.
   const source = withoutConditionals(expansion.text).replace(RAISE, "").replace(/\\(parbox|makebox|framebox)((?:\s*\[[^\][]*\])+)/g, "\\$1")
+    .replace(/\\(vspace|hspace|addvspace)\s*\*/g, "\\$1").replace(PRIMITIVE_SKIP, (_, axis: string) => (axis === "h" ? " " : ""))
+    // CJK's `\begin{CJK*}{UTF8}{bsmi}{#1}\end{CJK*}` (Self-RAG's `\zhtext`): the text, without its encoding and font.
+    .replace(/\\begin\s*\{CJK\*?\}\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{[^{}]*\}|\\end\s*\{CJK\*?\}/g, "")
     .replace(/\\(emph|textbf|textit|textsc|texttt|textsf|textrm|underline)\s+\{/g, "\\$1{").replace(/(^|[^\\])((?:\\\\)*)\\$/, "$1$2 ").replace(/\\(?:['`^"~=.]|[uvHckrdb](?![A-Za-z]))\s*(?:\{\s*(?:\\[ij]|[A-Za-z])\s*\}|(?:\\[ij](?![A-Za-z])|[A-Za-z]))/g, (match) => readAccent(match)?.char ?? match);
   const tree = parser.parse(source);
   const read = (from: number, to: number) => source.slice(from, to);
@@ -151,9 +191,10 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       if (child.from > at) target.appendChild(document.createTextNode(typesetText(read(at, child.from))));
       const switched = fontSwitch(child);
       if (switched) {
-        if (switched.className) { const span = element("span", switched.className); target.appendChild(span); target = span; }
-        // What the parser hung on the switch is text: `\tt [CLS]`, `\small{…}`.
-        for (let argument = switched.command.firstChild; argument; argument = argument.nextSibling) {
+        if (switched.className) { const span = element("span", switched.className); if (switched.color) span.style.color = switched.color; target.appendChild(span); target = span; }
+        // What the parser hung on the switch is text: `\tt [CLS]`, `\small{…}` (after a colour's own arguments).
+        for (let argument = switched.command.firstChild, own = switched.own; argument; argument = argument.nextSibling) {
+          if (own > 0 && (argument.name === "OptionalArgument" || /Argument$/.test(argument.name))) { if (argument.name !== "OptionalArgument") own--; continue; }
           if (argument.name === "OptionalArgument") target.appendChild(document.createTextNode(typesetText(read(argument.from, argument.to))));
           else if (argument.name === "TextArgument" || argument.name === "ShortTextArgument") renderArgument(target, argument);
         }
@@ -172,8 +213,17 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
     const ctrl = command?.name === "UnknownCommand" ? command.firstChild : null;
     if (!command || !ctrl || ctrl.name !== "CtrlSeq") return null;
     const text = read(ctrl.from, ctrl.to);
+    // `{\color{MidnightBlue} …}` (HANK's title): a colour it can draw styles the rest of its group; `own`, its arguments.
+    if (text === "\\color") {
+      const args = commandArguments(command);
+      const model = args[0]?.optional ? argumentInner(args[0].node) : null;
+      const name = args.find((arg) => !arg.optional);
+      const range = name && argumentInner(name.node);
+      const color = range && !hasDirectError(command) ? cssColor(model ? read(model.from, model.to) : null, read(range.from, range.to), context.defs.colors) : null;
+      return color ? { command, className: "cm-vis-color", color, own: 1 } : null;
+    }
     const className = FONT_SWITCHES[text] ?? (SIZE_COMMAND.test(text) ? "" : undefined);
-    return className === undefined ? null : { command, className };
+    return className === undefined ? null : { command, className, color: undefined, own: 0 };
   };
 
   const renderArgument = (parent: Node, argument: SyntaxNode) => {
@@ -185,6 +235,11 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       if (child.from <= inner.from && child.to >= inner.to && child.name !== "OpenBrace") holder = child;
     }
     renderRange(parent, inner.from, inner.to, holder);
+  };
+
+  /** The groups the parser hung on a command after the `taken` ones it reads (`\vspace{-2.5cm}{Title}`): text. */
+  const renderExtra = (parent: Node, node: SyntaxNode, taken: number) => {
+    for (const argument of commandArguments(node).filter((arg) => !arg.optional).slice(taken)) renderArgument(parent, argument.node);
   };
 
   const renderNode = (parent: Node, node: SyntaxNode): void => {
@@ -361,10 +416,49 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         if (after && !/^(?:[,.'/?;:!~\-)\]}"]|\\(?:footnote|footnotemark)(?![A-Za-z])|\\\/|\\ )/.test(after)) parent.appendChild(document.createTextNode(" "));
         return;
       }
-      if (INVISIBLE.has(text) || VERTICAL_LAYOUT.test(text)) return;
+      if (INVISIBLE.has(text) || VERTICAL_LAYOUT.test(text)) { renderExtra(parent, node, LAYOUT_ARITY[text] ?? 0); return; }
       // A counter command with its arguments, or a definition the grammar did not name (`\renewcommand\thefootnote{}`).
-      if (PRINTS_NOTHING.test(text)) return;
-      if (HORIZONTAL_SPACE.test(text)) { parent.appendChild(document.createTextNode(" ")); return; }
+      if (PRINTS_NOTHING.test(text)) { if (text in LAYOUT_ARITY) renderExtra(parent, node, LAYOUT_ARITY[text]); return; }
+      if (HORIZONTAL_SPACE.test(text)) { parent.appendChild(document.createTextNode(" ")); renderExtra(parent, node, LAYOUT_ARITY[text] ?? 0); return; }
+      // hyperref's `\hyperref[label]{text}` (and its four-argument form): the text, as a link.
+      if (text === "\\hyperref") {
+        const argument = commandArguments(node).filter((arg) => !arg.optional).at(-1);
+        if (argument) { const link = element("span", "cm-vis-link"); renderArgument(link, argument.node); parent.appendChild(link); return; }
+      }
+      // IEEEtran's author blocks in `\author{…}` (Membership Inference): the name, then the affiliation under it.
+      if (text === "\\IEEEauthorblockN" || text === "\\IEEEauthorblockA") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) {
+          const block = element("span", text === "\\IEEEauthorblockA" ? "cm-vis-affiliation" : "cm-vis-author-name");
+          if (text === "\\IEEEauthorblockA") parent.appendChild(element("br"));
+          renderArgument(block, argument.node);
+          parent.appendChild(block);
+          return;
+        }
+      }
+      if (text === "\\IEEEauthorrefmark") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) { const mark = element("sup"); renderArgument(mark, argument.node); parent.appendChild(mark); return; }
+      }
+      // censor's `\censor{…}` (redacted names in Extracting Training Data's tables): a bar as wide as the text.
+      if (text === "\\censor") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        if (argument) { const bar = element("span", "cm-vis-censor"); renderArgument(bar, argument.node); parent.appendChild(bar); return; }
+      }
+      // nicefrac's `\nicefrac{1}{2}` in text (a table cell): a slanted fraction.
+      if (text === "\\nicefrac" || text === "\\sfrac") {
+        const [numerator, denominator] = commandArguments(node).filter((arg) => !arg.optional);
+        if (numerator && denominator) {
+          const top = element("sup");
+          const bottom = element("sub");
+          renderArgument(top, numerator.node);
+          renderArgument(bottom, denominator.node);
+          parent.appendChild(top);
+          parent.appendChild(document.createTextNode("⁄"));
+          parent.appendChild(bottom);
+          return;
+        }
+      }
       if (BOXES.has(text)) {
         const argument = commandArguments(node).filter((arg) => !arg.optional).at(-1);
         if (argument) { renderArgument(parent, argument.node); return; }
@@ -378,6 +472,21 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
           parent.appendChild(chip);
           return;
         }
+      }
+      // `\gls{gpu}`, `\ac{CNN}`: the form of the entry they print (an entry written with another one stays as written).
+      if (text in ACRONYM_COMMANDS) {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        const inner = argument && argumentInner(argument.node);
+        const printed = inner ? acronymText(context.defs, text, read(inner.from, inner.to)) : null;
+        if (printed !== null && !/\\(?:gls|Gls|ac|Ac)/.test(printed)) { parent.appendChild(renderLatexFragment(printed, context)); return; }
+      }
+      // eurosym's `\EUR{8.50}` ("€ 8.50", or "8.50 €" with its `right` option) and `\euro{8.50}`, the sign before a group (a wage in a cell).
+      if (text === "\\EUR" || (text === "\\euro" && commandArguments(node).length)) {
+        const right = text === "\\EUR" && context.defs.packageOptions.get("eurosym")?.includes("right");
+        if (!right) parent.appendChild(document.createTextNode(text === "\\EUR" ? "€\u2009" : "€"));
+        renderExtra(parent, node, 0);
+        if (right) parent.appendChild(document.createTextNode("\u2009€"));
+        return;
       }
       if (SIZE_COMMAND.test(text) && !commandArguments(node).length) return;
       // ulem's underlines and strike-out.

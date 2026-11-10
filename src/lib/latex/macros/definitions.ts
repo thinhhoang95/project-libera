@@ -75,6 +75,27 @@ function columnTypeAlign(body: string): LatexColumnType["align"] {
   return base[0] === "c" ? "center" : base[0] === "r" ? "right" : "left";
 }
 
+/** An acronym's or glossary entry's forms (a glossary entry's name is both its short and long form). */
+export type LatexAcronym = { short: string; long: string; shortPlural?: string; longPlural?: string };
+
+/** A `key=value, key={value}` list as a map (acro's `\DeclareAcronym{gpu}{short = GPU, long = …}`). */
+function keyValues(list: string) {
+  const values = new Map<string, string>();
+  let depth = 0;
+  let start = 0;
+  const add = (part: string) => {
+    const equals = part.indexOf("=");
+    if (equals > 0) values.set(part.slice(0, equals).trim(), part.slice(equals + 1).trim().replace(/^\{([\s\S]*)\}$/, "$1"));
+  };
+  for (let i = 0; i < list.length; i++) {
+    if (list[i] === "{") depth++;
+    else if (list[i] === "}") depth--;
+    else if (list[i] === "," && depth === 0) { add(list.slice(start, i)); start = i + 1; }
+  }
+  add(list.slice(start));
+  return values;
+}
+
 export type LatexDefinitions = {
   /** Every definition of each name, in reading order (later ones win from where they are). */
   macros: Map<string, LatexMacro[]>;
@@ -102,6 +123,11 @@ export type LatexDefinitions = {
   /** enumitem's `\setlist[exercises,1]{label=…}`: the options of a list's level, by `name:level`. */
   listOptions?: Map<string, string>;
   /**
+   * Acronyms and glossary entries by key: glossaries' `\newacronym{gpu}{GPU}{graphics processing unit}` and
+   * `\newglossaryentry{key}{name=…}`, acronym's `\acro{CNN}[CNN]{Convolutional Neural Network}`, acro's `\DeclareAcronym`.
+   */
+  acronyms?: Map<string, LatexAcronym>;
+  /**
    * Where the open file's definitions are (absolute ranges, in order), so edits inside one re-read them.
    * `broken`: a definition without its body, which runs to the end so any later edit may complete it; it is
    * no body to skip (what follows it is still the document).
@@ -122,7 +148,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|newacronym|acro|newglossaryentry|DeclareAcronym)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -838,6 +864,29 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         end = value.end;
         defs.colors.set(name.content.trim(), { model: model ? model.content.trim() : "", value: value.content.trim() });
       }
+    } else if (command === "newacronym" || command === "acro" || command === "newglossaryentry" || command === "DeclareAcronym") {
+      // Acronyms and glossary entries, which `\gls{gpu}`, `\ac{CNN}` and the like print (B5-15). They are kept for the
+      // whole document, as the packages write them to the .aux file: a use before the definition still prints them.
+      const options = command === "newacronym" ? readOptionalAt(source, index) : null;
+      const key = readGroupAt(source, options?.end ?? index);
+      let entry: LatexAcronym | null = null;
+      if (key && command === "newacronym") {
+        const short = readGroupAt(source, key.end);
+        const long = short && readGroupAt(source, short.end);
+        const extra = options ? keyValues(options.content) : new Map<string, string>();
+        if (short && long) entry = { short: short.content.trim(), long: long.content.trim(), shortPlural: extra.get("shortplural"), longPlural: extra.get("longplural") };
+      } else if (key && command === "acro") {
+        // `\acro{CNN}[short]{long}`: the short form defaults to the key.
+        const short = readOptionalAt(source, key.end);
+        const long = readGroupAt(source, short?.end ?? key.end);
+        if (long) entry = { short: short ? short.content.trim() : key.content.trim(), long: long.content.trim() };
+      } else if (key) {
+        const fields = readGroupAt(source, key.end);
+        const values = fields ? keyValues(fields.content) : null;
+        if (values && command === "newglossaryentry" && values.has("name")) entry = { short: values.get("name")!, long: values.get("name")!, shortPlural: values.get("plural") };
+        if (values && command === "DeclareAcronym" && values.has("short") && values.has("long")) entry = { short: values.get("short")!, long: values.get("long")!, shortPlural: values.get("short-plural-form"), longPlural: values.get("long-plural-form") };
+      }
+      if (key && entry) (defs.acronyms ??= new Map()).set(key.content.trim(), entry);
     }
 
     if (added && !global) (scanner.innermost()?.locals ?? []).push(added);
@@ -868,6 +917,7 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}:${type.paragraph ? "p" : ""}${type.math ? "m" : ""}`);
   for (const [name, kind] of defs.lists ?? []) parts.push(`list:${name}:${kind}`);
   for (const [level, options] of defs.listOptions ?? []) parts.push(`listopt:${level}:${options}`);
+  for (const [key, entry] of defs.acronyms ?? []) parts.push(`acr:${key}:${JSON.stringify(entry)}`);
   return hashString(parts.join("\u0000"));
 }
 
