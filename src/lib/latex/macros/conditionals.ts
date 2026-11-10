@@ -199,7 +199,8 @@ export function decideConditional(text: string, at: number, name: string, facts:
 
 /** Where the conditional whose test starts at `from` ends: the `\else` at its level (-1 when none) and its `\fi`; null when it is not closed. */
 function conditionalExtent(text: string, from: number, facts: ConditionalFacts) {
-  const token = /\\\\|%[^\n]*|\\(if[A-Za-z@]*|fi|else|or)(?![A-Za-z@])/g;
+  // Escaped characters (`\%`, `\\`) first: they are no comment and no command.
+  const token = /\\[^A-Za-z@]|%[^\n]*|\\(if[A-Za-z@]*|fi|else|or)(?![A-Za-z@])/g;
   token.lastIndex = from;
   let depth = 0;
   let elseAt = -1;
@@ -226,7 +227,7 @@ function conditionalExtent(text: string, from: number, facts: ConditionalFacts) 
  */
 export function evaluateTexConditionals(text: string, facts: ConditionalFacts, depth = 0): string {
   if (!text.includes("\\if") || depth > 8) return text;
-  const token = /\\\\|%[^\n]*|\\(?:(unless)\s*\\)?(if[A-Za-z@]*)(?![A-Za-z@])/g;
+  const token = /\\[^A-Za-z@]|%[^\n]*|\\(?:(unless)\s*\\)?(if[A-Za-z@]*)(?![A-Za-z@])/g;
   let output = "";
   let copied = 0;
   for (let match = token.exec(text); match; match = token.exec(text)) {

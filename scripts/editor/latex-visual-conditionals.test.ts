@@ -16,6 +16,7 @@ import { expandLatexMacros, expandLatexMacroUse } from "../../src/lib/latex/macr
 import { collectLatexDefinitions, macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 import { computeLatexNumbering } from "../../src/lib/latex/macros/numbering";
 import { disabledRegions, discardingMacros } from "../../src/lib/latex/macros/structure";
+import { decideConditional } from "../../src/lib/latex/macros/conditionals";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -145,6 +146,23 @@ We prove it in section~2 \ifnum\llncs=1 (short)\else (full)\fi and then more.
     view.destroy();
     parent.remove();
   }
+});
+
+test("TeX's tests are decided as TeX decides them, and left undecided when what they test is not known", () => {
+  const constants: Record<string, string> = { flag: "1", width: "2.5cm", mode: "draft", draft: "draft", final: "final" };
+  const facts = { constant: (name: string) => constants[name], defined: (name: string) => (name in constants ? true : undefined) };
+  const decide = (text: string) => {
+    const match = /^\\(if[A-Za-z]*)/.exec(text)!;
+    return decideConditional(text, match[0].length, match[1], facts)?.value ?? null;
+  };
+  const cases: Array<[string, boolean | null]> = [
+    ["\\if0\n\\begin{lemma}", false], ["\\if1\nText", false], ["\\if11 yes", true], ["\\if1\\flag yes", true], ["\\if0%\n0 yes", true],
+    ["\\ifx 1 0", false], ["\\ifx 1 1", null], ["\\ifx\\mode\\final", false], ["\\ifx\\mode\\draft", null], ["\\ifx\\flag\\undefined", false],
+    ["\\ifnum\\flag=1 yes", true], ["\\ifnum \\flag > 2 yes", false], ["\\ifnum\\flag0=10 yes", null], ["\\ifnum\\value{page}=1", null],
+    ["\\ifdim\\width>1in yes", false], ["\\ifdim\\width<1in yes", true], ["\\ifdim\\linewidth>1in", null], ["\\ifodd\\flag yes", true],
+    ["\\ifdefined\\flag yes", true], ["\\ifdefined\\other yes", null], ["\\ifmmode x", null], ["\\ifcase\\month\\or A\\fi", null],
+  ];
+  for (const [text, value] of cases) assert.equal(decide(text), value, text);
 });
 
 test("B7-02: a plain TeX \\loop … \\repeat does not put later definitions under a condition (2410.03413's macros_basic.tex)", () => {
