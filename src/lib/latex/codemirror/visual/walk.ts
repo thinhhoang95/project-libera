@@ -1064,9 +1064,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           // `\title{…}`, `\author{…}` and `\date{…}` written in the body right before `\maketitle`: what the title block
           // shows, folded into it (Alt-click shows their source).
           const bodyStart = Math.max(0, env.preambleEnd);
-          const wrapper = (name: string) => { const macro = macroAt(defs, name, node.from); return macro ? macroPassThrough(macro, defs) : null; };
-          const run = node.from > bodyStart ? titleDeclarationsStart(read(state, bodyStart, node.from), ABSTRACT_WITH_TITLE.test(defs.documentClass ?? ""), wrapper) : null;
-          // Only within this walk's range, so the construct does not start before what is being built.
+          const run = titleRun(state, defs, bodyStart, node.from);
+          // Only within this walk's range, so the construct does not start before what is being built (the structural
+          // layer widens a range holding `\maketitle` back to titleRunStart).
           const declarations = run && bodyStart + run.start >= from ? bodyStart + run.start : null;
           // acmart's teaser figure among them is drawn on its own: the block ends before it, and the rest up to `\maketitle` folds away.
           const gaps = declarations !== null ? run!.gaps.map((gap) => ({ from: bodyStart + gap.from, to: bodyStart + gap.to })) : [];
@@ -1075,9 +1075,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             while (end > start && /\s/.test(read(state, end - 1, end))) end--;
             return { start, end };
           };
-          const blockEnd = gaps.length ? trimmed(declarations!, gaps[0].from).end : node.to;
+          // A comment after `\maketitle` on its line (cs.LO 2610.41832's `\maketitle%[E]`) is part of its line.
+          const commentLine = doc.lineAt(node.to);
+          const end = /^[ \t]*%/.test(read(state, node.to, commentLine.to)) ? commentLine.to : node.to;
+          const blockEnd = gaps.length ? trimmed(declarations!, gaps[0].from).end : end;
           const folded = declarations !== null ? aloneOnLines(doc, declarations, blockEnd) : null;
-          const span = folded ?? aloneOnLines(doc, node.from, node.to);
+          const span = folded ?? aloneOnLines(doc, node.from, end);
           const range = span ?? { from: node.from, to: node.to };
           if (range.from < node.from) consumed.push([range.from, Math.min(node.from, range.to)]);
           // An abstract and keywords in the run are printed with the title (amsart's abstract before `\maketitle`).
@@ -3038,16 +3041,16 @@ function icmlTitle(block: string): { title: string | null; author: string | null
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
 const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/;
 /**
  * Environments among them: an abstract the class prints with the title (acmart's, amsart's), acmart's CCS metadata,
  * and its teaser figure, which is drawn on its own (the title block stops before it).
  */
-const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure)$/;
+const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl)$/;
+const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp)$/;
 
 type TitleRun = {
   start: number;
@@ -3056,6 +3059,20 @@ type TitleRun = {
   abstract: string | null;
   notes: Array<[string, string]>;
 };
+
+/** The run of title declarations before `\maketitle` at `pos`, in the body from `bodyStart`. */
+function titleRun(state: EditorState, defs: LatexDefinitions, bodyStart: number, pos: number) {
+  if (pos <= bodyStart) return null;
+  const wrapper = (name: string) => { const macro = macroAt(defs, name, pos); return macro ? macroPassThrough(macro, defs) : null; };
+  return titleDeclarationsStart(read(state, bodyStart, pos), ABSTRACT_WITH_TITLE.test(defs.documentClass ?? ""), wrapper);
+}
+
+/** Where the title block of `\maketitle` at `pos` starts when it folds declarations before it, or null. */
+export function titleRunStart(state: EditorState, defs: LatexDefinitions, preambleEnd: number, pos: number) {
+  const bodyStart = Math.max(0, preambleEnd);
+  const run = titleRun(state, defs, bodyStart, pos);
+  return run ? bodyStart + run.start : null;
+}
 
 /** What `\keywords`, `\subjclass` and `\ccsdesc` add to a title block, as its small lines (label, LaTeX). */
 function titleNotes(keywords: string[], subjclass: string[], ccs: string[]): Array<[string, string]> {
@@ -3144,7 +3161,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs. */
-export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?)$/;
+export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?)$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
 export const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
 

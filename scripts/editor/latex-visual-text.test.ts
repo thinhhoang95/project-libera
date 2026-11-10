@@ -505,3 +505,38 @@ Kept: \cite[\unknownmacro{x}]{other}.
   // A note with a command that is not understood leaves its citation as source.
   assert.match(text, /\\cite\[\\unknownmacro\{x\}\]\{other\}/);
 });
+
+test("Cambridge's jfp front matter folds into the title block, also when a long document is built in pieces (cs.LO 2610.41832)", () => {
+  const doc = String.raw`\documentclass[nolinenum]{jfp}
+\begin{document}
+\journaltitle{arxiv}
+\cpr{The Author(s),}
+\doival{10.1017/xxxxx}
+\newcommand{\shorttitle}{Pareto climate economics}
+\lefttitle{Botta, Jansson, Richter}
+\righttitle{\shorttitle}
+\totalpg{\pageref{lastpage01}}
+\jnlDoiYr{2026}
+\title{Pareto climate economics: optimism and pessimism}
+\begin{authgrp}
+\author{NICOLA BOTTA} \affiliation{Potsdam Institute for Climate Impact Research.
+  (\email{botta@pik-potsdam.de})}
+%
+\author{PATRIK JANSSON}
+\affiliation{Chalmers University of Technology. (\email{patrikj@chalmers.se})}
+\end{authgrp}
+\begin{abstract}
+${"We argue that simple models help. ".repeat(80)}
+\end{abstract}
+\maketitle%[E]
+\section{Introduction}
+${"Body text of the paper. ".repeat(600)}
+\end{document}
+`;
+  const state = visualState(doc);
+  assert.ok(constructs(state).includes(`title:${doc.indexOf("\\journaltitle")}:${doc.indexOf("%[E]") + 4}`));
+  const text = bodyText(doc);
+  assert.match(text, /Pareto climate economics: optimism and pessimism/);
+  assert.match(text, /NICOLA BOTTA.*PATRIK JANSSON/);
+  assert.doesNotMatch(text, /\\journaltitle|\\cpr|\\doival|\\jnlDoiYr|\\author|authgrp|\\affiliation|\\email/);
+});
