@@ -576,6 +576,8 @@ const DRAWN_BUILTINS = new Set([
 const PACKAGE_FILE = /\.(?:sty|cls)$/i;
 /** Formula commands the Visual mode draws itself when a document builds them from boxes (see math-render.ts's KATEX_MACROS). */
 const BOX_BUILT = new Set(["widebar"]);
+/** TeX's sized delimiters, which documents wrap for spacing (mleftright's idiom). */
+const SIZED_DELIMITERS = new Set(["left", "right", "middle"]);
 
 /** Whether `body` uses a `\let` copy of LaTeX's own `\name` (`\oldparagraph` after `\let\oldparagraph\paragraph`). */
 function callsSavedOriginal(defs: LatexDefinitions, name: string, body: string) {
@@ -603,6 +605,10 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // A drawn command wrapped around its saved self (2107.05853's `\let\oldparagraph\paragraph`
   // `\renewcommand{\paragraph}[1]{\oldparagraph{#1.}}`): LaTeX's own is drawn (a heading), without what the wrapper adds.
   if (DRAWN_BUILTINS.has(macro.name) && !macro.alias && callsSavedOriginal(context.defs, macro.name, macro.body)) return null;
+  // mleftright's spacing fix written out (2611.09172's `\let\originalleft\left`, then `\renewcommand{\left}{\mathopen{}
+  // \mathclose\bgroup\originalleft}` and `\renewcommand{\right}{\aftergroup\egroup\originalright}`): TeX's group tricks
+  // around the saved delimiter, which a formula renderer cannot run. TeX's own `\left` and `\right` are drawn.
+  if (SIZED_DELIMITERS.has(macro.name) && !macro.alias && callsSavedOriginal(context.defs, macro.name, macro.body) && /\\(?:aftergroup|bgroup|egroup|mathopen|mathclose)(?![A-Za-z@])/.test(macro.body)) return null;
   const existing = context.defs.macros.get(macro.name);
   if (mode === "provide" && existing?.length) return null;
   const fingerprint = hashString(JSON.stringify([macro.name, macro.arity, macro.optional ?? null, macro.spec ?? null, macro.body, !!macro.mathOnly, !!macro.unsupported, !!macro.alias, mode === "provide"]));

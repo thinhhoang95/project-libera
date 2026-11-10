@@ -278,3 +278,36 @@ ${body}
   // A capitalised command that is no macro of the document still keeps the algorithm source.
   assert.equal(parseAlgorithm2e(String.raw`\Unknown{x}\;`, { numbered: false, ends: false }, () => null), null);
 });
+
+test("KaTeX's gaps in real formulas: \\sun, \\arrowvert, \\slashed, \\ooalign, \\textsc around a formula, booktabs rules (2611.08676, 2611.11568, 2611.09172, 2611.11191)", () => {
+  drawnAs("", String.raw`\left(\frac{N_{\mathrm{X}}}{N_{\mathrm{H}}}\right)_{\sun}`, String.raw`\left(\frac{N_{\mathrm{X}}}{N_{\mathrm{H}}}\right)_{\odot}`);
+  drawnAs("", String.raw`\Big\arrowvert x \Big\Arrowvert`, String.raw`\Big\vert x \Big\Vert`);
+  // slashed's `/` centred over its argument, braced or not; the `\Slash` idiom built with `\ooalign` draws the same overlay.
+  const slashed = (x: string, slash = "/") => `{\\mathclap{\\hphantom{${x}}\\mathclap{${slash}}}${x}}`;
+  drawnAs(String.raw`\usepackage{slashed}`, String.raw`\slashed{k} + \slashed n_1`, `${slashed("k")} + ${slashed("n")}_1`);
+  drawnAs(String.raw`\newcommand{\Slash}[1]{{\ooalign{\hfil/\hfil\crcr$#1$}}}`, String.raw`{\rm Tr}\left[ \bar\Gamma(\Slash{k}+m) \right]`, String.raw`{\rm Tr}\left[ \bar\Gamma({${slashed("k", "\\text{/}")}}+m) \right]`);
+  // An overlay whose alignment is not read (neither row centred) stays source.
+  assert.equal(drawn("", String.raw`{\ooalign{$a$\crcr$b$}}`), null);
+  drawnAs(String.raw`\newcommand{\nodes}{\mathit{nodes}}`, String.raw`P[i]\gets\textsc{FetchInvalidSubtrees($T.\nodes[i]$)}`,
+    String.raw`P[i]\gets\text{F{\small ETCH}I{\small NVALID}S{\small UBTREES}($T.\mathit{nodes}[i]$)}`);
+  drawnAs("", String.raw`\begin{array}{cc} \toprule v & 0\\ \midrule x & y\\ \bottomrule \end{array}`, String.raw`\begin{array}{cc} \hline v & 0\\ \hline x & y\\ \hline \end{array}`, true);
+});
+
+test("a written-out mleftright (\\left as \\mathclose\\bgroup…, \\right with \\aftergroup) keeps TeX's \\left and \\right (2611.09172)", () => {
+  const preamble = String.raw`\let \originalleft \left
+\let\originalright\right
+\renewcommand{\left}{\mathopen{}\mathclose\bgroup\originalleft}
+\renewcommand{\right}{\aftergroup\egroup\originalright}`;
+  drawnAs(preamble, String.raw`O\!\left(\frac{n}{B}\log_{M/B}\frac{n}{B}\right)`, String.raw`O\!\left(\frac{n}{B}\log_{M/B}\frac{n}{B}\right)`);
+});
+
+test("\\ensuremath in text is an inline formula, also from a macro ending in \\xspace (2610.41832's lhs2TeX, 2611.08676's \\css)", () => {
+  const text = visibleText(String.raw`\documentclass{article}
+\newcommand{\Conid}[1]{\mathit{#1}}
+\newcommand{\css}{\ensuremath{\mathrm{CS}_{2}}\xspace}
+\begin{document}
+The relation \ensuremath{\mathcal{R}\mathbin{\circ}\mathcal{S}} on \ensuremath{\Conid{C}}, with \css{} and \css here.
+\end{document}`).replace(/\u200b/g, "");
+  assert.doesNotMatch(text, /\\ensuremath|\\Conid|\\css/);
+  assert.match(text, /The relation R∘S on C, with CS2 and CS2 here\./);
+});
