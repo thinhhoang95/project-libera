@@ -63,7 +63,6 @@ function mounted(doc: string, extra: Extension[] = []) {
 
 const drawnFloats = (doc: string) => constructs(visualState(doc)).filter((item) => item.startsWith("figure:")).length;
 const inDocument = (body: string, preamble = "") => `\\documentclass{article}\n${preamble}\\begin{document}\n${body}\n\\end{document}\n`;
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const mouse = (type: string, init: Record<string, unknown> = {}) => new dom.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init });
 const key = (name: string, init: Record<string, unknown> = {}) => new dom.window.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
 
