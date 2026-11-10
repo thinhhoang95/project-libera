@@ -1,3 +1,4 @@
+import { readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import type { LatexMacro, XparseArgument } from "./definitions";
 
 /* Commands that packages define and the Visual mode cannot read from their
@@ -5,7 +6,7 @@ import type { LatexMacro, XparseArgument } from "./definitions";
  * act as, for the reader to add where the document loads the package. Only
  * what they draw is kept; a use in a form not written here stays source. */
 
-export type PackageMacro = Pick<LatexMacro, "name" | "arity" | "spec" | "body" | "mathOnly"> & {
+export type PackageMacro = Pick<LatexMacro, "name" | "arity" | "optional" | "spec" | "body" | "mathOnly"> & {
   /** Replaces an earlier definition of the name (`\renewcommand`, xparse's `\DeclareDocumentCommand`); else the package's `\newcommand` leaves it. */
   replaces?: boolean;
 };
@@ -138,6 +139,58 @@ function amsthmMacros(): PackageMacro[] {
     { name: "qed", arity: 0, body: "\\qedsymbol" },
     { name: "qedhere", arity: 0, body: "" },
   ];
+}
+
+/** Past spaces and comments. */
+function skipSpace(source: string, at: number) {
+  return at + /^(?:\s|%[^\n]*(?:\n|$))*/.exec(source.slice(at))![0].length;
+}
+
+/**
+ * algorithmicx's block definitions: `\algblockdefx[ON]{Blk}{EndBlk}[1]{#1}{}` (2411.02681), `\algblock[Name]{Start}{End}`
+ * and `\algdef{SE}[DOWHILE]{Do}{doWhile}{\algorithmicdo}[1]{\algorithmicwhile\ #1}` (flags S, E or SE), and `\algtext*{End}`
+ * (the command draws no line). Each command is a macro writing `\algorithmic@begin{text}` or `\algorithmic@end{text}`,
+ * the block's first and last lines for algorithm.ts. Null for the other forms (`\algdef{C}`, `\algtext` with a text),
+ * whose commands stay unknown.
+ */
+export function readAlgorithmBlock(source: string, index: number, command: string, starred: boolean, defined: (name: string) => LatexMacro | null): { end: number; macros: PackageMacro[] } | null {
+  let at = skipSpace(source, index);
+  const group = () => {
+    at = skipSpace(source, at);
+    const read = source[at] === "{" ? readGroup(source, at, TEX_GROUPS) : null;
+    if (read) at = read.end;
+    return read?.content ?? null;
+  };
+  const optional = () => {
+    const before = at;
+    at = skipSpace(source, at);
+    const read = source[at] === "[" ? readOptional(source, at, TEX_GROUPS) : null;
+    if (read) at = read.end; else at = before;
+    return read?.content ?? null;
+  };
+  const commandName = (text: string | null) => (text === null ? null : /^\s*\\?([A-Za-z@]+)\s*$/.exec(text)?.[1] ?? null);
+  if (command === "algtext") {
+    const name = commandName(group());
+    const macro = name ? defined(name) : null;
+    const marker = macro && /^\\algorithmic@(begin|end)\{/.exec(macro.body)?.[1];
+    if (!starred || !name || !macro || !marker) return null;
+    return { end: at, macros: [{ name, arity: macro.arity, optional: macro.optional, body: `\\algorithmic@${marker}{}` }] };
+  }
+  const flags = command === "algdef" ? group()?.trim() : "SE";
+  if (!flags || !/^(?:SE|S|E)$/.test(flags)) return null;
+  optional();
+  const names = [...flags].map(() => commandName(group()));
+  if (names.some((name) => !name)) return null;
+  const macros: PackageMacro[] = [];
+  for (const [n, flag] of [...flags].entries()) {
+    const count = command === "algblock" ? null : optional();
+    const fallback = count !== null ? optional() : null;
+    const text = command === "algblock" ? `\\textbf{${names[n]}}` : group();
+    if (text === null || (count !== null && !/^\s*\d\s*$/.test(count))) return null;
+    const arity = count === null ? 0 : Number(count);
+    macros.push({ name: names[n]!, arity, ...(fallback !== null && arity ? { optional: fallback } : {}), body: `\\algorithmic@${flag === "S" ? "begin" : "end"}{${text}}` });
+  }
+  return { end: at, macros };
 }
 
 /** The macros package `name` defines (with the options it was loaded with), or none. */

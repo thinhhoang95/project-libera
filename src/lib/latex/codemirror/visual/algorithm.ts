@@ -17,11 +17,110 @@ export type AlgorithmLine = {
   comment?: string;
   /** Lines the package numbers (not \Require, \Ensure, \Statex). */
   numbered: boolean;
+  /** A rule across the algorithm (`\\\hrulefill` between statements, GaLore's), dotted for `\dotfill`; the line has no text. */
+  rule?: "solid" | "dotted";
 };
 
 export type AlgorithmSpec = { lines: AlgorithmLine[]; numberEvery: number };
 
-type Kind = { lead?: string; trail?: string; args: number; open?: boolean; close?: boolean; middle?: boolean; numbered?: boolean; name?: boolean };
+/** The document's macro used at the start of `source` (its name and arguments), expanded; null when it is none. */
+export type AlgorithmMacroExpander = (source: string) => { text: string; length: number } | null;
+
+type Kind = { lead?: string; trail?: string; args: number; open?: boolean; close?: boolean; middle?: boolean; numbered?: boolean; name?: boolean; block?: boolean };
+
+/**
+ * The statements algorithmicx's `\algdef{SE}`, `\algblockdefx` and `\algblock` define (macros/packages.ts writes their
+ * commands as these markers): a block's first line, with its text, and its last line (none when its text is empty).
+ */
+const BLOCK_STATEMENTS: Record<string, Kind> = {
+  "algorithmic@begin": { args: 1, open: true, block: true },
+  "algorithmic@end": { args: 1, close: true, block: true },
+};
+
+/** The statement `name` is, written as algorithmic (`\FORALL`) or algpseudocode (`\ForAll`) write it: never `\forall` or `\repeat`. */
+function statementKind(name: string): Kind | undefined {
+  return BLOCK_STATEMENTS[name] ?? (/^[A-Z]/.test(name) ? STATEMENTS[name.toLowerCase()] : undefined);
+}
+
+/** Where the formula starting at `at` (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) ends, or -1. */
+function formulaEnd(text: string, at: number) {
+  if (!text.startsWith("\\[", at)) return mathEnd(text, at);
+  const close = text.indexOf("\\]", at + 2);
+  return close < 0 ? -1 : close + 2;
+}
+
+/** algorithmic's and algpseudocode's words in a statement: `\Call{Name}{args}` as Name(args) in small capitals, `\TRUE`, `\AND`. */
+const ALGORITHMIC_WORDS: Record<string, string> = { AND: "and", OR: "or", XOR: "xor", NOT: "not", TO: "to", TRUE: "true", FALSE: "false" };
+
+function algorithmicWords(text: string) {
+  if (!text.includes("\\")) return text;
+  let out = "";
+  let at = 0;
+  for (const match of text.matchAll(/\\(Call|textproc|AND|OR|XOR|NOT|TO|TRUE|FALSE|algorithmic(?:end|do|while|for|forall|loop|repeat|until|procedure|function|if|then|else|return))(?![A-Za-z@])\s*/g)) {
+    if (match.index! < at) continue;
+    const name = match[1];
+    let end = match.index! + match[0].length;
+    let drawn: string;
+    if (name === "Call") {
+      const procedure = text[end] === "{" ? readGroup(text, end) : null;
+      let space = procedure ? procedure.end : end;
+      while (/\s/.test(text[space] ?? "")) space++;
+      const args = procedure && text[space] === "{" ? readGroup(text, space) : null;
+      if (!procedure || !args) continue;
+      drawn = `\\textsc{${procedure.content}}${args.content.trim() ? `(${args.content})` : ""}`;
+      end = args.end;
+    } else if (name === "textproc") drawn = "\\textsc";
+    else drawn = `\\textbf{${ALGORITHMIC_WORDS[name] ?? (name === "algorithmicforall" ? "for all" : name.slice("algorithmic".length))}} `;
+    out += text.slice(at, match.index) + drawn;
+    at = end;
+  }
+  return out + text.slice(at);
+}
+
+/** Statements and comments: what a macro of the document must write for its use to be read as part of the algorithm. */
+function writesStatements(text: string) {
+  for (const match of text.matchAll(/\\([A-Za-z@]+)/g)) if (statementKind(match[1]) || match[1] === "Comment" || match[1] === "COMMENT") return true;
+  return false;
+}
+
+/**
+ * The document's macros that write statements, expanded where they are used between statements: algpseudocode's
+ * `\algnewcommand{\LineComment}[1]{\State \(\triangleright\) #1}`, a comment macro (`\Cmnt{…}`, 1610.05820), and the
+ * blocks `\algdef` defines. Other macros are left for the text they are in.
+ */
+function expandStatementMacros(source: string, expand: AlgorithmMacroExpander) {
+  let out = source;
+  let braces = 0;
+  for (let i = 0, expansions = 0; i < out.length; i++) {
+    const char = out[i];
+    if (char === "{") braces++;
+    else if (char === "}") braces--;
+    else if (char === "$" || out.startsWith("\\(", i) || out.startsWith("\\[", i)) { const close = formulaEnd(out, i); if (close < 0) return out; i = close - 1; }
+    else if (char === "\\" && braces === 0) {
+      const name = /^\\([A-Za-z@]+)/.exec(out.slice(i, i + 80));
+      if (!name) { i++; continue; }
+      const use = statementKind(name[1]) || expansions >= 200 ? null : expand(out.slice(i));
+      if (use && writesStatements(use.text)) {
+        out = out.slice(0, i) + use.text + out.slice(i + use.length);
+        expansions++;
+        i--;
+        continue;
+      }
+      i += name[0].length - 1;
+    }
+  }
+  return out;
+}
+
+/** A plain label from a keyword's definition (`\renewcommand{\algorithmicrequire}{\textbf{Input:}}`), or null. */
+function plainLabel(text: string) {
+  const label = text.replace(/\\(?:textbf|bfseries|textnormal|textrm)(?![A-Za-z@])\s*/g, "").replace(/[{}]/g, "").replace(/\\ /g, " ").trim();
+  return label && !/[\\$#^_&%]/.test(label) ? label : null;
+}
+
+/** `\\` and a fill after a statement (`\\\hrulefill`), or a statement that is only a fill: a rule. */
+const RULE_AFTER = /(?:\\\\|\\newline)\s*\\(hrulefill|dotfill)\s*$/;
+const ONLY_RULE = /^\s*\\(hrulefill|dotfill)\s*$/;
 
 /** Statements by lower-cased name (algorithmic writes them in capitals, algpseudocode in title case). */
 const STATEMENTS: Record<string, Kind> = {
@@ -58,28 +157,41 @@ const STATEMENTS: Record<string, Kind> = {
  * (`\begin{algorithmic}[1]`: every line; none: 0). Null when the body holds
  * text before its first statement or a statement it does not know.
  */
-export function parseAlgorithmic(body: string, options: string | null): AlgorithmSpec | null {
+export function parseAlgorithmic(body: string, options: string | null, expand?: AlgorithmMacroExpander): AlgorithmSpec | null {
   const numberEvery = options && /^\s*\d+\s*$/.test(options) ? Number(options) : 0;
   // Comments, labels, vertical space and size switches are not lines of the algorithm.
-  const source = body.replace(/(^|[^\\])%[^\n]*/g, "$1")
+  const cleaned = body.replace(/(^|[^\\])%[^\n]*/g, "$1")
     .replace(/\\(?:label|vspace\*?|addvspace)\s*\{[^{}]*\}/g, "")
     .replace(/\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large)(?![A-Za-z@])/g, "");
+  const source = expand ? expandStatementMacros(cleaned, expand) : cleaned;
+  // `\renewcommand{\algorithmicrequire}{\textbf{Input:}}`: the label the document gives \Require and \Ensure.
+  const labels: Record<string, string> = {};
+  for (const key of expand ? ["require", "ensure"] : []) {
+    const use = expand!(`\\algorithmic${key}`);
+    const label = use && plainLabel(use.text);
+    if (label) labels[key] = label;
+  }
   const lines: AlgorithmLine[] = [];
   let depth = 0;
   let i = 0;
-  const statement = /\\([A-Za-z]+)(?![A-Za-z@])/g;
-  // Find each statement command at brace depth zero; the text up to the next one is its line.
+  const statement = /\\([A-Za-z@]+)(?![A-Za-z@])/g;
+  // Find each statement command at brace depth zero, outside formulas (`\STATE $\forall i$` is no \FORALL); the text up
+  // to the next one is its line.
   const starts: Array<{ at: number; name: string; kind: Kind; end: number }> = [];
   let braces = 0;
   for (; i < source.length; i++) {
     const char = source[i];
     if (char === "{") braces++;
     else if (char === "}") braces--;
-    else if (char === "\\" && braces === 0) {
+    else if (braces === 0 && (char === "$" || source.startsWith("\\(", i) || source.startsWith("\\[", i))) {
+      const close = formulaEnd(source, i);
+      if (close < 0) return null;
+      i = close - 1;
+    } else if (char === "\\" && braces === 0) {
       statement.lastIndex = i;
       const match = statement.exec(source);
       if (match && match.index === i) {
-        const kind = STATEMENTS[match[1].toLowerCase()];
+        const kind = statementKind(match[1]);
         if (kind) starts.push({ at: i, name: match[1], kind, end: i + match[0].length });
         i += match[0].length - 1;
       } else i++;
@@ -88,7 +200,7 @@ export function parseAlgorithmic(body: string, options: string | null): Algorith
   if (braces !== 0) return null;
   if (!starts.length || source.slice(0, starts[0].at).trim()) return null;
   for (let index = 0; index < starts.length; index++) {
-    const { kind, end } = starts[index];
+    const { kind, end, name } = starts[index];
     const lineEnd = index + 1 < starts.length ? starts[index + 1].at : source.length;
     let at = end;
     const skip = () => { while (/\s/.test(source[at] ?? "")) at++; };
@@ -120,10 +232,19 @@ export function parseAlgorithmic(body: string, options: string | null): Algorith
     // algorithmic takes `\IF{c}` and `\STATE text`; an optional argument (`\STATE[label]`) is dropped.
     const optional = readOptional(rest.trimStart(), 0);
     if (optional && kind.args === 0) rest = rest.trimStart().slice(optional.end);
-    const text = kind.name ? `\\textsc{${args[0]}}(${args[1] ?? ""})` : [...args, rest.trim()].filter(Boolean).join(" ");
-    // `\State \Return x`: the statement is the return.
-    if (!text && !kind.lead && comment === undefined && index + 1 < starts.length) continue;
-    lines.push({ depth, lead: kind.lead, text, trail: kind.trail, comment, numbered: kind.numbered !== false });
+    // GaLore's `\STATE … \COMMENT{…} \\\hrulefill`: a rule after the line. A fill inside a line only fills space.
+    const after = RULE_AFTER.exec(rest);
+    if (after) rest = rest.slice(0, after.index);
+    const only = ONLY_RULE.exec(rest);
+    if (!only) rest = rest.replace(/\\(?:hrulefill|dotfill)(?![A-Za-z@])/g, " ");
+    const text = algorithmicWords(kind.name ? `\\textsc{${args[0]}}(${args[1] ?? ""})` : [...args, rest.trim()].filter(Boolean).join(" ")).trim();
+    if (comment !== undefined) comment = algorithmicWords(comment);
+    const rule = (match: RegExpExecArray | null): AlgorithmLine["rule"] => (match ? (match[1] === "dotfill" ? "dotted" : "solid") : undefined);
+    if (only && comment === undefined && !kind.lead && !args.length) lines.push({ depth, text: "", numbered: false, rule: rule(only) });
+    // `\State \Return x`: the statement is the return. An `\algdef` block's line whose text is empty is not drawn.
+    else if (!text && !kind.lead && comment === undefined && (kind.block || index + 1 < starts.length)) { /* no line */ }
+    else lines.push({ depth, lead: labels[name.toLowerCase()] ?? kind.lead, text, trail: kind.trail, comment, numbered: kind.numbered !== false });
+    if (after) lines.push({ depth, text: "", numbered: false, rule: rule(after) });
     if (kind.open || kind.middle) depth++;
   }
   return { lines, numberEvery };
@@ -135,7 +256,7 @@ export function parseAlgorithmic(body: string, options: string | null): Algorith
 const IGNORED_2E: Record<string, number> = {
   SetAlgoLined: 0, SetAlgoVlined: 0, SetAlgoNoLine: 0, SetAlgoNoEnd: 0, SetAlgoShortEnd: 0, SetAlgoLongEnd: 0,
   DontPrintSemicolon: 0, PrintSemicolon: 0, LinesNumbered: 0, LinesNotNumbered: 0, LinesNumberedHidden: 0, nl: 0,
-  Indp: 0, Indm: 0, BlankLine: 0, centering: 0, SetSideCommentLeft: 0, SetSideCommentRight: 0, SetNoFillComment: 0, SetFillComment: 0,
+  BlankLine: 0, centering: 0, SetSideCommentLeft: 0, SetSideCommentRight: 0, SetNoFillComment: 0, SetFillComment: 0,
   tiny: 0, scriptsize: 0, footnotesize: 0, small: 0, normalsize: 0, large: 0,
   caption: 1, label: 1, vspace: 1, IncMargin: 1, DecMargin: 1, SetAlFnt: 1, SetAlCapFnt: 1, SetAlCapNameFnt: 1, SetAlCapSty: 1, SetAlCapSkip: 1,
   SetArgSty: 1, SetFuncSty: 1, SetKwSty: 1, SetCommentSty: 1, SetDataSty: 1, SetProgSty: 1, SetVlineSkip: 1, TitleOfAlgo: 1, RestyleAlgo: 1,
@@ -165,7 +286,7 @@ function mathEnd(text: string, at: number) {
  * blocks print "end" (not with `vlined` or `noend`). Null when it holds a statement
  * it does not know or unbalanced braces.
  */
-export function parseAlgorithm2e(body: string, options: { numbered: boolean; ends: boolean }): AlgorithmSpec | null {
+export function parseAlgorithm2e(body: string, options: { numbered: boolean; ends: boolean }, expand?: AlgorithmMacroExpander): AlgorithmSpec | null {
   const source = body.replace(/(^|[^\\])%[^\n]*/g, "$1");
   const ends = options.ends && !/\\SetAlgo(?:NoEnd|Vlined)(?![A-Za-z@])/.test(source);
   const numberEvery = options.numbered || /\\LinesNumbered(?![A-Za-z@])/.test(source) ? 1 : 0;
@@ -177,6 +298,9 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
   const keywords = new Map<string, string>();
   const blocks = new Map<string, { begin: string; end: string }>();
   let failed = false;
+  /** `\Indp` and `\Indm` (GaLore's code box): levels added to the lines after them. */
+  let shift = 0;
+  let expansions = 0;
   const name = (text: string) => text.trim().replace(/^\\/, "");
   /** The document's function names and keywords in an argument (`\Fn{\FMain{$x$}}`), as they are drawn. */
   const words = (text: string) => !text.includes("\\") ? text : text.replace(/\\([A-Za-z@]+)(?![A-Za-z@])(\s*\{((?:[^{}]|\{[^{}]*\})*)\})?/g, (whole, command: string, group: string | undefined, args: string | undefined) => {
@@ -192,7 +316,7 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
   const read = (text: string, depth: number) => {
     let pending = "";
     let i = 0;
-    const push = (line: Omit<AlgorithmLine, "depth" | "numbered"> & { numbered?: boolean }) => lines.push({ depth, numbered: true, ...line, text: words(line.text) });
+    const push = (line: Omit<AlgorithmLine, "depth" | "numbered"> & { numbered?: boolean }) => lines.push({ depth: depth + shift, numbered: true, ...line, text: words(line.text) });
     const flush = (comment?: string) => {
       const text = pending.replace(/\s+/g, " ").trim();
       pending = "";
@@ -376,7 +500,15 @@ export function parseAlgorithm2e(body: string, options: { numbered: boolean; end
       const keyword = keywords.get(command);
       if (keyword !== undefined) { pending += `${keyword} `; continue; }
       // A statement it does not know (another package's, or the document's own): the algorithm stays source.
-      if (/^[A-Z]/.test(command) && !TEXT_CAPITALS.test(command)) { failed = true; break; }
+      if (command === "Indp" || command === "Indm") { flush(); shift = Math.max(0, shift + (command === "Indp" ? 1 : -1)); continue; }
+      if (/^[A-Z]/.test(command) && !TEXT_CAPITALS.test(command)) {
+        // The document's own statement macro (GaLore's `\PyCode{…}`): its expansion, read in its place.
+        const at = i - match[0].length;
+        const use = expand && expansions < 200 ? expand(text.slice(at)) : null;
+        if (use && use.length) { text = text.slice(0, at) + use.text + text.slice(at + use.length); i = at; expansions++; continue; }
+        failed = true;
+        break;
+      }
       pending += match[0];
     }
     flush();

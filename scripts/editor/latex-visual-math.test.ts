@@ -12,7 +12,7 @@ import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirro
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
 import { katexForEnvironment, renderKatex } from "../../src/lib/latex/codemirror/visual/math-render";
 import { parseAlgorithm2e, parseAlgorithmic } from "../../src/lib/latex/codemirror/visual/algorithm";
-import { expandLatexMacros, needsMathMode } from "../../src/lib/latex/macros/expand";
+import { expandLatexMacros, expandLatexMacroUse, needsMathMode } from "../../src/lib/latex/macros/expand";
 import { readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 import { computeLatexNumbering } from "../../src/lib/latex/macros/numbering";
 
@@ -181,4 +181,100 @@ This completes the proof.\qed
 Done.
 \end{proof}
 \end{document}`), /Done\.∎/);
+});
+
+/** An algorithmic body's lines as "depth|lead|text|trail|comment" (rules as "depth|rule"). */
+function algorithmLines(body: string, options: string | null = "1", preamble = "") {
+  const defs = readLatexDefinitions(`${preamble}\n\\begin{document}\\end{document}`);
+  const expand = (source: string) => expandLatexMacroUse(source, defs, { mode: "text", pos: Number.MAX_SAFE_INTEGER });
+  const spec = parseAlgorithmic(body, options, defs.macros.size ? expand : undefined);
+  return spec?.lines.map((line) => (line.rule ? `${line.depth}|${line.rule}` : [line.depth, line.lead ?? "", line.text, line.trail ?? "", line.comment ?? ""].join("|"))) ?? null;
+}
+
+test("\\forall in a statement's formula is no \\FORALL, and statements are matched case-sensitively (B5-06)", () => {
+  assert.deepEqual(algorithmLines(String.raw`\STATE $\forall i$: $x_i \gets 0$
+\FORALL{$j$}
+\STATE \(\forall k\) $y \gets 1$
+\ENDFOR`), ["0||$\\forall i$: $x_i \\gets 0$||", "0|for all|$j$|do|", "1||\\(\\forall k\\) $y \\gets 1$||", "0|end for|||"]);
+  // Lower-case commands are TeX's (`\repeat`, `\loop`, `\input`), not statements.
+  assert.deepEqual(algorithmLines(String.raw`\State \return x`), ["0||\\return x||"]);
+});
+
+test("algpseudocode's \\Call, algorithmic's \\TRUE and \\AND, and \\algorithmicrequire as the document renames it (B5-24)", () => {
+  assert.deepEqual(algorithmLines(String.raw`\State $\mathbf{x} \gets$ \Call{RandRecord}{$\mathbf{x}^*$, $k$}
+\If{\Call{SplitSucceeded}{$\Sigma$} \AND $p$}
+\State \Call{Init}{}
+\EndIf`), ["0||$\\mathbf{x} \\gets$ \\textsc{RandRecord}($\\mathbf{x}^*$, $k$)||", "0|if|\\textsc{SplitSucceeded}($\\Sigma$) \\textbf{and} $p$|then|", "1||\\textsc{Init}||", "0|end if|||"]);
+  assert.deepEqual(algorithmLines(String.raw`\REQUIRE $x$
+\ENSURE $y$`, null, String.raw`\renewcommand{\algorithmicrequire}{\textbf{Input:}}\algrenewcommand\algorithmicensure{\textbf{Output:}}`), ["0|Input:|$x$||", "0|Output:|$y$||"]);
+});
+
+test("\\algnewcommand statements and comments, and \\algdef / \\algblockdefx blocks, are read as what they write (B5-24)", () => {
+  const preamble = String.raw`\usepackage{algpseudocode}
+\algnewcommand{\LineComment}[1]{\State \(\triangleright\) #1}
+\algnewcommand{\Cmnt}[1]{\Comment{\textcolor{gray}{\small\em #1}}}
+\algblockdefx[ON]{Blk}{EndBlk}[1]
+  {#1}
+  {}
+\algdef{SE}[DOWHILE]{Do}{doWhile}{\algorithmicdo}[1]{\algorithmicwhile\ #1}`;
+  assert.deepEqual(algorithmLines(String.raw`\LineComment{initialise}
+\State $x \gets 0$ \Cmnt{a record}
+\Blk{On receiving $m$}
+\State send $m$
+\EndBlk
+\Do
+\State $x \gets x + 1$
+\doWhile{$x < 3$}`, "1", preamble), [
+    "0||\\(\\triangleright\\) initialise||", "0||$x \\gets 0$||\\textcolor{gray}{\\small\\em a record}", "0||On receiving $m$||", "1||send $m$||",
+    "0||\\textbf{do}||", "1||$x \\gets x + 1$||", "0||\\textbf{while} \\ $x < 3$||",
+  ]);
+  // `\algtext*{EndBlk}`: the command draws no line.
+  assert.equal(readLatexDefinitions(String.raw`\algblockdefx[ON]{Blk}{EndBlk}[1]{#1}{\textbf{end}}\algtext*{EndBlk}`).macros.get("EndBlk")?.at(-1)?.body, "\\algorithmic@end{}");
+  // A definition in the body is source: the name it defines is not drawn there.
+  assert.match(visibleText(String.raw`\documentclass{article}
+\begin{document}
+\algnewcommand{\Note}[1]{\State #1}
+Text.
+\end{document}`), /\\algnewcommand\{\\Note\}\[1\]\{\\State #1\}/);
+});
+
+test("\\\\\\hrulefill between statements is a rule across the algorithm; a fill in a line is space (GaLore, B6-21)", () => {
+  assert.deepEqual(algorithmLines(String.raw`\STATE $R_t \gets P_{t}^{\top} G_t$ \hfill \COMMENT{Project gradient}
+   \\\hrulefill
+   \STATE {\bfseries Update by Adam}
+   \STATE \dotfill
+   \STATE Input \dotfill $x$`, null), ["0||$R_t \\gets P_{t}^{\\top} G_t$ \\hfill||Project gradient", "0|solid", "0||{\\bfseries Update by Adam}||", "0|dotted", "0||Input   $x$||"]);
+});
+
+test("algorithm2e: keywords declared in the preamble, the document's statement macros, and \\Indp / \\Indm (GaLore, B6-19)", () => {
+  const doc = (preamble: string, body: string) => String.raw`\documentclass{article}
+\usepackage[ruled,vlined]{algorithm2e}
+${preamble}
+\begin{document}
+\begin{algorithm}[t]
+${body}
+\caption{Code}
+\end{algorithm}
+\end{document}`;
+  const preamble = String.raw`\SetKwInOut{Input}{Input}\SetKwFunction{FUpdate}{Update}
+\SetKwProg{Fn}{Function}{:}{}
+\newcommand{\PyCode}[1]{\texttt{#1}}`;
+  const text = visibleText(doc(preamble, String.raw`\SetAlgoLined
+\Input{weights $W$}
+\Fn{\FUpdate{$W$}}{
+  \PyCode{for weight in model.parameters():} \\
+  \Indp
+  \PyCode{grad = weight.grad} \\
+  \Indm
+  \PyCode{done} \\
+}`));
+  assert.match(text, /Input:\s*weights W/);
+  assert.match(text, /Function\s*Update\(W\):/i);
+  assert.match(text, /for weight in model\.parameters\(\):\s*grad = weight\.grad\s*done/);
+  assert.doesNotMatch(text, /\\Indp|\\PyCode|\\Input/);
+  // The levels \Indp and \Indm set.
+  const spec = parseAlgorithm2e(String.raw`a\; \Indp b\; \Indp c\; \Indm d\; \Indm \Indm e\;`, { numbered: false, ends: false });
+  assert.deepEqual(spec?.lines.map((line) => `${line.depth}${line.text}`), ["0a", "1b", "2c", "1d", "0e"]);
+  // A capitalised command that is no macro of the document still keeps the algorithm source.
+  assert.equal(parseAlgorithm2e(String.raw`\Unknown{x}\;`, { numbered: false, ends: false }, () => null), null);
 });

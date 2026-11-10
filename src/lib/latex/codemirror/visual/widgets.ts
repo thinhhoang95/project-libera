@@ -603,6 +603,8 @@ function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
   const list = el("div", "cm-vis-algorithm");
   let count = 0;
   for (const line of spec.lines) {
+    // `\\\hrulefill` between statements (GaLore's): a rule across the lines.
+    if (line.rule) { list.append(el("div", `cm-vis-algorithm-rule${line.rule === "dotted" ? " cm-vis-algorithm-rule-dotted" : ""}`)); continue; }
     const row = el("div", "cm-vis-algorithm-line");
     row.style.setProperty("--vis-algorithm-depth", String(line.depth));
     const number = el("span", "cm-vis-algorithm-number");

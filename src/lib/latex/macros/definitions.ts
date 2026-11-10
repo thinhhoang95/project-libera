@@ -1,5 +1,5 @@
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
-import { packageMacros } from "./packages";
+import { packageMacros, readAlgorithmBlock } from "./packages";
 
 /* The document's own definitions, read the way TeX would read them, for the
  * Visual mode (docs/latex-visual-editor-plan.md §7). Only forms whose meaning
@@ -125,7 +125,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKw)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -540,7 +540,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     const uncertain = scanner.branch() === "unknown";
     context.deferred = scanner.deferred();
     let index = start + match[0].length;
-    const command = match[1];
+    // algorithmicx's `\algnewcommand{\LineComment}[1]{\State …}` is `\newcommand` (and `\algrenewcommand` is `\renewcommand`).
+    const command = match[1] === "algnewcommand" ? "newcommand" : match[1] === "algrenewcommand" ? "renewcommand" : match[1];
     const note = (list: LatexDefinitionNote[], name: string, message: string) => list.push({ pos: context.offset + start, file: context.file, name, message });
     const starred = source[index] === "*";
     if (starred) index++;
@@ -842,6 +843,30 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       if (name && value && (model || command === "colorlet")) {
         end = value.end;
         defs.colors.set(name.content.trim(), { model: model ? model.content.trim() : "", value: value.content.trim() });
+      }
+    } else if (command === "algdef" || command === "algblockdefx" || command === "algblock" || command === "algtext") {
+      // algorithmicx's blocks (2411.02681's `\algblockdefx[ON]{Blk}{EndBlk}[1]{#1}{}`): commands for algorithm.ts to read.
+      const block = readAlgorithmBlock(source, index, command, starred, (name) => macroAt(defs, name, Number.MAX_SAFE_INTEGER));
+      if (block) {
+        end = block.end;
+        if (!uncertain) for (const macro of block.macros) addMacro(context, { ...macro, pos, file: context.file }, "renew");
+      }
+    } else if (/^SetKw(?:Function|InOut|Input|Prog|Data|Block)?$/.test(command)) {
+      // algorithm2e's keywords declared before an algorithm (`\SetKwInOut{Input}{Input}` in a preamble): macros whose
+      // body is the declaration, which an algorithm reads first (walk.ts); in text and formulas their uses stay source.
+      const count = command === "SetKwProg" ? 4 : command === "SetKwBlock" ? 3 : 2;
+      const groups: string[] = [];
+      let at = index;
+      while (groups.length < count) {
+        const group = readGroupAt(source, at);
+        if (!group) break;
+        groups.push(group.content);
+        at = group.end;
+      }
+      const name = /^\s*\\?([A-Za-z@]+)\s*$/.exec(groups[0] ?? "")?.[1];
+      if (name && groups.length === count) {
+        end = at;
+        if (!uncertain) added = addMacro(context, { name, arity: 0, body: source.slice(start, at), mathOnly: true, pos, file: context.file, package: "algorithm2e" }, "renew");
       }
     }
 

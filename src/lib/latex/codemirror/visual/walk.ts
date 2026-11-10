@@ -129,7 +129,7 @@ function layoutExtent(state: EditorState, at: number, command: string) {
   return at + i;
 }
 /** Definitions the grammar parses as unknown commands. */
-const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname)$/;
+const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext)$/;
 const SECTION_CLASSES: Record<string, string> = {
   Book: "cm-vis-hpart", Part: "cm-vis-hpart", Chapter: "cm-vis-h0", Section: "cm-vis-h1", SubSection: "cm-vis-h2",
   SubSubSection: "cm-vis-h3", Paragraph: "cm-vis-h4", SubParagraph: "cm-vis-h4",
@@ -1702,7 +1702,7 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       const env = environmentName(ref.node, readState) ?? "";
       if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { covered = false; return false; }
       if (env === "tikzpicture" || TABULAR_NAMES.test(env)) return false;
-      if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state)) covered = false; return false; }
+      if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state, defs)) covered = false; return false; }
       // adjustbox's `\begin{adjustbox}{width=\linewidth}` and threeparttable: around the content, which is checked.
       if (env === "adjustbox" || env === "threeparttable" || env === "ThreePartTable") return undefined;
       // overpic: an image with text put over it, drawn without the overlay.
@@ -1736,16 +1736,22 @@ function algorithm2eSpec(node: SyntaxNode, state: EditorState, defs: LatexDefini
   const body = read(state, content.from, content.to);
   if (/\\begin\s*\{algorithmic\}/.test(body)) return null;
   const options = defs.packageOptions.get("algorithm2e") ?? [];
-  const algorithm = parseAlgorithm2e(body, { numbered: options.includes("linesnumbered"), ends: !options.some((option) => option === "vlined" || option === "noend") });
+  // Keywords declared before it (`\SetKwInOut{Input}{Input}` in the preamble) are read first; the document's statement
+  // macros (`\PyCode{…}`) are read as what they write.
+  let declarations = "";
+  for (const name of defs.macros.keys()) { const macro = macroAt(defs, name, node.from); if (macro?.package === "algorithm2e") declarations += macro.body; }
+  const expand = (source: string) => expandLatexMacroUse(source, defs, { mode: "text", pos: node.from });
+  const algorithm = parseAlgorithm2e(declarations + body, { numbered: options.includes("linesnumbered"), ends: !options.some((option) => option === "vlined" || option === "noend") }, expand);
   return algorithm && { algorithm, ruled: options.some((option) => option === "ruled" || option === "algoruled") };
 }
 
-/** An `algorithmic` environment's lines, or null when they cannot be read. */
-function algorithmicSpec(node: SyntaxNode, state: EditorState) {
+/** An `algorithmic` environment's lines, or null when they cannot be read. The document's macros may write statements. */
+function algorithmicSpec(node: SyntaxNode, state: EditorState, defs?: LatexDefinitions) {
   const content = node.getChild("Content");
   const options = node.getChild("BeginEnv")?.getChild("OptionalArgument");
   const range = options && argumentInner(options);
-  return content ? parseAlgorithmic(read(state, content.from, content.to), range ? read(state, range.from, range.to) : null) : null;
+  const expand = defs?.macros.size ? (source: string) => expandLatexMacroUse(source, defs, { mode: "text", pos: node.from }) : undefined;
+  return content ? parseAlgorithmic(read(state, content.from, content.to), range ? read(state, range.from, range.to) : null, expand) : null;
 }
 
 /** Where each `\bibitem` of the `thebibliography` at `envFrom` is (outside comments), per document version. */
@@ -2098,7 +2104,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
           return false;
         }
         if (envName === "algorithmic") {
-          const algorithm = algorithmicSpec(ref.node, state);
+          const algorithm = algorithmicSpec(ref.node, state, defs);
           if (algorithm) content.algorithm = algorithm; else valid = false;
           found(ref.from);
           return false;

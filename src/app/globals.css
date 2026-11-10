@@ -3250,6 +3250,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-algorithm-number { flex: none; width: 1.8em; text-align: right; color: var(--muted-foreground); font-size: .85em; }
 .cm-vis-algorithm-body { padding-left: calc(var(--vis-algorithm-depth, 0) * 1.4em); }
 .cm-vis-algorithm-comment { margin-left: .8em; color: var(--muted-foreground); }
+.cm-vis-algorithm-rule { margin: .2em 0 .2em 2.4em; border-top: 1px solid currentColor; }
+.cm-vis-algorithm-rule-dotted { border-top-style: dotted; }
 /* `\iffalse … \fi`: left out of the document, so faded. */
 .libera-latex-visual .cm-line.cm-vis-disabled { opacity: .45; }
 .cm-vis-rm { font-style: normal; font-weight: 400; }
