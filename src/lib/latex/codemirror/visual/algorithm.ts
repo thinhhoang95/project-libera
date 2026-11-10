@@ -263,8 +263,11 @@ export function parseAlgorithmic(body: string, options: string | null, expand?: 
   if (expand) source = expandStatementMacros(source, origin, uses, expand);
   // Labels, vertical space and size switches are not lines of the algorithm; a label is its line's.
   const labels: Array<{ key: string; at: number }> = [];
+  /** The source with its labels, for where a line's LaTeX ends (a label at its end is part of it). */
+  const labelled = source;
   source = source.replace(/\\label\s*\{([^{}]*)\}/g, (whole, key: string, at: number) => { labels.push({ key: key.trim(), at }); return blank(whole); });
-  source = source.replace(/\\(?:vspace\*?|addvspace)\s*\{[^{}]*\}|\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large)(?![A-Za-z@])/g, blank);
+  // (Those a macro writes are its text's: `\Cmnt{…}` writing `\Comment{\small …}`.)
+  source = source.replace(/\\(?:vspace\*?|addvspace)\s*\{[^{}]*\}|\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large)(?![A-Za-z@])/g, (whole: string, at: number) => (origin[at] >= 0 ? blank(whole) : whole));
   // `\renewcommand{\algorithmicrequire}{\textbf{Input:}}`: the label the document gives \Require and \Ensure.
   const keywordLabels: Record<string, string> = {};
   for (const key of expand ? ["require", "ensure"] : []) {
@@ -272,7 +275,7 @@ export function parseAlgorithmic(body: string, options: string | null, expand?: 
     const label = use && plainLabel(use.text);
     if (label) keywordLabels[key] = label;
   }
-  const where = (a: number, b: number) => located(source, origin, uses, a, b);
+  const where = (a: number, b: number) => located(labelled, origin, uses, a, b);
   const lines: AlgorithmLine[] = [];
   const statement = /\\([A-Za-z@]+)(?![A-Za-z@])/g;
   /** Whether `at` starts a line of the source (only spaces before it on its line). */
@@ -311,7 +314,7 @@ export function parseAlgorithmic(body: string, options: string | null, expand?: 
   } : null);
   const add = (line: AlgorithmLine | null) => { if (line) lines.push(line); return line; };
   // Text before the first statement: source, at the top.
-  add(raw(0, where(0, starts[0].at), false));
+  add(raw(0, located(source, origin, uses, 0, starts[0].at), false));
   let depth = 0;
   /** The blocks open: their first line (none for an `\algdef` block whose text is empty), name and where they start. */
   const open: Array<{ line: AlgorithmLine | null; name: string; at: number; from: number }> = [];
