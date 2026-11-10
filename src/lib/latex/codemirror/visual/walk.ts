@@ -3065,7 +3065,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       }
       const formula = mathDrawing(ref.node, state);
       if (formula) { content.drawings!.push(formula); content.places.drawings.push(ref.from); found(ref.from); return false; }
-      if ((name === "Environment" || name === "KnownEnvironment") && !isTabular(ref.node, readState)) {
+      if ((name === "Environment" || name === "KnownEnvironment" || name === "TikzPictureEnvironment") && !isTabular(ref.node, readState)) {
         const envName = environmentName(ref.node, readState) ?? "";
         if (envName === "tikzpicture") { content.drawings!.push(""); content.places.drawings.push(ref.from); found(ref.from); return false; }
         if (DIAGRAM_ENVIRONMENTS[envName]) { content.drawings!.push(`diagram:${DIAGRAM_ENVIRONMENTS[envName]}`); content.places.drawings.push(ref.from); found(ref.from); return false; }

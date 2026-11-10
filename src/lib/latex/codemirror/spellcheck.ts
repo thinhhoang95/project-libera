@@ -27,7 +27,7 @@ function notProseRanges(view: EditorView): DecorationSet {
     tree.iterate({
       from, to,
       enter: (node) => {
-        if (!NOT_PROSE.has(node.name)) return undefined;
+        if (!NOT_PROSE.has(node.name) && !/(?:CtrlSeq|KeyArgument|LabelArgument|RefArgument)$/.test(node.name)) return undefined;
         const start = Math.max(node.from, last, from);
         const end = Math.min(node.to, to);
         if (end > start) { builder.add(start, end, noSpellcheck); last = end; }

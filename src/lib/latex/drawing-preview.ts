@@ -66,7 +66,7 @@ function mathAround(text: string, from: number, to: number) {
 export function drawingCandidates(source: string): DrawingCandidate[] {
   const text = maskComments(source);
   const found: DrawingCandidate[] = [];
-  const pattern = /\\begin\s*\{([A-Za-z]+)\}|\\xymatrix(?![A-Za-z@])|\\(input|include|includestandalone|tikzfig|ctikzfig)(?![A-Za-z@])\s*(?:\[[^\]]*\])?\s*\{([^{}]*)\}/g;
+  const pattern = /\\begin\s*\{([A-Za-z]+)\}|\\xymatrix(?![A-Za-z])|\\(input|include|includestandalone|tikzfig|ctikzfig)(?![A-Za-z@])\s*(?:\[[^\]]*\])?\s*\{([^{}]*)\}/g;
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     let candidate: { from: number; to: number; drawing: string } | null = null;
     if (match[1] !== undefined) {
