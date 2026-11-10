@@ -12,7 +12,7 @@
  * "Left as source" is a command or formula in the body, outside comments, that no construct covers. Some of those are
  * fine (a `\noindent`, a `\vspace`), most are a missing feature or a parse that went wrong. */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { JSDOM } from "jsdom";
@@ -83,6 +83,15 @@ async function fetchPapers(args: string[]) {
           // A single gzipped .tex, not a tar.
           const { gunzipSync } = await import("node:zlib");
           writeFileSync(path.join(folder, "main.tex"), gunzipSync(bytes));
+        }
+        // arXiv compiles a `toplevel` file named in 00README.json from the archive's root; the editor resolves includes
+        // from the main file's folder, so a main file in a subfolder is moved to the root, as arXiv reads it.
+        const readme = path.join(folder, "00README.json");
+        if (existsSync(readme)) {
+          try {
+            const top = (JSON.parse(readFileSync(readme, "utf8")) as { sources?: Array<{ usage?: string; filename?: string }> }).sources?.find((source) => source.usage === "toplevel")?.filename;
+            if (top?.includes("/") && existsSync(path.join(folder, top)) && !existsSync(path.join(folder, path.basename(top)))) renameSync(path.join(folder, top), path.join(folder, path.basename(top)));
+          } catch { /* a README that isn't JSON: left as it is */ }
         }
         const texs = texFiles(folder).filter((file) => /\.tex$/i.test(file));
         const size = texs.reduce((sum, file) => sum + statSync(path.join(folder, file)).size, 0);
