@@ -284,7 +284,9 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
         }
         entries.push(...cached.entries);
       }
-      if (!cancelled) setBibEntries(entries);
+      // A key in two files (one .bib loaded twice under two names) is listed once: BibTeX uses the first.
+      const seen = new Set<string>();
+      if (!cancelled) setBibEntries(entries.filter((entry) => !seen.has(entry.key) && !!seen.add(entry.key)));
     })();
     return () => { cancelled = true; };
     // bibKey covers the paths and their versions.

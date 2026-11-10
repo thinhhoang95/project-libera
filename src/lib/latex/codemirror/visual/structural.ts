@@ -66,7 +66,7 @@ const WIDEN = new Set([
   "TabularEnvironment", "ListEnvironment", "Maketitle", "IncludeGraphics", "SectioningCommand", "UnknownCommand",
 ]);
 const TABULAR_ENVIRONMENTS = /^(?:tabular\*?|tabularx|tabulary|longtable\*?|xltabular)$/;
-const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices|thebibliography|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;
+const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices|appendix|thebibliography|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;
 
 /** Where the folded preamble ends: the `\begin{document}` line, or the command itself when body text follows it on that line. */
 export function preambleEndOf(state: EditorState) {

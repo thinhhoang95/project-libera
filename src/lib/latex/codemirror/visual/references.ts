@@ -8,18 +8,47 @@ import { CONTROL_SYMBOLS, readAccent, SYMBOL_COMMANDS } from "./symbols";
 
 /* What citation and reference chips say (docs/latex-visual-editor-plan.md §3). */
 
-/** `citeAuthor` and `label` come from a compiled bibliography (`.bbl`, `thebibliography`): what the citation prints. */
-export type BibLookup = (key: string) => { author?: string; year?: string; title?: string; citeAuthor?: string; label?: string } | null;
+/**
+ * `citeAuthor`, `label` and `number` come from a compiled bibliography (`.bbl`, `thebibliography`): what the citation
+ * prints; `number` is the entry's place in it, which natbib's `numbers` option prints for an author–year `.bbl`.
+ */
+export type BibLookup = (key: string) => { author?: string; year?: string; title?: string; citeAuthor?: string; label?: string; number?: string } | null;
+
+type ProjectBibEntry = NonNullable<ReturnType<typeof projectOf>>["bibEntries"][number];
+const projectOf = (state: EditorState) => state.field(latexProjectField, false);
+/** The project's entries by key, built once per list (a chip looks its keys up on every refresh). */
+const bibIndexes = new WeakMap<readonly ProjectBibEntry[], Map<string, ProjectBibEntry[]>>();
 
 export function bibLookup(state: EditorState): BibLookup {
-  const project = state.field(latexProjectField, false);
+  const project = projectOf(state);
+  const list = project?.bibEntries ?? [];
+  let index = bibIndexes.get(list);
+  if (!index) {
+    index = new Map();
+    for (const entry of list) index.set(entry.key, [...(index.get(entry.key) ?? []), entry]);
+    bibIndexes.set(list, index);
+  }
+  const entries = index;
   return (key) => {
-    const entry = project?.bibEntries.find((candidate) => candidate.key === key)
-      ?? project?.libraryEntries?.find((candidate) => candidate.key === key || candidate.aliases.includes(key));
+    const matches = entries.get(key) ?? [];
+    const entry = matches[0] ?? project?.libraryEntries?.find((candidate) => candidate.key === key || candidate.aliases.includes(key));
     if (!entry) return null;
-    const compiled = "citeAuthor" in entry || "label" in entry ? entry as { citeAuthor?: string; label?: string } : null;
-    return { author: entry.author, year: entry.year, title: entry.title, citeAuthor: compiled?.citeAuthor, label: compiled?.label };
+    // A `.bib` entry comes first, but how the citation prints is the compiled bibliography's (a numeric `.bbl`'s [3]).
+    const compiled = matches.find((candidate) => candidate.label !== undefined || candidate.citeAuthor !== undefined || candidate.number !== undefined);
+    return {
+      author: entry.author ?? compiled?.author, year: entry.year ?? compiled?.year, title: entry.title ?? compiled?.title,
+      citeAuthor: compiled?.citeAuthor, label: compiled?.label, number: compiled?.number,
+    };
   };
+}
+
+/** natbib's `numbers` (or `super`) option: citations print [3] whatever the bibliography gives. In its author–year mode `\cite` is `\citet`. */
+export type CitationStyle = { numeric?: boolean; textualCite?: boolean };
+
+export function citationStyle(defs: LatexDefinitions): CitationStyle {
+  const natbib = defs.packageOptions.get("natbib");
+  if (natbib?.some((option) => option === "numbers" || option === "super")) return { numeric: true };
+  return defs.packages.includes("natbib") ? { textualCite: true } : {};
 }
 
 /** BibTeX or `.aux` text as it prints: accents (`Boli\'c`, `{\"o}`), escapes and symbols decoded, braces dropped. */
@@ -59,8 +88,11 @@ export function shortAuthors(author: string | undefined) {
 
 export type CitationParts = { command: string; keys: string[]; pre?: string; post?: string };
 
+/** Citations that name the authors in the text: natbib's `\citet`, biblatex's `\textcite`, apacite's `\citeA`. */
+const TEXTUAL_CITATIONS = /^(?:citet|textcite|Citet|Textcite|citeA)$/;
+
 /** The chip text of a citation: numbers from the `.aux` when the style is numeric, else author and year. */
-export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLookup) {
+export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLookup, style: CitationStyle = {}) {
   const name = parts.command.replace(/^\\/, "").replace(/\*$/, "");
   const items = parts.keys.map((key) => {
     const compiled = aux.citations[key];
@@ -69,21 +101,30 @@ export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLo
     const authors = rawAuthors && plainTexText(rawAuthors);
     const year = compiled?.year ?? entry?.year ?? null;
     // A numeric or alphabetic label: the last compile's, else a compiled bibliography's (`\bibitem{key}` in order).
-    const numeric = compiled ? (/^\d+[a-z]?$/.test(compiled.label) ? compiled.label : null) : entry?.label && !entry.citeAuthor ? entry.label : null;
+    // natbib's author–year `.aux` numbers its entries too (`\bibcite{athey2019}{{13}{2019}{{Athey et~al.}}…}`, SDID):
+    // the authors win there unless natbib was loaded with `numbers`.
+    const numeric = compiled
+      ? (/^\d+[a-z]?$/.test(compiled.label) && (style.numeric || !compiled.authors) ? compiled.label : null)
+      : entry?.label && (style.numeric || !entry.citeAuthor) ? entry.label : style.numeric ? entry?.number ?? null : null;
     return { key, authors, year, numeric };
   });
   const allNumeric = items.every((item) => item.numeric);
-  const note = (text: string) => {
-    const pre = parts.pre ? `${parts.pre} ` : "";
-    const post = parts.post ? `, ${parts.post}` : "";
-    return `${pre}${text}${post}`;
-  };
+  // Notes as they print: `p.~5` is "p. 5".
+  const pre = parts.pre ? plainTexText(parts.pre).trim() : "";
+  const post = parts.post ? plainTexText(parts.post).trim() : "";
+  const note = (text: string) => `${pre ? `${pre} ` : ""}${text}${post ? `, ${post}` : ""}`;
   if (name === "citeauthor" || name === "Citeauthor") return items.map((item) => item.authors ?? item.key).join("; ");
   if (name === "citeyear" || name === "citeyearpar") return items.map((item) => item.year ?? item.key).join("; ");
   if (name === "nocite") return `(not cited: ${parts.keys.join(", ")})`;
-  if (allNumeric && !/^(?:citet|textcite|Citet|Textcite)$/.test(name)) return `[${note(items.map((item) => item.numeric).join(", "))}]`;
-  if (/^(?:citet|textcite|Citet|Textcite)$/.test(name)) {
-    return items.map((item) => (item.authors ? `${item.authors} ${allNumeric ? `[${item.numeric}]` : `(${item.year ?? "n.d."})`}` : item.key)).join("; ");
+  // natbib's `\cite` is `\citet` in its author–year mode, `\citep` with numbers.
+  const textual = TEXTUAL_CITATIONS.test(name) || (name === "cite" && !!style.textualCite && !allNumeric);
+  if (allNumeric && !textual) return `[${note(items.map((item) => item.numeric).join(", "))}]`;
+  if (textual) {
+    // The notes go inside the parentheses: `\citet[see][p.~5]{jon90}` is "Jones et al. (see 1990, p. 5)".
+    return items.map((item, index) => {
+      const inner = `${index === 0 && pre ? `${pre} ` : ""}${allNumeric ? item.numeric : item.year ?? "n.d."}${index === items.length - 1 && post ? `, ${post}` : ""}`;
+      return item.authors ? `${item.authors} ${allNumeric ? `[${inner}]` : `(${inner})`}` : item.key;
+    }).join("; ");
   }
   const body = items.map((item) => (item.authors ? `${item.authors}${item.year ? ` ${item.year}` : ""}` : item.key)).join("; ");
   return `[${note(body)}]`;
@@ -108,6 +149,12 @@ export function referenceChipText(command: string, keys: string[], numbering: La
   if (name === "pageref" || name === "vpageref") {
     return keys.map((key) => aux.labels[key]?.page ?? "?").join(", ");
   }
+  // cleveref's `\cpageref{a,b}`: "pages 3 and 5", from the last compile.
+  if (name === "cpageref" || name === "Cpageref") {
+    const pages = keys.map((key) => aux.labels[key]?.page ?? "?");
+    const list = pages.length > 2 ? `${pages.slice(0, -1).join(", ")} and ${pages.at(-1)}` : pages.join(" and ");
+    return `${name[0] === "C" ? "P" : "p"}age${pages.length > 1 ? "s" : ""} ${list}`;
+  }
   const targets = keys.map((key) => labelTarget(key, numbering, aux));
   if (targets.every((target) => target === null)) return keys.map((key) => `?${key}`).join(", ");
   return referenceText(command, targets, defs, keys);
@@ -131,6 +178,7 @@ export function referencesInMath(latex: string, numbering: LatexNumbering, aux: 
   if (!REFERENCE_IN_MATH.test(latex)) return latex;
   return latex.replace(/\\(eq|auto|Auto|c|C)?ref\*?\s*\{([^{}]*)\}/g, (_, kind: string | undefined, keys: string) => {
     const text = referenceChipText(`\\${kind ?? ""}ref`, keys.split(",").map((key) => key.trim()).filter(Boolean), numbering, aux, defs);
-    return `\\text{${text.replace(/[\\{}_#%&$^~]/g, (char) => `\\${char}`)}}`;
+    // A tag written in math (`\tag{$\mathcal{I}$}`) stays math.
+    return text.split(/(\$[^$]+\$)/).map((part) => (/^\$[^$]+\$$/.test(part) ? `{${part.slice(1, -1)}}` : part ? `\\text{${part.replace(/[\\{}_#%&$^~]/g, (char) => `\\${char}`)}}` : "")).join("");
   });
 }

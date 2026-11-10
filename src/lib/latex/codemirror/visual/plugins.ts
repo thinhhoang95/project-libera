@@ -9,7 +9,7 @@ import { computeLatexNumbering, type IncludedFile } from "../../macros/numbering
 import { latexProjectField } from "../editing";
 import { auxField, definitionsField, numberingField, numberingIncludesField, numberingStartField, setNumbering, visualConfig, visualDefinitions } from "./model";
 import { buildPendingEffect, CHUNK, constructAt, structuralField } from "./structural";
-import { refreshVisualWidgets } from "./widgets";
+import { followReference, refreshVisualWidgets } from "./widgets";
 
 /* The Visual mode's background work: numbering after a pause in typing,
  * building the rest of a long document while the browser is idle, opening
@@ -122,6 +122,9 @@ export const linkClicks = EditorView.domEventHandlers({
   mousedown(event, view) {
     const target = (event.target as HTMLElement | null)?.closest?.(".cm-vis-link") as HTMLElement | null;
     if (!target || !(event.metaKey || event.ctrlKey)) return false;
+    // `\hyperref[label]{text}`: to the label.
+    const ref = target.getAttribute("data-ref");
+    if (ref) { event.preventDefault(); return followReference(view, ref); }
     const href = target.getAttribute("data-href") ?? target.closest("[data-href]")?.getAttribute("data-href");
     if (!href || !/^(?:https?:|mailto:)/i.test(href.trim())) return false;
     event.preventDefault();

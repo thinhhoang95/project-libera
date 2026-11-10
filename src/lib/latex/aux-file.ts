@@ -26,7 +26,8 @@ function groups(text: string, index: number, count: number) {
 
 /** Text of a label number as TeX wrote it: `\relax`, protected spaces and braces removed. */
 function clean(value: string) {
-  return value.replace(/\\(?:relax|protect|nobreakspace|@\s*)\s*/g, "").replace(/\\ /g, " ").replace(/~/g, " ").replace(/[{}]/g, "").trim();
+  // natbib's `{2023{\natexlab{a}}}` year is 2023a (GaLore's citations showed "2023\natexlaba").
+  return value.replace(/\\natexlab\s*\{([^{}]*)\}/g, "$1").replace(/\\(?:relax|protect|nobreakspace|@\s*)\s*/g, "").replace(/\\ /g, " ").replace(/~/g, " ").replace(/[{}]/g, "").trim();
 }
 
 export function parseLatexAux(text: string): LatexAuxData {

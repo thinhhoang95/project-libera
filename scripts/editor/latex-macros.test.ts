@@ -440,7 +440,7 @@ test("references say what the PDF says", () => {
   assert.equal(referenceText("\\cref", [target("eq:c")], defs, ["eq:c"]), "eq. (2)");
   assert.equal(referenceText("\\Cref", [target("fig:a")], defs, ["fig:a"]), "Figure 1");
   assert.equal(referenceText("\\cref", [target("lem:b")], defs, ["lem:b"]), "Lemma 2.2");
-  assert.equal(referenceText("\\autoref", [target("sec:method")], defs, ["sec:method"]), "Section 2");
+  assert.equal(referenceText("\\autoref", [target("sec:method")], defs, ["sec:method"]), "section 2", "hyperref's \\sectionautorefname");
   assert.equal(referenceText("\\cref", [target("eq:a"), target("eq:c")], defs, ["eq:a", "eq:c"]), "eqs. (1) and (2)");
 });
 

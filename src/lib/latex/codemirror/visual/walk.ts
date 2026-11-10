@@ -4,7 +4,7 @@ import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
-import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, restatableTheorem, stripTexComments } from "../../macros/numbering";
+import { CAPTION_OF, enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, restatableTheorem, stripTexComments } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
@@ -152,6 +152,8 @@ const TEXT_BLOCKS: Record<string, string> = {
   flushright: "cm-vis-flushright", abstract: "cm-vis-abstract",
   // The appendix package's environment: its lines fold away, its sections are lettered (numbering.ts).
   appendices: "cm-vis-appendices",
+  // `\begin{appendix}`, which runs `\appendix` (KOMA papers): the same.
+  appendix: "cm-vis-appendices",
   // `tabbing`: lines of text with tab stops (`\=`, `\>`), drawn as gaps (Featherweight Go's proofs).
   tabbing: "cm-vis-tabbing",
   // setspace's line spacing and pdflscape's rotated pages: layout, whose lines fold away (applied economics papers).
@@ -796,9 +798,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (alias?.alias && ALIAS_FAMILIES[name].test(alias.body)) command = alias.body + (command.endsWith("*") ? "*" : "");
           const optionals = node.getChildren("OptionalArgument").map((arg) => { const range = argumentInner(arg); return range ? read(state, range.from, range.to) : ""; });
           const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+          // cleveref's `\crefrange{a}{b}`: the grammar ends it after `{a}`; the chip takes the second key's group too.
+          let to = node.to;
+          if (/^\\[cC]refrange\*?$/.test(command)) {
+            const after = read(state, node.to, Math.min(doc.length, node.to + 300));
+            const open = /^\s*\{/.exec(after);
+            const second = open ? readGroup(after, open[0].length - 1) : null;
+            if (!second || !second.content.trim() || /[{}\\,]/.test(second.content) || keys.length !== 1) return false;
+            keys.push(second.content.trim());
+            to = node.to + second.end;
+            consumed.push([node.from, to]);
+          }
           emit({
-            kind: name === "Cite" ? "cite" : "ref", from: node.from, to: node.to, reveal: "strict",
-            replaces: [{ from: node.from, to: node.to, widget: new ChipWidget(name === "Cite" ? "cite" : "ref", command, keys, notes, node.to - node.from) }],
+            kind: name === "Cite" ? "cite" : "ref", from: node.from, to, reveal: "strict",
+            replaces: [{ from: node.from, to, widget: new ChipWidget(name === "Cite" ? "cite" : "ref", command, keys, notes, to - node.from) }],
           });
           return false;
         }
@@ -1172,6 +1185,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
+    // hyperref's `\hyperref[label]{text}`: the text, as a link to the label (Econometrica's "\hyperref[lemma:x]{identity
+    // lemma}", 117 of them); ⌘/Ctrl-click follows it. Its 4-argument form stays source.
+    if (text === "\\hyperref") {
+      const parts = commandArguments(node);
+      const label = parts.length === 2 && parts[0].optional ? argumentInner(parts[0].node) : null;
+      const body = label && !parts[1].optional ? argumentInner(parts[1].node) : null;
+      const key = label ? read(state, label.from, label.to).trim() : "";
+      if (body && key && body.to > body.from && !hasDirectError(node)) {
+        const to = parts[1].node.to;
+        emit({
+          kind: "style", from: node.from, to, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: body.from }, { from: body.to, to }] : [],
+          marks: [{ from: body.from, to: body.to, class: "cm-vis-link cm-vis-ref-link", attributes: { "data-ref": key, title: `${key} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}-click to follow)` } }],
+        });
+        return undefined;
+      }
+    }
     // fancyref's `\Fref{sec:x}` (the grammar knows only `\fref` as a reference): a reference chip.
     if (text === "\\Fref" || text === "\\fref") {
       const argument = commandArguments(node).find((arg) => !arg.optional);
@@ -1233,14 +1263,22 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const change = counterChange(state, node, enumCounter(lists[i].depth));
       if (change) { lists[i].count = change(lists[i].count); return undefined; }
     }
-    // `\footnotetext{…}`: the text of a note marked with `\footnotemark`, set as a footnote's (styled in both layers).
+    // `\footnotemark` (`[n]`): the note's number, as a footnote's mark; the `\footnotetext` after it has the note.
+    if (text === "\\footnotemark") {
+      const optional = read(state, ctrl.to, ctrl.to + 1) === "[" ? commandArguments(node).find((arg) => arg.optional) : null;
+      const to = optional ? optional.node.to : ctrl.to;
+      if (structural && !hasDirectError(node)) emit({ kind: "footnote", from: node.from, to, reveal: "touch", replaces: [{ from: node.from, to, widget: new FootnoteMarkWidget() }] });
+      return false;
+    }
+    // `\footnotetext{…}`: the text of a note marked with `\footnotemark`, set as a footnote's (styled in both layers),
+    // after its number.
     if (text === "\\footnotetext") {
       const argument = commandArguments(node).find((arg) => !arg.optional);
       const inner = argument && argumentInner(argument.node);
       if (inner && !hasDirectError(node)) {
         emit({
           kind: "footnote", from: node.from, to: argument.node.to, reveal: "touch",
-          replaces: structural ? [{ from: node.from, to: inner.from }, { from: inner.to, to: argument.node.to }] : [],
+          replaces: structural ? [{ from: node.from, to: inner.from, widget: new FootnoteMarkWidget() }, { from: inner.to, to: argument.node.to }] : [],
           marks: [{ from: inner.from, to: inner.to, class: "cm-vis-footnote" }],
         });
         return undefined;
@@ -1688,8 +1726,8 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (ref.to <= proseBefore && (command === "\\justify" || command === "\\justifying")) return false;
       // `\subfigure[caption]{…}`: a panel, its caption in brackets and its content checked as the float's.
       if (isSubFloatCommand(ref.node, readState)) { panel(ref.node); return false; }
-      // caption's `\captionof{table}{…}`, and a macro that writes the caption (`\mycap{…}`), are captions.
-      if (command === "\\captionof" || captionMacro(ref.node) !== null) { caption(ref.node); return false; }
+      // caption's `\captionof{table}{…}`, KOMA's `\captionabove{…}`, and a macro that writes the caption (`\mycap{…}`), are captions.
+      if (CAPTION_OF.test(command) || KOMA_CAPTION.test(command) || captionMacro(ref.node) !== null) { caption(ref.node); return false; }
       // `\resizebox{\linewidth}{!}{\input{fig}}`: a drawing, scaled.
       if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel, defs)) covered = false; return false; }
       // Layout with what it takes (`\vskip 0.15in`, `\vspace*{2pt}`, `\setlength\tabcolsep{3pt}`, `\aboverulesep = 2mm`,
@@ -1876,7 +1914,7 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
 }
 
 /** What ends a float's content: a grid, a drawing, an image, an included file or a caption. */
-const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox)\}|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\(?:input|include|includestandalone)\s*\{[^{}]*\}|\\caption(?:of)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
+const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox)\}|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\(?:input|include|includestandalone)\s*\{[^{}]*\}|\\caption(?:of|above|below|aboveof|belowof)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
 
 /**
  * Where a float's notes start: after its last grid, image, included file or caption. Text from there to the end is the
@@ -2047,7 +2085,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       if (name === "UnknownCommand") {
         const ctrl = ref.node.firstChild;
         const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
-        if (command === "\\captionof") {
+        if (CAPTION_OF.test(command)) {
           // `\captionof{table}{…}`: a caption of the kind it names; numbered at its panel, or where it is.
           const args = ref.node.getChildren("TextArgument");
           const type = args[0] && argumentInner(args[0]);
@@ -2058,6 +2096,18 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
             content.caption = read(state, text.from, text.to);
             content.captionPos = text.from;
             numberAt = panelRoot ? root.from : ref.from;
+          }
+          return false;
+        }
+        // KOMA-Script's `\captionabove{…}` and `\captionbelow[short]{…}`: the float's caption, as `\caption`'s (below).
+        if (KOMA_CAPTION.test(command)) {
+          for (let parent = ref.node.parent; parent && parent.from !== root.from; parent = parent.parent) if (parent.name === "FigureEnvironment" || parent.name === "TableEnvironment") return false;
+          const argument = ref.node.getChildren("TextArgument").at(-1);
+          const inner = argument && argumentInner(argument);
+          if (inner) {
+            content.caption = read(state, inner.from, inner.to);
+            content.captionPos = inner.from;
+            content.places.captions.push({ pos: ref.from, text: content.caption, captionPos: inner.from });
           }
           return false;
         }
