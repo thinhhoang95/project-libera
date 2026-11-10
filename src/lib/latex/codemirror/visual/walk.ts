@@ -5,7 +5,7 @@ import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
-import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
+import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
@@ -790,6 +790,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       for (const part of content.sources ?? []) part.offset -= range.from;
       // A caption written out (not by a macro) is edited in place.
       if (content.caption && read(state, content.captionPos, content.captionPos + content.caption.length) === content.caption) content.captionOffset = content.captionPos - range.from;
+      if (content.algorithm?.offset !== undefined) content.algorithm = { ...content.algorithm, offset: content.algorithm.offset - range.from };
     }
     figure.length = range.to - range.from;
     emit({ kind: "figure", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(figure) }] });
@@ -2932,16 +2933,9 @@ function algorithm2eSpec(node: SyntaxNode, state: EditorState, defs: LatexDefini
   const env = environmentName(node, (from, to) => read(state, from, to));
   const content = node.getChild("Content");
   if ((env !== "algorithm" && env !== "algorithm*") || !content) return null;
-  const body = read(state, content.from, content.to);
-  if (/\\begin\s*\{algorithmic\}/.test(body)) return null;
-  const options = defs.packageOptions.get("algorithm2e") ?? [];
-  // Keywords declared before it (`\SetKwInOut{Input}{Input}` in the preamble) are read first; the document's statement
-  // macros (`\PyCode{…}`) are read as what they write.
-  let declarations = "";
-  for (const name of defs.macros.keys()) { const macro = macroAt(defs, name, node.from); if (macro?.package === "algorithm2e") declarations += macro.body; }
-  const expand = (source: string) => expandLatexMacroUse(source, defs, { mode: "text", pos: node.from });
-  const algorithm = parseAlgorithm2e(declarations + body, { numbered: options.includes("linesnumbered"), ends: !options.some((option) => option === "vlined" || option === "noend") }, expand);
-  return algorithm && { algorithm, ruled: options.some((option) => option === "ruled" || option === "algoruled") };
+  const read2e = readAlgorithm2eBody(read(state, content.from, content.to), defs, node.from);
+  if (read2e) read2e.algorithm.offset = content.from;
+  return read2e;
 }
 
 /** An `algorithmic` environment's lines, or null when they cannot be read. The document's macros may write statements. */
@@ -2949,8 +2943,9 @@ function algorithmicSpec(node: SyntaxNode, state: EditorState, defs?: LatexDefin
   const content = node.getChild("Content");
   const options = node.getChild("BeginEnv")?.getChild("OptionalArgument");
   const range = options && argumentInner(options);
-  const expand = defs?.macros.size ? (source: string) => expandLatexMacroUse(source, defs, { mode: "text", pos: node.from }) : undefined;
-  return content ? parseAlgorithmic(read(state, content.from, content.to), range ? read(state, range.from, range.to) : null, expand) : null;
+  const spec = content ? readAlgorithmicBody(read(state, content.from, content.to), range ? read(state, range.from, range.to) : null, defs, node.from) : null;
+  if (spec) spec.offset = content!.from;
+  return spec;
 }
 
 /** Where each `\bibitem` of the `thebibliography` at `envFrom` is (outside comments), per document version. */

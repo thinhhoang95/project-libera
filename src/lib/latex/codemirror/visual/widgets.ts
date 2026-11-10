@@ -13,7 +13,7 @@ import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./re
 import { cssColor } from "./symbols";
 import { editableLines, type FrontDetailsView, type FrontLineView } from "./front-matter";
 import { columnSpans, parseTabular, type TableModel, type TableRow, type TableSettings } from "./table-model";
-import type { AlgorithmSpec } from "./algorithm";
+import { algorithmLineNumbers, type AlgorithmSpec } from "./algorithm";
 import { attachDrawingPreview } from "./drawing-preview";
 
 /* The widgets the Visual mode draws in place of LaTeX constructs
@@ -719,18 +719,86 @@ function floatNames(doc: EditorView["state"]["doc"]) {
   return names;
 }
 
-/** The lines of an algorithm, numbered and indented as the algorithmic package sets them. */
-function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
-  const list = el("div", "cm-vis-algorithm");
-  let count = 0;
-  for (const line of spec.lines) {
+/** An algorithm's lines as drawn: the spec they are read from, and where its body starts in the document now. */
+export type AlgorithmElement = HTMLElement & { liberaAlgorithm?: { spec: AlgorithmSpec; base: () => number | null } };
+
+export type AlgorithmHooks = {
+  /** Opens line `line`'s LaTeX in an editor over it; false when it cannot be edited. */
+  edit: (view: EditorView, list: AlgorithmElement, line: number) => boolean;
+  /** Insert and delete commands for a line (right-click). */
+  menu: (view: EditorView, event: MouseEvent, list: AlgorithmElement, line: number) => void;
+  /** Opens an algorithm's caption (`caption` is its LaTeX, in the float at `range`) in an editor over `text`. */
+  caption: (view: EditorView, text: HTMLElement, caption: string, range: () => { from: number; to: number } | null) => boolean;
+  /** A redrawn algorithm: continues an edit that was open in the one it replaces. */
+  adopt?: (view: EditorView, list: AlgorithmElement) => void;
+};
+let algorithmHooks: AlgorithmHooks | null = null;
+/** Set by algorithm-edit.ts. */
+export function setAlgorithmHooks(hooks: AlgorithmHooks | null) { algorithmHooks = hooks; }
+
+const algorithmEditable = (view: EditorView) => !!algorithmHooks && !view.state.readOnly && view.state.facet(visualConfig).editable();
+
+/**
+ * A click on an algorithm's line or caption: edits the line's (or caption's) LaTeX in place, or with Alt shows the
+ * line's source. False when the click is not one of these (the float is then selected as a whole).
+ */
+function algorithmClick(view: EditorView, event: MouseEvent) {
+  const target = event.target as HTMLElement;
+  if (target.closest(".cm-vis-title-editor, .cm-vis-algorithm-editor")) return true;
+  const row = target.closest<HTMLElement>("[data-algorithm-line]");
+  const list = row?.closest<AlgorithmElement>(".cm-vis-algorithm");
+  const algorithm = list?.liberaAlgorithm;
+  if (row && list && algorithm) {
+    const index = Number(row.dataset.algorithmLine);
+    const source = algorithm.spec.lines[index]?.source;
+    if (!source) return false;
+    event.preventDefault();
+    if (!event.altKey && source.exact && algorithmEditable(view) && algorithmHooks!.edit(view, list, index)) return true;
+    const base = algorithm.base();
+    if (base !== null) revealSourceAt(view, base + source.from, base + source.to);
+    return true;
+  }
+  const caption = target.closest<HTMLElement & { liberaCaption?: { caption: string; range: () => { from: number; to: number } | null } }>("[data-algorithm-caption]");
+  if (caption?.liberaCaption && !event.altKey && algorithmEditable(view)) {
+    event.preventDefault();
+    return algorithmHooks!.caption(view, caption, caption.liberaCaption.caption, caption.liberaCaption.range);
+  }
+  return false;
+}
+
+/** The lines of an algorithm, numbered and indented as the algorithmic package sets them; `base` is where its body starts. */
+function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext, view?: EditorView, base?: () => number | null) {
+  const list = el("div", "cm-vis-algorithm") as AlgorithmElement;
+  if (view && base && spec.offset !== undefined) {
+    list.liberaAlgorithm = { spec, base };
+    list.addEventListener("contextmenu", (event) => {
+      const row = (event.target as HTMLElement).closest<HTMLElement>("[data-algorithm-line]");
+      if (!row || !algorithmEditable(view)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      algorithmHooks!.menu(view, event, list, Number(row.dataset.algorithmLine));
+    });
+    queueMicrotask(() => { if (list.isConnected) algorithmHooks?.adopt?.(view, list); });
+  }
+  const numbers = algorithmLineNumbers(spec);
+  spec.lines.forEach((line, index) => {
     // `\\\hrulefill` between statements (GaLore's): a rule across the lines.
-    if (line.rule) { list.append(el("div", `cm-vis-algorithm-rule${line.rule === "dotted" ? " cm-vis-algorithm-rule-dotted" : ""}`)); continue; }
+    if (line.rule) { list.append(el("div", `cm-vis-algorithm-rule${line.rule === "dotted" ? " cm-vis-algorithm-rule-dotted" : ""}`)); return; }
     const row = el("div", "cm-vis-algorithm-line");
+    row.dataset.algorithmLine = String(index);
+    if (line.source) row.classList.add(line.source.exact ? "cm-vis-algorithm-editable" : "cm-vis-algorithm-sourced");
     row.style.setProperty("--vis-algorithm-depth", String(line.depth));
     const number = el("span", "cm-vis-algorithm-number");
-    if (line.numbered) { count++; if (spec.numberEvery && count % spec.numberEvery === 0) number.textContent = `${count}:`; }
+    const count = numbers[index];
+    if (count !== null && spec.numberEvery && count % spec.numberEvery === 0) number.textContent = `${count}:`;
     const body = el("span", "cm-vis-algorithm-body");
+    // A statement the reader does not know: its LaTeX, in the algorithm.
+    if (line.raw) {
+      body.append(el("code", "cm-vis-raw cm-vis-algorithm-raw", line.text));
+      row.append(number, body);
+      list.append(row);
+      return;
+    }
     if (line.lead) body.append(el("strong", "cm-vis-algorithm-keyword", line.lead), " ");
     body.append(renderLatexFragment(line.text, context));
     if (line.trail) body.append(" ", el("strong", "cm-vis-algorithm-keyword", line.trail));
@@ -741,7 +809,7 @@ function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
     }
     row.append(number, body);
     list.append(row);
-  }
+  });
   return list;
 }
 
@@ -908,7 +976,11 @@ export class FigureWidget extends VisualWidget {
         body.append(grid);
       }
       if (content.algorithm) {
-        const lines = renderAlgorithm(content.algorithm, fragmentContext(view, content.captionPos));
+        const offset = content.algorithm.offset;
+        const lines = renderAlgorithm(content.algorithm, fragmentContext(view, content.captionPos), view, () => {
+          const pos = start();
+          return pos === null || offset === undefined ? null : pos + offset;
+        });
         if (content.intro) {
           // The prose and the lines, one above the other (the body lays its items out in a row).
           const block = el("div", "cm-vis-algorithm-block");
@@ -937,6 +1009,11 @@ export class FigureWidget extends VisualWidget {
           event.preventDefault();
           event.stopPropagation();
         });
+      }
+      // An algorithm's caption is edited in place (algorithm-edit.ts).
+      if (content.kind === "algorithm" && !content.sub) {
+        text.dataset.algorithmCaption = "true";
+        Object.assign(text, { liberaCaption: { caption: content.caption, range: () => { const pos = start(); return pos === null ? null : { from: pos, to: pos + spec.length }; } } });
       }
       caption.append(label, text);
       captions.push({ content, label, text });
@@ -980,6 +1057,7 @@ export class FigureWidget extends VisualWidget {
     });
     dom.addEventListener("mousedown", (event) => {
       if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true], .cm-vis-float-editor")) return;
+      if (event.detail < 2 && algorithmClick(view, event)) return;
       event.preventDefault();
       const from = widgetPos(view, dom);
       if (from === null) return;

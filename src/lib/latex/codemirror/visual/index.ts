@@ -6,6 +6,7 @@ import { pasteHtmlAsLatex } from "./paste";
 import { closeTableSessions, installTableEditor } from "./table-edit";
 import { closeTitleSessions, installTitleEditor } from "./title-edit";
 import { closeFloatSessions, installFloatEditor } from "./float-edit";
+import { closeAlgorithmSessions, installAlgorithmEditor } from "./algorithm-edit";
 import { visualConfig, visualStateFields, type VisualConfig } from "./model";
 import { linkClicks, numberingPlugin, pendingFiller, remoteOutlines } from "./plugins";
 import { rebuildVisualEffect, structuralField } from "./structural";
@@ -36,6 +37,7 @@ const widgetEditorLifecycle = ViewPlugin.define((view) => ({
     closeTableSessions(view);
     closeTitleSessions(view);
     closeFloatSessions(view);
+    closeAlgorithmSessions(view);
   },
 }));
 
@@ -62,6 +64,7 @@ export function latexVisualMode(config: Partial<VisualConfig>): Extension {
     installTableEditor(),
     installTitleEditor(),
     installFloatEditor(),
+    installAlgorithmEditor(),
     EditorView.editorAttributes.of({ class: "cm-latex-visual" }),
     EditorView.contentAttributes.of({ "aria-roledescription": "LaTeX visual editor" }),
   ];
