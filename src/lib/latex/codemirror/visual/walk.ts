@@ -236,30 +236,60 @@ function counterChange(state: EditorState, node: SyntaxNode, counter: string | n
   return command === "\\setcounter" ? () => amount : (count) => count + amount;
 }
 
+/** Per parse, a list's `\item`s and changes to its counter, in order: where each ends, and the count after it. */
+const itemCounts = new WeakMap<object, Map<string, { defs: LatexDefinitions; ends: number[]; counts: number[] }>>();
+
 /** The item count of `list` (not of lists inside it) at `pos`: its `\item`s before it, and changes to its counter. */
 function itemsBefore(list: SyntaxNode, pos: number, state: EditorState, counter: string | null, defs: LatexDefinitions) {
-  let count = 0;
+  // A long list is built in pieces, each asking for the count where it starts: the list is read once per parse,
+  // not once per piece (an `enumerate` of 10,000 items took seconds to build).
+  let root = list;
+  while (root.parent) root = root.parent!;
+  let lists = root.tree ? itemCounts.get(root.tree) : undefined;
+  if (root.tree && !lists) itemCounts.set(root.tree, (lists = new Map()));
+  const key = `${list.from}:${list.to}:${counter}`;
+  let read = lists?.get(key);
+  if (!read || read.defs !== defs) {
+    read = { defs, ...readItemCounts(list, state, counter, defs) };
+    lists?.set(key, read);
+  }
+  // They do not overlap: those that end by `pos` come first.
+  let low = 0;
+  for (let high = read.ends.length; low < high;) {
+    const mid = (low + high) >> 1;
+    if (read.ends[mid] <= pos) low = mid + 1;
+    else high = mid;
+  }
+  return read.counts[low];
+}
+
+function readItemCounts(list: SyntaxNode, state: EditorState, counter: string | null, defs: LatexDefinitions) {
+  const ends: number[] = [];
+  const counts = [0];
   const content = list.getChild("Content");
-  if (!content) return 0;
+  if (!content) return { ends, counts };
+  const add = (end: number, change: (count: number) => number) => { ends.push(end); counts.push(change(counts[counts.length - 1])); };
   const cursor = content.cursor();
   const itemMacros = itemMacroNames(defs);
+  // As the walk counts them when it draws the list whole: not in an inner list of the document's own, nor in `\iffalse … \fi`.
+  const disabled = state.field(disabledField, false) ?? [];
   const walk = (): void => {
     do {
-      if (cursor.from >= pos) return;
       if (cursor.name === "ListEnvironment") continue;
-      if (cursor.name === "Item") { if (cursor.to <= pos && !cursor.node.getChild("OptionalArgument")) count++; continue; }
+      if (cursor.name === "Environment" && defs.lists?.has(environmentName(cursor.node, (from, to) => state.doc.sliceString(from, to)) ?? "")) continue;
+      if (cursor.name === "Item") { if (!cursor.node.getChild("OptionalArgument") && !disabled.some((region) => region.from <= cursor.from && cursor.from < region.to)) add(cursor.to, (count) => count + 1); continue; }
       if (cursor.name === "UnknownCommand") {
         // `\step` for `\item` counts as an item.
         const ctrl = cursor.node.firstChild;
-        if (itemMacros.size && ctrl && cursor.to <= pos && itemMacros.has(state.doc.sliceString(ctrl.from + 1, ctrl.to))) { count++; continue; }
-        const change = cursor.to <= pos ? counterChange(state, cursor.node, counter) : null;
-        if (change) { count = change(count); continue; }
+        if (itemMacros.size && ctrl && itemMacros.has(state.doc.sliceString(ctrl.from + 1, ctrl.to))) { add(cursor.to, (count) => count + 1); continue; }
+        const change = counterChange(state, cursor.node, counter);
+        if (change) { add(cursor.to, change); continue; }
       }
       if (cursor.firstChild()) { walk(); cursor.parent(); }
     } while (cursor.nextSibling());
   };
   if (cursor.firstChild()) walk();
-  return count;
+  return { ends, counts };
 }
 
 /** The first `\label{…}` after `pos` on the same line, with only spaces between, as a node. */
@@ -656,12 +686,17 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
 
       if (!starts) {
         // Containers that began before the walked range: keep list context for the items inside.
-        if (name === "ListEnvironment") {
+        // So for enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as drawList draws them.
+        const custom = name === "Environment" ? defs.lists?.get(environmentName(node, readNode) ?? "") : undefined;
+        if (name === "ListEnvironment" || custom) {
           const formed = wellFormedEnvironment(node, state);
           if (formed) {
-            const list = listContext(node, formed.name, lists, state, 0);
+            const list = listContext(node, custom ?? formed.name, lists, state, 0);
+            if (!list.template && custom) list.template = customListLabel(defs, formed.name, list.depth);
             list.count = itemsBefore(node, from, state, list.variant === "number" ? enumCounter(list.depth) : null, defs);
             lists.push(list);
+            // A long list is built in pieces (structural.ts): its `\end` line is drawn by the piece it is in.
+            if (structural && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "list-end");
           }
         }
         return;
@@ -968,7 +1003,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     lists.push(list);
     if (structural) {
       collapseLine(formed.begin, "list-begin");
-      collapseLine(formed.end, "list-end");
+      // Past the walked range, the piece with the `\end` line draws it (see above): a list of hundreds of items is not walked whole.
+      if (formed.end.from < to) collapseLine(formed.end, "list-end");
     }
     if (formed.content) {
       const first = doc.lineAt(formed.begin.to).number + 1;

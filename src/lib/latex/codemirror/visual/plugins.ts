@@ -87,6 +87,9 @@ export const numberingPlugin = ViewPlugin.fromClass(class {
 /** Builds the pending pieces of a long document while idle, the ones on screen first. */
 export const pendingFiller = ViewPlugin.fromClass(class {
   private handle: number | null = null;
+  /** A piece on screen queued for right after this update, before the browser paints. */
+  private soon = false;
+  private destroyed = false;
   constructor(readonly view: EditorView) { this.maybeSchedule(); }
   update(update: ViewUpdate) {
     // A piece on screen that is not built yet goes first, without waiting for idle time.
@@ -100,21 +103,28 @@ export const pendingFiller = ViewPlugin.fromClass(class {
     const visible = pending.find((range) => range.from < bottom && range.to > top);
     if (visible) {
       const from = Math.max(visible.from, top - CHUNK / 2);
-      return { from, to: Math.min(visible.to, from + CHUNK) };
+      return { from, to: Math.min(visible.to, from + CHUNK), visible: true };
     }
     const after = pending.find((range) => range.from >= bottom) ?? pending[0];
-    return { from: after.from, to: Math.min(after.to, after.from + CHUNK) };
+    return { from: after.from, to: Math.min(after.to, after.from + CHUNK), visible: false };
   }
   private maybeSchedule() {
-    if (this.handle !== null) return;
-    if (!this.next()) return;
-    this.handle = requestIdle(() => {
-      this.handle = null;
-      const chunk = this.next();
-      if (chunk) this.view.dispatch({ effects: buildPendingEffect.of(chunk) });
-    });
+    const chunk = this.next();
+    if (!chunk) return;
+    // On screen and parsed: built before the browser paints, so a long file opens drawn where it is shown (each
+    // build is a time slice, and each one builds something: what the parser has reached). The rest waits for idle time.
+    if (chunk.visible && chunk.from < syntaxTree(this.view.state).length) {
+      if (!this.soon) { this.soon = true; queueMicrotask(() => { this.soon = false; this.build(); }); }
+      return;
+    }
+    if (this.handle === null) this.handle = requestIdle(() => { this.handle = null; this.build(); });
   }
-  destroy() { if (this.handle !== null) cancelIdle(this.handle); }
+  private build() {
+    if (this.destroyed) return;
+    const chunk = this.next();
+    if (chunk) this.view.dispatch({ effects: buildPendingEffect.of({ from: chunk.from, to: chunk.to }) });
+  }
+  destroy() { this.destroyed = true; if (this.handle !== null) cancelIdle(this.handle); }
 });
 
 /** ⌘/Ctrl-click on a link opens it. */

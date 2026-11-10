@@ -40,12 +40,25 @@ export type StructuralState = {
   treeLength: number;
 };
 
-export const LARGE_DOCUMENT = 60_000;
+/**
+ * Longer documents are built around the cursor first, the rest in pieces while idle. A 23 KB chapter dense with
+ * formulas took 36 ms to build whole (1709.01953's `path-sgd.tex`), more than a frame or two.
+ */
+export const LARGE_DOCUMENT = 12_000;
 export const CHUNK = 8_000;
-/** How far the first build of a long document reaches on each side of the cursor. */
-export const FIRST_BUILD_RADIUS = 8_000;
+/** How far the first build of a long document reaches before and after the cursor: a screen or two around it. */
+export const FIRST_BUILD_BEFORE = 4_000;
+export const FIRST_BUILD_AFTER = 6_000;
 const SYNC_BUDGET = 40_000;
+/** How far an edit is followed forward at once; the rest is dropped and built in pieces. */
+const FOLLOW_BUDGET = 10_000;
 const WINDOW = 2_000;
+/**
+ * A pending piece is built in parts of PIECE characters until SLICE_MS have passed: a CHUNK of formulas
+ * (2403.14606's chapters) took 15–30 ms with KaTeX's cache cold.
+ */
+const PIECE = 2_000;
+const SLICE_MS = 8;
 
 let nextConstructId = 1;
 
@@ -157,19 +170,25 @@ function overlapping(extents: RangeSet<ConstructMark>, from: number, to: number)
   return { ids, from: low, to: high };
 }
 
-/** Widens [from, to] to whole lines and to the constructs (old and new) around its edges. */
-function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>, from: number, to: number) {
+/**
+ * Widens [from, to] to whole lines and to the constructs (old and new) around its edges. `wholeLists` is false
+ * for a piece of a first or pending build: a list is drawn by its lines (the walk knows how many items come before
+ * them), so a list of hundreds of items is built in pieces. An edit still rebuilds the whole list, whose numbers
+ * it may change.
+ */
+function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>, from: number, to: number, wholeLists = true) {
   let range = lineBounds(state, from, to);
   for (let round = 0; round < 8; round++) {
     let { from: low, to: high } = overlapping(extents, range.from, range.to);
     for (const [pos, side] of [[range.from, 1], [range.to, -1]] as const) {
       for (let node: ReturnType<Tree["resolveInner"]> | null = tree.resolveInner(pos, side); node; node = node.parent) {
-        let rendered = WIDEN.has(node.name);
+        let rendered = WIDEN.has(node.name) && (wholeLists || node.name !== "ListEnvironment");
         if (!rendered && node.name === "Environment") {
           const name = environmentName(node, (start, end) => state.doc.sliceString(start, end));
           const defs = visualDefinitions(state);
-          // Floats and tabulars the grammar does not name (`algorithm`, `table*`, `tabular*`) are drawn whole too.
-          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name));
+          // Floats and tabulars the grammar does not name (`algorithm`, `table*`, `tabular*`) are drawn whole too;
+          // so are enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as the lists the grammar knows.
+          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name) || (wholeLists && !!defs.lists?.has(name)));
         }
         // A use of the document's macros is drawn from its arguments: an edit in one (a brace that now closes it) redraws it.
         if (!rendered && node.name === "UnknownCommand") {
@@ -290,7 +309,9 @@ function rebuild(state: EditorState, tree: Tree, working: Working, from: number,
     working.pending = addPending(working.pending, { from: Math.min(lines.from, from), to: Math.max(lines.to, to, from) });
     return;
   }
-  let range = widen(state, tree, working.extents, from, Math.min(to, available));
+  // A first or pending build walks a long list in pieces; an edit rebuilds it whole (see widen).
+  const wholeLists = !!edit;
+  let range = widen(state, tree, working.extents, from, Math.min(to, available), wholeLists);
   // The synchronous budget covers an edit's first walk too.
   const capped = edit ? capEdit(state, working, range, from, Math.min(to, available), stabilize) : null;
   if (capped) range = capped.range;
@@ -298,7 +319,7 @@ function rebuild(state: EditorState, tree: Tree, working: Working, from: number,
   // New constructs may run past the range (a new `$` pairs with a later one): walk the whole widened range
   // again, so what the first walk covered (a macro's arguments) is known to the rest.
   for (let round = 0; built.maxTo > range.to && round < 16; round++) {
-    const extra = widen(state, tree, working.extents, range.from, built.maxTo);
+    const extra = widen(state, tree, working.extents, range.from, built.maxTo, wholeLists);
     range = { from: Math.min(range.from, extra.from), to: Math.max(range.to, extra.to) };
     built = walk(state, tree, range.from, range.to, preambleEnd, preambleOpen);
   }
@@ -316,26 +337,51 @@ function rebuild(state: EditorState, tree: Tree, working: Working, from: number,
   let at = capped ? capped.followFrom : range.to;
   let spent = range.to - range.from;
   while (at < available) {
-    if (working.pending.some((pending) => pending.from <= at && pending.to > at)) break;
+    // A pending piece is built later, without following anything: follow on after it. Stopping there left what the
+    // edit changed further on as it was (`\begin{enumerate}` becoming `\beqbegin{enumerate}` with the parser behind:
+    // the old `\end{document}` line stayed folded).
+    const skip = working.pending.find((pending) => pending.from <= at && pending.to > at);
+    if (skip) { at = skip.to; continue; }
     const window = lineBounds(state, at + 1, Math.min(available, at + WINDOW));
     if (window.to <= at) break;
     const next = walk(state, tree, window.from, window.to, preambleEnd, preambleOpen);
     // Agreement needs the same constructs and the same syntax around the window's end in the old and new
     // trees: two windows of plain text agree on constructs even when the new one has become verbatim.
     if (sameSignatures(next, working.extents, window.from, window.to) && sameContext(state, tree, window.to, edit)) break;
-    if (spent > SYNC_BUDGET) {
-      // Too far to follow now: drop what may be stale and build it in pieces.
+    if (spent > FOLLOW_BUDGET) {
+      // Too far to follow now: drop what may be stale and build it in pieces. An unclosed `{` typed in a long file
+      // changes the syntax to its end: following it all costs ~10 ms a keystroke; a screen below the edit is enough.
       const { ids } = overlapping(working.extents, at, state.doc.length);
       working.decorations = working.decorations.update({ filter: (_f, _t, value) => !ids.has(value.spec.cid), filterFrom: at, filterTo: state.doc.length });
       working.extents = working.extents.update({ filter: (_f, _t, value) => !ids.has(value.id), filterFrom: at, filterTo: state.doc.length });
       working.pending = addPending(working.pending, { from: at, to: state.doc.length });
       break;
     }
-    const widened = widen(state, tree, working.extents, window.from, Math.max(window.to, next.maxTo));
-    const fresh = walk(state, tree, widened.from, widened.to, preambleEnd, preambleOpen);
+    const widened = widen(state, tree, working.extents, window.from, Math.max(window.to, next.maxTo), wholeLists);
+    // Nothing to widen: the walk just made is the one to apply.
+    const fresh = widened.from === window.from && widened.to === window.to && next.maxTo <= window.to ? next : walk(state, tree, widened.from, widened.to, preambleEnd, preambleOpen);
     apply(widened.from, widened.to, fresh);
     spent += widened.to - widened.from;
     at = Math.max(widened.to, fresh.maxTo);
+  }
+}
+
+/**
+ * Builds what is pending in [from, to] in pieces of PIECE characters until SLICE_MS have passed (or the next piece,
+ * at the pace of the last, would pass them): the rest stays pending for the next idle slice.
+ */
+function buildPending(state: EditorState, tree: Tree, working: Working, from: number, to: number, preambleEnd: number, preambleOpen: boolean) {
+  const started = performance.now();
+  for (let at = from; at < to;) {
+    const next = working.pending.find((range) => range.to > at && range.from < to);
+    if (!next) break;
+    const start = Math.max(at, next.from);
+    const end = Math.min(to, next.to, start + PIECE);
+    const before = performance.now();
+    rebuild(state, tree, working, start, end, preambleEnd, preambleOpen, false);
+    at = end;
+    const now = performance.now();
+    if (now - started + (now - before) > SLICE_MS) break;
   }
 }
 
@@ -357,9 +403,10 @@ function initialBuild(state: EditorState, preambleEnd: number, preambleOpen: boo
     rebuild(state, tree, working, 0, length, preambleEnd, preambleOpen, false);
     return { ...working, treeLength: tree.length };
   }
-  const head = state.selection.main.head;
-  const from = Math.max(0, head - FIRST_BUILD_RADIUS);
-  const to = Math.min(length, head + FIRST_BUILD_RADIUS);
+  // A cursor in the folded preamble (a file just opened) sees the body's start.
+  const head = Math.max(state.selection.main.head, preambleEnd);
+  const from = Math.max(0, head - FIRST_BUILD_BEFORE);
+  const to = Math.min(length, head + FIRST_BUILD_AFTER);
   const tree = ensureSyntaxTree(state, to, 200) ?? syntaxTree(state);
   working.pending = [{ from: 0, to: length }];
   // The preamble block sits at the top: build it with the first piece.
@@ -478,7 +525,7 @@ export const structuralField = StateField.define<StructuralState>({
         for (const pending of working.pending.filter((range) => range.from < tree.length && range.to > value.treeLength)) {
           const from = Math.max(pending.from, value.treeLength - 1);
           const to = Math.min(pending.to, tree.length, from + CHUNK);
-          if (to > from) rebuild(state, tree, working, from, to, preambleEnd, preambleOpen, false);
+          if (to > from) buildPending(state, tree, working, from, to, preambleEnd, preambleOpen);
         }
         const frontier = Math.max(0, Math.min(value.treeLength, state.doc.length));
         if (frontier < state.doc.length && !working.pending.some((range) => range.from <= frontier && range.to > frontier)) {
@@ -488,7 +535,7 @@ export const structuralField = StateField.define<StructuralState>({
       for (const effect of tr.effects) {
         if (effect.is(buildPendingEffect)) {
           const { from, to } = effect.value;
-          if (working.pending.some((range) => range.from < to && range.to > from)) rebuild(state, tree, working, from, to, preambleEnd, preambleOpen, false);
+          buildPending(state, tree, working, from, to, preambleEnd, preambleOpen);
         }
       }
     }
