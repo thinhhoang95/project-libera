@@ -1,9 +1,52 @@
 import "./setup.cjs";
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { JSDOM } from "jsdom";
+import { ensureSyntaxTree } from "@codemirror/language";
+import { EditorState, type Extension } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-language";
 import { latexParser as parser } from "../../src/lib/latex/codemirror/latex-parser";
+import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
+import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
+import { columnSpans } from "../../src/lib/latex/codemirror/visual/table-model";
 import { macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 import { computeLatexNumbering, numberingEntryAt } from "../../src/lib/latex/macros/numbering";
+
+const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
+for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
+for (const key of ["getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const) Object.defineProperty(globalThis, key, { value: (dom.window[key] as (...args: never[]) => unknown).bind(dom.window), configurable: true });
+after(() => dom.window.close());
+
+/** The Visual mode's state for `doc`, with every pending piece built. */
+function visualState(doc: string, extra: Extension[] = []) {
+  const base = EditorState.create({ doc, extensions: [latexLanguageSupport("main.tex", "tree")] });
+  ensureSyntaxTree(base, doc.length, 5000);
+  let state = EditorState.create({ doc, selection: { anchor: doc.length }, extensions: [latexLanguageSupport("main.tex", "tree"), latexVisualState(), latexVisualMode({ documentPath: "nb/main.tex" }), ...extra] });
+  for (let guard = 0; state.field(structuralField).pending.length && guard < 200; guard++) {
+    const next = state.field(structuralField).pending[0];
+    state = state.update({ effects: buildPendingEffect.of({ from: next.from, to: Math.min(next.to, next.from + CHUNK) }) }).state;
+  }
+  return state;
+}
+
+/** Constructs as "kind:from:to": what the structural layer has built. */
+function constructs(state: EditorState) {
+  const list: string[] = [];
+  state.field(structuralField).extents.between(0, state.doc.length, (from, to, mark) => { list.push(`${mark.kind}:${from}:${to}`); });
+  return list;
+}
+
+/** The text a mounted Visual mode shows for `doc` (widgets' text included). */
+function visibleText(doc: string) {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  const view = new EditorView({ state: visualState(doc), parent });
+  const text = view.contentDOM.textContent ?? "";
+  view.destroy();
+  parent.remove();
+  return text;
+}
 
 /* Regressions found by opening real papers in the Visual mode (arXiv sources:
  * Callaway & Sant'Anna 1803.09015, Borusyak et al. 2108.12419, Featherweight Go
@@ -138,4 +181,28 @@ test("a class that defines \\chapter (a custom class built on amsbook) numbers s
   const chapter = String.raw`\chapter{Social choice}\section{Social choice functions}`;
   const continued = number(chapter, { start: { counters: { chapter: 1, section: 7 }, appendix: false } });
   assert.equal(numberingEntryAt(continued, chapter.indexOf("\\section"), "section")?.number, "2.1");
+});
+
+test("a figure holding a code listing or \\verb text is not replaced by a figure widget, which would hide the code", () => {
+  for (const listing of [
+    "\\begin{lstlisting}\nfunc main() { println(42) }\n\\end{lstlisting}",
+    "\\begin{verbatim}\nfunc main() { println(42) }\n\\end{verbatim}",
+    "\\verb|func main() { println(42) }|",
+  ]) {
+    const doc = `\\begin{document}\n\\begin{figure}\n${listing}\n\\caption{Example}\n\\end{figure}\n\\end{document}\n`;
+    assert.equal(constructs(visualState(doc)).some((item) => item.startsWith("figure:")), false, listing);
+    assert.match(visibleText(doc), /println\(42\)/);
+  }
+  // A figure of an image and a caption is still drawn as one.
+  const image = "\\begin{document}\n\\begin{figure}\n\\includegraphics{plot.png}\n\\caption{Example}\n\\end{figure}\n\\end{document}\n";
+  assert.equal(constructs(visualState(image)).some((item) => item.startsWith("figure:")), true);
+});
+
+test("a repeated column specification is bounded by its count, even when it repeats nothing", () => {
+  const started = performance.now();
+  assert.equal(columnSpans("*{100000000000000000000}{}"), null);
+  assert.equal(columnSpans("*{10000000}{}"), null);
+  assert.ok(performance.now() - started < 50);
+  assert.deepEqual(columnSpans("*{3}{c}")?.map((column) => column.letter), ["c", "c", "c"]);
+  assert.deepEqual(columnSpans("l*{2}{}r")?.map((column) => column.letter), ["l", "r"]);
 });

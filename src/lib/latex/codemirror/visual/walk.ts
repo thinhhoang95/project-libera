@@ -71,6 +71,8 @@ const SKIPPED = new Set([
   "Comment", "VerbatimEnvironment", "TikzPictureEnvironment", "VerbCommand", "LstInlineCommand", "Csname",
   "NewCommand", "RenewCommand", "NewEnvironment", "RenewEnvironment", "Def", "Let", "NewTheoremCommand", "TheoremStyleCommand",
 ]);
+/** Skipped nodes whose text the PDF shows (listings, `\verb`): never part of what a widget replaces without drawing it. */
+const VISIBLE_SKIPPED = new Set(["VerbatimEnvironment", "VerbCommand", "LstInlineCommand", "Csname"]);
 /** Definition nodes of the grammar, which may end before the definition does (`\newcommand*{\a}{…}`). */
 const DEFINITION_NODES = new Set(["NewCommand", "RenewCommand", "NewEnvironment", "RenewEnvironment", "Def", "Let", "NewTheoremCommand", "TheoremStyleCommand"]);
 /** Built-in commands drawn by the walk, which a document may redefine. */
@@ -1319,6 +1321,8 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     if (!covered) return false;
     const name = ref.name;
     if (ref.type.isError) { covered = false; return false; }
+    // A listing or `\verb` text is visible content the figure widget cannot draw: replacing the float would hide it.
+    if (VISIBLE_SKIPPED.has(name)) { covered = false; return false; }
     if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "BlankLine" || name === "LineBreak" || name === "Tilde") return false;
     if (name === "IncludeGraphics" || name === "Label" || name === "TabularEnvironment" || name === "SetLengthCommand" || name === "Centering") return false;
     if (name === "Caption") { caption(ref.node); return false; }

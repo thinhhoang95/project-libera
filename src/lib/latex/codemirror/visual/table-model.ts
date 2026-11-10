@@ -105,8 +105,10 @@ export function columnSpans(spec: string, depth = 0, types?: ColumnTypes): Array
       const bodyEnd = countEnd < 0 ? -1 : matchingBrace(spec, countEnd + 1);
       if (countEnd < 0 || bodyEnd < 0) return null;
       const count = Number(spec.slice(i + 2, countEnd).trim());
+      // The count is bounded on its own: `*{100000000000000000000}{}` repeats nothing, but the loop would still run.
+      if (!Number.isSafeInteger(count) || count < 0 || count > MAX_COLUMNS) return null;
       const inner = columnSpans(spec.slice(countEnd + 2, bodyEnd), depth + 1, types);
-      if (!Number.isInteger(count) || count < 0 || !inner || columns.length + count * inner.length > MAX_COLUMNS) return null;
+      if (!inner || columns.length + count * inner.length > MAX_COLUMNS) return null;
       for (let n = 0; n < count; n++) for (const column of inner) columns.push({ letter: column.letter, from: i, to: bodyEnd + 1, repeated: true });
       i = bodyEnd;
       continue;
