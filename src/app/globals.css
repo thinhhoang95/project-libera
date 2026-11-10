@@ -3282,6 +3282,17 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-title { font-size: 1.75em; font-weight: 700; line-height: 1.25; }
 .cm-vis-authors { display: flex; flex-wrap: wrap; justify-content: center; gap: .3em 2.2em; margin-top: .7em; font-size: .95em; }
 .cm-vis-date { margin-top: .5em; color: var(--muted-foreground); }
+/* Keywords, CCS concepts and subject classes under a title block; an author's affiliation (IEEEtran's author blocks). */
+.cm-vis-title-note { margin: .45em auto 0; max-width: 88%; font-size: .85em; text-align: left; }
+.cm-vis-title-note-label { font-weight: 700; }
+.cm-vis-affiliation { font-size: .88em; color: var(--muted-foreground); }
+/* censor's `\censor{…}`: a bar as wide as the text it hides. */
+.cm-vis-censor { background: currentColor; border-radius: 1px; }
+/* todonotes' `\todo{…}` and `\missingfigure{…}`: a note chip that wraps. */
+.cm-vis-chip.cm-vis-todo { background: color-mix(in srgb, #f59e0b 24%, transparent); color: var(--foreground); white-space: normal; }
+/* An item of an inline list (paralist's `inparaenum`): its label in the text, not hanging in the margin. */
+.cm-vis-item.cm-vis-item-inline { margin-left: 0; min-width: 0; padding-right: .3em; }
+.cm-vis-keywords-label { font-weight: 700; }
 .cm-vis-macro { border-bottom: 1px dotted color-mix(in srgb, var(--primary) 55%, transparent); cursor: pointer; }
 .cm-vis-linebreak { padding-inline: 2px; color: var(--muted-foreground); font-family: var(--font-sans); font-size: .75em; opacity: .5; }
 .cm-vis-logo { font-variant: small-caps; letter-spacing: .02em; }

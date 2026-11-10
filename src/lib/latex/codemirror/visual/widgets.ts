@@ -251,12 +251,21 @@ export function followReference(view: EditorView, key: string) {
 
 /** `\item`: a bullet, a number or a description label. */
 export class ItemMarkerWidget extends VisualWidget {
-  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number) {
-    super(`${variant}\u0000${depth}\u0000${label}`);
+  /**
+   * `latex`: a label written with formulas or styles (`\item[$(i)$]`, `\item[\textbf{Step 1}]`), drawn as LaTeX;
+   * `inline`: an item of a list run into its paragraph (paralist's `inparaenum`).
+   */
+  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number, readonly flags: { latex?: boolean; inline?: boolean } = {}) {
+    super(`${variant}\u0000${depth}\u0000${label}\u0000${flags.latex ? "l" : ""}${flags.inline ? "i" : ""}`);
   }
-  toDOM() {
-    const dom = el("span", `cm-vis-item cm-vis-item-${this.variant}`, this.label);
+  toDOM(view: EditorView) {
+    const dom = el("span", `cm-vis-item cm-vis-item-${this.variant}${this.flags.inline ? " cm-vis-item-inline" : ""}`, this.flags.latex ? undefined : this.label);
     dom.style.setProperty("--vis-depth", String(this.depth));
+    if (this.flags.latex) {
+      const render = (target: EditorView) => dom.replaceChildren(renderLatexFragment(this.label, widgetContext(target, dom)));
+      render(view);
+      refreshable(dom, view, render);
+    }
     return dom;
   }
 }
@@ -919,9 +928,12 @@ export function preambleSummary(view: EditorView | null, defs = view ? visualDef
 
 /** `\maketitle`: the title, authors and date from the preamble. */
 export class TitleWidget extends VisualWidget {
-  /** `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`). */
-  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null) {
-    super(JSON.stringify([title, author, date, length, abstract]));
+  /**
+   * `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`); `notes`: small
+   * lines under it, as label and LaTeX (keywords, CCS concepts, subject classes).
+   */
+  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null, readonly notes: ReadonlyArray<readonly [string, string]> = []) {
+    super(JSON.stringify([title, author, date, length, abstract, notes]));
   }
   toDOM(view: EditorView) {
     const dom = el("div", "cm-vis-title-block");
@@ -948,6 +960,11 @@ export class TitleWidget extends VisualWidget {
         body.append(renderLatexFragment(this.abstract, context));
         abstract.append(heading, body);
         dom.append(abstract);
+      }
+      for (const [label, latex] of this.notes) {
+        const note = el("div", "cm-vis-title-note");
+        note.append(el("span", "cm-vis-title-note-label", `${label}: `), renderLatexFragment(latex, context));
+        dom.append(note);
       }
     };
     render(view);
