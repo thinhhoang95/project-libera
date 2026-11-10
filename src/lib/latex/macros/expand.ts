@@ -366,6 +366,80 @@ export function expandLatexMacroUse(source: string, defs: LatexDefinitions, opti
   return result ? { text: result.text, length: result.end + empty, used: [...context.used] } : null;
 }
 
+/**
+ * Where a piece of an expansion comes from: `[from, to)` in the expansion is the call's own text at `source` (offsets
+ * from the use's start), copied unchanged from one of its arguments. Text the definition writes has none.
+ */
+export type ExpansionSegment = { from: number; to: number; source: number };
+export type ProvenanceExpansion = { text: string; length: number; segments: ExpansionSegment[] };
+
+/** A macro's arguments at `index` with where each one's text is (a group's content, or the token); null when one is missing. */
+function readArgumentSpans(source: string, index: number, macro: Pick<LatexMacro, "arity" | "optional">) {
+  const spans: Array<{ value: string; from: number } | { value: string; from: null }> = [];
+  let remaining = macro.arity;
+  if (macro.optional !== undefined && remaining > 0) {
+    const at = skipSpaces(source, index);
+    const optional = readOptional(source, at, TEX_GROUPS);
+    if (optional) { spans.push({ value: optional.content, from: at + 1 }); index = optional.end; } else spans.push({ value: macro.optional, from: null });
+    remaining--;
+  }
+  for (; remaining > 0; remaining--) {
+    const at = skipSpaces(source, index);
+    const read = readUndelimited(source, index);
+    if (!read) return null;
+    spans.push({ value: read.value, from: source[at] === "{" ? at + 1 : at });
+    index = read.end;
+  }
+  return { spans, end: index };
+}
+
+/** Private-use characters standing for the arguments while the body is expanded. */
+const ARGUMENT_MARK = 0xe000;
+
+/**
+ * The use of a macro at the start of `source` expanded as `expandLatexMacroUse` does, with where each piece of the
+ * expansion comes from: a call's argument put in unchanged maps back to the call (editing it there edits the drawing;
+ * an argument written twice is drawn twice from the same text), and the rest is the definition's. Null when the use
+ * is not a usable macro, takes xparse arguments, or its expansion cannot be traced (its arguments are tested or split).
+ */
+export function expandMacroUseWithProvenance(source: string, defs: LatexDefinitions, options: { mode?: "math" | "text"; pos?: number } = {}): ProvenanceExpansion | null {
+  const plain = expandLatexMacroUse(source, defs, options);
+  if (!plain) return null;
+  const name = /^\\([A-Za-z@]+)/.exec(source);
+  const pos = options.pos ?? Number.MAX_SAFE_INTEGER;
+  const macro = name ? macroAt(defs, name[1], pos) : null;
+  if (!macro || macro.spec || macro.alias || /[-]/.test(source.slice(0, plain.length) + macro.body)) return null;
+  const read = readArgumentSpans(source, name![0].length, macro);
+  if (!read || read.end > plain.length) return null;
+  const context: Context = { defs, pos, used: new Set(), mode: options.mode ?? "text", budget: MAX_EXPANSIONS };
+  let body = evaluateConditionals(substituteArguments(macro.body, read.spans.map((_, n) => String.fromCharCode(ARGUMENT_MARK + n))));
+  if (body.includes("\\if") || /\\not(?:toggle|bool)/.test(body)) {
+    const facts = conditionalFacts(defs, pos, context.mode === "math");
+    body = evaluateTexConditionals(evaluateIfThenElse(body, facts), facts);
+  }
+  const inner = expandText(body, context, 1);
+  if (inner === null) return null;
+  let text = "";
+  const segments: ExpansionSegment[] = [];
+  for (let i = 0; i < inner.length; i++) {
+    const n = inner.charCodeAt(i) - ARGUMENT_MARK;
+    if (n < 0 || n >= read.spans.length) { text += inner[i]; continue; }
+    const span = read.spans[n];
+    const expanded = expandLatexMacros(span.value, defs, { mode: "text", pos });
+    if (!expanded.ok) return null;
+    if (expanded.text === span.value && span.from !== null && span.value.length) segments.push({ from: text.length, to: text.length + span.value.length, source: span.from });
+    text += expanded.text;
+  }
+  // Traced only when it is the expansion: an argument the body tests or takes apart is not followed.
+  return text === plain.text ? { text, length: plain.length, segments } : null;
+}
+
+/** Where `[from, to)` of an expansion is in the call (offsets from the use's start), when it lies in one argument copied unchanged; null otherwise. */
+export function provenanceOf(expansion: Pick<ProvenanceExpansion, "segments">, from: number, to: number) {
+  const segment = expansion.segments.find((item) => item.from <= from && to <= item.to);
+  return segment ? segment.source + (from - segment.from) : null;
+}
+
 /** Commands that only make sense in math, so a text expansion containing them (outside math) cannot be drawn as text. */
 const MATH_ONLY = /\\(?:math[a-z]+|frac|dfrac|tfrac|sqrt|sum|prod|int|oint|lim|infty|partial|nabla|cdot|cdots|ldots(?=[_^])|times|le|ge|leq|geq|neq|approx|equiv|sim|pm|mp|in|notin|subset|subseteq|cup|cap|forall|exists|to|rightarrow|leftarrow|mapsto|left|right|big[lr]?|Big[lr]?|operatorname|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|hat|widehat|bar|vec|tilde|widetilde|check|breve|acute|grave|ddot|dot|Hat|Bar|Vec|Tilde|Check|Breve|Acute|Grave|Ddot|Dot|overline|overbrace|underbrace|underline(?=\s*\{.*[_^])|boldsymbol|bm|mathbb|parallel|top|bot|langle|rangle|lVert|rVert|lvert|rvert)(?![A-Za-z])/;
 

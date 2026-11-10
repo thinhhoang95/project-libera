@@ -620,6 +620,11 @@ export type FigureContent = {
   intro?: string;
   /** Where the number is recorded relative to the widget: the environment's start, or its panel's. */
   numberOffset: number;
+  /**
+   * A float a macro writes (macro-provenance.ts): where the caption's text is, relative to the widget, when it is the
+   * call's argument. A click on the caption puts the cursor there, to edit just that argument.
+   */
+  captionSource?: { from: number; to: number };
 };
 
 export type FigureSpec = FigureContent & {
@@ -744,6 +749,17 @@ export class FigureWidget extends VisualWidget {
       const label = el("span", "cm-vis-caption-label");
       const text = el("span", "cm-vis-caption-text");
       text.append(renderLatexFragment(content.caption, fragmentContext(view, content.captionPos)));
+      const source = content.captionSource;
+      if (source) {
+        text.classList.add("cm-vis-caption-argument");
+        text.addEventListener("mousedown", (event) => {
+          if (event.button !== 0 || event.altKey) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const at = widgetPos(view, dom);
+          if (at !== null) editKeysAt(view, at + source.from);
+        });
+      }
       caption.append(label, text);
       captions.push({ content, label, text });
       if (content.captionAbove) into.append(caption, body, ...notes); else into.append(body, caption, ...notes);

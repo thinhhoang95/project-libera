@@ -3,7 +3,8 @@ import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
-import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
+import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
+import { expansionState, placeAtCall } from "./macro-provenance";
 import { CAPTION_OF, enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
@@ -2076,11 +2077,40 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (structural) emit({ kind: "footnote", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new MacroFootnoteWidget(text, to - node.from) }] });
       return done();
     }
-    if (first.name === "Environment" || first.name === "EquationEnvironment" || first.name === "EquationArrayEnvironment" || first.name === "ListEnvironment") {
+    if (first.name === "Environment" || first.name === "EquationEnvironment" || first.name === "EquationArrayEnvironment" || first.name === "ListEnvironment"
+      || first.name === "FigureEnvironment" || first.name === "TableEnvironment" || first.name === "TabularEnvironment") {
       if (!structural) return done();
-      return expandedEnvironment(node.from, to, use.text) ? done() : null;
+      return expandedEnvironment(node.from, to, use.text) || expandedFloat(node, to, first) ? done() : null;
     }
     return null;
+  }
+
+  /**
+   * A float or tabular a macro writes (`\tbl{caption}{\begin{tabular}…}` for `\begin{table}\caption{#1}#2\end{table}`):
+   * drawn as the float it is, read from its expansion, with the parts copied from the call's arguments placed at their
+   * text in the call, so they are edited there (macro-provenance.ts). False when it is not one the float reader draws.
+   */
+  function expandedFloat(use: SyntaxNode, to: number, env: SyntaxNode) {
+    const expansion = expandMacroUseWithProvenance(read(state, use.from, Math.min(doc.length, use.from + 4000)), defs, { mode: "text", pos: use.from });
+    if (!expansion || use.from + expansion.length !== to) return false;
+    const scratch = expansionState(state, expansion.text);
+    const readText = (start: number, end: number) => expansion.text.slice(start, end);
+    const span = aloneOnLines(doc, use.from, to);
+    const range = span ?? { from: use.from, to };
+    if (env.name === "TabularEnvironment" || isTabular(env, readText)) {
+      // A tabular written whole as an argument is edited there, by cell; one the definition writes is read-only.
+      const source = expansion.text.slice(env.from, env.to);
+      if (!parseTabular(source, 0, defs.columnTypes)?.rows.length) return false;
+      const at = provenanceOf(expansion, env.from, env.to);
+      emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: at === null ? new TableWidget(source, use.from - range.from, range.to - range.from, true) : new TableWidget(source, use.from + at - range.from, range.to - range.from) }] });
+      return true;
+    }
+    const kind = floatKind(env, readText);
+    if (!kind || !wellFormedEnvironment(env, scratch)) return false;
+    const figure = figureSpec(env, environmentName(env, readText) ?? "", scratch, defs, expandRowsAt(use.from), () => null, kind);
+    if (!figure) return false;
+    emit({ kind: "figure", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(placeAtCall(figure, expansion, use.from, range)) }] });
+    return true;
   }
 
   /** Draws an environment written through macros at [from, to] from its expansion `text`; false when it is not one it draws. */
