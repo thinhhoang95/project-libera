@@ -696,6 +696,16 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       if (name === "Environment") {
         const env = environmentName(node, read) ?? "";
         scopes.push({ node: node.from, target: env === "subtable" ? null : currentTarget() });
+        // enumitem's lists of the document's own (`\newlist{exercises}{enumerate}{6}`): numbered as their kind.
+        const custom = defs.lists?.get(env);
+        if (custom) {
+          const optional = node.getChild("BeginEnv")?.getChild("OptionalArgument");
+          const enumerate = custom === "enumerate";
+          const depth = lists.filter((list) => list.enumerate).length + (enumerate ? 1 : 0);
+          const options = defs.listOptions?.get(`${env}:${depth}`);
+          lists.push({ enumerate, count: 0, depth, template: optional ? read(optional.from + 1, optional.to - 1) : options ? options.replace(/\\the([A-Za-z]+)/g, (_, counter: string) => format(counter)) : null });
+          return;
+        }
         // The appendix package's `appendices` environment letters its sections, as `\appendix` does.
         if (env === "appendices") {
           appendix = true;
@@ -762,7 +772,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       if (floats.length && floats[floats.length - 1].from === ref.from && (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment")) floats.pop();
       if (name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" || name === "ListEnvironment" || name === "FootnoteCommand" || name === "EndnoteCommand" || name === "TabularEnvironment" || name === "UnknownCommand") {
         if (scopes.length && scopes[scopes.length - 1].node === ref.from) scopes.pop();
-        if (name === "ListEnvironment") lists.pop();
+        if (name === "ListEnvironment" || (name === "Environment" && defs.lists?.has(environmentName(ref.node, read) ?? ""))) lists.pop();
         const group = subequations[subequations.length - 1];
         if (name === "Environment" && group?.node === ref.from) { subequations.pop(); counters.set("equation", group.saved); }
       }

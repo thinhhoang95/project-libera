@@ -762,22 +762,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return drawFloat(node, floatKind(node, readNode) ?? (name === "TableEnvironment" ? "table" : "figure"));
         }
         case "TabularEnvironment": return drawTabular(node);
-        case "ListEnvironment": {
-          const formed = wellFormedEnvironment(node, state);
-          if (!formed) return;
-          const list = listContext(node, formed.name, lists, state, 0);
-          lists.push(list);
-          if (structural) {
-            collapseLine(formed.begin, "list-begin");
-            collapseLine(formed.end, "list-end");
-          }
-          if (formed.content) {
-            const first = doc.lineAt(formed.begin.to).number + 1;
-            const last = doc.lineAt(formed.end.from).number - 1;
-            if (last >= first) emit({ kind: "list-body", from: node.from, to: node.to, reveal: "never", replaces: [], lines: [{ from: doc.line(first).from, to: doc.line(last).to, class: `cm-vis-list cm-vis-list-d${Math.min(6, list.depth)}` }] });
-          }
-          return;
-        }
+        case "ListEnvironment": return drawList(node);
         case "Item": {
           if (!lists.length || !structural) return false;
           const optional = node.getChild("OptionalArgument");
@@ -787,6 +772,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "Environment": case "KnownEnvironment": {
           if (name === "KnownEnvironment") return;
+          // A list of the document's own (enumitem's `\newlist`): drawn as the lists the grammar knows.
+          if (defs.lists?.has(environmentName(node, readNode) ?? "")) return drawList(node);
           // `table*`, `algorithm` and the other floats the grammar does not name; a theorem the document calls
           // `algorithm` (`\newtheorem{algorithm}{Algorithm}`, Callaway & Sant'Anna's bootstrap) is the document's own.
           const kind = floatKind(node, readNode);
@@ -842,7 +829,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return;
     },
     leave(ref) {
-      if (ref.name === "ListEnvironment" && lists.length && lists[lists.length - 1].node.from === ref.from) lists.pop();
+      if ((ref.name === "ListEnvironment" || ref.name === "Environment") && lists.length && lists[lists.length - 1].node.from === ref.from) lists.pop();
     },
   });
 
@@ -872,6 +859,27 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const first = doc.lineAt(Math.min(doc.length, headerEnd + 1)).number + 1;
       const last = doc.lineAt(formed.end.from).number - 1;
       if (last >= first) emit({ kind: "list-body", from: node.from, to: node.to, reveal: "never", replaces: [], lines: [{ from: doc.line(first).from, to: doc.line(last).to, class: "cm-vis-bibliography" }] });
+    }
+    return undefined;
+  }
+
+  /** A list: its `\begin` and `\end` lines fold away and its lines are indented; its items are drawn as they are met. */
+  function drawList(node: SyntaxNode): undefined {
+    const formed = wellFormedEnvironment(node, state);
+    if (!formed) return undefined;
+    // enumitem's lists of the document's own (`\newlist{exercises}{enumerate}{6}`) are lists of their kind.
+    const custom = defs.lists?.get(formed.name);
+    const list = listContext(node, custom ?? formed.name, lists, state, 0);
+    if (!list.template && custom) list.template = customListLabel(defs, formed.name, list.depth);
+    lists.push(list);
+    if (structural) {
+      collapseLine(formed.begin, "list-begin");
+      collapseLine(formed.end, "list-end");
+    }
+    if (formed.content) {
+      const first = doc.lineAt(formed.begin.to).number + 1;
+      const last = doc.lineAt(formed.end.from).number - 1;
+      if (last >= first) emit({ kind: "list-body", from: node.from, to: node.to, reveal: "never", replaces: [], lines: [{ from: doc.line(first).from, to: doc.line(last).to, class: `cm-vis-list cm-vis-list-d${Math.min(6, list.depth)}` }] });
     }
     return undefined;
   }
@@ -1396,6 +1404,17 @@ function listContext(node: SyntaxNode, name: string, lists: ListContext[], state
   const optional = node.getChild("BeginEnv")?.getChild("OptionalArgument");
   const range = optional && argumentInner(optional);
   return { node, variant, depth, count, template: range ? state.doc.sliceString(range.from, range.to) : null };
+}
+
+/**
+ * The label enumitem's `\setlist[name,level]{label=…}` gives a level of a list of the document's own, as an
+ * `enumerateItemLabel` template; a counter it starts with (`\thechapter.\arabic*`) is left out, as the walk does not
+ * know its value.
+ */
+function customListLabel(defs: LatexDefinitions, name: string, depth: number) {
+  const options = defs.listOptions?.get(`${name}:${depth}`);
+  if (!options || !/(?:^|,)\s*label\s*=/.test(options)) return null;
+  return options.replace(/\\the[A-Za-z]+\s*\.?/g, "").replace(/\\emph\s*\{([^{}]*)\}/g, "$1");
 }
 
 /** Tabulars: the grammar names `tabular` and `tabularx`; `tabular*`, `tabulary` and `array`-like ones are plain environments. */

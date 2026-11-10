@@ -96,6 +96,10 @@ export type LatexDefinitions = {
   columnTypes: Map<string, LatexColumnType>;
   /** xcolor's `\definecolor{name}{model}{value}`, and `\colorlet{name}{color}` (model "", value the colour it names). */
   colors: Map<string, { model: string; value: string }>;
+  /** enumitem's `\newlist{exercises}{enumerate}{6}`: lists of the document's own, by name, with the kind they are. */
+  lists?: Map<string, "enumerate" | "itemize" | "description">;
+  /** enumitem's `\setlist[exercises,1]{label=…}`: the options of a list's level, by `name:level`. */
+  listOptions?: Map<string, string>;
   /**
    * Where the open file's definitions are (absolute ranges, in order), so edits inside one re-read them.
    * `broken`: a definition without its body, which runs to the end so any later edit may complete it; it is
@@ -117,7 +121,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -626,6 +630,25 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           body: `\\IfBooleanTF{#1}{\\left${open} #3 \\right${close}}{\\IfNoValueTF{#2}{\\mathopen{${open}}#3\\mathclose{${close}}}{\\mathopen{#2${open}}#3\\mathclose{#2${close}}}}`,
         }, "new");
       }
+    } else if (command === "newlist") {
+      // enumitem's `\newlist{exercises}{enumerate}{6}`: a list of the document's own, of a known kind.
+      const nameGroup = readGroupAt(source, index);
+      const kind = nameGroup && readGroupAt(source, nameGroup.end);
+      const levels = kind && readGroupAt(source, kind.end);
+      if (nameGroup && kind && levels) {
+        end = levels.end;
+        const type = kind.content.trim().replace(/\*$/, "");
+        if (type === "enumerate" || type === "itemize" || type === "description") (defs.lists ??= new Map()).set(nameGroup.content.trim(), type);
+      }
+    } else if (command === "setlist") {
+      // `\setlist[exercises,1]{label=\thechapter.\arabic*}`: a level's label (and other options).
+      const which = readOptionalAt(source, index);
+      const options = readGroupAt(source, which?.end ?? index);
+      if (which && options) {
+        end = options.end;
+        const [name, level] = which.content.split(",").map((part) => part.trim());
+        if (name && /^\d+$/.test(level ?? "")) (defs.listOptions ??= new Map()).set(`${name}:${level}`, options.content.trim());
+      }
     } else if (command === "foreach") {
       // pgffor's loop that defines one macro per letter (`\foreach \x in {A,...,Z}{\expandafter\xdef\csname m\x\endcsname
       // {\noexpand\mathbf{\x}}}`, `\mA` … `\mZ` in many theory papers): read as the macros it makes. Any other loop is not
@@ -814,6 +837,8 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [name, list] of defs.packageOptions) parts.push(`pkg:${name}:${list.join(",")}`);
   for (const [name, color] of defs.colors) parts.push(`color:${name}:${color.model}:${color.value}`);
   for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}:${type.paragraph ? "p" : ""}`);
+  for (const [name, kind] of defs.lists ?? []) parts.push(`list:${name}:${kind}`);
+  for (const [level, options] of defs.listOptions ?? []) parts.push(`listopt:${level}:${options}`);
   return hashString(parts.join("\u0000"));
 }
 

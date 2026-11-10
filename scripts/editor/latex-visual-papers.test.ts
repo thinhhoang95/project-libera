@@ -561,6 +561,33 @@ Compute the estimator \\begin{equation*}\\hat\\tau = \\argmin_{\\tau}\\p{x - \\t
   assert.match(drawn, /\$x formula/);
 });
 
+test("enumitem's lists of the document's own are drawn and numbered as their kind (O'Donnell's exercises)", () => {
+  const doc = String.raw`\documentclass{book}
+\usepackage{enumitem}
+\newlist{exercises}{enumerate}{6}
+\setlist[exercises,1]{leftmargin=*,label=\thechapter.\arabic*}
+\setlist[exercises,2]{leftmargin=\parindent,label=(\emph{\alph*})}
+\begin{document}
+\chapter{Social choice}
+\begin{exercises}
+\item For each function, determine if it is odd.\label{ex:odd}
+\item Prove May's Theorem:
+\begin{exercises}
+\item Show that $f$ is symmetric.
+\end{exercises}
+\end{exercises}
+See Exercise~\ref{ex:odd}.
+\end{document}
+`;
+  const text = visibleText(doc);
+  assert.doesNotMatch(text, /\\item|\\begin\{exercises\}/);
+  assert.match(text, /1\s*For each function/);
+  assert.match(text, /2\s*Prove May's Theorem/);
+  assert.match(text, /\(a\)\s*Show that/);
+  // The reference shows the chapter's number, as the label does in the PDF.
+  assert.equal(number(doc).labels.get("ex:odd")?.number, "1.1");
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);
