@@ -8,9 +8,10 @@ import { resolveRelativeNotebookPath } from "../../project";
 import { applyEquationNumbers, renderKatex } from "./math-render";
 import { preambleOpenField, togglePreamble, visualAux, visualConfig, visualDefinitions, visualNumbering } from "./model";
 import { latexProjectField } from "../editing";
-import { bibLookup, citationStyle, citationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
+import { bibLookup, citationStyleFor, citationText, missingCitationKeys, multiCitationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
 import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./render-fragment";
 import { cssColor } from "./symbols";
+import { editableLines, type FrontDetailsView, type FrontLineView } from "./front-matter";
 import { columnSpans, parseTabular, type TableModel, type TableRow, type TableSettings } from "./table-model";
 import type { AlgorithmSpec } from "./algorithm";
 
@@ -191,14 +192,16 @@ export class MathWidget extends VisualWidget {
 /** A citation, reference or label chip. */
 export class ChipWidget extends VisualWidget {
   /** `index`: an `\index{…}` or `\glossary{…}` entry, which the PDF does not show where it is: a small grey tag, as a label. */
-  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number) {
-    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}`);
+  /** `more`: a multicite's other groups (`\parencites[12]{a}[34]{b}`), each with its keys and notes. */
+  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number, readonly more: ReadonlyArray<{ keys: string[]; notes: { pre?: string; post?: string } }> = []) {
+    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}${more.length ? `\u0000${JSON.stringify(more)}` : ""}`);
   }
   private text(view: EditorView) {
     if (this.kind === "label") return this.keys[0];
     // makeidx's `sort@shown!sub` entries: what each level shows.
     if (this.kind === "index") return this.keys[0].split("!").map((level) => level.slice(level.lastIndexOf("@") + 1).replace(/\|.*$/, "")).join(" › ");
-    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyle(visualDefinitions(view.state)));
+    if (this.kind === "cite" && this.more.length) return multiCitationText(this.command, [{ keys: this.keys, notes: this.notes }, ...this.more], visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state));
+    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state));
     return stateReferenceText(view.state, this.command, this.keys);
   }
   toDOM(view: EditorView) {
@@ -229,7 +232,13 @@ export class ChipWidget extends VisualWidget {
         dom.setAttribute("aria-label", `Reference to ${text.replace(/\$/g, "")}`);
       } else if (this.kind === "cite") {
         const bib = bibLookup(target.state);
-        dom.title = this.keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : key; }).join("\n");
+        const keys = [...this.keys, ...this.more.flatMap((group) => group.keys)];
+        // A key no bibliography data knows (only once some is loaded): a warning, as a reference to an unknown label.
+        const missing = missingCitationKeys(target.state, keys);
+        dom.classList.toggle("cm-vis-missing", missing.length > 0);
+        // biblatex's `\supercite`: a superscript number.
+        dom.classList.toggle("cm-vis-cite-super", /^\\supercites?\*?$/.test(this.command) && /^[\d,\s–-]+$/.test(dom.textContent ?? ""));
+        dom.title = keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : missing.includes(key) ? `${key} (citation not found)` : key; }).join("\n");
         dom.setAttribute("aria-label", `Citation ${dom.textContent}`);
       } else {
         dom.title = `${this.command}{${this.keys[0]}}`;
@@ -1487,10 +1496,13 @@ export function preambleSummary(view: EditorView | null, defs = view ? visualDef
 }
 
 /** The parts of a title block that open in the title editor (title-edit.ts). */
-export type TitlePart = "title" | "author" | "date" | "abstract";
+export type TitlePart = "title" | "author" | "date" | "abstract" | "line";
 
-/** A drawn title block: where it starts and how long its construct is, for finding its source; and how it redraws. */
-export type TitleElement = HTMLElement & { liberaTitleStart?: () => number | null; liberaTitleLength?: number; liberaTitleRender?: () => void };
+/**
+ * A drawn title block: where it starts and how long its construct is, for finding its source; how far the source it
+ * reads goes (past the block when a command in its run stays source); and how it redraws.
+ */
+export type TitleElement = HTMLElement & { liberaTitleStart?: () => number | null; liberaTitleLength?: number; liberaTitleScope?: number; liberaTitleRender?: () => void };
 
 export type TitleHooks = {
   /** Opens the LaTeX of one part (the `index`th author) in place; false when its source cannot be found. */
@@ -1525,8 +1537,12 @@ export class TitleWidget extends VisualWidget {
    * `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`); `notes`: small
    * lines under it, as label and LaTeX (keywords, CCS concepts, subject classes).
    */
-  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null, readonly notes: ReadonlyArray<readonly [string, string]> = []) {
-    super(JSON.stringify([title, author, date, length, abstract, notes]));
+  /**
+   * `details`: a class's subtitle, each author's affiliations and emails, institutes and notes (front-matter.ts), each
+   * editable line a `line` part numbered in editableLines' order; `scope`: how far from the block's start its source goes.
+   */
+  constructor(readonly title: string | null, readonly author: string | null, readonly date: string | null, readonly length: number, readonly abstract: string | null = null, readonly notes: ReadonlyArray<readonly [string, string]> = [], readonly details: FrontDetailsView | null = null, readonly scope: number | null = null) {
+    super(JSON.stringify([title, author, date, length, abstract, notes, details, scope]));
   }
   toDOM(view: EditorView) {
     const dom: TitleElement = el("div", "cm-vis-title-block");
@@ -1542,17 +1558,37 @@ export class TitleWidget extends VisualWidget {
       if (dom.querySelector(".cm-vis-title-editor")) return;
       const context = widgetContext(target, dom);
       dom.replaceChildren();
+      const details = this.details;
+      // The class's lines, numbered as title-edit.ts finds their source.
+      const editableIndex = new Map(details ? editableLines(details).map((line, index) => [line, index] as const) : []);
+      const line = (className: string, item: FrontLineView) => {
+        const node = el("div", className);
+        if (item.label) node.append(el("span", "cm-vis-title-line-label", item.label));
+        node.append(renderLatexFragment(item.latex, context));
+        return item.editable && editableIndex.has(item) ? part(node, "line", editableIndex.get(item)!) : node;
+      };
       if (this.title !== null) { const title = part(el("div", "cm-vis-title"), "title"); title.append(renderLatexFragment(this.title, context)); dom.append(title); }
+      if (details?.subtitle) dom.append(line("cm-vis-subtitle", details.subtitle));
       if (this.author !== null) {
         const authors = el("div", "cm-vis-authors");
         let index = 0;
         for (const piece of this.author.split(/\\(?:and|And|AND)(?![A-Za-z])/)) {
           if (!piece.trim()) continue;
+          const lines = details?.authorLines[index] ?? [];
           const author = part(el("div", "cm-vis-author"), "author", index++);
           author.append(renderLatexFragment(piece.trim(), context));
-          authors.append(author);
+          if (!lines.length) { authors.append(author); continue; }
+          // The author's affiliations and emails under the name, each its own part.
+          const group = el("div", "cm-vis-author-group");
+          group.append(author, ...lines.map((item) => line("cm-vis-affiliation", item)));
+          authors.append(group);
         }
         dom.append(authors);
+      }
+      if (details?.places.length) {
+        const places = el("div", "cm-vis-title-places");
+        places.append(...details.places.map((item) => line("cm-vis-affiliation", item)));
+        dom.append(places);
       }
       if (this.date !== null) { const date = part(el("div", "cm-vis-date"), "date"); date.append(renderLatexFragment(this.date, context)); dom.append(date); }
       if (this.abstract) {
@@ -1569,9 +1605,11 @@ export class TitleWidget extends VisualWidget {
         note.append(el("span", "cm-vis-title-note-label", `${label}: `), renderLatexFragment(latex, context));
         dom.append(note);
       }
+      for (const item of details?.notes ?? []) dom.append(line("cm-vis-title-note", item));
     };
     dom.liberaTitleStart = () => widgetPos(view, dom);
     dom.liberaTitleLength = this.length;
+    if (this.scope !== null) dom.liberaTitleScope = this.scope;
     dom.liberaTitleRender = () => render(view);
     render(view);
     refreshable(dom, view, render);

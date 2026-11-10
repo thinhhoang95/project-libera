@@ -3189,6 +3189,7 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-index { background: transparent; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px var(--border); }
 .cm-vis-index::before { content: "index "; opacity: .6; font-size: .9em; }
 .cm-vis-chip.cm-vis-missing { background: color-mix(in srgb, var(--destructive) 12%, transparent); color: var(--destructive); }
+.cm-vis-chip.cm-vis-cite-super { vertical-align: super; font-size: .72em; }
 .cm-vis-item { display: inline-block; min-width: 1.3em; margin-left: -1.7em; padding-right: .4em; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .cm-vis-item-description { margin-left: 0; min-width: 0; text-align: left; color: var(--foreground); font-weight: 700; }
 .libera-latex-visual .cm-line.cm-vis-list-d1 { padding-left: 1.9em; }
@@ -3351,6 +3352,10 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-title-note { margin: .45em auto 0; max-width: 88%; font-size: .85em; text-align: left; }
 .cm-vis-title-note-label { font-weight: 700; }
 .cm-vis-affiliation { font-size: .88em; color: var(--muted-foreground); }
+.cm-vis-subtitle { font-size: 1.2em; font-weight: 600; margin-top: .3em; }
+.cm-vis-author-group { display: flex; flex-direction: column; align-items: center; }
+.cm-vis-title-places { margin-top: .5em; }
+.cm-vis-title-line-label { font-style: italic; }
 /* censor's `\censor{…}`: a bar as wide as the text it hides. */
 .cm-vis-censor { background: currentColor; border-radius: 1px; }
 /* todonotes' `\todo{…}` and `\missingfigure{…}`: a note chip that wraps. */

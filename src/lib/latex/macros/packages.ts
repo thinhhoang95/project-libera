@@ -211,6 +211,22 @@ const AAS_JOURNALS: Record<string, string> = {
  * abbreviations, and the table spacing it also allows in text (`\phn`, a digit's width). Math symbols are math-render.ts's.
  */
 export function classMacros(cls: string): PackageMacro[] {
+  // IEEEtran's drop cap: `\IEEEPARstart{T}{his}` prints "This".
+  if (cls === "IEEEtran") return [{ name: "IEEEPARstart", arity: 2, body: "#1#2" }];
+  // llncs's and svjour3's marks in the title block: `\inst{1}` refers to the first institute; `\orcidID` is an icon;
+  // svjour3's `\at` starts an institute's address on its own line.
+  if (/^(?:llncs|svjour3?|svmult)$/.test(cls)) {
+    return [
+      { name: "inst", arity: 1, body: "\\textsuperscript{#1}" },
+      { name: "orcidID", arity: 1, body: "" },
+      { name: "email", arity: 1, body: cls === "llncs" ? "\\texttt{#1}" : "e-mail: #1" },
+      ...(cls === "llncs" ? [] : [{ name: "at", arity: 0, body: "\\\\" }]),
+    ];
+  }
+  // elsarticle's marks: `\tnoteref{t1}` points to a title note (☆), `\corref{cor1}` to the corresponding author (∗).
+  // Springer Nature's sn-jnl writes names and affiliations in parts (`\fnm{Alice} \sur{One}`, `\orgname{…}`): their text.
+  if (cls === "sn-jnl") return ["fnm", "sur", "spfx", "pfx", "sfx", "tanm", "dgr", "orgdiv", "orgname", "orgaddress", "street", "city", "postcode", "state", "country"].map((name) => ({ name, arity: 1, body: "#1" }));
+  if (cls === "elsarticle") return [{ name: "tnoteref", arity: 1, body: "\\textsuperscript{☆}" }, { name: "corref", arity: 1, body: "\\textsuperscript{∗}" }];
   if (!/^(?:aastex\d*|emulateapj)$/.test(cls)) return [];
   return [
     ...Object.entries(AAS_JOURNALS).map(([name, body]) => ({ name, arity: 0, body })),

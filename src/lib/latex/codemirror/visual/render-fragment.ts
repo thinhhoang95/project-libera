@@ -79,7 +79,7 @@ export function acronymText(defs: LatexDefinitions, command: string, key: string
 }
 
 /** Citation commands of other bibliography styles, as the natbib command they act like (ACL's `\newcite` is `\citet`). */
-export const CITE_ALIASES: Record<string, string> = { "\\newcite": "\\citet", "\\shortcite": "\\cite", "\\citeN": "\\citet", "\\citeNP": "\\citep", "\\citealtNP": "\\citealt" };
+export const CITE_ALIASES: Record<string, string> = { "\\newcite": "\\citet", "\\shortcite": "\\cite", "\\citeN": "\\citet", "\\citeNP": "\\citep", "\\citealtNP": "\\citealt", "\\onlinecite": "\\onlinecite", "\\Citet": "\\Citet" };
 
 /**
  * TeX's own conditionals in a macro's expansion, which a drawing cannot evaluate: the `\else`

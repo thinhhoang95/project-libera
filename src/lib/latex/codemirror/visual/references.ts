@@ -1,4 +1,4 @@
-import type { EditorState } from "@codemirror/state";
+import type { EditorState, Text } from "@codemirror/state";
 import type { LatexAuxData } from "../../aux-file";
 import type { LatexDefinitions } from "../../macros/definitions";
 import { referenceText, type LabelTarget, type LatexNumbering } from "../../macros/numbering";
@@ -44,12 +44,59 @@ export function bibLookup(state: EditorState): BibLookup {
 }
 
 /** natbib's `numbers` (or `super`) option: citations print [3] whatever the bibliography gives. In its author–year mode `\cite` is `\citet`. */
-export type CitationStyle = { numeric?: boolean; textualCite?: boolean };
+export type CitationStyle = { numeric?: boolean; textualCite?: boolean; aliases?: ReadonlyMap<string, string> };
 
 export function citationStyle(defs: LatexDefinitions): CitationStyle {
   const natbib = defs.packageOptions.get("natbib");
   if (natbib?.some((option) => option === "numbers" || option === "super")) return { numeric: true };
   return defs.packages.includes("natbib") ? { textualCite: true } : {};
+}
+
+/**
+ * What the document says about its citations beyond the package options (cached per document version): natbib's
+ * `\setcitestyle{numbers}`, `\defcitealias{key}{alias}`, and the keys of a `thebibliography` written in it.
+ */
+const documentCitations = new WeakMap<Text, { numbers: boolean; aliases: Map<string, string>; bibitems: Set<string> }>();
+function citationsInDocument(doc: Text) {
+  let found = documentCitations.get(doc);
+  if (found) return found;
+  const text = doc.sliceString(0, Math.min(doc.length, 400_000)).replace(/(^|[^\\])%[^\n]*/g, "$1");
+  const aliases = new Map<string, string>();
+  for (const match of text.matchAll(/\\defcitealias\s*\{([^{}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g)) aliases.set(match[1].trim(), match[2].trim());
+  const bibitems = new Set<string>();
+  for (const match of text.matchAll(/\\bibitem\s*(?:\[(?:[^\]{}]|\{[^{}]*\})*\])?\s*\{([^{}]*)\}/g)) bibitems.add(match[1].trim());
+  const numbers = [...text.matchAll(/\\setcitestyle\s*\{([^{}]*)\}/g)].some((match) => /(?:^|,)\s*(?:numbers|super)\s*(?:,|$)/.test(match[1]));
+  documentCitations.set(doc, found = { numbers, aliases, bibitems });
+  return found;
+}
+
+/** How the document's citations print: its packages' options, then `\setcitestyle` and `\defcitealias` in it. */
+export function citationStyleFor(state: EditorState): CitationStyle {
+  const base = citationStyle(visualDefinitions(state));
+  const found = citationsInDocument(state.doc);
+  return { ...(found.numbers ? { numeric: true } : base), ...(found.aliases.size ? { aliases: found.aliases } : {}) };
+}
+
+/**
+ * The keys of a citation that no bibliography data knows: not in the `.bib` files, the References library, the
+ * compiled `.bbl` or `.aux`, nor a `\bibitem` in the document. Empty when there is no bibliography data at all (before
+ * the `.bib` is read, nothing is called missing).
+ */
+export function missingCitationKeys(state: EditorState, keys: readonly string[]): string[] {
+  const project = projectOf(state);
+  const aux = visualAux(state);
+  const found = citationsInDocument(state.doc);
+  const anyData = !!project?.bibEntries.length || !!project?.libraryEntries?.length || Object.keys(aux.citations).length > 0 || found.bibitems.size > 0;
+  if (!anyData) return [];
+  const bib = bibLookup(state);
+  return keys.filter((key) => !aux.citations[key] && !found.bibitems.has(key) && !bib(key));
+}
+
+/** A multicite (`\parencites[12]{a}[34]{b}`): each group's citation, in one pair of brackets when they all have them. */
+export function multiCitationText(command: string, groups: ReadonlyArray<{ keys: string[]; notes: { pre?: string; post?: string } }>, aux: LatexAuxData, bib: BibLookup, style: CitationStyle = {}) {
+  const single = command.replace(/s(\*?)$/, "$1");
+  const texts = groups.map((group) => citationText({ command: single, keys: group.keys, ...group.notes }, aux, bib, style));
+  return texts.every((text) => /^\[.*\]$/.test(text)) ? `[${texts.map((text) => text.slice(1, -1)).join("; ")}]` : texts.join("; ");
 }
 
 /** BibTeX or `.aux` text as it prints: accents (`Boli\'c`, `{\"o}`), escapes and symbols decoded, braces dropped. */
@@ -167,6 +214,27 @@ export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLo
   const post = parts.post ? (citationNoteText(parts.post) ?? plainTexText(parts.post)).trim() : "";
   const note = (text: string) => `${pre ? `${pre} ` : ""}${text}${post ? `, ${post}` : ""}`;
   if (name === "citeauthor" || name === "Citeauthor") return items.map((item) => item.authors ?? item.key).join("; ");
+  // biblatex's `\citetitle` prints the entry's title; `\fullcite` the whole entry, roughly as the list gives it.
+  if (name === "citetitle" || name === "Citetitle") return items.map((item) => { const title = bib(item.key)?.title; return title ? plainTexText(title) : item.key; }).join("; ");
+  if (name === "fullcite" || name === "footfullcite") {
+    return items.map((item) => {
+      const entry = bib(item.key);
+      const parts = [entry?.author ? plainTexText(entry.author.split(/\s+and\s+/).join(", ")) : item.authors, entry?.title && plainTexText(entry.title), item.year].filter(Boolean);
+      return parts.length > 1 ? parts.join(". ") : item.key;
+    }).join("; ");
+  }
+  // natbib's `\citetalias{key}` prints the alias `\defcitealias{key}{Paper I}` gave it; `\citepalias` in parentheses.
+  if (name === "citetalias" || name === "citepalias") {
+    const text = items.map((item) => style.aliases?.get(item.key) ?? item.key).join("; ");
+    return name === "citepalias" ? `(${note(text)})` : text;
+  }
+  // The number alone: `\citenum` (natbib), revtex's `\onlinecite`, biblatex's `\supercite` (a superscript).
+  if ((name === "citenum" || name === "supercite" || name === "onlinecite") && allNumeric) return note(items.map((item) => item.numeric).join(","));
+  // natbib's `\citealp` and `\citealt`: the citation without its brackets.
+  if ((name === "citealp" || name === "Citealp") && allNumeric) return note(items.map((item) => item.numeric).join(", "));
+  if (/^[cC]ite(?:alp|alt)$/.test(name) && items.every((item) => item.authors)) {
+    return note(items.map((item) => `${item.authors}${item.year ? ` ${item.year}` : ""}`).join("; "));
+  }
   if (name === "citeyear" || name === "citeyearpar") return items.map((item) => item.year ?? item.key).join("; ");
   if (name === "nocite") return `(not cited: ${parts.keys.join(", ")})`;
   // natbib's `\cite` is `\citet` in its author–year mode, `\citep` with numbers.
@@ -219,11 +287,19 @@ export function stateReferenceText(state: EditorState, command: string, keys: st
 }
 
 /** Whether a formula refers to labels (`$\mathcal{L}_{\ref{eq:loss}}$`), whose numbers KaTeX cannot know. */
-export const REFERENCE_IN_MATH = /\\(?:eq|auto|Auto|c|C)?ref\b/;
+export const REFERENCE_IN_MATH = /\\(?:(?:eq|auto|Auto|c|C)?ref|cite[A-Za-z]*|[pP]arencite|[tT]extcite)\b/;
 
-/** A formula with its references written as their numbers, for KaTeX. */
+/** A citation in a formula (`$x \text{by \cite{knuth}}$`), which KaTeX does not know: its chip text, as text. */
+const CITE_IN_MATH = /\\((?:[cC]ite[A-Za-z]*|[pP]arencite|[tT]extcite))\*?((?:\s*\[[^\]]*\]){0,2})\s*\{([^{}]*)\}/g;
+
+/** A formula with its references and citations written as their numbers, for KaTeX. */
 export function withReferenceNumbers(latex: string, state: EditorState) {
-  return referencesInMath(latex, visualNumbering(state), visualAux(state), visualDefinitions(state));
+  const cited = !/\\(?:[cC]ite|[pP]arencite|[tT]extcite)/.test(latex) ? latex : latex.replace(CITE_IN_MATH, (_, name: string, optionals: string, keys: string) => {
+    const notes = [...optionals.matchAll(/\[([^\]]*)\]/g)].map((match) => match[1]);
+    const text = citationText({ command: `\\${name}`, keys: keys.split(",").map((key) => key.trim()).filter(Boolean), ...(notes.length > 1 ? { pre: notes[0] || undefined, post: notes[1] || undefined } : { post: notes[0] || undefined }) }, visualAux(state), bibLookup(state), citationStyleFor(state));
+    return `\\text{${text.replace(/\\/g, "").replace(/[{}_#%&$^~]/g, (char) => `\\${char}`)}}`;
+  });
+  return referencesInMath(cited, visualNumbering(state), visualAux(state), visualDefinitions(state));
 }
 
 /** A formula with its references written as their numbers, from numbering, `.aux` and definitions (captions, cells). */
