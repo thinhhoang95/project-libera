@@ -167,7 +167,8 @@ const DEFINING = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustComm
 
 /** The use of a macro at `index` (which holds a backslash), expanded, or null when it is not a usable macro. */
 function expandUse(source: string, index: number, context: Context, depth: number): { text: string; end: number } | null | false {
-  const match = /^\\([A-Za-z@]+)/.exec(source.slice(index, index + 80));
+  // A control word, or a control symbol the document defines (GRF's `\newcommand{\1}{\mathbf{1}}`).
+  const match = /^\\([A-Za-z@]+|[0-9!*+|<>?])/.exec(source.slice(index, index + 80));
   if (!match) return null;
   const macro = macroAt(context.defs, match[1], context.pos);
   if (!macro) return null;
@@ -243,7 +244,8 @@ function expandText(source: string, context: Context, depth: number): string | n
         continue;
       }
     }
-    if (!/[A-Za-z@]/.test(next)) {
+    // A control symbol, unless the document defines it (`\newcommand{\1}{\mathbf{1}}`): then it is a macro use.
+    if (!/[A-Za-z@]/.test(next) && !(/[0-9!*+|<>?]/.test(next) && macroAt(context.defs, next, context.pos))) {
       if (outer === "text") {
         if (closer === null && (next === "(" || next === "[")) closer = next === "(" ? "\\)" : "\\]";
         else if (closer !== null && closer === `\\${next}`) closer = null;
@@ -273,7 +275,7 @@ function expandText(source: string, context: Context, depth: number): string | n
     const result = expandUse(source, i, context, depth);
     context.mode = outer;
     if (result === false) return null;
-    if (!result) { i += /^\\[A-Za-z@]+/.exec(source.slice(i, i + 80))![0].length - 1; continue; }
+    if (!result) { i += /^\\(?:[A-Za-z@]+|[\s\S])/.exec(source.slice(i, i + 80))![0].length - 1; continue; }
     const before = output + source.slice(copied, i);
     // `\hat\bx` with `\bx` for `\mathbf{x}`: TeX gives \hat the macro, one token; its expansion, written out, needs braces.
     const text = math && !singleToken(result.text) && ARGUMENT_BEFORE.test(before) ? `{${result.text}}` : result.text;

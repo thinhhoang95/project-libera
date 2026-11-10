@@ -33,6 +33,8 @@ export const KATEX_MACROS: Record<string, string> = {
   "\\@": "",
   "\\leavevmode": "",
   "\\ensuremath": "#1",
+  // The TeX.SX `\widebar` (a bar sized to its argument, built from box arithmetic the reader leaves out): a bar.
+  "\\widebar": "\\overline{#1}",
 };
 
 /** mathtools' small matrices with delimiters, which KaTeX lacks: its `smallmatrix` between those delimiters. */

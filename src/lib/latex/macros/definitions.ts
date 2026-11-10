@@ -472,6 +472,8 @@ const DRAWN_BUILTINS = new Set([
   "stackanchor", "stackon", "stackunder", "mathlarger", "mathsmaller",
 ]);
 const PACKAGE_FILE = /\.(?:sty|cls)$/i;
+/** Formula commands the Visual mode draws itself when a document builds them from boxes (see math-render.ts's KATEX_MACROS). */
+const BOX_BUILT = new Set(["widebar"]);
 
 function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, mode: "new" | "renew" | "provide"): LatexMacro | null {
   // A class's or package's font machinery (naaclhlt2019.sty's `\small`) passes the command itself as a token,
@@ -481,6 +483,9 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // The same restyling written in the document (Mask R-CNN's `\renewcommand\paragraph{\@startsection{paragraph}…}`):
   // the kernel's page machinery, not something to draw.
   if (DRAWN_BUILTINS.has(macro.name) && /\\@(?:startsection|setfontsize|setsize|dottedtocline|xpt|ixpt)(?![A-Za-z@])/.test(macro.body)) return null;
+  // Formula commands built from box arithmetic (the TeX.SX `\widebar`: `\@ifnextchar`, `\setbox`, `\mathaccent"0362`),
+  // which expanding cannot follow: KaTeX draws a near equivalent (math-render.ts).
+  if (BOX_BUILT.has(macro.name) && /\\(?:@ifnextchar|setbox|mathaccent|wide@bar)(?![A-Za-z])/.test(macro.body)) return null;
   const existing = context.defs.macros.get(macro.name);
   if (mode === "provide" && existing?.length) return null;
   const fingerprint = hashString(JSON.stringify([macro.name, macro.arity, macro.optional ?? null, macro.spec ?? null, macro.body, !!macro.mathOnly, !!macro.unsupported, !!macro.alias, mode === "provide"]));

@@ -611,6 +611,19 @@ test("title declarations written in the body right before \\maketitle are folded
   assert.match(other, /\\title/);
 });
 
+test("a control symbol the document defines (\\1) expands, and the TeX.SX \\widebar is drawn as a bar (Generalized Random Forests)", () => {
+  const preamble = String.raw`\makeatletter
+\newcommand*\widebar[1]{\@ifnextchar^{{\wide@bar{#1}{0}}}{\wide@bar{#1}{1}}}
+\newcommand*\wide@bar[2]{\setbox0\hbox{$#1$}\mathaccent"0362{#1}}
+\makeatother
+\newcommand{\bY}{\widebar{Y}}
+\newcommand{\1}{\mathbf{1}}`;
+  assert.ok(drawn(preamble, String.raw`\rho_i = Y_i - \bY_p`));
+  assert.ok(drawn(preamble, String.raw`\psi_{\theta}(Y_i) = q - \1\{Y_i \leq \theta\}`));
+  // Undefined control symbols are left for KaTeX, which draws its own (`\!`, `\|`).
+  assert.ok(drawn("", String.raw`\|x\|\!+\!y`));
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);
