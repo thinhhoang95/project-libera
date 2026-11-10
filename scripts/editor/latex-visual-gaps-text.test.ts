@@ -139,9 +139,12 @@ test("\\setcounter{enumi} on a list's line is hidden and counts; a list in \\par
 \end{enumerate}`));
   assert.ok(counted.lines.some((line) => /^\s*7\.G$/.test(line)), counted.lines.join(" | "));
   assert.doesNotMatch(counted.lines.join("\n"), /setcounter/);
+  // A blank line between the boxes: each is a single box in the text. Without it they sit side by side and are drawn
+  // as columns (the floats round's side-by-side boxes), their lists as list elements.
   const boxed = shown(inDocument(String.raw`\parbox{0.5\textwidth}{\begin{itemize}
 \item A
 \end{itemize}}
+
 \begin{minipage}{0.4\textwidth}
 \begin{enumerate}
 \item X

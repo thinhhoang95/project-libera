@@ -1152,7 +1152,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         case "ParBoxCommand": {
           const command = node.parent?.parent;
           if (command?.name === "Command" && drawColumns(command) === false) return false;
-          break;
+          // A single `\parbox{w}{…}` in the text: its text (a list in it is drawn as lists are).
+          return starts ? textWrapper(node, "\\parbox") ?? undefined : undefined;
         }
         case "ListEnvironment": return drawList(node);
         case "Item": {
@@ -1289,9 +1290,6 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           else if (structural && name === "Centering" && /^\\centering$/.test(read(state, node.from, node.to))) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
           return false;
         }
-        // `\parbox{w}{…}` in the text: its text (a list in it is drawn as lists are).
-        case "ParBoxCommand":
-          return starts ? textWrapper(node, "\\parbox") ?? undefined : undefined;
         case "UnknownCommand":
           return unknownCommand(node);
       }
