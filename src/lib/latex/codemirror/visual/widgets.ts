@@ -281,6 +281,20 @@ export class ItemMarkerWidget extends VisualWidget {
   }
 }
 
+/** linguex's `\ex.` (an example: "(1)") and `\a.`, `\b.` (its parts: "a."), numbered by the numbering pass. */
+export class ExampleMarkerWidget extends VisualWidget {
+  constructor(readonly part: boolean) { super(part ? "part" : "example"); }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-item cm-vis-item-number cm-vis-item-inline cm-vis-example");
+    refreshable(dom, view, (target) => {
+      const pos = widgetPos(target, dom);
+      const number = (pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "item"))?.number ?? "";
+      dom.textContent = this.part ? `${/[a-z]+$/.exec(number)?.[0] ?? "?"}.` : `(${number || "?"})`;
+    });
+    return dom;
+  }
+}
+
 /** The hidden `\section{` of a heading, drawn as its number. */
 export class HeadingNumberWidget extends VisualWidget {
   constructor(readonly level: string, readonly markup: string) { super(`${level}\u0000${markup}`); }

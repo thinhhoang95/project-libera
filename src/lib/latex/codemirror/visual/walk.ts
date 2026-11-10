@@ -17,7 +17,7 @@ import { macroBuiltTabular, parseTabular, readCtable, readLongTable } from "./ta
 import { argumentGroups, transparentPlan } from "./transparent";
 import {
   ChipWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
@@ -105,6 +105,9 @@ function balancedEnvironments(text: string) {
 }
 
 /** Lengths a float sets for its table or caption (`\aboverulesep = 2mm`, `\tabcolsep=3pt`): layout. */
+/** linguex's example (`\ex.`, `\exg.` with a gloss, `\exi.`) and part (`\a.`, `\b.`) markers. */
+const LINGUEX_MARKER = /^\\(?:ex|exg|exi|a|b)$/;
+
 /** Whether a citation's notes can be printed as text (`[\emph{inter alia}]`); one that cannot leaves the citation source. */
 function notesUnderstood(notes: { pre?: string; post?: string }) {
   return [notes.pre, notes.post].every((note) => !note || citationNoteText(note) !== null);
@@ -1448,6 +1451,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
     const text = read(state, ctrl.from, ctrl.to);
+    // linguex's numbered examples (cs.CL 2611.11838): `\ex.` is "(1)", its parts `\a.` and `\b.` are "a.", "b.".
+    if (LINGUEX_MARKER.test(text) && read(state, ctrl.to, ctrl.to + 1) === "." && defs.packages.includes("linguex") && !macroAt(defs, text.slice(1), node.from)) {
+      if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to + 1, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to + 1, widget: new ExampleMarkerWidget(text === "\\a" || text === "\\b") }] });
+      consumed.push([node.from, ctrl.to + 1]);
+      return false;
+    }
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
     if (text === "\\printbibliography") {
       const end = commandArguments(node).filter((arg) => arg.optional).at(-1)?.node.to ?? ctrl.to;

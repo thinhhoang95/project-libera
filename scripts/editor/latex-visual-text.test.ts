@@ -506,6 +506,31 @@ Kept: \cite[\unknownmacro{x}]{other}.
   assert.match(text, /\\cite\[\\unknownmacro\{x\}\]\{other\}/);
 });
 
+test("linguex's examples are numbered (1), (2) with lettered parts, and referable (cs.CL 2611.11838)", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\usepackage{linguex}
+\begin{document}
+See (\ref{ex:p}), (\ref{ex:q}) and (\ref{ex:pb}).
+
+\ex.\label{ex:p}
+\textbf{Original:} I'm afraid the cat was hit.
+\a. First reading.
+\b.\label{ex:pb} Second reading.
+
+\ex.\label{ex:q} Plain example.
+
+\exg. Dit is een voorbeeld.\\
+This is an example.
+\end{document}
+`);
+  assert.match(text, /See \(1\), \(2\) and \(1b\)\./);
+  assert.match(text, /\(1\)\s*ex:p\s*Original: I'm afraid/);
+  assert.match(text, /a\. First reading\.\s*b\.\s*ex:pb Second reading\./);
+  assert.match(text, /\(2\)\s*ex:q Plain example\./);
+  assert.match(text, /\(3\) Dit is een voorbeeld\./);
+  assert.doesNotMatch(text, /\\ex|\\a\.|\\b\./);
+});
+
 test("Cambridge's jfp front matter folds into the title block, also when a long document is built in pieces (cs.LO 2610.41832)", () => {
   const doc = String.raw`\documentclass[nolinenum]{jfp}
 \begin{document}
