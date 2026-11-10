@@ -3236,6 +3236,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-caption-algorithm { margin: 0 0 .3em; padding: .2em 0; border-block: 1px solid currentColor; text-align: left; }
 .cm-vis-algorithm { padding-bottom: .3em; border-bottom: 1px solid currentColor; font-size: .92em; line-height: 1.55; text-align: left; }
 .cm-vis-algorithm-block { flex: 1 1 100%; min-width: 0; text-align: left; }
+.libera-latex-visual .cm-line.cm-vis-tabbing { padding-left: 1.2em; }
+.cm-vis-tab-stop { display: inline-block; min-width: 1.5em; }
 .cm-vis-figure-intro { margin: 0 0 .45em; font-size: .92em; text-align: left; }
 .cm-vis-figure-note { margin: .35em auto 0; max-width: 92%; font-size: .85em; color: var(--muted-foreground); text-align: justify; }
 .cm-vis-algorithm-line { display: flex; gap: .6em; }

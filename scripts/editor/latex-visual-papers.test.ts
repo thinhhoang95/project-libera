@@ -624,6 +624,21 @@ test("a control symbol the document defines (\\1) expands, and the TeX.SX \\wide
   assert.ok(drawn("", String.raw`\|x\|\!+\!y`));
 });
 
+test("tabbing's tab stops are gaps and its formulas are drawn; \\= elsewhere is still a macron (Featherweight Go's proofs)", () => {
+  const doc = String.raw`\begin{document}
+\begin{tabbing}
+$e' = x$ \= and $t_b = y$ \\
+\> $\Gamma \vdash e : t$ by inversion
+\end{tabbing}
+Caf\=e
+\end{document}
+`;
+  const text = visibleText(doc);
+  assert.doesNotMatch(text, /\\=|\\>|\\begin\{tabbing\}/);
+  assert.match(text, /by inversion/);
+  assert.match(text, /Cafē/);
+});
+
 test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
   const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
     const entry = entries.find((candidate) => candidate.key === key);

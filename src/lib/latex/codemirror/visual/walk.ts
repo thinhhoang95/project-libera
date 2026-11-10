@@ -110,6 +110,8 @@ const TEXT_BLOCKS: Record<string, string> = {
   flushright: "cm-vis-flushright", abstract: "cm-vis-abstract",
   // The appendix package's environment: its lines fold away, its sections are lettered (numbering.ts).
   appendices: "cm-vis-appendices",
+  // `tabbing`: lines of text with tab stops (`\=`, `\>`), drawn as gaps (Featherweight Go's proofs).
+  tabbing: "cm-vis-tabbing",
   // `\begin{small} … \end{small}`: a size, which draws nothing; its lines fold away.
   ...Object.fromEntries(["tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge", "Huge"].map((size) => [size, "cm-vis-sized"])),
 };
@@ -1027,6 +1029,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return undefined;
   }
 
+  /** Whether `node` is inside an environment called `name` (a few levels up). */
+  function insideEnvironment(node: SyntaxNode, name: string) {
+    for (let parent = node.parent, depth = 0; parent && depth < 12; parent = parent.parent, depth++) {
+      if (parent.name === "Environment" && environmentName(parent, readNode) === name) return true;
+    }
+    return false;
+  }
+
   function unknownCommand(node: SyntaxNode): false | undefined {
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
@@ -1042,6 +1052,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (structural) emit({ kind: "index", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ChipWidget("index", text, [read(state, inner.from, inner.to).trim()], {}, to - node.from) }] });
         return false;
       }
+    }
+    // A tab stop in `tabbing` (`\=` sets one, `\>` moves to the next, `\+`/`\-` indent): a gap, as the stops line up.
+    if (/^\\[=><+-]$/.test(text) && insideEnvironment(node, "tabbing")) {
+      if (structural) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to, widget: new SymbolWidget(text === "\\+" || text === "\\-" ? "" : " ", text, "cm-vis-symbol cm-vis-tab-stop") }] });
+      return false;
     }
     // hyperref's `\texorpdfstring{$\ell_1$}{l1}` in a heading: the TeX the page shows; the bookmark's text is hidden.
     if (text === "\\texorpdfstring") {
