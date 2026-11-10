@@ -4,7 +4,7 @@ import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, needsMathMode, readMacroArguments, substituteArguments } from "../../macros/expand";
-import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, restatableTheorem, stripTexComments } from "../../macros/numbering";
+import { enumerateItemLabel, environmentName, FLOAT_KINDS, floatKind, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { parseAlgorithm2e, parseAlgorithmic } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser } from "../latex-parser";
@@ -1062,10 +1062,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
 
     // NeurIPS's `ack` and the like: a heading as the abstract's.
     const acknowledgments = ACKNOWLEDGMENTS.test(name);
-    if (theorem || name === "proof" || name === "abstract" || acknowledgments) {
-      const variant = theorem ? "theorem" : name === "proof" ? "proof" : "abstract";
-      const title = theorem ? theorem.title : name === "proof" ? (note ?? "Proof") : acknowledgments ? "Acknowledgments" : "Abstract";
-      const header = new EnvironmentHeaderWidget(variant, title, theorem ? note : null, theorem?.numbered ? "theorem" : null, 0);
+    // A user environment that is a theorem in a frame (the book 2403.14606's `boxdef`): drawn as the theorem, without the frame.
+    const wrapped = user && !theorem ? wrappedTheorem(userArgs ? substituteArguments(user.begin, userArgs) : user.begin, user.end, defs) : null;
+    const shown = theorem ?? (wrapped ? defs.theorems.get(wrapped.env) : undefined);
+    if (shown || name === "proof" || name === "abstract" || acknowledgments) {
+      const variant = shown ? "theorem" : name === "proof" ? "proof" : "abstract";
+      const title = shown ? shown.title : name === "proof" ? (note ?? "Proof") : acknowledgments ? "Acknowledgments" : "Abstract";
+      const header = new EnvironmentHeaderWidget(variant, title, theorem ? note : wrapped ? wrapped.note : null, shown?.numbered ? "theorem" : null, 0);
       const span = aloneOnLines(doc, begin.from, headerEnd);
       if (structural) {
         emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: header }] });
@@ -1074,7 +1077,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(null) }] });
         } else collapseLine(formed.end, "env-end");
       }
-      const styleClass = theorem ? THEOREM_STYLE_CLASSES[theorem.style] : name === "abstract" ? "cm-vis-abstract" : acknowledgments ? "cm-vis-acknowledgments" : "cm-vis-proof";
+      const styleClass = shown ? THEOREM_STYLE_CLASSES[shown.style] : name === "abstract" ? "cm-vis-abstract" : acknowledgments ? "cm-vis-acknowledgments" : "cm-vis-proof";
       if (formed.content && formed.content.to > headerEnd) emit({ kind: "env-body", from: headerEnd, to: formed.end.from, reveal: "never", replaces: [], marks: [{ from: headerEnd, to: formed.end.from, class: styleClass }], lines: name === "abstract" && contentLines && contentLines.to >= contentLines.from ? [{ ...contentLines, class: "cm-vis-abstract-line" }] : undefined });
       return undefined;
     }

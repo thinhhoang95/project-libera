@@ -106,6 +106,27 @@ export function restatableTheorem(node: SyntaxNode, read: Read) {
   return head ? { env: head[2].trim(), note: head[1]?.trim() || null, name: head[3].trim(), length: head[0].length } : null;
 }
 
+/** Environments around a theorem's text that only frame it (mdframed's box, framed's rule): dropped when it is drawn. */
+const THEOREM_FRAMES = /^(?:mdframed|framed|oframed|shaded\*?|snugshade\*?|leftbar|tcolorbox)$/;
+
+/**
+ * A user environment whose code is a theorem, perhaps in frames (the book 2403.14606's 212 `boxdef`s:
+ * `\newenvironment{boxdef}[1]{\begin{definition}[#1]\begin{mdframed}[style=defsty]}{\end{mdframed}\end{definition}}`):
+ * the theorem's environment and its note as the begin code (arguments substituted) gives it. Null for any other code.
+ */
+export function wrappedTheorem(begin: string, end: string, defs: LatexDefinitions): { env: string; note: string | null } | null {
+  const plain = (code: string) => stripTexComments(code).replace(/\s+/g, "");
+  const opening = /^\\begin\{([^{}]+)\}(?:\[((?:[^\][{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\])?((?:\\begin\{[^{}]+\}(?:\[[^\]]*\])?)*)$/.exec(plain(begin));
+  if (!opening || !defs.theorems.has(opening[1])) return null;
+  const frames = [...opening[3].matchAll(/\\begin\{([^{}]+)\}/g)].map((match) => match[1]);
+  if (frames.some((frame) => !THEOREM_FRAMES.test(frame))) return null;
+  // The end code closes the frames and then the theorem.
+  if (plain(end) !== [...frames].reverse().concat(opening[1]).map((name) => `\\end{${name}}`).join("")) return null;
+  // The note as written (spaces kept): read again from the code.
+  const note = opening[2] === undefined ? null : /\\begin\s*\{[^{}]+\}\s*\[((?:[^\][{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\]/.exec(stripTexComments(begin))?.[1].trim() || null;
+  return { env: opening[1], note };
+}
+
 /** `longtable` and `xltabular`: tables that are their own float, with a caption and head and foot rows. */
 export function isLongTable(node: SyntaxNode, read: Read) {
   return /^(?:longtable|xltabular)\*?$/.test(environmentName(node, read) ?? "");
@@ -772,7 +793,10 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         }
         // thmtools' restatable typesets the theorem it names.
         const restated = env === "restatable" || env === "restatable*" ? restatableTheorem(node, read) : null;
-        const theorem = defs.theorems.get(restated?.env ?? env);
+        // A user environment that is a theorem in a frame (`boxdef`) numbers that theorem.
+        const user = restated || defs.theorems.has(env) ? undefined : defs.environments.get(env);
+        const wrapped = user ? wrappedTheorem(user.begin, user.end, defs) : null;
+        const theorem = defs.theorems.get(restated?.env ?? wrapped?.env ?? env);
         if (theorem) {
           let number: string | null = null;
           if (theorem.numbered) {
@@ -780,7 +804,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             step(counter);
             number = format(counter);
           }
-          const theoremEnv = restated?.env ?? env;
+          const theoremEnv = restated?.env ?? wrapped?.env ?? env;
           entries.push({ pos: node.from, kind: "theorem", number, env: theoremEnv });
           if (number) setTarget({ number, kind: "theorem", pos: node.from, env: theoremEnv });
         }
