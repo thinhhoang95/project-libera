@@ -848,7 +848,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
         }
         // `\verb|…|`, `\lstinline`, `verbatim`, `lstlisting`, `minted`: code, its text taken as written.
-        if (VISIBLE_SKIPPED.has(name) && name !== "Csname" && ref.from >= from && ref.from < to && ref.from > env.preambleEnd && !isConsumed(ref) && !startsDisabled(ref.from)) drawCode(ref.node);
+        // (A long block is built in pieces: the piece with its `\end` line draws that line.)
+        if (VISIBLE_SKIPPED.has(name) && name !== "Csname" && ref.from < to && (ref.from >= from || name === "VerbatimEnvironment") && ref.from > env.preambleEnd && !isConsumed(ref) && !startsDisabled(ref.from)) drawCode(ref.node, ref.from >= from);
         return false;
       }
       if (env.preambleEnd > 0 && ref.to <= env.preambleEnd) return false;
@@ -1315,7 +1316,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    * block as its lines, as written, in the typewriter face (edited in place), its `\begin` and `\end` lines folded away
    * (listings' caption drawn over it). One whose delimiters or options are not closed on their line stays source.
    */
-  function drawCode(node: SyntaxNode) {
+  function drawCode(node: SyntaxNode, starts: boolean) {
     if (node.name === "VerbCommand" || node.name === "LstInlineCommand") {
       const content = node.getChild("VerbContent") ?? node.getChild("LstInlineContent");
       const range = content ? inlineCodeRange(read(state, content.from, content.to)) : null;
@@ -1332,11 +1333,15 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const closing = aloneOnLines(doc, formed.end.from, formed.end.to);
     if (!opening || !closing || doc.lineAt(opening.from).number !== doc.lineAt(headerEnd).number) return;
     if (structural) {
+      if (!starts) {
+        if (closing.from >= from) collapseLine(closing, "code-end");
+        return;
+      }
       if (header.caption) {
         const widget = new CodeCaptionWidget(header.caption, header.numbered, node.from - opening.from);
         emit({ kind: "env-header", from: opening.from, to: opening.to, reveal: "line", wholeLine: true, replaces: [{ from: opening.from, to: opening.to, widget }] });
       } else collapseLine(opening, "code-begin");
-      collapseLine(closing, "code-end");
+      if (closing.from < to) collapseLine(closing, "code-end");
     }
     const first = doc.lineAt(opening.to).number + 1;
     const last = doc.lineAt(closing.from).number - 1;

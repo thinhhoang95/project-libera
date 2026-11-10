@@ -18,7 +18,7 @@ const STYLE_CONTAINERS = new Set([
   "ListEnvironment", "TextBoldCommand", "TextItalicCommand", "EmphasisCommand", "UnderlineCommand", "TextTeletypeCommand",
   "TextSmallCapsCommand", "TextSansSerifCommand", "TextMediumCommand", "StrikeOutCommand", "TextSuperscriptCommand",
   "TextSubscriptCommand", "TextColorCommand", "ColorBoxCommand", "HrefCommand", "UrlCommand", "FootnoteCommand", "EndnoteCommand",
-  "SectioningCommand",
+  "SectioningCommand", "VerbatimEnvironment",
 ]);
 
 function visibleRanges(view: EditorView) {
