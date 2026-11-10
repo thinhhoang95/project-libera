@@ -126,7 +126,11 @@ export function readLatexLabels(source: string) {
   return [...labels];
 }
 
-export type BibEntrySummary = { key: string; type: string; title?: string; author?: string; year?: string };
+/**
+ * `citeAuthor`: the authors as a citation prints them ("Callaway and Sant'Anna", "Abadie et al."), when a compiled
+ * bibliography gives them; `label`: the label a numeric or alphabetic style prints ("12", "Vas17").
+ */
+export type BibEntrySummary = { key: string; type: string; title?: string; author?: string; year?: string; citeAuthor?: string; label?: string };
 
 /** Entry keys and a short description from BibTeX sources, for `\cite` completion. */
 export function readBibEntries(source: string): BibEntrySummary[] {
@@ -140,6 +144,117 @@ export function readBibEntries(source: string): BibEntrySummary[] {
     const field = (name: string) => body.match(new RegExp(`\\b${name}\\s*=\\s*[{"]((?:[^{}"]|\\{[^{}]*\\})*)[}"]`, "i"))?.[1].replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
     entries.push({ key: match[2], type, title: field("title"), author: field("author"), year: field("year") ?? body.match(/\byear\s*=\s*(\d{4})/i)?.[1] });
   }
+  return entries;
+}
+
+/** A TeX group's text without its braces and spacing (`{Sant'Anna}` → Sant'Anna). */
+function bibText(text: string) {
+  return text.replace(/\\bibinitperiod|\\bibinithyphendelim|\\bibnamedelim[a-z]/g, (match) => (match === "\\bibinitperiod" ? "." : match === "\\bibinithyphendelim" ? "-" : " ")).replace(/~/g, " ").replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
+}
+
+/** The authors a citation prints, from surnames: "Sun", "Sun and Abraham", "Sun et al.". */
+function citeAuthors(surnames: string[]) {
+  if (!surnames.length) return undefined;
+  if (surnames.length === 1) return surnames[0];
+  if (surnames.length === 2) return `${surnames[0]} and ${surnames[1]}`;
+  return `${surnames[0]} et al.`;
+}
+
+/**
+ * What a compiled bibliography says about each entry, for documents that ship one without the `.bib` (arXiv sources,
+ * a `.bbl` from the last compile): BibTeX's `thebibliography` (in a `.bbl` or written into the document) and
+ * biblatex's `.bbl` (`\entry{key}{type}{}` … `\endentry`).
+ * - natbib's `\bibitem[Callaway and Sant'Anna(2020)]{key}` gives the cited authors and year;
+ * - `\bibitem{key}` in a numeric style is numbered in order, `\bibitem[Vas17]{key}` has that label;
+ * - biblatex's entries give the authors' family names, the year (with its extra letter) and the title.
+ */
+export function readCompiledBibliography(source: string): BibEntrySummary[] {
+  const entries: BibEntrySummary[] = [];
+  const text = stripLatexComments(source);
+  if (text.includes("\\entry")) {
+    const seen = new Set<string>();
+    for (const match of text.matchAll(/\\entry\s*\{([^{}]+)\}\s*\{([^{}]*)\}[\s\S]*?\\endentry/g)) {
+      // An entry cited in several reference sections is written in each.
+      if (seen.has(match[1].trim())) continue;
+      seen.add(match[1].trim());
+      const body = match[0];
+      const field = (name: string) => {
+        const at = body.search(new RegExp(`\\\\field\\s*\\{${name}\\}\\s*\\{`));
+        if (at < 0) return undefined;
+        const group = readGroup(body, body.indexOf("{", body.indexOf(`{${name}}`, at) + name.length + 2));
+        return group ? bibText(group.content) : undefined;
+      };
+      const names = (role: string) => {
+        const at = body.search(new RegExp(`\\\\name\\s*\\{${role}\\}`));
+        if (at < 0) return [];
+        // \name{author}{2}{}{…}: the fourth group holds the names.
+        let index = at + body.slice(at).indexOf("}") + 1;
+        let group = null;
+        for (let n = 0; n < 3; n++) {
+          const open = body.indexOf("{", index);
+          group = open >= 0 ? readGroup(body, open) : null;
+          if (!group) return [];
+          index = group.end;
+        }
+        const list = group!.content;
+        const families = [...list.matchAll(/family=\{((?:[^{}]|\{[^{}]*\})*)\}/g)].map((family) => bibText(family[1]));
+        if (families.length) return families;
+        // biber before 2.x: {{hash}{Family}{F.}{Given}{G.}…} per name.
+        return [...list.matchAll(/\{\{[^{}]*\}\{((?:[^{}]|\{[^{}]*\})*)\}/g)].map((name) => bibText(name[1]));
+      };
+      const surnames = names("author").length ? names("author") : names("editor");
+      const year = field("labelyear") ?? field("year") ?? field("labeldatesource");
+      const extra = field("extradate") ?? field("extrayear");
+      const extraLetter = extra && /^\d+$/.test(extra) ? String.fromCharCode(96 + Number(extra)) : "";
+      entries.push({
+        key: match[1].trim(), type: match[2].trim() || "misc", title: field("title"), author: surnames.join(" and ") || undefined,
+        year: year ? `${year}${extraLetter}` : undefined, citeAuthor: citeAuthors(surnames),
+        ...(field("labelnumber") ? { label: field("labelnumber") } : field("labelalpha") ? { label: field("labelalpha") } : {}),
+      });
+    }
+    return entries;
+  }
+  const start = text.search(/\\begin\s*\{thebibliography\}/);
+  if (start < 0) return entries;
+  const end = text.indexOf("\\end{thebibliography}", start);
+  const list = text.slice(start, end < 0 ? text.length : end);
+  // The harvard package's `\harvarditem[Abadie et al.]{Abadie, Diamond \harvardand\ Hainmueller}{2010}{key}`.
+  if (list.includes("\\harvarditem")) {
+    const group = (at: number) => { const open = /^\s*\{/.exec(list.slice(at, at + 20)); return open ? readGroup(list, at + open[0].length - 1) : null; };
+    for (const match of list.matchAll(/\\harvarditem\s*(?:\[([^\]]*)\])?/g)) {
+      const names = group((match.index ?? 0) + match[0].length);
+      const year = names && group(names.end);
+      const key = year && group(year.end);
+      if (!names || !year || !key) continue;
+      const cited = bibText((match[1] ?? names.content).replace(/\\harvardand\\?\s*/g, "and "));
+      entries.push({ key: key.content.trim(), type: "bibitem", citeAuthor: cited, year: bibText(year.content) });
+    }
+    return entries;
+  }
+  const items = [...list.matchAll(/\\bibitem\s*(?:\[((?:[^[\]{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\])?\s*\{([^{}]+)\}/g)];
+  items.forEach((item, index) => {
+    const following = list.slice((item.index ?? 0) + item[0].length, items[index + 1]?.index ?? list.length);
+    // The title: the block after the first \newblock, when the style writes them.
+    const blocks = following.split(/\\newblock\b/);
+    // ACM's style marks the title (`\showarticletitle{…}`) and its fields (`\bibinfo{booktitle}{…}`).
+    const marked = /\\showarticletitle\s*\{((?:[^{}]|\{[^{}]*\})*)\}/.exec(following)?.[1];
+    const block = marked ?? (blocks.length > 1 ? blocks[1] : null);
+    const title = block ? bibText(block.replace(/\\bibinfo\s*\{[^{}]*\}/g, "").replace(/\\(?:em|it|bf|textit|emph|textbf|bibfield|showarticletitle)\b\s*/g, "")).replace(/[.,]\s*$/, "") || undefined : undefined;
+    const optional = item[1]?.trim().replace(/^\{([\s\S]*)\}$/, "$1");
+    const entry: BibEntrySummary = { key: item[2].trim(), type: "bibitem", title };
+    // ACM's `\protect\citeauthoryear{Full names}{Short names}{Year}`.
+    const acm = optional ? /\\citeauthoryear\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}/.exec(optional) : null;
+    // natbib: `Short authors(Year)Full authors`.
+    const natbib = optional && !acm ? /^([\s\S]*?)\s*\(\s*([^()]*?)\s*\)\s*([\s\S]*)$/.exec(optional) : null;
+    if (acm) {
+      entry.citeAuthor = bibText(acm[2].replace(/\\mbox\s*/g, ""));
+      entry.year = bibText(acm[3]);
+    } else if (natbib && natbib[1].trim()) {
+      entry.citeAuthor = bibText(natbib[1]);
+      entry.year = bibText(natbib[2]);
+    } else entry.label = optional ? bibText(optional) : String(index + 1);
+    entries.push(entry);
+  });
   return entries;
 }
 

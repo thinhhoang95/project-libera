@@ -8,14 +8,17 @@ import { CONTROL_SYMBOLS, readAccent, SYMBOL_COMMANDS } from "./symbols";
 
 /* What citation and reference chips say (docs/latex-visual-editor-plan.md §3). */
 
-export type BibLookup = (key: string) => { author?: string; year?: string; title?: string } | null;
+/** `citeAuthor` and `label` come from a compiled bibliography (`.bbl`, `thebibliography`): what the citation prints. */
+export type BibLookup = (key: string) => { author?: string; year?: string; title?: string; citeAuthor?: string; label?: string } | null;
 
 export function bibLookup(state: EditorState): BibLookup {
   const project = state.field(latexProjectField, false);
   return (key) => {
     const entry = project?.bibEntries.find((candidate) => candidate.key === key)
       ?? project?.libraryEntries?.find((candidate) => candidate.key === key || candidate.aliases.includes(key));
-    return entry ? { author: entry.author, year: entry.year, title: entry.title } : null;
+    if (!entry) return null;
+    const compiled = "citeAuthor" in entry || "label" in entry ? entry as { citeAuthor?: string; label?: string } : null;
+    return { author: entry.author, year: entry.year, title: entry.title, citeAuthor: compiled?.citeAuthor, label: compiled?.label };
   };
 }
 
@@ -62,10 +65,11 @@ export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLo
   const items = parts.keys.map((key) => {
     const compiled = aux.citations[key];
     const entry = bib(key);
-    const rawAuthors = compiled?.authors ?? shortAuthors(entry?.author) ?? null;
+    const rawAuthors = compiled?.authors ?? entry?.citeAuthor ?? shortAuthors(entry?.author) ?? null;
     const authors = rawAuthors && plainTexText(rawAuthors);
     const year = compiled?.year ?? entry?.year ?? null;
-    const numeric = compiled && /^\d+[a-z]?$/.test(compiled.label) ? compiled.label : null;
+    // A numeric or alphabetic label: the last compile's, else a compiled bibliography's (`\bibitem{key}` in order).
+    const numeric = compiled ? (/^\d+[a-z]?$/.test(compiled.label) ? compiled.label : null) : entry?.label && !entry.citeAuthor ? entry.label : null;
     return { key, authors, year, numeric };
   });
   const allNumeric = items.every((item) => item.numeric);

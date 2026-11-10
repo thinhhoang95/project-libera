@@ -15,6 +15,9 @@ import { columnSpans } from "../../src/lib/latex/codemirror/visual/table-model";
 import { renderKatex } from "../../src/lib/latex/codemirror/visual/math-render";
 import { expandLatexMacros } from "../../src/lib/latex/macros/expand";
 import { macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
+import { readCompiledBibliography } from "../../src/lib/latex/project";
+import { citationText } from "../../src/lib/latex/codemirror/visual/references";
+import { EMPTY_AUX } from "../../src/lib/latex/aux-file";
 import { computeLatexNumbering, numberingEntryAt } from "../../src/lib/latex/macros/numbering";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
@@ -410,6 +413,72 @@ a topic studied by economists. \index{Arrow's Theorem@Arrow's Theorem!proof}
   assert.doesNotMatch(text, /\\index/);
   assert.match(text, /social choice/);
   assert.match(text, /Arrow's Theorem › proof/);
+});
+
+test("a compiled bibliography gives citations their authors, years and numbers when there is no .bib (arXiv sources)", () => {
+  const cite = (command: string, keys: string[], entries: ReturnType<typeof readCompiledBibliography>) => citationText({ command, keys }, EMPTY_AUX, (key) => {
+    const entry = entries.find((candidate) => candidate.key === key);
+    return entry ? { author: entry.author, year: entry.year, title: entry.title, citeAuthor: entry.citeAuthor, label: entry.label } : null;
+  });
+  // biblatex's .bbl (Borusyak et al.), with an entry repeated in a second reference section.
+  const biblatex = readCompiledBibliography(String.raw`\refsection{0}
+    \entry{Abraham2018}{article}{}
+      \name{author}{2}{}{%
+        {{hash=3011926b49b3aa7b3e8913ca855e42fc}{%
+           family={Sun},
+           familyi={S\bibinitperiod},
+           given={Liyang},
+           giveni={L\bibinitperiod}}}%
+        {{hash=1bfe7aacc440efc360e6a6e3eaa7a2d3}{%
+           family={Abraham},
+           familyi={A\bibinitperiod},
+           given={Sarah},
+           giveni={S\bibinitperiod}}}%
+      }
+      \field{labelnamesource}{author}
+      \field{title}{{Estimating Dynamic Treatment Effects in Event Studies}}
+      \field{year}{2021}
+    \endentry
+    \entry{Abraham2018}{article}{}
+      \name{author}{1}{}{%
+        {{hash=0}{family={Wrong}}}%
+      }
+      \field{year}{1999}
+    \endentry
+  \endrefsection`);
+  assert.equal(biblatex.length, 1);
+  assert.equal(biblatex[0].year, "2021");
+  assert.equal(cite("\\textcite", ["Abraham2018"], biblatex), "Sun and Abraham (2021)");
+  // natbib's author-year labels.
+  const natbib = readCompiledBibliography(String.raw`\begin{thebibliography}{2}
+\bibitem[{Abadie et~al.(2010)Abadie, Diamond, and Hainmueller}]{abadie2010}
+Abadie, A., A.~Diamond, and J.~Hainmueller.
+\newblock Synthetic control methods.
+\bibitem[Card and Krueger(1994)]{card1994}
+Card, D. and A.~B. Krueger.
+\end{thebibliography}`);
+  assert.equal(cite("\\citet", ["abadie2010"], natbib), "Abadie et al. (2010)");
+  assert.equal(cite("\\citep", ["card1994"], natbib), "[Card and Krueger 1994]");
+  // The harvard package (Callaway & Sant'Anna's .bbl).
+  const harvard = readCompiledBibliography(String.raw`\begin{thebibliography}{xx}
+\harvarditem{Abadie}{2005}{Abadie2005}
+Abadie, A.  \harvardyearleft 2005\harvardyearright , "Semiparametric estimators,"
+\harvarditem[Abadie et~al.]{Abadie, Diamond \harvardand\ Hainmueller}{2010}{Abadie2010}
+Abadie, A., Diamond, A.
+\end{thebibliography}`);
+  assert.equal(cite("\\citet", ["Abadie2005"], harvard), "Abadie (2005)");
+  assert.equal(cite("\\citet", ["Abadie2010"], harvard), "Abadie et al. (2010)");
+  // A numeric style written into the document (Attention Is All You Need): numbered in order.
+  const numeric = readCompiledBibliography(String.raw`\begin{thebibliography}{10}
+\bibitem{layernorm2016}
+Jimmy~Lei Ba, Jamie~Ryan Kiros, and Geoffrey~E Hinton.
+\newblock Layer normalization.
+\bibitem{bahdanau2014neural}
+Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio.
+\newblock Neural machine translation by jointly learning to align and translate.
+\end{thebibliography}`);
+  assert.equal(numeric[1].title, "Neural machine translation by jointly learning to align and translate");
+  assert.equal(cite("\\cite", ["bahdanau2014neural", "layernorm2016"], numeric), "[2, 1]");
 });
 
 test("an array drawn on its own keeps its column specification (Featherweight Go's \\begin{array}{l} in rules)", () => {

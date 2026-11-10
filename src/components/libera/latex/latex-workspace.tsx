@@ -10,7 +10,7 @@ import { latexLibraryEntries, type LatexProjectData, type LatexProjectFile } fro
 import type { BibMirrorResult } from "@/lib/references/bib-mirror";
 import { useReferenceLibrary } from "@/components/libera/references/use-reference-library";
 import {
-  LATEX_ENGINE_LABELS, hasDocumentClass, isCompilableLatexPath, readBibEntries, readLatexBibliographyReferences, readLatexLabels,
+  LATEX_ENGINE_LABELS, hasDocumentClass, isCompilableLatexPath, readBibEntries, readCompiledBibliography, readLatexBibliographyReferences, readLatexLabels,
   readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, type BibEntrySummary, type LatexEngineSetting,
 } from "@/lib/latex/project";
 import { bodyStartOf, collectLatexDefinitions, readLatexInputs } from "@/lib/latex/macros/definitions";
@@ -291,6 +291,49 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bibKey, build.version]);
 
+  // Compiled bibliographies, for citations a `.bib` does not cover (arXiv sources ship the `.bbl`, not the `.bib`):
+  // the main file's `.bbl`, the main file's own `thebibliography` (a chapter's citations), and this file's.
+  const compiledBibPaths = useMemo(() => {
+    const paths: string[] = [];
+    const bbl = rootPath.replace(/\.(?:tex|ltx)$/i, ".bbl");
+    if (bbl !== rootPath && knownLatexPaths.has(bbl)) paths.push(bbl);
+    if (rootPath !== filePath) paths.push(rootPath);
+    return paths;
+  }, [filePath, knownLatexPaths, rootPath]);
+  const compiledBibKey = compiledBibPaths.map((path) => `${path}@${fileUpdatedAt.get(path) ?? ""}`).join("|");
+  const [compiledBibEntries, setCompiledBibEntries] = useState<BibEntrySummary[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const entries: BibEntrySummary[] = [];
+      for (const path of compiledBibPaths) {
+        const openTab = latest.current.readOpenTabs().find((other) => other.file.path === path);
+        const cacheKey = `compiled:${fileUpdatedAt.get(path) ?? ""}:${openTab ? liveTabText(openTab).length : ""}`;
+        let cached = bibCache.get(`compiled:${path}`);
+        if (!cached || cached.key !== cacheKey) {
+          const content = (openTab ? liveTabText(openTab) : null) ?? (await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => ""));
+          cached = { key: cacheKey, entries: readCompiledBibliography(content) };
+          bibCache.set(`compiled:${path}`, cached);
+        }
+        entries.push(...cached.entries);
+      }
+      if (!cancelled) setCompiledBibEntries(entries);
+    })();
+    return () => { cancelled = true; };
+    // compiledBibKey covers the paths and their versions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compiledBibKey, build.version]);
+  // This file's own `thebibliography`, read again only when it changes.
+  const ownBibliographyText = useMemo(() => {
+    const start = draftForAnalysis.search(/\\begin\s*\{thebibliography\}/);
+    if (start < 0) return "";
+    const end = draftForAnalysis.indexOf("\\end{thebibliography}", start);
+    return draftForAnalysis.slice(start, end < 0 ? draftForAnalysis.length : end);
+  }, [draftForAnalysis]);
+  const ownBibliography = useMemo(() => (ownBibliographyText ? readCompiledBibliography(ownBibliographyText) : []), [ownBibliographyText]);
+  // A `.bib` entry comes first; a compiled one fills in what it does not have.
+  const allBibEntries = useMemo(() => (ownBibliography.length || compiledBibEntries.length ? [...bibEntries, ...ownBibliography, ...compiledBibEntries] : bibEntries), [bibEntries, compiledBibEntries, ownBibliography]);
+
   // Definitions the Visual mode needs from other files: the main file's
   // preamble (for a chapter), and the macro files and local packages a
   // preamble loads, and theirs. Read live from open tabs (shared ones from
@@ -383,8 +426,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not turn on references.bib."));
   }, [notebook]);
   const project = useMemo<LatexProjectData>(
-    () => ({ labels: otherLabels, bibEntries, files: projectFiles, libraryEntries, hasBibliography, enableBibMirror }),
-    [bibEntries, otherLabels, projectFiles, libraryEntries, hasBibliography, enableBibMirror],
+    () => ({ labels: otherLabels, bibEntries: allBibEntries, files: projectFiles, libraryEntries, hasBibliography, enableBibMirror }),
+    [allBibEntries, otherLabels, projectFiles, libraryEntries, hasBibliography, enableBibMirror],
   );
 
   /** Of packages a chapter file could not load itself, those its main file lacks too. */
