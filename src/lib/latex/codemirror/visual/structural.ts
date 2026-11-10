@@ -78,6 +78,8 @@ const WIDEN = new Set([
   "EquationEnvironment", "EquationArrayEnvironment", "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment",
   "TabularEnvironment", "ListEnvironment", "Maketitle", "IncludeGraphics", "SectioningCommand", "UnknownCommand",
 ]);
+// `\mbox{…}` (drawn upright, as `\textrm{…}`) is a style like the others: a `}` typed lines after its `{` closes it.
+WIDEN.add("MathTextCommand");
 const TABULAR_ENVIRONMENTS = /^(?:tabular\*?|tabularx|tabulary|longtable\*?|xltabular)$/;
 const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices|thebibliography|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;
 
@@ -388,6 +390,16 @@ function buildPending(state: EditorState, tree: Tree, working: Working, from: nu
   }
 }
 
+/** The start of the outermost node of `tree` (up to CHUNK long) that runs across `pos`: what a tree ending at `pos` had cut short. */
+function cutShortFrom(tree: Tree, pos: number) {
+  let from = pos;
+  for (let node: ReturnType<Tree["resolveInner"]> | null = tree.resolveInner(pos, -1); node; node = node.parent) {
+    if (node.to - node.from > CHUNK) break;
+    if (node.from < pos && node.to > pos) from = Math.min(from, node.from);
+  }
+  return from;
+}
+
 function emptyWorking(): Working {
   return { decorations: Decoration.none, extents: RangeSet.empty, pending: [] };
 }
@@ -530,6 +542,10 @@ export const structuralField = StateField.define<StructuralState>({
           const to = Math.min(pending.to, tree.length, from + CHUNK);
           if (to > from) buildPending(state, tree, working, from, to, preambleEnd, preambleOpen);
         }
+        // What was built before the old tree's end from a node it cut short (an `\mbox{` whose `}` it had not reached,
+        // left as source) is built again from the node's start, now that the node is whole.
+        const cut = cutShortFrom(tree, value.treeLength);
+        if (cut < value.treeLength) rebuild(state, tree, working, cut, value.treeLength, preambleEnd, preambleOpen, false);
         const frontier = Math.max(0, Math.min(value.treeLength, state.doc.length));
         if (frontier < state.doc.length && !working.pending.some((range) => range.from <= frontier && range.to > frontier)) {
           rebuild(state, tree, working, frontier, Math.min(state.doc.length, frontier + 1), preambleEnd, preambleOpen, true, { oldTree: syntaxTree(tr.startState), oldDoc: tr.startState, changes: tr.changes });

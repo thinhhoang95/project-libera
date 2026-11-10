@@ -4,7 +4,7 @@ import { after, test } from "node:test";
 import fc from "fast-check";
 import { JSDOM } from "jsdom";
 import { history } from "@codemirror/commands";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-language";
@@ -157,6 +157,40 @@ test("a } typed lines after a font switch's { draws the group it closes", () => 
   const at = paper.indexOf("\\begin{algorithmic}");
   assertIncrementalMatchesFresh(paper, [{ from: at + 3, to: at + 7, insert: "\\eqnr" }]);
 });
+
+test("what was built from a node the parser had cut short is built again when the parser catches up", () => {
+  // Fuzzing "edits around delimited pairs, discarding macros…" with the parser behind (its 20 ms budget running out
+  // under load): `\begin{figure}` became `\\beabegin{figure}`, so the figure's `\mbox{` is drawn as a box of its own; the
+  // parse after the edit stopped inside it, and once the parser caught up only what followed that point was built
+  // again: the box stayed source.
+  const doc = "\\documentclass{article}\n\\begin{document}\n\\begin{figure}\n  \\centering\n  \\mbox{\n    \\includegraphics{r1}\n    \\includegraphics{r5}\n  }\n  \\caption{Recall.}\n\\end{figure}\nAfter.\n\\end{document}\n";
+  const at = doc.indexOf("begin{figure}");
+  // Positions after the edit.
+  const box = doc.indexOf("\\mbox{") + 4;
+  const close = doc.indexOf("}\n  \\caption") + 4;
+  let found = false;
+  // The clock jumps once the parser has read it `reads` times: its budget runs out there. Find a cut inside the box.
+  for (let reads = 0; reads < 400 && !found; reads++) {
+    let state = stateFor(doc);
+    withParserBudget(reads, () => { state = state.update({ changes: { from: at, insert: "\\bea" } }).state; });
+    const parsed = syntaxTree(state).length;
+    if (parsed <= doc.indexOf("\n", box - 4) + 4 || parsed >= close) continue;
+    found = true;
+    ensureSyntaxTree(state, state.doc.length, 5000);
+    const incremental = fill(state.update({}).state);
+    assert.ok(constructs(incremental).some((entry) => entry.startsWith(`style:${box}:`)), "the box is drawn");
+    assert.deepEqual(constructs(incremental), constructs(fill(stateFor(incremental.doc.toString()))));
+  }
+  assert.ok(found, "a parse that stops inside the box");
+});
+
+/** Runs `run` with the clock jumping ahead once it has been read `reads` times: a parse's time budget runs out there. */
+function withParserBudget(reads: number, run: () => void) {
+  const now = Date.now;
+  let count = 0;
+  Date.now = () => now() + Math.max(0, count++ - reads) * 1e7;
+  try { run(); } finally { Date.now = now; }
+}
 
 test("typing in a list of the document's own (enumitem's \\newlist) keeps its items drawn", () => {
   // The edit's lines were walked without the list around them: `\item Two` lost its marker until the next full build.
