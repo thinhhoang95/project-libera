@@ -1,5 +1,6 @@
 import { MAX_MACRO_DEPTH, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
-import { macroAt, type LatexDefinitions, type LatexMacro, type XparseArgument } from "./definitions";
+import { evaluateIfThenElse, evaluateTexConditionals } from "./conditionals";
+import { conditionalFacts, macroAt, type LatexDefinitions, type LatexMacro, type XparseArgument } from "./definitions";
 
 /* Expanding the document's macros (docs/latex-visual-editor-plan.md §7.4).
  * In math, uses are substituted into the formula before KaTeX sees it; in
@@ -183,7 +184,15 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   const read = readMacroArguments(source, index + match[0].length, macro);
   if (!read) return false;
   context.used.add(macro.fingerprint);
-  const body = evaluateConditionals(substituteArguments(macro.body, read.args));
+  // A `\let` copy of LaTeX's own command saved before the document redefines it (`\let\oldemph\emph`, then
+  // `\renewcommand{\emph}[1]{\textcolor{red}{\oldemph{#1}}}`) stands for the original, not the redefinition.
+  if (macro.alias && new RegExp(String.raw`\\${match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z@])`).test(macroAt(context.defs, macro.body.slice(1), context.pos)?.body ?? "")) return { text: macro.body, end: read.end };
+  let body = evaluateConditionals(substituteArguments(macro.body, read.args));
+  // TeX's conditionals and ifthen's `\ifthenelse` that are decided here (estout's `\sym` takes its `\ifmmode` branch).
+  if (body.includes("\\if")) {
+    const facts = conditionalFacts(context.defs, context.pos, context.mode === "math");
+    body = evaluateTexConditionals(evaluateIfThenElse(body, facts), facts);
+  }
   const inner = expandText(body, context, depth + 1);
   if (inner === null) return false;
   // A control word right after the expansion must not run into it (`\x y` → `\alpha y`, not `\alphay`).
@@ -312,7 +321,9 @@ export function expandLatexMacroUse(source: string, defs: LatexDefinitions, opti
   const macro = name ? macroAt(defs, name[1], context.pos) : null;
   if (macro?.alias && /^[{[*]/.test(source.slice(skipSpaces(source, name![0].length)))) return null;
   const result = expandUse(source, 0, context, 0);
-  return result ? { text: result.text, length: result.end, used: [...context.used] } : null;
+  // `\etal{} show`: the empty group after a macro without arguments only keeps the space; it is part of the use.
+  const empty = result && macro && !macro.arity && !macro.spec && /^\{\}/.test(source.slice(result.end, result.end + 2)) ? 2 : 0;
+  return result ? { text: result.text, length: result.end + empty, used: [...context.used] } : null;
 }
 
 /** Commands that only make sense in math, so a text expansion containing them (outside math) cannot be drawn as text. */

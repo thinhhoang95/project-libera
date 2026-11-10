@@ -1,4 +1,5 @@
-import { definitionExtentAt, macroAt, type LatexDefinitions } from "./definitions";
+import { decideConditional, opensConditional, type ConditionalFacts } from "./conditionals";
+import { conditionalFacts, conditionalFactsKey, definitionExtentAround, definitionExtentAt, macroAt, switchAt, type LatexDefinitions } from "./definitions";
 
 /* Macros that write a document's structure: `\newcommand{\mysec}[1]{\section{#1}}`,
  * `\newcommand{\step}{\item}`, `\newcommand{\nl}{\\}`, `\newcommand{\beq}{\begin{equation}}`.
@@ -177,14 +178,15 @@ function groupsEnd(text: string, at: number, count: number) {
  * their arguments (`\cut{…}` with `\newcommand{\cut}[1]{}`), through their
  * arguments. Neither numbered nor drawn.
  */
-export function disabledRegions(text: string, discarding: ReadonlyMap<string, number> = new Map()): Array<{ from: number; to: number }> {
+export function disabledRegions(text: string, discarding: ReadonlyMap<string, number> = new Map(), defs?: LatexDefinitions): Array<{ from: number; to: number }> {
   const used = [...discarding.keys()].filter((name) => text.includes(`\\${name}`));
   const comments = text.includes("\\begin{comment}");
-  if (!/\\if(?:false|x|num)?(?![A-Za-z@])/.test(text) && !used.length && !comments) return [];
-  const names = used.join(",");
+  // With the document's definitions, any conditional may be decided (`\ifnum\llncs=0`, a `\newif` switch).
+  if (!(defs ? /\\if/ : /\\if(?:false|x|num)?(?![A-Za-z@])/).test(text) && !used.length && !comments) return [];
+  const names = `${used.join(",")}\u0000${defs ? `${conditionalFactsKey(defs)}\u0000${defs.fingerprint}` : ""}`;
   const cached = disabledCache.get(text);
   if (cached && cached.names === names) return cached.regions;
-  const regions = [...falseRegions(text), ...discardedRegions(text, used, discarding), ...(comments ? commentRegions(text) : [])].sort((a, b) => a.from - b.from);
+  const regions = [...falseRegions(text, defs), ...discardedRegions(text, used, discarding), ...(comments ? commentRegions(text) : [])].sort((a, b) => a.from - b.from);
   // Only the outermost: a `\cut{…}` inside `\iffalse` is left out with it.
   const outer = regions.filter((region, index) => !regions.some((other, at) => at !== index && other.from <= region.from && other.to >= region.to && (at < index || other.from !== region.from || other.to !== region.to)));
   if (disabledCache.size > 8) disabledCache.clear();
@@ -241,8 +243,53 @@ function staticallyFalse(text: string, at: number, name: string) {
   return !!tokens && tokens[1] !== tokens[2];
 }
 
-/** What `\iffalse … \fi` leaves out (see `disabledRegions`), and conditionals the text decides as false. */
-function falseRegions(text: string) {
+/**
+ * What `\iffalse … \fi` leaves out (see `disabledRegions`), and the branch a conditional does not take when it is
+ * decided (conditionals.ts): `\if0` on its own line, `\ifnum\llncs=1` with `\def\llncs{0}` (2410.03413), a `\newif`
+ * switch; a true one's `\else … \fi`. Definitions' bodies are not run here: their conditionals do not count.
+ */
+function falseRegions(text: string, defs?: LatexDefinitions) {
+  if (!defs) return staticFalseRegions(text);
+  const regions: Array<{ from: number; to: number }> = [];
+  const declared = new Set([...text.matchAll(/\\newif\s*\\(if[A-Za-z@]+)/g)].map((match) => match[1]));
+  const switches: Pick<ConditionalFacts, "switchState"> = { switchState: (name) => (declared.has(name) ? null : switchAt(defs, name, Number.MAX_SAFE_INTEGER)) };
+  /** Open conditionals, innermost last; `from`: where the region it leaves out started (-1 when none is open). */
+  const stack: Array<{ value: boolean | null; inElse: boolean; from: number }> = [];
+  // Escaped characters (`\%`, `\\`) first: they are no comment and no command.
+  const token = /\\[^A-Za-z@]|%[^\n]*|\\(unless|if[A-Za-z@]*|fi|else|or|repeat)(?![A-Za-z@])/g;
+  let unless = -1;
+  for (let match = token.exec(text); match; match = token.exec(text)) {
+    const name = match[1];
+    if (!name) continue;
+    const extent = definitionExtentAround(defs, match.index);
+    if (extent) { token.lastIndex = Math.max(token.lastIndex, extent.to); continue; }
+    const end = match.index + match[0].length;
+    if (name === "unless") { unless = match.index; continue; }
+    const left = stack.some((open) => open.from >= 0);
+    if (name === "fi" || name === "repeat") {
+      // plain TeX's `\repeat` is a `\fi`.
+      const top = stack.pop();
+      if (top && top.from >= 0) regions.push({ from: top.from, to: end });
+    } else if (name === "else" || name === "or") {
+      const top = stack[stack.length - 1];
+      if (!top || top.inElse || name === "or") continue;
+      top.inElse = true;
+      if (top.from >= 0) { regions.push({ from: top.from, to: end }); top.from = -1; }
+      else if (top.value === true && !left) top.from = match.index;
+    } else if (opensConditional(name, text, end, switches)) {
+      // Under a branch left out TeX only counts conditionals.
+      const decided = left ? null : decideConditional(text, end, name, conditionalFacts(defs, match.index));
+      const inverted = unless >= 0 && !text.slice(unless + 7, match.index).trim();
+      const value = decided ? decided.value !== inverted : null;
+      stack.push({ value, inElse: false, from: value === false ? (inverted ? unless : match.index) : -1 });
+    }
+    unless = -1;
+  }
+  return regions;
+}
+
+/** `falseRegions` without the document's definitions: `\iffalse`, and tests on characters and numbers written out. */
+function staticFalseRegions(text: string) {
   const regions: Array<{ from: number; to: number }> = [];
   if (!/\\if(?:false|x|num)?(?![A-Za-z@])/.test(text)) return regions;
   const declared = new Set([...text.matchAll(/\\newif\s*\\(if[A-Za-z@]+)/g)].map((match) => match[1]));

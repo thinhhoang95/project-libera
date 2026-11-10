@@ -156,8 +156,8 @@ test("etoolbox's and biblatex's \\ifbool{…}, \\iffieldundef{…} are macros, n
   const defs = readLatexDefinitions(source);
   assert.equal(macroAt(defs, "assumptionname", 0)?.body, "Assumption");
   assert.equal(macroAt(defs, "assumptionname", 0)?.unsupported, undefined);
-  // A conditional made with \newif is one, whatever follows it.
-  assert.equal(macroAt(defs, "note", 0)?.unsupported, true);
+  // A conditional made with \newif is one, whatever follows it (false until `\drafttrue`: what it holds is not run).
+  assert.equal(macroAt(defs, "note", 0), null);
 });
 
 test("definitions in \\AtBeginDocument{…} and LyX's \\global\\long\\def last past their braces", () => {

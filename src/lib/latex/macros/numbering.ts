@@ -632,7 +632,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     try { return format("footnote"); } finally { counters.set("footnote", saved); }
   };
   /** What `\iffalse … \fi` and macros that discard their arguments (`\cut{…}`) leave out of the document: not numbered. */
-  const disabled = includeDepth ? [] : disabledRegions(mainRead(0, tree.length), discardingMacros(defs));
+  const disabled = includeDepth ? [] : disabledRegions(mainRead(0, tree.length), discardingMacros(defs), defs);
   /** Nodes entered (for what follows the `\fi` inside them) but not counted themselves: by name and start. */
   const passive = new Set<string>();
   const numberExpansion = (host: SyntaxNode, text: string) => {
