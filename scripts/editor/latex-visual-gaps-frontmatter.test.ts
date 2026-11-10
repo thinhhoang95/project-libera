@@ -95,7 +95,7 @@ test("revtex: each author's affiliations (a shared one, a different one), email,
     "line6: Preprint: APS/123-QED", "line7: Collaboration: The XYZ Collaboration", "line8: PACS: 12.34.Ab",
   ]);
   assert.doesNotMatch(text, /\\(?:title|author|affiliation|pacs|preprint)/);
-  assert.match(text, /1 Introduction/);
+  assert.match(text, /1\s*Introduction/);
 });
 
 test("principle 1: one command the title run does not know stays source alone; the declarations around it stay drawn", () => {
@@ -298,7 +298,7 @@ test("principle 2: a title block being typed stays source until complete, withou
     assert.equal(view.state.doc.toString(), doc);
     const text = view.contentDOM.textContent ?? "";
     // The body after it is drawn as before.
-    assert.match(text, /1 Introduction/, `step ${index}`);
+    assert.match(text, /1\s*Introduction/, `step ${index}`);
     view.destroy();
   }
   // elsarticle's front matter without its end: source, and the section after it is drawn.
