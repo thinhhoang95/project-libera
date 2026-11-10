@@ -496,6 +496,31 @@ test("a chapter's start is the same when the project is numbered again after an 
   }
 });
 
+test("an environment restating a theorem by reference draws its heading with the reference (math.CO 2611.11191's teoremarep)", () => {
+  const doc = String.raw`\documentclass{article}
+\usepackage{amsthm}
+\newtheorem{teorema}{Theorem}
+\newtheorem*{teoremarepinner}{Theorem \theteoremarepnum}
+\newcommand{\theteoremarepnum}{}
+\newenvironment{teoremarep}[1]{\renewcommand{\theteoremarepnum}{\ref{r:#1}}\begin{teoremarepinner}}{\end{teoremarepinner}}
+\begin{document}
+\begin{teorema}\label{r:1.1}
+Packings are designs.
+\end{teorema}
+\section{Packing}
+\begin{teoremarep}{1.1}
+Packings are designs, restated.
+\end{teoremarep}
+\end{document}
+`;
+  const state = visualState(doc);
+  const at = doc.indexOf("\\begin{teoremarep}");
+  assert.ok(constructs(state).some((entry) => entry.startsWith("env-header:") && Number(entry.split(":")[1]) <= at && Number(entry.split(":")[2]) > at));
+  const text = visibleText(doc);
+  assert.match(text, /Theorem 1\. Packings are designs, restated\./);
+  assert.doesNotMatch(text, /teoremarep|\\begin/);
+});
+
 test("the body starts at the first \\begin{document} outside a comment (AASTeX 7's template comment, astro-ph.GA 2611.08676)", () => {
   const doc = String.raw`\documentclass[twocolumn]{aastex701}
 %% This is the end of the preamble.  Indicate the beginning of the

@@ -512,14 +512,18 @@ function drawableEnvironmentCode(code: string): string | null {
 
 /**
  * The named-theorem idiom (O'Donnell's `\newenvironment{named}[1]{\renewcommand{\theoremname}{#1}\begin{namedtheorem}}`
- * with `\newtheorem*{namedtheorem}{\theoremname}`): an unnumbered theorem whose heading is the argument. Null otherwise.
+ * with `\newtheorem*{namedtheorem}{\theoremname}`): an unnumbered theorem whose heading is the argument, or holds it
+ * (math.CO 2611.11191's restated `\newtheorem*{teoremarepinner}{Theorem \theteoremarepnum}` with
+ * `\renewcommand{\theteoremarepnum}{\ref{r:#1}}`: "Theorem 1.1"). Null otherwise.
  */
 function namedTheorem(code: string, defs: LatexDefinitions) {
   const match = /^\s*\\(?:re)?newcommand\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\\begin\s*\{([^{}]+)\}\s*$/.exec(code);
   if (!match) return null;
   const theorem = defs.theorems.get(match[4].trim());
-  if (!theorem || theorem.numbered || theorem.title.replace(/\\protect\s*/g, "").trim() !== `\\${match[1] ?? match[2]}`) return null;
-  return { theorem, title: match[3].trim() };
+  const title = theorem?.title.replace(/\\protect\s*/g, "").trim() ?? "";
+  const use = new RegExp(String.raw`\\${match[1] ?? match[2]}(?![A-Za-z@])`, "g");
+  if (!theorem || theorem.numbered || title.match(use)?.length !== 1) return null;
+  return { theorem, title: title.replace(use, () => match[3].trim()) };
 }
 
 /** `inline`: a list run into its paragraph (paralist's `inparaenum`), whose lines are not indented. */
