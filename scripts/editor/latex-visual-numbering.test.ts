@@ -95,6 +95,39 @@ test("B5-01: \\frontmatter and \\backmatter chapters are not numbered; \\mainmat
   assert.deepEqual(sectionNumbers(String.raw`\chapter{Foreword}`, { start: { counters: {}, appendix: false, mainmatter: false } }), [null]);
 });
 
+test("2611.08676: AASTeX's deluxetable is a numbered table (a label after \\begin refers to it), and \\restartappendixnumbering numbers A1, B1", () => {
+  const source = String.raw`\documentclass{aastex701}
+\begin{document}
+\section{Data}
+\begin{deluxetable*}{lc}\label{tab:params}
+\tablecaption{Parameters}
+\startdata
+a & 1 \\
+\enddata
+\end{deluxetable*}
+\begin{deluxetable}{lc}
+\tablecaption{Ages\label{tab:ages}}
+\startdata
+a & 1
+\enddata
+\end{deluxetable}
+\begin{figure}\caption{Spectra}\label{fig:spec}\end{figure}
+\begin{equation}x\label{eq:x}\end{equation}
+\appendix
+\restartappendixnumbering
+\section{Lines}
+\begin{deluxetable}{l}\tablenum{9}\tablecaption{Given}\label{tab:given}\startdata a\enddata\end{deluxetable}
+\begin{deluxetable}{l}\tablecaption{Lines\label{tab:a1}}\startdata a\enddata\end{deluxetable}
+\section{Histograms}
+\begin{figure}\caption{Histograms}\label{fig:b1}\end{figure}
+\begin{equation}y\label{eq:b1}\end{equation}
+\end{document}`;
+  const labels = number(source).labels;
+  assert.deepEqual(["tab:params", "tab:ages", "fig:spec", "eq:x", "tab:given", "tab:a1", "fig:b1", "eq:b1"].map((key) => labels.get(key)?.number), ["1", "2", "1", "1", "9", "A1", "B1", "B1"]);
+  // `\appendix` and `\restartappendixnumbering` print nothing: their lines fold away.
+  assert.doesNotMatch(visibleText(source), /\\appendix|\\restartappendixnumbering/);
+});
+
 test("B4-01: \\begin{appendix} letters the sections after it, and the floats numbered by them (KOMA min-wage paper)", () => {
   const source = String.raw`\documentclass{scrartcl}
 \begin{document}

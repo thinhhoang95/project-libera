@@ -368,3 +368,39 @@ test("B4-29..34: stargazer's \\\\[-1.8ex] rows, \\rotatebox in cells, and a tabu
   const rules = inDocument("\\begin{tabular}{ll}\n\\hline\n\\hline\n\\end{tabular}");
   assert.equal(constructs(visualState(rules)).some((item) => item.startsWith("table:")), false);
 });
+
+test("2611.08676: AASTeX's deluxetable is drawn as a numbered table with its head, rows and notes; \\plottwo figures as images", () => {
+  const preamble = "\\documentclass{aastex701}\n";
+  const table = inDocument(String.raw`\begin{deluxetable*}{lcc}[h!]\label{tab:params}
+\tablecaption{Stellar Parameters}
+\tablewidth{0pt}
+\tabletypesize{\scriptsize}
+\tablehead{
+\colhead{Parameter} & \colhead{K2-141} & \colhead{NGTS-10}
+}
+\startdata
+\sidehead{Literature}
+Radius & $0.68\pm0.02$ & \nodata \\
+% Bytes & 1 & 2 \\
+Bytes & 1\phn--\phn9 & 11--19\tablenotemark{a} \\
+\hline
+\enddata
+\tablenotetext{a}{From 2MASS.}
+\tablecomments{A star marks adopted values.}
+\tablerefs{(1) Malavolta 2018.}
+\end{deluxetable*}`, preamble);
+  assert.equal(drawnFloats(table), 1);
+  const { text, html, raw } = mounted(table);
+  assert.match(text, /Table 1: Stellar ParametersParameterK2-141NGTS-10LiteratureRadius0\.68±0\.02⋯Bytes1\u2007–\u2007911–19a/);
+  assert.match(text, /aFrom 2MASS\.Note—A star marks adopted values\.References—\(1\) Malavolta 2018\./);
+  assert.doesNotMatch(text, /Bytes12/);
+  assert.match(html, /<sup>a<\/sup>/);
+  assert.deepEqual(raw, []);
+  // A command it does not know inside leaves it as source.
+  assert.equal(drawnFloats(inDocument("\\begin{deluxetable}{l}\n\\tablecaption{A}\n\\mystery{x}\n\\startdata\na\n\\enddata\n\\end{deluxetable}", preamble)), 0);
+  const plots = inDocument("\\begin{figure*}[h!]\n    \\epsscale{0.8}\n    \\plotone{a.pdf}\n    \\plottwo{b.pdf}{c.pdf}\n    \\caption{Spectra}\n    \\label{fig:spec}\n\\end{figure*}", preamble);
+  assert.equal(drawnFloats(plots), 1);
+  assert.match(mounted(plots).text, /a\.pdfb\.pdfc\.pdfFigure 1: Spectra/);
+  // Outside AASTeX the commands are not known: the figure stays source.
+  assert.equal(drawnFloats(plots.replace("aastex701", "article")), 0);
+});

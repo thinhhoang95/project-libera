@@ -11,6 +11,7 @@ import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-langu
 import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
 import { computeLatexNumbering } from "../../src/lib/latex/macros/numbering";
+import { titleSources } from "../../src/lib/latex/codemirror/visual/title-edit";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -490,4 +491,63 @@ We develop a command.
 `);
   assert.match(text, /Keywords: many instruments, two-stage least squares\./);
   assert.doesNotMatch(text, /\\keywords|ccs2012/);
+});
+
+test("2611.08676: AASTeX's front matter is a title block without \\maketitle; UAT keywords, facilities, software and \\bibliography{x}{} are drawn", () => {
+  const source = String.raw`\documentclass[twocolumn]{aastex701}
+\begin{document}
+
+\title{Expanding the Volatile Abundance Inventory}
+
+%% the class needs an email for each author
+\correspondingauthor{David R. Coria}
+
+\author[orcid=0000-0002-1221-5346, gname=David, sname='Coria']{David R. Coria}
+\affiliation{Department of Physics \& Astronomy, University of New Mexico}
+\affiliation{University of Kansas}
+\email[show]{drcoria@unm.edu}
+
+\author[gname=Ian,sname=Crossfield]{Ian J. M. Crossfield}
+\affiliation{Instituto de Alta Investigaci{\'o}n}
+\email{ianc@ku.edu}
+
+% \author[gname=givenname, sname=surname]{full_name}
+\begin{abstract}
+Few abundances are known.
+\end{abstract}
+
+\keywords{\uat{Planet hosting stars}{1242} --- \uat{Hot Jupiters}{753}}
+
+\section{Introduction}
+Text.
+
+\facilities{Gemini:South, \facility{LDT}}
+
+\software{TurboSpectrum}
+
+\bibliography{kdwarfs}{}
+\end{document}
+`;
+  const state = visualState(source);
+  const title = constructs(state).find((item) => item.startsWith("title:"));
+  assert.ok(title);
+  const text = bodyText(source);
+  assert.match(text, /Expanding the Volatile Abundance InventoryDavid R\. Coria\s*Department of Physics & Astronomy, University of New Mexico\s*University of KansasIan J\. M\. Crossfield\s*Instituto de Alta Investigación/);
+  // Only the email AASTeX 7 shows (`[show]`); the corresponding author, small.
+  assert.match(text, /Corresponding author: David R\. CoriaEmail: drcoria@unm\.edu/);
+  assert.doesNotMatch(text, /ianc@ku\.edu|orcid|\\correspondingauthor|\\affiliation/);
+  assert.match(text, /Keywords: Planet hosting stars \(1242\) — Hot Jupiters \(753\)/);
+  assert.match(text, /Facilities: Gemini:South, LDT/);
+  assert.match(text, /Software: TurboSpectrum/);
+  assert.match(text, /References/);
+  assert.doesNotMatch(text, /\\uat|\\facilit|\\software|\\bibliography/);
+  // The block's parts open in the title editor: the title and each author's name.
+  const [, from, to] = title.split(":").map(Number);
+  const sources = titleSources(state, from, to);
+  assert.equal(sources.title && state.sliceDoc(sources.title.from, sources.title.to), "Expanding the Volatile Abundance Inventory");
+  assert.deepEqual(sources.authors.map((span) => state.sliceDoc(span.from, span.to)), ["David R. Coria", "Ian J. M. Crossfield"]);
+  assert.equal(mounted(source, (content) => content.querySelectorAll("[data-title-part=author]").length), 2);
+  // Before AASTeX 7 every email is printed; with a \maketitle the block is drawn there, as for other classes.
+  assert.match(bodyText(source.replace("aastex701", "aastex631")), /Emails: drcoria@unm\.edu, ianc@ku\.edu/);
+  assert.equal(constructs(visualState(source.replace("\\begin{abstract}", "\\maketitle\n\\begin{abstract}"))).filter((item) => item.startsWith("title:")).length, 1);
 });
