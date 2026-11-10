@@ -520,14 +520,17 @@ export function graphicsBase(state: EditorView["state"]) {
   return `${config.rootPath || config.documentPath}`;
 }
 
-const pdfThumbnails = new Map<string, Promise<string | null>>();
+/** A PDF page drawn as an image, with the page's size in TeX points (what `trim` and `scale` are measured against). */
+type PdfThumbnail = { data: string; width: number; height: number };
+const pdfThumbnails = new Map<string, Promise<PdfThumbnail | null>>();
 
-async function pdfThumbnail(url: string): Promise<string | null> {
+async function pdfThumbnail(url: string, pageNumber = 1): Promise<PdfThumbnail | null> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc ||= new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
   const pdf = await pdfjs.getDocument({ url }).promise;
   try {
-    const page = await pdf.getPage(1);
+    // `page=` past the end: the first page, as a missing page is an error in TeX (the placeholder would hide the figure).
+    const page = await pdf.getPage(pageNumber <= pdf.numPages ? pageNumber : 1);
     const viewport = page.getViewport({ scale: 1 });
     const scale = Math.min(2, 900 / Math.max(1, viewport.width));
     const scaled = page.getViewport({ scale });
@@ -537,44 +540,66 @@ async function pdfThumbnail(url: string): Promise<string | null> {
     const context = canvas.getContext("2d");
     if (!context) return null;
     await page.render({ canvasContext: context, viewport: scaled }).promise;
-    return canvas.toDataURL("image/png");
+    return { data: canvas.toDataURL("image/png"), width: viewport.width, height: viewport.height };
   } finally {
     void pdf.destroy();
   }
 }
 
-const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "pdf", "svg", "gif", "webp", "eps"];
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "pdf", "svg", "gif", "webp", "eps", "ps"];
 
-/** Draws a graphics file into `container`: an image, a PDF's first page, or a labelled placeholder. */
-function renderImage(container: HTMLElement, view: EditorView, name: string, className = "cm-vis-image") {
+/**
+ * The extensions tried for a graphics file named without one: the document's `\DeclareGraphicsExtensions{.pdf,.png}`
+ * order first (per document version), then the usual ones.
+ */
+const extensionCache = new WeakMap<EditorView["state"]["doc"], string[]>();
+function graphicsExtensions(doc: EditorView["state"]["doc"]) {
+  let extensions = extensionCache.get(doc);
+  if (extensions) return extensions;
+  extensions = IMAGE_EXTENSIONS;
+  const head = doc.sliceString(0, Math.min(doc.length, 200_000));
+  if (head.includes("\\DeclareGraphicsExtensions")) {
+    const declared = /^[^%\n]*?\\DeclareGraphicsExtensions\s*\{([^{}]*)\}/m.exec(head)?.[1];
+    const listed = declared?.split(",").map((ext) => ext.trim().replace(/^\./, "").toLowerCase()).filter((ext) => /^[a-z0-9]+$/.test(ext)) ?? [];
+    if (listed.length) extensions = [...new Set([...listed, ...IMAGE_EXTENSIONS])];
+  }
+  extensionCache.set(doc, extensions);
+  return extensions;
+}
+
+/** Draws a graphics file into `container`: an image, a PDF's page (the first, or `page=`), or a labelled placeholder. */
+function renderImage(container: HTMLElement, view: EditorView, name: string, className = "cm-vis-image", style: GraphicsStyle | null = null) {
   const config = view.state.facet(visualConfig);
   const resolvedPaths = graphicsCandidates(view, name);
   const placeholder = (message: string) => {
     container.replaceChildren(el("span", "cm-vis-image-placeholder", message));
   };
   if (!resolvedPaths.length) { placeholder(`${name} (outside the notebook)`); return; }
-  const candidates = resolvedPaths.flatMap((resolved) => (/\.([a-z0-9]+)$/i.test(resolved) ? [resolved] : IMAGE_EXTENSIONS.map((ext) => `${resolved}.${ext}`)));
+  const extensions = graphicsExtensions(view.state.doc);
+  const candidates = resolvedPaths.flatMap((resolved) => (/\.([a-z0-9]+)$/i.test(resolved) ? [resolved] : extensions.map((ext) => `${resolved}.${ext}`)));
   const tryNext = (index: number) => {
     const path = candidates[index];
     if (!path) { placeholder(`${name} (not found)`); return; }
     const url = config.fileUrl(path);
     if (!url) { placeholder(name); return; }
     const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase();
-    if (ext === "eps") { placeholder(`${name} (EPS: shown in the PDF only)`); return; }
+    if (ext === "eps" || ext === "ps") { placeholder(`${name} (${ext.toUpperCase()}: shown in the PDF only)`); return; }
     if (ext === "pdf") {
-      let thumbnail = pdfThumbnails.get(url);
+      const key = style?.page ? `${url}#page=${style.page}` : url;
+      let thumbnail = pdfThumbnails.get(key);
       if (!thumbnail) {
-        thumbnail = pdfThumbnail(url).catch(() => null);
-        pdfThumbnails.set(url, thumbnail);
+        thumbnail = pdfThumbnail(url, style?.page).catch(() => null);
+        pdfThumbnails.set(key, thumbnail);
         if (pdfThumbnails.size > 60) pdfThumbnails.delete(pdfThumbnails.keys().next().value!);
       }
       container.replaceChildren(el("span", "cm-vis-image-loading", name));
-      void thumbnail.then((data) => {
-        if (!data) { pdfThumbnails.delete(url); tryNext(index + 1); return; }
+      void thumbnail.then((drawn) => {
+        if (!drawn) { pdfThumbnails.delete(key); tryNext(index + 1); return; }
         const image = el("img", className) as HTMLImageElement;
-        image.src = data;
+        image.src = drawn.data;
         image.alt = name;
         container.replaceChildren(image);
+        if (style) applyGraphicsStyle(container, image, style, drawn);
       });
       return;
     }
@@ -583,6 +608,7 @@ function renderImage(container: HTMLElement, view: EditorView, name: string, cla
     image.decoding = "async";
     image.loading = "lazy";
     image.onerror = () => tryNext(index + 1);
+    if (style) image.onload = () => applyGraphicsStyle(container, image, style, { width: image.naturalWidth, height: image.naturalHeight });
     image.src = url;
     container.replaceChildren(image);
   };
@@ -591,7 +617,8 @@ function renderImage(container: HTMLElement, view: EditorView, name: string, cla
 
 /** What one float, or one panel of it (a minipage beside another), shows. */
 export type FigureContent = {
-  images: Array<{ path: string; width?: string }>;
+  /** `options`: the `\includegraphics` options drawn besides the width (height, scale, angle, trim and clip, page). */
+  images: Array<{ path: string; width?: string; options?: string }>;
   /** For tables: the tabular sources inside, with their offsets relative to the widget.
    * `readOnly`: drawn from a reading of the source (a longtable's rows), not cell by cell from it.
    * `ruled`: inside revtex's `ruledtabular`, which rules the grid with double lines above and below. */
@@ -620,6 +647,15 @@ export type FigureContent = {
   intro?: string;
   /** Where the number is recorded relative to the widget: the environment's start, or its panel's. */
   numberOffset: number;
+  /**
+   * Parts the widget does not draw (an unknown command, a code listing, a forest tree), shown as their source, or as a
+   * placeholder naming them, in their place: offsets relative to the widget; `before` the drawn content or after it.
+   */
+  sources?: Array<{ offset: number; length: number; text: string; name?: string; before?: boolean }>;
+  /** Where the caption's text is relative to the widget, when it is written out there: clicked, it is edited in place. */
+  captionOffset?: number;
+  /** A panel's width (a minipage's `0.48\linewidth`, a `\subcaptionbox`'s width) as CSS. */
+  width?: string;
 };
 
 export type FigureSpec = FigureContent & {
@@ -686,6 +722,122 @@ function renderAlgorithm(spec: AlgorithmSpec, context: FragmentContext) {
   return list;
 }
 
+export type FloatHooks = {
+  /**
+   * Opens `target` as an editor of the LaTeX written at [from, from + original.length) (a caption's text, a part shown
+   * as source); false when it cannot (the text there changed, a read-only view).
+   */
+  edit: (view: EditorView, target: HTMLElement, from: number, original: string, label: string) => boolean;
+  /** A redrawn float or block: continues an editor that was open in the one it replaces. */
+  adopt?: (view: EditorView, dom: HTMLElement) => void;
+};
+let floatHooks: FloatHooks | null = null;
+/** Set by float-edit.ts. */
+export function setFloatHooks(hooks: FloatHooks | null) { floatHooks = hooks; }
+
+/** The document position of a widget's editable part (`data-float-offset` from the widget's start), for float-edit.ts. */
+export function floatPartPos(view: EditorView, dom: HTMLElement, part: HTMLElement) {
+  const from = widgetPos(view, dom);
+  return from === null || part.dataset.floatOffset === undefined ? null : from + Number(part.dataset.floatOffset);
+}
+
+/**
+ * A part of a float the widget does not draw: its source in monospace, or a placeholder naming what it is (a code
+ * listing, a forest tree). Clicked, its source opens in an editor of its own; the rest of the float stays drawn.
+ */
+function sourcePartElement(view: EditorView, dom: HTMLElement, part: NonNullable<FigureContent["sources"]>[number]) {
+  let element: HTMLElement;
+  if (part.name) {
+    element = el("span", "cm-vis-figure-drawing cm-vis-figure-source cm-vis-figure-source-named");
+    element.append(el("span", "cm-vis-figure-drawing-name", part.name), el("span", "cm-vis-figure-drawing-note", "Click to edit its source"));
+  } else {
+    element = el("code", "cm-vis-raw cm-vis-figure-source", part.text);
+    element.title = "Not drawn here: click to edit its source";
+  }
+  if (part.before) element.classList.add("cm-vis-figure-source-before");
+  element.dataset.floatOffset = String(part.offset);
+  element.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-float-editor")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const from = widgetPos(view, dom);
+    if (from === null) return;
+    const at = from + part.offset;
+    if (event.altKey || !floatHooks?.edit(view, element, at, part.text, part.name ?? "Source")) revealSourceAt(view, at, at + part.length);
+  });
+  return element;
+}
+
+/** CSS for `\includegraphics` options beyond the width: `height`, `scale`, `angle`, `trim` with `clip`, `keepaspectratio`, `page`. */
+export type GraphicsStyle = { height?: string; scale?: number; angle?: number; trim?: [number, number, number, number]; keepAspect?: boolean; page?: number };
+
+/** A TeX length in an option as CSS (`3cm`, `0.3\textheight` as a share of a page's height); undefined when not one of those. */
+function graphicsLength(value: string | undefined) {
+  if (!value) return undefined;
+  const length = /^([\d.]+)\s*(cm|mm|in|pt|em|ex|bp)$/.exec(value.trim());
+  if (length) return length[2] === "bp" ? `${Number(length[1]) * 96 / 72}px` : `${length[1]}${length[2]}`;
+  // A share of the page's height (`0.3\textheight`): of a page about 9in tall.
+  const share = /^([\d.]*)\s*\\textheight$/.exec(value.trim());
+  return share ? `${Number(share[1] || 1) * 9}in` : undefined;
+}
+
+/** The style an `\includegraphics[…]` option list asks for (its width is read with the image). */
+export function graphicsStyle(options: string): GraphicsStyle | null {
+  const values = new Map<string, string>();
+  for (const pair of options.split(",")) {
+    const [key, ...rest] = pair.split("=");
+    if (key.trim()) values.set(key.trim(), rest.join("=").trim());
+  }
+  const style: GraphicsStyle = {};
+  const height = graphicsLength(values.get("height") ?? values.get("totalheight"));
+  if (height) style.height = height;
+  const scale = Number(values.get("scale"));
+  if (values.has("scale") && Number.isFinite(scale) && scale > 0) style.scale = scale;
+  const angle = Number(values.get("angle"));
+  if (values.has("angle") && Number.isFinite(angle) && angle % 360 !== 0) style.angle = angle;
+  // `trim=l b r t` (bp) crops only with `clip` (else the image spills over its box, as TeX draws it: shown whole).
+  const clip = values.has("clip") && values.get("clip") !== "false";
+  const trim = (values.get("trim") ?? values.get("viewport"))?.split(/\s+/).map((part) => parseFloat(part));
+  if (clip && trim?.length === 4 && trim.every((part) => Number.isFinite(part) && part >= 0) && values.has("trim")) style.trim = trim as GraphicsStyle["trim"];
+  if (values.has("keepaspectratio") && values.get("keepaspectratio") !== "false") style.keepAspect = true;
+  const page = Number(values.get("page"));
+  if (Number.isInteger(page) && page > 1) style.page = page;
+  return Object.keys(style).length ? style : null;
+}
+
+/** Applies a graphics style to a drawn image once its natural size is known: `scale` and `trim` need it. */
+function applyGraphicsStyle(container: HTMLElement, image: HTMLImageElement | HTMLCanvasElement, style: GraphicsStyle, natural: { width: number; height: number }) {
+  if (style.height) {
+    image.style.height = style.height;
+    image.style.width = container.style.getPropertyValue("--vis-image-width") ? "100%" : "auto";
+    image.style.objectFit = style.keepAspect ? "contain" : "fill";
+  }
+  // A PNG's pixels are TeX's points (72 to the inch), as pdfTeX reads an image without a resolution.
+  if (style.scale && natural.width > 0 && !container.style.getPropertyValue("--vis-image-width") && !style.height) image.style.width = `${natural.width * style.scale * 96 / 72}px`;
+  if (style.trim && natural.width > 0 && natural.height > 0) {
+    // Cropped by a window over the image: its share of the image, shifted by what is trimmed at the left and top.
+    const [left, bottom, right, top] = style.trim;
+    const visibleWidth = natural.width - left - right;
+    const visibleHeight = natural.height - top - bottom;
+    if (visibleWidth > 0 && visibleHeight > 0) {
+      const crop = el("span", "cm-vis-image-crop");
+      crop.style.aspectRatio = `${visibleWidth} / ${visibleHeight}`;
+      image.style.width = `${(natural.width / visibleWidth) * 100}%`;
+      image.style.maxWidth = "none";
+      image.style.marginLeft = `${-(left / visibleWidth) * 100}%`;
+      image.style.marginTop = `${-(top / visibleWidth) * 100}%`;
+      image.replaceWith(crop);
+      crop.append(image);
+    }
+  }
+  if (style.angle) {
+    // TeX turns counterclockwise.
+    const target = image.parentElement?.classList.contains("cm-vis-image-crop") ? image.parentElement : image;
+    target.style.transform = `rotate(${-style.angle}deg)`;
+    target.classList.add("cm-vis-image-rotated");
+  }
+}
+
 /** A figure, table or algorithm environment: images, drawings, grids or lines, and numbered captions (one per panel). */
 export class FigureWidget extends VisualWidget {
   constructor(readonly spec: FigureSpec) { super(JSON.stringify(spec)); }
@@ -700,9 +852,12 @@ export class FigureWidget extends VisualWidget {
       for (const image of content.images) {
         const frame = el("span", "cm-vis-figure-image");
         if (image.width) frame.style.setProperty("--vis-image-width", image.width);
-        renderImage(frame, view, image.path);
+        const style = image.options ? graphicsStyle(image.options) : null;
+        renderImage(frame, view, image.path, "cm-vis-image", style);
         body.append(frame);
       }
+      // What it does not draw: its source in its place (before or after the drawn content), editable on its own.
+      for (const part of content.sources ?? []) body.append(sourcePartElement(view, dom, part));
       for (const drawing of content.drawings ?? []) {
         // TikZ and other drawings are typeset only in the PDF: a placeholder names where the drawing is, or the
         // package that draws it ("diagram:tikz-cd").
@@ -744,6 +899,21 @@ export class FigureWidget extends VisualWidget {
       const label = el("span", "cm-vis-caption-label");
       const text = el("span", "cm-vis-caption-text");
       text.append(renderLatexFragment(content.caption, fragmentContext(view, content.captionPos)));
+      if (content.captionOffset !== undefined) {
+        // Clicked, the caption's LaTeX is edited in place (its label and short title stay as written).
+        const offset = content.captionOffset;
+        const original = content.caption;
+        text.classList.add("cm-vis-editable-part");
+        text.dataset.floatOffset = String(offset);
+        text.title = "Click to edit the caption";
+        text.addEventListener("mousedown", (event) => {
+          if (event.button !== 0 || event.altKey || event.detail >= 2 || (event.target as HTMLElement).closest(".cm-vis-float-editor")) return;
+          const from = widgetPos(view, dom);
+          if (from === null || !floatHooks?.edit(view, text, from + offset, original, "Caption")) return;
+          event.preventDefault();
+          event.stopPropagation();
+        });
+      }
       caption.append(label, text);
       captions.push({ content, label, text });
       if (content.captionAbove) into.append(caption, body, ...notes); else into.append(body, caption, ...notes);
@@ -752,13 +922,19 @@ export class FigureWidget extends VisualWidget {
       const row = el("div", `cm-vis-figure-panels${spec.stacked ? " cm-vis-figure-panels-stacked" : ""}`);
       for (const panel of spec.panels) {
         const element = el("div", "cm-vis-figure-panel");
+        if (panel.width) element.style.setProperty("--vis-panel-width", panel.width);
         draw(panel, element);
         row.append(element);
+      }
+      // The float's own parts shown as source (between or around the panels).
+      for (const part of spec.sources ?? []) {
+        const element = sourcePartElement(view, dom, part);
+        if (part.before) row.prepend(element); else row.append(element);
       }
       // The float's own caption, if it has one besides the panels'.
       // Its notes are under the panels, whether its caption is above or below them (the cannabis paper's figures).
       const notesBelow = spec.caption === null || spec.captionAbove;
-      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined, notes: notesBelow ? undefined : spec.notes };
+      const own: FigureContent = { ...spec, images: [], tabulars: undefined, drawings: undefined, algorithm: undefined, sources: undefined, notes: notesBelow ? undefined : spec.notes };
       if (spec.caption !== null && spec.captionAbove) draw(own, dom);
       dom.append(row);
       if (spec.caption !== null && !spec.captionAbove) draw(own, dom);
@@ -779,13 +955,15 @@ export class FigureWidget extends VisualWidget {
       }
     });
     dom.addEventListener("mousedown", (event) => {
-      if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true]")) return;
+      if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true], .cm-vis-float-editor")) return;
       event.preventDefault();
       const from = widgetPos(view, dom);
       if (from === null) return;
       if (event.altKey || event.detail >= 2) revealSourceAt(view, from + spec.numberOffset, from + spec.length);
       else selectRange(view, from, from + spec.length);
     });
+    // An editor open in the widget this one replaces (a co-author's edit redrew it) continues here.
+    queueMicrotask(() => { if (dom.isConnected) floatHooks?.adopt?.(view, dom); });
     return dom;
   }
   // The editor never handles events in here: clicks open editors, and an edited cell takes its own keys.

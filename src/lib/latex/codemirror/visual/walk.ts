@@ -352,6 +352,15 @@ function graphicsWidth(options: string | null) {
   return length ? `${length[1]}${length[2]}` : undefined;
 }
 
+/** `\includegraphics` options the image widget draws besides its width (widgets.ts: graphicsStyle). */
+const GRAPHICS_STYLE_KEYS = /(?:^|,)\s*(?:height|totalheight|scale|angle|trim|viewport|clip|page|keepaspectratio)\b/;
+
+/** A minipage's width as CSS (`\begin{minipage}[t]{0.48\textwidth}` 48%), from its opening; undefined when not one of those. */
+function minipageWidth(opening: string) {
+  const width = /^\\begin\s*\{minipage\}\s*(?:\[[^\]]*\]\s*){0,3}\{([^{}]*)\}/.exec(opening)?.[1];
+  return width ? graphicsWidth(`width=${width.trim()}`) : undefined;
+}
+
 /** The enumerate counter of a numbered list at `depth` (`enumi`…`enumiv`). */
 function enumCounter(depth: number) {
   return ["enumi", "enumii", "enumiii", "enumiv"][depth - 1] ?? null;
@@ -756,6 +765,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     for (const content of [figure, ...(figure.panels ?? [])]) {
       content.numberOffset += node.from - range.from;
       for (const tabular of content.tabulars ?? []) tabular.offset -= range.from;
+      for (const part of content.sources ?? []) part.offset -= range.from;
+      // A caption written out (not by a macro) is edited in place.
+      if (content.caption && read(state, content.captionPos, content.captionPos + content.caption.length) === content.caption) content.captionOffset = content.captionPos - range.from;
     }
     figure.length = range.to - range.from;
     emit({ kind: "figure", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new FigureWidget(figure) }] });
@@ -2242,7 +2254,8 @@ const SUB_FLOATS = new Set(["subfigure", "subtable"]);
 const isSubFloat = (node: SyntaxNode, read: (from: number, to: number) => string) => (node.name === "FigureEnvironment" || node.name === "Environment") && SUB_FLOATS.has(environmentName(node, read) ?? "");
 /** The subfigure and subfig packages' panels, written as commands: `\subfigure[caption]{…}`, `\subfloat[caption]{…}`. */
 const isSubFloatCommand = (node: SyntaxNode, read: (from: number, to: number) => string) =>
-  node.name === "UnknownCommand" && !!node.firstChild && /^\\(?:subfigure|subfloat)$/.test(read(node.firstChild.from, node.firstChild.to)) && !!node.getChild("TextArgument");
+  node.name === "UnknownCommand" && !!node.firstChild && /^\\(?:subfigure|subfloat|subcaptionbox\*?)$/.test(read(node.firstChild.from, node.firstChild.to))
+  && node.getChildren("TextArgument").length >= (read(node.firstChild.from, node.firstChild.to).startsWith("\\subcaptionbox") ? 2 : 1);
 
 /**
  * Diagrams of TikZ-based packages, typeset only in the PDF: in a float each is a placeholder naming its package, as a
@@ -2347,12 +2360,16 @@ function boxUse(node: SyntaxNode, state: EditorState) {
 /**
  * Whether the figure widget would show everything in a float: its images,
  * drawings, tables and algorithms, one caption per float or minipage panel,
- * labels, comments and layout commands. Text, other commands and sub-figures
- * are not drawn by it, so such a float stays source (its parts render on their own).
+ * labels, comments and layout commands. Text, other commands and environments
+ * it does not draw are recorded in `sources`: shown as source (or a placeholder
+ * naming them) inside the float, which stays drawn around them. False only for
+ * what makes the float's structure unreadable (a parse error, a panel with two captions).
  */
-function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefinitions, captionMacro: (use: SyntaxNode) => CaptionMacroUse | null) {
+function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefinitions, captionMacro: (use: SyntaxNode) => CaptionMacroUse | null, sources: SourcePart[] = []) {
   const content = node.getChild("Content");
   if (!content) return true;
+  /** A part the widget does not draw: its source is shown in its place. */
+  const unknown = (from: number, to: number, name?: string) => { sources.push(name ? { from, to, name } : { from, to }); };
   // algorithm2e's statements are the float's body: covered when they can be read.
   if (algorithm2eSpec(node, state, defs)) return true;
   const readState = (from: number, to: number) => read(state, from, to);
@@ -2386,17 +2403,17 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     const name = ref.name;
     if (ref.to <= noteUntil) return false;
     if (ref.type.isError) { covered = false; return false; }
-    // A listing or `\verb` text is visible content the figure widget cannot draw: replacing the float would hide it.
-    if (VISIBLE_SKIPPED.has(name)) { covered = false; return false; }
+    // A listing or `\verb` text is visible content the figure widget cannot draw: shown as its source, in its place.
+    if (VISIBLE_SKIPPED.has(name)) { unknown(ref.from, ref.to, name === "VerbatimEnvironment" ? `Code (${environmentName(ref.node, readState) ?? "listing"})` : undefined); return false; }
     // The notes after the last image, grid or caption (tablenotes, a notes minipage, `\floatfoot`, a "Notes:" paragraph).
     if (ref.from >= notesFrom && name !== "EndEnv") return false;
     // Notes between the content and a caption at the end.
     if (notesBefore && ref.from >= notesBefore.from && ref.to <= notesBefore.to) return false;
     if (SKIPPED.has(name) || name === "Whitespace" || name === "NewLine" || name === "BlankLine" || name === "LineBreak" || name === "Tilde") return false;
-    if (name === "IncludeGraphics" || name === "Label" || name === "TabularEnvironment" || name === "SetLengthCommand" || name === "Centering") return false;
+    if (name === "IncludeGraphics" || name === "IncludeSvg" || name === "Label" || name === "TabularEnvironment" || name === "SetLengthCommand" || name === "Centering") return false;
     if (name === "Caption") { caption(ref.node); return false; }
     if (ref.to <= proseBefore && PROSE_NODES.has(name)) return false;
-    if (name === "Normal") { if (read(state, ref.from, ref.to).trim()) covered = false; return false; }
+    if (name === "Normal") { if (read(state, ref.from, ref.to).trim()) unknown(ref.from, ref.to); return false; }
     // A drawing from another file (`\input{fig}`, often TikZ), or a table's (`\include{tables/stats}`, the cannabis
     // pass-through paper's tables): shown as a placeholder.
     if (name === "Input" || name === "Include") return false;
@@ -2406,19 +2423,19 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     if (name === "ColorBoxCommand") {
       const box = textBoxUse(ref.node, state, defs);
       if (box) noteUntil = Math.max(noteUntil, ref.from + box.end);
-      else covered = false;
+      else unknown(ref.from, ref.to);
       return false;
     }
     if (name === "UnknownCommand") {
       const ctrl = ref.node.firstChild;
       const command = ctrl ? read(state, ctrl.from, ctrl.to) : "";
-      if (command === "\\includestandalone" || diagramDrawing(ref.node, state)) return false;
+      if (command === "\\includestandalone" || diagramDrawing(ref.node, state) || importedFile(ref.node, state)) return false;
       // AASTeX's `\plotone{file}`, `\plottwo{a}{b}` and the `\epsscale{…}` they are drawn at.
       if (aastexPlot(command, ref.node, state, defs)) return false;
       // floatrow's `\floatfoot{Notes: …}`, wherever it is: a note under the caption.
       if (command === "\\floatfoot") {
         const note = groupAfter(state, ctrl!.to);
-        if (!note) { covered = false; return false; }
+        if (!note) { unknown(ref.from, ref.to); return false; }
         noteUntil = Math.max(noteUntil, note.end);
         return false;
       }
@@ -2427,7 +2444,7 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       // subcaption's `\subcaption*{Notes: …}` under a figure: unnumbered text, drawn under the caption.
       if (command === "\\subcaption" && read(state, ctrl!.to, ctrl!.to + 1) === "*") {
         const note = starredNote(state, ctrl!.to);
-        if (!note) { covered = false; return false; }
+        if (!note) { unknown(ref.from, ref.to); return false; }
         noteUntil = note.end;
         return false;
       }
@@ -2439,22 +2456,22 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       // A caption macro's content arguments (`\tbl{caption}{\begin{tabular}…}`) are checked as the float's content.
       const written = captionMacro(ref.node);
       if (written) { caption(ref.node); for (const argument of written.body) argument.cursor().iterate(visit); return false; }
-      // `\resizebox{\linewidth}{!}{\input{fig}}`: a drawing, scaled.
-      if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel, defs, notesFrom)) covered = false; return false; }
+      // `\resizebox{\linewidth}{!}{\input{fig}}`: a drawing, scaled. One holding more: its content is checked part by part.
+      if (DRAWING_WRAPPERS.test(command)) { if (!drawingOnly(ref.node, state, panel, defs, notesFrom)) ref.node.getChildren("TextArgument").at(-1)?.cursor().iterate(visit); return false; }
       // Layout with what it takes (`\vskip 0.15in`, `\vspace*{2pt}`, `\setlength\tabcolsep{3pt}`, `\aboverulesep = 2mm`,
       // acmart's `\Description{…}`): none of it is drawn, so none of it is content.
       if (FIGURE_LAYOUT.test(command) || SIZE_COMMAND.test(command) || FLOAT_LENGTHS.test(command)) { noteUntil = Math.max(noteUntil, layoutExtent(state, ctrl!.to, command)); return false; }
       // `\fbox{\begin{minipage}…}`, or a macro writing such a box (cs.CL 2611.11838's `\genbox{color}{title}{text}`).
       const box = textBoxUse(ref.node, state, defs);
       if (box) { noteUntil = Math.max(noteUntil, ref.from + box.end); return false; }
-      if (!layoutMacro(ref.node, state, defs)) covered = false;
+      if (!layoutMacro(ref.node, state, defs)) unknown(ref.from, ref.to, SOURCE_PLACEHOLDERS[command]);
       return false;
     }
     // `\begin{center}`, minipages and sub-figures: their markup is layout, their content is checked. A TikZ picture
     // is a drawing; an algorithm is its caption and its algorithmic lines.
     if (name === "Environment" || name === "FigureEnvironment") {
       const env = environmentName(ref.node, readState) ?? "";
-      if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { covered = false; return false; }
+      if (name === "FigureEnvironment" && !SUB_FLOATS.has(env)) { unknown(ref.from, ref.to); return false; }
       if (env === "tikzpicture" || TABULAR_NAMES.test(env)) return false;
       if (env === "algorithmic") { if (!algorithmicSpec(ref.node, state, defs)) covered = false; return false; }
       // adjustbox's `\begin{adjustbox}{width=\linewidth}`, threeparttable and revtex's `ruledtabular` (drawn as the
@@ -2465,21 +2482,59 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       if (env === "overpic" || env === "picture") return false;
       // A diagram the PDF draws, and a box whose content is drawn as text (Self-RAG's prompts in a `tcolorbox`).
       if (DIAGRAM_ENVIRONMENTS[env] || boxEnvironments(state.doc).has(env)) return false;
-      if (env !== "center" && !SIZE_ENVIRONMENTS.has(env) && !PANEL_ENVIRONMENTS.has(env)) covered = false;
+      // Any other environment is shown as its source (a known one it cannot draw, a forest tree or framed text, as a
+      // placeholder naming it), in its place.
+      if (env !== "center" && !SIZE_ENVIRONMENTS.has(env) && !PANEL_ENVIRONMENTS.has(env)) { unknown(ref.from, ref.to, SOURCE_PLACEHOLDERS[env]); return false; }
       return undefined;
     }
     if (name === "BeginEnv" || name === "EndEnv") return false;
-    // `\mbox{\subfigure[…]{…} \subfigure[…]{…}}`: a box around the content.
-    if (name === "MathTextCommand") { if (!drawingOnly(ref.node, state, panel, defs)) covered = false; return false; }
+    // `\mbox{\subfigure[…]{…} \subfigure[…]{…}}`: a box around the content (one holding more is checked part by part).
+    if (name === "MathTextCommand") { if (!drawingOnly(ref.node, state, panel, defs)) ref.node.getChildren("TextArgument").at(-1)?.cursor().iterate(visit); return false; }
     // `{\small \begin{tabular}…}`: a group around the content, for its size; a panel command's group.
     if (name === "Group" || name === "NonEmptyGroup" || name === "OpenBrace" || name === "CloseBrace" || name === "TextArgument" || name === "LongArg") return undefined;
     // `\\` between images (a `KnownCtrlSym` holding a `LineBreak`) is layout.
     if (name === "Content" || name === "Text" || name === "Command" || name === "KnownCommand" || name === "KnownCtrlSym" || name === "KnownEnvironment") return undefined;
-    covered = false;
+    unknown(ref.from, ref.to);
     return false;
   };
   content.cursor().iterate(visit);
   return covered;
+}
+
+/** A part of a float the figure widget does not draw: its range, and the name of what it is when it is a known thing it cannot draw. */
+type SourcePart = { from: number; to: number; name?: string };
+
+/** Things a float may hold that are known but drawn only in the PDF: shown as a placeholder naming them. */
+const SOURCE_PLACEHOLDERS: Record<string, string> = {
+  forest: "Tree (forest)", framed: "Framed text (framed)", shaded: "Shaded text (framed)", leftbar: "Text with a bar (framed)", snugshade: "Shaded text (framed)",
+  lstlisting: "Code (lstlisting)", minted: "Code (minted)", "\\chemfig": "Chemical structure (chemfig)", "\\Tree": "Tree (qtree)", "\\lstinputlisting": "Code (lstinputlisting)",
+  "\\inputminted": "Code (minted)", dirtree: "Directory tree (dirtree)", "\\dirtree": "Directory tree (dirtree)", "\\schemestart": "Reaction scheme (chemfig)",
+};
+
+/** import's `\subimport{dir/}{file}` and `\import{dir/}{file}` (a drawing from another file, as `\input`): the file, else null. */
+function importedFile(node: SyntaxNode, state: EditorState) {
+  const ctrl = node.firstChild;
+  if (!ctrl || !/^\\(?:sub)?(?:import|inputfrom|includefrom)\*?$/.test(read(state, ctrl.from, ctrl.to))) return null;
+  const args = node.getChildren("TextArgument").map((argument) => { const inner = argumentInner(argument); return inner ? read(state, inner.from, inner.to).trim() : null; });
+  if (args.length !== 2 || args.some((arg) => !arg)) return null;
+  return `${args[0]!.replace(/\/?$/, "/")}${args[1]}`;
+}
+
+/**
+ * A float's parts not drawn, merged where only space or comments separate them (a line of unknown commands is one
+ * source line), and without those inside another.
+ */
+function mergeSourceParts(parts: SourcePart[], state: EditorState) {
+  const sorted = [...parts].sort((a, b) => a.from - b.from || b.to - a.to);
+  const merged: SourcePart[] = [];
+  for (const part of sorted) {
+    const last = merged.at(-1);
+    if (last && part.to <= last.to) continue;
+    // Unnamed parts on the same lines join; a named one (a placeholder) stays apart.
+    if (last && !last.name && !part.name && /^[ \t]*(?:\n[ \t]*)?$/.test(read(state, last.to, part.from))) { last.to = part.to; continue; }
+    merged.push({ ...part });
+  }
+  return merged;
 }
 
 /**
@@ -2739,7 +2794,7 @@ function drawingOnly(command: SyntaxNode, state: EditorState, panel?: (sub: Synt
 }
 
 /** What ends a float's content: a grid, a drawing, an image, an included file or a caption. */
-const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|ruledtabular|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox|tikzcd|quantikz|circuitikz|pchstack|pcvstack|tcolorbox|mdframed)\}|\\\]|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\plotone\s*\{[^{}]*\}|\\plottwo\s*\{[^{}]*\}\s*\{[^{}]*\}|\\(?:input|include|includestandalone|c?tikzfig)\s*\{[^{}]*\}|\\caption(?:of|above|below|aboveof|belowof)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
+const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|ruledtabular|tabularx|tabulary|longtable|xltabular|algorithmic|tikzpicture|overpic|subfigure|subtable|adjustbox|tikzcd|quantikz|circuitikz|pchstack|pcvstack|tcolorbox|mdframed|lstlisting|verbatim|minted|forest|framed)\}|\\\]|\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}|\\plotone\s*\{[^{}]*\}|\\plottwo\s*\{[^{}]*\}\s*\{[^{}]*\}|\\(?:input|include|includestandalone|c?tikzfig)\s*\{[^{}]*\}|\\caption(?:of|above|below|aboveof|belowof)?\*?\s*(?:\[[^\]]*\])?\s*\{/g;
 
 /**
  * Where a float's notes start: after its last grid, image, included file or caption. Text from there to the end is the
@@ -2797,11 +2852,14 @@ function notesBeforeCaption(node: SyntaxNode, state: EditorState) {
 const NOTE_GROUPS = /\\(?:subcaption\*|Description|captionsetup)\s*(?:\[[^\]]*\]\s*)?\{/;
 
 /** The notes of a float as text to draw: what follows its content, without layout, labels and environment markup; null when nothing is left. */
-function floatNotes(node: SyntaxNode, state: EditorState, range?: { from: number; to: number }) {
+function floatNotes(node: SyntaxNode, state: EditorState, range?: { from: number; to: number }, exclude: SourcePart[] = []) {
   const from = range?.from ?? floatNotesStart(node, state);
   const to = range?.to ?? node.getChild("EndEnv")?.from;
   if (!Number.isFinite(from) || to === undefined || from >= to) return null;
-  let text = stripTexComments(read(state, from, to));
+  let raw = read(state, from, to);
+  // Parts shown as source (a listing after the caption) are not notes.
+  for (const part of exclude) if (part.to > from && part.from < to) raw = raw.slice(0, Math.max(0, part.from - from)) + " ".repeat(Math.min(to, part.to) - Math.max(from, part.from)) + raw.slice(Math.min(to, part.to) - from);
+  let text = stripTexComments(raw);
   // A `\subcaption*{…}` note is drawn as one already; acmart's `\Description{…}` (a screen reader's text) and
   // `\captionsetup{…}` print nothing.
   for (let at = text.search(NOTE_GROUPS); at >= 0; at = text.search(NOTE_GROUPS)) {
@@ -2935,7 +2993,13 @@ function captionSegments(own: Collected, floatFrom: number): FigureContent[] {
  * algorithm, or at a `\captionof` outside a panel.
  */
 function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: LatexDefinitions, expand: (text: string) => string | null, captionMacro: (use: SyntaxNode) => CaptionMacroUse | null, kind: FigureContent["kind"]): FigureSpec | null {
-  if (!figureCovered(node, state, defs, captionMacro)) return null;
+  const found: SourcePart[] = [];
+  if (!figureCovered(node, state, defs, captionMacro, found)) return null;
+  const sourceParts = mergeSourceParts(found, state);
+  /** Whether [from, to] is inside a part shown as source (the collection leaves it to that part). */
+  const inSource = (from: number, to: number) => sourceParts.some((part) => from >= part.from && to <= part.to);
+  /** Parts the collection could not read (a tabular without rows): shown as source too, in the content they are in. */
+  const unread: SourcePart[] = [];
   const readState = (from: number, to: number) => read(state, from, to);
   const algorithm2e = algorithm2eSpec(node, state, defs);
   const isPanel = (candidate: SyntaxNode) => (candidate.name === "Environment" && environmentName(candidate, readState) === "minipage") || isSubFloat(candidate, readState) || isSubFloatCommand(candidate, readState);
@@ -2961,9 +3025,29 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     if (subCommand) {
       content.sub = true;
       content.kind = defaultKind === "table" ? "table" : "figure";
-      const bracket = root.getChild("OptionalArgument");
-      const inner = bracket && argumentInner(bracket);
-      if (bracket) { content.caption = inner ? read(state, inner.from, inner.to) : ""; content.captionPos = inner?.from ?? bracket.from; }
+      // subcaption's `\subcaptionbox[list]{caption}[width]{content}`: the caption is its first group, the width the bracket after it.
+      if (read(state, root.from, root.from + 14) === "\\subcaptionbox") {
+        const [first, ...rest] = commandArguments(root);
+        const captionArg = first && !first.optional ? first : rest.find((arg) => !arg.optional);
+        const inner = captionArg && argumentInner(captionArg.node);
+        if (inner) { content.caption = read(state, inner.from, inner.to); content.captionPos = inner.from; }
+        const all = commandArguments(root);
+        const width = all.findIndex((arg) => arg === captionArg);
+        const bracket = all[width + 1]?.optional ? argumentInner(all[width + 1].node) : null;
+        const css = bracket ? graphicsWidth(`width=${read(state, bracket.from, bracket.to).trim()}`) : null;
+        if (css) content.width = css;
+        // A starred one has no letter.
+        if (read(state, root.from + 14, root.from + 15) === "*") content.unnumbered = true;
+      } else {
+        const bracket = root.getChild("OptionalArgument");
+        const inner = bracket && argumentInner(bracket);
+        if (bracket) { content.caption = inner ? read(state, inner.from, inner.to) : ""; content.captionPos = inner?.from ?? bracket.from; }
+      }
+    }
+    // A minipage panel's width (`\begin{minipage}{0.48\linewidth}`): the share of the row it takes.
+    if (root !== node && root.name === "Environment" && environmentName(root, readState) === "minipage") {
+      const css = minipageWidth(read(state, root.from, Math.min(root.to, root.from + 300)));
+      if (css) content.width = css;
     }
     const found = (at: number) => { content.firstContent = Math.min(content.firstContent, at); };
     /** AASTeX's `\epsscale{…}`: the width of the plots after it. */
@@ -2973,6 +3057,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     const step = (ref: SyntaxNodeRef): boolean | undefined => {
       const name = ref.name;
       if (name === "Comment" || ref.from < boxUntil) return false;
+      // What is shown as source is the source part's.
+      if (ref.from !== root.from && inSource(ref.from, ref.to)) return false;
       // A panel is content of its own: the float's caption after the panels is below them.
       if (ref.from !== root.from && skipPanels && isPanel(ref.node)) { found(ref.from); return false; }
       // A box of text around a minipage (`\colorbox{c}{\begin{minipage}…}`, `\fbox{…}`, a macro writing one): framed text.
@@ -3034,7 +3120,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
           found(ref.from);
           return false;
         }
-        const diagram = diagramDrawing(ref.node, state);
+        const diagram = diagramDrawing(ref.node, state) ?? importedFile(ref.node, state);
         if (diagram) { content.drawings!.push(diagram); content.places.drawings.push(ref.from); found(ref.from); return false; }
         // AASTeX's `\plotone{file}` (the column's width, times `\epsscale`) and `\plottwo{a}{b}` (half of it each).
         if (aastexPlot(command, ref.node, state, defs)) {
@@ -3106,7 +3192,22 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         const options = ref.node.getChild("OptionalArgument");
         const optionsRange = options && argumentInner(options);
         if (inner) {
-          content.images.push({ path: imagePath(read(state, inner.from, inner.to), state.doc), width: graphicsWidth(optionsRange ? read(state, optionsRange.from, optionsRange.to) : null) });
+          const options = optionsRange ? read(state, optionsRange.from, optionsRange.to) : null;
+          content.images.push({ path: imagePath(read(state, inner.from, inner.to), state.doc), width: graphicsWidth(options), ...(options && GRAPHICS_STYLE_KEYS.test(options) ? { options } : {}) });
+          content.places.images.push(ref.from);
+        }
+        found(ref.from);
+        return false;
+      }
+      // svg's `\includesvg[width=…]{file}`: the SVG file, drawn as an image.
+      if (name === "IncludeSvg") {
+        const argument = ref.node.getChild("IncludeSvgArgument")?.getChild("FilePathArgument") ?? ref.node.getChild("IncludeSvgArgument");
+        const inner = argument && argumentInner(argument);
+        const options = ref.node.getChild("OptionalArgument");
+        const optionsRange = options && argumentInner(options);
+        if (inner) {
+          const file = read(state, inner.from, inner.to).trim();
+          content.images.push({ path: imagePath(/\.svg$/i.test(file) ? file : `${file}.svg`, state.doc), width: graphicsWidth(optionsRange ? read(state, optionsRange.from, optionsRange.to) : null) });
           content.places.images.push(ref.from);
         }
         found(ref.from);
@@ -3115,12 +3216,13 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       if (isTabular(ref.node, readState)) {
         const source = read(state, ref.from, ref.to);
         // A longtable is shown as source (see the TabularEnvironment case): so is its table.
-        if (/^\\begin\s*\{(?:longtable|xltabular)\*?\}/.test(source)) valid = false;
+        if (/^\\begin\s*\{(?:longtable|xltabular)\*?\}/.test(source)) unread.push({ from: ref.from, to: ref.to });
         else {
           // Rows written through the document's macros are drawn from their expansion (read-only).
           const built = macroBuiltTabular(source, expand, defs.columnTypes);
           const tabular: NonNullable<FigureContent["tabulars"]>[number] = built ? { source: built, offset: ref.from, readOnly: true } : { source, offset: ref.from };
-          if (!parseTabular(tabular.source, 0, defs.columnTypes)?.rows.length) valid = false;
+          // A grid it cannot read (rules only, or not split into rows) is shown as its source.
+          if (!parseTabular(tabular.source, 0, defs.columnTypes)?.rows.length) { unread.push({ from: ref.from, to: ref.to }); found(ref.from); return false; }
           // revtex's `ruledtabular`: double rules above and below the grid.
           for (let parent = ref.node.parent; parent && parent.from > root.from; parent = parent.parent) if (parent.name === "Environment" && environmentName(parent, readState) === "ruledtabular") { tabular.ruled = true; break; }
           content.tabulars!.push(tabular);
@@ -3165,8 +3267,8 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     }
     // algorithm2e's statements are the float's body, not notes after its caption (cs.DS 2611.09172's caption on top).
     if (root === node && !algorithm2e) {
-      const notes = floatNotes(node, state);
-      const before = notesBefore && floatNotes(node, state, notesBefore);
+      const notes = floatNotes(node, state, undefined, sourceParts);
+      const before = notesBefore && floatNotes(node, state, notesBefore, sourceParts);
       if (before) content.notes = [...(content.notes ?? []), before];
       if (notes) content.notes = [...(content.notes ?? []), notes];
     }
@@ -3179,6 +3281,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
     if (ref.name === "Comment") return false;
     // The minipage in a box of text (`\fbox{\begin{minipage}…}`) is the box's, not a panel.
     if (ref.name === "ColorBoxCommand" || (ref.name === "UnknownCommand" && textBoxUse(ref.node, state, defs))) return false;
+    if (inSource(ref.from, ref.to)) return false;
     if (isPanel(ref.node)) { panels.push(ref.node); return false; }
     return undefined;
   });
@@ -3187,6 +3290,12 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
   if (!valid) return null;
   const empty = (part: FigureContent) => !part.images.length && !part.tabulars && !part.drawings && !part.algorithm && !part.boxes && part.caption === null;
   if (empty(own) && parts.every(empty)) return null;
+  // The parts shown as source go to the panel they are in, else to the float, before or after its drawn content.
+  for (const part of [...sourceParts, ...unread].sort((a, b) => a.from - b.from)) {
+    const at = panels.findIndex((panel) => part.from >= panel.from && part.to <= panel.to);
+    const content = at >= 0 ? parts[at] : own;
+    (content.sources ??= []).push({ offset: part.from, length: part.to - part.from, text: read(state, part.from, part.to), ...(part.name ? { name: part.name } : {}), ...(part.from < content.firstContent ? { before: true } : {}) });
+  }
   const strip = (part: Collected): FigureContent => {
     const { firstContent, places, ...content } = part;
     void firstContent;

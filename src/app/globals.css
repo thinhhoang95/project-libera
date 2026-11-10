@@ -3250,8 +3250,25 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-caption-label { font-weight: 700; }
 /* Side-by-side minipages, each with its own caption. */
 .cm-vis-figure-panels { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 1em; }
-.cm-vis-figure-panel { flex: 1 1 14em; min-width: 0; }
+.cm-vis-figure-panel { flex: 1 1 var(--vis-panel-width, 14em); min-width: 0; }
 .cm-vis-figure-panels-stacked { flex-direction: column; align-items: stretch; }
+/* A part of a float not drawn (an unknown command, a listing): its source, or a placeholder naming it, in its place; clicked, edited on its own. */
+.cm-vis-figure-source { flex: 1 1 100%; box-sizing: border-box; padding: .25em .5em; border-radius: 4px; text-align: left; white-space: pre-wrap; cursor: text; }
+.cm-vis-figure-source:hover, .cm-vis-editable-part:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.cm-vis-figure-source-before { order: -1; }
+.cm-vis-figure-source-named { min-height: 3em; }
+.cm-vis-editable-part { cursor: text; border-radius: 3px; }
+.cm-vis-float-editing { display: block; text-align: left; }
+.cm-vis-float-editor { display: block; box-sizing: border-box; width: 100%; min-height: 1.9em; margin: 0; padding: .3em .5em; resize: none; overflow: hidden; border: 0; border-radius: 4px; outline: 2px solid var(--ring); background: var(--background); color: var(--foreground); font-family: var(--font-mono); font-size: .86rem; font-weight: 400; line-height: 1.45; text-align: left; white-space: pre-wrap; }
+/* `\includegraphics[trim=…,clip]`: a window over the image; `angle=…`: turned. */
+.cm-vis-image-crop { display: block; width: 100%; overflow: hidden; }
+.cm-vis-image-crop > img { display: block; max-height: none; }
+.cm-vis-image-rotated { transform-origin: center; }
+/* Side-by-side minipages and parboxes outside floats: columns at their widths. */
+.cm-vis-columns { display: flex; justify-content: space-between; align-items: flex-start; gap: 1em; margin: .3em 0; cursor: pointer; }
+.cm-vis-column { flex: 0 1 var(--vis-column-width, 48%); min-width: 0; text-align: left; }
+.cm-vis-column-block + .cm-vis-column-block { margin-top: .4em; }
+.cm-vis-column ul, .cm-vis-column ol { margin: .2em 0; padding-left: 1.4em; }
 .cm-vis-inline-image { vertical-align: middle; }
 /* An algorithm: "Algorithm 1 Caption" between rules, then its numbered, indented lines. */
 .cm-vis-figure-algorithm, .cm-vis-figure-panel:has(.cm-vis-algorithm) { text-align: left; }
