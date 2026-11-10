@@ -3116,9 +3116,9 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false): TitleR
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs. */
-const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?)$/;
+export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?)$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
-const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
+export const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
 
 /**
  * LIPIcs' authors (Stein & Samuelson's `\author{Dario {Stein}}{iHub, Radboud University Nijmegen}{dario.stein@ru.nl}{}{}`):

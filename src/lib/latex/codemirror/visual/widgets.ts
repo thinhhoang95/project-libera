@@ -1009,7 +1009,40 @@ export function preambleSummary(view: EditorView | null, defs = view ? visualDef
   return parts.join(" · ");
 }
 
-/** `\maketitle`: the title, authors and date from the preamble. */
+/** The parts of a title block that open in the title editor (title-edit.ts). */
+export type TitlePart = "title" | "author" | "date" | "abstract";
+
+/** A drawn title block: where it starts and how long its construct is, for finding its source; and how it redraws. */
+export type TitleElement = HTMLElement & { liberaTitleStart?: () => number | null; liberaTitleLength?: number; liberaTitleRender?: () => void };
+
+export type TitleHooks = {
+  /** Opens the LaTeX of one part (the `index`th author) in place; false when its source cannot be found. */
+  edit: (view: EditorView, block: TitleElement, part: TitlePart, index: number) => boolean;
+  /** A redrawn title block: continues an edit that was open in the block it replaces. */
+  adopt?: (view: EditorView, block: TitleElement) => void;
+};
+let titleHooks: TitleHooks | null = null;
+/** Set by title-edit.ts. */
+export function setTitleHooks(hooks: TitleHooks | null) { titleHooks = hooks; }
+
+function titleEditable(view: EditorView) {
+  return !!titleHooks && !view.state.readOnly && view.state.facet(visualConfig).editable();
+}
+
+/** Opens the first part of a title block drawn in [from, to] (Enter on the selected block); false when there is none. */
+export function editTitleAt(view: EditorView, from: number, to: number) {
+  if (!titleHooks || !titleEditable(view)) return false;
+  for (const block of view.contentDOM.querySelectorAll<TitleElement>(".cm-vis-title-block")) {
+    const start = block.liberaTitleStart?.();
+    if (start === null || start === undefined || start < from || start >= to) continue;
+    const first = block.querySelector<HTMLElement>("[data-title-part]");
+    if (!first) return false;
+    return titleHooks.edit(view, block, first.dataset.titlePart as TitlePart, Number(first.dataset.titleIndex ?? 0));
+  }
+  return false;
+}
+
+/** `\maketitle`: the title, authors and date from the preamble. Click a part to edit its LaTeX (title-edit.ts). */
 export class TitleWidget extends VisualWidget {
   /**
    * `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`); `notes`: small
@@ -1019,27 +1052,37 @@ export class TitleWidget extends VisualWidget {
     super(JSON.stringify([title, author, date, length, abstract, notes]));
   }
   toDOM(view: EditorView) {
-    const dom = el("div", "cm-vis-title-block");
+    const dom: TitleElement = el("div", "cm-vis-title-block");
+    const editable = titleEditable(view);
+    const part = (node: HTMLElement, name: TitlePart, index = 0) => {
+      node.dataset.titlePart = name;
+      node.dataset.titleIndex = String(index);
+      if (editable) node.title = "Click to edit · Alt-click for the source";
+      return node;
+    };
     const render = (target: EditorView) => {
+      // An open editor keeps its draft: a numbering change elsewhere does not redraw it away.
+      if (dom.querySelector(".cm-vis-title-editor")) return;
       const context = widgetContext(target, dom);
       dom.replaceChildren();
-      if (this.title !== null) { const title = el("div", "cm-vis-title"); title.append(renderLatexFragment(this.title, context)); dom.append(title); }
+      if (this.title !== null) { const title = part(el("div", "cm-vis-title"), "title"); title.append(renderLatexFragment(this.title, context)); dom.append(title); }
       if (this.author !== null) {
         const authors = el("div", "cm-vis-authors");
-        for (const part of this.author.split(/\\(?:and|And|AND)(?![A-Za-z])/)) {
-          if (!part.trim()) continue;
-          const author = el("div", "cm-vis-author");
-          author.append(renderLatexFragment(part.trim(), context));
+        let index = 0;
+        for (const piece of this.author.split(/\\(?:and|And|AND)(?![A-Za-z])/)) {
+          if (!piece.trim()) continue;
+          const author = part(el("div", "cm-vis-author"), "author", index++);
+          author.append(renderLatexFragment(piece.trim(), context));
           authors.append(author);
         }
         dom.append(authors);
       }
-      if (this.date !== null) { const date = el("div", "cm-vis-date"); date.append(renderLatexFragment(this.date, context)); dom.append(date); }
+      if (this.date !== null) { const date = part(el("div", "cm-vis-date"), "date"); date.append(renderLatexFragment(this.date, context)); dom.append(date); }
       if (this.abstract) {
         const abstract = el("div", "cm-vis-title-abstract");
         const heading = el("div", "cm-vis-title-abstract-heading");
         heading.textContent = "Abstract";
-        const body = el("div", "cm-vis-title-abstract-body");
+        const body = part(el("div", "cm-vis-title-abstract-body"), "abstract");
         body.append(renderLatexFragment(this.abstract, context));
         abstract.append(heading, body);
         dom.append(abstract);
@@ -1050,11 +1093,24 @@ export class TitleWidget extends VisualWidget {
         dom.append(note);
       }
     };
+    dom.liberaTitleStart = () => widgetPos(view, dom);
+    dom.liberaTitleLength = this.length;
+    dom.liberaTitleRender = () => render(view);
     render(view);
     refreshable(dom, view, render);
+    if (editable) {
+      dom.classList.add("cm-vis-title-editable");
+      queueMicrotask(() => { if (dom.isConnected) titleHooks?.adopt?.(view, dom); });
+    }
     dom.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
+      const target = event.target as HTMLElement;
+      // Clicks in an open editor place its caret.
+      if (target.closest(".cm-vis-title-editor")) return;
       event.preventDefault();
+      const clicked = target.closest<HTMLElement>("[data-title-part]");
+      if (clicked && !event.altKey && titleHooks && titleEditable(view)
+        && titleHooks.edit(view, dom, clicked.dataset.titlePart as TitlePart, Number(clicked.dataset.titleIndex ?? 0))) return;
       const from = widgetPos(view, dom);
       if (from !== null) (event.altKey ? revealSourceAt : selectRange)(view, from, from + this.length);
     });

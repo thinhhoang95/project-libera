@@ -25,6 +25,7 @@ import { graphicsCandidates, isEditingCell, refreshVisualWidgets } from "../../s
 import { citationText, plainTexText, stateReferenceText } from "../../src/lib/latex/codemirror/visual/references";
 import { latexParser } from "../../src/lib/latex/codemirror/latex-parser";
 import { parseAlgorithm2e, parseAlgorithmic } from "../../src/lib/latex/codemirror/visual/algorithm";
+import { minimalChange, titleSources } from "../../src/lib/latex/codemirror/visual/title-edit";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver", "DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -1815,6 +1816,101 @@ test("editing \\title in the body redraws \\maketitle", () => {
   view.dispatch({ changes: { from: at, to: at + 1, insert: "B" } });
   assert.equal(view.contentDOM.querySelector(".cm-vis-title")?.textContent, "B");
   view.destroy();
+});
+
+/* ---- Title block editing -------------------------------------------------------- */
+
+const TITLED = String.raw`\documentclass{article}
+\title{Attention Is All You Need}
+\author{Ashish Vaswani \\ Google Brain
+  \and Noam Shazeer \\
+  Google Research}
+\date{June 2017}
+\begin{document}
+\maketitle
+Text.
+\end{document}`;
+
+function titlePart(view: EditorView, part: string, index = 0) {
+  return view.contentDOM.querySelectorAll<HTMLElement>(`.cm-vis-title-block [data-title-part="${part}"]`)[index];
+}
+const press = (target: Element, key: string, init: Record<string, unknown> = {}) => target.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
+const typeInto = (area: HTMLTextAreaElement, value: string) => { area.value = value; area.dispatchEvent(new window.Event("input", { bubbles: true })); };
+
+test("the title block's parts map to their source in the preamble", () => {
+  const state = stateFor(TITLED);
+  const at = TITLED.indexOf("\\maketitle");
+  const sources = titleSources(state, at, at + "\\maketitle".length);
+  const text = (span: { from: number; to: number } | null) => (span ? state.sliceDoc(span.from, span.to) : null);
+  assert.equal(text(sources.title), "Attention Is All You Need");
+  assert.deepEqual(sources.authors.map(text), ["Ashish Vaswani \\\\ Google Brain", "Noam Shazeer \\\\\n  Google Research"]);
+  assert.equal(text(sources.date), "June 2017");
+  // acmart adds an author with each `\author`; LIPIcs' takes five arguments.
+  const acm = stateFor("\\documentclass{acmart}\n\\title[Short]{Long}\n\\author{A}\n\\affiliation{X}\n\\author{B}\n\\begin{document}\n\\maketitle\n\\end{document}");
+  const acmAt = acm.doc.toString().indexOf("\\maketitle");
+  const acmSources = titleSources(acm, acmAt, acmAt + 10);
+  assert.equal(acm.sliceDoc(acmSources.title!.from, acmSources.title!.to), "Long");
+  assert.deepEqual(acmSources.authors.map((span) => acm.sliceDoc(span.from, span.to)), ["A", "B"]);
+  const lipics = stateFor("\\documentclass{lipics-v2021}\n\\author{Dario Stein}{Radboud}{d@ru.nl}{}{}\n\\begin{document}\n\\maketitle\n\\end{document}");
+  const lipicsAt = lipics.doc.toString().indexOf("\\maketitle");
+  const [author] = titleSources(lipics, lipicsAt, lipicsAt + 10).authors;
+  assert.equal(lipics.sliceDoc(author.from, author.to), "{Dario Stein}{Radboud}{d@ru.nl}{}{}");
+});
+
+test("clicking an author edits its LaTeX in place, and saving writes only that author as one undo step", () => {
+  const view = mount(TITLED);
+  const author = titlePart(view, "author", 1);
+  assert.match(author.textContent ?? "", /Noam Shazeer/);
+  author.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  const area = view.contentDOM.querySelector<HTMLTextAreaElement>(".cm-vis-title-editor")!;
+  assert.ok(area, "the author opens in an editor");
+  assert.equal(area.value, "Noam Shazeer \\\\\n  Google Research");
+  typeInto(area, "Noam Shazeer \\\\\n  Google DeepMind");
+  press(area, "Enter");
+  assert.equal(view.state.doc.toString(), TITLED.replace("Google Research", "Google DeepMind"));
+  assert.match(titlePart(view, "author", 1).textContent ?? "", /Google DeepMind/);
+  assert.equal(view.contentDOM.querySelector(".cm-vis-title-editor"), null);
+  undo(view);
+  assert.equal(view.state.doc.toString(), TITLED);
+  view.destroy();
+});
+
+test("Escape writes nothing; Tab saves", () => {
+  const view = mount(TITLED);
+  titlePart(view, "title").dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  let area = view.contentDOM.querySelector<HTMLTextAreaElement>(".cm-vis-title-editor")!;
+  typeInto(area, "Something else");
+  press(area, "Escape");
+  assert.equal(view.state.doc.toString(), TITLED);
+  assert.equal(titlePart(view, "title").textContent, "Attention Is All You Need");
+  titlePart(view, "title").dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  area = view.contentDOM.querySelector<HTMLTextAreaElement>(".cm-vis-title-editor")!;
+  typeInto(area, "Attention Is Not All You Need");
+  press(area, "Tab");
+  assert.match(view.state.doc.toString(), /\\title\{Attention Is Not All You Need\}/);
+  view.destroy();
+});
+
+test("Enter on the selected title block edits its title", () => {
+  const view = mount(TITLED);
+  const at = TITLED.indexOf("\\maketitle");
+  view.dispatch({ selection: EditorSelection.range(at, at + "\\maketitle".length) });
+  assert.ok(runScopeHandlers(view, new window.KeyboardEvent("keydown", { key: "Enter" }), "editor"));
+  assert.equal(view.contentDOM.querySelector<HTMLTextAreaElement>(".cm-vis-title-editor")?.value, "Attention Is All You Need");
+  view.destroy();
+});
+
+test("an edit to an affiliation on its own line of \\author redraws the title block", () => {
+  const view = mount(TITLED);
+  const at = TITLED.indexOf("Google Research");
+  view.dispatch({ changes: { from: at + "Google ".length, to: at + "Google Research".length, insert: "Brain" } });
+  assert.match(titlePart(view, "author", 1).textContent ?? "", /Google Brain/);
+  view.destroy();
+});
+
+test("only the characters that changed are written", () => {
+  assert.deepEqual(minimalChange(10, "Google Research", "Google DeepMind"), { from: 17, to: 25, insert: "DeepMind" });
+  assert.deepEqual(minimalChange(0, "aa", "aaa"), { from: 2, to: 2, insert: "a" });
 });
 
 test("a chapter's numbers start where its main file includes it", () => {

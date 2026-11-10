@@ -1,7 +1,8 @@
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
-import { Facet, RangeSet, RangeValue, StateEffect, StateField, type ChangeDesc, type EditorState, type Range, type Transaction } from "@codemirror/state";
+import { Facet, RangeSet, RangeValue, StateEffect, StateField, type ChangeDesc, type EditorState, type Range, type Text, type Transaction } from "@codemirror/state";
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
+import { readGroup, TEX_GROUPS } from "../../../macros/core";
 import { macroAt } from "../../macros/definitions";
 import { environmentName, FLOAT_KINDS } from "../../macros/numbering";
 import { bodyStartIn, disabledField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
@@ -93,14 +94,39 @@ export function preambleEndOf(state: EditorState) {
 
 const TITLE_PARTS = /\\(?:title|author|date)(?![A-Za-z@])/;
 
-/** The `\maketitle` constructs after an edit to a line with `\title`, `\author` or `\date` (before or after the edit). */
+const TITLE_PART_OPEN = /\\(?:title|author|date)(?![A-Za-z@])\*?\s*(?:\[[^\]]*\]\s*)?\{/g;
+
+/**
+ * Whether `pos` is inside the arguments of a `\title`, `\author` or `\date` that starts on an earlier line (an
+ * affiliation on its own line of `\author{Name \\ Institute}`; LIPIcs' `\author` takes five arguments).
+ */
+function insideTitlePart(doc: Text, pos: number) {
+  const start = Math.max(0, pos - 6000);
+  const before = doc.sliceString(start, pos);
+  let open = -1;
+  for (const match of before.matchAll(TITLE_PART_OPEN)) open = start + (match.index ?? 0) + match[0].length - 1;
+  if (open < 0) return false;
+  const text = doc.sliceString(open, Math.min(doc.length, pos + 6000));
+  for (let at = 0, groups = 0; groups < 5; groups++) {
+    const group = readGroup(text, at, TEX_GROUPS);
+    // Not closed yet (being typed): inside.
+    if (!group) return true;
+    if (open + group.end > pos) return true;
+    const next = /^[ \t]*\n?[ \t]*\{/.exec(text.slice(group.end, group.end + 200));
+    if (!next) return false;
+    at = group.end + next[0].length - 1;
+  }
+  return false;
+}
+
+/** The `\maketitle` constructs after an edit to a line with `\title`, `\author` or `\date` (before or after the edit), or inside their arguments. */
 function titlesAfterEdit(tr: Transaction, extents: RangeSet<ConstructMark>) {
   let from = -1;
   tr.changes.iterChanges((fromA, toA, fromB, toB) => {
     if (from >= 0) return;
     const before = tr.startState.doc;
     const after = tr.state.doc;
-    if (TITLE_PARTS.test(before.sliceString(before.lineAt(fromA).from, before.lineAt(toA).to)) || TITLE_PARTS.test(after.sliceString(after.lineAt(fromB).from, after.lineAt(toB).to))) from = fromB;
+    if (TITLE_PARTS.test(before.sliceString(before.lineAt(fromA).from, before.lineAt(toA).to)) || TITLE_PARTS.test(after.sliceString(after.lineAt(fromB).from, after.lineAt(toB).to)) || insideTitlePart(after, fromB)) from = fromB;
   });
   const titles: PendingRange[] = [];
   if (from < 0) return titles;

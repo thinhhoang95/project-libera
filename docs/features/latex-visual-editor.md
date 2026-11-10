@@ -28,7 +28,7 @@ Switch with **Editor Mode → Visual** or **Source** in the file menu (the ⋯ b
 | `\iffalse … \fi`, and what the document otherwise leaves out | Faded source: what it leaves out is neither drawn nor numbered (an `\else` at its level ends it). So are conditionals the text decides (`\ifx 1 0`, `\if ab`, `\ifnum 0=1`) and the uses of macros that throw their argument away (`\newcommand{\cut}[1]{}`, then `\cut{…}`). |
 | `\footnotetext{…}` | The note's text in small grey text, as a footnote's |
 | `thebibliography` (a `.bbl` written into the file) | A **References** heading (**Bibliography** in book and report classes), then each `\bibitem` as a hanging `[1]`, `[2]`… (or the `[label]` it gives; natbib's author–year labels are not shown, as in the PDF). `\newblock` is hidden and the entries' `{\em …}` parts are styled. |
-| `\maketitle` | The title, authors and date |
+| `\maketitle` | The title, authors and date; click one to edit it (see Title block) |
 | The preamble | A folded block: **Preamble · article · 12 packages · 8 macros · 2 theorem types**. Click it (or press Enter on it) to see the source. Text after `\begin{document}` on the same line stays visible. |
 | `\%`, `\&`, `\ldots`, `--`, `---`, ` `` ''`, `~`, accents such as `\'e`, `\LaTeX`, `\today` | The characters they typeset. An accent shows its source while the cursor touches it, so `\c` typed on the way to `\cite` is not drawn as a cedilla. |
 
@@ -52,6 +52,10 @@ Some formulas open as source instead, because MathLive would change them: formul
 ### Tables
 
 Click a cell (or select a table and press Enter) to edit its LaTeX; Enter or Tab saves (Tab moves to the next cell), Escape cancels. Only the characters you changed are written. If a co-author edits the table meanwhile, your cell stays open with what you typed. Right-click a cell to insert or delete rows and columns (the menu works with the arrow keys too); each command is one undo step and writes the fewest changes (one row, or one `&` per row and one letter in the column specification). Cells with a comment or a line break inside are edited as source.
+
+### Title block
+
+`\maketitle` shows `\title`, `\author`, `\date` (and an abstract the class prints with the title) written elsewhere, usually in the folded preamble. Click the title, an author, the date or that abstract (or select the block and press Enter) to edit its LaTeX in place: an author opens with the affiliation and email lines written in it. Enter saves, Shift+Enter starts a new line, Tab saves and moves to the next part, Escape cancels. The text is written back to the command's argument wherever it is, changing only the characters you changed, as one undo step; if a co-author changed that part meanwhile, Libera asks before replacing their version. Authors are found as each class reads them: the parts of `\author` between `\and`, every `\author` in acmart and other classes that add one per command, LIPIcs' five arguments, ICML's `\icmlauthor` names, and the commands in a `frontmatter` environment. Alt-click still shows the block's own source, as before.
 
 ### Formatting and paste
 

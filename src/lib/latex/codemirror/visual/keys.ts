@@ -5,7 +5,7 @@ import type { SyntaxNode } from "@lezer/common";
 import { wrapSelection } from "../editing";
 import { argumentInner } from "./render-fragment";
 import { constructAt, forceRevealEffect, structuralField } from "./structural";
-import { editFirstCell, followReference, revealSourceAt, setMathOpener, type MathOpener } from "./widgets";
+import { editFirstCell, editTitleAt, followReference, revealSourceAt, setMathOpener, type MathOpener } from "./widgets";
 
 /* Keyboard behaviour of the Visual mode (docs/latex-visual-editor-plan.md
  * §6.5–6.6). Every command here either moves the selection or writes the
@@ -107,7 +107,7 @@ export function registerMathOpener(opener: MathOpener | null) {
 /**
  * Enter on a selected formula opens its editor; on a selected reference,
  * goes to its label; on a selected table, edits its first cell (Tab moves on);
- * on another selected widget, shows its source.
+ * on a selected title block, edits its title (Tab moves on); on another selected widget, shows its source.
  */
 const openSelected: Command = (view) => {
   const range = view.state.selection.main;
@@ -120,6 +120,7 @@ const openSelected: Command = (view) => {
     if (key && followReference(view, key)) return true;
   }
   if ((construct.kind === "table" || construct.kind === "figure") && editFirstCell(view, construct.from, construct.to)) return true;
+  if (construct.kind === "title" && editTitleAt(view, construct.from, construct.to)) return true;
   revealSourceAt(view, construct.from, construct.to);
   return true;
 };

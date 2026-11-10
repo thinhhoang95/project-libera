@@ -3302,6 +3302,12 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-title { font-size: 1.75em; font-weight: 700; line-height: 1.25; }
 .cm-vis-authors { display: flex; flex-wrap: wrap; justify-content: center; gap: .3em 2.2em; margin-top: .7em; font-size: .95em; }
 .cm-vis-date { margin-top: .5em; color: var(--muted-foreground); }
+.cm-vis-title-editable [data-title-part] { border-radius: 4px; cursor: text; transition: background-color .12s; }
+.cm-vis-title-editable [data-title-part]:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.cm-vis-title-editable .cm-vis-author[data-title-part] { padding: 0 .3em; }
+.cm-vis-title-editing, .cm-vis-title-editable .cm-vis-title-editing:hover { background: none; }
+.cm-vis-authors > .cm-vis-title-editing { flex: 1 1 100%; }
+.cm-vis-title-editor { display: block; box-sizing: border-box; width: 100%; min-height: 1.9em; margin: 0; padding: .3em .5em; resize: none; overflow: hidden; border: 0; border-radius: 4px; outline: 2px solid var(--ring); outline-offset: 0; background: var(--background); color: var(--foreground); font-family: var(--font-mono); font-size: .86rem; font-weight: 400; line-height: 1.45; text-align: left; white-space: pre-wrap; }
 /* Keywords, CCS concepts and subject classes under a title block; an author's affiliation (IEEEtran's author blocks). */
 .cm-vis-title-note { margin: .45em auto 0; max-width: 88%; font-size: .85em; text-align: left; }
 .cm-vis-title-note-label { font-weight: 700; }

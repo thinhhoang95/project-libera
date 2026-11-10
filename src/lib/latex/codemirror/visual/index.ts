@@ -4,6 +4,7 @@ import { visualKeys } from "./keys";
 import { closeMathSessions, mathSessionTracker } from "./math-edit";
 import { pasteHtmlAsLatex } from "./paste";
 import { closeTableSessions, installTableEditor } from "./table-edit";
+import { closeTitleSessions, installTitleEditor } from "./title-edit";
 import { visualConfig, visualStateFields, type VisualConfig } from "./model";
 import { linkClicks, numberingPlugin, pendingFiller, remoteOutlines } from "./plugins";
 import { structuralField } from "./structural";
@@ -25,11 +26,12 @@ export function latexVisualState(): Extension {
   return visualStateFields;
 }
 
-/** Formula and table editors and menus belong to the view in the Visual mode: they close with it (tab closed, mode switched off). */
+/** Formula, table and title editors and menus belong to the view in the Visual mode: they close with it (tab closed, mode switched off). */
 const widgetEditorLifecycle = ViewPlugin.define((view) => ({
   destroy() {
     closeMathSessions(view);
     closeTableSessions(view);
+    closeTitleSessions(view);
   },
 }));
 
@@ -47,6 +49,7 @@ export function latexVisualMode(config: Partial<VisualConfig>): Extension {
     mathSessionTracker,
     pasteHtmlAsLatex,
     installTableEditor(),
+    installTitleEditor(),
     EditorView.editorAttributes.of({ class: "cm-latex-visual" }),
     EditorView.contentAttributes.of({ "aria-roledescription": "LaTeX visual editor" }),
   ];
