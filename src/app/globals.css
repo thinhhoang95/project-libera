@@ -3275,7 +3275,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-rm { font-style: normal; font-weight: 400; }
 .cm-vis-image-placeholder, .cm-vis-image-loading { display: inline-block; padding: 1.6em 1.2em; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted-foreground); font-family: var(--font-sans); font-size: 12px; }
 .cm-vis-tabular { margin: .4em 0; overflow-x: auto; cursor: pointer; }
-.cm-vis-table { margin: .2em auto; border-collapse: collapse; font-size: .92em; line-height: 1.45; }
+/* `\renewcommand{\arraystretch}{x}` sets --vis-arraystretch: taller rows. */
+.cm-vis-table { margin: .2em auto; border-collapse: collapse; font-size: .92em; line-height: calc(1.45 * var(--vis-arraystretch, 1)); }
 .cm-vis-table.cm-vis-table-nested { display: inline-table; margin: 0; font-size: inherit; vertical-align: middle; }
 .cm-vis-table-cell { padding: .18em .75em; vertical-align: top; cursor: text; }
 /* A cell of an l, c or r column is one line, as in TeX; a table wider than the page scrolls (below). */
@@ -3284,7 +3285,26 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-table-row.cm-vis-rule-heavy > td { border-top: 1.5px solid currentColor; }
 .cm-vis-table-row.cm-vis-row-spaced > td { padding-top: .5em; }
 /* colortbl's `\rowcolor` and `\cellcolor`: a faint fill of the colour, so text stays readable in every theme. */
-.cm-vis-table-row[data-fill] > td, .cm-vis-table-cell[data-fill] { background: color-mix(in srgb, var(--vis-fill) 35%, transparent); }
+/* A cell's own fill wins over its row's (`\rowcolor`, `\rowcolors`), which wins over its column's (`\columncolor`). */
+.cm-vis-table-cell[data-column-fill] { background: color-mix(in srgb, var(--vis-column-fill) 35%, transparent); }
+.cm-vis-table-row[data-fill] > td, .cm-vis-table-row > .cm-vis-table-cell[data-fill] { background: color-mix(in srgb, var(--vis-fill) 35%, transparent); }
+/* `\cline{2-3}`, `\cmidrule{2-3}`: a rule over some columns only. */
+.cm-vis-table-cell.cm-vis-cell-rule { border-top: 1px solid currentColor; }
+/* A row with more cells than the column specification: drawn, and marked. */
+.cm-vis-table-row.cm-vis-table-row-odd > td { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--destructive) 70%, transparent); }
+/* Rows written through the document's macros: drawn from their expansion, edited as source. */
+.cm-vis-table-cell.cm-vis-table-macro { cursor: pointer; }
+.cm-vis-table-selected { background: color-mix(in srgb, var(--ring) 18%, transparent); }
+/* siunitx's `S` columns: numbers padded with digit-wide spaces so their points line up. */
+.cm-vis-table-decimal { font-variant-numeric: tabular-nums; white-space: pre; }
+/* `\diagbox{below}{above}`: a cell split from its top left to its bottom right corner. */
+.cm-vis-table-diag { background-image: linear-gradient(to top right, transparent calc(50% - .5px), currentColor, transparent calc(50% + .5px)); }
+.cm-vis-diag-above { display: block; text-align: right; }
+.cm-vis-diag-below { display: block; text-align: left; }
+/* `\rotatebox{90}{…}` header: read from the bottom up (`-90`: from the top down). */
+.cm-vis-rotated { display: inline-block; writing-mode: vertical-rl; }
+.cm-vis-rotated.cm-vis-rotated-up { transform: rotate(180deg); }
+.cm-vis-table-menu-separator { height: 1px; margin: 4px 6px; background: var(--border); }
 /* stackengine's `\stackanchor{a}{b}`: its parts one above the other. */
 .cm-vis-stack { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1.15; }
 /* A displayed formula inside a caption or an algorithm's statement. */

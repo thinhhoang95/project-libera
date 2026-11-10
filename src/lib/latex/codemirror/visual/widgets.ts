@@ -11,7 +11,7 @@ import { latexProjectField } from "../editing";
 import { bibLookup, citationStyle, citationText, plainTexText, stateReferenceText, labelTarget, withReferenceNumbers } from "./references";
 import { renderLatexFragment, renderLatexInto, type FragmentContext } from "./render-fragment";
 import { cssColor } from "./symbols";
-import { parseTabular } from "./table-model";
+import { columnSpans, parseTabular, type TableModel, type TableRow, type TableSettings } from "./table-model";
 import type { AlgorithmSpec } from "./algorithm";
 
 /* The widgets the Visual mode draws in place of LaTeX constructs
@@ -595,8 +595,9 @@ export type FigureContent = {
   images: Array<{ path: string; width?: string }>;
   /** For tables: the tabular sources inside, with their offsets relative to the widget.
    * `readOnly`: drawn from a reading of the source (a longtable's rows), not cell by cell from it.
-   * `ruled`: inside revtex's `ruledtabular`, which rules the grid with double lines above and below. */
-  tabulars?: Array<{ source: string; offset: number; readOnly?: boolean; ruled?: boolean }>;
+   * `ruled`: inside revtex's `ruledtabular`, which rules the grid with double lines above and below.
+   * `extras`: what the float sets for the grid (`\rowcolors`, `\arraystretch`), and rows written through macros. */
+  tabulars?: Array<{ source: string; offset: number; readOnly?: boolean; ruled?: boolean; extras?: TableExtras }>;
   /** Drawings the editor does not draw (TikZ, `\input` files): their file name, or "" for an inline picture. */
   drawings?: string[];
   /** An `algorithmic` body, as numbered lines. */
@@ -725,7 +726,7 @@ export class FigureWidget extends VisualWidget {
         const grid = renderTableGrid(view, tabular.source, () => {
           const pos = start();
           return pos === null ? null : pos + tabular.offset;
-        }, tabular.readOnly ? spec.length - tabular.offset : undefined);
+        }, tabular.readOnly ? spec.length - tabular.offset : undefined, tabular.extras);
         if (tabular.ruled) grid.classList.add("cm-vis-table-ruled");
         body.append(grid);
       }
@@ -801,6 +802,8 @@ export type TableHooks = {
   menu: (view: EditorView, event: MouseEvent, tableStart: () => number | null, row: number, cell: number) => void;
   /** A redrawn table: continues a cell edit that was open in the table it replaces. */
   adopt?: (view: EditorView, table: TableElement) => void;
+  /** Shift-click: extends the selection of cells (for merging) to this cell. */
+  select?: (view: EditorView, cell: HTMLElement, tableStart: () => number | null, row: number, cell_: number) => void;
 };
 let tableHooks: TableHooks | null = null;
 /** Set by table-edit.ts. */
@@ -814,14 +817,62 @@ export function isEditingCell(td: HTMLElement) {
   return td.getAttribute("contenteditable") === "true";
 }
 
+/** What a grid's surroundings set for it (`\rowcolors`, `\arraystretch`), and the rows the document's macros write (table-model.ts). */
+export type TableExtras = { settings?: TableSettings; macroRows?: Record<number, string | null> };
+
+/** A table fill: none for white, the page's own colour. */
+function tableFill(model: string | null, name: string, colors: FragmentContext["defs"]["colors"]) {
+  return !name.trim() || /^white$/i.test(name.trim()) ? null : cssColor(model, name, colors);
+}
+
+/** A partial rule (`\cline{2-3}`, `\cmidrule(lr){2-3}`, `\cdashline{1-2}`): the columns it rules. */
+const PARTIAL_RULE = /^\\(?:cline|cmidrule|cdashline)\s*(?:\([^)]*\)\s*)?(?:\[[^\]]*\]\s*)?\{\s*(\d+)\s*-\s*(\d+)\s*\}/;
+/** A number as siunitx's `S` column reads it in the simple case: a sign, digits, a decimal point, digits. */
+const DECIMAL = /^([+\-−]?)(\d*)(?:([.,])(\d*))?$/;
+/** diagbox's `\diagbox{below}{above}` (and `\backslashbox`), the whole cell. */
+const DIAGBOX = /^\\(?:diagbox|backslashbox)\s*(?:\[[^\]]*\]\s*)?\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}$/;
+/** A header turned a quarter: `\rotatebox{90}{…}`, the whole cell. */
+const ROTATED = /^\\rotatebox\s*(?:\[[^\]]*\]\s*)?\{\s*(-?\d+)\s*\}\s*\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}$/;
+const FIGURE_SPACE = " ";
+const PUNCTUATION_SPACE = " ";
+
+/** For siunitx's `S` columns: the widest integer part (with its sign) and fraction of the numbers written in them. */
+function decimalColumns(model: TableModel, types: ReadonlyMap<string, unknown>) {
+  const layouts = new Map<number, { int: number; frac: number }>();
+  model.columns.forEach((column, index) => {
+    if (column !== "S" || types.has(column)) return;
+    let int = 0;
+    let frac = 0;
+    let numbers = 0;
+    for (const row of model.rows) {
+      let at = 0;
+      for (const cell of row.cells) {
+        if (at === index && cell.span === 1) {
+          const number = DECIMAL.exec(cell.text.trim());
+          if (number && (number[2] || number[4])) {
+            numbers++;
+            int = Math.max(int, number[1].length + number[2].length);
+            frac = Math.max(frac, number[4]?.length ?? 0);
+          }
+        }
+        at += cell.span;
+      }
+    }
+    if (numbers) layouts.set(index, { int, frac });
+  });
+  return layouts;
+}
+
 /** A tabular as a grid; cells render their LaTeX, and become editable through table-edit.ts. */
 /**
  * The grid of a tabular. With `readOnlyLength`, the source is a reading of the
  * document rather than a slice of it (a longtable's rows): cells are not
  * edited, and a click shows the source of the `readOnlyLength` characters
- * from `start`.
+ * from `start`. `extras` holds what the commands around the tabular set for it,
+ * and the rows the document's macros write: those are drawn from their
+ * expansion, and a click shows their source; the other cells stay editable.
  */
-export function renderTableGrid(view: EditorView, source: string, start: () => number | null, readOnlyLength?: number) {
+export function renderTableGrid(view: EditorView, source: string, start: () => number | null, readOnlyLength?: number, extras: TableExtras = {}) {
   const types = visualDefinitions(view.state).columnTypes;
   const model = parseTabular(source, 0, types);
   const table = el("table", "cm-vis-table") as TableElement;
@@ -833,35 +884,110 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   /** Cells whose LaTeX can show numbers, citations or macros, redrawn when those change. */
   const dynamic: Array<{ td: HTMLElement; text: string; from: number }> = [];
   // `\newcolumntype` letters align as their definition does.
-  // tabulary's `C` and `R` align as `c` and `r` (unless the document defines them).
-  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" || column === "C" ? "center" : column === "r" || column === "R" || column === "D" ? "right" : "left"));
+  // tabulary's `C` and `R` align as `c` and `r` (unless the document defines them); siunitx's `S` centres its numbers.
+  const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" || column === "C" || column === "S" ? "center" : column === "r" || column === "R" || column === "D" ? "right" : "left"));
   // dcolumn's `D{.}{.}{3.2}` cells (and `>{$}c<{$}`) are formulas: `1.41^{***}` has its stars raised.
   const formulas = model.columns.map((column) => column === "D" || !!types.get(column)?.math);
   // As in TeX, only paragraph columns (`p{…}`, `m{…}`, `b{…}`, tabularx's `X`, tabulary's `L C R J`) wrap; the
   // others are one line, so a wide table scrolls instead of breaking "2.46" into "2." and "46" (Carlini & Wagner).
   const wraps = model.columns.map((column) => (types.has(column) ? !!types.get(column)!.paragraph : /^[pmbXLCRJ]$/.test(column)));
+  // `m{…}` and `b{…}` set their cells' text in the middle and at the bottom of the row.
+  const valigns = model.columns.map((column) => (types.has(column) ? null : column === "m" ? "middle" : column === "b" ? "bottom" : null));
+  // colortbl's `>{\columncolor{…}}c`: the column's fill, under a row's.
+  const spans = columnSpans(model.spec, 0, types) ?? [];
+  const columnFills = model.columns.map((_, index) => {
+    const span = spans[index];
+    const fill = span && /\\columncolor\s*(?:\[([^\]]*)\]\s*)?\{([^{}]*)\}/.exec(model.spec.slice(span.from, span.to));
+    return fill ? tableFill(fill[1] ?? null, fill[2], context.defs.colors) : null;
+  });
+  const decimals = decimalColumns(model, types);
+  const settings = extras.settings;
+  // `\renewcommand{\arraystretch}{1.5}`: taller rows.
+  if (settings?.stretch) table.style.setProperty("--vis-arraystretch", String(settings.stretch));
+  // xcolor's `\rowcolors{2}{gray!10}{white}`: odd and even rows filled faintly from the row it names.
+  const rowColors = settings?.rowColors
+    ? { start: settings.rowColors.start, odd: tableFill(null, settings.rowColors.odd, context.defs.colors), even: tableFill(null, settings.rowColors.even, context.defs.colors) }
+    : null;
   /** Columns a `\multirow` above still covers, and for how many more rows. */
   const rowsCovered = new Map<number, number>();
   /** The rules of rows not drawn, drawn above the next row; whether the last such row closes the table. */
   let carried: string[] = [];
   let closing = false;
-  model.rows.forEach((row, rowIndex) => {
+
+  // The rows to draw: the tabular's own, and for a row the document's macros write, the rows of its expansion.
+  type Shown = { row: TableRow; index: number | null; text: string; macro?: { from: number; to: number }; raw?: boolean };
+  const shown: Shown[] = [];
+  let pending: string[] = [];
+  model.rows.forEach((row, index) => {
+    const before = pending.length ? [...pending, ...row.rulesBefore] : row.rulesBefore;
+    pending = [];
+    const reading = extras.macroRows?.[index];
+    if (reading === undefined) { shown.push({ row: before === row.rulesBefore ? row : { ...row, rulesBefore: before }, index, text: source }); return; }
+    const macro = { from: row.from, to: row.to };
+    const wrapped = reading === null ? "" : `\\begin{tabular}{${model.spec}}${reading}\\end{tabular}`;
+    const sub = reading === null ? null : parseTabular(wrapped, 0, types);
+    // A row whose expansion cannot be read: its source, alone in its row.
+    if (!sub) { shown.push({ row: { ...row, rulesBefore: before }, index: null, text: source, macro, raw: true }); return; }
+    sub.rows.forEach((subRow, k) => shown.push({ row: k === 0 ? { ...subRow, rulesBefore: [...before, ...subRow.rulesBefore] } : subRow, index: null, text: wrapped, macro }));
+    if (!sub.rows.length) pending.push(...before);
+    pending.push(...sub.rulesAfter);
+  });
+  if (pending.length) closing = true;
+
+  let drawn = 0;
+  shown.forEach(({ row, index: rowIndex, text: rowSource, macro, raw }, shownIndex) => {
     const rulesBefore = [...carried, ...row.rulesBefore];
     carried = [];
     // stargazer's `\\[-1.8ex]\hline` and `\hline \\[-1.8ex]`: empty rows a negative space pulls up to nothing in the
     // PDF (the Grammarly paper's tables); their rules go to the next row.
-    if (row.breakAt !== null && row.cells.every((cell) => !cell.text.trim()) && /^\\\\\*?\s*\[\s*-/.test(source.slice(row.breakAt, row.to)) && ![...rowsCovered.values()].some((count) => count > 0)) {
-      if (rowIndex + 1 < model.rows.length) { carried = rulesBefore; return; }
+    if (row.breakAt !== null && row.cells.every((cell) => !cell.text.trim()) && /^\\\\\*?\s*\[\s*-/.test(rowSource.slice(row.breakAt, row.to)) && ![...rowsCovered.values()].some((count) => count > 0)) {
+      if (shownIndex + 1 < shown.length) { carried = rulesBefore; return; }
       if (rulesBefore.length) { closing = true; return; }
     }
     const tr = el("tr", "cm-vis-table-row");
     // `\addlinespace` is space, not a line; `\noalign{…}` sets up the line after it (a thicker one: Mask R-CNN's `\shline`).
     const lines = rulesBefore.filter((rule) => !/^\\(?:addlinespace|noalign)/.test(rule));
+    // `\cline{2-3}` and `\cmidrule{2-3}` rule only their columns.
+    const partial = lines.map((rule) => PARTIAL_RULE.exec(rule)).filter((match): match is RegExpExecArray => !!match).map((match) => [Number(match[1]) - 1, Number(match[2]) - 1] as const);
+    const full = lines.filter((rule) => !PARTIAL_RULE.test(rule));
     const thick = rulesBefore.some((rule) => /^\\noalign\s*\{[^}]*\\arrayrulewidth\s*[\d.]+\s*pt/.test(rule));
-    if (lines.length) tr.classList.add(thick || lines.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
+    if (full.length) tr.classList.add(thick || full.some((rule) => /toprule|bottomrule/.test(rule)) ? "cm-vis-rule-heavy" : "cm-vis-rule");
     if (rulesBefore.some((rule) => /^\\addlinespace/.test(rule))) tr.classList.add("cm-vis-row-spaced");
+    drawn++;
+    if (rowColors && drawn >= rowColors.start) {
+      const fill = drawn % 2 ? rowColors.odd : rowColors.even;
+      if (fill) { tr.style.setProperty("--vis-fill", fill); tr.dataset.fill = ""; }
+    }
+    /** Shows the source of the row a macro writes. */
+    const revealMacro = (event: MouseEvent) => {
+      if (event.button !== 0 || !macro) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const base = start();
+      if (base === null) return;
+      if (readOnly) revealSourceAt(view, base, base + readOnlyLength!);
+      else revealSourceAt(view, base + macro.from, base + macro.to);
+    };
+    if (raw && macro) {
+      const td = el("td", "cm-vis-table-cell cm-vis-table-macro") as HTMLTableCellElement;
+      td.colSpan = Math.max(1, model.columns.length);
+      td.append(el("code", "cm-vis-raw", source.slice(macro.from, macro.to)));
+      td.title = "A row written through a macro: click to edit its source";
+      td.addEventListener("mousedown", revealMacro);
+      tr.append(td);
+      table.append(tr);
+      return;
+    }
+    if (rowIndex !== null) {
+      // More cells than the column specification has (or a `\multicolumn` past its end): drawn, and marked.
+      const width = row.cells.reduce((sum, cell) => sum + cell.span, 0);
+      if (model.columns.length && width > model.columns.length) {
+        tr.classList.add("cm-vis-table-row-odd");
+        tr.title = `This row has ${width} columns; the table's specification has ${model.columns.length}`;
+      }
+    }
     // Rows read from another file (`\input{./tables/summary_stats_post.tex} \\`, the Grammarly paper): a placeholder row.
-    const input = row.cells.length === 1 ? /^\\(?:input|include)\s*\{([^{}]+)\}$/.exec(row.cells[0].text.trim()) : null;
+    const input = rowIndex !== null && row.cells.length === 1 ? /^\\(?:input|include)\s*\{([^{}]+)\}$/.exec(row.cells[0].text.trim()) : null;
     if (input) {
       const name = input[1].trim().replace(/^\.\//, "");
       // Not a cell of the grid: the cell editor and keys leave it alone.
@@ -891,7 +1017,9 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       if (cell.span > 1) td.colSpan = cell.span;
       td.style.textAlign = cell.span > 1 ? "center" : aligns[column] ?? "left";
       if (cell.span === 1 && wraps[column] === false) td.classList.add("cm-vis-table-line");
-      let text = cell.contentFrom !== undefined ? source.slice(cell.contentFrom, cell.contentTo) : cell.text;
+      if (partial.some(([first, last]) => column <= last && column + cell.span - 1 >= first)) td.classList.add("cm-vis-cell-rule");
+      if (cell.span === 1 && columnFills[column]) { td.style.setProperty("--vis-column-fill", columnFills[column]!); td.dataset.columnFill = ""; }
+      let text = cell.contentFrom !== undefined ? rowSource.slice(cell.contentFrom, cell.contentTo) : cell.text;
       // colortbl: `\rowcolor{Gray}` at a row's start fills the row, `\cellcolor{…}` its cell (faintly, under the text).
       const fill = /^\s*\\(rowcolor|cellcolor)\s*(?:\[([^\]]*)\]\s*)?\{([^{}]*)\}/.exec(text);
       if (fill) {
@@ -908,12 +1036,48 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
         td.rowSpan = Number(multirow[1]);
         td.style.verticalAlign = "middle";
         for (let at = column; at < column + cell.span; at++) rowsCovered.set(at, Number(multirow[1]) - 1);
+      } else if (cell.span === 1 && valigns[column]) td.style.verticalAlign = valigns[column]!;
+      const trimmed = text.trim();
+      const decimal = cell.span === 1 ? decimals.get(column) : undefined;
+      const number = decimal ? DECIMAL.exec(trimmed) : null;
+      const diagonal = DIAGBOX.exec(trimmed);
+      const rotated = ROTATED.exec(trimmed);
+      if (decimal && number && (number[2] || number[4])) {
+        // The number as written, padded with digit-wide spaces so the column's points line up.
+        const whole = number[1] + number[2];
+        const fraction = number[4] ?? "";
+        td.classList.add("cm-vis-table-decimal");
+        td.textContent = FIGURE_SPACE.repeat(decimal.int - whole.length) + whole + (number[3] ?? (decimal.frac ? PUNCTUATION_SPACE : "")) + fraction + FIGURE_SPACE.repeat(decimal.frac - fraction.length);
+      } else if (diagonal) {
+        // A cell split by a diagonal: the first part below it, the second above.
+        td.classList.add("cm-vis-table-diag");
+        const above = el("span", "cm-vis-diag-above");
+        above.append(renderLatexFragment(diagonal[2], context));
+        const below = el("span", "cm-vis-diag-below");
+        below.append(renderLatexFragment(diagonal[1], context));
+        td.append(above, below);
+      } else if (rotated && /^(?:90|-90|270)$/.test(rotated[1])) {
+        // A header turned a quarter, read from the bottom up (90) or the top down (-90).
+        const turned = el("span", rotated[1] === "90" ? "cm-vis-rotated cm-vis-rotated-up" : "cm-vis-rotated");
+        turned.append(renderLatexFragment(rotated[2], context));
+        td.append(turned);
+      } else {
+        const formula = cell.span === 1 && formulas[column] && trimmed && !text.includes("$") && !/^\s*\\multi(?:column|row)/.test(text);
+        td.append(renderLatexFragment(formula ? `$${trimmed}$` : text, context));
+        if (text.includes("\\")) dynamic.push({ td, text, from: macro ? macro.from : cell.contentFrom ?? cell.from });
       }
-      const formula = cell.span === 1 && formulas[column] && text.trim() && !text.includes("$") && !/^\s*\\multi(?:column|row)/.test(text);
-      td.append(renderLatexFragment(formula ? `$${text.trim()}$` : text, context));
-      if (text.includes("\\")) dynamic.push({ td, text, from: cell.contentFrom ?? cell.from });
+      if (macro) {
+        // A row the document's macros write: drawn from their expansion; a click shows the row's source.
+        td.classList.add("cm-vis-table-macro");
+        td.title = "Written through a macro: click to edit its source";
+        td.addEventListener("mousedown", revealMacro);
+        tr.append(td);
+        column += cell.span;
+        return;
+      }
       td.dataset.row = String(rowIndex);
       td.dataset.cell = String(cellIndex);
+      // A cell with a comment or a line break inside opens as its whole source.
       if (cell.sourceOnly) td.classList.add("cm-vis-table-source-only");
       td.addEventListener("mousedown", (event) => {
         if (event.button !== 0 || isEditingCell(td)) return;
@@ -924,7 +1088,9 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
           if (base !== null) revealSourceAt(view, base, base + readOnlyLength);
           return;
         }
-        if (tableHooks && !cell.sourceOnly && !event.altKey && view.state.facet(visualConfig).editable() && !view.state.readOnly) { tableHooks.edit(view, td, start, rowIndex, cellIndex); return; }
+        // Shift-click selects cells, for merging them.
+        if (event.shiftKey && tableHooks?.select) { tableHooks.select(view, td, start, rowIndex!, cellIndex); return; }
+        if (tableHooks && !event.altKey && view.state.facet(visualConfig).editable() && !view.state.readOnly) { tableHooks.edit(view, td, start, rowIndex!, cellIndex); return; }
         const base = start();
         if (base !== null) revealSourceAt(view, base + cell.from, base + cell.to + 1);
       });
@@ -932,7 +1098,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
         if (readOnly || !tableHooks || view.state.readOnly || !view.state.facet(visualConfig).editable()) return;
         event.preventDefault();
         event.stopPropagation();
-        tableHooks.menu(view, event, start, rowIndex, cellIndex);
+        tableHooks.menu(view, event, start, rowIndex!, cellIndex);
       });
       tr.append(td);
       column += cell.span;
@@ -961,7 +1127,7 @@ export function editFirstCell(view: EditorView, from: number, to: number) {
   for (const table of view.contentDOM.querySelectorAll<TableElement>(".cm-vis-table")) {
     const start = table.liberaTableStart?.();
     if (start === null || start === undefined || start < from || start >= to) continue;
-    const cell = table.querySelector<HTMLElement>(".cm-vis-table-cell:not(.cm-vis-table-source-only)");
+    const cell = table.querySelector<HTMLElement>(".cm-vis-table-cell[data-row]:not(.cm-vis-table-source-only)") ?? table.querySelector<HTMLElement>(".cm-vis-table-cell[data-row]");
     if (!cell || !table.liberaTableStart) return false;
     tableHooks.edit(view, cell, table.liberaTableStart, Number(cell.dataset.row), Number(cell.dataset.cell));
     return true;
@@ -972,15 +1138,15 @@ export function editFirstCell(view: EditorView, from: number, to: number) {
 /** A tabular outside a table environment. */
 export class TableWidget extends VisualWidget {
   /** `readOnly`: the source is a reading of the document (rows written through its macros), not a slice of it. */
-  constructor(readonly source: string, readonly offset: number, readonly length: number, readonly readOnly = false) {
-    super(`${offset}\u0000${readOnly ? 1 : 0}\u0000${source}`);
+  constructor(readonly source: string, readonly offset: number, readonly length: number, readonly readOnly = false, readonly extras?: TableExtras) {
+    super(`${offset}\u0000${readOnly ? 1 : 0}\u0000${source}${extras ? `\u0000${JSON.stringify(extras)}` : ""}`);
   }
   toDOM(view: EditorView) {
     const dom = el("div", "cm-vis-tabular");
     dom.append(renderTableGrid(view, this.source, () => {
       const pos = widgetPos(view, dom);
       return pos === null ? null : pos + this.offset;
-    }, this.readOnly ? this.length - this.offset : undefined));
+    }, this.readOnly ? this.length - this.offset : undefined, this.extras));
     dom.addEventListener("mousedown", (event) => {
       // A click in the cell being edited moves its caret.
       if (event.button !== 0 || (event.target as HTMLElement).closest(".cm-vis-table-cell[contenteditable=true]")) return;
