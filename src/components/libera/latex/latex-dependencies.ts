@@ -83,7 +83,14 @@ const DEFINES = /\\(?:newcommand|renewcommand|providecommand|DeclareRobustComman
 export async function collectMacroSources(options: {
   filePath: string; rootPath: string; ownPreamble: string; known: ReadonlySet<string>; readText: ReadText; version: (path: string) => string;
 }): Promise<{ sources: MacroSource[]; paths: string[] }> {
-  const { filePath, rootPath, known, readText, version } = options;
+  const { filePath, rootPath, known, version } = options;
+  // Finding the chapter and reading the sources read the same files: once each.
+  const reads = new Map<string, Promise<string>>();
+  const readText = (path: string) => {
+    let read = reads.get(path);
+    if (!read) reads.set(path, read = options.readText(path));
+    return read;
+  };
   const sources: MacroSource[] = [];
   const paths: string[] = [];
   let preamble = options.ownPreamble;

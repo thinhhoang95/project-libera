@@ -46,9 +46,10 @@ export async function findInclusion(filePath: string, rootPath: string, readText
     for (const input of readLatexInputs(text)) {
       if (input.pos < from) continue;
       const target = includeTargets(input, rootPath, importDir);
-      if (target.paths[0] === filePath) return [{ path, text, cut: input.pos }];
-      if (depth >= MAX_DEPTH || reads >= MAX_FILES) continue;
+      // The first of the paths TeX tries that exists is the file it reads.
       for (const candidate of target.paths) {
+        if (candidate === filePath) return [{ path, text, cut: input.pos }];
+        if (depth >= MAX_DEPTH || reads >= MAX_FILES) break;
         reads++;
         const included = await readText(candidate);
         if (!included) continue;
@@ -152,14 +153,16 @@ export async function chapterNumberingStart(
       const target = includeTargets(input, rootPath, importDir);
       out += text.slice(at, input.pos);
       at = input.end;
-      if (stop !== null && target.paths[0] === stop) return { text: out, found: true };
-      if (!target.paths.length || depth >= MAX_DEPTH || reads >= MAX_FILES) continue;
+      // The first of the paths TeX tries that exists is the file it reads.
       let included = "";
       for (const candidate of target.paths) {
+        if (stop !== null && candidate === stop) return { text: out, found: true };
+        if (depth >= MAX_DEPTH || reads >= MAX_FILES) break;
         reads++;
         included = await readText(candidate);
         if (included) break;
       }
+      if (!included) continue;
       const inner = await expand(included, 0, depth + 1, target.importDir, stop);
       out += `\n${inner.text}\n`;
       if (inner.found) return { text: out, found: true };
