@@ -1,6 +1,6 @@
 import { ExternalTokenizer } from "@lezer/lr";
 import { parser as packageParser } from "codemirror-lang-latex/src/latex.mjs";
-import { literalArgTokenizer, specializeCtrlSeq } from "codemirror-lang-latex/src/tokens.mjs";
+import { literalArgTokenizer, specializeCtrlSeq, specializeEnvName } from "codemirror-lang-latex/src/tokens.mjs";
 
 /* The LaTeX parser every part of Libera uses: codemirror-lang-latex's, with
  * one tokenizer and one specializer replaced. Its literal arguments (file
@@ -49,7 +49,20 @@ const MATH_TEXT_CTRL_SEQ = 16;
 const MATH_TEXT_COMMANDS = new Set(["\\textnormal", "\\textup", "\\textsl", "\\mbox"]);
 const specializeControlSequence: typeof specializeCtrlSeq = (name, stack) => (MATH_TEXT_COMMANDS.has(name) ? MATH_TEXT_CTRL_SEQ : specializeCtrlSeq(name, stack));
 
+/** The grammar's `EquationEnvName` and `EquationArrayEnvName` tokens (latex.terms.mjs). */
+const EQUATION_ENV_NAME = 82;
+const EQUATION_ARRAY_ENV_NAME = 83;
+
+/**
+ * Display environments the package does not know as math: breqn's `dmath` and `dseries` (one equation) and empheq's
+ * `empheq` (rows, its inner environment named in its argument). Their body is a formula, numbered as one.
+ */
+const MORE_MATH_ENVIRONMENTS: Record<string, number> = {
+  dmath: EQUATION_ENV_NAME, "dmath*": EQUATION_ENV_NAME, dseries: EQUATION_ENV_NAME, "dseries*": EQUATION_ENV_NAME, empheq: EQUATION_ARRAY_ENV_NAME,
+};
+const specializeEnvironmentName: typeof specializeEnvName = (name, terms) => MORE_MATH_ENVIRONMENTS[name] ?? specializeEnvName(name, terms);
+
 export const latexParser = packageParser.configure({
   tokenizers: [{ from: literalArgTokenizer, to: nestedLiteralArgTokenizer }],
-  specializers: [{ from: specializeCtrlSeq, to: specializeControlSequence }],
+  specializers: [{ from: specializeCtrlSeq, to: specializeControlSequence }, { from: specializeEnvName, to: specializeEnvironmentName }],
 });
