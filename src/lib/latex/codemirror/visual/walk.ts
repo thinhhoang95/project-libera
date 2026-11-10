@@ -417,6 +417,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = use.firstChild;
     const name = ctrl ? read(state, ctrl.from + 1, ctrl.to) : "";
     if (!name || !structureMacroNames(defs).has(name) || !macroAt(defs, name, use.from)) return null;
+    // An argument the parser ends early (`\mycap{{ figure.}` with its `}` lines after `\end{figure}`) is read past the
+    // float in the text: the caption would swallow `\end{figure}`, and a brace typed far below would make it one.
+    if (use.getChildren("TextArgument").some((argument) => hasDirectError(argument) || argument.lastChild?.lastChild?.type.isError)) return null;
     const expansion = expandLatexMacroUse(read(state, use.from, Math.min(doc.length, use.from + 4000)), defs, { mode: "text", pos: use.from });
     if (!expansion) return null;
     const parts = topConstructs(expansion.text);
