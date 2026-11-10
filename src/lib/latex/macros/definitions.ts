@@ -1303,10 +1303,10 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         end = block.end;
         if (!uncertain) for (const macro of block.macros) addMacro(context, { ...macro, pos, file: context.file }, "renew");
       }
-    } else if (/^SetKw(?:Function|InOut|Input|Prog|Data|Block|For)?$/.test(command)) {
+    } else if (/^SetKw(?:Function|InOut|Input|Prog|Data|Block|For|Comment|IF|Repeat)?$/.test(command)) {
       // algorithm2e's keywords declared before an algorithm (`\SetKwInOut{Input}{Input}` in a preamble): macros whose
       // body is the declaration, which an algorithm reads first (walk.ts); in text and formulas their uses stay source.
-      const count = command === "SetKwProg" || command === "SetKwFor" ? 4 : command === "SetKwBlock" ? 3 : 2;
+      const count = command === "SetKwProg" || command === "SetKwFor" ? 4 : command === "SetKwIF" ? 8 : command === "SetKwBlock" || command === "SetKwComment" || command === "SetKwRepeat" ? 3 : 2;
       const groups: string[] = [];
       let at = index;
       while (groups.length < count) {
