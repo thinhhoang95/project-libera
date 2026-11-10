@@ -4,7 +4,8 @@ import type { LatexDefinitions } from "../../macros/definitions";
 import { referenceText, type LabelTarget, type LatexNumbering } from "../../macros/numbering";
 import { latexProjectField } from "../editing";
 import { visualAux, visualDefinitions, visualNumbering } from "./model";
-import { CONTROL_SYMBOLS, readAccent, SYMBOL_COMMANDS } from "./symbols";
+import { readGroup } from "../../../macros/core";
+import { CONTROL_SYMBOLS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES } from "./symbols";
 
 /* What citation and reference chips say (docs/latex-visual-editor-plan.md §3). */
 
@@ -70,6 +71,58 @@ export function plainTexText(text: string) {
   return out;
 }
 
+/** Commands whose argument a citation note prints as its text (the chip is plain text, so the style is not kept). */
+const NOTE_WRAPPERS = /^\\(?:emph|textit|textbf|textsc|textrm|textsf|texttt|textup|textsl|textmd|textnormal|mbox|text)$/;
+
+/**
+ * A citation note as it prints (`[\emph{inter alia}]` is "inter alia", `[{\rm I\hspace{-.01em}I}. 7.1]` is "II. 7.1"):
+ * emphasis and font switches give their text, spacing commands are dropped, `~` is a space, simple formulas their
+ * characters. Null when the note holds anything else: the citation then stays source.
+ */
+export function citationNoteText(note: string, depth = 0): string | null {
+  if (depth > 8) return null;
+  let out = "";
+  for (let i = 0; i < note.length;) {
+    const char = note[i];
+    if (char === "{" || char === "}") { i++; continue; }
+    if (char === "~") { out += " "; i++; continue; }
+    if (char === "$") {
+      const close = note.indexOf("$", i + 1);
+      const math = close < 0 ? null : note.slice(i + 1, close);
+      if (math === null || !/^[\w\s.,;:+\-=()<>/'|]*$/.test(math)) return null;
+      out += math;
+      i = close + 1;
+      continue;
+    }
+    if (char !== "\\") {
+      const next = note.slice(i).search(/[{}~$\\]/);
+      const end = next < 0 ? note.length : i + next;
+      out += note.slice(i, end).replace(TEXT_LIGATURES, (ligature) => LIGATURE_CHARS[ligature]);
+      i = end;
+      continue;
+    }
+    const accent = readAccent(note.slice(i, i + 12));
+    if (accent) { out += accent.char; i += accent.length; continue; }
+    const command = /^\\(?:[A-Za-z]+\*?|.)/.exec(note.slice(i))?.[0] ?? "\\";
+    let after = i + command.length;
+    const symbol = CONTROL_SYMBOLS[command] ?? SYMBOL_COMMANDS[command];
+    if (symbol !== undefined) { out += symbol; i = after + (/[A-Za-z]$/.test(command) && note[after] === " " ? 1 : 0); continue; }
+    if (FONT_SWITCHES[command] || SIZE_COMMAND.test(command)) { i = after + (note[after] === " " ? 1 : 0); continue; }
+    while (note[after] === " ") after++;
+    const group = readGroup(note, after);
+    if (/^\\(?:hspace|hskip)\*?$/.test(command) && group) { i = group.end; continue; }
+    if (NOTE_WRAPPERS.test(command) && group) {
+      const inner = citationNoteText(group.content, depth + 1);
+      if (inner === null) return null;
+      out += inner;
+      i = group.end;
+      continue;
+    }
+    return null;
+  }
+  return out.replace(/\s+/g, " ");
+}
+
 /** "Vaswani et al.", "Vaswani and Shazeer", "Vaswani" from a BibTeX author list. */
 export function shortAuthors(author: string | undefined) {
   if (!author) return null;
@@ -110,8 +163,8 @@ export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLo
   });
   const allNumeric = items.every((item) => item.numeric);
   // Notes as they print: `p.~5` is "p. 5".
-  const pre = parts.pre ? plainTexText(parts.pre).trim() : "";
-  const post = parts.post ? plainTexText(parts.post).trim() : "";
+  const pre = parts.pre ? (citationNoteText(parts.pre) ?? plainTexText(parts.pre)).trim() : "";
+  const post = parts.post ? (citationNoteText(parts.post) ?? plainTexText(parts.post)).trim() : "";
   const note = (text: string) => `${pre ? `${pre} ` : ""}${text}${post ? `, ${post}` : ""}`;
   if (name === "citeauthor" || name === "Citeauthor") return items.map((item) => item.authors ?? item.key).join("; ");
   if (name === "citeyear" || name === "citeyearpar") return items.map((item) => item.year ?? item.key).join("; ");

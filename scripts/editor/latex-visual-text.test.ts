@@ -491,3 +491,17 @@ We develop a command.
   assert.match(text, /Keywords: many instruments, two-stage least squares\./);
   assert.doesNotMatch(text, /\\keywords|ccs2012/);
 });
+
+test("a citation note prints its emphasis, font switches and spacing as text (cs.CL 2611.11838, math.AG 2611.08810)", () => {
+  const text = bodyText(String.raw`\documentclass{article}
+\begin{document}
+Probing \citep[\emph{inter alia}]{hewitt,tenney} and \cite[{\rm I\hspace{-.01em}I\hspace{-.01em}I}. 7.1 and~8.2]{Stichtenoth}.
+Kept: \cite[\unknownmacro{x}]{other}.
+\end{document}
+`);
+  assert.match(text, /hewitt; tenney, inter alia\]/);
+  assert.match(text, /\[Stichtenoth, III\. 7\.1 and 8\.2\]/);
+  assert.doesNotMatch(text, /\\emph|\\rm|\\hspace/);
+  // A note with a command that is not understood leaves its citation as source.
+  assert.match(text, /\\cite\[\\unknownmacro\{x\}\]\{other\}/);
+});

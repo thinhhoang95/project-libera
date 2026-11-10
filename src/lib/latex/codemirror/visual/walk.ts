@@ -10,7 +10,7 @@ import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt
 import { latexParser } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { disabledField } from "./model";
-import { REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
+import { citationNoteText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, parseTabular, readCtable, readLongTable } from "./table-model";
@@ -105,6 +105,11 @@ function balancedEnvironments(text: string) {
 }
 
 /** Lengths a float sets for its table or caption (`\aboverulesep = 2mm`, `\tabcolsep=3pt`): layout. */
+/** Whether a citation's notes can be printed as text (`[\emph{inter alia}]`); one that cannot leaves the citation source. */
+function notesUnderstood(notes: { pre?: string; post?: string }) {
+  return [notes.pre, notes.post].every((note) => !note || citationNoteText(note) !== null);
+}
+
 const FLOAT_LENGTHS = /^\\(?:tabcolsep|arraycolsep|arrayrulewidth|aboverulesep|belowrulesep|doublerulesep|extrarowheight|abovecaptionskip|belowcaptionskip|textfloatsep|intextsep|columnsep|parskip|parindent)$/;
 const GLUE = String.raw`-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|\\[A-Za-z@]+)`;
 /** `\vskip 0.15in plus 2pt minus 1pt`, `\kern-3pt`: TeX's glue after a primitive. */
@@ -988,6 +993,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (alias?.alias && ALIAS_FAMILIES[name].test(alias.body)) command = alias.body + (command.endsWith("*") ? "*" : "");
           const optionals = node.getChildren("OptionalArgument").map((arg) => { const range = argumentInner(arg); return range ? read(state, range.from, range.to) : ""; });
           const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+          if (!notesUnderstood(notes)) return false;
           // cleveref's `\crefrange{a}{b}`: the grammar ends it after `{a}`; the chip takes the second key's group too.
           let to = node.to;
           if (/^\\[cC]refrange\*?$/.test(command)) {
@@ -1747,6 +1753,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
         const optionals = args.filter((arg) => arg.optional).map((arg) => { const range = argumentInner(arg.node); return range ? read(state, range.from, range.to) : ""; });
         const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+        if (!notesUnderstood(notes)) return false;
         const end = keysArgument.node.to;
         emit({ kind: "cite", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new ChipWidget("cite", CITE_ALIASES[text], keys, notes, end - node.from) }] });
         return false;
