@@ -270,6 +270,8 @@ function usesChapters(text: string) {
  */
 function chapterNumbered(tree: Tree, read: Read, defs: LatexDefinitions, options: NumberingOptions) {
   if (CHAPTER_CLASSES.test(defs.documentClass ?? "")) return true;
+  // A file of a book whose main file has numbered chapters before it (the book 2403.14606's nowfnt class).
+  if (options.start?.counters.chapter) return true;
   if (usesChapters(read(0, tree.length))) return true;
   if (!options.includes) return false;
   let found = false;

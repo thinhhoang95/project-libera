@@ -11,7 +11,7 @@ import { latexLanguageSupport } from "../../src/lib/latex/codemirror/latex-langu
 import { latexParser as parser } from "../../src/lib/latex/codemirror/latex-parser";
 import { latexVisualMode, latexVisualState } from "../../src/lib/latex/codemirror/visual";
 import { buildPendingEffect, CHUNK, structuralField } from "../../src/lib/latex/codemirror/visual/structural";
-import { collectLatexDefinitions, macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
+import { collectLatexDefinitions, loadKey, macroAt, readLatexDefinitions } from "../../src/lib/latex/macros/definitions";
 import { computeLatexNumbering, type NumberingStart } from "../../src/lib/latex/macros/numbering";
 import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
 
@@ -222,6 +222,240 @@ test("a chapter included through another file gets that file's definitions up to
   const defs = visualDefinitions(visualState(files["nb/chapters/one.tex"], [], sources));
   assert.ok(macroAt(defs, "early", 5));
   assert.equal(macroAt(defs, "late", 5), null);
+});
+
+/** A main file's numbering with its body includes as the workspace collects them (latex-dependencies.ts, plugins.ts). */
+async function mainNumbering(files: Record<string, string>, rootPath = "nb/main.tex") {
+  const { collectBodyIncludes } = await import("../../src/components/libera/latex/latex-dependencies");
+  const { known, readText } = project(files);
+  const { includes } = await collectBodyIncludes({ filePath: rootPath, rootPath, text: files[rootPath], known, readText });
+  const text = files[rootPath];
+  return computeLatexNumbering(parser.parse(text), (from, to) => text.slice(from, to), readLatexDefinitions(text), {
+    includes: (name) => {
+      const included = includes.get(loadKey("input", name));
+      return included === undefined ? null : { tree: parser.parse(included), read: (from, to) => included.slice(from, to) };
+    },
+  });
+}
+
+test("a main file's numbers count all the files its body includes, past 24 (2405.14734's tables, B6-02)", async () => {
+  const files: Record<string, string> = {};
+  const tables = Array.from({ length: 30 }, (_, index) => `tables/t${index}`);
+  files["nb/main.tex"] = String.raw`\documentclass{article}
+\begin{document}
+\input{sections/body}
+\begin{figure}\caption{Last}\label{fig:a}\end{figure}
+\begin{table}\caption{Own}\label{tab:own}\end{table}
+\end{document}`;
+  files["nb/sections/body.tex"] = tables.map((name) => `\\input{${name}}`).join("\n");
+  for (const [index, name] of tables.entries()) files[`nb/${name}.tex`] = String.raw`\begin{table}\caption{T${index}}\end{table}`;
+  const numbering = await mainNumbering(files);
+  assert.equal(numbering.labels.get("tab:own")?.number, "31");
+  assert.equal(numbering.labels.get("fig:a")?.number, "1");
+});
+
+test("files the import package includes are numbered and lead to their chapters (B5-13)", async () => {
+  const files = {
+    "nb/main.tex": String.raw`\documentclass{article}
+\usepackage{import}
+\begin{document}
+\import{chapters/}{intro}
+\subimport*{chapters/}{method}
+\section{End}\label{sec:end}
+\end{document}`,
+    "nb/chapters/intro.tex": String.raw`\section{Intro}\input{details}`,
+    "nb/chapters/details.tex": String.raw`\section{Details}`,
+    "nb/chapters/method.tex": String.raw`\section{Method}\label{sec:method}`,
+  };
+  const numbering = await mainNumbering(files);
+  assert.equal(numbering.labels.get("sec:method")?.number, "3");
+  assert.equal(numbering.labels.get("sec:end")?.number, "4");
+  const { start } = await chapterData(files, "nb/chapters/method.tex");
+  assert.equal(start?.counters.section, 2);
+});
+
+test("a subfiles chapter is numbered and defined from the main file its class option names (B5-14)", async () => {
+  const { subfilesRootPath } = await import("../../src/lib/latex/project");
+  const files = {
+    "nb/main.tex": String.raw`\documentclass{book}
+\usepackage{subfiles}
+\newcommand{\R}{\mathbb{R}}
+\begin{document}
+\subfile{chapters/one}
+\subfile{chapters/two}
+\end{document}`,
+    "nb/chapters/one.tex": String.raw`\documentclass[../main.tex]{subfiles}
+\begin{document}
+\chapter{One}
+\end{document}`,
+    "nb/chapters/two.tex": String.raw`\documentclass[../main.tex]{subfiles}
+\begin{document}
+\chapter{Two}\label{ch:two}
+\section{Reals}\label{sec:reals} $\R$
+\end{document}`,
+  };
+  assert.equal(subfilesRootPath("nb/chapters/two.tex", files["nb/chapters/two.tex"], new Set(Object.keys(files))), "nb/main.tex");
+  assert.equal(subfilesRootPath("nb/main.tex", files["nb/main.tex"]), null);
+  const { sources, start } = await chapterData(files, "nb/chapters/two.tex");
+  assert.equal(start?.counters.chapter, 1);
+  const state = visualState(files["nb/chapters/two.tex"], [], sources, start);
+  const defs = visualDefinitions(state);
+  assert.equal(defs.documentClass, "book");
+  assert.ok(macroAt(defs, "R", 100));
+  const numbering = computeLatexNumbering(syntaxTree(state), (from, to) => state.doc.sliceString(from, to), defs, { start });
+  assert.equal(numbering.labels.get("ch:two")?.number, "2");
+  assert.equal(numbering.labels.get("sec:reals")?.number, "2.1");
+  // The main file counts its subfiles' chapters.
+  const main = await mainNumbering({ ...files, "nb/main.tex": files["nb/main.tex"].replace("\\end{document}", "\\chapter{Three}\\label{ch:three}\n\\end{document}") });
+  assert.equal(main.labels.get("ch:three")?.number, "3");
+});
+
+test("theorems a well-known class defines are drawn and numbered as the class numbers them (llncs, LIPIcs, acmart: B5-05, B7-12)", () => {
+  const body = String.raw`\begin{document}
+\section{One}
+\begin{theorem}\label{t1}A.\end{theorem}
+\begin{lemma}\label{l1}B.\end{lemma}
+\begin{remark}\label{r1}C.\end{remark}
+\end{document}`;
+  /** The theorems numbered, as "environment number". */
+  const theorems = (preamble: string) => number(`${preamble}\n${body}`).entries.filter((entry) => entry.kind === "theorem").map((entry) => `${entry.env} ${entry.number}`);
+  assert.deepEqual(theorems(String.raw`\documentclass[runningheads]{llncs}`), ["theorem 1", "lemma 1", "remark 1"]);
+  assert.deepEqual(theorems(String.raw`\documentclass[envcountsame]{llncs}`), ["theorem 1", "lemma 2", "remark 3"]);
+  assert.deepEqual(theorems(String.raw`\documentclass[envcountsect]{llncs}`), ["theorem 1.1", "lemma 1.1", "remark 1.1"]);
+  assert.deepEqual(theorems(String.raw`\documentclass[a4paper,UKenglish,cleveref,thm-restate]{lipics-v2021}`), ["theorem 1", "lemma 2", "remark 3"]);
+  assert.deepEqual(theorems(String.raw`\documentclass[numberwithinsect]{lipics-v2021}`), ["theorem 1.1", "lemma 1.2", "remark 1.3"]);
+  // acmart has no remark; its theorems are numbered in sections.
+  assert.deepEqual(theorems(String.raw`\documentclass[sigconf]{acmart}`), ["theorem 1.1", "lemma 1.2"]);
+  assert.deepEqual(theorems(String.raw`\documentclass[sigconf,acmthm=false]{acmart}`), []);
+  // amsart defines none; a document's own definition wins over the class's.
+  assert.deepEqual(theorems(String.raw`\documentclass{amsart}`), []);
+  assert.deepEqual(theorems(String.raw`\documentclass{acmart}
+\newtheorem{lemma}{Lemma}`), ["theorem 1.1", "lemma 1"]);
+  const doc = String.raw`\documentclass{llncs}
+${body}`;
+  const text = visibleText(doc);
+  assert.match(text, /Theorem 1\. A\./);
+  assert.match(text, /Remark 1\. C\./);
+});
+
+test("a class the project has gives its theorems (the book 2403.14606's nowfnt.cls, B5-05)", async () => {
+  const files = {
+    "nb/nowfnt.cls": String.raw`\NeedsTeXFormat{LaTeX2e}
+\RequirePackage{amsthm}
+\newtheoremstyle{now}{}{}{}{}{\sffamily\bfseries}{.}{.5em}{}
+\theoremstyle{now}
+\ifbool{@nowfntplain}
+{\newtheorem{theorem}{Theorem}[section]
+ \newtheorem{definition}{Definition}[section]
+ }
+{
+ \newtheorem{theorem}{Theorem}[chapter]
+ \newtheorem{lemma}[theorem]{Lemma}
+ \newtheorem{definition}{Definition}[chapter]
+}
+\def\@spn#1{\newtheorem{#1}{X}}
+% \newtheorem{commented}{Commented}`,
+    "nb/main.tex": String.raw`\documentclass[MAL, biber]{nowfnt}
+\newenvironment{boxdef}[1]{\begin{definition}[#1]\begin{mdframed}}{\end{mdframed}\end{definition}}
+\begin{document}
+\chapter{Intro}
+\input{chapters/one}
+\end{document}`,
+    "nb/chapters/one.tex": String.raw`\begin{theorem}\label{t}A.\end{theorem}
+\begin{lemma}\label{l}B.\end{lemma}
+\begin{boxdef}{Programs}\label{d}C.\end{boxdef}`,
+  };
+  const { sources, start } = await chapterData(files, "nb/chapters/one.tex");
+  assert.equal(sources[0].path, "nb/nowfnt.cls");
+  const state = visualState(files["nb/chapters/one.tex"], [], sources, start);
+  const defs = visualDefinitions(state);
+  assert.deepEqual([...defs.theorems.keys()].sort(), ["definition", "lemma", "theorem"]);
+  const numbering = computeLatexNumbering(syntaxTree(state), (from, to) => state.doc.sliceString(from, to), defs, { start });
+  assert.deepEqual(["t", "l", "d"].map((key) => numbering.labels.get(key)?.number), ["1.1", "1.2", "1.1"]);
+  assert.match(visibleText(files["nb/chapters/one.tex"], sources, start), /Definition 1\.1 \(Programs\)\. C\./);
+});
+
+/** A small book whose chapters use what numbering keeps between files: appendix, formats, counters, labels after includes. */
+const BOOK: Record<string, string> = {
+  "main.tex": String.raw`\documentclass{book}
+\newtheorem{theorem}{Theorem}[chapter]
+\newcommand{\beq}{\begin{equation}}
+\newcommand{\eeq}{\end{equation}}
+\begin{document}
+\chapter{Start}\label{ch:start}
+\input{chapters/one}\label{after:one}
+\numberwithin{figure}{section}
+\begin{center}\input{chapters/two}\label{after:two}\end{center}
+\renewcommand{\thetheorem}{\thechapter.\Roman{theorem}}
+\input{chapters/three}
+\input{chapters/one}
+\end{document}`,
+  "chapters/one.tex": String.raw`\chapter{One}\label{ch:one}
+\section{A}\begin{theorem}\label{thm:a}x\end{theorem}
+\beq a \label{eq:a}\eeq
+\begin{figure}\caption{F}\label{fig:one}\end{figure}
+\input{chapters/one-more}`,
+  "chapters/one-more.tex": String.raw`\section{More}\label{sec:more}\footnote{n}`,
+  "chapters/two.tex": String.raw`\chapter{Two}\begin{figure}\caption{G}\label{fig:two}\end{figure}\setcounter{theorem}{4}`,
+  "chapters/three.tex": String.raw`\appendix\chapter{Proofs}\label{ch:proofs}\begin{theorem}\label{thm:b}y\end{theorem}`,
+};
+
+test("an included file's numbering is remembered by the state it starts from, with the same numbers as numbering it again (B5-19)", () => {
+  const trees = new Map<string, { tree: ReturnType<typeof parser.parse>; read: (from: number, to: number) => string }>();
+  const remembered = (name: string) => {
+    const text = BOOK[`${name}.tex`];
+    if (text === undefined) return null;
+    let file = trees.get(name);
+    if (!file) trees.set(name, file = { tree: parser.parse(text), read: (from, to) => text.slice(from, to) });
+    return file;
+  };
+  const fresh = (name: string) => {
+    const text = BOOK[`${name}.tex`];
+    return text === undefined ? null : { tree: parser.parse(text), read: (from: number, to: number) => text.slice(from, to) };
+  };
+  const numberMain = (text: string, includes: typeof fresh) => computeLatexNumbering(parser.parse(text), (from, to) => text.slice(from, to), readLatexDefinitions(text), { includes });
+  const summary = (numbering: ReturnType<typeof numberMain>) => JSON.stringify([numbering.fingerprint, [...numbering.labels], numbering.counters, numbering.appendix]);
+  const main = BOOK["main.tex"];
+  const first = numberMain(main, remembered);
+  assert.equal(first.labels.get("thm:b")?.number, "A.I");
+  assert.equal(first.labels.get("fig:two")?.number, "3.0.1");
+  assert.equal(first.labels.get("after:one")?.number, "2.2");
+  assert.equal(summary(first), summary(numberMain(main, fresh)));
+  // Again, from what was remembered; and after edits before, between and inside the includes.
+  assert.equal(summary(numberMain(main, remembered)), summary(first));
+  for (const edited of [
+    main.replace("\\chapter{Start}", "Some text. \\chapter{Start}"),
+    main.replace("\\chapter{Start}", "\\chapter{Start}\\chapter{Again}"),
+    main.replace("\\numberwithin{figure}{section}", ""),
+    main.replace("\\Roman{theorem}", "\\alph{theorem}"),
+    main.replace("\\begin{center}", "\\begin{center}\\section{Inside}"),
+    main.replace("\\input{chapters/three}", "\\setcounter{chapter}{7}\\input{chapters/three}"),
+  ]) assert.equal(summary(numberMain(edited, remembered)), summary(numberMain(edited, fresh)), edited);
+  // A file it includes changed: what was remembered for the file including it is not used.
+  BOOK["chapters/one-more.tex"] = String.raw`\section{More}\section{Even more}\label{sec:more}`;
+  try {
+    trees.delete("chapters/one-more");
+    assert.equal(summary(numberMain(main, remembered)), summary(numberMain(main, fresh)));
+    assert.equal(numberMain(main, remembered).labels.get("sec:more")?.number, "B.3");
+  } finally {
+    BOOK["chapters/one-more.tex"] = String.raw`\section{More}\label{sec:more}\footnote{n}`;
+  }
+});
+
+test("a chapter's start is the same when the project is numbered again after an edit, parsed only where it changed (B5-18)", async () => {
+  const files = (prefix: string, extra = "") => Object.fromEntries(Object.entries(BOOK).map(([path, text]) => [`${prefix}/${path}`, path === "chapters/two.tex" ? text + extra : text]));
+  const start = (prefix: string, extra = "") => {
+    const { readText } = project(files(prefix, extra));
+    return chapterNumberingStart(`${prefix}/chapters/three.tex`, `${prefix}/main.tex`, readText);
+  };
+  const first = await start("nb");
+  assert.equal(first?.counters.chapter, 3);
+  assert.equal(first?.counters.theorem, 4);
+  assert.deepEqual(await start("nb"), first);
+  // Edits of a chapter before it and of the chapter itself: the same as numbering a project seen for the first time.
+  for (const [index, extra] of ["\\chapter{Extra}\\label{ch:extra}", "\\section{S}\\begin{theorem}t\\end{theorem}", ""].entries()) {
+    assert.deepEqual(await start("nb", extra), await start(`fresh${index}`, extra));
+  }
 });
 
 void collectLatexDefinitions;
