@@ -129,7 +129,8 @@ export function revealSourceAt(view: EditorView, from: number, to: number) {
   view.focus();
 }
 
-export type MathOpener = (view: EditorView, from: number, to: number) => boolean;
+/** `event` and `dom`: the click on the drawn formula, which picks the row or cell to open. */
+export type MathOpener = (view: EditorView, from: number, to: number, event?: MouseEvent, dom?: HTMLElement) => boolean;
 let openMathEditor: MathOpener | null = null;
 /** Set by math-edit.ts once MathLive editing is installed. */
 export function setMathOpener(opener: MathOpener | null) { openMathEditor = opener; }
@@ -179,7 +180,7 @@ export class MathWidget extends VisualWidget {
       if (from === null) return;
       event.preventDefault();
       const to = from + this.length;
-      if (event.altKey || !openMathEditor || !openMathEditor(view, from + this.numberOffset, to)) revealSourceAt(view, from + this.numberOffset, to);
+      if (event.altKey || !openMathEditor || !openMathEditor(view, from + this.numberOffset, to, event, dom)) revealSourceAt(view, from + this.numberOffset, to);
     });
     return dom;
   }

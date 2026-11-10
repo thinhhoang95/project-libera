@@ -1368,10 +1368,11 @@ test("cancelling a cell shows the cell's current source, and closing the view cl
   assert.equal(document.querySelector(".cm-vis-table-menu"), null, "and its menu");
 });
 
-test("MathLive gets the macros a formula's macros use, and refuses ones it would change", () => {
+test("MathLive gets the macros a formula's macros use; ones it cannot read are opaque atoms", () => {
   const view = mount("\\newcommand\\b[1][x]{#1}\\newcommand\\a{\\b}\\newcommand\\c{y}\\newcommand\\d{\\c}\nSee $\\a$ and $\\d$.");
   const doc = view.state.doc.toString();
-  assert.equal(canEditInMathLive(view, doc.indexOf("$\\a")), false, "\\a uses \\b, which has an optional argument");
+  // \a uses \b, which has an optional argument: \a is an opaque atom, written back as it is (latex-visual-gaps-math-edit.test.ts).
+  assert.equal(canEditInMathLive(view, doc.indexOf("$\\a")), true);
   assert.equal(canEditInMathLive(view, doc.indexOf("$\\d")), true);
   view.destroy();
 });
