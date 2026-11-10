@@ -16,7 +16,7 @@ export type LatexAiMenuState = { from: number; to: number; x: number; y: number 
 const itemClass = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 const MENU_WIDTH = 296;
 
-export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForwardSync, onAddSnippet, onPasteMarkdown, onConvertMarkdown }: {
+export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForwardSync, onAddSnippet, onPaste, onPasteMarkdown, onConvertMarkdown }: {
   view: EditorView;
   menu: LatexAiMenuState;
   documentPath: string;
@@ -24,6 +24,8 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
   onError: (message: string) => void;
   onForwardSync: (pos: number) => void;
   onAddSnippet: (range: { from: number; to: number }) => void;
+  /** Paste: the clipboard converted as a paste would be (Markdown as LaTeX); throws when the clipboard cannot be read. */
+  onPaste?: () => Promise<void>;
   /** Paste Markdown as LaTeX…: the clipboard's text through the conversion dialog. */
   onPasteMarkdown?: () => void;
   /** Convert Markdown to LaTeX…: the selected text through the conversion dialog. */
@@ -86,6 +88,7 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
     const { from, to } = view.state.selection.main;
     try {
       if (action === "paste") {
+        if (onPaste) { await onPaste(); return; }
         const text = await navigator.clipboard.readText();
         view.dispatch(view.state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
         return;

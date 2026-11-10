@@ -56,7 +56,13 @@ export type LatexTextOptions = {
 export function escapeLatexText(text: string, options: LatexTextOptions = {}) {
   if (options.dropEmoji) {
     let count = 0;
-    text = text.replace(EMOJI, () => { count++; return ""; });
+    text = text.replace(EMOJI, (match) => {
+      // ©, ®, ™, ↔ and the like are pictographs to Unicode but have a TeX spelling: kept (without an emoji variation selector).
+      const base = match.replace(/️/g, "");
+      if ([...base].length === 1 && (TEXT_SYMBOLS[base] !== undefined || MATH_SYMBOLS[base] !== undefined)) return base;
+      count++;
+      return "";
+    });
     if (count) options.onDropped?.(count);
   }
   let out = "";
@@ -85,13 +91,39 @@ export function escapeLatexText(text: string, options: LatexTextOptions = {}) {
   return out + spaces;
 }
 
-/** Unicode symbols inside a formula as commands (pdfLaTeX): `α^2` → `\alpha^2`. */
+/** Commands whose argument is text, even inside a formula: a math command there needs `\ensuremath`. */
+const TEXT_ARGUMENT_COMMANDS = /^(?:text|textrm|textit|textbf|textsf|texttt|textup|textsl|textsc|textmd|textnormal|emph|mbox|hbox|fbox|intertext|shortintertext)$/;
+
+/**
+ * Unicode symbols inside a formula as commands (pdfLaTeX): `α^2` → `\alpha^2`.
+ * Inside a text argument (`\text{α}`) they are wrapped in `\ensuremath`, since
+ * math commands cannot stand in text; a `$…$` inside it is math again.
+ */
 export function mathSymbolsToCommands(tex: string) {
   let out = "";
   const chars = Array.from(tex);
+  // One entry per open brace: whether its group is text. `inlineMath`: inside `$…$` within a text group.
+  const groups: boolean[] = [];
+  let pendingText = false;
+  let inlineMath = false;
   for (let index = 0; index < chars.length; index++) {
-    const symbol = MATH_SYMBOLS[chars[index]];
-    if (symbol === undefined) { out += chars[index]; continue; }
+    const char = chars[index];
+    if (char === "\\") {
+      // A command (or an escaped character) is copied whole; a text command makes its next group text.
+      const name = /^\\(?:[A-Za-z]+|.)/.exec(chars.slice(index, index + 40).join(""))?.[0] ?? "\\";
+      out += name;
+      index += Array.from(name).length - 1;
+      pendingText = TEXT_ARGUMENT_COMMANDS.test(name.slice(1));
+      continue;
+    }
+    if (char === "{") { groups.push(pendingText || (!!groups[groups.length - 1] && !inlineMath)); pendingText = false; out += char; continue; }
+    if (char === "}") { groups.pop(); out += char; continue; }
+    if (!/\s/.test(char)) pendingText = false;
+    const inText = !!groups[groups.length - 1];
+    if (char === "$" && inText) inlineMath = !inlineMath;
+    const symbol = MATH_SYMBOLS[char];
+    if (symbol === undefined) { out += char; continue; }
+    if (inText && !inlineMath) { out += `\\ensuremath{${symbol}}`; continue; }
     out += symbol;
     // `\alpha` followed by a letter would read as one longer command.
     if (/[A-Za-z]$/.test(symbol) && /^[A-Za-z]/.test(chars[index + 1] ?? "")) out += " ";

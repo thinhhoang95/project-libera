@@ -1,5 +1,13 @@
 import { DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } from '../../electron/math-markers.cjs';
-export type MathMarkerSettings = { inlineMathMarkers?: string; blockMathMarkers?: string };
+export type MathMarkerSettings = {
+  inlineMathMarkers?: string;
+  blockMathMarkers?: string;
+  /**
+   * Parsing only (pastes): a `$` that would close a `$…$` formula does not when a digit follows it
+   * (`$5 and $10`), or when it follows a space and the formula began with a digit (`$5 and $`).
+   */
+  currencyDollars?: boolean;
+};
 export type MathMarkerPair = { open: string; close: string; display: boolean };
 
 function configuredMathMarkerPairs(settings: MathMarkerSettings = {}): MathMarkerPair[] {

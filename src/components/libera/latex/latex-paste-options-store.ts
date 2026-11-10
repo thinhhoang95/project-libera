@@ -16,13 +16,14 @@ export function getMarkdownPasteOptions() {
   return options;
 }
 
+/** The settings once the server's have been read (once per window): always the current ones, so a save made since is seen. */
 export function loadMarkdownPasteOptions() {
   loading ??= apiRequest<MarkdownPasteOptions>(ENDPOINT)
     // Changes made before the load finished win over what the server had.
     .then((response) => { if (!revision) options = parseMarkdownPasteOptions(response); return options; })
     // A later call retries; pastes use the defaults meanwhile.
     .catch(() => { loading = null; return options; });
-  return loading;
+  return loading.then(() => options);
 }
 
 /** Remember settings: this window uses them at once; the server stores them in order, and a failed save is retried with the next one. */

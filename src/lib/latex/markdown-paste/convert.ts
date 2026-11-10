@@ -12,6 +12,7 @@ import { nodeChildren, plainText, sourceOf, stripHeadingNumber, type MarkdownStr
 import { parseHeadingTemplate } from "./choices";
 import { bibliographyDialect, hasPackage, hasT1Fonts, isTwoColumn, type LatexPasteContext } from "./context";
 import type { HeadingTarget, MarkdownPasteChoices } from "./options";
+import { htmlToMarkdownTree } from "./html";
 import { parseMarkdown, type ParsedMarkdown } from "./parse";
 
 /* The Markdown tree as LaTeX (docs/latex-markdown-paste-plan.md §4). One walk;
@@ -50,7 +51,25 @@ const PACKAGES: Record<string, { options?: string; satisfiedBy: string[] }> = {
   listings: { satisfiedBy: ["listings"] },
   csquotes: { satisfiedBy: ["csquotes"] },
   tcolorbox: { satisfiedBy: ["tcolorbox"] },
+  cleveref: { satisfiedBy: ["cleveref"] },
+  siunitx: { satisfiedBy: ["siunitx"] },
+  mhchem: { options: "version=4", satisfiedBy: ["mhchem", "chemformula"] },
+  glossaries: { satisfiedBy: ["glossaries", "glossaries-extra"] },
+  acronym: { satisfiedBy: ["acronym", "acro"] },
+  todonotes: { satisfiedBy: ["todonotes"] },
+  amsthm: { satisfiedBy: ["amsthm", "ntheorem"] },
 };
+
+/** The package a command kept from the text needs (unless the document defines the command itself). */
+const KEPT_COMMAND_PACKAGES: Record<string, string> = {
+  eqref: "amsmath", text: "amsmath", cref: "cleveref", Cref: "cleveref", autoref: "hyperref", nameref: "hyperref", href: "hyperref", url: "url",
+  si: "siunitx", SI: "siunitx", num: "siunitx", unit: "siunitx", qty: "siunitx", ang: "siunitx", ce: "mhchem",
+  gls: "glossaries", Gls: "glossaries", glspl: "glossaries", acrshort: "glossaries", acrlong: "glossaries", acrfull: "glossaries",
+  ac: "acronym", acp: "acronym", todo: "todonotes", textcolor: "xcolor", colorbox: "xcolor", sout: "ulem", uline: "ulem", hl: "soul",
+  includegraphics: "graphicx", enquote: "csquotes",
+};
+const KEPT_ENVIRONMENT_PACKAGES: Record<string, string> = { tabularx: "tabularx", "equation*": "amsmath", align: "amsmath", "align*": "amsmath", gather: "amsmath", "gather*": "amsmath",
+  multline: "amsmath", "multline*": "amsmath", flalign: "amsmath", "flalign*": "amsmath", alignat: "amsmath", "alignat*": "amsmath", proof: "amsthm" };
 
 /**
  * LaTeX written in the Markdown's text is kept only when it is on this list
@@ -109,6 +128,8 @@ type BlockState = {
   nested: boolean;
   /** Inside a footnote: no verbatim, no floats. */
   footnote: boolean;
+  /** Inside a float (no float of its own, a caption is fine) or a box (neither). */
+  container: "float" | "box" | null;
 };
 
 type InlineState = {
@@ -120,7 +141,11 @@ type InlineState = {
   link?: boolean;
   /** Inside another command's argument (`\textbf{…}`): no `\verb`. */
   argument?: boolean;
+  /** Footnote references write nothing (a longtable's repeated header). */
+  skipFootnotes?: boolean;
 };
+
+const FOOTNOTE_BLOCK_STATE: BlockState = { itemize: 0, enumerate: 0, other: 0, nested: true, footnote: true, container: null };
 
 function wrap(command: string, content: string) {
   return content.trim() ? `\\${command}{${content}}` : content;
@@ -195,6 +220,8 @@ export class MarkdownLatexConverter {
   private readonly headingLabels = new Map<string, string>();
   private readonly footnoteLabels = new Map<string, string>();
   private readonly footnotesShown = new Set<string>();
+  /** Footnotes being written now: a reference to one of them inside its own text is a cycle. */
+  private readonly expandingFootnotes = new Set<string>();
   private pendingFootnoteTexts: string[] | null = null;
   private readonly textOptions: LatexTextOptions;
 
@@ -214,7 +241,7 @@ export class MarkdownLatexConverter {
     structure.depths.forEach((depth, rank) => this.headingRank.set(depth, rank));
     // A caption paragraph leaves the text only when caption detection is on and that table will write the caption.
     structure.tables.forEach((table, index) => {
-      if (table.captionNode && choices.tableCaptionFromText && choices.tables[index]?.caption.trim() && this.tableHoldsCaption(table.inFootnote)) this.skip.add(table.captionNode);
+      if (table.captionNode && choices.tableCaptionFromText && choices.tables[index]?.caption.trim() && this.tableHoldsCaption(table.inFootnote, table.quote && this.quoteIsBox(table.quote, false) ? "box" : context.container)) this.skip.add(table.captionNode);
     });
     if (structure.numberedHeadings && choices.stripHeadingNumbers) {
       for (const heading of structure.headings) {
@@ -252,7 +279,7 @@ export class MarkdownLatexConverter {
     if (this.context.inlineOnly) latex = this.flatten(nodeChildren(root)).replace(/\s*\n\s*/g, " ").trim();
     else {
       const around = this.context.listDepth;
-      const parts = this.blocks(nodeChildren(root), { itemize: around.itemize, enumerate: around.enumerate, other: around.other, nested: false, footnote: false });
+      const parts = this.blocks(nodeChildren(root), { itemize: around.itemize, enumerate: around.enumerate, other: around.other, nested: false, footnote: false, container: this.context.container });
       latex = parts.join("\n\n");
       block = parts.length > 1 || /^(?:\\(?:begin|\[|part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\b|%)/.test(parts[0] ?? "") || /\n\s*\n/.test(parts[0] ?? "");
     }
@@ -287,10 +314,20 @@ export class MarkdownLatexConverter {
     return null;
   }
 
-  /** Whether a table gets a caption: in a float or a longtable (never inside a footnote, where tables have no float). */
-  private tableHoldsCaption(inFootnote = false) {
-    if (inFootnote || this.context.inlineOnly) return false;
+  /** Whether a table gets a caption: in a float (its own, or the one the paste lands in) or a longtable; never in a footnote or a box. */
+  private tableHoldsCaption(inFootnote: boolean, container: BlockState["container"]) {
+    if (inFootnote || this.context.inlineOnly || container === "box") return false;
+    if (container === "float") return true;
     return this.tableEnvironment() === "longtable" || this.choices.tableFloat !== "none";
+  }
+
+  /** Whether a block quote is written as a tcolorbox (a Libera box or a GitHub alert, with tcolorbox loaded). */
+  private quoteIsBox(node: MdNode, footnote: boolean) {
+    if (footnote || !hasPackage(this.context, "tcolorbox")) return false;
+    if (node.data?.hProperties?.["data-box-color"]) return true;
+    const first = nodeChildren(node)[0];
+    const text = first?.type === "paragraph" ? nodeChildren(first)[0] : null;
+    return text?.type === "text" && ALERT.test(text.value ?? "");
   }
 
   /** The table environment in effect: longtable cannot be used in two-column documents, so tabular stands in. */
@@ -324,7 +361,7 @@ export class MarkdownLatexConverter {
       case "code": return this.code(node, state);
       case "math": return this.displayMath(node.value ?? "", state);
       case "table": return this.table(node, state);
-      case "html": return this.htmlBlock(node);
+      case "html": return this.htmlBlock(node, state);
       case "thematicBreak": case "definition": case "footnoteDefinition": case "liberaBibliography": case "yaml": case "toml":
         return null;
       default:
@@ -367,7 +404,7 @@ export class MarkdownLatexConverter {
     // Images alone in their paragraph become figures.
     const images = meaningful.filter((child) => child.type === "image" || child.type === "imageReference" || (child.type === "html" && /^<img\b/i.test(child.value ?? "")));
     if (images.length && images.length === meaningful.length && !state.footnote) {
-      return images.map((image) => this.figure(image)).filter(Boolean).join("\n\n");
+      return images.map((image) => this.figure(image, state)).filter(Boolean).join("\n\n");
     }
     const text = this.inline(children, { footnote: state.footnote }).trim();
     return text || null;
@@ -419,12 +456,14 @@ export class MarkdownLatexConverter {
       title = alert[2].trim() || ALERT_TITLES[alert[1].toLowerCase()] || alert[1][0].toUpperCase() + alert[1].slice(1).toLowerCase();
       this.overrides.set(firstText, (firstText.value ?? "").slice(alert[0].length));
     }
+    // A tcolorbox is a box: tables and images inside it get no float.
+    const boxed = !!(box || alert) && hasPackage(this.context, "tcolorbox") && !state.footnote;
     // quote and quotation are lists to LaTeX: they count toward its six levels of nesting.
-    const parts = this.blocks(nodeChildren(node), { ...state, nested: true, other: state.other + 1 });
+    const parts = this.blocks(nodeChildren(node), { ...state, nested: true, other: state.other + 1, container: boxed ? "box" : state.container });
     if (alert && firstText) this.overrides.delete(firstText);
     const color = typeof box === "string" ? BOX_COLORS[box.toLowerCase()] ?? "gray" : alert ? alertColor(alert[1]) : null;
     const escapedTitle = title ? this.escape(title) : null;
-    if ((box || alert) && hasPackage(this.context, "tcolorbox") && !state.footnote) {
+    if (boxed) {
       const options = [`colback=${color}!6!white`, `colframe=${color}!55!black`, ...(escapedTitle ? [`title={${escapedTitle}}`] : [])];
       return `\\begin{tcolorbox}[${options.join(",")}]\n${indentLines(parts.join("\n\n"), "  ")}\n\\end{tcolorbox}`;
     }
@@ -524,16 +563,30 @@ export class MarkdownLatexConverter {
     }
   }
 
-  private htmlBlock(node: MdNode): string | null {
+  /**
+   * An HTML block (a README's `<p align="center"><img …></p>`, `<details>`, a `<table>`): read like
+   * clipboard HTML (html.ts), so its paragraphs, formatting, lists, tables and images convert; tags with
+   * no equivalent keep their text. `state` null: flattened to one line (a paste into an argument).
+   */
+  private htmlBlock(node: MdNode, state: BlockState | null): string | null {
     const html = (node.value ?? "").trim();
     if (!html || /^<!--[\s\S]*-->$/.test(html)) return null;
-    if (/^<img\b/i.test(html)) return this.figure(node);
     if (/^<br\s*\/?>$/i.test(html)) return null;
-    const text = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "");
-    const tags = [...new Set([...html.matchAll(/<([A-Za-z][\w-]*)/g)].map((match) => match[1].toLowerCase()))].filter((tag) => !/^(?:div|p|span|details|summary|center|section|article|br)$/.test(tag));
+    if (/^<img\b/i.test(html)) return state ? this.figure(node, state) : null;
+    const tags = [...new Set([...html.matchAll(/<([A-Za-z][\w-]*)/g)].map((match) => match[1].toLowerCase()))].filter((tag) => !HTML_BLOCK_TAGS.has(tag));
     if (tags.length) this.warn("html", tags.length, () => "Some HTML had no LaTeX equivalent: its tags were dropped and its text kept.");
-    const decoded = decodeEntities(text).trim();
-    return decoded ? this.escape(decoded) : null;
+    const tree = typeof DOMParser === "undefined" ? null : htmlToMarkdownTree(html, { keepPlain: true });
+    if (tree) {
+      const children = nodeChildren(tree);
+      return (state ? this.blocks(children, state).join("\n\n") : this.flatten(children)) || null;
+    }
+    // No DOM (or nothing in it): the text, with block tags as paragraph breaks.
+    const text = html.replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/?(?:p|div|li|tr|h[1-6]|blockquote|pre|section|article|details|summary|table|ul|ol|dl|dt|dd)\b[^>]*>/gi, "\n\n")
+      .replace(/<[^>]+>/g, "");
+    const paragraphs = decodeEntities(text).split(/\n[ \t]*\n\s*/).map((part) => part.trim()).filter(Boolean).map((part) => this.escape(part));
+    return paragraphs.length ? paragraphs.join(state ? "\n\n" : " ") : null;
   }
 
   /* ---- figures ----------------------------------------------------------- */
@@ -571,7 +624,7 @@ export class MarkdownLatexConverter {
     return resolved.path;
   }
 
-  private figure(node: MdNode): string | null {
+  private figure(node: MdNode, state: BlockState): string | null {
     const image = this.imageSource(node);
     if (!image?.src) return null;
     const path = this.resolveImage(image.src);
@@ -586,7 +639,8 @@ export class MarkdownLatexConverter {
     this.need("graphicx", "images");
     const width = Number(this.choices.imageWidth.toFixed(2));
     const graphic = `\\includegraphics[width=${width === 1 ? "" : width}\\linewidth]{${path}}`;
-    if (this.choices.images === "inline") return graphic;
+    // Inside a float or a box (the paste lands in one, or in a callout box), the graphic alone.
+    if (this.choices.images === "inline" || state.container) return graphic;
     const placement = this.placement();
     const lines = [`\\begin{figure}${placement}`, "  \\centering", `  ${graphic}`];
     if (caption) {
@@ -612,6 +666,7 @@ export class MarkdownLatexConverter {
     const rows = nodeChildren(node);
     if (!rows.length) return null;
     if (node.data?.hProperties?.rowspan) this.warn("rowspan", 1, () => "Cells merged across rows were split: the text stays in the first row, the cells below are empty.");
+    if (node.data?.hProperties?.truncated) this.warn("table-truncated", 1, () => "A table had more than 64 columns or 5,000 rows: the rest was left out. Paste as plain text to keep all of it.");
     // Cells by column; a cell from HTML may span several (`colspan`).
     const slots = new Map(rows.map((row) => {
       let column = 0;
@@ -664,8 +719,11 @@ export class MarkdownLatexConverter {
       const text = this.inline(nodeChildren(cell), { cell: span === 1 && wrapped.has(column) ? "wrap" : "nowrap" }).replace(/\s*\n\s*/g, " ").trim();
       return bold && text ? `\\textbf{${text}}` : text;
     };
-    const longtable = environment === "longtable" && !state.footnote;
-    this.pendingFootnoteTexts = longtable ? null : [];
+    // longtable can stand neither in a footnote nor in a float or box.
+    const longtable = environment === "longtable" && !state.footnote && !state.container;
+    // Footnotes in cells are marks, with their texts after the table. A longtable's body takes \footnote
+    // itself; its header cannot, so the header's texts go into the first body row.
+    this.pendingFootnoteTexts = [];
     const rowLine = (row: MdNode, bold: boolean) => {
       const cells: string[] = [];
       let column = 0;
@@ -684,10 +742,12 @@ export class MarkdownLatexConverter {
       return `${cells.join(" & ")} \\\\`;
     };
     const headerLine = headerEmpty ? null : rowLine(header, this.choices.tableBoldHeader);
+    const headerTexts = this.pendingFootnoteTexts ?? [];
+    if (longtable) this.pendingFootnoteTexts = null;
     const bodyLines = body.map((row) => rowLine(row, false));
     // Each \footnotemark in the table stepped the counter: step back to the first mark's number,
     // then forward again before each text, so every text gets its own mark's number.
-    const marks = this.pendingFootnoteTexts ?? [];
+    const marks = longtable ? headerTexts : this.pendingFootnoteTexts ?? [];
     this.pendingFootnoteTexts = null;
     const footnoteTexts = marks.length > 1
       ? [`\\addtocounter{footnote}{-${marks.length - 1}}`, ...marks.map((text, at) => at ? `\\stepcounter{footnote}${text}` : text)]
@@ -711,10 +771,15 @@ export class MarkdownLatexConverter {
       if (captionLatex) lines.push(`  \\caption{${captionLatex}}${label ? `\\label{${label}}` : ""}\\\\`);
       if (headerLine) {
         lines.push(...headBlock.map((line) => `  ${line}`), "  \\endfirsthead");
-        lines.push(...headBlock.map((line) => `  ${line}`), "  \\endhead");
+        // The header repeated on later pages carries no footnote marks: the footnotes are on the first page.
+        lines.push(...headBlock.map((line) => `  ${line === headerLine ? line.replace(/\\footnotemark(?!\[)/g, "") : line}`), "  \\endhead");
       } else if (top) lines.push(`  ${top}`);
       if (bottom) lines.push(`  ${bottom}`, "  \\endlastfoot");
-      lines.push(...bodyWithRules.map((line) => `  ${line}`), "\\end{longtable}");
+      const rows = [...bodyWithRules];
+      const headerFootnotes = footnoteTexts.join("");
+      if (headerFootnotes && rows.length) rows[0] = `${headerFootnotes}${rows[0]}`;
+      lines.push(...rows.map((line) => `  ${line}`), "\\end{longtable}");
+      if (headerFootnotes && !rows.length) lines.push(headerFootnotes);
       const table = lines.join("\n");
       return size ? `\\begingroup\n\\${this.choices.tableSize}\n${table}\n\\endgroup` : table;
     }
@@ -727,9 +792,16 @@ export class MarkdownLatexConverter {
       `\\end{${name}}`,
     ].join("\n");
     const footnotes = footnoteTexts.join("\n");
-    const float = this.choices.tableFloat === "none" || state.footnote || this.context.inlineOnly ? null : this.choices.tableFloat;
+    const float = this.choices.tableFloat === "none" || state.footnote || state.container || this.context.inlineOnly ? null : this.choices.tableFloat;
     if (!float) {
-      if (caption) this.warn("caption-without-float", 1, () => "Captions need a table float: choose Table under Float to keep them.");
+      // Inside a float the paste lands in, the caption is that float's.
+      if (caption && state.container === "float" && !state.footnote && !this.context.inlineOnly) {
+        const captionLines = [`\\caption{${captionLatex}}`, ...(label ? [`\\label{${label}}`] : [])];
+        const sized = size ? `{${size}\n${tabular}\n}` : tabular;
+        const body = (this.choices.tableCaptionBelow ? [sized, ...captionLines] : [...captionLines, sized]).join("\n");
+        return footnotes ? `${body}\n${footnotes}` : body;
+      }
+      if (caption) this.warn("caption-without-float", 1, () => state.container === "box" ? "Captions cannot go in a box, so table captions there were left out." : "Captions need a table float: choose Table under Float to keep them.");
       const body = size ? `{${size}\n${tabular}\n}` : tabular;
       return footnotes ? `${body}\n${footnotes}` : body;
     }
@@ -765,7 +837,9 @@ export class MarkdownLatexConverter {
 
   /* ---- inline ------------------------------------------------------------ */
 
-  private inline(nodes: MdNode[], state: InlineState): string {
+  private inline(input: MdNode[], state: InlineState): string {
+    // A copy: LaTeX kept across formulas replaces the text node it ends in with what is left of it.
+    const nodes = [...input];
     const parts: string[] = [];
     for (let index = 0; index < nodes.length; index++) {
       const node = nodes[index];
@@ -774,6 +848,15 @@ export class MarkdownLatexConverter {
         parts.push(paired.text);
         index = paired.end;
         continue;
+      }
+      if (node.type === "text") {
+        const spanning = this.rawAcrossMath(nodes, index, state);
+        if (spanning) {
+          parts.push(spanning.text);
+          nodes[spanning.end] = spanning.rest;
+          index = spanning.end - 1;
+          continue;
+        }
       }
       parts.push(this.inlineNode(node, state));
     }
@@ -901,17 +984,78 @@ export class MarkdownLatexConverter {
     let value = this.overrides.get(node) ?? node.value ?? "";
     if (state.moving || state.cell) value = value.replace(/\s*\n\s*/g, " ");
     if (!this.choices.keepLatex || state.link) return this.escape(value);
+    return splitRawLatex(value, this.definedNames()).map((part) => part.raw ? this.keptLatex(part.text, state) : this.escape(part.text)).join("");
+  }
+
+  private definedNames(): DefinedNames {
+    return { commands: this.context.definedCommands, environments: this.context.definedEnvironments };
+  }
+
+  /** A piece of LaTeX written in the text, kept as it is where it can stand. */
+  private keptLatex(text: string, state: InlineState) {
+    // Environments and block commands cannot stand in an argument, a heading or a table cell.
     const inlineOnly = this.context.inlineOnly || state.moving || !!state.cell || !!state.argument;
-    return splitRawLatex(value, { commands: this.context.definedCommands, environments: this.context.definedEnvironments }).map((part) => {
-      if (!part.raw) return this.escape(part.text);
-      // Environments and block commands cannot stand in an argument, a heading or a table cell.
-      if (inlineOnly && BLOCK_COMMAND.test(part.text)) {
-        this.warn("raw-block", 1, () => "LaTeX environments or block commands written in the text were kept as text: they cannot stand where the paste goes.");
-        return this.escape(part.text);
+    if (inlineOnly && BLOCK_COMMAND.test(text)) {
+      this.warn("raw-block", 1, () => "LaTeX environments or block commands written in the text were kept as text: they cannot stand where the paste goes.");
+      return this.escape(text);
+    }
+    this.keptPackages(text);
+    if (/\\(?:footnote|url|href)\b/.test(text) && state.moving) return `\\protect${text}`;
+    return text;
+  }
+
+  /**
+   * A LaTeX command written in the text whose argument holds inline math
+   * (`see \textbf{foo $x$}`): the parser splits it into text, math and text,
+   * so no text node holds the whole command. Read from the source across
+   * those nodes, it is kept as written when it is allowed. Returns what the
+   * nodes from `index` up to the command's end write, the node `end`'s text
+   * after the command (`rest`), or null.
+   */
+  private rawAcrossMath(nodes: MdNode[], index: number, state: InlineState): { text: string; end: number; rest: MdNode } | null {
+    if (!this.choices.keepLatex || state.link || !this.parsed.source) return null;
+    const node = nodes[index];
+    const value = node.value ?? "";
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (this.overrides.has(node) || start === undefined || end === undefined || this.parsed.source.slice(start, end) !== value) return null;
+    const open = unclosedCommand(value, this.definedNames());
+    if (open < 0) return null;
+    for (let next = index + 1; next < nodes.length && next <= index + 40; next++) {
+      const candidate = nodes[next];
+      const from = candidate.position?.start.offset;
+      const to = candidate.position?.end.offset;
+      if (from === undefined || to === undefined) return null;
+      // Only inline formulas written `$…$` or `\(…\)` may sit inside; anything else is Markdown, not LaTeX.
+      if (candidate.type === "inlineMath") {
+        if (!/^(?:\$(?!\$)|\\\()/.test(this.parsed.source.slice(from, to))) return null;
+        continue;
       }
-      if (/\\(?:footnote|url|href)\b/.test(part.text) && state.moving) return `\\protect${part.text}`;
-      return part.text;
-    }).join("");
+      if (candidate.type !== "text" || this.parsed.source.slice(from, to) !== (candidate.value ?? "")) return null;
+      const [first] = splitRawLatex(this.parsed.source.slice(start + open, to), this.definedNames());
+      if (!first?.raw) continue;
+      const rawEnd = start + open + first.text.length;
+      if (rawEnd <= from) return null;
+      const before = this.text({ type: "text", value: value.slice(0, open) }, state);
+      // What follows the command in the text node it ends in: converted next, and it may start another such command.
+      const rest: MdNode = { type: "text", value: (candidate.value ?? "").slice(rawEnd - from), position: { start: { offset: rawEnd }, end: { offset: to } } };
+      return { text: before + this.keptLatex(first.text, state), end: next, rest };
+    }
+    return null;
+  }
+
+  /** The packages LaTeX kept from the text needs: its commands, environments and formulas. */
+  private keptPackages(segment: string) {
+    const defined = this.context.definedCommands;
+    for (const match of segment.matchAll(/\\([A-Za-z]+)/g)) {
+      const name = KEPT_COMMAND_PACKAGES[match[1]];
+      if (name && !defined.has(match[1])) this.need(name, `\\${match[1]} in the text`);
+    }
+    for (const match of segment.matchAll(/\\begin\s*\{([^}]*)\}/g)) {
+      const name = KEPT_ENVIRONMENT_PACKAGES[match[1].trim()];
+      if (name && !this.context.definedEnvironments.has(match[1].trim())) this.need(name, `the ${match[1].trim()} environment in the text`);
+    }
+    for (const name of mathPackages(segment)) this.need(name, "commands in the formulas");
   }
 
   /** Text as LaTeX, with straight quotes made typographic and non-Latin scripts noted under pdfLaTeX. */
@@ -960,7 +1104,7 @@ export class MarkdownLatexConverter {
     const isBare = !plain || plain === url || plain === url.replace(/^mailto:/i, "") || `http://${plain}` === url || `https://${plain}` === url;
     if (isBare && !/^mailto:/i.test(url)) { this.need("url", "web addresses"); return `\\url{${latexAddress}}`; }
     if (this.choices.links === "footnote") {
-      if (state.cell || state.footnote) return text;
+      if (state.cell || state.footnote || this.context.inFootnote) return text;
       this.need("url", "web addresses");
       return `${text}\\footnote{\\url{${latexAddress}}}`;
     }
@@ -980,16 +1124,32 @@ export class MarkdownLatexConverter {
   private footnote(id: string, state: InlineState): string {
     const definition = this.structure.footnotes.get(id);
     if (!definition) return this.escape(`[^${id}]`);
-    // A footnote inside a footnote has no reliable number in LaTeX: its text goes in parentheses instead.
-    if (state.footnote) {
-      this.warn("nested-footnote", 1, () => "A footnote inside another footnote was written in parentheses.");
-      const inner = this.blocks(nodeChildren(definition), { itemize: 0, enumerate: 0, other: 0, nested: true, footnote: true }).join(" ");
-      return inner.trim() ? ` (${inner.trim()})` : "";
+    // The repeated header of a longtable shows the marks of its first header only.
+    if (state.skipFootnotes) return "";
+    // A footnote whose text refers back to itself (directly or through another) is not expanded again.
+    if (this.expandingFootnotes.has(id)) {
+      this.warn("cyclic-footnote", 1, () => "A footnote that refers to itself was left as written.");
+      return this.escape(`[^${id}]`);
     }
+    this.expandingFootnotes.add(id);
+    try {
+      // A footnote inside a footnote (or pasted into one) has no reliable number in LaTeX: its text goes in parentheses instead.
+      if (state.footnote || this.context.inFootnote) {
+        this.warn("nested-footnote", 1, () => "A footnote inside another footnote was written in parentheses.");
+        const inner = this.blocks(nodeChildren(definition), FOOTNOTE_BLOCK_STATE).join(" ");
+        return inner.trim() ? ` (${inner.trim()})` : "";
+      }
+      return this.footnoteCommand(id, definition, state);
+    } finally {
+      this.expandingFootnotes.delete(id);
+    }
+  }
+
+  private footnoteCommand(id: string, definition: MdNode, state: InlineState): string {
     const label = this.footnoteLabels.get(id);
     if (label && this.footnotesShown.has(id)) return `\\footnotemark[\\ref{${label}}]`;
     this.footnotesShown.add(id);
-    const content = this.blocks(nodeChildren(definition), { itemize: 0, enumerate: 0, other: 0, nested: true, footnote: true }).join("\n\\par ");
+    const content = this.blocks(nodeChildren(definition), FOOTNOTE_BLOCK_STATE).join("\n\\par ");
     const body = `${label ? `\\label{${label}}` : ""}${content}`;
     if (this.pendingFootnoteTexts && state.cell) {
       this.pendingFootnoteTexts.push(`\\footnotetext{${body}}`);
@@ -1029,13 +1189,18 @@ export class MarkdownLatexConverter {
         case "code": parts.push(`\\texttt{${this.escapeCode((node.value ?? "").replace(/\n/g, " "))}}`); break;
         case "math": parts.push(this.displayMath(node.value ?? "", null)); break;
         case "table": parts.push(nodeChildren(node).map((row) => nodeChildren(row).map((cell) => this.inline(nodeChildren(cell), { moving: true })).join(", ")).join("; ")); break;
-        case "html": { const text = this.htmlBlock(node); if (text && !text.startsWith("%") && !text.startsWith("\\begin")) parts.push(text); break; }
+        case "html": { const text = this.htmlBlock(node, null); if (text && !text.startsWith("%")) parts.push(text); break; }
         default: break;
       }
     }
     return parts.filter((part) => part.trim()).join(" ");
   }
 }
+
+/** Tags an HTML block's conversion (html.ts) understands: any other is dropped, with a warning, and its text kept. */
+const HTML_BLOCK_TAGS = new Set(["div", "p", "span", "br", "details", "summary", "center", "section", "article", "header", "footer", "main", "aside", "nav", "figure", "figcaption",
+  "b", "strong", "i", "em", "cite", "dfn", "var", "u", "ins", "s", "del", "strike", "sup", "sub", "mark", "code", "kbd", "samp", "tt", "a", "img", "pre", "blockquote", "hr",
+  "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col", "dl", "dt", "dd", "math", "font", "small", "picture", "source"]);
 
 const SECTION_TARGETS = new Set<HeadingTarget>(["part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph"]);
 
@@ -1089,6 +1254,20 @@ function groupEnd(text: string, index: number, open: string, close: string) {
 const MATH_ENVIRONMENTS = new Set(["matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix", "cases", "aligned", "gathered", "alignedat", "split", "array", "subarray"]);
 
 export type DefinedNames = { commands?: ReadonlySet<string>; environments?: ReadonlySet<string> };
+
+/** Where a kept-LaTeX command starts in `text` whose argument does not close there (it continues past a formula), or -1. */
+function unclosedCommand(text: string, defined: DefinedNames) {
+  for (const match of text.matchAll(/\\([A-Za-z@]+)\*?/g)) {
+    if (!TEXT_COMMANDS.has(match[1]) && !defined.commands?.has(match[1])) continue;
+    let end = match.index + match[0].length;
+    while (text[end] === "{" || text[end] === "[") {
+      const close = groupEnd(text, end, text[end], text[end] === "{" ? "}" : "]");
+      if (close < 0) return text[end] === "{" ? match.index : -1;
+      end = close;
+    }
+  }
+  return -1;
+}
 
 /** Whether every command and environment in a piece of hand-written LaTeX is allowed (known, or defined by the document). */
 function onlyAllowedNames(segment: string, defined: DefinedNames) {

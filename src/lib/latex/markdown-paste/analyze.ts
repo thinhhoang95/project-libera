@@ -64,6 +64,8 @@ export type TableInfo = {
   captionNode: MdNode | null;
   /** Inside a footnote: written without a float, so without a caption. */
   inFootnote: boolean;
+  /** The block quote it is in, if any (a callout written as a tcolorbox holds no float). */
+  quote: MdNode | null;
 };
 
 export type MarkdownStructure = {
@@ -110,7 +112,8 @@ export function collectStructure({ tree, source }: ParsedMarkdown): MarkdownStru
     footnoteReferences: new Map(), internalLinks: false, images: 0, citations: 0, codeBlocks: 0, math: 0, markdown: false,
   };
   const captionNodes = new Set<MdNode>();
-  const visit = (node: MdNode, nested: boolean, inFootnote = false) => {
+  const linkReferences: string[] = [];
+  const visit = (node: MdNode, nested: boolean, inFootnote = false, quote: MdNode | null = null) => {
     if (!PLAIN_TYPES.has(node.type)) structure.markdown = true;
     switch (node.type) {
       case "heading": structure.headings.push({ node, depth: node.depth ?? 1, nested, text: plainText(node).trim() }); break;
@@ -118,6 +121,8 @@ export function collectStructure({ tree, source }: ParsedMarkdown): MarkdownStru
       case "footnoteDefinition": if (node.identifier) structure.footnotes.set(node.identifier, node); break;
       case "footnoteReference": if (node.identifier) structure.footnoteReferences.set(node.identifier, (structure.footnoteReferences.get(node.identifier) ?? 0) + 1); break;
       case "link": if (node.url?.startsWith("#")) structure.internalLinks = true; break;
+      // `[text][ref]` with `[ref]: #anchor`: resolved once the definitions are all known.
+      case "linkReference": if (node.identifier) linkReferences.push(node.identifier); break;
       case "image": case "imageReference": structure.images++; break;
       case "liberaCitation": structure.citations++; break;
       case "code": structure.codeBlocks++; break;
@@ -139,12 +144,13 @@ export function collectStructure({ tree, source }: ParsedMarkdown): MarkdownStru
           captionNodes.add(candidate);
           break;
         }
-        structure.tables.push({ node: child, columns: Math.max(1, child.align?.length ?? header.length), rows: rows.length, header, caption, captionNode, inFootnote });
+        structure.tables.push({ node: child, columns: Math.max(1, child.align?.length ?? header.length), rows: rows.length, header, caption, captionNode, inFootnote, quote });
       }
-      visit(child, nested || node.type === "listItem" || node.type === "blockquote" || node.type === "footnoteDefinition" || node.type === "tableCell", inFootnote || node.type === "footnoteDefinition");
+      visit(child, nested || node.type === "listItem" || node.type === "blockquote" || node.type === "footnoteDefinition" || node.type === "tableCell", inFootnote || node.type === "footnoteDefinition", node.type === "blockquote" ? node : quote);
     });
   };
   visit(tree as unknown as MdNode, false);
+  if (linkReferences.some((id) => structure.definitions.get(id)?.url.startsWith("#"))) structure.internalLinks = true;
   const sectioning = structure.headings.filter((heading) => !heading.nested);
   structure.depths = [...new Set(sectioning.map((heading) => heading.depth))].sort((a, b) => a - b);
   structure.numberedHeadings = sectioning.length > 0 && sectioning.every((heading) => HEADING_NUMBER.test(heading.text))

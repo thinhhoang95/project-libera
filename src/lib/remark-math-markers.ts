@@ -15,7 +15,7 @@ export const remarkMathMarkers: Plugin<[MathMarkerSettings?], Root> = function (
   const fromMarkdown: FromMarkdownExtension = { enter: {}, exit: {} };
   pairs.forEach((pair, index) => {
     const name = `liberaMath${index}` as TokenType;
-    const construct = mathConstruct(pair, name, pairs);
+    const construct = mathConstruct(pair, name, pairs, !!settings.currencyDollars && !pair.display && pair.open === '$' && pair.close === '$');
     const group = pair.display ? extension.flow : extension.text;
     (group[pair.open.charCodeAt(0)] ??= []).push(construct);
     fromMarkdown.enter![name] = function (token) {
@@ -31,7 +31,8 @@ export const remarkMathMarkers: Plugin<[MathMarkerSettings?], Root> = function (
   (data.fromMarkdownExtensions ??= []).push(fromMarkdown);
 };
 
-function mathConstruct(pair: MathMarkerPair, name: TokenType, pairs: MathMarkerPair[]): Construct {
+/** `currency`: a `$…$` pair that leaves prices alone (MathMarkerSettings.currencyDollars). */
+function mathConstruct(pair: MathMarkerPair, name: TokenType, pairs: MathMarkerPair[], currency = false): Construct {
   return {
     name,
     concrete: pair.display,
@@ -54,6 +55,13 @@ function mathConstruct(pair: MathMarkerPair, name: TokenType, pairs: MathMarkerP
         } else { effects.enter("liberaMathData" as TokenType); effects.consume(code); effects.exit("liberaMathData" as TokenType); }
         if (body.endsWith(pair.close) && !escapedAt(body, body.length - pair.close.length)) {
           if (!body.slice(0, -pair.close.length).trim()) return nok;
+          if (currency) {
+            const inner = body.slice(0, -pair.close.length);
+            // `$5 and $`: a price, then a dollar sign that starts the next one; the first `$` opened no formula.
+            if (/^\d/.test(inner) && /\s$/.test(inner)) return nok;
+            // `$5 and $10`: a dollar sign followed by a digit starts a price; it closes nothing.
+            return next => next !== null && next >= 48 && next <= 57 ? nok(next) : finish(next);
+          }
           if (!pair.display) return finish;
           return effects.check({ partial: true, tokenize(checkEffects, yes, no) {
             const tail: State = next => {

@@ -35,6 +35,13 @@ export type LatexPasteContext = {
   documentDir: string;
   /** The paste lands in a command argument or a table: blocks are flattened to inline text. */
   inlineOnly: boolean;
+  /**
+   * The paste lands inside a float (`table`, `figure`): tables and images get no float of their own,
+   * but may take a caption; or inside a box (`tcolorbox`, `minipage`), where neither floats nor captions fit.
+   */
+  container: "float" | "box" | null;
+  /** The paste lands in a footnote's text: footnotes in it are written in parentheses. */
+  inFootnote: boolean;
 };
 
 export function createPasteContext(partial: Partial<LatexPasteContext> = {}): LatexPasteContext {
@@ -42,7 +49,7 @@ export function createPasteContext(partial: Partial<LatexPasteContext> = {}): La
     sectionLevel: null, sectionCommand: null, sectionTitle: null,
     documentClass: null, classOptions: [], engine: "pdflatex",
     packages: new Map(), labels: new Set(), bibKeys: null, bibAliases: new Map(), definedCommands: new Set(), definedEnvironments: new Set(),
-    listDepth: { itemize: 0, enumerate: 0, other: 0 }, files: null, documentDir: "", inlineOnly: false,
+    listDepth: { itemize: 0, enumerate: 0, other: 0 }, files: null, documentDir: "", inlineOnly: false, container: null, inFootnote: false,
     ...partial,
   };
 }
@@ -55,8 +62,9 @@ const CHAPTER_CLASSES = new Set(["book", "report", "memoir", "scrbook", "scrrepr
 
 /** Packages a class or another package loads, so their commands need nothing more. */
 const IMPLIED: Record<string, string[]> = {
-  "class:beamer": ["hyperref", "xcolor", "graphicx", "amsmath", "amssymb"],
+  "class:beamer": ["hyperref", "xcolor", "graphicx", "amsmath", "amssymb", "amsthm"],
   "class:memoir": ["booktabs", "array"],
+  "class:amsart": ["amsmath", "amsthm", "amsfonts"], "class:amsbook": ["amsmath", "amsthm", "amsfonts"], "class:amsproc": ["amsmath", "amsthm", "amsfonts"],
   tabularx: ["array"], xltabular: ["tabularx", "longtable", "array"], tabulary: ["array"],
   hyperref: ["url"], tcolorbox: ["xcolor"], tikz: ["xcolor", "graphicx"], pgfplots: ["xcolor", "graphicx"],
   mathtools: ["amsmath"], amssymb: ["amsfonts"], soulutf8: ["soul"], csquotes: [], "biblatex": [], fontspec: [],

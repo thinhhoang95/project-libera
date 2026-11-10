@@ -1,4 +1,5 @@
 import type { MdNode } from "./analyze";
+import { mathmlToTex } from "./mathml";
 
 /* Clipboard HTML (Word, Google Docs, web pages) as the Markdown tree the
  * converter reads, so a rich-text paste is written with the same choices,
@@ -7,7 +8,7 @@ import type { MdNode } from "./analyze";
  * Google Docs' wrapper is unwrapped, formatting on spans counts, TeX comes
  * from MathML and KaTeX annotations, and what has no equivalent is dropped. */
 
-const BLOCKS = new Set(["P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "UL", "OL", "LI", "TABLE", "PRE", "BLOCKQUOTE", "SECTION", "ARTICLE", "HEADER", "FOOTER", "FIGURE", "HR", "MAIN", "ASIDE", "NAV", "DL", "DT", "DD", "FIGCAPTION", "CENTER"]);
+const BLOCKS = new Set(["P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "UL", "OL", "LI", "TABLE", "PRE", "BLOCKQUOTE", "SECTION", "ARTICLE", "HEADER", "FOOTER", "FIGURE", "HR", "MAIN", "ASIDE", "NAV", "DL", "DT", "DD", "FIGCAPTION", "CENTER", "DETAILS", "SUMMARY"]);
 const SKIP = new Set(["SCRIPT", "STYLE", "HEAD", "META", "LINK", "TITLE", "NOSCRIPT", "TEMPLATE", "SVG", "VIDEO", "AUDIO", "IFRAME", "OBJECT", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "CANVAS"]);
 
 type Context = { pre: boolean };
@@ -47,7 +48,9 @@ function inline(node: Node, context: Context): MdNode[] {
   const tag = element.tagName.toUpperCase();
   if (SKIP.has(tag)) return [];
   if (tag === "MATH" || element.classList.contains("katex") || element.classList.contains("katex-display") || element.classList.contains("MathJax")) {
-    const tex = texAnnotation(element);
+    // The TeX the formula was written in, or else its MathML read as TeX (Word, Wikipedia without annotations).
+    const mathml = tag === "MATH" ? element : element.querySelector("math");
+    const tex = texAnnotation(element) ?? (mathml ? mathmlToTex(mathml) : null);
     if (tex) {
       const display = element.getAttribute("display") === "block" || element.classList.contains("katex-display");
       return [{ type: display ? "math" : "inlineMath", value: tex }];
@@ -150,6 +153,12 @@ function block(element: HTMLElement, context: Context): MdNode[] {
       return children.length ? [{ type: "heading", depth: Number(tag[1]), children }] : [];
     }
     case "HR": return [{ type: "thematicBreak" }];
+    // A collapsible section: its summary as a bold line, then its content.
+    case "SUMMARY": {
+      const children = trimInline(inline(element, context));
+      return children.length ? [{ type: "paragraph", children: [{ type: "strong", children }] }] : [];
+    }
+    case "DETAILS": return blocks(element, context);
     case "PRE": {
       const language = /(?:^|\s)(?:language|lang)-([\w+#-]+)/.exec(`${element.className} ${element.querySelector("code")?.className ?? ""}`)?.[1] ?? null;
       return [{ type: "code", lang: language, value: (element.textContent ?? "").replace(/\n$/, "") }];
@@ -167,8 +176,11 @@ function block(element: HTMLElement, context: Context): MdNode[] {
       return items.length ? [{ type: "list", ordered: tag === "OL", start: tag === "OL" && Number.isFinite(start) && start > 0 ? start : 1, children: items }] : [];
     }
     case "TABLE": {
-      const rows = Array.from(element.querySelectorAll("tr")).filter((row) => row.closest("table") === element).slice(0, MAX_TABLE_ROWS);
+      const allRows = Array.from(element.querySelectorAll("tr")).filter((row) => row.closest("table") === element);
+      const rows = allRows.slice(0, MAX_TABLE_ROWS);
       if (!rows.length) return [];
+      // Rows past 5,000 and cells past column 64 are left out: the converter says so.
+      let truncated = allRows.length > rows.length;
       const align: Array<"left" | "right" | "center" | null> = [];
       // Cells a row span carries into the rows below: an empty cell holds their place, so later cells keep their columns.
       const carried: number[] = [];
@@ -185,7 +197,7 @@ function block(element: HTMLElement, context: Context): MdNode[] {
         };
         for (const cell of Array.from(row.children).filter((child) => child.tagName === "TD" || child.tagName === "TH")) {
           fillCarried();
-          if (column >= MAX_TABLE_COLUMNS) break;
+          if (column >= MAX_TABLE_COLUMNS) { truncated = true; break; }
           const span = Math.min(htmlSpan(cell.getAttribute("colspan")), MAX_TABLE_COLUMNS - column);
           const down = htmlSpan(cell.getAttribute("rowspan")) - 1;
           if (down > 0) rowSpans = true;
@@ -201,7 +213,8 @@ function block(element: HTMLElement, context: Context): MdNode[] {
       const header = Array.from(rows[0].children).every((cell) => cell.tagName === "TH");
       const width = Math.max(1, ...tableRows.map((row) => (row.children ?? []).reduce((sum, cell) => sum + Number(cell.data?.hProperties?.colspan ?? 1), 0)));
       const children = header ? tableRows : [{ type: "tableRow", children: Array.from({ length: width }, (): MdNode => ({ type: "tableCell", children: [] })) }, ...tableRows];
-      const table: MdNode = { type: "table", align: Array.from({ length: width }, (_, index) => align[index] ?? null), children, data: rowSpans ? { hProperties: { rowspan: true } } : undefined };
+      const properties = { ...(rowSpans ? { rowspan: true } : {}), ...(truncated ? { truncated: true } : {}) };
+      const table: MdNode = { type: "table", align: Array.from({ length: width }, (_, index) => align[index] ?? null), children, data: Object.keys(properties).length ? { hProperties: properties } : undefined };
       // A <caption> is the table's caption, found as "Table: …" next to it.
       const caption = element.querySelector(":scope > caption")?.textContent?.replace(/\s+/g, " ").trim();
       return caption ? [{ type: "paragraph", children: [{ type: "text", value: `Table: ${caption}` }] }, table] : [table];
@@ -230,11 +243,86 @@ function blocks(element: HTMLElement, context: Context): MdNode[] {
   return out;
 }
 
-/** Clipboard HTML as a Markdown tree, or null when it should be pasted as plain text. */
-export function htmlToMarkdownTree(html: string): MdNode | null {
+/** A Word list paragraph's list and level (`mso-list:l0 level2 lfo1`), or null. */
+function msoListOf(element: Element): { list: string; level: number } | null {
+  const match = /mso-list\s*:\s*(l\d+)\s+level(\d+)/i.exec(element.getAttribute("style") ?? "");
+  return match ? { list: match[1], level: Math.max(1, Math.min(9, Number(match[2]))) } : null;
+}
+
+/** Word's typed list marker (`1.`, `a)`, `iv.`) as a number when it is one, null for bullets. */
+function msoOrderedStart(marker: string): number | null {
+  const text = marker.replace(/[\s\u00a0]+/g, "");
+  const match = /^\(?([0-9]{1,6}|[a-zA-Z]|[ivxlcdmIVXLCDM]{1,8})[.)]$/.exec(text);
+  if (!match) return null;
+  const value = match[1];
+  if (/^\d+$/.test(value)) return Number(value);
+  if (/^[ivxlcdm]+$/i.test(value) && (value.length > 1 || /^[iI]$/.test(value))) {
+    const numerals: Record<string, number> = { i: 1, v: 5, x: 10, l: 50, c: 100, d: 500, m: 1000 };
+    let total = 0;
+    const lower = value.toLowerCase();
+    for (let index = 0; index < lower.length; index++) {
+      const current = numerals[lower[index]];
+      const next = numerals[lower[index + 1]] ?? 0;
+      total += current < next ? -current : current;
+    }
+    return total;
+  }
+  return value.toLowerCase().charCodeAt(0) - 96;
+}
+
+/**
+ * Word writes lists as paragraphs styled `mso-list:l0 level1 lfo1`, with the
+ * bullet or number typed in a `mso-list:Ignore` span. Runs of them become
+ * real (nested) lists, so they convert like any other list.
+ */
+function normalizeWordLists(root: HTMLElement) {
+  const document = root.ownerDocument;
+  for (const parent of [root, ...Array.from(root.querySelectorAll("*"))] as HTMLElement[]) {
+    let child = parent.firstElementChild;
+    while (child) {
+      if (!msoListOf(child)) { child = child.nextElementSibling; continue; }
+      // A run of list paragraphs (whitespace between them is skipped).
+      const run: Element[] = [];
+      let next: Element | null = child;
+      while (next && msoListOf(next)) { run.push(next); next = next.nextElementSibling; }
+      const stack: Array<{ level: number; list: HTMLElement }> = [];
+      const roots: HTMLElement[] = [];
+      for (const paragraph of run) {
+        const { level } = msoListOf(paragraph)!;
+        const ignore = paragraph.querySelector("[style*='mso-list:Ignore'], [style*='mso-list: Ignore']");
+        const marker = ignore?.textContent ?? "";
+        ignore?.remove();
+        const start = msoOrderedStart(marker);
+        while (stack.length && stack[stack.length - 1].level > level) stack.pop();
+        if (!stack.length || stack[stack.length - 1].level < level) {
+          const list = document.createElement(start === null ? "ul" : "ol");
+          if (start !== null && start > 1) list.setAttribute("start", String(start));
+          const host = stack.length ? stack[stack.length - 1].list.lastElementChild : null;
+          if (host) host.appendChild(list);
+          else roots.push(list);
+          stack.push({ level, list });
+        }
+        const item = document.createElement("li");
+        item.append(...Array.from(paragraph.childNodes));
+        stack[stack.length - 1].list.appendChild(item);
+      }
+      for (const list of roots) parent.insertBefore(list, run[0]);
+      for (const paragraph of run) paragraph.remove();
+      child = next;
+    }
+  }
+}
+
+/**
+ * Clipboard HTML as a Markdown tree, or null when it should be pasted as plain
+ * text. `keepPlain`: HTML written in Markdown, which converts even when it
+ * holds nothing but `div`s and `span`s.
+ */
+export function htmlToMarkdownTree(html: string, { keepPlain = false }: { keepPlain?: boolean } = {}): MdNode | null {
   if (!html.trim()) return null;
   const body = new DOMParser().parseFromString(html, "text/html").body;
-  if (!body || isSourceWrapperBody(body)) return null;
+  if (!body || (!keepPlain && isSourceWrapperBody(body))) return null;
+  if (/mso-list/i.test(html)) normalizeWordLists(body);
   // Google Docs wraps everything in a <b style="font-weight:normal">.
   for (const wrapper of Array.from(body.querySelectorAll("b[style*='font-weight:normal'], b[style*='font-weight: normal']"))) {
     wrapper.replaceWith(...Array.from(wrapper.childNodes));

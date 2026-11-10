@@ -259,9 +259,9 @@ test("math is read with the user's markers (Preferences → Markdown) and the co
   assert.equal(convert("Area @@\\pi r^2@@ and $x$ and \\(y\\)."), "Area $\\pi r^2$ and $x$ and $y$.");
   assert.equal(convert("%%\nE = mc^2\n%%"), "\\[\nE = mc^2\n\\]");
   assert.equal(convert("\\[\na\n\\]\n\n$$\nb\n$$"), "\\[\na\n\\]\n\n\\[\nb\n\\]");
-  assert.deepEqual(pasteMathMarkers(custom), { inlineMathMarkers: "@@ @@\n$ $\n$$ $$\n\\( \\)", blockMathMarkers: "%% %%\n\\[ \\]\n$$ $$" });
+  assert.deepEqual(pasteMathMarkers(custom), { inlineMathMarkers: "@@ @@\n$ $\n$$ $$\n\\( \\)", blockMathMarkers: "%% %%\n\\[ \\]\n$$ $$", currencyDollars: true });
   // The user's own pair keeps its meaning: `$$` configured as display only is not also inline.
-  assert.deepEqual(pasteMathMarkers({ inlineMathMarkers: "$ $", blockMathMarkers: "$$ $$" }), { inlineMathMarkers: "$ $\n$$ $$\n\\( \\)", blockMathMarkers: "$$ $$\n\\[ \\]" });
+  assert.deepEqual(pasteMathMarkers({ inlineMathMarkers: "$ $", blockMathMarkers: "$$ $$" }), { inlineMathMarkers: "$ $\n$$ $$\n\\( \\)", blockMathMarkers: "$$ $$\n\\[ \\]", currencyDollars: true });
   // Detection leaves formulas written with the user's markers out of the LaTeX score.
   assert.equal(scoreMarkdown("- a @@\\begin{matrix}1\\end{matrix}@@\n- b @@\\section{x}@@", custom).isMarkdown, true);
 });
@@ -554,8 +554,12 @@ test("the paste handler takes Markdown and leaves LaTeX, math, the preamble and 
   assert.equal(taken(view, MARKDOWN), false);
   assert.equal(taken(view, MARKDOWN), true);
   requests.at(-1)?.range.release();
-  // Rich HTML converts in the Visual mode only.
-  assert.equal(taken(view, { "text/plain": "Bold", "text/html": "<p><b>Bold</b></p>" }), false);
+  // Rich HTML converts in Source mode too, unless its text is LaTeX or it is only a code block.
+  assert.equal(taken(view, { "text/plain": "Bold", "text/html": "<p><b>Bold</b></p>" }), true);
+  assert.equal(requests.at(-1)?.html, "<p><b>Bold</b></p>");
+  requests.at(-1)?.range.release();
+  assert.equal(taken(view, { "text/plain": String.raw`\textbf{Bold} and \emph{x}`, "text/html": String.raw`<p><b>\textbf{Bold}</b> and \emph{x}</p>` }), false);
+  assert.equal(taken(view, { "text/plain": "x = 1", "text/html": "<pre><code>x = 1</code></pre>" }), false);
   view.destroy();
   const visual = mount(DOC, (request) => requests.push(request), { visual: true });
   visual.dispatch({ selection: { anchor: body } });
@@ -856,5 +860,151 @@ test("context: the document's definitions, the lists around the paste, headings 
   const doc = "\\begin{document}\n\\begin{itemize}\n\\item a\n\\begin{quote}\nX\n\\end{quote}\n\\end{itemize}\n\\end{document}";
   const view = mount(doc, () => undefined);
   assert.deepEqual(listDepthAt(view.state, doc.indexOf("X")), { itemize: 1, enumerate: 0, other: 1 });
+  view.destroy();
+});
+
+/* ---- Second review (Codex, gpt-6.1-sol, 10 Nov 2026) ------------------------- */
+
+const htmlLatex = (html: string, context = article()) => {
+  const prepared = prepareHtmlPaste(html);
+  assert.ok(prepared);
+  return convertPreparedMarkdown(prepared, resolveChoices(DEFAULT_MARKDOWN_PASTE_OPTIONS, prepared.analysis, context), context);
+};
+
+test("a footnote that refers to itself is written once, not expanded forever", () => {
+  const result = markdownToLatex("# H[^n]\n\n[^n]: R[^n]", {}, article());
+  assert.match(result.latex, /\\footnote\{\\label\{fn:n\}R\[\\textasciicircum\{\}n\]\}/);
+  assert.ok(result.warnings.some((warning) => warning.code === "cyclic-footnote"));
+  // Two footnotes that refer to each other.
+  assert.doesNotThrow(() => latex("A[^a]\n\n[^a]: see[^b]\n\n[^b]: back[^a]"));
+});
+
+test("prices are text: a $ before a digit, or after a space in a formula that began with one, closes nothing", () => {
+  assert.equal(latex("Pay $5 and $10 today."), String.raw`Pay \$5 and \$10 today.`);
+  assert.equal(latex("From $5-$10, or $3.50."), String.raw`From \$5-\$10, or \$3.50.`);
+  assert.equal(latex("Math $x$, spaced $ y $, indexed $a_1$ and $2x$."), "Math $x$, spaced $y$, indexed $a_1$ and $2x$.");
+  assert.equal(latex("Pay $5 and $x$."), String.raw`Pay \$5 and $x$.`);
+});
+
+test("©, ® and ™ keep their TeX spellings under pdfLaTeX; real emoji are still removed", () => {
+  const result = markdownToLatex("Copyright © 2026 ACME™®, ©️ and 😀.", {}, article());
+  assert.equal(result.latex, String.raw`Copyright \copyright{} 2026 ACME\texttrademark{}\textregistered{}, \copyright{} and .`);
+  assert.match(result.warnings.find((warning) => warning.code === "emoji")?.message ?? "", /1 removed/);
+});
+
+test("Unicode symbols inside a text argument of a formula are wrapped in \\ensuremath", () => {
+  assert.equal(mathSymbolsToCommands(String.raw`\text{α} = α`), String.raw`\text{\ensuremath{\alpha}} = \alpha`);
+  assert.equal(mathSymbolsToCommands(String.raw`\text{if $α$} \mathrm{β} \frac{γ}{2}`), String.raw`\text{if $\alpha$} \mathrm{\beta} \frac{\gamma}{2}`);
+  assert.equal(mathSymbolsToCommands(String.raw`\textbf {x ≤ y}`), String.raw`\textbf {x \ensuremath{\le} y}`);
+});
+
+test("LaTeX written around inline math is kept whole, one command after another", () => {
+  assert.equal(latex(String.raw`See \textbf{foo $x$}. And \emph{a $b$ c $d$} end \ref{x}.`), String.raw`See \textbf{foo $x$}. And \emph{a $b$ c $d$} end \ref{x}.`);
+  // Markdown inside the braces is not LaTeX: the command is shown as text.
+  assert.match(latex(String.raw`See \textbf{foo **x** $y$}.`), /\\textbackslash\{\}textbf/);
+  // An unknown command is never kept.
+  assert.match(latex(String.raw`See \input{foo $x$}.`), /\\textbackslash\{\}input/);
+});
+
+test("commands kept from the text report the packages they need", () => {
+  const result = markdownToLatex(String.raw`See \eqref{eq:test}, \cref{fig:a} and \ce{H2O}.`, {}, article());
+  assert.deepEqual(result.missing.map((pkg) => pkg.name).sort(), ["amsmath", "cleveref", "mhchem"]);
+  assert.equal(result.missing.find((pkg) => pkg.name === "mhchem")?.line, String.raw`\usepackage[version=4]{mhchem}`);
+  // A command the document defines needs nothing.
+  assert.deepEqual(markdownToLatex(String.raw`See \cref{a}.`, {}, article({ definedCommands: new Set(["cref"]) })).missing, []);
+  // amsart loads amsmath and amsthm itself.
+  assert.deepEqual(markdownToLatex(String.raw`See \eqref{a}.`, {}, article({ documentClass: "amsart", packages: readPreambleInfo([String.raw`\documentclass{amsart}`]).packages })).missing, []);
+});
+
+test("HTML blocks in Markdown convert like clipboard HTML: paragraphs, formatting, images, details", () => {
+  assert.equal(latex("<div><p>A</p><p>B <b>bold</b></p></div>"), "A\n\nB \\textbf{bold}");
+  assert.match(latex('<p align="center"><img src="fig.png" alt="Logo"></p>'), /\\begin\{figure\}[\s\S]*\\includegraphics\[width=0\.75\\linewidth\]\{fig\.png\}[\s\S]*\\caption\{Logo\}/);
+  assert.equal(latex("<details>\n<summary>More</summary>\n\nHidden **text**\n\n</details>"), "\\textbf{More}\n\nHidden \\textbf{text}");
+  assert.equal(latex("<div>A</div><div>B</div>"), "A\n\nB");
+  // Flattened into an argument.
+  assert.equal(latex("<p>A</p><p>B</p>", {}, article({ inlineOnly: true })), "A B");
+});
+
+test("reference-style links to the paste's own headings get labels and \\hyperref", () => {
+  assert.equal(latex("# Heading\n\n[jump][x]\n\n[x]: #heading"), "\\section{Heading}\\label{sec:heading}\n\n\\hyperref[sec:heading]{jump}");
+});
+
+test("pipes inside formulas and code do not split table cells", () => {
+  const out = latex("| A | B |\n|---|---|\n| $P(A|B)$ | `a|b` |\n| $5 | $10 |\n| \\(|x|\\) | $\\|v\\|$ |", {}, article(), { tableFloat: "none" });
+  assert.match(out, /\\begin\{tabular\}\{ll\}/);
+  assert.match(out, /\$P\(A\|B\)\$ & \\texttt\{a\|b\} \\\\/);
+  assert.match(out, /\\\$5 & \\\$10 \\\\/);
+  assert.match(out, /\$\|x\|\$ & \$\\\|v\\\|\$ \\\\/);
+  // Outside tables, nothing changes.
+  assert.equal(latex("Odds $P(A|B)$ here."), "Odds $P(A|B)$ here.");
+});
+
+test("inside a float, tables and images get no float of their own; inside a box, no caption either", () => {
+  const markdown = "Table: Results\n\n| A |\n|---|\n| x |\n\n![Plot](plot.png)";
+  const inFloat = markdownToLatex(markdown, {}, article({ container: "float" }));
+  assert.doesNotMatch(inFloat.latex, /\\begin\{(?:table|figure)\}/);
+  assert.match(inFloat.latex, /^\\caption\{Results\}\n\\label\{tab:results\}\n\\begin\{tabular\}/);
+  assert.match(inFloat.latex, /\n\n\\includegraphics\[width=0\.75\\linewidth\]\{plot\.png\}$/);
+  const inBox = markdownToLatex(markdown, {}, article({ container: "box" }));
+  assert.doesNotMatch(inBox.latex, /\\begin\{(?:table|figure)\}|\\caption/);
+  // The caption paragraph stays in the text, so nothing is lost.
+  assert.match(inBox.latex, /^Table: Results/);
+  // A longtable cannot go in a float either.
+  assert.doesNotMatch(latex("| A |\n|---|\n| x |", { tableEnvironment: "longtable" }, article({ container: "float" })), /longtable/);
+  // A GitHub alert written as a tcolorbox is a box too.
+  const alert = latex("> [!NOTE]\n> Table: In box\n>\n> | A |\n> |---|\n> | x |\n>\n> ![Plot](plot.png)", {}, article({ packages: packages({ tcolorbox: [] }) }));
+  assert.match(alert, /\\begin\{tcolorbox\}/);
+  assert.doesNotMatch(alert, /\\begin\{(?:table|figure)\}|\\caption/);
+  assert.match(alert, /Table: In box/);
+});
+
+test("pasted into a footnote, footnotes and footnoted links are written in its text", () => {
+  const result = markdownToLatex("A[^n] and [site](https://x.org)\n\n[^n]: B", { links: "footnote" }, article({ inlineOnly: true, inFootnote: true }));
+  assert.equal(result.latex, "A (B) and site");
+});
+
+test("footnotes in a longtable's header: marks in the first header, texts in the first body row", () => {
+  const out = latex("| A[^n] | B[^m] |\n|---|---|\n| x | y[^k] |\n\n[^n]: N.\n\n[^m]: M.\n\n[^k]: K.", { tableEnvironment: "longtable" });
+  const [first, repeated] = out.split("\\endfirsthead");
+  assert.match(first, /A\\footnotemark & B\\footnotemark \\\\/);
+  assert.match(repeated.split("\\endhead")[0], /A & B \\\\/);
+  assert.match(out, /\\addtocounter\{footnote\}\{-1\}\\footnotetext\{N\.\}\\stepcounter\{footnote\}\\footnotetext\{M\.\}x & y\\footnote\{K\.\} \\\\/);
+});
+
+test("clipboard HTML: Word's mso-list paragraphs are lists, MathML without TeX is read, big tables say what they left out", () => {
+  const word = [
+    `<p class=MsoListParagraphCxSpFirst style='mso-list:l0 level1 lfo1'><![if !supportLists]><span style='mso-list:Ignore'>3.<span>&nbsp;&nbsp;</span></span><![endif]>First</p>`,
+    `<p class=MsoListParagraphCxSpMiddle style='margin-left:1in;mso-list:l0 level2 lfo1'><span style='mso-list:Ignore'>o<span>&nbsp;</span></span>Sub <b>bold</b></p>`,
+    `<p class=MsoListParagraphCxSpLast style='mso-list:l0 level1 lfo1'><span style='mso-list:Ignore'>4.<span>&nbsp;</span></span>Second</p>`,
+    `<p class=MsoNormal>After.</p>`,
+  ].join("\n");
+  assert.equal(htmlLatex(word).latex, [
+    "\\begin{enumerate}", "  \\setcounter{enumi}{2}", "  \\item First", "  \\begin{itemize}", "    \\item Sub \\textbf{bold}", "  \\end{itemize}", "  \\item Second", "\\end{enumerate}", "", "After.",
+  ].join("\n"));
+  const math = htmlLatex("<p><math><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mfrac><mi>a</mi><mi>b</mi></mfrac><mo>+</mo><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msub><mi>z</mi><mi>i</mi></msub><mo>⁡</mo><mi>sin</mi><mi>θ</mi></math></p>").latex;
+  assert.equal(math, String.raw`$x^2+\frac{a}{b}+\sum_{i=1}^nz_i\sin\theta$`);
+  // Tokens never spell a command.
+  assert.doesNotMatch(htmlLatex("<p><math><mo>\\</mo><mi>i</mi><mi>n</mi><mi>p</mi><mi>u</mi><mi>t</mi></math></p>").latex, /\\input/);
+  const wide = htmlLatex(`<table><tr>${"<td>x</td>".repeat(64)}<td>LOST</td></tr></table>`);
+  assert.ok(wide.warnings.some((warning) => warning.code === "table-truncated"));
+});
+
+test("context: a paste inside a float, a box or a footnote's text is known as such", () => {
+  const doc = [
+    "\\begin{document}",
+    "\\begin{table}[h]", "  \\centering FLOAT", "\\end{table}",
+    "\\begin{tcolorbox} BOX \\end{tcolorbox}",
+    "\\begin{figure}\\begin{minipage}{3cm} INNER \\end{minipage}\\end{figure}",
+    "Text\\footnote{in NOTE here} PLAIN",
+    "\\end{document}",
+  ].join("\n");
+  const view = mount(doc, () => undefined);
+  const at = (word: string) => latexPasteContextAt(view.state, doc.indexOf(word), { documentPath: "main.tex" });
+  assert.equal(at("FLOAT").container, "float");
+  assert.equal(at("BOX").container, "box");
+  assert.equal(at("INNER").container, "box");
+  assert.equal(at("NOTE").inFootnote, true);
+  assert.equal(at("NOTE").inlineOnly, true);
+  assert.deepEqual([at("PLAIN").container, at("PLAIN").inFootnote], [null, false]);
   view.destroy();
 });

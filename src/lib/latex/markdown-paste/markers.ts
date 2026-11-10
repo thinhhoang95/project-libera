@@ -28,7 +28,8 @@ export function pasteMathMarkers(settings: MathMarkerSettings = {}): MathMarkerS
   };
   add(inline, COMMON_INLINE);
   add(block, COMMON_BLOCK);
-  return { inlineMathMarkers: inline.join("\n"), blockMathMarkers: block.join("\n") };
+  // Pasted prose mentions prices: `$5 and $10` is text, not a formula.
+  return { inlineMathMarkers: inline.join("\n"), blockMathMarkers: block.join("\n"), currencyDollars: true };
 }
 
 /** Every opening and closing marker a paste is read with, longest openers first. */
