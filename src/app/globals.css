@@ -3212,7 +3212,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .libera-latex-visual .cm-line.cm-vis-keywords { font-size: .92em; padding-inline: 1.2em; }
 .cm-vis-references { padding: .4em 0; cursor: default; }
 .cm-vis-references-heading { font-size: 1.25em; font-weight: 700; margin-bottom: .4em; }
-.cm-vis-references-item { padding-left: 2.8em; text-indent: -2.8em; margin: .15em 0; font-size: .95em; }
+.cm-vis-references-item { padding-left: 1.6em; text-indent: -1.6em; margin: .15em 0; font-size: .95em; }
+.cm-vis-references-labelled .cm-vis-references-item { padding-left: 2.8em; text-indent: -2.8em; }
 .cm-vis-references-label { display: inline-block; min-width: 2.8em; text-indent: 0; color: var(--muted-foreground); }
 .cm-vis-references-note { color: var(--muted-foreground); font-style: italic; font-size: .92em; }
 .libera-latex-visual .cm-line.cm-vis-flushright { text-align: right; }

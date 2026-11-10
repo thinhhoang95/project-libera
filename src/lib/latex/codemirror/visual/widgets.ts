@@ -981,10 +981,18 @@ export class BibliographyListWidget extends VisualWidget {
       }
       const numeric = entries.every((entry) => entry.label && /^\d+$/.test(entry.label));
       const sorted = numeric ? [...entries].sort((a, b) => Number(a.label) - Number(b.label)) : entries;
+      // Author–year lists hang without a label column.
+      dom.classList.toggle("cm-vis-references-labelled", entries.some((entry) => entry.label));
       for (const entry of sorted) {
         const line = el("div", "cm-vis-references-item");
         const who = entry.author ? plainTexText(entry.author.split(/\s+and\s+/).join(", ")) : entry.citeAuthor ? plainTexText(entry.citeAuthor) : "";
-        line.append(el("span", "cm-vis-references-label", entry.label ? `[${entry.label}]` : ""), document.createTextNode([who, entry.title ? plainTexText(entry.title) : "", entry.year ?? ""].filter(Boolean).join(". ") + "."));
+        const title = entry.title ? plainTexText(entry.title) : "";
+        // A working paper's title block may end with its year ("…disaggregated data, 2016").
+        const year = entry.year && !title.endsWith(entry.year) ? entry.year : "";
+        // "Abadie et al." already ends with its period.
+        const parts = [who, title, year].map((part) => part.trim().replace(/\.$/, "")).filter(Boolean);
+        if (entry.label) line.append(el("span", "cm-vis-references-label", `[${entry.label}]`));
+        line.append(document.createTextNode(`${parts.join(". ")}.`));
         dom.append(line);
       }
     };
