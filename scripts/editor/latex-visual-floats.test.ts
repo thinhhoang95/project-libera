@@ -401,8 +401,10 @@ Bytes & 1\phn--\phn9 & 11--19\tablenotemark{a} \\
   const plots = inDocument("\\begin{figure*}[h!]\n    \\epsscale{0.8}\n    \\plotone{a.pdf}\n    \\plottwo{b.pdf}{c.pdf}\n    \\caption{Spectra}\n    \\label{fig:spec}\n\\end{figure*}", preamble);
   assert.equal(drawnFloats(plots), 1);
   assert.match(mounted(plots).text, /a\.pdfb\.pdfc\.pdfFigure 1: Spectra/);
-  // Outside AASTeX the commands are not known: the figure stays source.
-  assert.equal(drawnFloats(plots.replace("aastex701", "article")), 0);
+  // Outside AASTeX the commands are not known: they are source lines inside the drawn figure.
+  const unknown = plots.replace("aastex701", "article");
+  assert.equal(drawnFloats(unknown), 1);
+  assert.match(mounted(unknown).raw.join("\n"), /\\plotone\{a\.pdf\}/);
 });
 
 test("hep-th 2611.10539, cond-mat 2611.08102: revtex's ruledtabular is a ruled table with its label-first caption; widetext is transparent", () => {

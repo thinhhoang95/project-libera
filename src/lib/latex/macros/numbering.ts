@@ -783,6 +783,13 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           }
           return;
         }
+        // subcaption's `\subcaptionbox{caption}[width]{content}`: a lettered panel, as a `subfigure`'s caption ("1a"); a
+        // \label in its caption is its. The starred one has no letter.
+        if (command === "\\subcaptionbox" && floats.length) {
+          scopes.push({ node: node.from, target: null });
+          if (read(ctrl.to, ctrl.to + 1) !== "*") numberSubCaption(floats[floats.length - 1].kind === "table" ? "table" : "figure", node);
+          return;
+        }
         // The ctable package's `\ctable[caption={…},label=…]{…}{…}{…}`: a captioned table, numbered where it is.
         if (command === "\\ctable" && !includeDepth && !macroHost) {
           const table = readCtable(read(node.from, Math.min(tree.length, node.from + 40000)));
