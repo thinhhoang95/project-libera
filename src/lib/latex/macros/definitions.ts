@@ -61,7 +61,8 @@ export type LatexTheoremDefinition = {
 
 export type LatexDefinitionNote = { pos: number; file?: string; name: string; message: string };
 
-export type LatexColumnType = { arity: number; align: "left" | "center" | "right" };
+/** `paragraph`: a column whose cells wrap, as `p{…}` and tabularx's `X` do; the others are one line. */
+export type LatexColumnType = { arity: number; align: "left" | "center" | "right"; paragraph?: boolean };
 
 /** How a `\newcolumntype` body aligns: `>{\centering}`, `>{\raggedleft}`, or its base column (`c`, `r`). */
 function columnTypeAlign(body: string): LatexColumnType["align"] {
@@ -771,7 +772,10 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       if (letter && body && /^\s*[A-Za-z]\s*$/.test(letter.content)) {
         end = body.end;
         const arity = count ? Number(count.content.trim()) : 0;
-        defs.columnTypes.set(letter.content.trim(), { arity: Number.isInteger(arity) && arity >= 0 && arity <= 9 ? arity : 0, align: columnTypeAlign(body.content) });
+        // Its base column, without the `>{…}`, `<{…}` and `@{…}` parts: `p{#1}`, `m{…}`, `b{…}` or `X` wrap.
+        const base = body.content.replace(/[<>@!]\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, "");
+        const paragraph = /(?:^|[^\\A-Za-z])[pmb]\s*\{|(?:^|[^\\A-Za-z])X(?![A-Za-z])/.test(base);
+        defs.columnTypes.set(letter.content.trim(), { arity: Number.isInteger(arity) && arity >= 0 && arity <= 9 ? arity : 0, align: columnTypeAlign(body.content), ...(paragraph ? { paragraph } : {}) });
       }
     } else if (command === "definecolor" || command === "colorlet") {
       // `\definecolor{myred}{RGB}{89,10,10}`, `\colorlet{accent}{red!60}`: names `\textcolor` and `\color` draw.
@@ -809,7 +813,7 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   parts.push(defs.documentClass ?? "", String(defs.secnumdepth ?? ""), defs.graphicsPaths.join("|"));
   for (const [name, list] of defs.packageOptions) parts.push(`pkg:${name}:${list.join(",")}`);
   for (const [name, color] of defs.colors) parts.push(`color:${name}:${color.model}:${color.value}`);
-  for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}`);
+  for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}:${type.paragraph ? "p" : ""}`);
   return hashString(parts.join("\u0000"));
 }
 

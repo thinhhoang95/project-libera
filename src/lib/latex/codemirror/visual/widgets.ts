@@ -739,6 +739,9 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
   // `\newcolumntype` letters align as their definition does.
   // tabulary's `C` and `R` align as `c` and `r` (unless the document defines them).
   const aligns = model.columns.map((column) => types.get(column)?.align ?? (column === "c" || column === "C" ? "center" : column === "r" || column === "R" ? "right" : "left"));
+  // As in TeX, only paragraph columns (`p{…}`, `m{…}`, `b{…}`, tabularx's `X`, tabulary's `L C R J`) wrap; the
+  // others are one line, so a wide table scrolls instead of breaking "2.46" into "2." and "46" (Carlini & Wagner).
+  const wraps = model.columns.map((column) => (types.has(column) ? !!types.get(column)!.paragraph : /^[pmbXLCRJ]$/.test(column)));
   /** Columns a `\multirow` above still covers, and for how many more rows. */
   const rowsCovered = new Map<number, number>();
   model.rows.forEach((row, rowIndex) => {
@@ -759,6 +762,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       const td = el("td", "cm-vis-table-cell") as HTMLTableCellElement;
       if (cell.span > 1) td.colSpan = cell.span;
       td.style.textAlign = cell.span > 1 ? "center" : aligns[column] ?? "left";
+      if (cell.span === 1 && wraps[column] === false) td.classList.add("cm-vis-table-line");
       let text = cell.contentFrom !== undefined ? source.slice(cell.contentFrom, cell.contentTo) : cell.text;
       // colortbl: `\rowcolor{Gray}` at a row's start fills the row, `\cellcolor{…}` its cell (faintly, under the text).
       const fill = /^\s*\\(rowcolor|cellcolor)\s*(?:\[([^\]]*)\]\s*)?\{([^{}]*)\}/.exec(text);

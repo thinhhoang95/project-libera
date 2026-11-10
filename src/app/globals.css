@@ -3171,6 +3171,12 @@ html.dark .libera-workspace-region[data-ai-active="true"] .libera-ai-glow { opac
 .cm-vis-math-inline { padding-inline: 1px; }
 .cm-vis-math-display { display: block; padding: .35em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
 span.cm-vis-math-display { display: inline-block; width: 100%; }
+/* A numbered formula wider than the column: its number follows it, instead of being drawn over its right end
+   (KaTeX positions the number absolutely, at the right of the column), and the row scrolls. The empty space on
+   each side keeps a narrower formula centred, as before. */
+.cm-vis-math-display .katex-display > .katex > .katex-html:has(> .tag) { display: flex; align-items: baseline; }
+.cm-vis-math-display .katex-display > .katex > .katex-html:has(> .tag)::before { content: ""; flex: 1 1 0; min-width: 0; }
+.cm-vis-math-display .katex-display > .katex > .katex-html > .tag { position: static; flex: 1 1 0; min-width: max-content; padding-left: 1.2em; text-align: right; }
 .cm-vis-math:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .cm-vis-math .katex .eqn-num[data-vis-num]::before { content: "(" attr(data-vis-num) ")"; counter-increment: none; }
 .cm-vis-math .katex .eqn-num:not([data-vis-num])::before { content: ""; counter-increment: none; }
@@ -3206,7 +3212,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .libera-latex-visual .cm-line.cm-vis-flushright { text-align: right; }
 .cm-vis-figure { margin: .5em 0; padding: .7em .8em .5em; border: 1px solid var(--border); border-radius: 10px; text-align: center; cursor: pointer; }
 .cm-vis-figure:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-.cm-vis-figure-body { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-end; gap: .7em; }
+/* `safe center`: content wider than the figure (an 18-column table*) starts at the left edge and scrolls, rather than overflowing on both sides. */
+.cm-vis-figure-body { display: flex; flex-wrap: wrap; justify-content: safe center; align-items: flex-end; gap: .7em; overflow-x: auto; }
 .cm-vis-figure-image { display: inline-block; width: var(--vis-image-width, auto); max-width: 100%; }
 .cm-vis-figure-drawing {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .2em;
@@ -3240,6 +3247,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-table { margin: .2em auto; border-collapse: collapse; font-size: .92em; line-height: 1.45; }
 .cm-vis-table.cm-vis-table-nested { display: inline-table; margin: 0; font-size: inherit; vertical-align: middle; }
 .cm-vis-table-cell { padding: .18em .75em; vertical-align: top; cursor: text; }
+/* A cell of an l, c or r column is one line, as in TeX; a table wider than the page scrolls (below). */
+.cm-vis-table-cell.cm-vis-table-line { white-space: nowrap; }
 .cm-vis-table-row.cm-vis-rule > td { border-top: 1px solid currentColor; }
 .cm-vis-table-row.cm-vis-rule-heavy > td { border-top: 1.5px solid currentColor; }
 .cm-vis-table-row.cm-vis-row-spaced > td { padding-top: .5em; }
