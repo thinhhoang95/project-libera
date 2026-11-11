@@ -277,7 +277,7 @@ export function citationNoteText(note: string, depth = 0, cite?: NestedCite): st
     if (char === "$") {
       const close = note.indexOf("$", i + 1);
       const math = close < 0 ? null : note.slice(i + 1, close);
-      const text = math === null ? null : mathNoteText(math);
+      const text = math === null ? null : (mathNoteText(math) ?? noteMathText(math));
       if (text === null) return null;
       out += text;
       i = close + 1;

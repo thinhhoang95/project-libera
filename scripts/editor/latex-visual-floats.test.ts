@@ -257,9 +257,9 @@ test("B7-22: quantikz circuits, tikz-cd diagrams and a TikZ file input in a form
     assert.equal(drawnFloats(doc), 1);
     assert.match(mounted(doc).text, expected[index]);
   });
-  // tikz-cd in a numbered equation: KaTeX cannot draw it, so it stays source.
+  // tikz-cd in a numbered equation: a simple diagram is drawn as a KaTeX array (math-diagram.ts, audit round 3, math.AG 2611.06861).
   const equation = inDocument("\\begin{equation}\\begin{tikzcd} A \\arrow[r] & B \\end{tikzcd}\\label{eq:cospan}\\end{equation}");
-  assert.equal(constructs(visualState(equation)).some((item) => item.startsWith("math:")), false);
+  assert.equal(constructs(visualState(equation)).some((item) => item.startsWith("math:")), true);
 });
 
 test("B6-11: a tcolorbox, an mdframed and a \\newtcolorbox box in the text are framed lines, with the title and \\tcblower", () => {
