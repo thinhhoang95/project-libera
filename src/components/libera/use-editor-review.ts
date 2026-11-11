@@ -11,8 +11,6 @@ import { installCodeMirrorReview, setCodeMirrorReviewLocked, setReviewHighlights
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownReview } from "./markdown-review-context";
 
-const VISUAL_SELECTION_ERROR = "This visual selection could not be mapped to Markdown. Use the source editor to comment on this passage.";
-
 function sourceCommentPoint(input: { getBoundingClientRect: () => DOMRect }) {
   const rect = input.getBoundingClientRect();
   return { x: rect.left + 30, y: rect.top + 30 };
@@ -199,10 +197,9 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       if (!review?.enabled || editor!.view.composing) return;
       const { from, to } = editor!.state.selection;
       const range = sourceRangeForTiptapTextSelection(editor!, read(), from, to);
-      if (range) {
-        if (review.error === VISUAL_SELECTION_ERROR) review.reportError("");
-        review.select(range, x, y);
-      } else review.reportError(VISUAL_SELECTION_ERROR);
+      // A selection of nothing but blank lines has no passage to comment on;
+      // like an empty click in the source editor, it opens nothing.
+      if (range) review.select(range, x, y);
     }
     const mouse = (event: MouseEvent) => select(event.clientX, event.clientY);
     function key(event: KeyboardEvent) {

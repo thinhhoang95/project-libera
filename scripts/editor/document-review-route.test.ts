@@ -286,9 +286,10 @@ test("recorded edits keep anchors that one change spanning them would lose", asy
   assert.equal(tracker.count, 3);
   const replayed = replayReviewEdits(doc, tracker.edits(doc), final);
   assert.deepEqual(replayed.threads[0].anchor, shown.threads[0].anchor);
-  assert.equal(syncReview(doc, final).threads[0].anchor.state, "orphaned", "the single change covers the comment");
+  // One change spanning the comment is followed through its separate parts.
+  assert.deepEqual(syncReview(doc, final).threads[0].anchor, shown.threads[0].anchor);
   // Edits that do not lead to the snapshot fall back to the single change.
-  assert.equal(replayReviewEdits(doc, [{ start: 0, end: 0, text: "x" }], final).threads[0].anchor.state, "orphaned");
+  assert.deepEqual(replayReviewEdits(doc, [{ start: 0, end: 0, text: "x" }], final).threads[0].anchor, shown.threads[0].anchor);
   for (const edits of [[null], [undefined], [false], [{ start: -1, end: 0, text: "x" }]]) assert.deepEqual(replayReviewEdits(doc, edits, final), syncReview(doc, final));
   assert.equal(tracker.edits(newReview("Notes/other.md", original, "other")).length, 0);
 });

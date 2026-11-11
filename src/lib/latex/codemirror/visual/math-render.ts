@@ -1,6 +1,7 @@
 import katex from "katex";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { splitMathRows, stripTexComments } from "../../macros/numbering";
+import { COVERAGE_MACROS, coverageForKatex } from "./math-coverage";
 import { siunitxForKatex } from "./siunitx";
 import { cssColor } from "./symbols";
 
@@ -116,6 +117,8 @@ export const KATEX_MACROS: Record<string, string> = {
   "\\k": "\\text{#1̨}",
   // breqn's `\condition{for all x}` after a dmath's formula: a comma and the text.
   "\\condition": ",\\quad\\text{#1}",
+  // amsmath, mathtools, esint and stmaryrd symbols and spaces (math-coverage.ts).
+  ...COVERAGE_MACROS,
 };
 
 /** TeX's `\ooalign` rows (`\crcr` or `\cr` at the top level of its group). */
@@ -609,6 +612,8 @@ export function forKatex(latex: string) {
     });
   }
   if (out.includes("\\physics@")) out = physicsForKatex(out);
+  // mathtools' `dcases*` and `multlined`, the tensor package's `\tensor`, stmaryrd's `\left\llbracket`, braket's `\braket@…` (math-coverage.ts).
+  out = coverageForKatex(out);
   // graphicx's `\scalebox{0.4}[1]{${=}$}` (2204.14024's `\eq`): its content, a text box as in LaTeX, unscaled.
   if (out.includes("\\scalebox")) out = replaceGroups(out, /\\scalebox\s*\{[^{}]*\}\s*(?:\[[^\]]*\]\s*)?/g, (content) => `\\text{${content}}`);
   // amsmath's `\intertext{where}` between an align's rows (a natural-gradient derivation's), which KaTeX lacks: the

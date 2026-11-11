@@ -76,6 +76,8 @@ html.dark .libera-editor-toolbar select:hover:not(:disabled) { background: var(-
   border-radius: 13px;
 }
 .libera-document-workspace .libera-tiptap [data-type="block-math"] .katex-display { margin-block: .5em; }
+/* Quote boxes (grey and colored) share the equation blocks' corner radius. */
+.libera-document-workspace .libera-tiptap blockquote { border-radius: 13px; }
 .libera-document-workspace .libera-tiptap a { color: var(--accent); text-underline-offset: 3px; }
 .libera-document-workspace .libera-document-status { background: var(--background); color: var(--muted-foreground); min-height: 32px; padding: 8px 20px; gap: 22px; font-size: 10px; }
 .libera-document-workspace .markdown-split-resizer { background: var(--border); }

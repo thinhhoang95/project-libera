@@ -335,7 +335,9 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   }, [publish, snapshot, tracker, tabState, tabRef]);
   const reload = useCallback(async () => {
     const tab = current.current.activeTab;
-    if (busyRef.current || !tab || !localStore) return;
+    if (busyRef.current) return;
+    // Nothing stored to read again: the press still dismisses the message.
+    if (!tab || !localStore) { setError(""); return; }
     const controller = new AbortController(); pending.current = controller;
     busyRef.current = true; setBusy("reload");
     try {
