@@ -23,7 +23,7 @@ function markLeadIns(node: Root | RootContent) {
     const first = firstContent(node);
     if (first?.type === "element" && first.tagName === "strong") {
       const className = first.properties.className;
-      const classes = Array.isArray(className) ? className : typeof className === "string" ? className.split(" ") : [];
+      const classes = Array.isArray(className) ? className : typeof className === "string" ? String(className).split(" ") : [];
       if (!classes.includes(LEAD_IN_CLASS)) first.properties.className = [...classes, LEAD_IN_CLASS];
     }
   }
