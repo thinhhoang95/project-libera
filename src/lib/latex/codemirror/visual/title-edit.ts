@@ -125,7 +125,7 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
     if (end) { abstract = { from: contentFrom, to: contentFrom + end.index }; abstractStart = match.index ?? 0; }
   }
   // sn-jnl's `\abstract{…}` command.
-  // (A&A's `bstract{…}{…}{…}{…}{…}`, drawn with a label before each part, has no one place to edit: a click shows its source.)
+  // (A&A's `\abstract{…}{…}{…}{…}{…}`, drawn with a label before each part, has no one place to edit: a click shows its source.)
   if (!abstract) {
     const use = commandUses(scope, base, "abstract").at(-1);
     const after = use ? state.sliceDoc(use[0].to + 1, Math.min(state.doc.length, use[0].to + 400)) : "";
