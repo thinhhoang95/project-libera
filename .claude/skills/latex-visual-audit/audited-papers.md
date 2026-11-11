@@ -27,3 +27,20 @@ Passed to `fetch --exclude` so a new round picks new papers. Add each round's id
 | cs.CL | 2611.11838 | ACL, linguex, minipage figures |
 | cs.DS | 2611.09172 | acmart, algorithm2e with user keywords, mleftright; main file in a subfolder (00README.json) |
 | q-bio.NC | 2610.36484 | `\newif` switch, highlight macro around `\paragraph` |
+
+## 2026-11-11, round 3 (12 papers, docs/audits/2026-11-11-latex-visual-paper-review-3.md)
+
+| Category | Id | Notes |
+|---|---|---|
+| quant-ph | 2611.10887 | revtex, `\onecolumngrid` |
+| hep-th | 2611.09538 | `\newtcolorbox` box, adjustbox, main file named by 00README toplevel |
+| astro-ph.GA | 2611.07227 | A&A class, natbib notes with `\citealt` and formulas, `list`, table fragments |
+| math.AG | 2611.06861 | xymatrix, tikzcd, TikZ pictures with `\foreach`, `\arraystretch` in math |
+| math.CO | 2611.10154 | `\includepdf` |
+| stat.ME | 2611.07519 | verbatim with `$` (R code), 2 files |
+| cs.LO | 2610.39746 | `\Needspace` |
+| cond-mat.str-el | 2611.06541 | revtex `\onecolumngrid` |
+| math.PR | 2611.08611 | preamble-heavy, TikZ |
+| cs.CL | 2611.11316 | 73 files, IEEEtran, lrbox/`\counterwithin` |
+| cs.DS | 2611.07622 | BibTeX alpha `\etalchar` labels |
+| q-bio.NC | 2610.30364 | `\url{\repourl}`, footnotetext with `\thefootnote` |
