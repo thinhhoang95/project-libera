@@ -12,6 +12,10 @@ import { readGroup, readOptional } from "../../../macros/core";
 export const COVERAGE_MACROS: Record<string, string> = {
   // unicode-math's and common macro files' `\defeq`: "=" with "def" over it.
   "\\defeq": "\\mathrel{\\stackrel{\\mathrm{def}}{=}}",
+  // accents.sty's `\accentset{accent}{base}` and `\underaccent{accent}{base}`: the accent set over or under the base, as
+  // `\overset` and `\underset` set it (the accent in script size, as accents.sty sets it).
+  "\\accentset": "\\overset{#1}{#2}",
+  "\\underaccent": "\\underset{#1}{#2}",
   // LaTeX's framed box with its options left out (`\framebox{a}`).
   "\\framebox": "\\fbox",
   // TeX's spaces by name.
@@ -247,9 +251,21 @@ export function bracketDelimitersForKatex(latex: string) {
     .replace(/\\(right|big[rm]?|Big[rm]?|bigg[rm]?|Bigg[rm]?)\s*\\rrbracket(?![A-Za-z@])/g, "\\$1]\\!\\$1]");
 }
 
+/**
+ * Box and line-spacing settings inside a formula that only move things by fractions of a line: `\lineskiplimit=0pt` (set
+ * at the start of an accent macro's text box, 2611.13390's `\oacc`) draws nothing, and `\raisebox{-.2ex}[\height][\depth]{…}`
+ * is `\raisebox{-.2ex}{…}` for KaTeX, which has no height and depth arguments (they only change the box's size for layout).
+ */
+export function boxSettingsForKatex(latex: string) {
+  if (!/\\(?:lineskiplimit|lineskip|raisebox)(?![A-Za-z@])/.test(latex)) return latex;
+  return latex
+    .replace(/\\(?:lineskiplimit|lineskip)\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|mu|bp|mm|cm|in)(?:\s+(?:plus|minus)\s*-?[\d.]+\s*(?:pt|em|ex|fil+))*\s*/g, "")
+    .replace(/(\\raisebox\s*\{[^{}]*\})\s*(?:\[[^\]]*\]\s*){1,2}(?=\{)/g, "$1");
+}
+
 /** All of this file's rewrites, in the order math-render.ts's `forKatex` applies them. */
 export function coverageForKatex(latex: string) {
-  let out = latex;
+  let out = boxSettingsForKatex(latex);
   out = mathtoolsEnvironmentsForKatex(out);
   out = tensorForKatex(out);
   return bracketDelimitersForKatex(out);

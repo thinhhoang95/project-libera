@@ -80,6 +80,29 @@ function readDelimited(source: string, index: number, open: string, close: strin
   return null;
 }
 
+/**
+ * A TeX delimited argument (`\def\set#1:#2{…}`): everything up to `delimiter` outside braces, past the delimiter. A text
+ * that is one `{…}` group loses its braces, as TeX strips them; null when the delimiter does not come before a
+ * paragraph break or the end of the text.
+ */
+function readUntil(source: string, index: number, delimiter: string): Argument | null {
+  for (let i = index; i < source.length && i < index + 4000; i++) {
+    if (source.startsWith(delimiter, i)) {
+      const value = source.slice(index, i);
+      const group = value.startsWith("{") ? readGroup(value, 0, TEX_GROUPS) : null;
+      return { value: group && group.end === value.length ? group.content : value, end: i + delimiter.length };
+    }
+    const char = source[i];
+    if (char === "\\") { i++; continue; }
+    if (char === "{") {
+      const group = readGroup(source, i, TEX_GROUPS);
+      if (!group) return null;
+      i = group.end - 1;
+    } else if (char === "}" || (char === "\n" && /^\n[ \t\r]*\n/.test(source.slice(i, i + 40)))) return null;
+  }
+  return null;
+}
+
 /** Reads a use's arguments after its name; null when they are not all there. */
 export function readMacroArguments(source: string, index: number, macro: Pick<LatexMacro, "arity" | "optional" | "spec">): { args: string[]; end: number } | null {
   const args: string[] = [];
@@ -94,6 +117,12 @@ export function readMacroArguments(source: string, index: number, macro: Pick<La
         const read = source[at] === argument.open ? readDelimited(source, at, argument.open, argument.close) : null;
         if (read) { args.push(read.value); index = read.end; } else if (argument.type === "r") return null;
         else args.push(argument.type === "d" ? NO_VALUE : argument.default);
+      } else if (argument.type === "u") {
+        // TeX skips the spaces after a control word, not those between later parameters.
+        const read = readUntil(source, n === 0 ? skipSpaces(source, index) : index, argument.delimiter);
+        if (!read) return null;
+        args.push(read.value);
+        index = read.end;
       } else if (argument.type === "e") {
         // The embellishments of one specification, in any order, each once: `^{a}_{b}` or `_{b}^{a}`.
         const tokens = macro.spec.slice(n).filter((other): other is Extract<XparseArgument, { type: "e" }> => other.type === "e" && other.group === argument.group);

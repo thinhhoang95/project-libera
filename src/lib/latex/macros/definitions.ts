@@ -22,7 +22,9 @@ import { findBeginDocument } from "../document-begin";
 export type XparseArgument = { type: "m" } | { type: "o" } | { type: "O"; default: string } | { type: "s" } | { type: "g" } | { type: "G"; default: string }
   | { type: "t"; token: string } | { type: "r"; open: string; close: string } | { type: "d"; open: string; close: string }
   | { type: "R"; open: string; close: string; default: string } | { type: "D"; open: string; close: string; default: string }
-  | { type: "e"; token: string; group: number; default?: string };
+  | { type: "e"; token: string; group: number; default?: string }
+  /** A TeX `\def` parameter with a delimiter (`\def\set#1:#2{…}`): the tokens up to `delimiter`, outside braces. */
+  | { type: "u"; delimiter: string };
 
 export type LatexMacro = {
   name: string;
@@ -474,6 +476,26 @@ function highestParameter(body: string) {
   let highest = 0;
   for (const match of body.matchAll(/##|#([1-9])/g)) if (match[1]) highest = Math.max(highest, Number(match[1]));
   return highest;
+}
+
+/**
+ * The parameter text of a `\def` with delimiters (`#1:#2`, `#1.`) as argument types: each `#n` in order with the
+ * delimiter after it, if any. Null when TeX's rules are not met (parameters numbered in order, nothing before `#1`),
+ * a delimiter is not plain characters, or the body uses a parameter that is not there.
+ */
+function delimitedSpec(parameters: string, body: string): XparseArgument[] | null {
+  const text = parameters.trim();
+  if (!text.startsWith("#")) return null;
+  const spec: XparseArgument[] = [];
+  const pattern = /#([1-9])([^#{}%]*)/y;
+  for (let next = 1; pattern.lastIndex < text.length;) {
+    const match = pattern.exec(text);
+    if (!match || Number(match[1]) !== next++) return null;
+    const delimiter = match[2].trim();
+    if (/\\par(?![A-Za-z@])/.test(delimiter)) return null;
+    spec.push(delimiter ? { type: "u", delimiter } : { type: "m" });
+  }
+  return spec.length && highestParameter(body) <= spec.length ? spec : null;
 }
 
 /** xparse argument specifications; null when one is not supported. */
@@ -1032,7 +1054,12 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           const closing = addMacro(context, { name: pair[1], arity: 0, body: halves[1], pos, file: context.file }, "renew");
           if (closing && !global) (scanner.innermost()?.locals ?? []).push(closing);
         } else if (command === "edef" || command === "xdef") shadow(name.name, `\\${command} is expanded when it is defined`);
-        else if (!/^\s*(?:#[1-9]\s*)*$/.test(parameters)) shadow(name.name, `\\${name.name} has delimited parameters`);
+        else if (!/^\s*(?:#[1-9]\s*)*$/.test(parameters)) {
+          // `\def\set#1:#2{\Set{{#1} \colon {#2}}}`: parameters with delimiters, read up to each one at a use.
+          const spec = uncertain ? null : delimitedSpec(parameters, body.content);
+          if (spec) added = addMacro(context, { name: name.name, arity: spec.length, spec, body: body.content, pos, file: context.file }, "renew");
+          else shadow(name.name, `\\${name.name} has delimited parameters`);
+        }
         else if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
         else added = addMacro(context, { name: name.name, arity: (parameters.match(/#/g) ?? []).length, body: body.content, pos, file: context.file }, "renew");
       }
