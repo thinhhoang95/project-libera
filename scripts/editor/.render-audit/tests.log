@@ -1,0 +1,704 @@
+TAP version 13
+# Subtest: TeX tokens: control words, symbols, braces and spaces
+ok 1 - TeX tokens: control words, symbols, braces and spaces
+  ---
+  duration_ms: 2.076292
+  type: 'test'
+  ...
+# Subtest: MathLive's rewrites of unchanged parts write nothing
+ok 2 - MathLive's rewrites of unchanged parts write nothing
+  ---
+  duration_ms: 0.310333
+  type: 'test'
+  ...
+# Subtest: only the tokens that changed are written, at their place in the document
+ok 3 - only the tokens that changed are written, at their place in the document
+  ---
+  duration_ms: 0.578875
+  type: 'test'
+  ...
+# Subtest: a diff applied to the original always typesets as the edited formula
+ok 4 - a diff applied to the original always typesets as the edited formula
+  ---
+  duration_ms: 19.798916
+  type: 'test'
+  ...
+# Subtest: formulas MathLive would change are refused
+ok 5 - formulas MathLive would change are refused
+  ---
+  duration_ms: 0.253875
+  type: 'test'
+  ...
+# Subtest: every cell maps to its exact source range, \\multicolumn and rules included
+ok 6 - every cell maps to its exact source range, \\multicolumn and rules included
+  ---
+  duration_ms: 2.046875
+  type: 'test'
+  ...
+# Subtest: cells with comments or line breaks are edited as source
+ok 7 - cells with comments or line breaks are edited as source
+  ---
+  duration_ms: 0.1455
+  type: 'test'
+  ...
+# Subtest: editing a cell rewrites only that cell
+ok 8 - editing a cell rewrites only that cell
+  ---
+  duration_ms: 0.145291
+  type: 'test'
+  ...
+# Subtest: rows and columns are added and removed with the fewest changes
+ok 9 - rows and columns are added and removed with the fewest changes
+  ---
+  duration_ms: 1.0585
+  type: 'test'
+  ...
+# Subtest: a cell edit writes only the characters that changed
+ok 10 - a cell edit writes only the characters that changed
+  ---
+  duration_ms: 0.440958
+  type: 'test'
+  ...
+# Subtest: deleting the first column keeps the rules before a row
+ok 11 - deleting the first column keeps the rules before a row
+  ---
+  duration_ms: 0.092
+  type: 'test'
+  ...
+# Subtest: text is escaped and symbols become commands
+ok 12 - text is escaped and symbols become commands
+  ---
+  duration_ms: 0.512083
+  type: 'test'
+  ...
+# Subtest: pasted links, math and code cannot leave the construct they become
+ok 13 - pasted links, math and code cannot leave the construct they become
+  ---
+  duration_ms: 19.07
+  type: 'test'
+  ...
+# Subtest: rich text from Word, Google Docs and web pages becomes LaTeX
+ok 14 - rich text from Word, Google Docs and web pages becomes LaTeX
+  ---
+  duration_ms: 18.626041
+  type: 'test'
+  ...
+# Subtest: \\(…\\) inside a table does not swallow the cells after it, and unbalanced tables are left as source
+ok 15 - \\(…\\) inside a table does not swallow the cells after it, and unbalanced tables are left as source
+  ---
+  duration_ms: 0.143583
+  type: 'test'
+  ...
+# Subtest: columns are edited with their whole specification
+ok 16 - columns are edited with their whole specification
+  ---
+  duration_ms: 0.250208
+  type: 'test'
+  ...
+# Subtest: huge or nested column repeats are left as source, without the work
+ok 17 - huge or nested column repeats are left as source, without the work
+  ---
+  duration_ms: 0.101375
+  type: 'test'
+  ...
+# Subtest: the formula diff keeps changes TeX typesets differently
+ok 18 - the formula diff keeps changes TeX typesets differently
+  ---
+  duration_ms: 0.202334
+  type: 'test'
+  ...
+# Subtest: the sample draws every construct it recognises, and the file is not changed
+ok 19 - the sample draws every construct it recognises, and the file is not changed
+  ---
+  duration_ms: 97.562583
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at ViewState.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:6407:33)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8210:46)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: chips and numbers follow the numbering
+ok 20 - chips and numbers follow the numbering
+  ---
+  duration_ms: 92.617833
+  type: 'test'
+  ...
+# Subtest: a \\let alias of a citation command is drawn as a citation, the way its target cites
+ok 21 - a \\let alias of a citation command is drawn as a citation, the way its target cites
+  ---
+  duration_ms: 2.808709
+  type: 'test'
+  ...
+# Subtest: a longtable is drawn as a numbered table: first head, body and last foot, with rows written through macros expanded
+ok 22 - a longtable is drawn as a numbered table: first head, body and last foot, with rows written through macros expanded
+  ---
+  duration_ms: 19.907625
+  type: 'test'
+  ...
+# Subtest: a tabularx is a grid; with rows written through macros it is drawn from their expansion
+ok 23 - a tabularx is a grid; with rows written through macros it is drawn from their expansion
+  ---
+  duration_ms: 5.007958
+  type: 'test'
+  ...
+# Subtest: a figure that draws another file (\\resizebox{…}{\\input{fig}}) shows its caption and a placeholder; \\textcircled is circled
+ok 24 - a figure that draws another file (\\resizebox{…}{\\input{fig}}) shows its caption and a placeholder; \\textcircled is circled
+  ---
+  duration_ms: 4.319417
+  type: 'test'
+  ...
+# Subtest: numbering follows starred floats, algorithms, \\captionof panels, \\iffalse and labels in \\nonumber rows
+ok 25 - numbering follows starred floats, algorithms, \\captionof panels, \\iffalse and labels in \\nonumber rows
+  ---
+  duration_ms: 19.179
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at ViewState.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:6407:33)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8210:46)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: floats of real papers are drawn: table*, minipage panels with algorithms and \\captionof, grouped tables, toggled images
+ok 26 - floats of real papers are drawn: table*, minipage panels with algorithms and \\captionof, grouped tables, toggled images
+  ---
+  duration_ms: 41.922292
+  type: 'test'
+  ...
+# Subtest: \\iffalse … \\fi is faded source with nothing in it drawn; old font switches, \\newcite, \\footnotetext and ack draw
+ok 27 - \\iffalse … \\fi is faded source with nothing in it drawn; old font switches, \\newcite, \\footnotetext and ack draw
+  ---
+  duration_ms: 23.497292
+  type: 'test'
+  ...
+# Subtest: edits around \\iffalse, font switches and floats build the same constructs as a fresh build
+ok 28 - edits around \\iffalse, font switches and floats build the same constructs as a fresh build
+  ---
+  duration_ms: 645.094208
+  type: 'test'
+  ...
+# Subtest: algorithmic bodies of both packages are read into indented, numbered lines
+ok 29 - algorithmic bodies of both packages are read into indented, numbered lines
+  ---
+  duration_ms: 0.196125
+  type: 'test'
+  ...
+# Subtest: the parser reads a file path argument with groups (\\iftoggle) as one argument
+ok 30 - the parser reads a file path argument with groups (\\iftoggle) as one argument
+  ---
+  duration_ms: 0.168833
+  type: 'test'
+  ...
+# Subtest: numbering follows subcaption's sub-figures (letters, \\caption* skipped), two tables in one float and appendices
+ok 31 - numbering follows subcaption's sub-figures (letters, \\caption* skipped), two tables in one float and appendices
+  ---
+  duration_ms: 17.24275
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at ViewState.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:6407:33)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8210:46)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: floats of the second batch draw: sub-figure panels, tables in \\resizebox, \\multirow through a macro, stacked captions, nested tabulars
+ok 32 - floats of the second batch draw: sub-figure panels, tables in \\resizebox, \\multirow through a macro, stacked captions, nested tabulars
+  ---
+  duration_ms: 20.75
+  type: 'test'
+  ...
+# Subtest: formulas of the second batch: \\textnormal with $ inside align, \\nicefrac, and \\ref in math following numbering; cvpr's \\eg
+ok 33 - formulas of the second batch: \\textnormal with $ inside align, \\nicefrac, and \\ref in math following numbering; cvpr's \\eg
+  ---
+  duration_ms: 13.956084
+  type: 'test'
+  ...
+# Subtest: heading numbers stay right when scrolling reuses a heading's drawing for another heading
+ok 34 - heading numbers stay right when scrolling reuses a heading's drawing for another heading
+  ---
+  duration_ms: 16.402333
+  type: 'test'
+  ...
+# No character metrics for '⁣' in style 'Main-Regular' and mode 'text'
+# No character metrics for '⁣' in style 'Main-Regular' and mode 'text'
+# Subtest: a package's font machinery (\\def\\small{…\\small…}) is LaTeX's own command; \\xspace spaces before a word, not before punctuation
+ok 35 - a package's font machinery (\\def\\small{…\\small…}) is LaTeX's own command; \\xspace spaces before a word, not before punctuation
+  ---
+  duration_ms: 5.698041
+  type: 'test'
+  ...
+# Subtest: edits around sub-figures, references in formulas and \\multirow cells build the same constructs as a fresh build
+ok 36 - edits around sub-figures, references in formulas and \\multirow cells build the same constructs as a fresh build
+  ---
+  duration_ms: 904.834916
+  type: 'test'
+  ...
+# Subtest: algorithm2e bodies are read into lines: blocks as arguments, statements ending with \\;, the document's keywords
+ok 37 - algorithm2e bodies are read into lines: blocks as arguments, statements ending with \\;, the document's keywords
+  ---
+  duration_ms: 1.0995
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at ViewState.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:6407:33)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8210:46)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: third batch: an algorithm2e float, a bibliography, colours, struts and a caption-less sub-figure label
+ok 38 - third batch: an algorithm2e float, a bibliography, colours, struts and a caption-less sub-figure label
+  ---
+  duration_ms: 25.287875
+  type: 'test'
+  ...
+# Subtest: edits around bibliographies, algorithm2e bodies and colour switches build the same constructs as a fresh build
+ok 39 - edits around bibliographies, algorithm2e bodies and colour switches build the same constructs as a fresh build
+  ---
+  duration_ms: 587.335167
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at ViewState.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:6407:33)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8210:46)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: fourth batch: rows numbered by hand (\\addtocounter … \\tag{\\theequation}) are numbered as LaTeX numbers them
+ok 40 - fourth batch: rows numbered by hand (\\addtocounter … \\tag{\\theequation}) are numbered as LaTeX numbers them
+  ---
+  duration_ms: 33.930917
+  type: 'test'
+  ...
+# Subtest: fourth batch: KaTeX-only gaps, font switches in environments, ulem, stacks, flalign and unbraced \\COMMENT
+ok 41 - fourth batch: KaTeX-only gaps, font switches in environments, ulem, stacks, flalign and unbraced \\COMMENT
+  ---
+  duration_ms: 23.752875
+  type: 'test'
+  ...
+# Subtest: edits around hand-numbered rows, font switches in environments and stacks build the same constructs as a fresh build
+ok 42 - edits around hand-numbered rows, font switches in environments and stacks build the same constructs as a fresh build
+  ---
+  duration_ms: 1131.055167
+  type: 'test'
+  ...
+# Subtest: fifth batch: \\def\\bea\#1\\eea pairs, discarding macros, \\ifx 1 0, and the subfigure package's commands, numbered as LaTeX does
+ok 43 - fifth batch: \\def\\bea\#1\\eea pairs, discarding macros, \\ifx 1 0, and the subfigure package's commands, numbered as LaTeX does
+  ---
+  duration_ms: 10.356416
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at ViewState.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:6407:33)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8210:46)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: fifth batch draws: sub-figure commands as panels, tabulary, colortbl fills, rules before a grouped cell, relsize and size environments
+ok 44 - fifth batch draws: sub-figure commands as panels, tabulary, colortbl fills, rules before a grouped cell, relsize and size environments
+  ---
+  duration_ms: 19.796125
+  type: 'test'
+  ...
+# Subtest: edits around delimited pairs, discarding macros, false conditionals and sub-figure commands build the same constructs as a fresh build
+ok 45 - edits around delimited pairs, discarding macros, false conditionals and sub-figure commands build the same constructs as a fresh build
+  ---
+  duration_ms: 813.856666
+  type: 'test'
+  ...
+# Subtest: sixth batch: subfig's panels number with their float, and a document's \\@startsection restyle keeps \\paragraph LaTeX's own
+ok 46 - sixth batch: subfig's panels number with their float, and a document's \\@startsection restyle keeps \\paragraph LaTeX's own
+  ---
+  duration_ms: 18.519417
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at ViewState.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:6407:33)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8210:46)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: sixth batch draws: \\raise in formulas and text, rule and layout macros in tables, overpic, size environments and \\centerline in floats
+ok 47 - sixth batch draws: \\raise in formulas and text, rule and layout macros in tables, overpic, size environments and \\centerline in floats
+  ---
+  duration_ms: 27.956875
+  type: 'test'
+  ...
+# Subtest: edits around rule and layout macros, sub-floats and overpic build the same constructs as a fresh build
+ok 48 - edits around rule and layout macros, sub-floats and overpic build the same constructs as a fresh build
+  ---
+  duration_ms: 738.459416
+  type: 'test'
+  ...
+# Subtest: clicking a citation or label chip opens its source, with the cursor after its keys
+ok 49 - clicking a citation or label chip opens its source, with the cursor after its keys
+  ---
+  duration_ms: 6.139625
+  type: 'test'
+  ...
+# Subtest: citation chips print TeX accents and escapes in author names
+ok 50 - citation chips print TeX accents and escapes in author names
+  ---
+  duration_ms: 2.47675
+  type: 'test'
+  ...
+# Subtest: an accent shows its source while the cursor touches it, so typing \\c before a word is not drawn as a cedilla
+ok 51 - an accent shows its source while the cursor touches it, so typing \\c before a word is not drawn as a cedilla
+  ---
+  duration_ms: 1.860333
+  type: 'test'
+  ...
+# Subtest: macros: math macros render expanded, text macros as their expansion, and \\todo keeps its argument editable
+ok 52 - macros: math macros render expanded, text macros as their expansion, and \\todo keeps its argument editable
+  ---
+  duration_ms: 13.721166
+  type: 'test'
+  ...
+# Subtest: broken or unknown LaTeX stays as source, but constructs inside a broken one still render
+ok 53 - broken or unknown LaTeX stays as source, but constructs inside a broken one still render
+  ---
+  duration_ms: 2.663542
+  type: 'test'
+  ...
+# Subtest: a hand-built notation table: definitions stay source, rows cover their arguments, and its label is a table
+ok 54 - a hand-built notation table: definitions stay source, rows cover their arguments, and its label is a table
+  ---
+  duration_ms: 7.498166
+  type: 'test'
+  ...
+# Subtest: a redefined built-in is drawn as the document's macro, not as the built-in
+ok 55 - a redefined built-in is drawn as the document's macro, not as the built-in
+  ---
+  duration_ms: 3.011958
+  type: 'test'
+  ...
+# Subtest: a user environment's arguments are read after its name, and its body is not eaten
+ok 56 - a user environment's arguments are read after its name, and its body is not eaten
+  ---
+  duration_ms: 1.25725
+  type: 'test'
+  ...
+# Subtest: a figure with content the widget does not draw stays source
+ok 57 - a figure with content the widget does not draw stays source
+  ---
+  duration_ms: 9.525958
+  type: 'test'
+  ...
+# Subtest: a starred definition's name and body stay source
+ok 58 - a starred definition's name and body stay source
+  ---
+  duration_ms: 2.883458
+  type: 'test'
+  ...
+# Subtest: definitions follow edits inside a multi-line body and before them
+ok 59 - definitions follow edits inside a multi-line body and before them
+  ---
+  duration_ms: 4.363542
+  type: 'test'
+  ...
+# Subtest: item markers follow \\setcounter, as references do
+ok 60 - item markers follow \\setcounter, as references do
+  ---
+  duration_ms: 8.159208
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8198:25)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: references in captions and table cells follow numbering, and fragments use definitions in force where they are
+ok 61 - references in captions and table cells follow numbering, and fragments use definitions in force where they are
+  ---
+  duration_ms: 15.501041
+  type: 'test'
+  ...
+# Subtest: a cell editor survives a co-author's edit to its table, and clicks in it do not close it
+ok 62 - a cell editor survives a co-author's edit to its table, and clicks in it do not close it
+  ---
+  duration_ms: 8.153583
+  type: 'test'
+  ...
+# Subtest: cancelling a cell shows the cell's current source, and closing the view closes its editors
+ok 63 - cancelling a cell shows the cell's current source, and closing the view closes its editors
+  ---
+  duration_ms: 7.577958
+  type: 'test'
+  ...
+# Subtest: MathLive gets the macros a formula's macros use, and refuses ones it would change
+ok 64 - MathLive gets the macros a formula's macros use, and refuses ones it would change
+  ---
+  duration_ms: 4.911375
+  type: 'test'
+  ...
+# Subtest: a widget's edit is its own undo step, in every history
+ok 65 - a widget's edit is its own undo step, in every history
+  ---
+  duration_ms: 3.983959
+  type: 'test'
+  ...
+# Subtest: buttons and menus work from the keyboard, and Enter on a selected reference follows it
+ok 66 - buttons and menus work from the keyboard, and Enter on a selected reference follows it
+  ---
+  duration_ms: 11.180375
+  type: 'test'
+  ...
+# Subtest: typing after a hidden command name keeps every cursor
+ok 67 - typing after a hidden command name keeps every cursor
+  ---
+  duration_ms: 1.578459
+  type: 'test'
+  ...
+# Subtest: transparent plans and formula previews follow the definitions they depend on
+ok 68 - transparent plans and formula previews follow the definitions they depend on
+  ---
+  duration_ms: 1.51525
+  type: 'test'
+  ...
+# Subtest: graphics resolve from the compile root's directory and \\graphicspath, as TeX finds them
+ok 69 - graphics resolve from the compile root's directory and \\graphicspath, as TeX finds them
+  ---
+  duration_ms: 0.854125
+  type: 'test'
+  ...
+# Subtest: the innermost construct at the cursor shows its source, by its policy
+ok 70 - the innermost construct at the cursor shows its source, by its policy
+  ---
+  duration_ms: 7.438875
+  type: 'test'
+  ...
+# Subtest: constructs under a pending suggestion or AI change show as source
+ok 71 - constructs under a pending suggestion or AI change show as source
+  ---
+  duration_ms: 1.911375
+  type: 'test'
+  ...
+# Subtest: bold toggles off inside \\textbf and on elsewhere
+ok 72 - bold toggles off inside \\textbf and on elsewhere
+  ---
+  duration_ms: 3.259833
+  type: 'test'
+  ...
+# Subtest: Backspace selects a formula before deleting it, and typing after \\ldots keeps the command
+ok 73 - Backspace selects a formula before deleting it, and typing after \\ldots keeps the command
+  ---
+  duration_ms: 1.721958
+  type: 'test'
+  ...
+# Subtest: the cursor stays before a heading's hidden brace
+ok 74 - the cursor stays before a heading's hidden brace
+  ---
+  duration_ms: 0.961292
+  type: 'test'
+  ...
+# Subtest: numbering counts structure written through macros where they are used
+ok 75 - numbering counts structure written through macros where they are used
+  ---
+  duration_ms: 10.355209
+  type: 'test'
+  ...
+# Error: Uncaught [ReferenceError: Window is not defined]
+#     at reportException (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/helpers/runtime-script-errors.js:66:24)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:664:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7) ReferenceError: Window is not defined
+#     at isScrolledToBottom (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:785:24)
+#     at ViewState.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:6407:33)
+#     at EditorView.measure (/Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8210:46)
+#     at /Users/thinhhoang/Documents/project-libera/node_modules/@codemirror/view/dist/index.cjs:8374:79
+#     at invokeTheCallbackFunction (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26)
+#     at runAnimationFrameCallbacks (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:662:13)
+#     at Timeout.<anonymous> (/Users/thinhhoang/Documents/project-libera/node_modules/jsdom/lib/jsdom/browser/Window.js:640:11)
+#     at listOnTimeout (node:internal/timers:585:17)
+#     at process.processTimers (node:internal/timers:521:7)
+# Subtest: structure written through macros is drawn as what it writes
+ok 76 - structure written through macros is drawn as what it writes
+  ---
+  duration_ms: 23.490959
+  type: 'test'
+  ...
+# Subtest: edits around environments opened and closed by macros build the same constructs as a fresh build
+ok 77 - edits around environments opened and closed by macros build the same constructs as a fresh build
+  ---
+  duration_ms: 481.92325
+  type: 'test'
+  ...
+# Subtest: incremental updates build the same constructs as a fresh build
+ok 78 - incremental updates build the same constructs as a fresh build
+  ---
+  duration_ms: 1047.132709
+  type: 'test'
+  ...
+# Subtest: deleting at the end of the document rebuilds what it ended
+ok 79 - deleting at the end of the document rebuilds what it ended
+  ---
+  duration_ms: 4.388625
+  type: 'test'
+  ...
+# Subtest: a rebuild that grows keeps what its first part covered (a macro's second argument on the next line)
+ok 80 - a rebuild that grows keeps what its first part covered (a macro's second argument on the next line)
+  ---
+  duration_ms: 3.469041
+  type: 'test'
+  ...
+# Subtest: text that becomes verbatim far from the edit stops being drawn
+ok 81 - text that becomes verbatim far from the edit stops being drawn
+  ---
+  duration_ms: 16.901333
+  type: 'test'
+  ...
+# Subtest: cursor moves, scrolling and mode switches never change the document
+ok 82 - cursor moves, scrolling and mode switches never change the document
+  ---
+  duration_ms: 299.253458
+  type: 'test'
+  ...
+# Subtest: switching modes keeps the document and its undo history
+ok 83 - switching modes keeps the document and its undo history
+  ---
+  duration_ms: 2.744625
+  type: 'test'
+  ...
+# Subtest: long documents are built in pieces, the part at the cursor first
+ok 84 - long documents are built in pieces, the part at the cursor first
+  ---
+  duration_ms: 446.659459
+  type: 'test'
+  ...
+# Subtest: text the parser has not reached stays pending, even on one long line
+ok 85 - text the parser has not reached stays pending, even on one long line
+  ---
+  duration_ms: 288.189291
+  type: 'test'
+  ...
+# Subtest: an edit inside a very long list walks its own lines now and the rest of the list later
+ok 86 - an edit inside a very long list walks its own lines now and the rest of the list later
+  ---
+  duration_ms: 2170.674209
+  type: 'test'
+  ...
+# Subtest: body text on the \\begin{document} line is not folded into the preamble
+ok 87 - body text on the \\begin{document} line is not folded into the preamble
+  ---
+  duration_ms: 1.995667
+  type: 'test'
+  ...
+# Subtest: editing \\title in the body redraws \\maketitle
+ok 88 - editing \\title in the body redraws \\maketitle
+  ---
+  duration_ms: 7.0955
+  type: 'test'
+  ...
+# Subtest: a chapter's numbers start where its main file includes it
+ok 89 - a chapter's numbers start where its main file includes it
+  ---
+  duration_ms: 2.357166
+  type: 'test'
+  ...
+# Subtest: opening and leaving a cell without typing writes nothing
+ok 90 - opening and leaving a cell without typing writes nothing
+  ---
+  duration_ms: 4.036958
+  type: 'test'
+  ...
+# Subtest: a cell edit follows its cell through a collaborator's edit before the table
+ok 91 - a cell edit follows its cell through a collaborator's edit before the table
+  ---
+  duration_ms: 2.788541
+  type: 'test'
+  ...
+# Subtest: a table menu command is planned against the table as it is when chosen
+ok 92 - a table menu command is planned against the table as it is when chosen
+  ---
+  duration_ms: 4.798833
+  type: 'test'
+  ...
+# Subtest: switching to Visual mode with a parse ahead of the state's tree builds only around the cursor
+ok 93 - switching to Visual mode with a parse ahead of the state's tree builds only around the cursor
+  ---
+  duration_ms: 278.600875
+  type: 'test'
+  ...
+1..93
+# tests 93
+# suites 0
+# pass 93
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 13098.535416

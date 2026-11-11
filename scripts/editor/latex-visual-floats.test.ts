@@ -507,10 +507,10 @@ Text.
 \twocolumn
 \renewcommand{\foo}{bar}
 \twocolumn[Kept text]`);
-  // Only another command's definition and a `\twocolumn` with text stay source.
+  // Only another command's definition stays source; `\twocolumn[Kept text]` is a transparent wrapper (round 4, MLSys 2611.13560).
   const { text } = mounted(doc);
   assert.match(text, /Text\.A1\W*More/);
-  assert.match(text, /\\renewcommand\{\\foo\}\{bar\}\\twocolumn\[Kept text\]$/);
+  assert.match(text, /\\renewcommand\{\\foo\}\{bar\}Kept text$/);
   assert.doesNotMatch(text, /frenchspacing|clearpage|appendix|thesection|theequation|setcounter|twocolumn\\/);
   // Numbering reads the lines that folded away.
   const state = visualState(doc);

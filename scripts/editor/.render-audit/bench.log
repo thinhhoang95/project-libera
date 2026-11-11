@@ -1,0 +1,8 @@
+Document: 502 KB, 62 idle pieces
+ok   first build around the cursor (ms)                            13.92   budget 30
+ok   slowest idle piece (ms)                                        8.27   budget 12
+ok   keystroke, median (ms)                                         0.44   budget 1
+ok   keystroke, 95th percentile (ms)                                0.96   budget 4
+ok   a $ that re-pairs a paragraph, 95th percentile (ms)            2.63   budget 8
+info keystroke with the jsdom view update, median (ms)              3.02
+info keystroke with the jsdom view update, 95th percentile (ms)     7.07

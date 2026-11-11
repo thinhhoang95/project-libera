@@ -1,0 +1,626 @@
+[
+  {
+    "name": "future counter format",
+    "doc": "\\documentclass{article}\n\\begin{document}\n\\section{First}\\label{first}\n\\begin{equation}a=b\\label{a}\\end{equation}\n\\renewcommand{\\thesection}{B}\n\\renewcommand{\\theequation}{B.\\arabic{equation}}\n\\section{Appendix}\\label{app}\n\\begin{equation}c=d\\label{b}\\end{equation}\n\\end{document}",
+    "constructs": [
+      {
+        "kind": "preamble",
+        "from": 0,
+        "to": 40,
+        "source": "\\documentclass{article}\n\\begin{document}"
+      },
+      {
+        "kind": "heading",
+        "from": 41,
+        "to": 69,
+        "source": "\\section{First}\\label{first}"
+      },
+      {
+        "kind": "math",
+        "from": 70,
+        "to": 112,
+        "source": "\\begin{equation}a=b\\label{a}\\end{equation}"
+      },
+      {
+        "kind": "heading",
+        "from": 192,
+        "to": 221,
+        "source": "\\section{Appendix}\\label{app}"
+      },
+      {
+        "kind": "math",
+        "from": 222,
+        "to": 264,
+        "source": "\\begin{equation}c=d\\label{b}\\end{equation}"
+      },
+      {
+        "kind": "document-end",
+        "from": 265,
+        "to": 279,
+        "source": "\\end{document}"
+      }
+    ],
+    "widgets": [
+      {
+        "from": 0,
+        "to": 40,
+        "type": "PreambleWidget"
+      },
+      {
+        "from": 41,
+        "to": 50,
+        "type": "HeadingNumberWidget"
+      },
+      {
+        "from": 70,
+        "to": 112,
+        "type": "MathWidget",
+        "source": "\\begin{equation}a=b\\label{a}\\end{equation}"
+      },
+      {
+        "from": 192,
+        "to": 201,
+        "type": "HeadingNumberWidget"
+      },
+      {
+        "from": 222,
+        "to": 264,
+        "type": "MathWidget",
+        "source": "\\begin{equation}c=d\\label{b}\\end{equation}"
+      }
+    ],
+    "numbering": [
+      {
+        "pos": 41,
+        "kind": "section",
+        "number": "B",
+        "level": 1
+      },
+      {
+        "pos": 70,
+        "kind": "equation",
+        "number": "B.1",
+        "rows": [
+          "B.1"
+        ],
+        "tagged": [
+          false
+        ]
+      },
+      {
+        "pos": 192,
+        "kind": "section",
+        "number": "B",
+        "level": 1
+      },
+      {
+        "pos": 222,
+        "kind": "equation",
+        "number": "B.2",
+        "rows": [
+          "B.2"
+        ],
+        "tagged": [
+          false
+        ]
+      }
+    ],
+    "labels": {
+      "first": {
+        "number": "B",
+        "kind": "section",
+        "pos": 41,
+        "title": "First"
+      },
+      "a": {
+        "number": "B.1",
+        "kind": "equation",
+        "pos": 70
+      },
+      "app": {
+        "number": "B",
+        "kind": "section",
+        "pos": 192,
+        "title": "Appendix"
+      },
+      "b": {
+        "number": "B.2",
+        "kind": "equation",
+        "pos": 222
+      }
+    },
+    "problems": []
+  },
+  {
+    "name": "malformed definition suppresses numbering",
+    "doc": "\\documentclass{article}\n\\WithSuffix\\newcommand\\foo*{bar}\n\\begin{document}\n\\section{First}\\label{first}\n\\begin{equation}a=b\\label{a}\\end{equation}\n\\end{document}",
+    "constructs": [
+      {
+        "kind": "preamble",
+        "from": 0,
+        "to": 73,
+        "source": "\\documentclass{article}\n\\WithSuffix\\newcommand\\foo*{bar}\n\\begin{document}"
+      },
+      {
+        "kind": "heading",
+        "from": 74,
+        "to": 102,
+        "source": "\\section{First}\\label{first}"
+      },
+      {
+        "kind": "math",
+        "from": 103,
+        "to": 145,
+        "source": "\\begin{equation}a=b\\label{a}\\end{equation}"
+      },
+      {
+        "kind": "document-end",
+        "from": 146,
+        "to": 160,
+        "source": "\\end{document}"
+      }
+    ],
+    "widgets": [
+      {
+        "from": 0,
+        "to": 73,
+        "type": "PreambleWidget"
+      },
+      {
+        "from": 74,
+        "to": 83,
+        "type": "HeadingNumberWidget"
+      },
+      {
+        "from": 103,
+        "to": 145,
+        "type": "MathWidget",
+        "source": "\\begin{equation}a=b\\label{a}\\end{equation}"
+      }
+    ],
+    "numbering": [],
+    "labels": {},
+    "problems": [
+      {
+        "pos": 35,
+        "name": "foo",
+        "message": "\\foo has no {…} body"
+      }
+    ]
+  },
+  {
+    "name": "missing definition body recovery",
+    "doc": "\\documentclass{article}\n\\newcommand{\\broken}\n\\begin{document}\n\\section{First}\\label{first}\n\\end{document}",
+    "constructs": [
+      {
+        "kind": "preamble",
+        "from": 0,
+        "to": 61,
+        "source": "\\documentclass{article}\n\\newcommand{\\broken}\n\\begin{document}"
+      },
+      {
+        "kind": "heading",
+        "from": 62,
+        "to": 90,
+        "source": "\\section{First}\\label{first}"
+      },
+      {
+        "kind": "document-end",
+        "from": 91,
+        "to": 105,
+        "source": "\\end{document}"
+      }
+    ],
+    "widgets": [
+      {
+        "from": 0,
+        "to": 61,
+        "type": "PreambleWidget"
+      },
+      {
+        "from": 62,
+        "to": 71,
+        "type": "HeadingNumberWidget"
+      }
+    ],
+    "numbering": [],
+    "labels": {},
+    "problems": [
+      {
+        "pos": 24,
+        "name": "broken",
+        "message": "\\broken has no {…} body"
+      }
+    ]
+  },
+  {
+    "name": "float loses code",
+    "doc": "\\begin{figure}\n\\begin{verbatim}\nImportant listing content\n\\end{verbatim}\n\\caption{Example}\n\\end{figure}",
+    "constructs": [
+      {
+        "kind": "figure",
+        "from": 0,
+        "to": 103,
+        "source": "\\begin{figure}\n\\begin{verbatim}\nImportant listing content\n\\end{verbatim}\n\\caption{Example}\n\\end{figure}"
+      }
+    ],
+    "widgets": [
+      {
+        "from": 0,
+        "to": 103,
+        "type": "FigureWidget",
+        "spec": {
+          "images": [],
+          "caption": "Example",
+          "captionPos": 82,
+          "kind": "figure",
+          "numberOffset": 0,
+          "captionAbove": true,
+          "env": "figure",
+          "start": 0,
+          "length": 103
+        }
+      }
+    ],
+    "numbering": [
+      {
+        "pos": 0,
+        "kind": "figure",
+        "number": "1"
+      }
+    ],
+    "labels": {},
+    "problems": []
+  },
+  {
+    "name": "float loses listing",
+    "doc": "\\begin{figure}\n\\begin{lstlisting}\nfunc main() { println(42) }\n\\end{lstlisting}\n\\caption{Example}\n\\end{figure}",
+    "constructs": [
+      {
+        "kind": "figure",
+        "from": 0,
+        "to": 109,
+        "source": "\\begin{figure}\n\\begin{lstlisting}\nfunc main() { println(42) }\n\\end{lstlisting}\n\\caption{Example}\n\\end{figure}"
+      }
+    ],
+    "widgets": [
+      {
+        "from": 0,
+        "to": 109,
+        "type": "FigureWidget",
+        "spec": {
+          "images": [],
+          "caption": "Example",
+          "captionPos": 88,
+          "kind": "figure",
+          "numberOffset": 0,
+          "captionAbove": true,
+          "env": "figure",
+          "start": 0,
+          "length": 109
+        }
+      }
+    ],
+    "numbering": [
+      {
+        "pos": 0,
+        "kind": "figure",
+        "number": "1"
+      }
+    ],
+    "labels": {},
+    "problems": []
+  },
+  {
+    "name": "theorem called algorithm",
+    "doc": "\\newtheorem{algorithm}{Algorithm}\n\\begin{algorithm}\\label{alg}Important steps.\\end{algorithm}\nSee \\ref{alg}.",
+    "constructs": [
+      {
+        "kind": "label",
+        "from": 51,
+        "to": 62,
+        "source": "\\label{alg}"
+      },
+      {
+        "kind": "ref",
+        "from": 98,
+        "to": 107,
+        "source": "\\ref{alg}"
+      }
+    ],
+    "widgets": [
+      {
+        "from": 51,
+        "to": 62,
+        "type": "ChipWidget"
+      },
+      {
+        "from": 98,
+        "to": 107,
+        "type": "ChipWidget"
+      }
+    ],
+    "numbering": [
+      {
+        "pos": 34,
+        "kind": "theorem",
+        "number": "1",
+        "env": "algorithm"
+      }
+    ],
+    "labels": {
+      "alg": {
+        "number": "1",
+        "kind": "theorem",
+        "pos": 34,
+        "env": "algorithm"
+      }
+    },
+    "problems": []
+  },
+  {
+    "name": "array missing columns",
+    "doc": "\\begin{array}{cc}a & b \\\\ c & d\\end{array}",
+    "constructs": [],
+    "widgets": [],
+    "numbering": [
+      {
+        "pos": 0,
+        "kind": "equation",
+        "number": null,
+        "rows": [
+          null,
+          null
+        ],
+        "tagged": [
+          false,
+          false
+        ]
+      }
+    ],
+    "labels": {},
+    "problems": []
+  },
+  {
+    "name": "fragment",
+    "doc": "$x",
+    "text": "x",
+    "math": 1,
+    "raw": []
+  },
+  {
+    "name": "fragment",
+    "doc": "\\(x",
+    "text": "x",
+    "math": 1,
+    "raw": []
+  },
+  {
+    "name": "fragment",
+    "doc": "\\begin{equation}x\\end{align}",
+    "text": "x​​",
+    "math": 1,
+    "raw": []
+  },
+  {
+    "name": "fragment",
+    "doc": "\\textbf{unfinished",
+    "text": "\\textbf{unfinished",
+    "math": 0,
+    "raw": [
+      "\\textbf{unfinished"
+    ]
+  },
+  {
+    "name": "fragment",
+    "doc": "\\textcolor[RGB{255,0,0}{hello}",
+    "text": "\\textcolor[RGB255,0,0hello",
+    "math": 0,
+    "raw": [
+      "\\textcolor"
+    ]
+  },
+  {
+    "name": "fragment",
+    "doc": "\\textcolor[RGB]{255,0,0}{hello}",
+    "text": "\\textcolor[RGB]255,0,0hello",
+    "math": 0,
+    "raw": [
+      "\\textcolor"
+    ]
+  },
+  {
+    "name": "fragment",
+    "doc": "$x_{\\ref{e}}$",
+    "text": "$x_{\\ref{e}}$",
+    "math": 0,
+    "raw": [
+      "$x_{\\ref{e}}$"
+    ]
+  },
+  {
+    "name": "empty-column-repeat",
+    "count": 1000,
+    "ms": 0.19908300000008694,
+    "columns": 0
+  },
+  {
+    "name": "empty-column-repeat",
+    "count": 1000000,
+    "ms": 6.237833000000023,
+    "columns": 0
+  },
+  {
+    "name": "empty-column-repeat",
+    "count": 10000000,
+    "ms": 12.014917000000082,
+    "columns": 0
+  },
+  {
+    "name": "include position state",
+    "doc": "\\begin{document}\\input{child}\\section{After}\\end{document}",
+    "child": "\\section{Child}\\begin{equation}x=y\\end{equation}",
+    "entries": [
+      {
+        "pos": 29,
+        "kind": "section",
+        "number": "2",
+        "level": 1
+      }
+    ],
+    "counters": {
+      "section": 2,
+      "subsection": 0,
+      "subsubsection": 0,
+      "paragraph": 0,
+      "subparagraph": 0,
+      "equation": 1
+    }
+  },
+  {
+    "name": "include position state",
+    "doc": "\\newcommand{\\f}{foo}\n\\begin{document}\\input{child}\\section{After}\\end{document}",
+    "child": "\\section{Child}\\begin{equation}x=y\\end{equation}",
+    "entries": [
+      {
+        "pos": 50,
+        "kind": "section",
+        "number": "1",
+        "level": 1
+      }
+    ],
+    "counters": {
+      "section": 1,
+      "subsection": 0,
+      "subsubsection": 0,
+      "paragraph": 0,
+      "subparagraph": 0
+    }
+  },
+  {
+    "name": "include position state",
+    "doc": "\\newcommand{\\f}{foo}\n\\newcommand{\\g}{goo}\n\\begin{document}\\input{child}\\section{After}\\end{document}",
+    "child": "\\section{Child}\\begin{equation}x=y\\end{equation}",
+    "entries": [
+      {
+        "pos": 71,
+        "kind": "section",
+        "number": "1",
+        "level": 1
+      }
+    ],
+    "counters": {
+      "section": 1,
+      "subsection": 0,
+      "subsubsection": 0,
+      "paragraph": 0,
+      "subparagraph": 0
+    }
+  },
+  {
+    "name": "caption with unclosed inline math",
+    "doc": "\\begin{figure}\\includegraphics{a.png}\\caption{Broken $x}\\end{figure}",
+    "constructs": [
+      {
+        "kind": "figure",
+        "from": 0,
+        "to": 68,
+        "source": "\\begin{figure}\\includegraphics{a.png}\\caption{Broken $x}\\end{figure}"
+      }
+    ],
+    "widgets": [
+      {
+        "from": 0,
+        "to": 68,
+        "type": "FigureWidget",
+        "spec": {
+          "images": [
+            {
+              "path": "a.png"
+            }
+          ],
+          "caption": "Broken $x",
+          "captionPos": 46,
+          "kind": "figure",
+          "numberOffset": 0,
+          "captionAbove": false,
+          "env": "figure",
+          "start": 0,
+          "base": "nb/main.tex",
+          "length": 68
+        }
+      }
+    ],
+    "numbering": [
+      {
+        "pos": 0,
+        "kind": "figure",
+        "number": "1"
+      }
+    ],
+    "labels": {},
+    "problems": []
+  },
+  {
+    "name": "single large list first build",
+    "chars": 16033,
+    "count": 1000,
+    "ms": 14.68308300000001,
+    "pending": []
+  },
+  {
+    "name": "single large list first build",
+    "chars": 160033,
+    "count": 10000,
+    "ms": 63.033041999999796,
+    "pending": []
+  },
+  {
+    "name": "fragment with known math macros/references",
+    "doc": "\\begin{equation*}\\argmin_x\\p{x}\\end{equation*}",
+    "text": "\\begin{equation*}\\argmin_x\\p{x}\\end{equation*}",
+    "math": 0,
+    "raw": [
+      "\\begin{equation*}\\argmin_x\\p{x}\\end{equation*}"
+    ]
+  },
+  {
+    "name": "fragment with known math macros/references",
+    "doc": "$x_{\\ref{e}}$",
+    "text": "$x_{\\ref{e}}$",
+    "math": 0,
+    "raw": [
+      "$x_{\\ref{e}}$"
+    ]
+  },
+  {
+    "name": "chapter inherited current label absent",
+    "root": "\\newtheorem{thm}{Theorem}\n\\begin{document}\n\\section{First}\\begin{thm}A\\end{thm}\n\\input{chapter}\n\\end{document}",
+    "chapter": "\\section{Second}\\begin{thm}B\\end{thm}",
+    "start": {
+      "counters": {
+        "section": 1,
+        "subsection": 0,
+        "subsubsection": 0,
+        "paragraph": 0,
+        "subparagraph": 0,
+        "thm": 1
+      },
+      "appendix": false
+    },
+    "entries": [
+      {
+        "pos": 0,
+        "kind": "section",
+        "number": "2",
+        "level": 1
+      },
+      {
+        "pos": 16,
+        "kind": "theorem",
+        "number": "2",
+        "env": "thm"
+      }
+    ]
+  }
+]
