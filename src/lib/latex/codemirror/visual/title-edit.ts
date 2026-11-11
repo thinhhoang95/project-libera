@@ -104,6 +104,22 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
     }
     return { title: title?.[0] ?? null, authors: names.map((groups) => groups[0]), date: null, abstract, lines: [], notes: [], start: first(), addAuthorAt: null };
   }
+  // A title block written by hand in a body file (`\def\@title{…}`, `\def\@author{…}`, `\def\@date{…}`, then a use of a macro
+  // `\let` to `\@maketitle`, walk.ts: handTitleBlock): the arguments of those definitions. Several authors are one
+  // `\def\@author` to edit as it stands, so no author is added from the block.
+  if (/^\\(?:g|e|x)?def\s*\\@(?:title|author|date)(?![A-Za-z@])/.test(block) && !/\\maketitle(?![A-Za-z@])/.test(block)) {
+    const defined = (name: string) => {
+      const use = commandUses(block, from, `@${name}`).at(-1);
+      if (!use) return undefined;
+      // The block's range shows the whole definition when it is edited as source: start at its `\def`.
+      const def = /\\(?:g|e|x)?def\s*$/.exec(text.slice(Math.max(0, use.start - 12), use.start));
+      return Object.assign(use, { start: def ? use.start - def[0].length : use.start });
+    };
+    const title = note(defined("title"));
+    const author = note(defined("author"));
+    const date = note(defined("date"));
+    return { title: title ? trimmed(state, title[0]) : null, authors: author ? authorPieces(state, author[0]) : [], date: date ? trimmed(state, date[0]) : null, abstract: null, lines: [], notes: [], start: first(), addAuthorAt: null };
+  }
   // imsart's and elsarticle's `frontmatter`: the commands in it.
   const frontMatter = /^\\begin\s*\{frontmatter\}/.test(block);
   const scope = frontMatter ? block : text;
