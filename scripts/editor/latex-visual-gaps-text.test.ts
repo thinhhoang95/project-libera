@@ -240,7 +240,7 @@ test("track changes and soul: added, deleted, replaced, highlights and comments 
   assert.match(html, /<span class="cm-vis-added">new text<\/span>/);
   assert.match(html, /<span class="cm-vis-deleted">old text<\/span>/);
   assert.match(html, /<span class="cm-vis-added">new<\/span>.*<span class="cm-vis-deleted">old<\/span>/);
-  assert.match(html, /cm-vis-fbox" style="border-color/);
+  assert.match(html, /cm-vis-fbox" style="[^"]*border-color/);
   // The text inside is the file's text (a mark), not a widget: the cursor in it shows the markup to edit.
   const at = doc.indexOf("new text") + 3;
   withView(doc, (view) => assert.match(view.contentDOM.textContent ?? "", /\\added\[id=R1\]\{new text\}/), at);
