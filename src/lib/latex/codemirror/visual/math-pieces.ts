@@ -217,6 +217,8 @@ export function pieceReason(text: string): string | null {
   if (count(/\\left(?![A-Za-z@])/g) !== count(/\\right(?![A-Za-z@])/g)) return "has a \\left without its \\right";
   if (count(/\\begin(?![A-Za-z@])/g) !== count(/\\end(?![A-Za-z@])/g)) return "has an unclosed environment";
   if (/\\(?:verb|label|tag)(?![A-Za-z@])/.test(text)) return "has markup inside a group";
+  // xy-pic and tikz-cd diagrams (math-diagram.ts draws them) are not a formula MathLive reads: a click shows their source.
+  if (/\\(?:xymatrix|arrow|ar)(?![A-Za-z@])/.test(text)) return "is a commutative diagram";
   return null;
 }
 

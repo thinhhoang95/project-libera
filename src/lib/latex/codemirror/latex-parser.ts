@@ -61,7 +61,17 @@ const EQUATION_ARRAY_ENV_NAME = 83;
 const MORE_MATH_ENVIRONMENTS: Record<string, number> = {
   dmath: EQUATION_ENV_NAME, "dmath*": EQUATION_ENV_NAME, dseries: EQUATION_ENV_NAME, "dseries*": EQUATION_ENV_NAME, empheq: EQUATION_ARRAY_ENV_NAME,
 };
-const specializeEnvironmentName: typeof specializeEnvName = (name, terms) => MORE_MATH_ENVIRONMENTS[name] ?? specializeEnvName(name, terms);
+/** The grammar's `VerbatimEnvName` token (latex.terms.mjs). */
+const VERBATIM_ENV_NAME = 84;
+
+/**
+ * Drawing environments whose body is TikZ, not LaTeX: `\foreach \start/\end/\label in {…}` and `$(60:\C)!0.5!(120:\C)$`
+ * are coordinates, not an environment's end, a label or a formula. Their content is read as opaque text up to the
+ * matching `\end{…}`, as a verbatim body is, so nothing inside is taken for math or commands.
+ */
+export const OPAQUE_DRAWING_ENVIRONMENTS = new Set(["tikzpicture", "pgfpicture", "circuitikz"]);
+
+const specializeEnvironmentName: typeof specializeEnvName = (name, terms) => (OPAQUE_DRAWING_ENVIRONMENTS.has(name) ? VERBATIM_ENV_NAME : MORE_MATH_ENVIRONMENTS[name] ?? specializeEnvName(name, terms));
 
 export const latexParser = packageParser.configure({
   tokenizers: [{ from: literalArgTokenizer, to: nestedLiteralArgTokenizer }],
