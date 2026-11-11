@@ -589,10 +589,60 @@ export function readLongTable(source: string, expand: (text: string) => string |
   const texts = sections.map((part) => (caption === null ? withoutCaption(part) : part.text));
 
   // Rows built by macros (`\row{a}{b}` → `a & b \\`): expand, then drop comments, which only end macro lines.
-  const expanded = expand(texts.join("\n"));
-  if (expanded === null) return null;
+  const expanded = expandInChunks(texts.join("\n"), expand);
   const tabular = `\\begin{tabular}{${spec}}${withoutComments(expanded)}\\end{tabular}`;
   return parseTabular(tabular, 0, types) ? { caption, captionAt, label, tabular } : null;
+}
+
+/** A table body longer than this is expanded in pieces. */
+const EXPANSION_CHUNK = 4000;
+
+/** Where lines end outside braces and comments in `text` (each index is the start of the next line), for cutting a table body. */
+function lineCuts(text: string) {
+  const cuts: number[] = [];
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\") i++;
+    else if (char === "%") { const end = text.indexOf("\n", i); if (end < 0) break; i = end - 1; }
+    else if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "\n" && depth <= 0) cuts.push(i + 1);
+  }
+  return cuts;
+}
+
+/**
+ * `expand` applied to a table body in pieces cut at line ends outside braces, so that a long table does not hit the
+ * expander's limit on one result and one macro it cannot read does not take the table with it: a piece it cannot expand
+ * is tried line by line (a call whose arguments run over a few lines is tried joined), and a line it still cannot expand
+ * stays as written, its macro shown as source by the cell it lands in.
+ */
+export function expandInChunks(text: string, expand: (text: string) => string | null): string {
+  if (text.length <= EXPANSION_CHUNK) {
+    const whole = expand(text);
+    if (whole !== null) return whole;
+  }
+  const cuts = lineCuts(text);
+  const nextCut = (after: number, limit: number) => cuts.find((cut) => cut > after && cut <= limit) ?? limit;
+  let output = "";
+  for (let start = 0; start < text.length;) {
+    const end = cuts.find((cut) => cut - start >= EXPANSION_CHUNK) ?? text.length;
+    const piece = text.length <= EXPANSION_CHUNK ? null : expand(text.slice(start, end));
+    if (piece !== null) { output += piece; start = end; continue; }
+    // Line by line; a call whose arguments run on (even past the end of the piece) takes the lines it needs.
+    let from = start;
+    while (from < end) {
+      let to = nextCut(from, text.length);
+      let got = expand(text.slice(from, to));
+      for (let extra = 0; got === null && extra < 4 && to < text.length; extra++) { to = nextCut(to, text.length); got = expand(text.slice(from, to)); }
+      if (got === null) { to = nextCut(from, text.length); got = text.slice(from, to); }
+      output += got;
+      from = to;
+    }
+    start = from;
+  }
+  return output;
 }
 
 /** Drops `%` comments (keeping `\%`): after expansion they only end the lines of macro bodies. */
@@ -607,8 +657,8 @@ function withoutComments(text: string) {
  * already give its cells, or the expansion cannot be read.
  */
 export function macroBuiltTabular(source: string, expand: (text: string) => string | null, types?: ColumnTypes): string | null {
-  const expanded = expand(source);
-  if (expanded === null || expanded === source) return null;
+  const expanded = expandInChunks(source, expand);
+  if (expanded === source) return null;
   const reading = withoutComments(expanded);
   const built = parseTabular(reading, 0, types);
   if (!built) return null;

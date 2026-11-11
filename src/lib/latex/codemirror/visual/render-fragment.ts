@@ -34,6 +34,8 @@ const DEFINITION_NODES = new Set(["NewCommand", "RenewCommand", "NewEnvironment"
 const PRINTS_NOTHING = /^\\(?:setcounter|addtocounter|stepcounter|refstepcounter|providecommand|renewcommand|newcommand|def|gdef|edef|xdef|let)$/;
 /** Layout inside a drawn caption, cell or title (not in text, where it stays as source): vertical space and settings draw nothing… */
 const VERTICAL_LAYOUT = /^\\(?:vspace|vskip|smallskip|medskip|bigskip|vfill|addvspace|newpage|clearpage|pagebreak|noindent|par|fontsize|setlength|addtolength|linespread|baselineskip)\*?$/;
+/** TeX's paragraph-shape assignments with their value (`\hangindent=0.8em`, `\hangafter=1`, `\parindent 0pt`): nothing is drawn for them. */
+const PARAGRAPH_SHAPE = /\\(?:hangindent|hangafter|parindent|parskip|leftskip|rightskip|parfillskip)(?![A-Za-z@])\s*=?\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:(?:pt|em|ex|in|cm|mm|bp|sp|pc|dd|cc|fil+)(?![A-Za-z]))?/g;
 /** …and horizontal space is a space. */
 const HORIZONTAL_SPACE = /^\\(?:hspace|hskip|hfill|hfil|enskip|enspace)\*?$/;
 /**
@@ -178,7 +180,8 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
   // figure cells) set its layout, not what it shows: without them, the box is `\parbox{w}{…}`, drawn by its content.
   // `\emph {x}`: a space before the argument, which TeX skips (the grammar does not).
   // `\vspace*{…}` is `\vspace{…}` here (the star keeps the grammar from attaching the group); primitive skips draw their glue as nothing.
-  const source = withoutConditionals(expansion.text).replace(RAISE, "").replace(/\\(parbox|makebox|framebox)((?:\s*\[[^\][]*\])+)/g, "\\$1")
+  // `\hangindent=1.2em\hangafter=1` (a cell macro's hanging indent): line breaking, which draws nothing.
+  const source = withoutConditionals(expansion.text).replace(PARAGRAPH_SHAPE, "").replace(RAISE, "").replace(/\\(parbox|makebox|framebox)((?:\s*\[[^\][]*\])+)/g, "\\$1")
     .replace(/\\(vspace|hspace|addvspace)\s*\*/g, "\\$1").replace(PRIMITIVE_SKIP, (_, axis: string) => (axis === "h" ? " " : ""))
     // CJK's `\begin{CJK*}{UTF8}{bsmi}{#1}\end{CJK*}` (Self-RAG's `\zhtext`): the text, without its encoding and font.
     .replace(/\\begin\s*\{CJK\*?\}\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{[^{}]*\}|\\end\s*\{CJK\*?\}/g, "")

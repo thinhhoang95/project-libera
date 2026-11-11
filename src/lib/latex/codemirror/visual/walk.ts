@@ -178,7 +178,7 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   tiny: 0, scriptsize: 0, footnotesize: 0, small: 0, normalsize: 0, large: 0, Large: 0, LARGE: 0, huge: 0, Huge: 0,
   vspace: 1, addvspace: 1, setstretch: 1, linespread: 1, thispagestyle: 1, pagestyle: 1, pagenumbering: 1, newgeometry: 1, tikzset: 1, pgfplotsset: 1,
   hypersetup: 1, captionsetup: 1, sisetup: 1, lstset: 1, enlargethispage: 1, hyphenation: 1, ccsdesc: 1,
-  setlength: 2, addtolength: 2, colorlet: 2, definecolor: 3, addcontentsline: 3, printcontents: 3,
+  setlength: 2, addtolength: 2, colorlet: 2, definecolor: 3, addcontentsline: 3, printcontents: 3, newcommand: 2,
   // State the numbering reads (numbering.ts): `\appendix`, `\setcounter{equation}{0}`, and a counter's format
   // (`\renewcommand{\theequation}{S\arabic{equation}}`, only a `\the…` one). Column and spacing switches, TeX groups.
   // Counters and boxes declared (`\newcounter`, chngcntr's `\counterwithin*`, `\newsavebox`): definitions, which print nothing.
@@ -192,7 +192,18 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   eject: 0, Needspace: 1, needspace: 1, onecolumngrid: 0, twocolumngrid: 0, addtocontents: 2, AtEndDocument: 1,
   // xcolor's alternating row fills, drawn by the tables after them.
   rowcolors: 3, showrowcolors: 0, hiderowcolors: 0,
+  // TeX's own dimension, skip and penalty assignments (`\medmuskip=3mu\relax`, `\relpenalty=10000`): line breaking and
+  // spacing only. Each reads its `= value` (see TEX_ASSIGNMENT), not a `{…}`.
+  medmuskip: 0, thinmuskip: 0, thickmuskip: 0, relpenalty: 0, binoppenalty: 0, hangindent: 0, hangafter: 0, parindent: 0, parskip: 0,
+  baselineskip: 0, lineskip: 0, leftskip: 0, rightskip: 0, parfillskip: 0, tolerance: 0, emergencystretch: 0, hbadness: 0, vbadness: 0,
+  widowpenalty: 0, clubpenalty: 0, hyphenpenalty: 0, exhyphenpenalty: 0, tabcolsep: 0, arraycolsep: 0,
 };
+/** The TeX assignments of LAYOUT_LINE_ARGS that take an `= value` (a glue, a dimension or an integer) rather than a group. */
+const TEX_ASSIGNMENT = /^(?:medmuskip|thinmuskip|thickmuskip|relpenalty|binoppenalty|hangindent|hangafter|parindent|parskip|baselineskip|lineskip|leftskip|rightskip|parfillskip|tolerance|emergencystretch|hbadness|vbadness|widowpenalty|clubpenalty|hyphenpenalty|exhyphenpenalty|tabcolsep|arraycolsep)$/;
+/** What follows such an assignment's name: an optional `=`, a number with a unit (or none: a penalty), then any `plus`/`minus` glue. */
+const TEX_ASSIGNMENT_VALUE = new RegExp(String.raw`^\s*=?\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|fil+)(?![A-Za-z]))?(?:\s*(?:plus|minus)\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|fil+)(?![A-Za-z]))*`);
+/** A definition's body that writes table rows, cells or rules (`#1 & #2 & #3\\`, `\midrule\multicolumn…`): a row helper. */
+const ROW_HELPER_BODY = /&|\\\\|\\(?:hline|toprule|midrule|bottomrule|cline|cmidrule|noalign|addlinespace)(?![A-Za-z@])/;
 /** The lists of contents a document prints, by the kind of entry they list. */
 const CONTENTS_LISTS: Record<string, "section" | "figure" | "table"> = { "\\tableofcontents": "section", "\\listoffigures": "figure", "\\listoftables": "table" };
 /** Layout-line commands whose `[…]` is text, not an option (ICML's `\twocolumn[\icmltitle{…}…]`): such a line stays. */
@@ -200,6 +211,20 @@ const LAYOUT_LINE_TEXT_OPTION = /^(?:onecolumn|twocolumn)$/;
 
 /** `\let\c@lemmaL\c@theorem`: LaTeX's internal counter register of one counter made another's (they count together). */
 const COUNTER_ALIAS = /^\\let\s*\\c@[A-Za-z@]+\s*=?\s*\\c@[A-Za-z@]+(?![A-Za-z@])/;
+/** Where a row helper's definition ends, from `at` (just after `\newcommand`): `{\name}[n]{body}` with table rows, cells or rules in its body; -1 otherwise. */
+function rowHelperDefinition(text: string, at: number) {
+  const name = /^\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)/.exec(text.slice(at, at + 80));
+  if (!name) return -1;
+  let i = at + name[0].length;
+  for (let open = /^\s*\[/.exec(text.slice(i)); open; open = /^\s*\[/.exec(text.slice(i))) {
+    const optional = readOptional(text, i + open[0].length - 1, TEX_GROUPS);
+    if (!optional) return -1;
+    i = optional.end;
+  }
+  const open = /^\s*\{/.exec(text.slice(i));
+  const body = open ? readGroup(text, i + open[0].length - 1, TEX_GROUPS) : null;
+  return body && ROW_HELPER_BODY.test(body.content) ? body.end : -1;
+}
 
 /** The lines from `from` (the first thing on its line) that hold only layout commands with their arguments, or null. */
 function layoutLine(state: EditorState, from: number): { from: number; to: number } | null {
@@ -222,8 +247,21 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
       i += alias[0].length - command[0].length;
       continue;
     }
-    // `\renewcommand` of a counter's format only (`{\thesection}` or `\thesection`).
-    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\(?:the[A-Za-z]+|qedsymbol)\s*\}|\\(?:the[A-Za-z]+|qedsymbol)(?![A-Za-z]))/.test(text.slice(i, i + 60))) return null;
+    if (TEX_ASSIGNMENT.test(command[1])) {
+      const value = TEX_ASSIGNMENT_VALUE.exec(text.slice(i));
+      if (!value) return null;
+      i += value[0].length;
+      continue;
+    }
+    // A row helper's definition (`\newcommand{\ntrow}[3]{#1 & #2 & #3\\}`): table setup, not text.
+    if (/^(?:newcommand|renewcommand)$/.test(command[1])) {
+      const helper = rowHelperDefinition(text, i);
+      if (helper > 0) { i = helper; continue; }
+    }
+    // `\renewcommand` of a counter's format (`{\thesection}` or `\thesection`), of `\qedsymbol`, or of the table row height (`\arraystretch`) only.
+    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\(?:the[A-Za-z]+|qedsymbol|arraystretch)\s*\}|\\(?:the[A-Za-z]+|qedsymbol|arraystretch)(?![A-Za-z]))/.test(text.slice(i, i + 60))) return null;
+    // `\newcommand` is only a layout line as a row helper (above).
+    if (command[1] === "newcommand") return null;
     const optional = /^[ \t]*\[/.exec(text.slice(i));
     if (optional) {
       if (LAYOUT_LINE_TEXT_OPTION.test(command[1])) return null;
@@ -778,7 +816,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       // Its caption, first head, body and last foot, with rows written through the document's macros expanded.
       // Drawn, not edited by cell; one it cannot read has its parts drawn on their own.
       if (!structural) return false;
-      const display = readLongTable(read(state, node.from, node.to), expandAt(node.from), defs.columnTypes);
+      // Only the row-writing macros are expanded here: the macros inside cells (`\Mach{..}{..}`) are drawn by the
+      // cells, each on its own, so one the expander cannot take (or a long table) does not lose the whole table.
+      const display = readLongTable(read(state, node.from, node.to), expandRowsAt(node.from), defs.columnTypes);
       if (!display) return undefined;
       const span = aloneOnLines(doc, node.from, node.to);
       const range = span ?? { from: node.from, to: node.to };
@@ -942,10 +982,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (extent && extent.to > ref.to) consumed.push([ref.from, extent.to]);
         // `\renewcommand{\theequation}{S\arabic{equation}}` in the body: a counter's format, which numbering reads; its
         // line folds away as other layout lines do.
-        if (name === "RenewCommand" && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !isConsumed(ref)) {
+        // A table's row helper (`\newcommand{\ntrow}[3]{#1 & #2 & #3\\}`) and its row height (`\renewcommand{\arraystretch}{1.12}`)
+        // fold away the same way; the line shows again at the cursor.
+        if ((name === "RenewCommand" || name === "NewCommand") && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !isConsumed(ref)) {
           const line = layoutLine(state, ref.from);
           if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
-          else if (structural && /^\\renewcommand\*?\s*(?:\{\s*\\the[A-Za-z]+\s*\}|\\the[A-Za-z]+(?![A-Za-z]))/.test(read(state, ref.from, Math.min(doc.length, ref.from + 60)))) {
+          else if (structural && name === "RenewCommand" && /^\\renewcommand\*?\s*(?:\{\s*\\the[A-Za-z]+\s*\}|\\the[A-Za-z]+(?![A-Za-z]))/.test(read(state, ref.from, Math.min(doc.length, ref.from + 60)))) {
             // In a line of text, or at the start of a group that only scopes it (`{\renewcommand{\thefootnote}{}\footnotetext{…}}`,
             // 2610.30364): hidden, with the group's braces, shown again at the cursor.
             let group = ref.node.parent;
