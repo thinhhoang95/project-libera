@@ -26,7 +26,7 @@ const reviewMappingCache = new WeakMap<Editor, { doc: ProseMirrorNode; source: s
 export function tiptapReviewBlocks(editor: Editor, source: string) {
   const cached = reviewMappingCache.get(editor);
   if (cached?.doc === editor.state.doc && cached.source === source) return cached.blocks;
-  const blocks = mapReviewBlocks(editor, source);
+  const blocks = mapReviewBlocks(editor, source) ?? mapLiveBlocks(editor, source);
   reviewMappingCache.set(editor, { doc: editor.state.doc, source, blocks });
   return blocks;
 }
@@ -34,7 +34,7 @@ export function tiptapReviewBlocks(editor: Editor, source: string) {
 // Align parsed source blocks to the live ProseMirror document in order. Parsing
 // through the editor's own schema handles math, marks, images and nested lists.
 // Refuse mismatches rather than mapping a repeated paragraph to its first match.
-function mapReviewBlocks(editor: Editor, source: string): ReviewBlockMapping[] {
+function mapReviewBlocks(editor: Editor, source: string): ReviewBlockMapping[] | null {
   if (!editor.markdown) return [];
   const blocks = reviewBlocks(source);
   const definitions = blocks.filter((b) => b.type === "definition").map((b) => b.text).join("\n\n");
@@ -44,7 +44,7 @@ function mapReviewBlocks(editor: Editor, source: string): ReviewBlockMapping[] {
     if (block.type === "definition") continue;
     let parsed;
     try { parsed = editor.schema.nodeFromJSON(editor.markdown.parse(block.text + (definitions ? `\n\n${definitions}` : ""))); }
-    catch { return []; }
+    catch { return null; }
     if (!parsed.content.size) continue;
     let size = 0;
     const matches = () => {
@@ -64,21 +64,83 @@ function mapReviewBlocks(editor: Editor, source: string): ReviewBlockMapping[] {
       // Compare canonical Markdown for these exact, ordered blocks. Never
       // search by text or reparse/setContent on the live editor: repeated
       // passages, selection, IME composition and undo history must stay intact.
-      const serialize = (fragment: Fragment) => editor.markdown!.serialize({ type: "doc", content: fragment.toJSON() ?? [] }).trim();
+      // Trailing spaces typed at a line end are not compared: Markdown drops
+      // them (a heading of spaces parses as an empty heading).
+      const serialize = (fragment: Fragment) => editor.markdown!.serialize({ type: "doc", content: fragment.toJSON() ?? [] }).replace(/[ \t]+$/gm, "").trim();
       return serialize(content) === serialize(parsed.content);
     };
     // Tiptap preserves extra blank lines as empty paragraphs; remark's source
-    // blocks omit that whitespace. Advance past only these unanchored nodes,
+    // blocks omit that whitespace. Mid-edit, a block can also be blank in
+    // other ways (a new empty heading, a paragraph holding only spaces) that
+    // leaves no source block. Advance past only these unanchored nodes,
     // keeping nonempty blocks in strict order (including repeated passages).
     while (!matches()) {
       const node = editor.state.doc.nodeAt(cursor);
-      if (!node || node.type.name !== "paragraph" || node.content.size !== 0) return [];
+      if (!node || !isBlankBlock(node)) return null;
       cursor += node.nodeSize;
     }
     mapped.push({ start: block.start, end: block.end, from: cursor, to: cursor + size });
     cursor += size;
   }
   return mapped;
+}
+// The fallback while the live document is mid-edit in a shape the strict
+// alignment refuses (say, a list item or quote just started). Each top-level
+// node is found in the source by its own Markdown, in order, from where the
+// previous one ended; a node not found that way takes the source between its
+// found neighbours. Read-only: the editor and the source are never changed.
+// Only for a source that is the live document's own Markdown: against a stale
+// source (an anchor not yet caught up) a guess could pick the wrong copy of a
+// repeated passage, so that keeps refusing.
+function mapLiveBlocks(editor: Editor, source: string): ReviewBlockMapping[] {
+  const markdown = editor.markdown;
+  if (!markdown) return [];
+  let live;
+  try { live = editor.getMarkdown(); } catch { return []; }
+  if (live.replace(/\r\n?/g, "\n").trimEnd() !== source.replace(/\r\n?/g, "\n").trimEnd()) return [];
+  const nodes: { from: number; to: number; start: number; end: number }[] = [];
+  let cursor = 0;
+  editor.state.doc.forEach((node, offset) => {
+    if (isBlankBlock(node)) return;
+    let text = "";
+    try { text = markdown.serialize({ type: "doc", content: [node.toJSON()] }).trim(); } catch { /* Placed from its neighbours below. */ }
+    const lines = text.split("\n").map((line) => line.trimEnd());
+    let at = text ? source.indexOf(text, cursor) : -1;
+    let length = text.length;
+    // Trailing spaces typed at a line end may be spelled differently.
+    if (at < 0 && lines[0]) {
+      const first = source.indexOf(lines[0], cursor);
+      if (first >= 0) {
+        let end = first;
+        for (const line of lines) { const found = source.indexOf(line, end); if (found < 0 || source.slice(end, found).trim()) { end = -1; break; } end = found + line.length; }
+        if (end > first) { at = first; length = end - first; }
+      }
+    }
+    if (at >= 0) cursor = at + length;
+    nodes.push({ from: offset, to: offset + node.nodeSize, start: at, end: at < 0 ? -1 : at + length });
+  });
+  nodes.forEach((node, index) => {
+    if (node.start >= 0) return;
+    let start = 0, end = source.length;
+    for (let other = index - 1; other >= 0; other--) if (nodes[other].end >= 0) { start = nodes[other].end; break; }
+    for (let other = index + 1; other < nodes.length; other++) if (nodes[other].start >= 0) { end = nodes[other].start; break; }
+    while (start < end && /\s/.test(source[start])) start++;
+    while (end > start && /\s/.test(source[end - 1])) end--;
+    Object.assign(node, { start, end });
+  });
+  return nodes.filter((node) => node.end > node.start);
+}
+// A block that shows nothing yet: no text but whitespace, no code, and no
+// leaf content such as an image, math or a rule.
+function isBlankBlock(node: ProseMirrorNode) {
+  if (node.isLeaf || node.type.spec.code) return false;
+  let blank = true;
+  node.descendants((child) => {
+    if (!blank) return false;
+    if (child.type.spec.code || (child.isText ? /\S/.test(child.text!) : child.isLeaf)) blank = false;
+    return blank;
+  });
+  return blank;
 }
 export function tiptapRangeForSource(editor: Editor, source: string, range: ReviewRange) {
   const blocks = tiptapReviewBlocks(editor, source).filter((b) => b.start < range.end && b.end > range.start);
@@ -109,14 +171,28 @@ function alignedUnits(editor: Editor, source: string, block: ReviewBlockMapping)
   const text = source.slice(block.start, block.end);
   const units: AlignedUnit[] = [];
   const atoms: number[] = [];
+  // A highlight's color letter (`y>>>`) is markup, not text: a highlighted
+  // passage starting with that letter must not take the delimiter.
+  const markup = new Set<number>();
+  for (const match of text.matchAll(/[yroagtbvps](?=>>>)/g)) markup.add(match.index);
+  const find = (character: string, from: number) => {
+    let at = text.indexOf(character, from);
+    while (at >= 0 && markup.has(at)) at = text.indexOf(character, at + 1);
+    return at;
+  };
   let cursor = 0;
+  // Spaces typed at the start of a line have no source: Markdown drops them.
+  let leading = true;
   editor.state.doc.nodesBetween(block.from, block.to, (node, pos) => {
-    if (node.isInline && node.isLeaf && !node.isText) { atoms.push(units.length); units.push({ pos, size: node.nodeSize, start: -1, end: -1, space: false }); }
+    if (node.isTextblock) leading = true;
+    if (node.isInline && node.isLeaf && !node.isText) { leading = false; atoms.push(units.length); units.push({ pos, size: node.nodeSize, start: -1, end: -1, space: false }); }
     if (!node.isText) return;
     for (let index = 0; index < node.text!.length; index++) {
       const character = node.text![index];
       const space = /\s/.test(character);
-      let at = space ? cursor : text.indexOf(character, cursor);
+      if (space && leading) { units.push({ pos: pos + index, size: 1, start: -1, end: -1, space }); continue; }
+      if (!space) leading = false;
+      let at = space ? cursor : find(character, cursor);
       if (space) while (at < text.length && !/\s/.test(text[at])) at++;
       if (at < 0 || at >= text.length) at = -1;
       else cursor = at + 1;

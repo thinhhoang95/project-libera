@@ -207,3 +207,35 @@ test("plan replies are optional, skip settled threads, and do not make the plan 
   assert.notEqual(commentsKey(doc.threads, ids), key);
   assert.equal(commentsKey(doc.threads, ids, [{ messageId: "own" }]), key);
 });
+
+test("a comment follows an undo that arrives in one draft with an edit elsewhere", () => {
+  const original = "# Review test\n\nFirst paragraph here.\n\n- one\n- two\n\nLast paragraph.";
+  const at = original.indexOf("Last paragraph.");
+  const split = original.replace("Last paragraph.", "Last pa\n\n## ragraph.");
+  const anchor = mapAnchor(anchorAt(original, { start: at, end: at + 15 }), original, split);
+  assert.equal(anchor.quote, "Last pa\n\n## ragraph.");
+  // The undo and a new paragraph above it, serialized together.
+  const undone = original.replace("here.\n\n", "here.\n\nNew text\n\n");
+  const mapped = mapAnchor(anchor, split, undone);
+  assert.equal(mapped.state, "attached");
+  assert.equal(mapped.quote, "Last paragraph.");
+  assert.equal(undone.slice(mapped.start, mapped.end), "Last paragraph.");
+});
+
+test("a comment whose passage is removed along with an edit elsewhere is not guessed onto other text", () => {
+  const before = "Intro.\n\nKeep this.\n\nThe commented passage goes away.\n\nOutro.";
+  const at = before.indexOf("The commented");
+  const anchor = anchorAt(before, { start: at, end: at + "The commented passage goes away.".length });
+  const after = before.replace("Intro.", "Intro, edited.").replace("The commented passage goes away.\n\n", "");
+  assert.equal(mapAnchor(anchor, before, after).state, "orphaned");
+});
+
+test("a comment on one of two repeated passages keeps its own copy through separate edits", () => {
+  const before = "Start.\n\nRepeated passage.\n\nMiddle.\n\nRepeated passage.\n\nEnd.";
+  const second = before.lastIndexOf("Repeated passage.");
+  const anchor = anchorAt(before, { start: second, end: second + 17 });
+  const after = before.replace("Start.", "Start, longer.").replace("End.", "End, longer.");
+  const mapped = mapAnchor(anchor, before, after);
+  assert.equal(mapped.state, "attached");
+  assert.equal(mapped.start, after.lastIndexOf("Repeated passage."));
+});

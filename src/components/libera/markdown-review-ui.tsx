@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useEffect, useRef, useState, type RefObject } from "react";
-import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save, Search, CloudUpload, Clock, AlertTriangle } from "lucide-react";
+import { useMemo, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save, Search, CloudUpload, Clock, AlertTriangle, Circle, CircleCheck } from "lucide-react";
 import type { AgentSuggestion, ReviewSuggestion } from "@/lib/markdown-review";
 import { isSharedThread, type PendingInfo, type SharedReviewMessage, type SharedReviewThread } from "@/lib/collab/review-store/types";
 import { commentAuthorLabel, initials } from "@/lib/collab/review-store/authors";
@@ -114,7 +114,10 @@ export function ReviewComments() {
   const pendingSuggestions = openSuggestions.filter(({ suggestion }) => suggestion.status === "pending");
   // Comments keep their document numbering while filtered.
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = threads.map((thread, index) => ({ thread, index })).filter(({ thread, index }) => {
+  // A local review lists its newest comment first. A shared document keeps
+  // document order instead, since its cards follow the editor's scroll.
+  const numbered = threads.map((thread, index) => ({ thread, index }));
+  const shown = (r?.shared ? numbered : numbered.reverse()).filter(({ thread, index }) => {
     if (!matchesCommentStatus(thread.status, status)) return false;
     if (!terms.length) return true;
     const haystack = [`comment ${index + 1}`, thread.status, thread.messages[0]?.author ?? "", thread.anchor.quote, ...thread.messages.map((m) => m.text), ...(isSharedThread(thread) ? [thread.shared.detached ? "detached" : "", ...thread.messages.map((m) => m.shared.author.displayName)] : [])].join("\n").toLowerCase();
@@ -170,7 +173,7 @@ export function ReviewComments() {
       </section>}
       {pageThreads.map(({ thread, index }) => isSharedThread(thread) && r.shared ? <SharedThreadCard key={thread.id} thread={thread} index={index} shared={r.shared} selected={active?.id === thread.id} cardRef={active?.id === thread.id ? selectedCard : undefined} reply={reply} setReply={setReply} mentions={mentions} setMentions={setMentions} editing={editing} setEditing={setEditing} /> : <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} data-selected={active?.id === thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
         <button className="w-full text-left" aria-expanded={active?.id === thread.id} onClick={() => { r.selectThread(active?.id === thread.id ? null : thread.id); setReply(""); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
-          <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{thread.messages[0]?.author === "agent" && <span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title="Left by the AI agent"><Sparkles aria-hidden size={10} /> Agent</span>}</span><span className="text-[11px] capitalize text-muted-foreground">{thread.status === "addressed" ? "completed" : thread.status}{thread.status === "open" && thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</span></span>
+          <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{thread.messages[0]?.author === "agent" && <span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title="Left by the AI agent"><Sparkles aria-hidden size={10} /> Agent</span>}</span><CommentStatusLabel open={thread.status === "open"}>{thread.status === "addressed" ? "completed" : thread.status}{thread.status === "open" && thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</CommentStatusLabel></span>
           <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
           {active?.id !== thread.id && thread.messages[0] && <CommentBody text={thread.messages[0].text} preview />}
           {active?.id !== thread.id && thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}
@@ -190,6 +193,13 @@ export function ReviewComments() {
 }
 
 export type CommentStatusFilter = "all" | "open" | "resolved";
+/** A comment card's status, led by its mark: a check once resolved or
+ * completed, an empty circle while open. */
+function CommentStatusLabel({ open, children }: { open: boolean; children: ReactNode }) {
+  return <span className="review-comment-status inline-flex items-center gap-1 text-[11px] capitalize text-muted-foreground" data-open={open}>
+    {open ? <Circle aria-hidden size={12} /> : <CircleCheck aria-hidden size={12} className="text-emerald-500" />}{children}
+  </span>;
+}
 /** "Resolved" covers comments the agent completed (addressed) too. */
 export function matchesCommentStatus(status: string, filter: CommentStatusFilter) {
   return filter === "all" || (filter === "open" ? status === "open" : status !== "open");
@@ -485,7 +495,7 @@ function SharedThreadCard({ thread, index, shared, selected, cardRef, reply, set
   const status = info.status === "resolved" ? "resolved" : info.detached ? "detached" : "open";
   return <article ref={cardRef} data-anchor-end={thread.anchor.state === "attached" ? thread.anchor.end : undefined} data-selected={selected} data-detached={info.detached} data-thread-id={thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
     <button className="w-full text-left" aria-expanded={selected} onClick={() => { r.selectThread(selected ? null : thread.id); setReply(""); setMentions([]); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
-      <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex min-w-0 items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{first && <AuthorLine message={first} now={now} />}</span><span className="text-[11px] capitalize text-muted-foreground">{status}</span></span>
+      <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex min-w-0 items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{first && <AuthorLine message={first} now={now} />}</span><CommentStatusLabel open={status !== "resolved"}>{status}</CommentStatusLabel></span>
       <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
       {!selected && (first?.shared.deleted ? <span className="block text-xs italic text-muted-foreground">This comment was deleted.</span> : first && <CommentBody text={first.text} preview shared />)}
       {!selected && thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}

@@ -187,3 +187,46 @@ test("a comment anchored on one list item or table row highlights only that item
     assert.equal(editor.state.doc.textBetween(rowRange.from, rowRange.to, " "), "z w");
   } finally { editor.destroy(); }
 });
+
+test("visual selections keep mapping to Markdown while blocks are mid-edit", () => {
+  const base = "# Title\n\nFirst paragraph here.\n\n- one\n- two\n\nLast paragraph.";
+  const at = (editor: Editor, text: string, offset = 0) => { let found = -1; editor.state.doc.descendants((node, pos) => { if (found < 0 && node.isTextblock && node.textContent.includes(text)) found = pos + 1 + node.textContent.indexOf(text) + offset; }); return found; };
+  const newBlock = (editor: Editor) => { editor.commands.setTextSelection(at(editor, "here.", 5)); editor.commands.splitBlock(); };
+  const edits: [string, (editor: Editor) => void][] = [
+    ["whitespace paragraph", (e) => { newBlock(e); e.commands.insertContent(" "); }],
+    ["empty heading", (e) => { newBlock(e); e.commands.toggleHeading({ level: 2 }); }],
+    ["heading of spaces", (e) => { newBlock(e); e.commands.toggleHeading({ level: 2 }); e.commands.insertContent("  "); }],
+    ["empty blockquote", (e) => { newBlock(e); e.commands.toggleBlockquote(); }],
+    ["empty list item joined to a list", (e) => { newBlock(e); e.commands.toggleBulletList(); }],
+    ["leading space", (e) => { e.commands.setTextSelection(at(e, "First")); e.commands.insertContent(" "); }],
+  ];
+  for (const [name, edit] of edits) {
+    const editor = new Editor({ extensions: [...createMarkdownExtensions("Notes/a.md"), TiptapReview], content: base, contentType: "markdown" });
+    try {
+      edit(editor);
+      const source = editor.getMarkdown();
+      const before = editor.state.doc;
+      for (const word of ["paragraph", "Last", "two", "Title"]) {
+        const from = at(editor, word);
+        const range = sourceRangeForTiptapTextSelection(editor, source, from, from + word.length);
+        assert.equal(range && source.slice(range.start, range.end), word, `${name}: ${word}`);
+      }
+      assert.equal(editor.state.doc, before, `${name}: the live document is left untouched`);
+    } finally { editor.destroy(); }
+  }
+});
+
+test("a comment on highlighted text that starts with the color letter takes the text, not the delimiter", () => {
+  const editor = new Editor({ extensions: [...createMarkdownExtensions("Notes/a.md"), TiptapReview], content: "# T\n\nyou say yes here.\n\nEnd.", contentType: "markdown" });
+  try {
+    let from = -1, to = -1;
+    editor.state.doc.descendants((node, pos) => { if (from < 0 && node.type.name === "paragraph") { from = pos + 1; to = pos + 1 + node.content.size; } });
+    editor.chain().setTextSelection({ from, to }).toggleHighlight({ color: "#fef08a" }).run();
+    const source = editor.getMarkdown();
+    assert.match(source, /y>>>you say yes here\.<<</);
+    for (const [start, end, text] of [[from, to, "you say yes here."], [from, from + 3, "you"]] as const) {
+      const range = sourceRangeForTiptapTextSelection(editor, source, start, end);
+      assert.equal(range && source.slice(range.start, range.end), text);
+    }
+  } finally { editor.destroy(); }
+});

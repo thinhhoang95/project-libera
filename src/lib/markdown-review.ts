@@ -161,11 +161,65 @@ function blockSemantics(text: string) {
   }
   return result;
 }
+// The unchanged runs between two texts (Myers' diff), in order. One draft can
+// carry several separate changes (an undo plus an edit elsewhere, a paste,
+// replace-all), which a single replacement span would merge into one change
+// covering everything between them. Null when the texts differ too much.
+type EqualRun = { a: number; b: number; length: number };
+const MAX_DIFF_STEPS = 1000;
+function equalRuns(before: string, after: string, change: { start: number; oldEnd: number; newEnd: number }): EqualRun[] | null {
+  const a = before.slice(change.start, change.oldEnd), b = after.slice(change.start, change.newEnd);
+  const n = a.length, m = b.length, offset = MAX_DIFF_STEPS + 1;
+  const v = new Int32Array(2 * MAX_DIFF_STEPS + 3);
+  const trace: Int32Array[] = [];
+  let steps = -1;
+  search: for (let d = 0; d <= MAX_DIFF_STEPS; d++) {
+    trace.push(v.slice());
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1;
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) { x++; y++; }
+      v[offset + k] = x;
+      if (x >= n && y >= m) { steps = d; break search; }
+    }
+  }
+  if (steps < 0) return null;
+  const runs: EqualRun[] = [];
+  let x = n, y = m;
+  for (let d = steps; d > 0; d--) {
+    const previous = trace[d], k = x - y;
+    const down = k === -d || (k !== d && previous[offset + k - 1] < previous[offset + k + 1]);
+    const prevK = down ? k + 1 : k - 1;
+    const prevX = previous[offset + prevK], prevY = prevX - prevK;
+    const startX = down ? prevX : prevX + 1;
+    if (x > startX) runs.push({ a: change.start + startX, b: change.start + startX - k, length: x - startX });
+    x = prevX; y = prevY;
+  }
+  if (x > 0) runs.push({ a: change.start, b: change.start, length: x });
+  runs.reverse();
+  return [{ a: 0, b: 0, length: change.start }, ...runs, { a: change.oldEnd, b: change.newEnd, length: before.length - change.oldEnd }].filter((run) => run.length > 0);
+}
+// An attached anchor carried through those runs: its ends move with the text
+// around them, and it stays attached while at least half of its text is still
+// there. A passage deleted or moved elsewhere is never guessed onto other text.
+function mapThroughRuns(runs: EqualRun[], anchor: ReviewRange): ReviewRange | null {
+  let start = -1, end = -1, kept = 0;
+  for (const run of runs) {
+    const runEnd = run.a + run.length;
+    kept += Math.max(0, Math.min(runEnd, anchor.end) - Math.max(run.a, anchor.start));
+    if (start < 0 && runEnd > anchor.start) start = run.b + Math.max(0, anchor.start - run.a);
+    if (run.a < anchor.end) end = run.b + Math.min(run.length, anchor.end - run.a);
+  }
+  return start >= 0 && end > start && kept * 2 >= anchor.end - anchor.start ? { start, end } : null;
+}
 function anchorMappingContext(before: string, after: string) {
   let blocks: ReviewBlock[] | undefined;
   const indexes = new Map<number, Map<string, ReviewRange[]>>();
+  let runs: EqualRun[] | null | undefined;
+  const change = textChange(before, after);
   return {
-    change: textChange(before, after),
+    change,
+    runs: () => runs === undefined ? (runs = equalRuns(before, after, change)) : runs,
     semanticMatches(quote: string) {
       const { signature, count } = blockSemantics(quote);
       if (!count) return [];
@@ -198,6 +252,11 @@ export function mapAnchor(anchor: ReviewAnchor, before: string, after: string, c
       if (end > anchor.start) return anchorAt(after, { start: anchor.start, end });
     }
   }
+  // Its exact place is known: follow it through every separate change.
+  const known = anchor.state === "attached" && before.slice(anchor.start, anchor.end) === anchor.quote;
+  const followed = known ? context.runs() : null;
+  const carried = followed && mapThroughRuns(followed, anchor);
+  if (carried) return anchorAt(after, carried);
   const matches: number[] = [];
   for (let pos = after.indexOf(anchor.quote); anchor.quote && pos >= 0; pos = after.indexOf(anchor.quote, pos + 1)) matches.push(pos);
   const contextual = matches.filter((pos) => (!anchor.prefix || after.slice(Math.max(0, pos - anchor.prefix.length), pos) === anchor.prefix) && (!anchor.suffix || after.slice(pos + anchor.quote.length, pos + anchor.quote.length + anchor.suffix.length) === anchor.suffix));
