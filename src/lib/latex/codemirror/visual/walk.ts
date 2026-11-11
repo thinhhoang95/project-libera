@@ -2332,6 +2332,25 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return undefined;
       }
     }
+    // `\hfill {\huge $\lrcorner$}` (2611.13390's end-of-claim mark): the parser hangs the group on `\hfill`. A group with a size
+    // or font switch is drawn as any such group, after the gap; a mark alone on its line is pushed to the right, as the fill does.
+    if (text === "\\hfill") {
+      const hung = commandArguments(node).find((arg) => !arg.optional)?.node;
+      const switched = hung && !/\S/.test(read(state, ctrl.to, hung.from)) ? groupSwitch(hung) : null;
+      if (hung && switched) {
+        const line = doc.lineAt(ctrl.from);
+        const alone = !read(state, line.from, ctrl.from).trim() && !read(state, hung.to, line.to).trim();
+        if (structural) emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new SymbolWidget(" ", text, "cm-vis-symbol cm-vis-hfill") }] });
+        consumed.push([hung.from, switched.textFrom]);
+        emit({
+          kind: "style", from: hung.from, to: hung.to, reveal: "touch",
+          replaces: structural ? [{ from: hung.from, to: switched.textFrom }, { from: switched.close.from, to: hung.to }] : [],
+          marks: switched.className ? [{ from: switched.textFrom, to: switched.close.from, class: switched.className, attributes: switched.style ? { style: switched.style } : undefined }] : undefined,
+          lines: alone ? [{ from: line.from, to: line.to, class: "cm-vis-hfill-right" }] : undefined,
+        });
+        return undefined;
+      }
+    }
     // `\newblock` between a reference's parts: a space, as the default style sets it. A group the parser
     // read as its argument (`\newblock {\em CoRR}, 2017`) is the reference's text, styled by its switch.
     if (text === "\\newblock") {

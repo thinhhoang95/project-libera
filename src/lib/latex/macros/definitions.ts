@@ -629,6 +629,123 @@ function readForeachDefinitions(source: string, index: number): { end: number; m
   return { end: group.end, macros };
 }
 
+/** Most passes a `\loop` is run for here, and most macros it may make. */
+const MAX_LOOP_PASSES = 64;
+const MAX_LOOP_MACROS = 256;
+
+/**
+ * Plain TeX's `\loop … \repeat` that makes one macro per pass by name, the way a preamble builds `\cA`…`\cZ` (2611.13390):
+ * a counter stepped each pass, `\edef\X{\@Alph\c@ctr}` for the letter, and `\expandafter\factory\X` calling a macro
+ * `\def\factory#1{\expandafter\def\csname c#1\endcsname{\mathcal{#1}}}` (or the same `\csname` definition written in the
+ * loop with `\X`). The macros it makes, in order, or null for any other shape: only these statements, a test of a counter
+ * against a number last, a bounded number of passes. Nothing is run beyond that.
+ */
+function readLoopDefinitions(source: string, index: number, before: string, factory: (name: string) => LatexMacro | undefined): Array<{ name: string; body: string }> | null {
+  const close = loopEnd(source, index);
+  if (close < 0) return null;
+  const raw = source.slice(index, close - "\\repeat".length).replace(/(^|[^\\])%[^\n]*/g, "$1");
+  const test = /\\ifnum\s*(?:\\the\s*\\c@([A-Za-z@]+)|\\value\s*\{([A-Za-z@]+)\}|\\c@([A-Za-z@]+)|\\the([A-Za-z@]+)|\\([A-Za-z@]+))\s*([<>=])\s*(-?\d{1,6})\s*(?:\\relax)?\s*$/.exec(raw);
+  if (!test) return null;
+  const subject = test[1] ?? test[2] ?? test[3] ?? test[4] ?? test[5];
+  const limit = Number(test[7]);
+  const body = raw.slice(0, test.index);
+  const counters = new Map<string, number>();
+  /** A counter's or count register's value when the loop starts: set before it, or 0 from `\newcounter`/`\newcount`. */
+  const initial = (name: string): number | null => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const lastNumber = (pattern: RegExp) => { let found: string | null = null; for (const match of before.matchAll(pattern)) found = match[1]; return found === null ? null : Number(found); };
+    const set = lastNumber(new RegExp(String.raw`\\setcounter\s*\{${escaped}\}\s*\{\s*(-?\d{1,6})\s*\}`, "g")) ?? lastNumber(new RegExp(String.raw`\\${escaped}\s*=\s*(-?\d{1,6})`, "g"));
+    if (set !== null) return set;
+    return new RegExp(String.raw`\\newcounter\s*\{${escaped}\}|\\newcount\s*\\${escaped}(?![A-Za-z@])`).test(before) ? 0 : null;
+  };
+  const read = (name: string) => {
+    if (!counters.has(name)) {
+      const value = initial(name);
+      if (value === null) return null;
+      counters.set(name, value);
+    }
+    return counters.get(name)!;
+  };
+  if (read(subject) === null) return null;
+  const letters = new Map<string, string>();
+  const macros: Array<{ name: string; body: string }> = [];
+  const protectedBody = (text: string, variable: string | null, value: string) => {
+    let out = text.replace(/\\noexpand\s*(\\[A-Za-z@]+)/g, "\u0001$1\u0001");
+    if (variable) out = out.replace(new RegExp(String.raw`\\${variable}(?![A-Za-z@])`, "g"), value);
+    // What is left unprotected must not be a command that expands further.
+    if (/\\[A-Za-z@]/.test(out.replace(/\u0001\\[A-Za-z@]+\u0001/g, ""))) return null;
+    return out.replace(/\u0001/g, "");
+  };
+  const make = (kind: string, prefix: string, middle: string, suffix: string, text: string, variable: string | null) => {
+    const value = variable ? letters.get(variable)! : "";
+    let content = text;
+    if (kind === "edef" || kind === "xdef") {
+      const protectedText = protectedBody(text, variable, value);
+      if (protectedText === null) return false;
+      content = protectedText;
+    } else if (variable && new RegExp(String.raw`\\${variable}(?![A-Za-z@])`).test(text)) return false;
+    macros.push({ name: `${prefix}${middle}${suffix}`, body: content });
+    return true;
+  };
+  const sticky = (pattern: string) => new RegExp(String.raw`\s*${pattern}`, "y");
+  const step = sticky(String.raw`\\(?:step|refstep)counter\s*\{([A-Za-z@]+)\}`);
+  const addSet = sticky(String.raw`\\(add|set)tocounter\s*\{([A-Za-z@]+)\}\s*\{\s*(-?\d{1,6})\s*\}`);
+  const advance = sticky(String.raw`(?:\\global\s*)?\\advance\s*\\([A-Za-z@]+)\s*(?:by\s*)?(-?\d{1,6})\s*(?:\\relax)?`);
+  const variable = sticky(String.raw`(?:\\global\s*)?\\(edef|xdef)\s*\\([A-Za-z@]+)\s*\{\s*(?:\\@?(Alph|alph|arabic)\s*(?:\\c@([A-Za-z@]+)|\{([A-Za-z@]+)\})|\\the\s*\\c@([A-Za-z@]+)|\\the([A-Za-z@]+))\s*\}`);
+  const called = sticky(String.raw`\\expandafter\s*\\([A-Za-z@]+)\s*\\([A-Za-z@]+)`);
+  const named = sticky(String.raw`\\expandafter\s*(?:\\global\s*)?\\(def|gdef|edef|xdef)\s*\\csname\s*([A-Za-z@]*)\\([A-Za-z@]+)(?![A-Za-z@])\s*([A-Za-z@]*)\s*\\endcsname\s*`);
+  for (let pass = 0; ; pass++) {
+    if (pass >= MAX_LOOP_PASSES) return null;
+    let at = 0;
+    while (at < body.length) {
+      if (!body.slice(at).trim()) break;
+      const at0 = at;
+      const take = (pattern: RegExp) => { pattern.lastIndex = at0; const found = pattern.exec(body); if (found) at = pattern.lastIndex; return found; };
+      let m: RegExpExecArray | null;
+      if ((m = take(step))) {
+        const value = read(m![1]);
+        if (value === null) return null;
+        counters.set(m![1], value + 1);
+      } else if ((m = take(addSet))) {
+        const value = read(m![2]);
+        if (value === null) return null;
+        counters.set(m![2], m![1] === "add" ? value + Number(m![3]) : Number(m![3]));
+      } else if ((m = take(advance))) {
+        const value = read(m![1]);
+        if (value === null) return null;
+        counters.set(m![1], value + Number(m![2]));
+      } else if ((m = take(variable))) {
+        const style = m![3] ?? "arabic";
+        const counter = m![4] ?? m![5] ?? m![6] ?? m![7];
+        const value = read(counter);
+        if (value === null) return null;
+        if (style === "arabic") letters.set(m![2], String(value));
+        else if (value >= 1 && value <= 26) letters.set(m![2], String.fromCharCode((style === "Alph" ? 64 : 96) + value));
+        else return null;
+      } else if ((m = take(called))) {
+        const item = letters.get(m![2]);
+        const macro = item === undefined ? undefined : factory(m![1]);
+        if (item === undefined || !macro || macro.arity !== 1 || macro.optional !== undefined || macro.spec || macro.unsupported || macro.alias || macro.body.includes("##")) return null;
+        const factoryBody = macro.body.replace(/(^|[^\\])%[^\n]*/g, "$1");
+        const header = /^\s*\\expandafter\s*(?:\\global\s*)?\\(def|gdef|edef|xdef)\s*\\csname\s*([A-Za-z@]*)#1([A-Za-z@]*)\s*\\endcsname\s*/.exec(factoryBody);
+        const value = header && readGroup(factoryBody, header[0].length, TEX_GROUPS);
+        if (!header || !value || factoryBody.slice(value.end).trim()) return null;
+        // The argument is put in when the factory runs, then the definition is read as written.
+        if (!make(header[1], header[2], item, header[3], value.content.replace(/#1/g, item), null)) return null;
+      } else if ((m = take(named))) {
+        const value = letters.has(m![3]) ? readGroup(body, at, TEX_GROUPS) : null;
+        if (!value) return null;
+        if (!make(m![1], m![2], letters.get(m![3])!, m![4], value.content, m![3])) return null;
+        at = value.end;
+      } else return null;
+      if (macros.length > MAX_LOOP_MACROS) return null;
+    }
+    const value = read(subject)!;
+    const again = test[6] === "<" ? value < limit : test[6] === ">" ? value > limit : value === limit;
+    if (!again) return macros.length ? macros : null;
+  }
+}
+
 /** Another file whose definitions apply, and where it is read: by the open file (`loadedBy: ""`), by another source, or first (no `loadedBy`). */
 export type DefinitionSource = {
   path: string;
@@ -1454,6 +1571,12 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       const close = loopEnd(source, index);
       if (close < 0) continue;
       end = close;
+      // A loop that only makes macros by name (`\cA`…`\cZ`) is read as the macros it makes; any other is skipped.
+      const made = readLoopDefinitions(source, index, source.slice(0, start), latest);
+      for (const macro of made ?? []) {
+        if (uncertain) shadow(macro.name, `\\${macro.name} is defined under a condition`);
+        else addMacro(context, { name: macro.name, arity: 0, body: macro.body, pos, file: context.file }, "renew");
+      }
     } else if (command === "DeclareOption" || command === "ProcessOptions" || command === "ExecuteOptions") {
       // A package's or class's option (ICML's `\DeclareOption{accepted}{\gdef\isaccepted{1}}`): its code runs at
       // `\ProcessOptions` when the option is given (`\usepackage[accepted]{icml2020}`), maybe when how the package is

@@ -3431,6 +3431,7 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-so { letter-spacing: .12em; }
 .cm-vis-fbox { padding: 0 .2em; border: 1px solid currentColor; }
 .cm-vis-hfill { display: inline-block; min-width: 2em; }
+.cm-vis-hfill-right { text-align: right; }
 .cm-vis-hrulefill, .cm-vis-dotfill { display: inline-block; min-width: 4em; height: .6em; vertical-align: baseline; border-bottom: 1px solid currentColor; }
 .cm-vis-dotfill { border-bottom-style: dotted; border-bottom-width: 2px; }
 .cm-vis-text-drawing { cursor: pointer; }

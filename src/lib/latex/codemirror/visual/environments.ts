@@ -114,6 +114,8 @@ export function readEnvironmentArguments(text: string, spec: string): number | n
 export const WRAPPER_ENVIRONMENTS: Record<string, { args: string; lines?: string }> = {
   adjustbox: { args: "m" },
   adjustwidth: { args: "omm" }, "adjustwidth*": { args: "omm" },
+  // varwidth's `\begin{varwidth}[t]{\linewidth}`: a paragraph box that shrinks to its content.
+  varwidth: { args: "om" },
   // rotating's and graphicx-era wrappers.
   threeparttable: { args: "" }, ThreePartTable: { args: "" },
   sideways: { args: "" }, turn: { args: "m" }, rotate: { args: "m" }, lscape: { args: "" },
