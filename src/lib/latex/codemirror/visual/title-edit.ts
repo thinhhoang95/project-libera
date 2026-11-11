@@ -129,8 +129,7 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
   if (!abstract) {
     const use = commandUses(scope, base, "abstract").at(-1);
     const after = use ? state.sliceDoc(use[0].to + 1, Math.min(state.doc.length, use[0].to + 400)) : "";
-    if (use && !/^(?:\s|%[^
-]*)*\{/.test(after)) {
+    if (use && !/^(?:\s|%[^\n]*)*\{/.test(after)) {
       abstract = use[0];
       abstractStart = use.start ?? null;
     }
