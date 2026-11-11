@@ -282,8 +282,8 @@ export class ItemMarkerWidget extends VisualWidget {
    * `numberedAt`: for an item of a list continued from another (enumitem's `resume`), where its `\item` is from the
    * widget's start: its number comes from the numbering pass, which counts the lists before it.
    */
-  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number, readonly flags: { latex?: boolean; inline?: boolean } = {}, readonly numberedAt: number | null = null) {
-    super(`${variant}\u0000${depth}\u0000${label}\u0000${flags.latex ? "l" : ""}${flags.inline ? "i" : ""}\u0000${numberedAt ?? ""}`);
+  constructor(readonly label: string, readonly variant: "bullet" | "number" | "description", readonly depth: number, readonly flags: { latex?: boolean; inline?: boolean } = {}, readonly numberedAt: number | null = null, readonly length: number | null = null) {
+    super(`${variant}\u0000${depth}\u0000${label}\u0000${flags.latex ? "l" : ""}${flags.inline ? "i" : ""}\u0000${numberedAt ?? ""}\u0000${length ?? ""}`);
   }
   toDOM(view: EditorView) {
     const dom = el("span", `cm-vis-item cm-vis-item-${this.variant}${this.flags.inline ? " cm-vis-item-inline" : ""}`, this.flags.latex ? undefined : this.label);
@@ -299,6 +299,16 @@ export class ItemMarkerWidget extends VisualWidget {
       const render = (target: EditorView) => dom.replaceChildren(renderLatexFragment(this.label, widgetContext(target, dom)));
       render(view);
       refreshable(dom, view, render);
+    }
+    // A click opens the marker's source (`\item[$(\star)$]`, `\bibitem[…]{key}`), Alt-click too.
+    const length = this.length;
+    if (length !== null) {
+      dom.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        const from = widgetPos(view, dom);
+        if (from !== null) revealSourceAt(view, from, from + length);
+      });
     }
     return dom;
   }
