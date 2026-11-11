@@ -7,6 +7,9 @@ import { conditionalFacts, macroAt, type LatexDefinitions, type LatexMacro, type
  * text, the expansion is drawn by the fragment renderer. Expansion fails
  * (and the use stays as source) past the depth or size limits. */
 
+/** LaTeX's `\fnsymbol` sequence: the footnote symbols of a title's notes. */
+export const FOOTNOTE_SYMBOLS = ["*", "†", "‡", "§", "¶", "‖", "**", "††", "‡‡"];
+
 export const MAX_EXPANSION_LENGTH = 20_000;
 /** Most macro expansions one formula or use may take. */
 export const MAX_EXPANSIONS = 2_000;
@@ -363,6 +366,18 @@ function expandText(source: string, context: Context, depth: number): string | n
     // stays as written (O'Donnell's `named`), not `\renewcommand{testing}{…}`.
     const defining = DEFINING.exec(source.slice(i, i + 120));
     if (defining) { i += defining[0].length - 1; continue; }
+    // LaTeX's `\@fnsymbol{1}` (2611.13390's `\thankssymb`): the footnote symbol of that number, `*` `†` `‡` `§` `¶` `‖` `**` `††` `‡‡`.
+    // A number it has no symbol for (or a counter, which is not known here) is not drawn: the use stays source.
+    const fnsymbol = /^\\@fnsymbol(?![A-Za-z@])/.exec(source.slice(i, i + 12));
+    if (fnsymbol && !macroAt(context.defs, "@fnsymbol", context.pos)) {
+      const number = readUndelimited(source, i + fnsymbol[0].length);
+      const symbol = number && /^\s*[1-9]\s*$/.test(number.value) ? FOOTNOTE_SYMBOLS[Number(number.value) - 1] : undefined;
+      if (!number || symbol === undefined || closer !== null || outer === "math") return null;
+      output = joinTokens(output + source.slice(copied, i), symbol);
+      copied = number.end;
+      i = number.end - 1;
+      continue;
+    }
     const math = closer !== null || outer === "math";
     context.mode = math ? "math" : outer;
     const result = expandUse(source, i, context, depth);

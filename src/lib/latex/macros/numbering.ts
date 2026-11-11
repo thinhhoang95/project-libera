@@ -2,7 +2,7 @@ import type { SyntaxNode, Tree } from "@lezer/common";
 import { latexParser as parser } from "../codemirror/latex-parser";
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import { definitionExtentAt, macroAt, readLatexInputs, type LatexDefinitions, type LatexMacro } from "./definitions";
-import { expandLatexMacros, expandLatexMacroUse } from "./expand";
+import { expandLatexMacros, expandLatexMacroUse, FOOTNOTE_SYMBOLS } from "./expand";
 import { readCtable } from "../codemirror/visual/table-model";
 import { algorithmLineLabels, readAlgorithm2eBody, readAlgorithmicBody, type AlgorithmSpec } from "../codemirror/visual/algorithm";
 import { disabledRegions, discardingMacros, isPairMacro, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, regionContaining, structureMacroNames, usesStructureMacro } from "./structure";
@@ -72,9 +72,6 @@ function alph(value: number) {
   for (let n = value; n > 0; n = Math.floor((n - 1) / 26)) out = String.fromCharCode(97 + ((n - 1) % 26)) + out;
   return out;
 }
-
-/** LaTeX's `\fnsymbol`: the footnote symbols of a title's notes (`\renewcommand{\thefootnote}{\fnsymbol{footnote}}`). */
-const FOOTNOTE_SYMBOLS = ["*", "†", "‡", "§", "¶", "‖", "**", "††", "‡‡"];
 
 export function formatCounterValue(value: number, style: "arabic" | "roman" | "Roman" | "alph" | "Alph" | "fnsymbol") {
   // Out of range for letters and numerals (TeX would stop with an error): shown as a number, without the work.
