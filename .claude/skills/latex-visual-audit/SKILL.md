@@ -57,8 +57,12 @@ text/citations/front matter/macros/project files. Each issue gets: paper folder,
 Commit the current state on a branch first (`fix/latex-visual-audit-<n>`): worktrees start from HEAD. Spawn one Opus
 agent per area with `isolation: "worktree"`, all in one message. Each brief contains:
 - context: the code map above, `docs/audits/` of the last round, `docs/latex-visual-editor-plan.md`;
-- the rules: show only what is understood, else leave source; never auto-add `\usepackage` (user's preamble stays
-  theirs); tests cite the arXiv id; commits end with the Co-Authored-By line;
+- the rules: show only what is understood, else leave source; **every rendered widget must stay editable: clicking it
+  (mousedown) reveals the raw source for editing, and Alt-click/double-click keep working. Copy how existing widgets do
+  it (`revealSourceAt`, the `mousedown` handlers and `ignoreEvent` in widgets.ts, the `openMathEditor`/`floatHooks`
+  hooks) and add a click-to-source test for every new kind of widget. A widget the user can't get back into the source
+  from is a bug, even if it renders perfectly;** never auto-add `\usepackage` (user's preamble stays theirs); tests
+  cite the arXiv id; commits end with the Co-Authored-By line;
 - the papers path, the audit command with its filter, and its own outDir;
 - the issue list for its area, and the other agents' areas to stay out of; keep edits in walk.ts/widgets.ts localized;
 - the compute budget: the exact test files to run (`node --require ./scripts/editor/setup.cjs --import tsx --test
@@ -76,6 +80,9 @@ npx tsc --noEmit -p .
 npx eslint <changed files>
 npm run audit:latex-visual -- audit <scratch>/papers <scratch>/out-merged
 ```
+
+While reviewing each agent's diff, check that every new widget has a click-to-source path and a test for it (no
+`ignoreEvent() { return true; }` widget without a `mousedown` that reveals its source).
 
 Compare `out-base/summary.txt` with `out-merged/summary.txt`. If a merge broke a test, fix it on the round branch.
 Check a couple of the papers in the running app if a dev server is available.
