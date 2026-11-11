@@ -125,7 +125,8 @@ test("wrong and unsupported definitions are listed, and comments between argumen
   {\end{center}}`);
   assert.deepEqual(defs.problems.map((problem) => problem.message), ["\\bad uses #2 but takes 1 argument", "\\nobody has no {…} body"]);
   // xparse `r<>` is read now (macros round), so a still-unread verbatim `v` argument stands for the unsupported spec.
-  assert.deepEqual(defs.unsupported.map((note) => note.name), ["delimited", "expanded", "fancy"]);
+  // `\def\delimited#1.{#1}` is a delimited-parameter macro, expanded since round 4 (math.CO 2611.13390); the others stay unsupported.
+  assert.deepEqual(defs.unsupported.map((note) => note.name), ["expanded", "fancy"]);
   assert.equal(defs.environments.get("abstract")?.begin, "\\begin{center}");
 });
 
@@ -617,8 +618,8 @@ test("a delimited \\def\\bea#1\\eea is a pair; macros that discard their argumen
 \newcommand{\keep}[1]{#1}
 \begin{document}`);
   assert.deepEqual([defs.macros.get("bea")?.[0].body, defs.macros.get("eea")?.[0].body], [String.raw`\begin{align}`, String.raw`\end{align}`]);
-  // A body using the argument twice is not a pair: still left as source.
-  assert.ok(defs.macros.get("twice")?.[0].unsupported);
+  // A body using the argument twice is not a pair; it is a delimited-parameter macro (round 4, math.CO 2611.13390).
+  assert.ok(!defs.macros.get("twice")?.[0].unsupported);
   assert.deepEqual([...discardingMacros(defs)], [["cut", 1], ["eat", 1]]);
   const text = String.raw`A \cut{gone {nested} % }
 still gone} B \ifx 1 0 hidden\fi C \ifx 1 1 shown\fi D \ifnum 2<1 hidden\else shown\fi E \ifx\a\b decided later\fi`;
