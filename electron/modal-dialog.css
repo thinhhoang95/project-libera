@@ -66,7 +66,7 @@
 .libera-dialog .bg-destructive { background: var(--destructive, #dc2626); color: #fff; border-color: transparent; }
 .libera-dialog :is(button, a):disabled { opacity: .55; cursor: not-allowed; }
 .libera-dialog-footer > :is(button, a):hover:not(:disabled), .libera-dialog-actions > :is(button, a):hover:not(:disabled) { filter: brightness(.96); }
-.libera-dialog :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), textarea, select) { background: var(--dialog-surface); border: 1px solid var(--input); border-radius: 8px; color: var(--foreground); }
+.libera-dialog :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), textarea, select) { background-color: var(--dialog-surface); border: 1px solid var(--input); border-radius: 8px; color: var(--foreground); }
 .libera-dialog :is(input, textarea)::placeholder { color: var(--muted-foreground); }
 .libera-dialog :is(input, textarea, select):focus { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent); }
 .libera-dialog :is(button, a):focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }

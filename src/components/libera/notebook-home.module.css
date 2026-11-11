@@ -101,7 +101,7 @@
 .sectionHeader h3 { font-size: 21px; font-weight: 650; letter-spacing: -.6px; display: flex; align-items: center; gap: 9px; }
 .sectionHeader h3 span { font-size: 11px; font-weight: 500; letter-spacing: 0; padding: 2px 7px; background: var(--muted); color: var(--home-muted); border-radius: 6px; }
 .fileControls { display: flex; align-items: center; gap: 10px; }
-.fileControls select { font-size: 12px; border: 1px solid var(--home-line); border-radius: 9px; padding: 8px 10px; background: var(--home-surface); color: var(--home-ink); }
+.fileControls select { font-size: 12px; border: 1px solid var(--home-line); border-radius: 9px; padding: 8px 10px; background-color: var(--home-surface); color: var(--home-ink); }
 .viewToggle { display: flex; padding: 3px; border-radius: 10px; border: 1px solid var(--home-line); background: var(--muted); }
 .viewToggle button { padding: 6px 7px; color: var(--home-muted); border-radius: 6px; }
 .viewToggle button[aria-pressed=true] { color: var(--home-ink); background: var(--home-surface); box-shadow: 0 1px 4px #25395914; }

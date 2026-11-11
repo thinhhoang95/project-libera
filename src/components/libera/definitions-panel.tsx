@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, BookA, ChevronDown, Loader2, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, BookA, Loader2, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { usePaletteCommands } from "@/components/libera/command-palette/commands";
@@ -292,7 +292,6 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
                   <option key={option} value={option} disabled={!counts[option]}>{DEFINITION_KIND_LABELS[option]} ({counts[option]})</option>
                 ))}
               </select>
-              <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" />
             </span>
           </label>
         </>

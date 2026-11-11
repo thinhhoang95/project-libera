@@ -25,7 +25,7 @@ export function ChatReasoningSelect({ value, disabled, onChange }: { value: Chat
     aria-label="Reasoning effort"
     title="Reasoning effort: drag sideways to change it, or click to choose"
     data-dragging={dragging || undefined}
-    className="w-auto max-w-24 cursor-ew-resize touch-pan-y select-none appearance-none border-0 bg-transparent px-1 py-2 text-xs text-muted-foreground shadow-none outline-none hover:text-foreground focus-visible:underline data-[dragging]:text-foreground"
+    className="libera-select-plain w-auto max-w-24 cursor-ew-resize touch-pan-y select-none appearance-none border-0 bg-transparent px-1 py-2 text-xs text-muted-foreground shadow-none outline-none hover:text-foreground focus-visible:underline data-[dragging]:text-foreground"
     value={value}
     disabled={disabled}
     onChange={(event) => { if (isChatReasoningEffort(event.target.value)) onChange(event.target.value); }}

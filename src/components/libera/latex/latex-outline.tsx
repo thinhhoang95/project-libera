@@ -84,7 +84,6 @@ export function LatexOutline({ activeTab, expansionLevel, onExpansionLevelChange
           >
             {[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>Level {level}</option>)}
           </select>
-          <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" />
         </span>
       </label>
       <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

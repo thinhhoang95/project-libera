@@ -2946,26 +2946,21 @@ html.dark .libera-reference-reading[data-reading="read"] { color: #5fd3a0; }
    leading icon, --compact the short filter input or select. */
 .libera-panel-field--search { height: 2.25rem; padding-left: 2.25rem; padding-right: 2.25rem; font-size: 13px; }
 .libera-panel-field--compact { height: 2rem; font-size: 12px; }
-select.libera-panel-field {
+select.libera-panel-field { cursor: default; }
+/* Every dropdown in the app draws this one chevron: Chromium's native arrow
+   sits flush against the border and ignores the padding. The longhands matter:
+   a `background:` shorthand on a select from a stronger rule would reset the
+   chevron's placement (it then tiles), so colour selects with background-color.
+   .libera-select-plain opts a control out (the reasoning scrubber). */
+select:not([multiple]):not([size]):not(.libera-select-plain) {
   appearance: none;
-  padding-right: 2rem;
+  padding-right: 1.75rem;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2377829b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");
-  background-position: right 0.6rem center;
+  background-position: right 0.55rem center;
   background-repeat: no-repeat;
   background-size: 14px;
-  cursor: default;
 }
-/* The Visual editor's toolbar dropdowns draw their own chevron: Chromium's
-   native one sits flush against the border and ignores the padding. */
-select.libera-toolbar-select {
-  appearance: none;
-  padding-right: 1.6rem;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2377829b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");
-  background-position: right 0.45rem center;
-  background-repeat: no-repeat;
-  background-size: 13px;
-}
-html.dark select.libera-toolbar-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23adb9d1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E"); }
+html.dark select:not([multiple]):not([size]):not(.libera-select-plain) { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23adb9d1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E"); }
 .libera-panel-segmented { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: #7392d112; box-shadow: inset 0 0 0 1px #94a8ce14; }
 .libera-panel-segmented > button { flex: 1; border-radius: 7px; padding: 0.35rem 0.5rem; font-size: 12px; font-weight: 500; color: var(--muted-foreground); transition: background 150ms, color 150ms, box-shadow 150ms; }
 .libera-panel-segmented > button:hover:not(:disabled) { color: #457be6; }
@@ -2990,7 +2985,6 @@ html.dark .libera-panel-card[data-selected="true"] { background: #a3bbef14; box-
 html.dark .libera-panel-field { background-color: #b3c8ef0d; }
 html.dark .libera-panel-field:hover:not(:disabled):not(:focus) { background-color: #b3c8ef14; }
 html.dark .libera-panel-field:focus { border-color: #7aa5ef80; background-color: #b3c8ef17; box-shadow: 0 0 0 3px #7aa5ef1f; }
-html.dark select.libera-panel-field { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23adb9d1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E"); }
 html.dark .libera-panel-field option { background: #252d3f; color: #e1e8f7; }
 html.dark .libera-panel-segmented { background: #a3bbef0a; box-shadow: inset 0 0 0 1px #8298cb1a; }
 html.dark .libera-panel-segmented > button:hover:not(:disabled), html.dark .libera-panel-tile:hover:not(:disabled), html.dark .libera-panel-button:hover:not(:disabled) { color: #a2c9ff; }

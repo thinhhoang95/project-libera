@@ -58,11 +58,11 @@ html.dark.libera-glass .libera-glass-panel.libera-chat-panel {
 .libera-editor-toolbar .toolbar-button { border-radius: 8px; color: var(--muted-foreground); transition: background 140ms, color 140ms; }
 .libera-editor-toolbar button:not(:disabled):hover { color: var(--accent); background: var(--muted); }
 .libera-editor-toolbar button[aria-pressed="true"] { color: var(--accent); background: var(--surface-blue); }
-.libera-editor-toolbar select { border-color: var(--input); color: var(--surface-ink); border-radius: 9px; min-height: 32px; background: #ffffff85; box-shadow: 0 2px 5px #4e699a03; font-size: 12px; outline: none; transition: background 140ms, border-color 140ms; }
-.libera-editor-toolbar select:hover:not(:disabled) { background: var(--muted); }
+.libera-editor-toolbar select { border-color: var(--input); color: var(--surface-ink); border-radius: 9px; min-height: 32px; background-color: #ffffff85; box-shadow: 0 2px 5px #4e699a03; font-size: 12px; outline: none; transition: background 140ms, border-color 140ms; }
+.libera-editor-toolbar select:hover:not(:disabled) { background-color: var(--muted); }
 .libera-editor-toolbar select:focus-visible { border-color: var(--ring); }
-html.dark .libera-editor-toolbar select { background: #b3c8ef0d; }
-html.dark .libera-editor-toolbar select:hover:not(:disabled) { background: var(--muted); }
+html.dark .libera-editor-toolbar select { background-color: #b3c8ef0d; }
+html.dark .libera-editor-toolbar select:hover:not(:disabled) { background-color: var(--muted); }
 .libera-visual-editor { --markdown-page-gutter: clamp(22px, 3vw, 44px); }
 .libera-visual-editor .libera-visual-page { padding: 30px var(--markdown-page-gutter) 44px; }
 /* The adjustable content wrapper owns the column width. Do not cap its editor
@@ -215,10 +215,9 @@ button.libera-chat-model { appearance: none; cursor: pointer; text-align: left; 
 .libera-mode-switch button[aria-pressed="true"] svg { color: #8f74e3; }
 .libera-mode-switch button:disabled { cursor: default; }
 .libera-agent-permission { position: relative; display: flex; align-items: center; min-width: 0; max-width: 260px; flex: 0 1 auto; }
-.libera-agent-permission select { width: 100%; min-width: 0; appearance: none; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 24px 5px 9px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in srgb, var(--card) 70%, transparent); color: var(--surface-ink); font-size: 11.5px; outline: none; }
+.libera-agent-permission select { width: 100%; min-width: 0; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 9px; border: 1px solid var(--border); border-radius: 9px; background-color: color-mix(in srgb, var(--card) 70%, transparent); color: var(--surface-ink); font-size: 11.5px; outline: none; }
 .libera-agent-permission select:focus-visible { border-color: var(--ring); }
 .libera-agent-permission select:disabled { opacity: .6; cursor: default; }
-.libera-agent-permission svg { position: absolute; right: 7px; pointer-events: none; color: var(--muted-foreground); }
 
 /* An agent run: its messages, tool activity, tasks and changed files. */
 .libera-agent-tools { margin: 0; padding: 4px 0; list-style: none; border-left: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); }

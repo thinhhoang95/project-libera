@@ -118,7 +118,7 @@ function smartPasteClipboard(editor: Editor, range: { from: number; to: number }
 
 type MathDraft = { latex: string; display: boolean; from: number; to: number; existing: boolean };
 const buttonClass = "rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 aria-pressed:bg-muted aria-pressed:text-foreground";
-const selectClass = "libera-toolbar-select rounded-md border border-border bg-card px-2 py-1.5 text-xs";
+const selectClass = "rounded-md border border-border bg-card px-2 py-1.5 text-xs";
 const VISUAL_SCROLL_OUTLINE_ANCHOR_PROGRESS = 0.6;
 const isImage = (file: File) => /^image\/(png|jpe?g|gif|webp)$/i.test(file.type) || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
 
@@ -1161,7 +1161,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           if (!mathDraft) return;
           const type = mathDraft.display ? "blockMath" : "inlineMath";
           const original = mathDraft.existing ? editor.state.doc.nodeAt(mathDraft.from) : null;
-          editor.chain().focus().insertContentAt({ from: mathDraft.from, to: mathDraft.to }, { type, attrs: { ...(original?.type.name === type ? original.attrs : {}), latex: mathDraft.latex.trim() } }).run();
+          // The equation is where the reader clicked it: applying must not scroll to the caret.
+          editor.chain().focus(undefined, { scrollIntoView: false }).insertContentAt({ from: mathDraft.from, to: mathDraft.to }, { type, attrs: { ...(original?.type.name === type ? original.attrs : {}), latex: mathDraft.latex.trim() } }).run();
           setMathDraft(null);
         }}>Apply equation</button>
       </>}>

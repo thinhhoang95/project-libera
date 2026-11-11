@@ -5,7 +5,7 @@ import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SetStateAction } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, CheckCheck, AudioLines, ImagePlus, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2, FileDiff } from "lucide-react";
+import { Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, CheckCheck, AudioLines, ImagePlus, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2, FileDiff } from "lucide-react";
 import { speakMarkdown, toggleSpeech } from "@/lib/tts/player";
 import { useSpeech } from "./read-aloud";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
@@ -1462,7 +1462,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         <div className="libera-window-no-drag relative min-w-0 flex-1">
           <select
             id="document-chat-history"
-            className="w-full cursor-pointer appearance-none truncate border-0 bg-transparent py-2 pl-2 pr-7 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="w-full cursor-pointer truncate border-0 bg-transparent py-2 pl-2 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
             value={store?.activeId ?? ""}
             onChange={(event) => {
               setStore((current) => current && ({ ...current, activeId: event.target.value }));
@@ -1471,7 +1471,6 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           >
             {store?.chats.map((item) => <option key={item.id} value={item.id}>{runningIds.has(item.id) ? `${item.title} · Responding…` : item.title}</option>)}
           </select>
-          <ChevronDown aria-hidden className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         </div>
         <button className={buttonClass} aria-label="New chat" title="New chat" disabled={!chat?.messages.length} onClick={startNewChat}><Plus size={16} /></button>
         <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
@@ -1513,7 +1512,6 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           <select value={permission} disabled={!chat || pending} onChange={(event) => { const next = event.target.value; if (isAgentPermission(next)) changePermission(next); }}>
             {AGENT_PERMISSIONS.map((item) => <option key={item} value={item}>{agentPermissionLabel(item, sharedAgent)}</option>)}
           </select>
-          <ChevronDown aria-hidden size={13} />
         </label>}
         {agentMode && <button type="button" className={`${buttonClass} libera-agent-web-search`} aria-pressed={allowWebSearch} aria-label="Web search" disabled={pending} onClick={() => changeWebSearch(!allowWebSearch)}
           title={allowWebSearch ? "Web search on: the agent can search the web (through OpenRouter's web plugin). Click to turn off" : "Web search off: click to let the agent search the web for facts that are not in your library"}><Globe aria-hidden size={14} /></button>}

@@ -87,7 +87,8 @@ export function ModalDialog({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       openDialogs.splice(openDialogs.lastIndexOf(titleId), 1);
-      if (previous?.isConnected) previous.focus();
+      // Without scrolling: a tall opener (an editor) would otherwise jump to its top or its caret.
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
     };
   }, [open, titleId, opener]);
 
