@@ -1611,7 +1611,7 @@ export function preambleSummary(view: EditorView | null, defs = view ? visualDef
 }
 
 /** The parts of a title block that open in the title editor (title-edit.ts). */
-export type TitlePart = "title" | "author" | "date" | "abstract" | "line";
+export type TitlePart = "title" | "author" | "date" | "abstract" | "line" | "note";
 
 /**
  * A drawn title block: where it starts and how long its construct is, for finding its source; how far the source it
@@ -1622,6 +1622,11 @@ export type TitleElement = HTMLElement & { liberaTitleStart?: () => number | nul
 export type TitleHooks = {
   /** Opens the LaTeX of one part (the `index`th author) in place; false when its source cannot be found. */
   edit: (view: EditorView, block: TitleElement, part: TitlePart, index: number) => boolean;
+  /** Shows the real source of the whole block (the preamble's `\title`, `\author`, … included) with the cursor at its first command; false when it cannot be found. */
+  reveal?: (view: EditorView, block: TitleElement) => boolean;
+  /** Whether another author can be added (only where `\and` joins the authors), and opens a field for the new one. */
+  canAddAuthor?: (view: EditorView, block: TitleElement) => boolean;
+  addAuthor?: (view: EditorView, block: TitleElement) => boolean;
   /** A redrawn title block: continues an edit that was open in the block it replaces. */
   adopt?: (view: EditorView, block: TitleElement) => void;
 };
@@ -1646,7 +1651,21 @@ export function editTitleAt(view: EditorView, from: number, to: number) {
   return false;
 }
 
-/** `\maketitle`: the title, authors and date from the preamble. Click a part to edit its LaTeX (title-edit.ts). */
+/** The title block drawn in [from, to] shows its whole source (Alt+Enter on the selected block); false when there is none. */
+export function revealTitleSourceAt(view: EditorView, from: number, to: number) {
+  if (!titleHooks?.reveal) return false;
+  for (const block of view.contentDOM.querySelectorAll<TitleElement>(".cm-vis-title-block")) {
+    const start = block.liberaTitleStart?.();
+    if (start === null || start === undefined || start < from || start >= to) continue;
+    return titleHooks.reveal(view, block);
+  }
+  return false;
+}
+
+/**
+ * `\maketitle`: the title, authors and date from the preamble. Click a part to edit its LaTeX (title-edit.ts); the
+ * source button (or Alt-click) shows the block's real source, in the preamble where it is written.
+ */
 export class TitleWidget extends VisualWidget {
   /**
    * `abstract`: an abstract the class prints with the title (acmart's, written before `\begin{document}`); `notes`: small
@@ -1698,6 +1717,22 @@ export class TitleWidget extends VisualWidget {
           group.append(author, ...lines.map((item) => line("cm-vis-affiliation", item)));
           authors.append(group);
         }
+        // Another author, after `\and`: only where the class joins authors that way (title-edit.ts decides, once placed).
+        if (editable && titleHooks?.addAuthor && titleHooks.canAddAuthor) {
+          const add = el("button", "cm-vis-title-add-author") as HTMLButtonElement;
+          add.type = "button";
+          add.title = "Add an author";
+          add.setAttribute("aria-label", "Add an author");
+          add.addEventListener("mousedown", (event) => event.preventDefault());
+          add.addEventListener("click", (event) => {
+            event.preventDefault();
+            if (!titleHooks?.addAuthor?.(view, dom)) showSource();
+          });
+          const sync = () => { add.hidden = !titleHooks?.canAddAuthor?.(view, dom); };
+          sync();
+          queueMicrotask(() => { if (add.isConnected) sync(); });
+          authors.append(add);
+        }
         dom.append(authors);
       }
       if (details?.places.length) {
@@ -1715,12 +1750,31 @@ export class TitleWidget extends VisualWidget {
         abstract.append(heading, body);
         dom.append(abstract);
       }
-      for (const [label, latex] of this.notes) {
+      // Keywords, CCS concepts and subject classes: numbered on their own, each opens its LaTeX (or its source, when several commands write it).
+      this.notes.forEach(([label, latex], index) => {
         const note = el("div", "cm-vis-title-note");
+        note.dataset.titleNote = String(index);
+        if (editable) note.title = "Click to edit · Alt-click for the source";
         note.append(el("span", "cm-vis-title-note-label", `${label}: `), renderLatexFragment(latex, context));
         dom.append(note);
-      }
+      });
       for (const item of details?.notes ?? []) dom.append(line("cm-vis-title-note", item));
+      // Always a way to the raw source: the button shows when the pointer or the focus is in the block.
+      const tools = el("div", "cm-vis-title-tools");
+      const source = el("button", "cm-vis-title-source") as HTMLButtonElement;
+      source.type = "button";
+      source.title = "Edit source";
+      source.setAttribute("aria-label", "Edit the title block's source");
+      source.addEventListener("mousedown", (event) => event.preventDefault());
+      source.addEventListener("click", (event) => { event.preventDefault(); showSource(); });
+      tools.append(source);
+      dom.append(tools);
+    };
+    /** The block's real source: its commands wherever they are written (the preamble opens), else its own range. */
+    const showSource = () => {
+      if (titleHooks?.reveal?.(view, dom)) return;
+      const from = widgetPos(view, dom);
+      if (from !== null) revealSourceAt(view, from, from + this.length);
     };
     dom.liberaTitleStart = () => widgetPos(view, dom);
     dom.liberaTitleLength = this.length;
@@ -1736,11 +1790,16 @@ export class TitleWidget extends VisualWidget {
       if (event.button !== 0) return;
       const target = event.target as HTMLElement;
       // Clicks in an open editor place its caret.
-      if (target.closest(".cm-vis-title-editor")) return;
+      if (target.closest(".cm-vis-title-editor, .cm-vis-title-tools, .cm-vis-title-add-author")) return;
       event.preventDefault();
-      const clicked = target.closest<HTMLElement>("[data-title-part]");
-      if (clicked && !event.altKey && titleHooks && titleEditable(view)
-        && titleHooks.edit(view, dom, clicked.dataset.titlePart as TitlePart, Number(clicked.dataset.titleIndex ?? 0))) return;
+      const clicked = target.closest<HTMLElement>("[data-title-part], [data-title-note]");
+      if (clicked && !event.altKey && titleHooks && titleEditable(view)) {
+        const note = clicked.dataset.titleNote !== undefined;
+        if (titleHooks.edit(view, dom, note ? "note" : clicked.dataset.titlePart as TitlePart, Number((note ? clicked.dataset.titleNote : clicked.dataset.titleIndex) ?? 0))) return;
+        // A part that is not one field (a list several commands write): its source, where it is written.
+        if (titleHooks.reveal?.(view, dom)) return;
+      }
+      if (event.altKey && titleHooks?.reveal?.(view, dom)) return;
       const from = widgetPos(view, dom);
       if (from !== null) (event.altKey ? revealSourceAt : selectRange)(view, from, from + this.length);
     });

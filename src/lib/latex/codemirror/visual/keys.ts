@@ -6,7 +6,7 @@ import type { SyntaxNode } from "@lezer/common";
 import { wrapSelection } from "../editing";
 import { argumentInner } from "./render-fragment";
 import { constructAt, forceRevealEffect, structuralField } from "./structural";
-import { editFirstCell, editTitleAt, followReference, revealSourceAt, setMathOpener, type MathOpener } from "./widgets";
+import { editFirstCell, editTitleAt, followReference, revealSourceAt, revealTitleSourceAt, setMathOpener, type MathOpener } from "./widgets";
 
 /* Keyboard behaviour of the Visual mode (docs/latex-visual-editor-plan.md
  * §6.5–6.6). Every command here either moves the selection or writes the
@@ -121,7 +121,7 @@ const openSelected: Command = (view) => {
     if (key && followReference(view, key)) return true;
   }
   if ((construct.kind === "table" || construct.kind === "figure") && editFirstCell(view, construct.from, construct.to)) return true;
-  if (construct.kind === "title" && editTitleAt(view, construct.from, construct.to)) return true;
+  if (construct.kind === "title" && (editTitleAt(view, construct.from, construct.to) || revealTitleSourceAt(view, construct.from, construct.to))) return true;
   revealSourceAt(view, construct.from, construct.to);
   return true;
 };
@@ -131,6 +131,8 @@ const revealHere: Command = (view) => {
   const head = view.state.selection.main.head;
   const construct = constructAt(view.state, head);
   if (!construct) return false;
+  // A title block's source is in its commands (the preamble's `\title`, `\author`, …), not only in `\maketitle`.
+  if (construct.kind === "title" && revealTitleSourceAt(view, construct.from, construct.to)) return true;
   view.dispatch({ effects: forceRevealEffect.of(construct.id) });
   return true;
 };

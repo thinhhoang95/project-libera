@@ -3369,6 +3369,18 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .cm-vis-title-editable [data-title-part]:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .cm-vis-title-editable .cm-vis-author[data-title-part] { padding: 0 .3em; }
 .cm-vis-title-editing, .cm-vis-title-editable .cm-vis-title-editing:hover { background: none; }
+/* "Edit source" (top right) and "add author" (after the last author): shown while the pointer or the focus is in the block, so the raw LaTeX is always one click away. */
+.cm-vis-title-block { position: relative; }
+.cm-vis-title-tools { position: absolute; top: 0; right: 0; }
+.cm-vis-title-source, .cm-vis-title-add-author { display: inline-flex; align-items: center; justify-content: center; width: 1.7em; height: 1.7em; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--muted-foreground); font-family: var(--font-mono); font-size: .8rem; line-height: 1; cursor: pointer; opacity: 0; transition: opacity .12s, color .12s; }
+.cm-vis-title-source::before { content: "</>"; }
+.cm-vis-title-add-author::before { content: "+"; font-size: 1.1em; }
+.cm-vis-title-add-author[hidden] { display: none; }
+.cm-vis-title-block:hover .cm-vis-title-source, .cm-vis-title-block:hover .cm-vis-title-add-author, .cm-vis-title-block:focus-within .cm-vis-title-source, .cm-vis-title-block:focus-within .cm-vis-title-add-author, .cm-vis-title-source:focus-visible, .cm-vis-title-add-author:focus-visible { opacity: 1; }
+.cm-vis-title-source:hover, .cm-vis-title-add-author:hover { color: var(--foreground); }
+.cm-vis-title-source:focus-visible, .cm-vis-title-add-author:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+@media (hover: none) { .cm-vis-title-source, .cm-vis-title-add-author { opacity: .7; } }
+.cm-vis-title-new-author { min-width: 12em; }
 .cm-vis-authors > .cm-vis-title-editing { flex: 1 1 100%; }
 .cm-vis-title-editor { display: block; box-sizing: border-box; width: 100%; min-height: 1.9em; margin: 0; padding: .3em .5em; resize: none; overflow: hidden; border: 0; border-radius: 4px; outline: 2px solid var(--ring); outline-offset: 0; background: var(--background); color: var(--foreground); font-family: var(--font-mono); font-size: .86rem; font-weight: 400; line-height: 1.45; text-align: left; white-space: pre-wrap; }
 /* Keywords, CCS concepts and subject classes under a title block; an author's affiliation (IEEEtran's author blocks). */
