@@ -667,6 +667,23 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         if (argument) { const mail = element("span", "cm-vis-tt"); renderArgument(mail, argument.node); parent.appendChild(mail); }
         return;
       }
+      // A&A's and llncs's `\inst{1,2}` (the author's institutes), raised; orcidlink's `\orcidlink{0000-…}`, a small ORCID mark
+      // (the id in its tooltip); A&A's `\corrauth{email}`, a footnote mark (the email in its tooltip). 2611.07227.
+      if (text === "\\inst" || text === "\\orcidlink" || text === "\\corrauth") {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        const inner = argument && argumentInner(argument.node);
+        if (inner) {
+          if (text === "\\inst") { const mark = element("sup", "cm-vis-inst"); renderArgument(mark, argument.node); parent.appendChild(mark); return; }
+          const id = read(inner.from, inner.to).trim();
+          const orcid = text === "\\orcidlink";
+          const mark = element("sup", orcid ? "cm-vis-orcid" : "cm-vis-footnote-mark");
+          mark.textContent = orcid ? "iD" : "*";
+          mark.title = orcid ? `ORCID ${id}` : `Corresponding author: ${id}`;
+          if (orcid) mark.setAttribute("style", "color:#a6ce39;font-weight:700;font-size:.6em;padding-inline:1px");
+          parent.appendChild(mark);
+          return;
+        }
+      }
       if (text === "\\thanks") { parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" })); return; }
       if (text === "\\footnotemark") { parent.appendChild(Object.assign(element("sup", "cm-vis-footnote-mark"), { textContent: "*" })); return; }
       // hyperref's `\hyperref[label]{text}` (in a proof's note: "Proof of the {\hyperref[lemma:x]{necessity lemma}}"): its text, as a link.

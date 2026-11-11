@@ -100,7 +100,12 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
     if (end) abstract = trimmed(state, { from: contentFrom, to: contentFrom + end.index });
   }
   // sn-jnl's `\abstract{…}` command.
-  abstract ??= last(commandUses(scope, base, "abstract"));
+  // (A&A's `\abstract{…}{…}{…}{…}{…}`, drawn with a label before each part, has no one place to edit: a click shows its source.)
+  if (!abstract) {
+    const use = commandUses(scope, base, "abstract").at(-1);
+    const after = use ? state.sliceDoc(use[0].to + 1, Math.min(state.doc.length, use[0].to + 400)) : "";
+    abstract = use && !/^(?:\s|%[^\n]*)*\{/.test(after) ? use[0] : null;
+  }
   if (abstract) abstract = trimmed(state, abstract);
   const span = (found: SourceSpan | null) => (found ? trimmed(state, found) : null);
   // A class's affiliations, emails, institutes and notes, in the order the block numbers them.

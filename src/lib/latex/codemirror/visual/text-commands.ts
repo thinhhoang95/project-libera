@@ -215,6 +215,41 @@ export class TextDrawingWidget extends TextWidget {
   ignoreEvent() { return true; }
 }
 
+/** A `\url` whose address was written with a macro (`\url{\repourl}`): the address it prints, as a link; a click shows the source (Ctrl-click opens it). */
+export class LinkTextWidget extends TextWidget {
+  constructor(readonly text: string, readonly title: string, readonly length: number) { super(`${text}\u0000${title}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = document.createElement("span");
+    dom.className = "cm-vis-link";
+    dom.textContent = this.text;
+    dom.title = this.title;
+    dom.dataset.href = this.text;
+    dom.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey) return;
+      event.preventDefault();
+      const from = widgetPos(view, dom);
+      if (from !== null) revealSourceAt(view, from, from + this.length);
+    });
+    return dom;
+  }
+  ignoreEvent() { return true; }
+}
+
+/** pdfpages' `\includepdf[pages=…]{file.pdf}`: a small placeholder naming the file (its pages are not drawn); a click shows its source. */
+export class PdfPagesWidget extends TextWidget {
+  constructor(readonly file: string, readonly source: string, readonly length: number) { super(`${file}\u0000${source}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = document.createElement("span");
+    dom.className = "cm-vis-pdf-pages cm-vis-symbol";
+    dom.textContent = `PDF pages: ${this.file}`;
+    dom.title = this.source;
+    dom.setAttribute("style", "border:1px dashed currentColor;border-radius:3px;padding:0 .4em;opacity:.7;font-size:.85em");
+    revealOnClick(dom, view, this.length);
+    return dom;
+  }
+  ignoreEvent() { return true; }
+}
+
 /** listings' caption over a code block (its `\begin{lstlisting}[caption=…]` line): "Listing 1: …", numbered by the numbering pass. */
 export class CodeCaptionWidget extends TextWidget {
   constructor(readonly caption: string, readonly numbered: boolean, readonly numberOffset: number) { super(`${caption}\u0000${numbered ? 1 : 0}\u0000${numberOffset}`); }

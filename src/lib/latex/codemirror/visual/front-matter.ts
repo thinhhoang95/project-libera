@@ -27,7 +27,8 @@ export type FrontLineView = { label: string; latex: string; editable: boolean };
 
 const REVTEX = /^revtex4(?:-[12])?$/;
 const ACMART = /^acmart$/;
-const LLNCS = /^(?:llncs|svjour3?|svmult)$/;
+// A&A's `aa` numbers its institutes as llncs does (`\institute{A \and B}`, `\inst{1}`).
+const LLNCS = /^(?:llncs|svjour3?|svmult|aa)$/;
 const ELSARTICLE = /^elsarticle$/;
 const SNJNL = /^sn-jnl$/;
 
