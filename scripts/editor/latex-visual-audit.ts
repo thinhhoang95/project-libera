@@ -208,9 +208,28 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   const bodyTo = endMatch >= 0 ? endMatch : doc.length;
   const body = doc.slice(bodyFrom, bodyTo);
   const commands = new Map<string, { count: number; sample: string }>();
+  // Code and drawings are one unit each: a verbatim or listing is drawn as code (its `$` and `\` are text), a TikZ picture
+  // is source as a whole (its `$(60:\C)!0.5!(120:\C)$` and `\draw` are not LaTeX commands or formulas to report).
+  const opaque: Array<{ from: number; to: number }> = [];
+  syntaxTree(view.state).iterate({
+    from: bodyFrom, to: bodyTo,
+    enter: (node) => {
+      if (node.name !== "VerbatimEnvironment" && node.name !== "VerbCommand" && node.name !== "LstInlineCommand") return;
+      opaque.push({ from: node.from, to: node.to });
+      const env = node.name === "VerbatimEnvironment" ? /^\\begin\s*\{([^}]*)\}/.exec(doc.slice(node.from, node.from + 60))?.[1] : null;
+      if (env && /^(?:tikzpicture|pgfpicture|circuitikz)$/.test(env) && !covered(node.from) && !isInLatexComment(doc, node.from) && !faded(node.from)) {
+        const name = `begin{${env}} (one unit)`;
+        const entry = commands.get(name);
+        if (entry) entry.count++;
+        else commands.set(name, { count: 1, sample: `${lineOf(doc, node.from)}: ${lineAt(doc, node.from)}` });
+      }
+      return false;
+    },
+  });
+  const inOpaque = (pos: number) => opaque.some((range) => range.from <= pos && pos < range.to);
   for (const match of body.matchAll(/\\(?:begin\s*\{([^}]*)\}|([a-zA-Z@]+))/g)) {
     const pos = bodyFrom + match.index!;
-    if ((pos > 0 && doc[pos - 1] === "\\") || isInLatexComment(doc, pos) || covered(pos) || faded(pos)) continue;
+    if ((pos > 0 && doc[pos - 1] === "\\") || isInLatexComment(doc, pos) || covered(pos) || faded(pos) || inOpaque(pos)) continue;
     const name = match[1] !== undefined ? `begin{${match[1]}}` : match[2];
     const entry = commands.get(name);
     if (entry) entry.count++;
@@ -219,7 +238,7 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   const math: string[] = [];
   for (const match of body.matchAll(/\$\$?|\\\[|\\\(/g)) {
     const pos = bodyFrom + match.index!;
-    if ((pos > 0 && doc[pos - 1] === "\\") || isInLatexComment(doc, pos) || covered(pos) || faded(pos)) continue;
+    if ((pos > 0 && doc[pos - 1] === "\\") || isInLatexComment(doc, pos) || covered(pos) || faded(pos) || inOpaque(pos)) continue;
     math.push(`${lineOf(doc, pos)}: ${doc.slice(pos, pos + 140).replace(/\n/g, " ")}`);
   }
   // Why each formula left as source was not drawn: the macro expansion failed, or KaTeX's error.

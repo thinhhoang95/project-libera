@@ -8,11 +8,11 @@ import { expansionState, placeAtCall } from "./macro-provenance";
 import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
-import { latexParser } from "../latex-parser";
+import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { disabledField } from "./model";
-import { citationNoteText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
+import { citationNoteText, citationNotes, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
@@ -84,6 +84,8 @@ const SKIPPED = new Set([
 ]);
 /** Skipped nodes whose text the PDF shows (listings, `\verb`): never part of what a widget replaces without drawing it. */
 const VISIBLE_SKIPPED = new Set(["VerbatimEnvironment", "VerbCommand", "LstInlineCommand", "Csname"]);
+/** A `tikzpicture`, `pgfpicture` or `circuitikz`: parsed as opaque text (latex-parser.ts), so it is a drawing and not code. */
+const isDrawingVerbatim = (node: SyntaxNode, read: (from: number, to: number) => string) => node.name === "VerbatimEnvironment" && OPAQUE_DRAWING_ENVIRONMENTS.has(environmentName(node, read) ?? "");
 /** Definition nodes of the grammar, which may end before the definition does (`\newcommand*{\a}{…}`). */
 const DEFINITION_NODES = new Set(["NewCommand", "RenewCommand", "NewEnvironment", "RenewEnvironment", "Def", "Let", "NewTheoremCommand", "TheoremStyleCommand"]);
 /** Built-in commands drawn by the walk, which a document may redefine. */
@@ -1169,7 +1171,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
               const group = after[next + space] === "{" ? readGroup(after, next + space) : null;
               if (!group) break;
               const groupKeys = group.content.split(",").map((key) => key.trim()).filter(Boolean);
-              const groupNotes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
+              const groupNotes = citationNotes(optionals, defs, node.from);
               if (!groupKeys.length || /[{}\\]/.test(group.content) || !notesUnderstood(groupNotes)) return false;
               more.push({ keys: groupKeys, notes: groupNotes });
               at = group.end;
@@ -2205,7 +2207,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const range = optional && argumentInner(optional.node);
         const given = range ? read(state, range.from, range.to).trim().replace(/^\{([\s\S]*)\}$/, "$1") : null;
         // natbib's author–year labels (`[{Ba et~al.(2016)Ba, Kiros, and Hinton}]`) are not printed in the list.
-        const label = given === null ? `[${bibitemNumber(doc, env.from, node.from)}]` : /\(\s*\d{4}[a-z]?\s*\)/.test(given) ? "" : `[${given}]`;
+        // A label with commands (`CGK{\etalchar{+}}20`) is printed as text, or the line stays source.
+        const authorYear = given !== null && /\(\s*\d{4}[a-z]?\s*\)/.test(given);
+        const printed = given !== null && !authorYear && /[\\{}]/.test(given) ? citationNoteText(citationNotes([given], defs, node.from).post ?? given) : given;
+        if (given !== null && printed === null) return false;
+        const label = given === null ? `[${bibitemNumber(doc, env.from, node.from)}]` : authorYear ? "" : `[${printed}]`;
         const to = keyArgument.node.to;
         // A label written with commands (BibTeX's alpha style: `[CGK{\etalchar{+}}20]`, 2611.07622) is drawn as LaTeX, its macros expanded.
         const written = given !== null && /[\\$]/.test(given) && label !== "";
@@ -2886,7 +2892,7 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
     if (ref.to <= noteUntil) return false;
     if (ref.type.isError) { covered = false; return false; }
     // A listing or `\verb` text is visible content the figure widget cannot draw: shown as its source, in its place.
-    if (VISIBLE_SKIPPED.has(name)) { unknown(ref.from, ref.to, name === "VerbatimEnvironment" ? `Code (${environmentName(ref.node, readState) ?? "listing"})` : undefined); return false; }
+    if (VISIBLE_SKIPPED.has(name) && !isDrawingVerbatim(ref.node, readState)) { unknown(ref.from, ref.to, name === "VerbatimEnvironment" ? `Code (${environmentName(ref.node, readState) ?? "listing"})` : undefined); return false; }
     // The notes after the last image, grid or caption (tablenotes, a notes minipage, `\floatfoot`, a "Notes:" paragraph).
     if (ref.from >= notesFrom && name !== "EndEnv") return false;
     // Notes between the content and a caption at the end.
@@ -3637,7 +3643,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
       }
       const formula = mathDrawing(ref.node, state);
       if (formula) { content.drawings!.push(formula); content.places.drawings.push(ref.from); found(ref.from); return false; }
-      if ((name === "Environment" || name === "KnownEnvironment" || name === "TikzPictureEnvironment") && !isTabular(ref.node, readState)) {
+      if ((name === "Environment" || name === "KnownEnvironment" || name === "TikzPictureEnvironment" || isDrawingVerbatim(ref.node, readState)) && !isTabular(ref.node, readState)) {
         const envName = environmentName(ref.node, readState) ?? "";
         if (envName === "tikzpicture") { content.drawings!.push(""); content.places.drawings.push(ref.from); found(ref.from); return false; }
         if (DIAGRAM_ENVIRONMENTS[envName]) { content.drawings!.push(`diagram:${DIAGRAM_ENVIRONMENTS[envName]}`); content.places.drawings.push(ref.from); found(ref.from); return false; }

@@ -1,6 +1,7 @@
 import type { EditorState, Text } from "@codemirror/state";
 import type { LatexAuxData } from "../../aux-file";
 import type { LatexDefinitions } from "../../macros/definitions";
+import { expandLatexMacros } from "../../macros/expand";
 import { referenceText, type LabelTarget, type LatexNumbering } from "../../macros/numbering";
 import { latexProjectField } from "../editing";
 import { visualAux, visualDefinitions, visualNumbering } from "./model";
@@ -175,6 +176,90 @@ export function mathNoteText(math: string): string | null {
     return null;
   }
   return out.replace(/\s+/g, " ").replace(/\(\s+/g, "(").trim();
+}
+
+/** Symbols a formula in a citation note prints as one character. */
+const NOTE_MATH_SYMBOLS: Record<string, string> = {
+  "\\pm": "±", "\\mp": "∓", "\\times": "×", "\\cdot": "·", "\\sim": "∼", "\\approx": "≈", "\\simeq": "≃", "\\le": "≤", "\\leq": "≤", "\\ge": "≥",
+  "\\geq": "≥", "\\ne": "≠", "\\neq": "≠", "\\infty": "∞", "\\to": "→", "\\ldots": "…", "\\dots": "…", "\\cdots": "⋯", "\\circ": "°", "\\%": "%",
+  "\\alpha": "α", "\\beta": "β", "\\gamma": "γ", "\\delta": "δ", "\\epsilon": "ε", "\\varepsilon": "ε", "\\zeta": "ζ", "\\eta": "η", "\\theta": "θ",
+  "\\kappa": "κ", "\\lambda": "λ", "\\mu": "μ", "\\nu": "ν", "\\xi": "ξ", "\\pi": "π", "\\rho": "ρ", "\\sigma": "σ", "\\tau": "τ", "\\phi": "φ",
+  "\\varphi": "φ", "\\chi": "χ", "\\psi": "ψ", "\\omega": "ω", "\\Gamma": "Γ", "\\Delta": "Δ", "\\Theta": "Θ", "\\Lambda": "Λ", "\\Sigma": "Σ",
+  "\\Phi": "Φ", "\\Psi": "Ψ", "\\Omega": "Ω",
+};
+const NOTE_MATH_SPACED = /^\\(?:pm|mp|times|cdot|sim|approx|simeq|le|leq|ge|geq|ne|neq|to)$/;
+const NOTE_SUPERSCRIPTS: Record<string, string> = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹", "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼", "(": "⁽", ")": "⁾", n: "ⁿ", i: "ⁱ" };
+const NOTE_SUBSCRIPTS: Record<string, string> = { "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉", "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎" };
+/** Commands of a formula that print their argument's text (`{\rm mas\,yr^{-1}}`). */
+const NOTE_MATH_WRAPPERS = /^\\(?:mathrm|mathit|mathbf|mathsf|mathtt|mathnormal|text|textrm|textit|textbf|mbox|operatorname)$/;
+const NOTE_MATH_SPACES = /^\\(?:,|;|:|>| |quad|qquad|thinspace|enspace)$/;
+const NOTE_MATH_SWITCHES = /^\\(?:rm|it|bf|sf|tt|normalfont|mathstrut|left|right|!|displaystyle|textstyle|scriptstyle)$/;
+
+/**
+ * A formula in a citation note as plain text: `(+0.380 \pm 0.001, -0.361 \pm 0.002)\,{\rm mas\,yr^{-1}}` is
+ * "(+0.380 ± 0.001, -0.361 ± 0.002) mas yr⁻¹". Symbols, upright text and scripts of digits and signs only; null for
+ * anything else (a fraction, a letter in a subscript), so the note, and the citation, stay source.
+ */
+export function noteMathText(math: string, depth = 0): string | null {
+  if (depth > 6) return null;
+  let out = "";
+  for (let i = 0; i < math.length;) {
+    const char = math[i];
+    if (char === "{" || char === "}") { i++; continue; }
+    if (char === "^" || char === "_") {
+      const group = math[i + 1] === "{" ? readGroup(math, i + 1) : null;
+      const raw = group ? group.content : /^\\(?:[A-Za-z]+|.)/.exec(math.slice(i + 1))?.[0] ?? math.slice(i + 1, i + 2);
+      const inner = raw ? noteMathText(raw, depth + 1) : null;
+      if (inner === null) return null;
+      const map = char === "^" ? NOTE_SUPERSCRIPTS : NOTE_SUBSCRIPTS;
+      const letters = [...inner.trim()];
+      if (inner === "°") out += inner;
+      else if (letters.length && letters.every((letter) => map[letter] !== undefined)) out += letters.map((letter) => map[letter]).join("");
+      else return null;
+      i = group ? group.end : i + 1 + raw.length;
+      continue;
+    }
+    if (char !== "\\") {
+      const next = math.slice(i).search(/[{}^_\\]/);
+      const end = next < 0 ? math.length : i + next;
+      const piece = math.slice(i, end);
+      if (!/^[\w\s.,;:+\-=()[\]<>/'|*!?]*$/.test(piece)) return null;
+      out += piece;
+      i = end;
+      continue;
+    }
+    const command = /^\\(?:[A-Za-z]+|.)/.exec(math.slice(i))?.[0] ?? "\\";
+    let after = i + command.length;
+    if (NOTE_MATH_SPACES.test(command)) { out += " "; i = after; continue; }
+    if (NOTE_MATH_SWITCHES.test(command)) { i = after + (/[A-Za-z]$/.test(command) && math[after] === " " ? 1 : 0); continue; }
+    if (NOTE_MATH_SYMBOLS[command] !== undefined) {
+      // A relation or operation is spaced from its operands, as the formula prints it.
+      out += NOTE_MATH_SPACED.test(command) ? ` ${NOTE_MATH_SYMBOLS[command]} ` : NOTE_MATH_SYMBOLS[command];
+      i = after + (/[A-Za-z]$/.test(command) && math[after] === " " ? 1 : 0);
+      continue;
+    }
+    while (math[after] === " ") after++;
+    const group = NOTE_MATH_WRAPPERS.test(command) ? readGroup(math, after) : null;
+    const inner = group ? noteMathText(group.content, depth + 1) : null;
+    if (inner === null) return null;
+    out += inner;
+    i = group!.end;
+  }
+  return out;
+}
+
+/**
+ * A citation's notes with the document's macros expanded (`$0.1\masyr$`, `\getgaia{}`), so the chip can print them:
+ * each formula and each stretch of text whose macros all expand is replaced by the expansion; others stay as written.
+ */
+export function citationNotes(optionals: string[], defs: LatexDefinitions | undefined, pos: number): { pre?: string; post?: string } {
+  const notes = optionals.map((note) => (defs && note.includes("\\") ? note.split(/(\$[^$]*\$)/).map((part, index) => {
+    if (!part.includes("\\")) return part;
+    const math = index % 2 === 1;
+    const expanded = expandLatexMacros(math ? part.slice(1, -1) : part, defs, { mode: math ? "math" : "text", pos });
+    return expanded.ok ? (math ? `$${expanded.text}$` : expanded.text) : part;
+  }).join("") : note));
+  return notes.length > 1 ? { pre: notes[0] || undefined, post: notes[1] || undefined } : { post: notes[0] || undefined };
 }
 
 /**

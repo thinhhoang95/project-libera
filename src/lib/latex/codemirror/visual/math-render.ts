@@ -2,6 +2,7 @@ import katex from "katex";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { splitMathRows, stripTexComments } from "../../macros/numbering";
 import { COVERAGE_MACROS, coverageForKatex } from "./math-coverage";
+import { diagramsForKatex } from "./math-diagram";
 import { siunitxForKatex } from "./siunitx";
 import { cssColor } from "./symbols";
 
@@ -562,6 +563,16 @@ function arraysForKatex(latex: string) {
   return out;
 }
 
+/** The lengths that shape an array: `\arraystretch` becomes KaTeX's own macro (its arrays read it), the others (column gaps, rule widths) are dropped. */
+const ARRAY_LENGTHS = /\\(?:arraystretch|arraycolsep|tabcolsep|arrayrulewidth|doublerulesep|extrarowheight)(?![A-Za-z@])/;
+const ARRAY_LENGTH_NAMES = "(?:arraycolsep|tabcolsep|arrayrulewidth|doublerulesep|extrarowheight)";
+const LENGTH_SETTING = new RegExp(String.raw`\\(?:set|addto)length\s*(?:\{\s*\\${ARRAY_LENGTH_NAMES}\s*\}|\\${ARRAY_LENGTH_NAMES})\s*\{[^{}]*\}|\\${ARRAY_LENGTH_NAMES}\s*=\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|mm|cm|in|bp|mu)`, "g");
+function arrayLengthsForKatex(latex: string) {
+  return latex
+    .replace(/\\(?:re|provide)?newcommand\s*\*?\s*(?:\{\s*\\arraystretch\s*\}|\\arraystretch)\s*\{\s*(\d+(?:\.\d*)?|\.\d+)\s*\}/g, "\\def\\arraystretch{$1}")
+    .replace(LENGTH_SETTING, "");
+}
+
 /** `\ensuremath{x}` in a formula's text (`\text{the value \ensuremath{x}}`): math again, as `$x$`. */
 function ensuremathInText(latex: string) {
   return replaceGroups(latex, /\\(?:text|textrm|textit|textbf|textnormal|textup|textsf|texttt|mbox)(?![A-Za-z@])\s*/g, (content) => content, (match, content) => {
@@ -625,6 +636,10 @@ export function forKatex(latex: string) {
   if (out.includes("\\nulldelimiterspace")) out = out.replace(/\\nulldelimiterspace\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|mu|bp|mm|cm|in)|\\setlength\s*\{?\s*\\nulldelimiterspace\s*\}?\s*\{[^{}]*\}/g, "");
   // Page breaks and labels in their forms draw nothing (`\displaybreak[2]` in an align, cleveref's `\label[lemma]{x}`).
   if (/\\(?:displaybreak|allowdisplaybreaks|label|zlabel|ltxlabel|sublabel|smashoperator)(?![A-Za-z@])/.test(out)) out = out.replace(DRAWS_NOTHING, "");
+  // Commutative diagrams: xy's `\xymatrix{…}` and tikz-cd (math-diagram.ts), as arrays of objects and arrows.
+  if (out.includes("\\xymatrix") || out.includes("{tikzcd}")) out = diagramsForKatex(out);
+  // `\renewcommand{\arraystretch}{1.6}` and `\setlength{\arraycolsep}{7pt}` inside a display: KaTeX reads the stretch as `\def\arraystretch`; the column gaps are fixed.
+  if (ARRAY_LENGTHS.test(out)) out = arrayLengthsForKatex(out);
   // Arrays' column specifications and rules (`{@{}l@{\quad}r@{}}`, `\cmidrule`, `\multicolumn`).
   if (/\\begin\s*\{(?:array|darray|subarray)\}|\\(?:cline|cmidrule|hhline|noalign|specialrule|multicolumn)(?![A-Za-z@])/.test(out)) out = arraysForKatex(out);
   if (out.includes("\\buildrel")) out = buildrelForKatex(out);
