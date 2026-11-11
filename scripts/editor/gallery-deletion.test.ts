@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import { filterGalleryChatPhotos, type ChatPhoto, type ChatStore } from "../../src/lib/document-chat";
 import { parsePhotoEdits } from "../../src/lib/photo-edits";
 import { readChatState, writeChatState } from "../../src/lib/storage/document-chat";
@@ -162,8 +162,8 @@ test("a thumbnail already rendering finishes before deletion sweeps its cache", 
   let release!: () => void;
   const rendering = new Promise<void>((resolve) => { started = resolve; });
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  const original = sharp.prototype.toBuffer as (this: sharp.Sharp) => Promise<Buffer>;
-  context.mock.method(sharp.prototype, "toBuffer", async function (this: sharp.Sharp) {
+  const original = sharp.prototype.toBuffer as (this: Sharp) => Promise<Buffer>;
+  context.mock.method(sharp.prototype, "toBuffer", async function (this: Sharp) {
     const body = await original.call(this);
     started();
     await gate;

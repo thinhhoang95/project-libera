@@ -2281,7 +2281,7 @@ function installFileExplorerHandlers() {
       throw new Error("File was not found.");
     }
 
-    clipboard.writeText(mode === "absolute" ? targetPath : relativePath);
+    await clipboard.writeText(mode === "absolute" ? targetPath : relativePath);
   });
 }
 

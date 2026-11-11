@@ -217,6 +217,33 @@ async function installMissingNativePackages(installRoot) {
   }
 }
 
+// Electron 42+ no longer downloads its binary in postinstall; it fetches it on
+// first run instead. dev:mac and electron:dev expect electron/dist to be in the
+// cache already, so fetch it here (a no-op when it is already installed).
+function installElectronBinary(installRoot) {
+  const installScript = path.join(installRoot, "node_modules", "electron", "install.js");
+
+  console.log("Installing the Electron binary...");
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [installScript], {
+      cwd: installRoot,
+      env: process.env,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`Installing the Electron binary failed with exit code ${code}.`));
+    });
+  });
+}
+
 async function installPlatformCache(fingerprint) {
   const stagingRoot = path.join(cacheRoot, `.install-${platformKey}-${process.pid}`);
 
@@ -238,6 +265,7 @@ async function installPlatformCache(fingerprint) {
   }
 
   await installMissingNativePackages(stagingRoot);
+  await installElectronBinary(stagingRoot);
 
   await fs.writeFile(
     path.join(stagingRoot, path.basename(metadataFile)),
