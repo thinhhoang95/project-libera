@@ -6,7 +6,7 @@ import { isInLatexComment } from "../../macros/definitions";
 import { beginDocumentIndex } from "../../document-begin";
 import { preambleOpenField, togglePreamble, visualConfig, visualDefinitions } from "./model";
 import { preambleEndOf } from "./structural";
-import { ACCUMULATING_AUTHORS, LIPICS } from "./walk";
+import { ACCUMULATING_AUTHORS, LIPICS, titleClass } from "./walk";
 import { editableLines, frontMatterDetails } from "./front-matter";
 import { setTitleHooks, type TitleElement, type TitlePart } from "./widgets";
 
@@ -88,18 +88,27 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
   const starts: number[] = [];
   const first = () => (starts.length ? Math.min(...starts) : null);
   const note = (use: CommandUse | undefined) => { if (use) starts.push(use.start); return use; };
-  // ICML's `\twocolumn[\icmltitle{…} \icmlauthor{Name}{aff} …]`: the names (affiliations are keys into `\icmlaffiliation`).
-  if (/\\icmltitle(?![A-Za-z@])/.test(block)) {
-    const title = note(commandUses(block, from, "icmltitle").at(-1));
-    const names = commandUses(block, from, "icmlauthor");
+  // ICML's `\twocolumn[\icmltitle{…} \icmlauthor{Name}{aff} …]` and MLSys's `\mlsystitle`: the names (affiliations are keys into `\icmlaffiliation`).
+  const mlPrefix = /\\(icml|mlsys)title(?![A-Za-z@])/.exec(block)?.[1];
+  if (mlPrefix) {
+    const title = note(commandUses(block, from, `${mlPrefix}title`).at(-1));
+    const names = commandUses(block, from, `${mlPrefix}author`);
     names.forEach(note);
-    return { title: title?.[0] ?? null, authors: names.map((groups) => groups[0]), date: null, abstract: null, lines: [], notes: [], start: first(), addAuthorAt: null };
+    // MLSys's abstract is written inside the block, and drawn in it.
+    let abstract: SourceSpan | null = null;
+    for (const match of block.matchAll(/\\begin\s*\{abstract\}/g)) {
+      if (isInLatexComment(block, match.index ?? 0)) continue;
+      const contentFrom = (match.index ?? 0) + match[0].length;
+      const end = /\\end\s*\{abstract\}/.exec(block.slice(contentFrom));
+      if (end) { abstract = trimmed(state, { from: from + contentFrom, to: from + contentFrom + end.index }); starts.push(from + (match.index ?? 0)); break; }
+    }
+    return { title: title?.[0] ?? null, authors: names.map((groups) => groups[0]), date: null, abstract, lines: [], notes: [], start: first(), addAuthorAt: null };
   }
   // imsart's and elsarticle's `frontmatter`: the commands in it.
   const frontMatter = /^\\begin\s*\{frontmatter\}/.test(block);
   const scope = frontMatter ? block : text;
   const base = frontMatter ? from : 0;
-  const documentClass = visualDefinitions(state).documentClass ?? "";
+  const documentClass = titleClass(visualDefinitions(state), visualDefinitions(state).documentClass ?? "") ?? "";
   let authors: SourceSpan[];
   let addAuthorAt: number | null = null;
   if (!frontMatter && LIPICS.test(documentClass)) {
@@ -430,7 +439,7 @@ function canAddAuthor(view: EditorView, block: TitleElement) {
   if (!canEdit(view)) return false;
   const start = block.liberaTitleStart?.();
   // Not placed yet (just drawn): the class alone tells.
-  if (start === null || start === undefined) return !ACCUMULATING_AUTHORS.test(visualDefinitions(view.state).documentClass ?? "");
+  if (start === null || start === undefined) return !ACCUMULATING_AUTHORS.test(titleClass(visualDefinitions(view.state), visualDefinitions(view.state).documentClass ?? "") ?? "");
   return authorAppendPoint(block, titleSources(view.state, start, start + (block.liberaTitleScope ?? block.liberaTitleLength ?? 0))) !== null;
 }
 
