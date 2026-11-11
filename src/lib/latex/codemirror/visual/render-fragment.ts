@@ -459,7 +459,18 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       const ctrl = node.firstChild!;
       const keyText = keys ? read(keys.from, keys.to).replace(/^\{|\}$/g, "") : "";
       const chip = element("span", "cm-vis-chip cm-vis-ref");
-      chip.textContent = referenceChipText(read(ctrl.from, ctrl.to), keyText.split(",").map((key) => key.trim()).filter(Boolean), context.numbering, context.aux, context.defs);
+      const text = referenceChipText(read(ctrl.from, ctrl.to), keyText.split(",").map((key) => key.trim()).filter(Boolean), context.numbering, context.aux, context.defs);
+      chip.textContent = text;
+      // A reference to an item labelled with a formula (`label=$(\dagger_{\arabic*})$`): its math drawn, as the chip in the text has it.
+      if (/\$[^$]+\$/.test(text)) {
+        chip.replaceChildren(...text.split(/(\$[^$]+\$)/).filter(Boolean).map((part) => {
+          const html = /^\$[^$]+\$$/.test(part) ? renderKatex(part.slice(1, -1), false) : null;
+          if (!html) return document.createTextNode(part);
+          const math = element("span", "cm-vis-chip-math");
+          math.innerHTML = html;
+          return math;
+        }));
+      }
       parent.appendChild(chip);
       return;
     }

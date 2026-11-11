@@ -790,6 +790,16 @@ function markFailingParts(latex: string, state: PartialState, depth: number): st
         if (inner !== text && renders(inner)) return inner + separator;
       }
       const unnumbered = NUMBERED_ROW_ENVIRONMENTS.has(name) && !star && /\\(?:tag|nonumber|notag)(?![A-Za-z@])/.test(text);
+      // A row with alignment `&`s: its cells one by one, so the `&`s (and the cells KaTeX does read) are not shown as source,
+      // only the cell it rejects (an undefined macro in one cell of an `align*`).
+      const cells = splitTopLevelAmpersands(text);
+      if (cells.length > 1) {
+        return cells.map((cell) => {
+          if (!cell.trim()) return cell;
+          if (renders(cell)) { state.kept++; return cell; }
+          return sourcePart(cell, state) + (unnumbered ? "\\nonumber " : "");
+        }).join("&") + separator;
+      }
       return sourcePart(text, state) + (unnumbered ? "\\nonumber " : "") + separator;
     });
     out += `${latex.slice(at, match.index)}${match[0]}${args}${rows.join("")}`;
@@ -862,9 +872,10 @@ export function katexForEnvironment(env: string, body: string): DisplayMathSourc
     return { latex: starred ? inner : `\\begin{equation}${inner}\\end{equation}`, numbered: !starred, inline: false };
   }
   if (base === "eqnarray") {
-    // `a &=& b` is three columns; align's `a &= b` draws the same.
-    const rows = content.split(/\\\\/).map((row) => row.replace(/&([^&]*)&/, "&$1"));
-    return { latex: `\\begin{align${starred ? "*" : ""}}${rows.join("\\\\")}\\end{align${starred ? "*" : ""}}`, numbered: !starred, inline: false };
+    // `a &=& b` is three columns; align's `a &= b` draws the same. The row's second `&` goes (as a space: `&\to&P` must
+    // not become `\toP`); rows are split where TeX does (not at a `\\` in braces, a nested environment or a comment).
+    const rows = rowsWithBreaks(content).map(({ text, separator }) => withoutSecondAmpersand(text) + separator);
+    return { latex: `\\begin{align${starred ? "*" : ""}}${rows.join("")}\\end{align${starred ? "*" : ""}}`, numbered: !starred, inline: false };
   }
   if (NUMBERED_ROWS.has(base)) {
     const args = base === "alignat" ? /^\s*\{[^}]*\}/.exec(content)?.[0] ?? "" : "";
@@ -899,6 +910,44 @@ function rowsWithNumbers(rows: string[], numbered: boolean, columns: number): { 
     return slot ? `${text}${"&".repeat(Math.max(1, columns - cells + 1))}\\qquad ${slot}` : text;
   });
   return any ? { rows: out, slots } : null;
+}
+
+/** A row cut at its top-level `&`s (not `\&`, nor in braces, nested environments or comments): its cells. */
+function splitTopLevelAmpersands(row: string) {
+  const cells: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < row.length; i++) {
+    const char = row[i];
+    if (char === "%") { const end = row.indexOf("\n", i); if (end < 0) break; i = end; continue; }
+    if (char === "\\") {
+      if (row.startsWith("\\begin", i)) depth++;
+      else if (row.startsWith("\\end", i)) depth--;
+      i++;
+    } else if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "&" && depth === 0) { cells.push(row.slice(start, i)); start = i + 1; }
+  }
+  cells.push(row.slice(start));
+  return cells;
+}
+
+/** An eqnarray row with its second top-level `&` (the one after the middle column) replaced by a space. */
+function withoutSecondAmpersand(row: string) {
+  let depth = 0;
+  let seen = 0;
+  for (let i = 0; i < row.length; i++) {
+    const char = row[i];
+    if (char === "%") { const end = row.indexOf("\n", i); if (end < 0) break; i = end; continue; }
+    if (char === "\\") {
+      if (row.startsWith("\\begin", i)) depth++;
+      else if (row.startsWith("\\end", i)) depth--;
+      i++;
+    } else if (char === "{") depth++;
+    else if (char === "}") depth--;
+    else if (char === "&" && depth === 0 && ++seen === 2) return `${row.slice(0, i)} ${row.slice(i + 1)}`;
+  }
+  return row;
 }
 
 /** The `&` at the top level of a row (not in braces or nested environments). */

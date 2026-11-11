@@ -71,7 +71,8 @@ const mathCount = (state: EditorState) => constructs(state).filter((item) => ite
 
 test("an align row KaTeX rejects shows its source; the other rows are drawn and keep their numbers", () => {
   const view = mounted(doc("\\begin{align}\na &= b \\\\\nc &= \\undefinedthing{d} \\\\\ne &= f \\label{e3}\n\\end{align}\n\\begin{equation}\ng = h \\label{e4}\n\\end{equation}\nSee \\eqref{e4}."));
-  assert.deepEqual(view.sources, ["c &= \\undefinedthing{d}"]);
+  // Only the cell KaTeX rejects is source (the row's `&` is not shown); `c` is drawn.
+  assert.deepEqual(view.sources, ["= \\undefinedthing{d}"]);
   assert.deepEqual(view.numbers, ["1", "2", "3", "4"]);
   // A failing row with \nonumber or \tag keeps no slot.
   const tagged = mounted(doc("\\begin{align}\na &= b \\\\\nc &= \\nope \\nonumber \\\\\ne &= f\n\\end{align}"));

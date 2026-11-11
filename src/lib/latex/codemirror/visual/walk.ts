@@ -818,6 +818,21 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return false;
   };
 
+  /**
+   * Whether an item label written with formulas or commands can be drawn: each `$…$` is a formula KaTeX reads (the
+   * document's macros expanded), and outside them only text styles and spacing. Else the label is shown as written.
+   */
+  const drawableLabel = (label: string, pos: number) => {
+    let drawable = true;
+    const text = label.replace(/\$([^$]*)\$/g, (_, formula: string) => {
+      const expanded = expandLatexMacros(formula, defs, { mode: "math", pos });
+      if (!expanded.ok || renderKatex(expanded.text, false) === null) drawable = false;
+      return "";
+    });
+    if (!drawable) return false;
+    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => /^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) && !/\$/.test(text);
+  };
+
   /** An item marker in the current list for `\item` (or a macro for it) at [at, to]; `optional` is its `[label]`. */
   const emitItem = (at: number, to: number, optional: string | null) => {
     const list = lists[lists.length - 1];
@@ -829,10 +844,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (optional !== null) {
       latex = /[\\$]/.test(optional);
       label = latex ? optional.trim() : optional.replace(/[{}]/g, "").trim();
+      // A label that cannot be drawn (an unknown command, a formula KaTeX rejects) stays as written.
+      if (latex && !drawableLabel(label, list.node.from)) latex = false;
       if (list.variant !== "description") variant = "number";
     } else if (list.variant === "number") {
       list.count++;
       label = enumerateItemLabel(list.count, list.depth, list.template);
+      // enumitem's `label=$(\square_{\arabic*})$`: the formula drawn; as source when it cannot be.
+      latex = /[\\$]/.test(label) && drawableLabel(label, list.node.from);
     } else if (list.plain) {
       // `\begin{list}{}{…}` and `trivlist`: no label unless the item gives one.
       label = "";
@@ -843,7 +862,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const line = doc.lineAt(at);
     const replaceFrom = read(state, line.from, at).trim() ? at : line.from;
     const numberedAt = list.adjusted && optional === null && list.variant === "number" ? at - replaceFrom : null;
-    emit({ kind: "item", from: replaceFrom, to, reveal: "never", replaces: [{ from: replaceFrom, to, widget: new ItemMarkerWidget(label, variant, list.depth, { latex, inline: list.inline }, numberedAt) }] });
+    emit({ kind: "item", from: replaceFrom, to, reveal: "strict", replaces: [{ from: replaceFrom, to, widget: new ItemMarkerWidget(label, variant, list.depth, { latex, inline: list.inline }, numberedAt, to - replaceFrom) }] });
     return true;
   };
 
@@ -2299,7 +2318,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const to = keyArgument.node.to;
         // A label written with commands (BibTeX's alpha style: `[CGK{\etalchar{+}}20]`, 2611.07622) is drawn as LaTeX, its macros expanded.
         const written = given !== null && /[\\$]/.test(given) && label !== "";
-        emit({ kind: "item", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ItemMarkerWidget(label, "number", 1, written ? { latex: true } : {}) }] });
+        emit({ kind: "item", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ItemMarkerWidget(label, "number", 1, written ? { latex: true } : {}, null, to - node.from) }] });
         return false;
       }
     }

@@ -198,14 +198,29 @@ const ENUM_COUNTERS = ["enumi", "enumii", "enumiii", "enumiv"];
 /** LaTeX's own counters a document may print (`\thesection`, `\arabic{figure}`). */
 export const PRINTABLE_COUNTERS = new Set([...SECTION_COUNTERS, "part", "equation", "figure", "table", "footnote", "algorithm", "lstlisting", ...ENUM_COUNTERS]);
 
+/** enumitem's counter placeholders in a label (`\arabic*`, `\alph*`, `\Roman*`, and the list level's own `\arabic{enumii}`) as the item's value. */
+function fillEnumitemCounter(label: string, count: number, depth: number) {
+  const value = (style: string) => formatCounterValue(count, style as "arabic" | "alph" | "Alph" | "roman" | "Roman");
+  return label.replace(/\\(arabic|alph|Alph|roman|Roman)\*/g, (_, style: string) => value(style))
+    .replace(/\\(arabic|alph|Alph|roman|Roman)\s*\{\s*(enum(?:i|ii|iii|iv))\s*\}/g, (whole, style: string, counter: string) => (counter === ENUM_COUNTERS[depth - 1] ? value(style) : whole));
+}
+
+/** A label's grouping braces (`{(\roman*)}`) only group: gone, unless it has commands or math, which need them (`$L_{10}$`). */
+function withoutLabelBraces(label: string) {
+  return /[\\$]/.test(label) ? label : label.replace(/[{}]/g, "");
+}
+
 /** The label an `enumerate` item shows: `1.`, `(a)`, or a custom `[(i)]` / `label=(\alph*)` template. */
 export function enumerateItemLabel(count: number, depth: number, template: string | null) {
   if (template) {
     // enumerate's `[(i)]` and enumitem's `label=(\alph*)`.
-    const label = /(?:^|,)\s*label\s*=\s*([^,]+)/.exec(template)?.[1]?.trim() ?? (/=/.test(template) ? null : template);
-    if (label !== null) {
-      const starred = label.replace(/\\(arabic|alph|Alph|roman|Roman)\*/, (_, style: "arabic" | "alph" | "Alph" | "roman" | "Roman") => formatCounterValue(count, style));
-      if (starred !== label) return starred.replace(/[{}]/g, "");
+    const keyed = /(?:^|,)\s*label\s*=/.test(template);
+    const label = keyed ? listOptionMap(template).get("label")?.trim() ?? null : /=/.test(template) ? null : template;
+    if (label !== null && label !== undefined) {
+      const starred = fillEnumitemCounter(label, count, depth);
+      if (starred !== label) return withoutLabelBraces(starred);
+      // enumitem's `label=` is literal without a `\arabic*` (`label=$(\star)$`, `label=--`): its letters are not counters.
+      if (keyed) return withoutLabelBraces(label);
       const token = /[1aAiI]/.exec(label);
       if (token) {
         const style = token[0] === "1" ? "arabic" : token[0] === "a" ? "alph" : token[0] === "A" ? "Alph" : token[0] === "i" ? "roman" : "Roman";
@@ -229,7 +244,7 @@ export function enumerateItemReference(counts: number[], templates: Array<string
   const template = templates[depth - 1];
   if (template) {
     const ref = /(?:^|,)\s*ref\s*=\s*([^,]+)/.exec(template)?.[1]?.trim();
-    if (ref) return ref.replace(/\\(arabic|alph|Alph|roman|Roman)\*/g, (_, style: "arabic" | "alph" | "Alph" | "roman" | "Roman") => formatCounterValue(counts[depth - 1], style)).replace(/[{}]/g, "");
+    if (ref) return withoutLabelBraces(fillEnumitemCounter(ref, counts[depth - 1], depth));
     return enumerateItemLabel(counts[depth - 1], depth, template).replace(/\.$/, "");
   }
   const [first, second, third, fourth] = counts;
