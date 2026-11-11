@@ -170,7 +170,7 @@ const LiberaListItem = ListItem.extend({
     if (children.slice(1).some((child) => child.type === "text")) {
       token = { ...token, tokens: children.map((child) => child.type === "text" ? { ...child, type: "paragraph", tokens: child.tokens ?? [{ type: "text", raw: child.raw, text: child.text }] } : child) };
     }
-    return ListItem.config.parseMarkdown?.(token, helpers) ?? [];
+    return ListItem.config.parseMarkdown?.call(this, token, helpers) ?? [];
   },
 });
 
@@ -205,6 +205,39 @@ const LiberaOrderedList = OrderedList.extend({
       const token = orderedListTokenizer.tokenize(src, tokens, lexer) as ListToken | undefined;
       if (token?.items) splitItemDisplayMath(token.items, lexer as unknown as BlockLexer);
       return token as ReturnType<typeof orderedListTokenizer.tokenize>;
+    },
+  },
+});
+
+type TaskToken = ListToken & { mainContent?: string; text?: string; nestedTokens?: TaskToken[] };
+type TaskLexer = BlockLexer & { inlineTokens(src: string): ListToken[] };
+
+/** The same repair for task items. Since Tiptap 3.33 an item's continuation
+ * lines join its opening paragraph unless they start a block on their own, and
+ * a lone `\[` line does not, so `- [ ] Text:\n  \[\n  x\n  \]` lost its math. */
+function splitTaskDisplayMath(tokens: TaskToken[], lexer: TaskLexer) {
+  for (const token of tokens) {
+    if (token.type === "taskList" && token.items) splitTaskDisplayMath(token.items, lexer);
+    if (token.type !== "taskItem") continue;
+    if (token.nestedTokens) splitTaskDisplayMath(token.nestedTokens, lexer);
+    if (!token.mainContent?.includes("\n")) continue;
+    const blocks = lexer.blockTokens(token.mainContent, []);
+    if (!blocks.some((block) => block.type === "blockMath")) continue;
+    const lead = blocks[0]?.type === "paragraph" ? blocks.shift()!.raw!.trim() : "";
+    token.mainContent = token.text = lead;
+    token.tokens = lexer.inlineTokens(lead);
+    token.nestedTokens = [...blocks.filter((block) => block.type !== "space"), ...(token.nestedTokens ?? [])];
+  }
+}
+
+const taskListTokenizer = TaskList.config.markdownTokenizer!;
+const LiberaTaskList = TaskList.extend({
+  markdownTokenizer: {
+    ...taskListTokenizer,
+    tokenize(src, tokens, lexer) {
+      const token = taskListTokenizer.tokenize(src, tokens, lexer) as TaskToken | undefined;
+      if (token?.items) splitTaskDisplayMath(token.items, lexer as unknown as TaskLexer);
+      return token as ReturnType<typeof taskListTokenizer.tokenize>;
     },
   },
 });
@@ -273,7 +306,7 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
       parseMarkdown: (token, h) => ({ type: "paragraph", content: h.parseInline(token.tokens ?? []) }),
     }),
     LiberaMarkdown, LiberaHighlight, LiberaTextStyle, LiberaFontSize, LiberaLineHeight, Color,
-    TableKit, TaskList, TaskItem.configure({ nested: true }),
+    TableKit, LiberaTaskList, TaskItem.configure({ nested: true }),
     Image.extend({
       addNodeView() {
         if (options.imageNodeView) return options.imageNodeView;
