@@ -77,12 +77,16 @@ async function fetchPapers(args: string[]) {
       const gzip = bytes[0] === 0x1f && bytes[1] === 0x8b;
       try {
         if (!gzip) throw new Error("not a source archive (PDF only?)");
-        try {
-          execFileSync("tar", ["xzf", archive, "-C", folder], { stdio: "ignore" });
-        } catch {
+        const { gunzipSync } = await import("node:zlib");
+        const raw = gunzipSync(bytes);
+        if (raw.subarray(257, 262).toString("latin1") === "ustar") {
+          // A tar. Run from inside the folder with a relative name: GNU tar reads `C:/…` as a remote host on Windows.
+          const tarFile = path.join(folder, "source.tar");
+          writeFileSync(tarFile, raw);
+          try { execFileSync("tar", ["xf", "source.tar"], { cwd: folder, stdio: "ignore" }); } finally { rmSync(tarFile, { force: true }); }
+        } else {
           // A single gzipped .tex, not a tar.
-          const { gunzipSync } = await import("node:zlib");
-          writeFileSync(path.join(folder, "main.tex"), gunzipSync(bytes));
+          writeFileSync(path.join(folder, "main.tex"), raw);
         }
         // arXiv compiles a `toplevel` file named in 00README.json from the archive's root; the editor resolves includes
         // from the main file's folder, so a main file in a subfolder is moved to the root, as arXiv reads it.
