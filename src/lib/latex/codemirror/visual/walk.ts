@@ -17,6 +17,7 @@ import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectEr
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
+import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
   ChipWidget, ColumnsWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
   ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
@@ -175,6 +176,8 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   setlength: 2, addtolength: 2, colorlet: 2, definecolor: 3, addcontentsline: 3, printcontents: 3,
   // State the numbering reads (numbering.ts): `\appendix`, `\setcounter{equation}{0}`, and a counter's format
   // (`\renewcommand{\theequation}{S\arabic{equation}}`, only a `\the…` one). Column and spacing switches, TeX groups.
+  // Counters and boxes declared (`\newcounter`, chngcntr's `\counterwithin*`, `\newsavebox`): definitions, which print nothing.
+  newcounter: 1, counterwithin: 2, counterwithout: 2, newsavebox: 1,
   appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
   // IEEEtran's `\appendices`; counters stepped where they are.
   appendices: 0, stepcounter: 1, refstepcounter: 1,
@@ -218,11 +221,17 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
       if (space.includes("\n\n")) return null;
       const at = i + space.length;
       // `\setlength\parindent{0pt}`: an unbraced length.
-      const unbraced = k === 0 && /^(?:setlength|addtolength|renewcommand)$/.test(command[1]) ? /^\\[A-Za-z@]+/.exec(text.slice(at, at + 60)) : null;
+      const unbraced = k === 0 && /^(?:setlength|addtolength|renewcommand|newsavebox)$/.test(command[1]) ? /^\\[A-Za-z@]+/.exec(text.slice(at, at + 60)) : null;
       if (unbraced) { i = at + unbraced[0].length; continue; }
       const group = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
       if (!group) return null;
       i = group.end;
+    }
+    // `\newcounter{c}[section]`: the counter it counts within.
+    if (command[1] === "newcounter") {
+      const within = /^[ \t]*\[/.exec(text.slice(i));
+      const group = within ? readOptional(text, i + within[0].length - 1, TEX_GROUPS) : null;
+      if (group) i = group.end;
     }
   }
   return i > 0 ? { from: line.from, to: state.doc.lineAt(Math.min(state.doc.length, from + i)).to } : null;
@@ -231,7 +240,7 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
 /** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
 const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing)$/;
 /** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
-const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2 };
+const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2, "\\resizebox": 3, "\\scalebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
 const SPACING_ONLY = /^\s*(?:\\x?spaceskip\s*=[^]*?\\relax\s*|\\relax\s*)+$/;
 
@@ -283,7 +292,7 @@ function definitionsPrelude(text: string): { from: number; to: number } | null {
 }
 
 /** Definitions the grammar parses as unknown commands. */
-const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|newcounter|numberwithin|crefname|Crefname|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext)$/;
+const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|numberwithin|crefname|Crefname|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext)$/;
 const SECTION_CLASSES: Record<string, string> = {
   Book: "cm-vis-hpart", Part: "cm-vis-hpart", Chapter: "cm-vis-h0", Section: "cm-vis-h1", SubSection: "cm-vis-h2",
   SubSubSection: "cm-vis-h3", Paragraph: "cm-vis-h4", SubParagraph: "cm-vis-h4",
@@ -327,7 +336,7 @@ const HANDLED = new Set([
   "FootnoteCommand", "EndnoteCommand", "DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment",
   "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "Item", "Environment",
   "EndEnv", "Maketitle", "IncludeGraphics", "LineBreak", "Tilde", "Normal", "UnknownCommand", "Group",
-  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand", "ParBoxCommand",
+  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand", "ParBoxCommand", "HorizontalLine",
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
@@ -578,7 +587,7 @@ function namedTheorem(code: string, defs: LatexDefinitions) {
 
 /** `inline`: a list run into its paragraph (paralist's `inparaenum`), whose lines are not indented. */
 /** `adjusted`: a list continued from another or started elsewhere (enumitem's `resume`, `start=`); `base`: the count it starts from here. */
-type ListContext = { node: SyntaxNode; variant: "bullet" | "number" | "description"; depth: number; count: number; template: string | null; inline?: boolean; adjusted?: boolean; base?: number };
+type ListContext = { node: SyntaxNode; variant: "bullet" | "number" | "description"; depth: number; count: number; template: string | null; inline?: boolean; adjusted?: boolean; base?: number; plain?: boolean };
 /** paralist's lists, as the lists they are; the `inpara` ones run into their paragraph (Depth Anything's `inparaenum`). */
 const PARALIST: Record<string, "enumerate" | "itemize" | "description"> = {
   compactenum: "enumerate", asparaenum: "enumerate", inparaenum: "enumerate", compactitem: "itemize", asparaitem: "itemize", inparaitem: "itemize",
@@ -824,6 +833,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     } else if (list.variant === "number") {
       list.count++;
       label = enumerateItemLabel(list.count, list.depth, list.template);
+    } else if (list.plain) {
+      // `\begin{list}{}{…}` and `trivlist`: no label unless the item gives one.
+      label = "";
     } else if (list.variant === "bullet" && bulletLabel(list.template)) {
       // enumitem's `\begin{itemize}[label=--]`: the bullet it chose.
       ({ label, latex } = bulletLabel(list.template)!);
@@ -974,12 +986,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (!starts) {
         // Containers that began before the walked range: keep list context for the items inside.
         // So for enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as drawList draws them.
-        const custom = name === "Environment" ? defs.lists?.get(environmentName(node, readNode) ?? "") : undefined;
+        const generic = name === "Environment" && isGenericList(node) ? genericListHead(node, state) : null;
+        const custom = generic?.kind ?? (name === "Environment" ? defs.lists?.get(environmentName(node, readNode) ?? "") : undefined);
         if (name === "ListEnvironment" || custom) {
           const formed = wellFormedEnvironment(node, state);
           if (formed) {
             const list = listContext(node, custom ?? formed.name, lists, state, 0);
-            if (!list.template && custom) list.template = customListLabel(defs, formed.name, list.depth);
+            if (generic) { list.template = generic.template; list.plain = generic.plain; }
+            if (!list.template && custom && !generic) list.template = customListLabel(defs, formed.name, list.depth);
             list.count = itemsBefore(node, from, state, list.variant === "number" ? enumCounter(list.depth) : null, defs, list.base);
             lists.push(list);
             // A long list is built in pieces (structural.ts): its `\end` line is drawn by the piece it is in.
@@ -1218,7 +1232,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         case "Environment": case "KnownEnvironment": {
           if (name === "KnownEnvironment") return;
           // A list of the document's own (enumitem's `\newlist`): drawn as the lists the grammar knows.
-          if (defs.lists?.has(environmentName(node, readNode) ?? "") || PARALIST[environmentName(node, readNode) ?? ""]) return drawList(node);
+          if (defs.lists?.has(environmentName(node, readNode) ?? "") || PARALIST[environmentName(node, readNode) ?? ""] || isGenericList(node)) return drawList(node);
           // AASTeX's `deluxetable`: a table float of its own commands; one it cannot read stays as it was.
           if (/^deluxetable\*?$/.test(environmentName(node, readNode) ?? "") && !defs.environments.has(environmentName(node, readNode)!)) return drawDeluxeTable(node) ?? environment(node);
           // `table*`, `algorithm` and the other floats the grammar does not name; a theorem the document calls
@@ -1231,7 +1245,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const captioned = captionofBlock(node);
           if (captioned && drawFloat(node, captioned) === false) return false;
           // tcolorbox's and mdframed's boxes, and the document's own (`\newtcolorbox`): a frame around their lines.
-          if (boxEnvironments(doc).has(environmentName(node, readNode) ?? "") && !defs.environments.has(environmentName(node, readNode) ?? "")) return drawBox(node);
+          if ((boxEnvironments(doc).has(environmentName(node, readNode) ?? "") || FRAMED_PROSE.test(environmentName(node, readNode) ?? "")) && !defs.environments.has(environmentName(node, readNode) ?? "")) return drawBox(node);
           // Side-by-side minipages outside floats: columns.
           if (environmentName(node, readNode) === "minipage" && drawColumns(node) === false) return false;
           return environment(node);
@@ -1343,6 +1357,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           else if (structural && name === "Centering" && /^\\centering$/.test(read(state, node.from, node.to))) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
           return false;
         }
+        case "HorizontalLine":
+          return tableRule(node);
         case "UnknownCommand":
           return unknownCommand(node);
       }
@@ -1406,12 +1422,55 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   }
 
   /** A list: its `\begin` and `\end` lines fold away and its lines are indented; its items are drawn as they are met. */
+  /**
+   * Table rules outside a tabular (`\midrule`, `\hline`, `\cmidrule(lr){2-3}`): a file of rows that a parent file `\input`s
+   * inside its tabular (astro-ph 2611.07227's `tables/*.tex`) holds them with no table around. They are drawn as the line
+   * they are (the rule's own line, or a border on the row they follow); the rows stay text. Inside a tabular, a formula or
+   * a macro's body they are left to what draws those. Undefined when this is not such a rule.
+   */
+  function tableRule(node: SyntaxNode): false | undefined {
+    const start = node.from;
+    if (isConsumed(node)) return false;
+    for (let parent = node.parent; parent; parent = parent.parent) {
+      if (/^(?:TabularEnvironment|TabularContent|DollarMath|BracketMath|ParenMath|EquationEnvironment|EquationArrayEnvironment|NewCommand|RenewCommand|Def)$/.test(parent.name)) return undefined;
+      if (parent.name === "Environment" && /^(?:tabular\*?|tabularx|tabulary|longtable\*?|xltabular|array|deluxetable\*?|ruledtabular|supertabular|tabu|NiceTabular)$/.test(environmentName(parent, readNode) ?? "")) return undefined;
+    }
+    const run = tableRuleRun(read(state, start, Math.min(doc.length, start + 400)));
+    if (!run) return undefined;
+    const end = start + run.end;
+    const line = doc.lineAt(start);
+    // A rule run beyond the line's end is not drawn.
+    if (end > line.to) return undefined;
+    consumed.push([start, end]);
+    if (!structural) return false;
+    const before = read(state, line.from, start).trim();
+    const after = read(state, end, line.to).trim();
+    // The line classes apply while the rule is drawn: the cursor on the line shows its source, plain.
+    if (!before && !after) {
+      emit({ kind: "layout", from: line.from, to: line.to, reveal: "line", wholeLine: true, replaces: [{ from: line.from, to: line.to }], hiddenLines: [{ from: line.from, to: line.from, class: run.heavy ? "cm-vis-rule-row cm-vis-rule-row-heavy" : "cm-vis-rule-row" }] });
+    } else {
+      emit({ kind: "symbol", from: start, to: end, reveal: "line", wholeLine: true, replaces: [{ from: start, to: end }], hiddenLines: [{ from: line.from, to: line.from, class: after ? "cm-vis-rule-above" : "cm-vis-rule-below" }] });
+    }
+    return false;
+  }
+
+  /** LaTeX's own `list` and `trivlist` (unless the document defines an environment of that name). */
+  function isGenericList(node: SyntaxNode) {
+    if (node.name !== "Environment") return false;
+    const name = environmentName(node, readNode) ?? "";
+    return GENERIC_LISTS.test(name) && !defs.environments.has(name);
+  }
+
   function drawList(node: SyntaxNode): undefined {
     const formed = wellFormedEnvironment(node, state);
     if (!formed) return undefined;
     // enumitem's lists of the document's own (`\newlist{exercises}{enumerate}{6}`) are lists of their kind.
-    const custom = defs.lists?.get(formed.name) ?? PARALIST[formed.name];
+    // LaTeX's `list` and `trivlist`: an itemize or enumerate by their label, whose layout arguments are not drawn.
+    const generic = isGenericList(node) ? genericListHead(node, state) : null;
+    if (isGenericList(node) && !generic) return undefined;
+    const custom = generic?.kind ?? defs.lists?.get(formed.name) ?? PARALIST[formed.name];
     const list = listContext(node, custom ?? formed.name, lists, state, 0);
+    if (generic) { list.template = generic.template; list.plain = generic.plain; }
     if (!list.template && defs.lists?.has(formed.name)) list.template = customListLabel(defs, formed.name, list.depth);
     if (/^inpara/.test(formed.name) && !defs.lists?.has(formed.name)) list.inline = true;
     lists.push(list);
@@ -1563,7 +1622,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    */
   function drawBox(node: SyntaxNode): undefined {
     const formed = wellFormedEnvironment(node, state);
-    const use = formed && boxUse(node, state);
+    const use = formed && boxUse(node, state, true);
     if (!formed || !use) return undefined;
     const beginSpan = aloneOnLines(doc, formed.begin.from, use.end);
     const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
@@ -1673,6 +1732,26 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (structural) {
         collapseLine({ from: formed.begin.from, to: headerEnd }, "env-begin");
         collapseLine(formed.end, "env-end");
+      }
+      return undefined;
+    }
+    // `adjustbox`, `multicols`, `sideways`, `lrbox`…: a box or layout around their content, drawn as if they were not there
+    // (an lrbox's content is faded: LaTeX saves it for `\usebox`); their `\begin` with its arguments and `\end` fold away.
+    const wrapper = Object.hasOwn(WRAPPER_ENVIRONMENTS, name) && !defs.environments.has(name) ? WRAPPER_ENVIRONMENTS[name] : null;
+    if (wrapper) {
+      const nameEnd = formed.begin.getChild("EnvNameGroup")?.to ?? formed.begin.to;
+      const argsEnd = readEnvironmentArguments(read(state, nameEnd, Math.min(doc.length, nameEnd + 600)), wrapper.args);
+      if (argsEnd === null) return undefined;
+      const headerEnd = nameEnd + argsEnd;
+      consumed.push([formed.begin.from, headerEnd]);
+      if (structural) {
+        collapseLine({ from: formed.begin.from, to: headerEnd }, "env-begin");
+        collapseLine(formed.end, "env-end");
+      }
+      if (wrapper.lines && formed.content && formed.content.to > headerEnd) {
+        const bodyFrom = doc.lineAt(Math.min(doc.length, headerEnd + 1)).from;
+        const bodyTo = doc.lineAt(Math.max(formed.end.from - 1, 0)).to;
+        if (bodyTo >= bodyFrom) emit({ kind: "env-body", from: headerEnd, to: formed.end.from, reveal: "never", replaces: [], lines: [{ from: bodyFrom, to: bodyTo, class: wrapper.lines }] });
       }
       return undefined;
     }
@@ -1846,6 +1925,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
     const text = read(state, ctrl.from, ctrl.to);
+    // booktabs' `\cmidrule`, `\cline` and `\specialrule` outside a tabular: a rule line, as `\midrule` and `\hline` are.
+    if (/^\\(?:cline|cmidrule|specialrule)$/.test(text)) {
+      const rule = tableRule(node);
+      if (rule !== undefined) return rule;
+    }
     // linguex's numbered examples (cs.CL 2611.11838): `\ex.` is "(1)", its parts `\a.` and `\b.` are "a.", "b.".
     if (LINGUEX_MARKER.test(text) && read(state, ctrl.to, ctrl.to + 1) === "." && defs.packages.includes("linguex") && !macroAt(defs, text.slice(1), node.from)) {
       if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to + 1, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to + 1, widget: new ExampleMarkerWidget(text === "\\a" || text === "\\b") }] });
@@ -2821,9 +2905,9 @@ function boxTitle(options: string) {
 }
 
 /** A box environment's options and title as used (`\begin{prompt}[Self-RAG]`, `\begin{tcolorbox}[title=…]`), and where its opening ends. */
-function boxUse(node: SyntaxNode, state: EditorState) {
+function boxUse(node: SyntaxNode, state: EditorState, prose = false) {
   const name = environmentName(node, (from, to) => read(state, from, to)) ?? "";
-  const box = boxEnvironments(state.doc).get(name);
+  const box = boxEnvironments(state.doc).get(name) ?? (prose && FRAMED_PROSE.test(name) ? { title: null, arity: 0 } : undefined);
   const begin = node.getChild("BeginEnv");
   const nameEnd = begin?.getChild("EnvNameGroup")?.to;
   if (!box || !begin || nameEnd === undefined) return null;

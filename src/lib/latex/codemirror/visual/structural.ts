@@ -6,7 +6,8 @@ import { readGroup, TEX_GROUPS } from "../../../macros/core";
 import { macroAt } from "../../macros/definitions";
 import { environmentName, FLOAT_KINDS } from "../../macros/numbering";
 import { bodyStartIn, disabledField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
-import { macroRegionsFor, titleRunStart, walkConstructs, type Construct, type RevealPolicy } from "./walk";
+import { FRAMED_PROSE, GENERIC_LISTS } from "./environments";
+import { boxEnvironments, macroRegionsFor, titleRunStart, walkConstructs, type Construct, type RevealPolicy } from "./walk";
 import { preambleSummary } from "./widgets";
 
 /* The structural layer (docs/latex-visual-editor-plan.md §4–5, §8): hidden
@@ -216,7 +217,7 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
           const defs = visualDefinitions(state);
           // Floats and tabulars the grammar does not name (`algorithm`, `table*`, `tabular*`) are drawn whole too;
           // so are enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as the lists the grammar knows.
-          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name) || (wholeLists && !!defs.lists?.has(name)));
+          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name) || boxEnvironments(state.doc).has(name) || FRAMED_PROSE.test(name) || (wholeLists && GENERIC_LISTS.test(name)) || (wholeLists && !!defs.lists?.has(name)));
         }
         // A group opened by a font or size switch (`{\tt …}`, `{    \it …}`) is drawn whole: an edit whose `}` now closes
         // one opened lines before (`\begin{algorithmic}` becoming `\be\eqnralgorithmic}`) draws it from its `{`.
