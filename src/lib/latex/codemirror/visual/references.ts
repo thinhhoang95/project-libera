@@ -4,7 +4,7 @@ import type { LatexDefinitions } from "../../macros/definitions";
 import { referenceText, type LabelTarget, type LatexNumbering } from "../../macros/numbering";
 import { latexProjectField } from "../editing";
 import { visualAux, visualDefinitions, visualNumbering } from "./model";
-import { readGroup } from "../../../macros/core";
+import { readGroup, readOptional } from "../../../macros/core";
 import { colorsForKatex } from "./math-render";
 import { CONTROL_SYMBOLS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES } from "./symbols";
 
@@ -121,13 +121,68 @@ export function plainTexText(text: string) {
 
 /** Commands whose argument a citation note prints as its text (the chip is plain text, so the style is not kept). */
 const NOTE_WRAPPERS = /^\\(?:emph|textit|textbf|textsc|textrm|textsf|texttt|textup|textsl|textmd|textnormal|mbox|text)$/;
+/** Citation commands a note may hold, and how one prints (command, keys, notes) when the chip knows the bibliography. */
+const NOTE_CITE = /^\\(?:[cC]ite(?:t|p|alt|alp|author|year|yearpar|num)?|[pP]arencite|[tT]extcite)\*?$/;
+type NestedCite = (command: string, keys: string[], pre?: string, post?: string) => string;
+
+const MATH_NOTE_SYMBOLS: Record<string, string> = {
+  "\\pm": "±", "\\mp": "∓", "\\times": "×", "\\cdot": "·", "\\sim": "∼", "\\simeq": "≃", "\\approx": "≈", "\\le": "≤", "\\leq": "≤", "\\ge": "≥", "\\geq": "≥",
+  "\\neq": "≠", "\\ne": "≠", "\\ldots": "…", "\\dots": "…", "\\,": " ", "\\;": " ", "\\:": " ", "\\ ": " ", "\\!": "", "\\%": "%", "\\sigma": "σ", "\\mu": "μ",
+  "\\alpha": "α", "\\beta": "β", "\\degree": "°", "\\circ": "°", "\\infty": "∞", "\\to": "→", "\\rightarrow": "→",
+};
+const MATH_NOTE_BINARY = /^\\(?:pm|mp|times|sim|simeq|approx|le|leq|ge|geq|neq|ne|to|rightarrow)$/;
+const SUPERSCRIPTS: Record<string, string> = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹", "+": "⁺", "-": "⁻", "−": "⁻", "(": "⁽", ")": "⁾", n: "ⁿ", i: "ⁱ" };
+const SUBSCRIPTS: Record<string, string> = { "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉", "+": "₊", "-": "₋", "−": "₋", "(": "₍", ")": "₎" };
+
+/**
+ * A formula in a citation note (`$(+0.380 \pm 0.001)\,{\rm mas\,yr^{-1}}$`) as plain text, for a chip: numbers, operators and
+ * a few symbols, font switches dropped, exponents of digits and signs as superscripts. Null when it holds anything else.
+ */
+export function mathNoteText(math: string): string | null {
+  let out = "";
+  for (let i = 0; i < math.length;) {
+    const char = math[i];
+    if (char === "{" || char === "}") { i++; continue; }
+    if (char === "^" || char === "_") {
+      const group = math[i + 1] === "{" ? readGroup(math, i + 1) : null;
+      const body = group ? group.content : math[i + 1] ?? "";
+      const map = char === "^" ? SUPERSCRIPTS : SUBSCRIPTS;
+      const mapped = [...body.replace(/\s/g, "")].map((letter) => map[letter]);
+      if (!body.trim() || mapped.some((letter) => letter === undefined)) return null;
+      out += mapped.join("");
+      i = group ? group.end : i + 2;
+      continue;
+    }
+    if (char !== "\\") {
+      const next = math.slice(i).search(/[{}^_\\]/);
+      const end = next < 0 ? math.length : i + next;
+      const plain = math.slice(i, end);
+      if (!/^[\w\s.,;:+\-−=()<>/'|*[\]]*$/.test(plain)) return null;
+      out += plain;
+      i = end;
+      continue;
+    }
+    const command = /^\\(?:[A-Za-z]+|.)/.exec(math.slice(i))![0];
+    i += command.length;
+    if (command in MATH_NOTE_SYMBOLS) {
+      // Binary operators and relations are set apart (`0.380 \pm 0.001`).
+      out += MATH_NOTE_BINARY.test(command) ? ` ${MATH_NOTE_SYMBOLS[command]} ` : MATH_NOTE_SYMBOLS[command];
+      if (/[A-Za-z]$/.test(command) && math[i] === " ") i++;
+      continue;
+    }
+    // Font switches and `\mathrm{…}` print their text; the space after a command's name is not text.
+    if (/^\\(?:rm|it|bf|sf|tt|normalfont|mathrm|mathit|mathbf|text|textrm)$/.test(command)) { if (math[i] === " ") i++; continue; }
+    return null;
+  }
+  return out.replace(/\s+/g, " ").replace(/\(\s+/g, "(").trim();
+}
 
 /**
  * A citation note as it prints (`[\emph{inter alia}]` is "inter alia", `[{\rm I\hspace{-.01em}I}. 7.1]` is "II. 7.1"):
  * emphasis and font switches give their text, spacing commands are dropped, `~` is a space, simple formulas their
  * characters. Null when the note holds anything else: the citation then stays source.
  */
-export function citationNoteText(note: string, depth = 0): string | null {
+export function citationNoteText(note: string, depth = 0, cite?: NestedCite): string | null {
   if (depth > 8) return null;
   let out = "";
   for (let i = 0; i < note.length;) {
@@ -137,8 +192,9 @@ export function citationNoteText(note: string, depth = 0): string | null {
     if (char === "$") {
       const close = note.indexOf("$", i + 1);
       const math = close < 0 ? null : note.slice(i + 1, close);
-      if (math === null || !/^[\w\s.,;:+\-=()<>/'|]*$/.test(math)) return null;
-      out += math;
+      const text = math === null ? null : mathNoteText(math);
+      if (text === null) return null;
+      out += text;
       i = close + 1;
       continue;
     }
@@ -157,10 +213,28 @@ export function citationNoteText(note: string, depth = 0): string | null {
     if (symbol !== undefined) { out += symbol; i = after + (/[A-Za-z]$/.test(command) && note[after] === " " ? 1 : 0); continue; }
     if (FONT_SWITCHES[command] || SIZE_COMMAND.test(command)) { i = after + (note[after] === " " ? 1 : 0); continue; }
     while (note[after] === " ") after++;
+    // A citation inside the note (`[][mostly from \citealt{Pace2022}, \citealt{Battaglia2022}]`, 2611.07227): the text it prints.
+    if (NOTE_CITE.test(command)) {
+      const optionals: string[] = [];
+      for (let at = after; optionals.length < 2 && note[at] === "["; ) {
+        const optional = readOptional(note, at);
+        if (!optional) return null;
+        optionals.push(optional.content);
+        at = after = optional.end;
+        while (note[after] === " ") after++;
+        at = after;
+      }
+      const keys = readGroup(note, after);
+      if (!keys || !/^[^\\{}[\]%$#&]+$/.test(keys.content)) return null;
+      const list = keys.content.split(",").map((key) => key.trim()).filter(Boolean);
+      out += cite ? cite(command, list, optionals.length > 1 ? optionals[0] : undefined, optionals.at(-1)) : list.join(", ");
+      i = keys.end;
+      continue;
+    }
     const group = readGroup(note, after);
     if (/^\\(?:hspace|hskip)\*?$/.test(command) && group) { i = group.end; continue; }
     if (NOTE_WRAPPERS.test(command) && group) {
-      const inner = citationNoteText(group.content, depth + 1);
+      const inner = citationNoteText(group.content, depth + 1, cite);
       if (inner === null) return null;
       out += inner;
       i = group.end;
@@ -211,8 +285,9 @@ export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLo
   });
   const allNumeric = items.every((item) => item.numeric);
   // Notes as they print: `p.~5` is "p. 5".
-  const pre = parts.pre ? (citationNoteText(parts.pre) ?? plainTexText(parts.pre)).trim() : "";
-  const post = parts.post ? (citationNoteText(parts.post) ?? plainTexText(parts.post)).trim() : "";
+  const nested: NestedCite = (command, keys, preNote, postNote) => citationText({ command, keys, pre: preNote, post: postNote }, aux, bib, style);
+  const pre = parts.pre ? (citationNoteText(parts.pre, 0, nested) ?? plainTexText(parts.pre)).trim() : "";
+  const post = parts.post ? (citationNoteText(parts.post, 0, nested) ?? plainTexText(parts.post)).trim() : "";
   const note = (text: string) => `${pre ? `${pre} ` : ""}${text}${post ? `, ${post}` : ""}`;
   if (name === "citeauthor" || name === "Citeauthor") return items.map((item) => item.authors ?? item.key).join("; ");
   // biblatex's `\citetitle` prints the entry's title; `\fullcite` the whole entry, roughly as the list gives it.

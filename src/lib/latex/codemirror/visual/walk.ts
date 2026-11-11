@@ -24,7 +24,7 @@ import {
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
 import { detailsView, frontMatterDetails } from "./front-matter";
-import { CODE_ENVIRONMENTS, CodeCaptionWidget, CodeFileWidget, codeTokens, ContentsWidget, CounterWidget, documentCounters, inlineCodeRange, readCodeHeader, TEXT_WRAPPERS as STYLED_WRAPPERS, TextDrawingWidget } from "./text-commands";
+import { CODE_ENVIRONMENTS, CodeCaptionWidget, CodeFileWidget, codeTokens, ContentsWidget, CounterWidget, documentCounters, inlineCodeRange, LinkTextWidget, PdfPagesWidget, readCodeHeader, TEXT_WRAPPERS as STYLED_WRAPPERS, TextDrawingWidget } from "./text-commands";
 
 /* One walk over the syntax tree that recognises constructs
  * (docs/latex-visual-editor-plan.md §3–4). Each construct says which markup
@@ -125,7 +125,8 @@ function notesUnderstood(notes: { pre?: string; post?: string }) {
 }
 
 const FLOAT_LENGTHS = /^\\(?:tabcolsep|arraycolsep|arrayrulewidth|aboverulesep|belowrulesep|doublerulesep|extrarowheight|abovecaptionskip|belowcaptionskip|textfloatsep|intextsep|columnsep|parskip|parindent)$/;
-const GLUE = String.raw`-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|\\[A-Za-z@]+)`;
+// A length register alone (`\vskip\baselineskip`, 2610.30364) is glue too.
+const GLUE = String.raw`(?:-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|\\[A-Za-z@]+)|-?\s*\\[A-Za-z@]+)`;
 /** `\vskip 0.15in plus 2pt minus 1pt`, `\kern-3pt`: TeX's glue after a primitive. */
 const PRIMITIVE_GLUE = new RegExp(String.raw`^\s*${GLUE}(?:\s*(?:plus|minus)\s*(?:${GLUE}|-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*fil+))*`);
 
@@ -139,7 +140,7 @@ function layoutExtent(state: EditorState, at: number, command: string) {
   const rest = () => text.slice(i);
   if (/^\\(?:vskip|hskip|vglue|hglue|kern)$/.test(command)) i += PRIMITIVE_GLUE.exec(rest())?.[0].length ?? 0;
   // `\vspace*{2pt}`: the star keeps the grammar from attaching the group, which follows as text.
-  else if (/^\\(?:vspace|hspace|addvspace)$/.test(command)) i += /^\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
+  else if (/^\\(?:vspace|hspace|addvspace|Needspace|needspace)$/.test(command)) i += /^\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
   else if (/^\\(?:setlength|addtolength)$/.test(command)) i += /^\s*\\[A-Za-z@]+\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
   // `\rule{\textwidth}{0.4pt}` above a figure's notes (the cannabis pass-through paper): a line, drawn as the box's edge.
   else if (command === "\\rule") i += /^\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
@@ -176,6 +177,9 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   // IEEEtran's `\appendices`; counters stepped where they are.
   appendices: 0, stepcounter: 1, refstepcounter: 1,
   begingroup: 0, endgroup: 0,
+  // `\eject`, needspace's `\Needspace{16\baselineskip}`, revtex's `\onecolumngrid`/`\twocolumngrid`, `\addtocontents{toc}{…}` and
+  // `\AtEndDocument{…}` (run at the end, not here): page-layout lines that print nothing where they stand.
+  eject: 0, Needspace: 1, needspace: 1, onecolumngrid: 0, twocolumngrid: 0, addtocontents: 2, AtEndDocument: 1,
   // xcolor's alternating row fills, drawn by the tables after them.
   rowcolors: 3, showrowcolors: 0, hiderowcolors: 0,
 };
@@ -223,7 +227,7 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
 }
 
 /** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
-const INLINE_LAYOUT = /^\\(?:noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing)$/;
+const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing)$/;
 /** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
@@ -289,7 +293,7 @@ const INLINE_STYLES: Record<string, string> = {
   TextTeletypeCommand: "cm-vis-tt", TextSmallCapsCommand: "cm-vis-sc", TextSansSerifCommand: "cm-vis-sf", TextMediumCommand: "cm-vis-md",
   StrikeOutCommand: "cm-vis-s", TextSuperscriptCommand: "cm-vis-sup", TextSubscriptCommand: "cm-vis-sub",
   // `\textnormal{…}`, `\textrm{…}`, `\mbox{…}` in text: upright text, markup hidden.
-  MathTextCommand: "cm-vis-rm",
+  MathTextCommand: "cm-vis-rm", Hbox: "cm-vis-rm",
 };
 const MATH_CONTAINERS = new Set(["DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment", "Math", "InlineMath", "DisplayMath"]);
 /** Acknowledgment environments of conference classes (NeurIPS `ack`, ACM `acks`). */
@@ -857,8 +861,22 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return name && macro && !macro.provided ? { node: command, name: name[1] } : null;
   };
 
+  /** A citation's note with the document's macros expanded (`$\pm 1\masyr$`, `\Gaia{}`), when they can be; else as written. */
+  const noteMacros = (text: string, pos: number) => {
+    if (!text.includes("\\")) return text;
+    const expanded = expandLatexMacros(text, defs, { mode: "text", pos });
+    return expanded.ok ? expanded.text : text;
+  };
+
+  /** The address a `\url`/`\href` argument with macros in it prints (`\repourl/tree`), or null when a command stays in it. */
+  const expandedUrl = (raw: string, pos: number) => {
+    const expanded = expandLatexMacros(raw, defs, { mode: "text", pos });
+    const text = expanded.ok ? expanded.text.replace(/\\([%#&_~$^{}])/g, "$1").trim() : null;
+    return text && !/\\[A-Za-z@]/.test(text) && !/[{}]/.test(text) ? text : null;
+  };
+
   /** Hides a `\begin`/`\end` line when it is alone on its line, collapsing it; else only the markup. */
-  const collapseLine = (node: { from: number; to: number }, kind: string, extra?: Replace) => {
+  const collapseLine =(node: { from: number; to: number }, kind: string, extra?: Replace) => {
     const span = aloneOnLines(doc, node.from, node.to);
     const replace: Replace = extra ?? { from: span ? span.from : node.from, to: span ? span.to : node.to };
     emit({
@@ -881,6 +899,18 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (name === "RenewCommand" && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !isConsumed(ref)) {
           const line = layoutLine(state, ref.from);
           if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
+          else if (structural && /^\\renewcommand\*?\s*(?:\{\s*\\the[A-Za-z]+\s*\}|\\the[A-Za-z]+(?![A-Za-z]))/.test(read(state, ref.from, Math.min(doc.length, ref.from + 60)))) {
+            // In a line of text, or at the start of a group that only scopes it (`{\renewcommand{\thefootnote}{}\footnotetext{…}}`,
+            // 2610.30364): hidden, with the group's braces, shown again at the cursor.
+            let group = ref.node.parent;
+            for (let up = 0; up < 4 && group && group.name !== "Group"; up++) group = group.parent;
+            const open = group?.name === "Group" ? group.firstChild : null;
+            const close = group?.name === "Group" ? group.lastChild : null;
+            const scoped = !!open && !!close && open.name === "OpenBrace" && close.name === "CloseBrace" && !read(state, open.to, ref.from).trim();
+            const from = scoped ? open.from : ref.from;
+            emit({ kind: "layout", from, to: ref.to, reveal: "touch", replaces: [{ from, to: ref.to }] });
+            if (scoped) emit({ kind: "layout", from: close.from, to: close.to, reveal: "touch", replaces: [{ from: close.from, to: close.to }] });
+          }
         }
         // `\verb|…|`, `\lstinline`, `verbatim`, `lstlisting`, `minted`: code, its text taken as written.
         // (A long block is built in pieces: the piece with its `\end` line draws that line.)
@@ -1007,10 +1037,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const text = name === "HrefCommand" ? (node.getChild("ShortTextArgument") ?? node.getChild("TextArgument")) : url;
           const textRange = text && argumentInner(text);
           if (!urlRange || !textRange || textRange.to <= textRange.from || hasDirectError(node)) return;
+          // A user macro in the address (`\url{\repourl}`, `\href{\site/x}{…}`, 2610.30364) is expanded; one that cannot be stays source.
+          const rawUrl = read(state, urlRange.from, urlRange.to);
+          const href = rawUrl.includes("\\") ? expandedUrl(rawUrl, node.from) : rawUrl;
+          if (href === null) return;
+          const title = `${href} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}-click to open)`;
+          if (name === "UrlCommand" && href !== rawUrl) {
+            if (!structural) return;
+            emit({
+              kind: "style", from: node.from, to: node.to, reveal: "touch",
+              replaces: [{ from: node.from, to: urlRange.from }, { from: urlRange.from, to: urlRange.to, widget: new LinkTextWidget(href, title, urlRange.to - urlRange.from) }, { from: urlRange.to, to: node.to }],
+            });
+            return;
+          }
           emit({
             kind: "style", from: node.from, to: node.to, reveal: "touch",
             replaces: [{ from: node.from, to: textRange.from }, { from: textRange.to, to: node.to }],
-            marks: [{ from: textRange.from, to: textRange.to, class: "cm-vis-link", attributes: { "data-href": read(state, urlRange.from, urlRange.to), title: `${read(state, urlRange.from, urlRange.to)} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}-click to open)` } }],
+            marks: [{ from: textRange.from, to: textRange.to, class: "cm-vis-link", attributes: { "data-href": href, title } }],
           });
           return;
         }
@@ -1092,7 +1135,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           // `\let\cite\textcite` cites the way its target does.
           const alias = macroAt(defs, command.replace(/^\\|\*$/g, ""), node.from);
           if (alias?.alias && ALIAS_FAMILIES[name].test(alias.body)) command = alias.body + (command.endsWith("*") ? "*" : "");
-          const optionals = node.getChildren("OptionalArgument").map((arg) => { const range = argumentInner(arg); return range ? read(state, range.from, range.to) : ""; });
+          const optionals = node.getChildren("OptionalArgument").map((arg) => { const range = argumentInner(arg); return range ? noteMacros(read(state, range.from, range.to), node.from) : ""; });
           const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
           if (!notesUnderstood(notes)) return false;
           // cleveref's `\crefrange{a}{b}`: the grammar ends it after `{a}`; the chip takes the second key's group too.
@@ -2011,7 +2054,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     // `\footnotetext{…}`: the text of a note marked with `\footnotemark`, set as a footnote's (styled in both layers),
     // after its number.
-    if (text === "\\footnotetext") {
+    // A `\thanks{…}` in the text is the same, marked "*" (no counter).
+    if (text === "\\footnotetext" || text === "\\thanks") {
       const argument = commandArguments(node).find((arg) => !arg.optional);
       const inner = argument && argumentInner(argument.node);
       if (inner && !hasDirectError(node)) {
@@ -2163,7 +2207,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // natbib's author–year labels (`[{Ba et~al.(2016)Ba, Kiros, and Hinton}]`) are not printed in the list.
         const label = given === null ? `[${bibitemNumber(doc, env.from, node.from)}]` : /\(\s*\d{4}[a-z]?\s*\)/.test(given) ? "" : `[${given}]`;
         const to = keyArgument.node.to;
-        emit({ kind: "item", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ItemMarkerWidget(label, "number", 1) }] });
+        // A label written with commands (BibTeX's alpha style: `[CGK{\etalchar{+}}20]`, 2611.07622) is drawn as LaTeX, its macros expanded.
+        const written = given !== null && /[\\$]/.test(given) && label !== "";
+        emit({ kind: "item", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ItemMarkerWidget(label, "number", 1, written ? { latex: true } : {}) }] });
         return false;
       }
     }
@@ -2173,7 +2219,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const inner = keysArgument && argumentInner(keysArgument.node);
       if (inner && !hasDirectError(node)) {
         const keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
-        const optionals = args.filter((arg) => arg.optional).map((arg) => { const range = argumentInner(arg.node); return range ? read(state, range.from, range.to) : ""; });
+        const optionals = args.filter((arg) => arg.optional).map((arg) => { const range = argumentInner(arg.node); return range ? noteMacros(read(state, range.from, range.to), node.from) : ""; });
         const notes = optionals.length > 1 ? { pre: optionals[0] || undefined, post: optionals[1] || undefined } : { post: optionals[0] || undefined };
         if (!notesUnderstood(notes)) return false;
         const end = keysArgument.node.to;
@@ -2268,7 +2314,18 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "never", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new LineBreakWidget() }] });
       return undefined;
     }
-    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip)$/.test(text) && !hasDirectError(node)) {
+    // pdfpages' `\includepdf[pages=1]{file.pdf}` (2611.10154): a placeholder naming the file.
+    if (text === "\\includepdf" && mandatory.length >= 1 && !hasDirectError(node)) {
+      const file = argumentInner(mandatory[0].node);
+      const end = mandatory[0].node.to;
+      if (file) {
+        const source = read(state, node.from, end);
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new PdfPagesWidget(read(state, file.from, file.to).trim(), source, end - node.from) }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
+    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip|Needspace|needspace)$/.test(text) && !hasDirectError(node)) {
       const end = layoutExtent(state, ctrl.to, text);
       if (end > ctrl.to || /skip$/.test(text)) {
         const horizontal = /^\\h/.test(text);
@@ -3963,7 +4020,9 @@ const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRob
  */
 const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp)$/;
+const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa)$/;
+/** The headings of A&A's structured `\abstract{…}{…}{…}{…}{…}`. */
+const AA_ABSTRACT_LABELS = ["Context", "Aims", "Methods", "Results", "Conclusions"];
 
 type TitleRun = {
   start: number;
@@ -4038,7 +4097,9 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
       // A definition's name and parameters (`\newcommand\x[1]{…}`, `\def\x#1{…}`), before its body.
       if (TITLE_DEFINITIONS.test(command[1])) end += /^\s*(?:\\[A-Za-z@]+|\{\s*\\[A-Za-z@]+\s*\})(?:#\d)*/.exec(text.slice(end, end + 80))?.[0].length ?? 0;
       for (;;) {
-        const at = end + (/^[ \t]*/.exec(text.slice(end, end + 40))?.[0].length ?? 0);
+        // A&A's `\abstract` takes five groups, with comment lines between them (2611.07227).
+        const blank = command[1] === "abstract" ? /^(?:\s|%[^\n]*)*/ : /^[ \t]*/;
+        const at = end + (blank.exec(text.slice(end, end + 400))?.[0].length ?? 0);
         const group = text[at] === "[" ? readOptional(text, at, TEX_GROUPS) : text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
         if (!group) break;
         if (text[at] === "{") groups.push(group.content);
@@ -4052,7 +4113,10 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
       if (command[1] === "subjclass" && groups.length) subjclass.push(groups.at(-1)!.trim());
       if (command[1] === "ccsdesc" && groups.length) ccs.push(groups.at(-1)!.trim());
       // sn-jnl's abstract is a command: `\abstract{…}`.
-      if (command[1] === "abstract" && groups.length) run.abstract = stripTexComments(groups.at(-1)!).trim();
+      // A&A's takes several (context, aims, methods, results, conclusions), each printed under its label.
+      if (command[1] === "abstract" && groups.length) {
+        run.abstract = groups.length === 1 ? stripTexComments(groups[0]).trim() : groups.map((group, index) => `\\textit{${AA_ABSTRACT_LABELS[index] ?? "…"}.} ${stripTexComments(group).trim()}`).join(" ");
+      }
       i = end;
       continue;
     }
