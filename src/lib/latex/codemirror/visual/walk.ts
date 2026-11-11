@@ -24,7 +24,7 @@ import {
   RestatedTheoremWidget, restatablesIn, TodoWidget, type TableExtras,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
-import { detailsView, frontMatterDetails } from "./front-matter";
+import { detailsView, frontMatterDetails, type FrontDetailsView } from "./front-matter";
 import { CODE_ENVIRONMENTS, CodeCaptionWidget, CodeFileWidget, codeTokens, ContentsWidget, CounterWidget, documentCounters, inlineCodeRange, LinkTextWidget, PdfPagesWidget, readCodeHeader, TEXT_WRAPPERS as STYLED_WRAPPERS, TextDrawingWidget } from "./text-commands";
 
 /* One walk over the syntax tree that recognises constructs
@@ -1258,7 +1258,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "Maketitle": {
           if (!structural) return false;
-          const title = readTitleParts(state, node.from, defs.documentClass);
+          const title = readTitleParts(state, node.from, titleClass(defs, defs.documentClass));
           // `\title{…}`, `\author{…}` and `\date{…}` written in the body right before `\maketitle`: what the title block
           // shows, folded into it (Alt-click shows their source).
           const bodyStart = Math.max(0, env.preambleEnd);
@@ -1949,6 +1949,15 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
+    // revtex's `\acknowledgments` (a command, not an environment; its text runs to the next section or `\bibliography`): the
+    // unnumbered "Acknowledgments" heading, as the `ack` environment draws it; the line is its source with the cursor on it.
+    if (/^\\acknowledge?ments?$/.test(text) && !commandArguments(node).length && !hasDirectError(node) && !macroAt(defs, text.slice(1), node.from)) {
+      const span = aloneOnLines(doc, node.from, ctrl.to);
+      if (span) {
+        if (structural) emit({ kind: "env-header", from: span.from, to: span.to, reveal: "line", wholeLine: true, replaces: [{ from: span.from, to: span.to, widget: new EnvironmentHeaderWidget("abstract", "Acknowledgments", null, null, 0) }] });
+        return false;
+      }
+    }
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
     if (text === "\\printbibliography") {
       const end = commandArguments(node).filter((arg) => arg.optional).at(-1)?.node.to ?? ctrl.to;
@@ -1984,19 +1993,22 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const open = /^\s*\[/.exec(after);
       const block = open ? readOptional(after, open[0].length - 1, TEX_GROUPS) : null;
       const icml = block ? icmlTitle(block.content) : null;
+      // `\twocolumn[{ … }]`'s own `{`, and where its `}` is: the wrapper's delimiters (a braced content only when the group is all of it).
+      const contentFrom = ctrl.to + (open?.[0].length ?? 0);
+      const groupAt = block ? block.content.search(/\S/) : -1;
+      const group = block && block.content[groupAt] === "{" ? readGroup(block.content, groupAt, TEX_GROUPS) : null;
+      const wrapped = group && !block!.content.slice(group.end).trim() ? group : null;
       if (block && icml) {
         const end = ctrl.to + block.end;
         const span = aloneOnLines(doc, node.from, end);
         const range = span ?? { from: node.from, to: end };
         consumed.push([range.from, range.to]);
-        if (structural) emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TitleWidget(icml.title, icml.author, null, range.to - range.from) }] });
+        if (structural) emit({ kind: "title", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TitleWidget(icml.title, icml.author, null, range.to - range.from, icml.abstract, [], icml.details) }] });
         return false;
       }
       // CVPR's `\twocolumn[{\maketitle \begin{center}…\captionof{figure}{…}\end{center}}]`: the title (its `\maketitle`
       // is walked as usual), then the teaser figure, numbered at its `\captionof`; the wrapper's opening folds away.
-      const groupAt = block ? block.content.search(/\S/) : -1;
-      const group = block && block.content[groupAt] === "{" ? readGroup(block.content, groupAt, TEX_GROUPS) : null;
-      const teaser = group && !block!.content.slice(group.end).trim() ? teaserFigure(group.content) : null;
+      const teaser = wrapped ? teaserFigure(wrapped.content) : null;
       if (block && teaser) {
         const inner = ctrl.to + open![0].length + groupAt + 1;
         const end = ctrl.to + block.end;
@@ -2012,6 +2024,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
               start: span.from, length: span.to - span.from, base: graphicsBase(state),
             };
             emit({ kind: "figure", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new FigureWidget(spec) }] });
+          }
+          return undefined;
+        }
+      }
+      // Any other `\twocolumn[{ … }]` or `\twocolumn[ … ]` (a title block, text set across both columns): a wrapper. Its content is
+      // drawn as it would be outside, the `\twocolumn[{` and `}]` fold away (the cursor on their lines shows them).
+      if (block && open && !teaser && !hasDirectError(node) && block.content.trim()) {
+        const openingEnd = wrapped ? contentFrom + groupAt + 1 : contentFrom;
+        const closing = { from: wrapped ? contentFrom + wrapped.end - 1 : ctrl.to + block.end - 1, to: ctrl.to + block.end };
+        if (closing.from >= openingEnd) {
+          consumed.push([node.from, openingEnd], [closing.from, closing.to]);
+          if (structural) {
+            collapseLine({ from: node.from, to: openingEnd }, "env-begin");
+            collapseLine(closing, "env-end");
           }
           return undefined;
         }
@@ -3928,6 +3954,11 @@ function teaserFigure(text: string) {
 /** `\title`, `\author` and `\date` from the document, for `\maketitle`. */
 const titleCache = new WeakMap<Text, Map<number, ReturnType<typeof scanTitleParts>>>();
 
+/** The class that decides how the title block reads its commands: JHEP's `jheppub` package (over `article`) gives its own. */
+export function titleClass(defs: { packages: readonly string[] }, documentClass: string | null) {
+  return defs.packages.includes("jheppub") ? "jheppub" : documentClass;
+}
+
 /** `\title`, `\author` and `\date` before a `\maketitle` at `pos` (cached per document version). */
 function readTitleParts(state: EditorState, pos: number, documentClass: string | null) {
   let byPos = titleCache.get(state.doc);
@@ -3935,6 +3966,18 @@ function readTitleParts(state: EditorState, pos: number, documentClass: string |
   let parts = byPos.get(pos);
   if (!parts) byPos.set(pos, parts = scanTitleParts(state.doc.sliceString(0, Math.min(pos, 120_000)), documentClass));
   return parts;
+}
+
+/** JHEP's `\affiliation[1]{Institute}` lines, numbered by their option, as places under the authors (not editable in place). */
+function jhepPlaces(text: string): FrontDetailsView | null {
+  const places: FrontDetailsView["places"] = [];
+  for (const match of text.matchAll(/\\affiliation\s*(?:\[([^\]]*)\])?\s*\{/g)) {
+    const lineStart = text.lastIndexOf("\n", match.index) + 1;
+    if (/(^|[^\\])%/.test(text.slice(lineStart, match.index))) continue;
+    const group = readGroup(text, match.index + match[0].length - 1, TEX_GROUPS);
+    if (group) places.push({ label: match[1] ? `${match[1].trim()} ` : "", latex: group.content.trim(), editable: false });
+  }
+  return places.length ? { subtitle: null, authorLines: [], places, notes: [] } : null;
 }
 
 /** What imsart's and elsarticle's front matter may hold before the abstract: the title block's commands. */
@@ -4082,17 +4125,36 @@ function aastexFrontMatterIn(doc: Text, bodyStart: number, documentClass: string
   return front;
 }
 
-/** ICML's title block in `\twocolumn[…]`: the title, and each author with their affiliations' names; null when it is not one. */
-function icmlTitle(block: string): { title: string | null; author: string | null } | null {
-  const title = commandGroups(block, "icmltitle").at(-1) ?? null;
+/**
+ * ICML's title block in `\twocolumn[…]` (`\icmltitle`, `icmlauthorlist`, `\icmlauthor{Name}{aff}`, `\icmlaffiliation{aff}{…}`) and
+ * MLSys's, which is the same with another prefix (`\mlsystitle`…): the title, the authors (numbered when they have
+ * different affiliations) and the affiliations in the order they are first used; null when it is not one.
+ */
+function icmlTitle(block: string): { title: string | null; author: string | null; abstract: string | null; details: FrontDetailsView | null } | null {
+  const prefix = /\\(icml|mlsys)title(?![A-Za-z@])/.exec(block)?.[1];
+  if (!prefix) return null;
+  const title = commandGroups(block, `${prefix}title`).at(-1) ?? null;
   if (title === null) return null;
   const affiliations = new Map<string, string>();
-  for (const match of block.matchAll(/\\icmlaffiliation\s*\{([^{}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g)) affiliations.set(match[1].trim(), match[2].trim());
-  const authors = [...block.matchAll(/\\icmlauthor\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{([^{}]*)\}/g)].map((match) => {
-    const places = match[2].split(",").map((key) => affiliations.get(key.trim())).filter((place): place is string => !!place);
-    return places.length ? `${match[1].trim()} \\\\ {\\small ${places.join("; ")}}` : match[1].trim();
-  });
-  return { title, author: authors.length ? authors.join(" \\and ") : null };
+  for (const match of block.matchAll(new RegExp(`\\\\${prefix}affiliation\\s*\\{([^{}]*)\\}\\s*\\{((?:[^{}]|\\{[^{}]*\\})*)\\}`, "g"))) affiliations.set(match[1].trim(), match[2].trim());
+  const used: Array<{ name: string; keys: string[] }> = [...block.matchAll(new RegExp(`\\\\${prefix}author\\s*\\{((?:[^{}]|\\{[^{}]*\\})*)\\}\\s*\\{([^{}]*)\\}`, "g"))].map((match) => ({ name: match[1].trim(), keys: match[2].split(",").map((key) => key.trim()).filter((key) => affiliations.has(key)) }));
+  const order = [...new Set(used.flatMap((author) => author.keys))];
+  // One affiliation needs no numbers; several are told apart by them, as the class prints them.
+  const authors = used.map((author) => (order.length > 1 && author.keys.length ? `${author.name}\\textsuperscript{${author.keys.map((key) => order.indexOf(key) + 1).sort((a, b) => a - b).join(",")}}` : author.name));
+  const places = order.map((key, index) => ({ label: order.length > 1 ? `${index + 1} ` : "", latex: affiliations.get(key)!, editable: false }));
+  const abstract = abstractIn(block);
+  return { title, author: authors.length ? authors.join(" \\and ") : null, abstract: abstract ? abstract.text : null, details: places.length ? { subtitle: null, authorLines: [], places, notes: [] } : null };
+}
+
+/** The `\begin{abstract} … \end{abstract}` in `content` (outside comments), as offsets into it; null without one. */
+function abstractIn(content: string) {
+  for (const begin of content.matchAll(/\\begin\s*\{abstract\}/g)) {
+    const at = begin.index ?? 0;
+    if (isInLatexComment(content, at)) continue;
+    const end = /\\end\s*\{abstract\}/.exec(content.slice(at + begin[0].length));
+    if (end) return { from: at, to: at + begin[0].length + end.index + end[0].length, text: content.slice(at + begin[0].length, at + begin[0].length + end.index).trim() };
+  }
+  return null;
 }
 
 /**
@@ -4245,7 +4307,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX, Cambridge's jfp. */
-export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj)$/;
+export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
 export const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
 
@@ -4302,7 +4364,9 @@ function scanTitleParts(text: string, documentClass: string | null) {
   const authors = LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author");
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
   const bodyStart = beginDocumentIndex(text);
-  const abstract = bodyStart > 0 ? /\\begin\s*\{abstract\}([\s\S]*?)\\end\s*\{abstract\}/.exec(stripTexComments(text.slice(0, bodyStart)))?.[1].trim() ?? null : null;
+  const jhep = documentClass === "jheppub";
+  // JHEP's `\abstract{…}` command is the abstract, `\affiliation[1]{…}` the numbered places under the authors.
+  const abstract = bodyStart > 0 ? /\\begin\s*\{abstract\}([\s\S]*?)\\end\s*\{abstract\}/.exec(stripTexComments(text.slice(0, bodyStart)))?.[1].trim() ?? (jhep ? commandGroups(stripTexComments(text.slice(0, bodyStart)), "abstract").at(-1)?.trim() ?? null : null) : null;
   // Keywords and classifications in the preamble (LIPIcs', acmart's): small lines of the block. Those in the body are
   // the title run's (titleDeclarationsStart), so they are not shown twice.
   // A definition of `\keywords` (`\newcommand\keywords[1]{…}`) is not a use of it.
@@ -4312,6 +4376,6 @@ function scanTitleParts(text: string, documentClass: string | null) {
   const date = last("date");
   // A class's affiliations, emails, institutes and notes (front-matter.ts).
   const authorCount = author ? author.split(/\\(?:and|And|AND)(?![A-Za-z])/).filter((piece) => piece.trim()).length : 0;
-  const details = detailsView(frontMatterDetails(text, 0, documentClass ?? "", authorCount));
+  const details = detailsView(frontMatterDetails(text, 0, documentClass ?? "", authorCount)) ?? (jhep ? jhepPlaces(text) : null);
   return { title: last("title"), author, date: date && /\\(?:ifcase|month|year|day|number)(?![A-Za-z@])/.test(date) ? null : date, abstract, notes, details };
 }
