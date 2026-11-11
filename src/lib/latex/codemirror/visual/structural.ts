@@ -7,7 +7,7 @@ import { macroAt } from "../../macros/definitions";
 import { environmentName, FLOAT_KINDS } from "../../macros/numbering";
 import { bodyStartIn, disabledField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
 import { FRAMED_PROSE, GENERIC_LISTS } from "./environments";
-import { boxEnvironments, macroRegionsFor, titleRunStart, walkConstructs, type Construct, type RevealPolicy } from "./walk";
+import { boxEnvironments, handTitleBlock, macroRegionsFor, titleRunStart, walkConstructs, type Construct, type RevealPolicy } from "./walk";
 import { preambleSummary } from "./widgets";
 
 /* The structural layer (docs/latex-visual-editor-plan.md §4–5, §8): hidden
@@ -93,7 +93,7 @@ export function preambleEndOf(state: EditorState) {
   return state.doc.sliceString(start, line.to).trim() ? start : line.to;
 }
 
-const TITLE_PARTS = /\\(?:title|author|date)(?![A-Za-z@])/;
+const TITLE_PARTS = /\\@?(?:title|author|date)(?![A-Za-z@])/;
 
 const TITLE_PART_OPEN = /\\(?:title|author|date)(?![A-Za-z@])\*?\s*(?:\[[^\]]*\]\s*)?\{/g;
 
@@ -228,6 +228,11 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
           rendered = !!ctrl && ctrl.name === "CtrlSeq" && !!macroAt(visualDefinitions(state), state.doc.sliceString(ctrl.from + 1, ctrl.to), node.from);
         }
         if (rendered) { low = Math.min(low, node.from); high = Math.max(high, node.to); }
+        // A title block written by hand (`\def\@title{…}` … `\arxivmaketitle`) is built with its definitions.
+        if (node.name === "UnknownCommand") {
+          const hand = handTitleBlock(state, visualDefinitions(state), node.node, preambleEndOf(state));
+          if (hand) { low = Math.min(low, hand.from); high = Math.max(high, hand.to); }
+        }
       }
     }
     // An environment opened and closed by macros (`\beq … \eeq`) is drawn whole: so is it rebuilt.

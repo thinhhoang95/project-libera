@@ -1933,12 +1933,30 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const title = shown ? shown.title : name === "proof" ? (note ?? "Proof") : acknowledgments ? "Acknowledgments" : "Abstract";
       const header = new EnvironmentHeaderWidget(variant, title, theorem ? note : wrapped ? wrapped.note : null, shown?.numbered ? "theorem" : null, 0);
       const span = aloneOnLines(doc, begin.from, headerEnd);
+      // The proof's own `\renewcommand{\qedsymbol}{$\blacksquare$}` right after its header on the same line (math.CO 2611.13390):
+      // hidden as part of the header's construct, so the cursor anywhere on the line shows the whole line's source, the
+      // command's too (a construct of its own would lose the reveal to the header, whose range is longer).
+      let qedRenewal: { from: number; to: number } | null = null;
+      if (name === "proof" && structural && !block) {
+        const after = read(state, headerEnd, Math.min(doc.length, headerEnd + 400));
+        const renewal = /^[ \t]*\\renewcommand\*?[ \t]*\{[ \t]*\\qedsymbol[ \t]*\}[ \t]*(?=\{)/.exec(after);
+        const body = renewal ? readGroup(after, renewal[0].length, TEX_GROUPS) : null;
+        if (body && headerEnd + body.end <= formed.end.from) {
+          qedRenewal = { from: headerEnd, to: headerEnd + body.end };
+          consumed.push([headerEnd, qedRenewal.to]);
+        }
+      }
       if (structural) {
-        emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: header }] });
+        emit({ kind: "env-header", from: span?.from ?? begin.from, to: qedRenewal?.to ?? headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: header }, ...(qedRenewal ? [qedRenewal] : [])] });
         if (name === "proof") {
           const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
           // amsthm's end mark (□, or the document's `\renewcommand{\qedsymbol}{$\blacksquare$}`); ∎ without it.
-          const qed = macroAt(defs, "qedsymbol", formed.end.from) ? "\\qedsymbol" : null;
+          // (Looked up just inside the proof: a `\renewcommand` written in it lasts to its `\end`.)
+          // A mark renewed in the proof itself is out of scope at its `\end`, so it is drawn from its expansion.
+          const qedAt = Math.max(begin.to, formed.end.from - 1);
+          const qedMacro = macroAt(defs, "qedsymbol", qedAt);
+          const qedLocal = qedMacro && qedMacro.pos >= 0 ? expandLatexMacros("\\qedsymbol", defs, { mode: "text", pos: qedAt }) : null;
+          const qed = qedMacro ? (qedLocal?.ok ? qedLocal.text : "\\qedsymbol") : null;
           emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(qed) }] });
         } else collapseLine(formed.end, "env-end");
       }
@@ -2051,6 +2069,15 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const ctrl = node.firstChild;
     if (!ctrl) return undefined;
     const text = read(state, ctrl.from, ctrl.to);
+    // A title block written by hand in a body file (`\def\@title{…}` `\def\@author{…}` then `\arxivmaketitle`, a macro the
+    // main preamble `\let`s to `\@maketitle`): the title block, over those lines. Alt-click and the cursor show the source.
+    const hand = handTitleBlock(state, defs, node, env.preambleEnd);
+    if (hand) {
+      if (hand.from < from) return false;
+      if (structural) emit({ kind: "title", from: hand.from, to: hand.to, reveal: "strict", replaces: [{ from: hand.from, to: hand.to, block: true, widget: new TitleWidget(hand.title, hand.author, hand.date, hand.to - hand.from) }] });
+      consumed.push([hand.from, node.from]);
+      return false;
+    }
     // booktabs' `\cmidrule`, `\cline` and `\specialrule` outside a tabular: a rule line, as `\midrule` and `\hline` are.
     if (/^\\(?:cline|cmidrule|specialrule)$/.test(text)) {
       const rule = tableRule(node);
@@ -4090,6 +4117,46 @@ function teaserFigure(text: string) {
     .replace(/\\(?:begin|end)\s*\{center\}|\\(?:captionsetup|label)\s*\{[^{}]*\}|\\[vh]space\*?\s*\{[^{}]*\}|\\\\(?:\[[^\]]*\])?|\\(?:centering|par|noindent|hfill|medskip|smallskip|bigskip)(?![A-Za-z@])/g, " ")
     .trim();
   return !left && caption && images.length ? { from, images, caption } : null;
+}
+
+/**
+ * A title block written by hand where it is printed (stat.ME 2611.11188's supplement): `\def\@title{…}`, `\def\@author{…}`
+ * and `\def\@date{…}` on lines of their own, then a use of a macro the document `\let`s to `\@maketitle` (or `\maketitle`).
+ * The block runs from the first `\def` of the chain right before the use to the use; null when something else stands
+ * between them or shares their lines, or the macro is not known to print the title, so the lines stay source.
+ */
+export function handTitleBlock(state: EditorState, defs: LatexDefinitions, node: SyntaxNode, preambleEnd: number) {
+  const ctrl = node.firstChild;
+  if (node.name !== "UnknownCommand" || !ctrl || ctrl.name !== "CtrlSeq" || read(state, ctrl.to, node.to).trim()) return null;
+  const name = read(state, ctrl.from + 1, ctrl.to);
+  const macro = macroAt(defs, name, node.from);
+  if (!macro || !macro.alias || macro.arity !== 0 || macro.unsupported || !/^\\(?:@maketitle|maketitle)$/.test(macro.body.trim())) return null;
+  const bodyStart = Math.max(0, preambleEnd);
+  const lower = Math.max(bodyStart, node.from - 20_000);
+  const text = read(state, lower, node.from);
+  const items: Array<{ name: string; from: number; to: number; content: string }> = [];
+  for (const match of text.matchAll(/\\(?:g|e|x)?def\s*\\@(title|author|date)(?![A-Za-z@])\s*\{/g)) {
+    const index = match.index ?? 0;
+    if (isInLatexComment(text, index)) continue;
+    const group = readGroup(text, index + match[0].length - 1, TEX_GROUPS);
+    if (group) items.push({ name: match[1], from: lower + index, to: lower + group.end, content: group.content });
+  }
+  // The chain of definitions that ends at the use, with only space and comments between them.
+  let end = node.from;
+  const chain: typeof items = [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].to > end || !/^(?:\s|%[^\n]*)*$/.test(read(state, items[i].to, end))) break;
+    chain.unshift(items[i]);
+    end = items[i].from;
+  }
+  const last = (part: string) => chain.filter((item) => item.name === part).at(-1)?.content.trim() ?? null;
+  const title = last("title");
+  const author = last("author");
+  if (!chain.length || (!title && !author)) return null;
+  const span = aloneOnLines(state.doc, chain[0].from, ctrl.to);
+  if (!span) return null;
+  const date = last("date");
+  return { from: span.from, to: span.to, title, author, date: date || null };
 }
 
 /** `\title`, `\author` and `\date` from the document, for `\maketitle`. */
