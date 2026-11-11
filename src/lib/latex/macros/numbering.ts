@@ -1,7 +1,7 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { latexParser as parser } from "../codemirror/latex-parser";
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
-import { definitionExtentAt, macroAt, readLatexInputs, type LatexDefinitions } from "./definitions";
+import { definitionExtentAt, macroAt, readLatexInputs, type LatexDefinitions, type LatexMacro } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse } from "./expand";
 import { readCtable } from "../codemirror/visual/table-model";
 import { algorithmLineLabels, readAlgorithm2eBody, readAlgorithmicBody, type AlgorithmSpec } from "../codemirror/visual/algorithm";
@@ -451,11 +451,31 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   /** Open `subequations` environments: their equations are numbered 3a, 3b. */
   const subequations: Array<{ node: number; parent: string; saved: number }> = [];
 
-  const value = (name: string) => counters.get(name) ?? 0;
+  /**
+   * Counters made to count as another by `\let\c@lemmaL\c@theorem` (the register of one set to the other's): they share
+   * its count, so a lemma and a theorem are numbered in one sequence. Read from the preamble's and from the body's `\let`.
+   */
+  const aliases = new Map<string, string>();
+  const canonical = (name: string) => {
+    for (let guard = 0; guard < 8 && aliases.has(name); guard++) name = aliases.get(name)!;
+    return name;
+  };
+  const aliasCounter = (alias: string, target: string) => {
+    const base = canonical(target);
+    if (base !== alias) aliases.set(alias, base);
+  };
+  for (const [name, list] of defs.macros) {
+    const alias = /^c@(.+)$/.exec(name);
+    let macro: LatexMacro | undefined;
+    for (const item of list) if (item.pos < 0 && item.end === undefined) macro = item;
+    const target = macro && macro.alias ? /^\\c@([A-Za-z@]+)$/.exec(macro.body.trim()) : null;
+    if (alias && target) aliasCounter(alias[1], target[1]);
+  }
+  const value = (name: string) => counters.get(canonical(name)) ?? 0;
   const reset = (name: string) => {
     for (const [counter, parent] of within) if (parent === name) { counters.set(counter, 0); reset(counter); }
   };
-  const step = (name: string) => { counters.set(name, value(name) + 1); reset(name); };
+  const step = (name: string) => { name = canonical(name); counters.set(name, value(name) + 1); reset(name); };
   const formatting = new Set<string>();
   /** Counters AASTeX's `\restartappendixnumbering` numbers after the appendix's letter. */
   const appendixNumbered = new Set<string>();
@@ -817,6 +837,11 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         return false;
       }
       if (name === "Comment" || name === "VerbatimEnvironment" || name === "TikzPictureEnvironment") return false;
+      // `\let\c@lemmaL\c@theorem` in the body: from here on the two counters are one.
+      if (name === "Let" || name === "UnknownCommand") {
+        const alias = /^\\let\s*\\c@([A-Za-z@]+)\s*=?\s*\\c@([A-Za-z@]+)(?![A-Za-z@])/.exec(read(ref.from, ref.from + 80));
+        if (alias) aliasCounter(alias[1], alias[2]);
+      }
       if (name === "Input" || name === "Include" || name === "Subfile") { numberIncluded(node); return false; }
       if (name in SECTION_LEVELS) {
         const command = node.getChild("SectioningCommand");
@@ -952,7 +977,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const counter = argumentText(node, 0)?.trim();
           const amount = counterExpression(argumentText(node, 1) ?? "", value);
           if (counter && Number.isFinite(amount)) {
-            counters.set(counter, command === "\\setcounter" ? amount : value(counter) + amount);
+            counters.set(canonical(counter), command === "\\setcounter" ? amount : value(counter) + amount);
             // An enumerate counter: the list's next item continues from it.
             const list = enumerateList(counter);
             if (list) list.count = command === "\\setcounter" ? amount : list.count + amount;
@@ -1022,7 +1047,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           for (const match of row.matchAll(/\\(addtocounter|setcounter|stepcounter|refstepcounter)\s*\{\s*([A-Za-z@]+)\s*\}(?:\s*\{\s*(-?\d+)\s*\})?/g)) {
             const [, command, counter, amount] = match;
             if (command === "stepcounter" || command === "refstepcounter") step(counter);
-            else if (amount !== undefined) counters.set(counter, command === "setcounter" ? Number(amount) : value(counter) + Number(amount));
+            else if (amount !== undefined) counters.set(canonical(counter), command === "setcounter" ? Number(amount) : value(counter) + Number(amount));
           }
           // Read with its braces: `\tag{$\mathcal{I}$}` (Econometrica's) is "$\mathcal{I}$", which a reference draws.
           const open = /\\tag\*?\s*\{/.exec(row);

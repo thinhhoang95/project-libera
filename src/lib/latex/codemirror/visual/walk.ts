@@ -170,7 +170,7 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   newline: 0, linebreak: 0, onehalfspacing: 0, doublespacing: 0, singlespacing: 0, justifying: 0, raggedright: 0, raggedleft: 0, centering: 0,
   frontmatter: 0, mainmatter: 0, backmatter: 0, tableofcontents: 0, listoffigures: 0, listoftables: 0, listoftodos: 0, FloatBarrier: 0, restoregeometry: 0,
   balance: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
-  startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0,
+  startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0, let: 0,
   // AASTeX's `\restartappendixnumbering` and `\startlongtable` print nothing.
   restartappendixnumbering: 0, startlongtable: 0,
   // MNRAS's `\bsp` (a typesetting note on the last page) and its page range and year metadata.
@@ -198,6 +198,9 @@ const CONTENTS_LISTS: Record<string, "section" | "figure" | "table"> = { "\\tabl
 /** Layout-line commands whose `[…]` is text, not an option (ICML's `\twocolumn[\icmltitle{…}…]`): such a line stays. */
 const LAYOUT_LINE_TEXT_OPTION = /^(?:onecolumn|twocolumn)$/;
 
+/** `\let\c@lemmaL\c@theorem`: LaTeX's internal counter register of one counter made another's (they count together). */
+const COUNTER_ALIAS = /^\\let\s*\\c@[A-Za-z@]+\s*=?\s*\\c@[A-Za-z@]+(?![A-Za-z@])/;
+
 /** The lines from `from` (the first thing on its line) that hold only layout commands with their arguments, or null. */
 function layoutLine(state: EditorState, from: number): { from: number; to: number } | null {
   const line = state.doc.lineAt(from);
@@ -212,8 +215,15 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
     if (!command || count === undefined) return null;
     i += command[0].length;
     if (command[1] === "vskip") { i += PRIMITIVE_GLUE.exec(text.slice(i))?.[0].length ?? 0; continue; }
+    // `\let\c@lemmaL\c@theorem`: a counter that shares another's count (numbering.ts reads it); no other `\let`.
+    if (command[1] === "let") {
+      const alias = COUNTER_ALIAS.exec(text.slice(i - command[0].length, i + 80));
+      if (!alias) return null;
+      i += alias[0].length - command[0].length;
+      continue;
+    }
     // `\renewcommand` of a counter's format only (`{\thesection}` or `\thesection`).
-    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\the[A-Za-z]+\s*\}|\\the[A-Za-z]+(?![A-Za-z]))/.test(text.slice(i, i + 60))) return null;
+    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\(?:the[A-Za-z]+|qedsymbol)\s*\}|\\(?:the[A-Za-z]+|qedsymbol)(?![A-Za-z]))/.test(text.slice(i, i + 60))) return null;
     const optional = /^[ \t]*\[/.exec(text.slice(i));
     if (optional) {
       if (LAYOUT_LINE_TEXT_OPTION.test(command[1])) return null;
@@ -946,6 +956,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             const from = scoped ? open.from : ref.from;
             emit({ kind: "layout", from, to: ref.to, reveal: "touch", replaces: [{ from, to: ref.to }] });
             if (scoped) emit({ kind: "layout", from: close.from, to: close.to, reveal: "touch", replaces: [{ from: close.from, to: close.to }] });
+          }
+        }
+        // `\let\c@lemmaL\c@theorem` in the body (2611.11388's supplement): counters made to count together, which
+        // numbering reads. Its line folds away; in a line of text it is hidden, shown again at the cursor.
+        if (name === "Let" && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !isConsumed(ref)) {
+          const alias = COUNTER_ALIAS.exec(read(state, ref.from, Math.min(doc.length, ref.from + 80)));
+          if (alias) {
+            const line = layoutLine(state, ref.from);
+            if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
+            else if (structural) {
+              emit({ kind: "layout", from: ref.from, to: ref.from + alias[0].length, reveal: "touch", replaces: [{ from: ref.from, to: ref.from + alias[0].length }] });
+              consumed.push([ref.from, ref.from + alias[0].length]);
+            }
           }
         }
         // `\verb|…|`, `\lstinline`, `verbatim`, `lstlisting`, `minted`: code, its text taken as written.

@@ -31,6 +31,7 @@ import { collectBodyIncludes, collectMacroSources } from "../../src/components/l
 import katex from "katex";
 import { forKatex, KATEX_MACROS, katexForEnvironment } from "../../src/lib/latex/codemirror/visual/math-render";
 import { expandLatexMacros } from "../../src/lib/latex/macros/expand";
+import { subfilesRootPath } from "../../src/lib/latex/project";
 
 const DEFAULT_CATEGORIES = ["quant-ph", "hep-th", "astro-ph.GA", "math.AG", "math.CO", "stat.ME", "cs.LO", "cond-mat.str-el", "math.PR", "cs.CL", "cs.DS", "q-bio.NC"];
 const MIN_TEX_BYTES = 25_000;
@@ -314,7 +315,8 @@ async function audit(args: string[]) {
     for (const file of texs) {
       const filePath = `nb/${file}`;
       if (!read(filePath).trim() || isMacroFile(read(filePath))) continue;
-      const fileRoot = isMain(file) ? filePath : rootPath;
+      // A subfiles chapter has a \documentclass and a body of its own but is typeset as part of the main file it names (as the app resolves it).
+      const fileRoot = subfilesRootPath(filePath, read(filePath), known) ?? (isMain(file) ? filePath : rootPath);
       const started = performance.now();
       try {
         const result = await auditFile(filePath, fileRoot, known, read);
