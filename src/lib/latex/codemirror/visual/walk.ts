@@ -11,7 +11,8 @@ import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
-import { disabledField } from "./model";
+import { latexProjectField } from "../editing";
+import { disabledField, visualConfig } from "./model";
 import { citationNoteText, citationNotes, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
@@ -25,7 +26,7 @@ import {
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
 import { detailsView, frontMatterDetails } from "./front-matter";
-import { CODE_ENVIRONMENTS, CodeCaptionWidget, CodeFileWidget, codeTokens, ContentsWidget, CounterWidget, documentCounters, inlineCodeRange, LinkTextWidget, PdfPagesWidget, readCodeHeader, TEXT_WRAPPERS as STYLED_WRAPPERS, TextDrawingWidget } from "./text-commands";
+import { CODE_ENVIRONMENTS, CodeCaptionWidget, CodeFileWidget, codeTokens, ContentsWidget, CounterWidget, documentCounters, inlineCodeRange, IncludeChipWidget, LinkTextWidget, PdfPagesWidget, readCodeHeader, TEXT_WRAPPERS as STYLED_WRAPPERS, TextDrawingWidget } from "./text-commands";
 
 /* One walk over the syntax tree that recognises constructs
  * (docs/latex-visual-editor-plan.md §3–4). Each construct says which markup
@@ -145,6 +146,10 @@ function layoutExtent(state: EditorState, at: number, command: string) {
   // `\vspace*{2pt}`: the star keeps the grammar from attaching the group, which follows as text.
   else if (/^\\(?:vspace|hspace|addvspace|Needspace|needspace)$/.test(command)) i += /^\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
   else if (/^\\(?:setlength|addtolength)$/.test(command)) i += /^\s*\\[A-Za-z@]+\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
+  // TeX's line-break hints (bibtex's `50\penalty0 (2):`, `\looseness=-1`) and url's `\urlstyle{same}`: a number ends with the space after it.
+  else if (command === "\\penalty") i += /^\s*(?:-?\d+[ \t]*|\\[A-Za-z@]+[ \t]*)/.exec(rest())?.[0].length ?? 0;
+  else if (command === "\\looseness") i += /^\s*=?\s*-?\d+[ \t]*/.exec(rest())?.[0].length ?? 0;
+  else if (command === "\\urlstyle") i += /^\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
   // `\rule{\textwidth}{0.4pt}` above a figure's notes (the cannabis pass-through paper): a line, drawn as the box's edge.
   else if (command === "\\rule") i += /^\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
   else if (FLOAT_LENGTHS.test(command)) i += new RegExp(String.raw`^\s*=?\s*${GLUE}`).exec(rest())?.[0].length ?? 0;
@@ -238,7 +243,7 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
 }
 
 /** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
-const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing)$/;
+const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing|allowbreak|nobreak|nolinebreak|relax)$/;
 /** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2, "\\resizebox": 3, "\\scalebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
@@ -283,7 +288,7 @@ function definitionsPrelude(text: string): { from: number; to: number } | null {
       const end = text.indexOf("\\endcsname", i);
       if (end < 0) break;
       i = end + "\\endcsname".length;
-    } else if (!/^(?:BIBdecl|relax)$/.test(command[1])) break;
+    } else if (!/^(?:BIBdecl|relax|expandafter|ifx|else|fi)$/.test(command[1])) break; // natbib's `\expandafter\ifx\csname urlstyle\endcsname\relax … \else … \fi` around the `\doi` definition
     if (from < 0) from = start;
     to = i;
   }
@@ -336,7 +341,7 @@ const HANDLED = new Set([
   "FootnoteCommand", "EndnoteCommand", "DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment",
   "Cite", "Ref", "Label", "FigureEnvironment", "TableEnvironment", "TabularEnvironment", "ListEnvironment", "Item", "Environment",
   "EndEnv", "Maketitle", "IncludeGraphics", "LineBreak", "Tilde", "Normal", "UnknownCommand", "Group",
-  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand", "ParBoxCommand", "HorizontalLine",
+  "BibliographyCommand", "BibliographyStyleCommand", "Centering", "SetLengthCommand", "ParBoxCommand", "HorizontalLine", "Input", "Include",
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
@@ -889,6 +894,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return text && !/\\[A-Za-z@]/.test(text) && !/[{}]/.test(text) ? text : null;
   };
 
+  /** Whether a command is inside the argument or group of another (`\IfFileExists{a}{\input{a}}{}`, `{\small \input{x}}`). */
+  const inArgument = (node: SyntaxNode) => {
+    for (let parent = node.parent; parent; parent = parent.parent) if (/^(?:Group|NonEmptyGroup|TextArgument|ShortTextArgument|LongArg|SectioningArgument)$/.test(parent.name)) return true;
+    return false;
+  };
+
+  /** Whether `\input{file}` names a file the project has (or the project is not known: a file opened on its own, a chapter). */
+  const includeResolves = (file: string, isInput: boolean) => {
+    const config = state.facet(visualConfig);
+    const paths = state.field(latexProjectField, false)?.allPaths;
+    if (!paths?.length || (config.rootPath && config.rootPath !== config.documentPath)) return true;
+    const name = file.replace(/^\.\//, "");
+    // `\input` of a bare name may be a file of TeX's distribution, not the project's.
+    if (isInput && !/\//.test(name) && !/\.tex$/i.test(name)) return false;
+    return paths.some((path) => { const known = path.replace(/^\.\//, ""); return known === name || known === `${name}.tex`; });
+  };
+
   /** Hides a `\begin`/`\end` line when it is alone on its line, collapsing it; else only the markup. */
   const collapseLine =(node: { from: number; to: number }, kind: string, extra?: Replace) => {
     const span = aloneOnLines(doc, node.from, node.to);
@@ -1019,7 +1041,18 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       // `{\bf bold}`, `{\tt [CLS]}`, `{\small text}`: a group opened by a font or size switch styles what follows it.
       if (name === "Group") {
         const switched = groupSwitch(node);
-        if (!switched) return;
+        if (!switched) {
+          // BibTeX's protective braces (`{G}aussian`, `{PDE}s` in a .bbl) print nothing: hidden, back at the caret. Plain words only,
+          // and not the argument of a command (`\foo {x}`).
+          const inner = read(state, node.from + 1, node.to - 1);
+          const before = read(state, Math.max(0, node.from - 60), node.from);
+          // `{\urlstyle{same}\url{…}}` (url's style switch, scoped by the braces) is plain too.
+          const plain = inner.replace(/\\urlstyle\s*\{[^{}]*\}\s*/g, "").replace(/\\url\s*\{[^{}]*\}/g, "U");
+          if (/^[A-Za-z0-9][A-Za-z0-9 .,:;'’\-–]*$/.test(plain) && !/(?:\\[A-Za-z@]+\*?\s*|[}\]])$/.test(before) && !hasDirectError(node)) {
+            emit({ kind: "style", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.from + 1 }, { from: node.to - 1, to: node.to }] });
+          }
+          return;
+        }
         consumed.push([node.from, switched.textFrom]);
         emit({
           kind: "style", from: node.from, to: node.to, reveal: "touch",
@@ -1046,6 +1079,15 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             marks: [{ from: textRange.from, to: textRange.to, class: name === "ColorBoxCommand" ? "cm-vis-colorbox" : "cm-vis-color", attributes: { style: `${name === "ColorBoxCommand" ? "background-color" : "color"}: ${color}` } }],
           });
           return;
+        }
+        case "Input": case "Include": {
+          // `\input{chapters/intro}`, `\include{…}` in the text: a chip naming the file (what it holds is shown where the file is open). Not inside
+          // another command's argument (`\IfFileExists{a}{\input{a}}{}`), and not a file the project is known not to have.
+          const command = read(state, node.from, node.to).match(/^\\(input|include)\s*\{([^{}]*)\}$/);
+          const file = command?.[2].trim();
+          if (!structural || !command || !file || /[#\\%]/.test(file) || hasDirectError(node) || inArgument(node) || !includeResolves(file, command[1] === "input")) return;
+          emit({ kind: "symbol", from: node.from, to: node.to, reveal: "strict", replaces: [{ from: node.from, to: node.to, widget: new IncludeChipWidget(file, read(state, node.from, node.to), node.to - node.from) }] });
+          return false;
         }
         case "HrefCommand": case "UrlCommand": {
           const url = node.getChild("UrlArgument");
@@ -2274,7 +2316,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     if (DEFINITION_COMMANDS.test(text)) return skipDefinition(node);
     const macro = macroAt(defs, name, node.from);
-    if (macro) return macroUse(node, name);
+    // A .bbl's own `\providecommand{\doi}[1]{doi: #1}` (or `{doi: \begingroup \urlstyle{rm}\Url}`) is the stock fallback: `\doi{…}` is drawn as a link below.
+    const stockDoi = name === "doi" && !!macro && macro.end !== undefined && macro.end <= doc.length &&/^\\providecommand\s*\{\\doi\}[^]*doi:/.test(read(state, macro.pos, macro.end));
+    // The arxiv template's own `\def\keywords#1{… \def\and{ $\cdot$ } …}` (arxiv.sty, in the project) is llncs's keywords line: drawn below.
+    const stockKeywords = name === "keywords" && !!macro && defs.packages.includes("arxiv");
+    if (macro && !stockDoi && !stockKeywords) return macroUse(node, name);
     const drawn = packageCommand(node, ctrl, text, args);
     if (drawn !== null) return drawn;
     if (SIUNITX_TEXT.test(text)) {
@@ -2371,6 +2417,17 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       consumed.push([node.from, end]);
       return false;
     }
+    // bibtex's `\doi{10.1000/x}` (a natbib .bbl entry; its `\providecommand{\doi}[1]{doi: #1}` is the fallback): "doi: 10.1000/x", a link to doi.org.
+    if (text === "\\doi" && args.length === 1 && mandatory.length === 1 && first && !hasDirectError(node)) {
+      const doi = read(state, first.from, first.to).trim().replace(/\\([%#&_~$^{}])/g, "$1");
+      if (doi && !/[\\{}\s]/.test(doi)) {
+        const end = mandatory[0].node.to;
+        const href = `https://doi.org/${doi}`;
+        emit({ kind: "style", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new LinkTextWidget(`doi: ${doi}`, `${href} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}-click to open)`, end - node.from, href) }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
     // `\tableofcontents`, `\listoffigures`, `\listoftables` on their own line: the list they print, read-only.
     const contents = CONTENTS_LISTS[text];
     if (contents && !args.length) {
@@ -2415,7 +2472,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
-    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip|Needspace|needspace)$/.test(text) && !hasDirectError(node)) {
+    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip|Needspace|needspace|penalty|looseness|urlstyle)$/.test(text) && !hasDirectError(node)) {
       const end = layoutExtent(state, ctrl.to, text);
       if (end > ctrl.to || /skip$/.test(text)) {
         const horizontal = /^\\h/.test(text);

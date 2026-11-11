@@ -217,13 +217,14 @@ export class TextDrawingWidget extends TextWidget {
 
 /** A `\url` whose address was written with a macro (`\url{\repourl}`): the address it prints, as a link; a click shows the source (Ctrl-click opens it). */
 export class LinkTextWidget extends TextWidget {
-  constructor(readonly text: string, readonly title: string, readonly length: number) { super(`${text}\u0000${title}\u0000${length}`); }
+  /** `href`: where Ctrl-click goes when it is not the text itself (`\doi{10.1/x}` prints "doi: 10.1/x", a link to doi.org). */
+  constructor(readonly text: string, readonly title: string, readonly length: number, readonly href = text) { super(`${text}\u0000${title}\u0000${length}\u0000${href}`); }
   toDOM(view: EditorView) {
     const dom = document.createElement("span");
     dom.className = "cm-vis-link";
     dom.textContent = this.text;
     dom.title = this.title;
-    dom.dataset.href = this.text;
+    dom.dataset.href = this.href;
     dom.addEventListener("mousedown", (event) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey) return;
       event.preventDefault();
@@ -242,6 +243,21 @@ export class PdfPagesWidget extends TextWidget {
     const dom = document.createElement("span");
     dom.className = "cm-vis-pdf-pages cm-vis-symbol";
     dom.textContent = `PDF pages: ${this.file}`;
+    dom.title = this.source;
+    dom.setAttribute("style", "border:1px dashed currentColor;border-radius:3px;padding:0 .4em;opacity:.7;font-size:.85em");
+    revealOnClick(dom, view, this.length);
+    return dom;
+  }
+  ignoreEvent() { return true; }
+}
+
+/** `\input{chapters/intro}`, `\include{…}`: the file the line pulls in, as a small chip naming it; a click shows its source. */
+export class IncludeChipWidget extends TextWidget {
+  constructor(readonly file: string, readonly source: string, readonly length: number) { super(`${file}\u0000${source}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = document.createElement("span");
+    dom.className = "cm-vis-include cm-vis-symbol";
+    dom.textContent = `include: ${this.file}`;
     dom.title = this.source;
     dom.setAttribute("style", "border:1px dashed currentColor;border-radius:3px;padding:0 .4em;opacity:.7;font-size:.85em");
     revealOnClick(dom, view, this.length);
