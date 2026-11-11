@@ -44,3 +44,20 @@ Passed to `fetch --exclude` so a new round picks new papers. Add each round's id
 | cs.CL | 2611.11316 | 73 files, IEEEtran, lrbox/`\counterwithin` |
 | cs.DS | 2611.07622 | BibTeX alpha `\etalchar` labels |
 | q-bio.NC | 2610.30364 | `\url{\repourl}`, footnotetext with `\thefootnote` |
+
+## 2026-11-11, round 4 (12 papers, docs/audits/2026-11-11-latex-visual-paper-review-4.md)
+
+| Category | arXiv id | Notable |
+|---|---|---|
+| quant-ph | 2611.13347 | amsart + `subfiles` sections, local `stylesheet.sty` macros |
+| hep-th | 2611.12698 | `jheppub` front matter |
+| astro-ph.GA | 2611.10419 | MNRAS template |
+| math.AG | 2611.12008 | amsart, long single file |
+| math.CO | 2611.13390 | `\def\set#1:#2`, `\accentset`, enumitem math labels |
+| stat.ME | 2611.11188 | pasted natbib `.bbl`, hand-rolled supplement title block |
+| cs.LO | 2611.01825 | `arxiv.sty` `\keywords`, `.bbl` boilerplate |
+| cond-mat.str-el | 2611.09434 | revtex, eqnarray in `widetext`, `\acknowledgments` |
+| math.PR | 2611.11388 | `\let\c@lemmaL\c@theorem`, row-helper macros in a table fragment |
+| cs.CL | 2611.13560 | MLSys class, `\twocolumn[{…}]`, 50 files |
+| cs.DS | 2611.10440 | longtables with 25 KB of macro expansion |
+| q-bio.NC | 2610.40511 | ICLR 2027 |
