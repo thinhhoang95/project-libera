@@ -269,6 +269,9 @@ function withoutMeasuring(body: string) {
 /** TeX's own machinery left in an expansion: `\csname`, `\expandafter`, registers, and `@` internals (`\@ifundefined`, `\f@size`, `\strip@pt`). */
 const TEX_INTERNALS = /\\(?:csname|endcsname|expandafter|noexpand|edef|xdef|gdef|dimen|skip|count|setbox|dimexpr|numexpr|glueexpr)(?![A-Za-z@])|\\(?:[A-Za-z]+@[A-Za-z@]*|@[A-Za-z][A-Za-z@]*)/;
 
+/** Idioms with `@` that are not debris: cvpr's `\futurelet\@let@token` (the renderer reads its `\ifx`), an undecided `\if@switch`, `\@ifnextchar`, `\@ifstar`, and a box's width (`\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax}`). */
+const KNOWN_INTERNALS = /\\@let@token|\\if@[A-Za-z@]*|\\@(?:ifnextchar|ifstar)(?![A-Za-z@])|\\algorithmic@(?:begin|end)(?![A-Za-z@])|\\(?:begin\{(?:minipage|tcolorbox)\}|parbox)\s*(?:\[[^\]]*\]\s*)*\{(?:[^{}]|\{[^{}]*\})*\}/g;
+
 function expandUse(source: string, index: number, context: Context, depth: number): { text: string; end: number } | null | false {
   // A control word, or a control symbol the document defines (GRF's `\newcommand{\1}{\mathbf{1}}`).
   const match = /^\\([A-Za-z@]+|[0-9!*+|<>?()[\]])/.exec(source.slice(index, index + 80));
@@ -312,7 +315,7 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   if (inner === null) return false;
   // An expansion that still holds TeX's internals (`\csname bn@#1\endcsname`, `\@ifundefined`, `\@latex@warning`, `\dimen@`: a
   // macro that builds a box from registers, stat.ML 2611.11386's `\bn{…}`) would be drawn as debris: the use stays source.
-  if (context.mode === "text" && TEX_INTERNALS.test(inner)) return false;
+  if (context.mode === "text" && TEX_INTERNALS.test(inner.replace(KNOWN_INTERNALS, ""))) return false;
   // A control word right after the expansion must not run into it (`\x y` → `\alpha y`, not `\alphay`).
   const next = source[end] ?? "";
   const glue = /[A-Za-z@]$/.test(inner) && /\\[A-Za-z@]+$/.test(inner) && /[A-Za-z@]/.test(next) ? " " : "";
