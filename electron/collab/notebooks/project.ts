@@ -1935,6 +1935,9 @@ export class SharedProject {
       const stillChanging = quietWaitMs(seen, now, this.ctx.timings.importQuietMs);
       if (stillChanging > 0) {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
+        // Not a verification: the follow-up scan must read the file again even
+        // when its size and mtime are what the record already holds.
+        this.verified.delete(fileId);
         continue;
       }
       if (record.kind === "doc" && record.docId) {
@@ -2012,7 +2015,11 @@ export class SharedProject {
       // And once no program has changed it for a while: a copy can pause
       // with some of its bytes in place.
       const stillChanging = quietWaitMs(entry, now, this.ctx.timings.importQuietMs);
-      if (stillChanging > 0) {
+      // A rename changes ctime as well. A file the size of a missing one is
+      // read now, so the pair is found before the delete grace restores the
+      // old path; it only counts as new once it is quiet (checked below).
+      const renameCandidate = stillChanging > 0 && missingSizes.has(entry.size);
+      if (stillChanging > 0 && !renameCandidate) {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
         continue;
       }
@@ -2045,6 +2052,11 @@ export class SharedProject {
       if (!bytes) continue;
       readBudget -= entry.size;
       const hash = sha256(bytes);
+      // Not the bytes of a missing file after all: judged like any other new file, once quiet.
+      if (renameCandidate && ![...missing].some((fileId) => this.state.layout[fileId]?.hash === hash)) {
+        quietDeferMs = Math.min(quietDeferMs, stillChanging);
+        continue;
+      }
       const conflictOf = this.isLateCopy(relative, hash, entry.mtimeMs) ? null : this.conflictCopyOf(relative, hash);
       if (this.isLateCopy(relative, hash, entry.mtimeMs) || conflictOf) {
         const guard = this.diskGuard();

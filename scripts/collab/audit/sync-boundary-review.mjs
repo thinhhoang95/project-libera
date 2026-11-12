@@ -108,6 +108,9 @@ test("sync boundary review", { timeout: 120_000 }, async (t) => {
       const originalId = entries(owner, shared.projectId)[0].fileId;
       renameSync(path.join(root, "image.png"), path.join(root, "renamed.png"));
       writeFileSync(path.join(root, "new.png"), Buffer.from([9, 8, 7, 6]));
+      // A new file is shared once it has been quiet (Timings.importQuietMs, 300 ms in the harness):
+      // wait it out, so the rename and the new file's upload are in the same scan.
+      await sleep(400);
       delayed = true;
       const scanning = project.enqueue(() => project.scan());
       try {

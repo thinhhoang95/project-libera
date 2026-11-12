@@ -183,6 +183,8 @@ test("R02–R09 and R15: authoritative notebook mutations", { timeout: 180_000 }
       setText(hub, "current\n"); await project.whenIdle(); quiet(project);
       writeFileSync(path.join(root, "note.md"), "old\n");
       utimesSync(path.join(root, "note.md"), new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
+      // An externally changed file is judged once it has been quiet (Timings.importQuietMs, 300 ms in the harness).
+      await new Promise((resolve) => setTimeout(resolve, 400));
       await project.scan();
       assert.equal(hub.getText("content"), "current\n");
       assert.equal(project.reconcilePending, 1);

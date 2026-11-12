@@ -236,22 +236,20 @@ test("remaining sync lifecycle boundaries", { timeout: 150_000 }, async (t) => {
       const root = path.join(original.library, "UploadedAccountPlan");
       const planFile = path.join(root, ".libera-share-pending.json");
       writeTree(root, { "note.md": "uploaded for the first account\n" });
-      const rename = fs.rename;
+      // Completions are journaled (one appended record per upload) rather than
+      // rewriting the plan: interrupt right after the last one is durable. The
+      // interrupted share then compacts the journal into the plan file.
+      const append = fs.appendFile;
       let interrupted = false;
-      fs.rename = async (from, to) => {
-        let finalCheckpoint = false;
-        if (to === planFile && !interrupted) {
-          const value = JSON.parse(readFileSync(from, "utf8"));
-          finalCheckpoint = value.projectId && value.files.length > 0 && value.files.every((file) => file.uploaded);
-        }
-        await rename(from, to);
-        if (finalCheckpoint) {
+      fs.appendFile = async (target, ...args) => {
+        await append(target, ...args);
+        if (!interrupted && path.basename(String(target)) === ".libera-share-uploaded.jsonl") {
           interrupted = true;
           throw new Error("simulated interruption after durable final upload checkpoint");
         }
       };
       try { await assert.rejects(original.service.share({ notebook: "UploadedAccountPlan" })); }
-      finally { fs.rename = rename; }
+      finally { fs.appendFile = append; }
       assert.equal(interrupted, true);
       const plan = JSON.parse(readFileSync(planFile, "utf8"));
       assert.equal(plan.files.every((file) => file.uploaded), true);
