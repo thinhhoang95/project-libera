@@ -6,7 +6,7 @@ import { isInLatexComment } from "../../macros/definitions";
 import { beginDocumentIndex } from "../../document-begin";
 import { preambleOpenField, togglePreamble, visualConfig, visualDefinitions } from "./model";
 import { preambleEndOf } from "./structural";
-import { ACCUMULATING_AUTHORS, LIPICS, titleClass } from "./walk";
+import { ACCUMULATING_AUTHORS, authorBreakMacro, LIPICS, titleClass } from "./walk";
 import { editableLines, frontMatterDetails } from "./front-matter";
 import { setTitleHooks, type TitleElement, type TitlePart } from "./widgets";
 
@@ -69,7 +69,9 @@ function authorPieces(state: EditorState, span: SourceSpan) {
   const pieces: SourceSpan[] = [];
   let start = 0;
   const push = (end: number) => { if (text.slice(start, end).trim()) pieces.push(trimmed(state, { from: span.from + start, to: span.from + end })); };
-  for (const match of text.matchAll(/\\(?:and|And|AND)(?![A-Za-z])/g)) {
+  const breakMacro = authorBreakMacro(state.sliceDoc(0, span.from));
+  for (const match of text.matchAll(new RegExp(String.raw`\\(?:and|And|AND${breakMacro ? `|${breakMacro}` : ""})(?![A-Za-z@])`, "g"))) {
+    if (isInLatexComment(text, match.index ?? 0)) continue;
     push(match.index ?? 0);
     start = (match.index ?? 0) + match[0].length;
   }
