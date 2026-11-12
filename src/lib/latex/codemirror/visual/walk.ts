@@ -12,7 +12,7 @@ import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { latexProjectField } from "../editing";
-import { disabledField, visualConfig } from "./model";
+import { disabledField, macroSourcesField, visualConfig } from "./model";
 import { citationNoteText, citationNotes, prettyrefText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
@@ -188,6 +188,8 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
   // IEEEtran's `\appendices`; counters stepped where they are.
   appendices: 0, stepcounter: 1, refstepcounter: 1,
+  // IEEEtran's publication-id and running-head switches, `\nobalance`, `\suppressfloats[t]` and `\appendixpage` (an "Appendices" heading, not drawn): print nothing here.
+  IEEEpubidadjcol: 0, IEEEpeerreviewmaketitle: 0, nobalance: 0, suppressfloats: 0, appendixpage: 0,
   begingroup: 0, endgroup: 0,
   // `\eject`, needspace's `\Needspace{16\baselineskip}`, revtex's `\onecolumngrid`/`\twocolumngrid`, `\addtocontents{toc}{…}` and
   // `\AtEndDocument{…}` (run at the end, not here): page-layout lines that print nothing where they stand.
@@ -1923,7 +1925,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function environment(node: SyntaxNode): false | undefined {
     const formed = wellFormedEnvironment(node, state);
     if (!formed) return undefined;
-    const name = formed.name;
+    // IEEEtran's `IEEEproof` is amsthm's `proof` (its optional `[Proof of …]` heading and end mark), unless the document defines it.
+    const name = formed.name === "IEEEproof" && !defs.environments.has("IEEEproof") && !defs.theorems.has("IEEEproof") ? "proof" : formed.name;
     if (name === "thebibliography") return bibliography(node, formed);
     if (name === "frontmatter") return frontMatter(formed);
     if (name === "mathpar" || name === "mathpar*") return mathpar(node, formed);
@@ -4367,7 +4370,7 @@ export function handTitleBlock(state: EditorState, defs: LatexDefinitions, node:
 }
 
 /** `\title`, `\author` and `\date` from the document, for `\maketitle`. */
-const titleCache = new WeakMap<Text, Map<number, ReturnType<typeof scanTitleParts>>>();
+const titleCache = new WeakMap<Text, Map<string, ReturnType<typeof scanTitleParts>>>();
 
 /** The class that decides how the title block reads its commands: JHEP's `jheppub` package (over `article`) gives its own. */
 export function titleClass(defs: { packages: readonly string[] }, documentClass: string | null) {
@@ -4378,8 +4381,13 @@ export function titleClass(defs: { packages: readonly string[] }, documentClass:
 function readTitleParts(state: EditorState, pos: number, documentClass: string | null) {
   let byPos = titleCache.get(state.doc);
   if (!byPos) titleCache.set(state.doc, byPos = new Map());
-  let parts = byPos.get(pos);
-  if (!parts) byPos.set(pos, parts = scanTitleParts(state.doc.sliceString(0, Math.min(pos, 120_000)), documentClass));
+  // The title block's commands in a file the preamble `\input`s (SIAM's shared `ex_shared.tex`, arXiv 2611.09593): read before the document's own.
+  const included = (state.field(macroSourcesField, false) ?? [])
+    .filter((source) => source.key?.startsWith("input:") && /\\(?:title|author)(?![A-Za-z@])/.test(stripTexComments(source.text)))
+    .map((source) => `${source.text}\n`).join("");
+  const key = `${pos}:${included}`;
+  let parts = byPos.get(key);
+  if (!parts) byPos.set(key, parts = scanTitleParts(included + state.doc.sliceString(0, Math.min(pos, 120_000)), documentClass));
   return parts;
 }
 
@@ -4576,7 +4584,7 @@ function abstractIn(content: string) {
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo|makeatletter|makeatother|IEEEpubid|IEEEaftertitletext|IEEEpubidadjcol|markboth|markright)$/;
 /** What ends a run of title declarations rather than staying source inside it: text, sections, environments. */
 const RUN_ENDERS = /^(?:begin|end|part|chapter|section|subsection|subsubsection|paragraph|subparagraph|item|maketitle|par|noindent|indent|bibliography|printbibliography|appendix|label|footnote|textbf|textit|emph|cite|ref|includegraphics|caption)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
@@ -4585,7 +4593,7 @@ const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRob
  * Environments among them: an abstract the class prints with the title (acmart's, amsart's), acmart's CCS metadata,
  * and its teaser figure, which is drawn on its own (the title block stops before it).
  */
-const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp|keywords|IEEEkeywords)$/;
+const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp|keywords|IEEEkeywords|comment)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
 const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys)$/;
 /** The headings of A&A's structured `\abstract{…}{…}{…}{…}{…}`. */
@@ -4668,7 +4676,8 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
       else if (TITLE_DEFINITIONS.test(command[1])) end +=/^\s*(?:\\[A-Za-z@]+|\{\s*\\[A-Za-z@]+\s*\})(?:#\d)*/.exec(text.slice(end, end + 80))?.[0].length ?? 0;
       for (;;) {
         // A&A's `\abstract` takes five groups, with comment lines between them (2611.07227).
-        const blank = command[1] === "abstract" ? /^(?:\s|%[^\n]*)*/ : /^[ \t]*/;
+        // `\author` with its `{` on the next line (cs.IT 2611.09184): one line break is space to TeX.
+        const blank = command[1] === "abstract" || command[1] === "markboth" ? /^(?:\s|%[^\n]*)*/ : !groups.length && /^(?:title|author)$/.test(command[1]) ? /^[ \t]*(?:\n[ \t]*)?/ : /^[ \t]*/;
         const at = end + (blank.exec(text.slice(end, end + 400))?.[0].length ?? 0);
         const group = text[at] === "[" ? readOptional(text, at, TEX_GROUPS) : text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
         if (!group) break;
@@ -4753,6 +4762,14 @@ function lipicsAuthors(text: string) {
   return authors;
 }
 
+/**
+ * The name of a command the document defines as IEEEtran's "`\and` with a line break"
+ * (`\newcommand{\linebreakand}{\end{@IEEEauthorhalign} … \begin{@IEEEauthorhalign}}`, cs.IT 2611.09184), or null.
+ */
+export function authorBreakMacro(text: string) {
+  return /\\(?:re)?newcommand\s*\{\s*\\([A-Za-z]+)\s*\}\s*\{[\s%]*\\end\s*\{@IEEEauthorhalign\}/.exec(text)?.[1] ?? null;
+}
+
 /** The arguments of every `\command[…]{…}` in `text`, outside comments, in order. */
 function commandGroups(text: string, command: string) {
   // sn-jnl's corresponding author is `\author*[1]{…}`.
@@ -4765,6 +4782,8 @@ function commandGroups(text: string, command: string) {
     let depth = 0;
     for (let i = open; i < text.length; i++) {
       if (text[i] === "\\") { i++; continue; }
+      // A comment's braces (cs.IT 2611.09184's `{%Tofar …\thanks{…` author draft) are not the group's.
+      if (text[i] === "%") { const eol = text.indexOf("\n", i); if (eol < 0) break; i = eol; continue; }
       if (text[i] === "{") depth++;
       else if (text[i] === "}" && --depth === 0) { found.push(text.slice(open + 1, i)); break; }
     }
@@ -4781,7 +4800,10 @@ function scanTitleParts(text: string, documentClass: string | null) {
   const last = (command: string) => commandGroups(text, command).at(-1) ?? null;
   // LMCS's `\lmcsorcid{…}` and IEEEojcsys' `\affilmark{1,2}` (a superscript) in a name: the ORCID is not printed in the block.
   const cleanName = (name: string) => name.replace(/\\lmcsorcid\s*\{[^{}]*\}/g, "").replace(/\\affilmark\s*\{([^{}]*)\}/g, "\\textsuperscript{$1}");
-  const authors = (LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author")).map(/^(?:lmcs|IEEEojcsys)$/.test(documentClass ?? "") ? cleanName : (name) => name);
+  // IEEEtran's user macro for "`\and` with a line break" (`\linebreakand`): an author break; comments (a drafted list) are not shown.
+  const breakMacro = authorBreakMacro(text);
+  const plainName = (name: string) => (breakMacro ? stripTexComments(name).replace(new RegExp(`\\\\${breakMacro}(?![A-Za-z@])`, "g"), "\\and") : name);
+  const authors = (LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author")).map(/^(?:lmcs|IEEEojcsys)$/.test(documentClass ?? "") ? cleanName : plainName);
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
   const bodyStart = beginDocumentIndex(text);
   const jhep = documentClass === "jheppub";

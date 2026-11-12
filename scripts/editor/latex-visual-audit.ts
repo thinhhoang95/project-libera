@@ -131,7 +131,18 @@ function isMacroFile(text: string) {
   return lines.length > 0 && defining.length / lines.length > 0.4;
 }
 
-const MATH_NODES = new Set(["DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment"]);
+/** A file the root `\input`s before its `\begin{document}` (SIAM's shared `ex_shared.tex`): preamble, not body, so it has nothing to draw. */
+function inRootPreamble(file: string, rootText: string) {
+  const begin = firstBegin(rootText);
+  const preamble = rootText.slice(0, begin ? begin.index : 0);
+  const base = file.replace(/\.tex$/i, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const match of preamble.matchAll(new RegExp(String.raw`\\(?:input|include)\s*\{\s*(?:\./)?${base}(?:\.tex)?\s*\}`, "g"))) {
+    if (!isInLatexComment(preamble, match.index!)) return true;
+  }
+  return false;
+}
+
+const MATH_NODES =new Set(["DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment"]);
 
 const lineOf = (text: string, pos: number) => text.slice(0, pos).split("\n").length;
 const lineAt = (text: string, pos: number) => {
@@ -317,7 +328,7 @@ async function audit(args: string[]) {
     const totals = new Map<string, number>();
     for (const file of texs) {
       const filePath = `nb/${file}`;
-      if (!read(filePath).trim() || isMacroFile(read(filePath))) continue;
+      if (!read(filePath).trim() || isMacroFile(read(filePath)) || inRootPreamble(file, read(rootPath))) continue;
       // A subfiles chapter has a \documentclass and a body of its own but is typeset as part of the main file it names (as the app resolves it).
       const fileRoot = subfilesRootPath(filePath, read(filePath), known) ?? (isMain(file) ? filePath : rootPath);
       const started = performance.now();
