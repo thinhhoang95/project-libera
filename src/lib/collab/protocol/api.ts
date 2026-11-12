@@ -176,6 +176,8 @@ export interface FolderLease {
   /** Whether the caller holds the lease now. */
   granted: boolean;
   expiresAt: string | null;
+  /** The lifetime the server granted (after clamping); absent from older servers. Clients must not derive it from `expiresAt` and their own wall clock. */
+  ttlMs?: number;
   /** Another installation has asked for this lease while it was held: the folder is seen by more than one. */
   contended: boolean;
 }

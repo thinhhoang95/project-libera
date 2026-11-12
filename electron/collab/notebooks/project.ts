@@ -562,11 +562,21 @@ export class SharedProject {
   }
 
   /** Resolves once the queue is empty and no write, scan or manifest pass is pending. */
-  async whenIdle(): Promise<void> {
+  async whenIdle(timeoutMs?: number): Promise<boolean> {
+    // Continuous remote edits or watcher events can keep re-arming timers, so
+    // a caller that must finish passes a bound and gets false (retryable).
+    const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
     for (;;) {
-      await this.queue.catch(() => undefined);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      let cutoff: ReturnType<typeof setTimeout> | undefined;
+      await (Number.isFinite(remaining)
+        ? Promise.race([this.queue.catch(() => undefined), new Promise((resolve) => { cutoff = setTimeout(resolve, remaining); })])
+        : this.queue.catch(() => undefined));
+      clearTimeout(cutoff);
       const pendingWrites = [...this.docs.values()].some((doc) => doc.writeTimer !== null);
-      if (this.queued === 0 && !pendingWrites && !this.manifestTimer && !this.scanTimer) return;
+      if (this.queued === 0 && !pendingWrites && !this.manifestTimer && !this.scanTimer) return true;
+      if (deadline - Date.now() <= 0) return false;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
