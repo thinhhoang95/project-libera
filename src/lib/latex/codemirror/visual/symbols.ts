@@ -18,7 +18,7 @@ export const SYMBOL_COMMANDS: Record<string, string> = {
   // amssymb's tick, in text (results tables).
   "\\checkmark": "✓",
   "\\textbackslash": "\\", "\\textasciitilde": "~", "\\textasciicircum": "^", "\\textbar": "|", "\\textless": "<", "\\textgreater": ">",
-  "\\textquoteleft": "‘", "\\textquoteright": "’", "\\textquotedblleft": "“", "\\textquotedblright": "”", "\\guillemotleft": "«", "\\guillemotright": "»",
+  "\\textquoteleft": "‘", "\\lq": "‘", "\\rq": "’","\\textquoteright": "’", "\\textquotedblleft": "“", "\\textquotedblright": "”", "\\guillemotleft": "«", "\\guillemotright": "»",
   "\\pounds": "£", "\\euro": "€", "\\textdegree": "°", "\\textmu": "µ", "\\i": "ı", "\\j": "ȷ", "\\ss": "ß", "\\ae": "æ", "\\AE": "Æ",
   "\\oe": "œ", "\\OE": "Œ", "\\o": "ø", "\\O": "Ø", "\\aa": "å", "\\AA": "Å", "\\l": "ł", "\\L": "Ł",
   "\\LaTeX": "LaTeX", "\\TeX": "TeX", "\\LaTeXe": "LaTeX2ε", "\\BibTeX": "BibTeX", "\\quad": " ", "\\qquad": "  ",
@@ -56,9 +56,16 @@ export const TEXT_WRAPPERS: Record<string, { args: Array<string | null>; open?: 
   "\\framebox": { args: ["cm-vis-fbox"] },
   "\\makebox": { args: [""] },
   "\\parbox": { args: [null, ""] },
+  // `\smash[b]{…}` only changes the box's height: in text it is its argument.
+  "\\smash": { args: [""] },
+  // threeparttable's `\tnote{c}` (a table note's mark, outside a row too: in a caption or a line of text): a superscript.
+  "\\tnote": { args: ["cm-vis-sup"] },
   // url's and hyperref's unlinked paths, in the typewriter face.
   "\\nolinkurl": { args: ["cm-vis-tt"] },
   "\\path": { args: ["cm-vis-tt"] },
+  // hyperref's internal links and anchors (`\hyperlink{target}{text}`, Pandoc's `\hypertarget{id}{}`): their text, the target hidden.
+  "\\hyperlink": { args: [null, ""] },
+  "\\hypertarget": { args: [null, ""] },
   // A note in the margin: a small note where it is written.
   "\\marginpar": { args: ["cm-vis-margin-note"] },
   "\\marginnote": { args: ["cm-vis-margin-note"] },

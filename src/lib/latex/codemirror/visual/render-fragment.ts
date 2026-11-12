@@ -233,7 +233,7 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
         // What the parser hung on the switch is text: `\tt [CLS]`, `\small{…}` (after a colour's own arguments).
         for (let argument = switched.command.firstChild, own = switched.own; argument; argument = argument.nextSibling) {
           if (own > 0 && (argument.name === "OptionalArgument" || /Argument$/.test(argument.name))) { if (argument.name !== "OptionalArgument") own--; continue; }
-          if (argument.name === "OptionalArgument") target.appendChild(document.createTextNode(typesetText(read(argument.from, argument.to))));
+          if (argument.name === "OptionalArgument") renderNode(target, argument);
           else if (argument.name === "TextArgument" || argument.name === "ShortTextArgument") renderArgument(target, argument);
         }
         at = child.to;
@@ -387,7 +387,14 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
     // Alignment and lengths inside a cell or caption (`\centering`, `\setlength{\tabcolsep}{0pt}`) have no effect here.
     if (name === "Label" || name === "Centering" || name === "SetLengthCommand") return;
     // Brackets the parser took for an optional argument (`mAP@[.5, .95]`) are text.
-    if (name === "OptionalArgument" || name === "OpenBracket" || name === "CloseBracket") { parent.appendChild(document.createTextNode(typesetText(read(node.from, node.to)))); return; }
+    if (name === "OptionalArgument") {
+      const closed = read(node.to - 1, node.to) === "]";
+      parent.appendChild(document.createTextNode("["));
+      parent.appendChild(renderLatexFragment(read(node.from + 1, closed ? node.to - 1 : node.to), context));
+      if (closed) parent.appendChild(document.createTextNode("]"));
+      return;
+    }
+    if (name === "OpenBracket" || name === "CloseBracket") { parent.appendChild(document.createTextNode(typesetText(read(node.from, node.to)))); return; }
     // A tabular inside a cell (`\begin{tabular}{@{}c@{}}LOC \\ method\end{tabular}`): a small grid.
     if (name === "TabularEnvironment" && context.tabular) { parent.appendChild(context.tabular(read(node.from, node.to))); return; }
     // `\parbox{w}{…}` (the grammar's own node): its content, as the other boxes.

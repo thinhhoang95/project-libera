@@ -14,6 +14,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import { JSDOM } from "jsdom";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
@@ -29,7 +30,7 @@ import { chapterNumberingStart } from "../../src/lib/latex/macros/project-number
 import { collectLatexDefinitions, isInLatexComment } from "../../src/lib/latex/macros/definitions";
 import { collectBodyIncludes, collectMacroSources } from "../../src/components/libera/latex/latex-dependencies";
 import katex from "katex";
-import { forKatex, KATEX_MACROS, katexForEnvironment } from "../../src/lib/latex/codemirror/visual/math-render";
+import { forKatex, KATEX_MACROS, katexForEnvironment, loadMhchem } from "../../src/lib/latex/codemirror/visual/math-render";
 import { expandLatexMacros } from "../../src/lib/latex/macros/expand";
 import { subfilesRootPath } from "../../src/lib/latex/project";
 
@@ -131,7 +132,18 @@ function isMacroFile(text: string) {
   return lines.length > 0 && defining.length / lines.length > 0.4;
 }
 
-const MATH_NODES = new Set(["DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment"]);
+/** A file the root `\input`s before its `\begin{document}` (SIAM's shared `ex_shared.tex`): preamble, not body, so it has nothing to draw. */
+function inRootPreamble(file: string, rootText: string) {
+  const begin = firstBegin(rootText);
+  const preamble = rootText.slice(0, begin ? begin.index : 0);
+  const base = file.replace(/\.tex$/i, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const match of preamble.matchAll(new RegExp(String.raw`\\(?:input|include)\s*\{\s*(?:\./)?${base}(?:\.tex)?\s*\}`, "g"))) {
+    if (!isInLatexComment(preamble, match.index!)) return true;
+  }
+  return false;
+}
+
+const MATH_NODES =new Set(["DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment"]);
 
 const lineOf = (text: string, pos: number) => text.slice(0, pos).split("\n").length;
 const lineAt = (text: string, pos: number) => {
@@ -142,10 +154,13 @@ const lineAt = (text: string, pos: number) => {
 
 async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<string>, read: (path: string) => string) {
   const doc = read(filePath);
+  // The app loads KaTeX's mhchem the first time a formula uses `\ce`, and draws it again; the audit loads it up front.
+  // Under tsx `import()` finds the extension's ESM build, which registers on another KaTeX than the CommonJS one used here: load the CommonJS build too.
+  if (/\\(?:ce|pu)\s*\{/.test(doc)) { createRequire(import.meta.url)("katex/contrib/mhchem"); await loadMhchem(); }
   const readText = async (path: string) => read(path);
   const bodyMatch = firstBegin(doc);
   const ownPreamble = doc.slice(0, bodyMatch ? bodyMatch.index : 0);
-  const { sources } = await collectMacroSources({ filePath, rootPath, ownPreamble, known, readText, version: () => "1" });
+  const { sources } = await collectMacroSources({ filePath, rootPath, ownPreamble, ownBody: doc.slice(ownPreamble.length), known, readText, version: () => "1" });
   let start: NumberingStart | null = null;
   if (rootPath !== filePath) {
     const rootSource = sources.find((source: MacroSource) => source.path === rootPath);
@@ -160,6 +175,9 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   const parsed = EditorState.create({ doc, extensions: [latexLanguageSupport(filePath, "tree")] });
   ensureSyntaxTree(parsed, doc.length, 20_000);
   let state = EditorState.create({ doc, selection: { anchor: doc.length }, extensions: [latexLanguageSupport(filePath, "tree"), latexVisualState(), latexVisualMode({ documentPath: filePath })] });
+  // The Visual build gives the parser 400 ms; a 200 KB paper on a busy machine needs more, and a half-parsed tree
+  // reads as "nothing drawn". The editor redraws as parsing goes on; here the tree is finished first.
+  ensureSyntaxTree(state, doc.length, 60_000);
   state = state.update({ effects: [setMacroSources.of(sources), setNumberingStart.of(start), setNumberingIncludes.of(includes)] }).state;
   for (let guard = 0; state.field(structuralField).pending.length && guard < 5000; guard++) {
     const next = state.field(structuralField).pending[0];
@@ -193,12 +211,15 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
     try {
       const element = widget.toDOM(view);
       element.querySelectorAll(".katex-mathml, pre, code, .cm-vis-tt, .cm-vis-raw, [data-source-only]").forEach((node) => node.remove());
+      // A backslash KaTeX drew as a symbol of its own (`\backslash`, `\setminus` written `\backslash`) is not a command left in the text.
+      element.querySelectorAll("span").forEach((node) => { if (!node.children.length && node.textContent === "\\") node.textContent = "⧵"; });
       shownText = element.textContent ?? "";
     } catch (error) {
       junk.push(`${lineOf(doc, from)}: widget threw ${(error as Error).message.slice(0, 80)}`);
       return;
     }
-    const bad = /\\[a-zA-Z]{2,}|\bundefined\b|\bNaN\b|\[object Object\]/.exec(shownText);
+    // "undefined" is junk when it stands alone, not as an English word between others ("Ratios are undefined (–) when …").
+    const bad = /\\[a-zA-Z]{2,}|(?<![A-Za-z,;] )\bundefined\b(?! [A-Za-z])|\bNaN\b|\[object Object\]/.exec(shownText);
     if (bad) junk.push(`${lineOf(doc, from)}: shows "${shownText.slice(Math.max(0, bad.index - 40), bad.index + 60).replace(/\s+/g, " ")}"  from  ${doc.slice(from, Math.min(to, from + 100)).replace(/\n/g, " ")}`);
   });
   // A branch TeX skips (`\iffalse…\fi`, a discarding macro's argument) is faded on purpose, not left as source.
@@ -314,7 +335,7 @@ async function audit(args: string[]) {
     const totals = new Map<string, number>();
     for (const file of texs) {
       const filePath = `nb/${file}`;
-      if (!read(filePath).trim() || isMacroFile(read(filePath))) continue;
+      if (!read(filePath).trim() || isMacroFile(read(filePath)) || inRootPreamble(file, read(rootPath))) continue;
       // A subfiles chapter has a \documentclass and a body of its own but is typeset as part of the main file it names (as the app resolves it).
       const fileRoot = subfilesRootPath(filePath, read(filePath), known) ?? (isMain(file) ? filePath : rootPath);
       const started = performance.now();

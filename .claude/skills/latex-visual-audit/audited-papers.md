@@ -61,3 +61,62 @@ Passed to `fetch --exclude` so a new round picks new papers. Add each round's id
 | cs.CL | 2611.13560 | MLSys class, `\twocolumn[{…}]`, 50 files |
 | cs.DS | 2611.10440 | longtables with 25 KB of macro expansion |
 | q-bio.NC | 2610.40511 | ICLR 2027 |
+
+## 2026-11-12, round 5 (20 papers, docs/audits/2026-11-12-latex-visual-paper-review-5.md)
+
+| Category | arXiv id | Notable |
+|---|---|---|
+| math.NT | 2611.11566 | `\DeclareMathSymbol{\Sha}`, `\hyperref` in math |
+| math.AP | 2611.12463 | `\tag{\textbf{i}}` refs |
+| math.OC | 2611.12757 | IEEEojcsys front matter, `$…\)` |
+| math.ST | 2611.09087 | `\printbibliography` |
+| math.DG | 2611.11400 | enumitem `label=\textup{(\roman*)}`, `\href` with a line break |
+| math.NA | 2611.11466 | siamart predefined theorems, `AMS` |
+| cs.CC | 2611.07413 | llncs, zref-clever `\zcsetup`, `\newtcolorbox` with counters, body `\newenvironment` |
+| cs.PL | 2610.37006 | LMCS, `\def\+Bound`, `\mbox{\sc …}` in math |
+| cs.CR | 2611.11859 | `\mathpalette`/`\ooalign`, 28 files |
+| cs.DB | 2611.03327 | clean |
+| cs.GT | 2611.05777 | TikZ inside body `\newcommand`, `reptheorem`, thm-restate |
+| cs.SE | 2611.12982 | `\numberwithin{table}{section}` |
+| cs.LG | 2611.14059 | jmlr `\tableref`, `\ifmlhdemo` |
+| stat.ML | 2611.11460 | NeurIPS, 31 files, `hypbox` |
+| cs.CV | 2611.13868 | IEEEtran biographies |
+| cs.AI | 2611.13971 | Elsevier CAS front matter |
+| econ.TH | 2611.01431 | INFORMS `APPENDICES`, `\prettyref` |
+| econ.EM | 2610.41963 | clean |
+| econ.GN | 2610.39843 | clean |
+| q-fin.MF | 2610.16732 | macros from a body `\input` |
+
+Skipped: cs.SE 2611.11216 (PDF only), econ.GN 2610.39844 (too small).
+
+## 2026-11-12, round 6 (50 papers, docs/audits/2026-11-12-latex-visual-paper-review-6.md)
+
+- cs.AI: 2611.13960 2611.13966
+- cs.CC: 2611.04680 2611.04776
+- cs.CR: 2611.10776 2611.10830
+- cs.CV: 2611.13849 2611.13851
+- cs.DB: 2610.38404 2610.38605
+- cs.DS: 2611.10283 2611.10293
+- cs.GT: 2611.05705 2611.05706
+- cs.IT: 2611.09184 2611.09366
+- cs.LG: 2611.14035 2611.14046
+- cs.PL: 2610.26599 2610.28682
+- cs.SE: 2611.11192 2611.11213
+- econ.EM: 2610.41722 2610.41881
+- econ.GN: 2610.39097 2610.39375
+- econ.TH: 2611.01195 2611.05417
+- math.AP: 2611.11530 2611.11553
+- math.CO: 2611.12329 2611.12330
+- math.DG: 2611.09689 2611.09697
+- math.FA: 2611.07728 2611.07785
+- math.NA: 2611.09574 2611.09593
+- math.NT: 2611.09681 2611.09711
+- math.OC: 2611.12089 2611.12134
+- math.PR: 2611.09811 2611.10139
+- math.ST: 2611.04598 2611.04705
+- q-fin.MF: 2610.13543 2610.14524
+- stat.ML: 2611.11386 2611.11387
+
+Notable: math.DG 2611.09697 (`\def` with `&` and `\\` parameters swallowed the file), cs.IT 2611.09366 (Pandoc/Quarto output),
+cs.PL 2610.26599 (etoolbox text macros, 54 files), math.AP 2611.11553 (`\m@th`), math.NA 2611.09593 (SIAM shared preamble),
+stat.ML 2611.11386 (macro debris in captions). Skipped: math.ST 2611.04612 (PDF only).

@@ -230,12 +230,23 @@ test("\\algnewcommand statements and comments, and \\algdef / \\algblockdefx blo
   ]);
   // `\algtext*{EndBlk}`: the command draws no line.
   assert.equal(readLatexDefinitions(String.raw`\algblockdefx[ON]{Blk}{EndBlk}[1]{#1}{\textbf{end}}\algtext*{EndBlk}`).macros.get("EndBlk")?.at(-1)?.body, "\\algorithmic@end{}");
-  // A definition in the body is source: the name it defines is not drawn there.
-  assert.match(visibleText(String.raw`\documentclass{article}
+  // A definition in the body is an inert unit (round 5): folded, nothing it defines is drawn there, and its source shows at the caret.
+  const bodyDef = String.raw`\documentclass{article}
 \begin{document}
 \algnewcommand{\Note}[1]{\State #1}
 Text.
-\end{document}`), /\\algnewcommand\{\\Note\}\[1\]\{\\State #1\}/);
+\end{document}`;
+  assert.doesNotMatch(visibleText(bodyDef), /algnewcommand|Note|State/);
+  {
+    const parent = document.createElement("div");
+    document.body.append(parent);
+    const view = new EditorView({ state: visualState(bodyDef), parent });
+    refreshVisualWidgets(view);
+    view.dispatch({ selection: { anchor: bodyDef.indexOf("\\algnewcommand") + 4 } });
+    assert.match(view.contentDOM.textContent ?? "", /\\algnewcommand\{\\Note\}\[1\]\{\\State #1\}/);
+    view.destroy();
+    parent.remove();
+  }
 });
 
 test("\\\\\\hrulefill between statements is a rule across the algorithm; a fill in a line is space (GaLore, B6-21)", () => {

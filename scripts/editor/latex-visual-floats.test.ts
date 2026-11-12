@@ -507,10 +507,22 @@ Text.
 \twocolumn
 \renewcommand{\foo}{bar}
 \twocolumn[Kept text]`);
-  // Only another command's definition stays source; `\twocolumn[Kept text]` is a transparent wrapper (round 4, MLSys 2611.13560).
+  // Another command's definition folds as well (round 5: a body definition is an inert unit) and is source at the caret;
+  // `\twocolumn[Kept text]` is a transparent wrapper (round 4, MLSys 2611.13560).
   const { text } = mounted(doc);
   assert.match(text, /Text\.A1\W*More/);
-  assert.match(text, /\\renewcommand\{\\foo\}\{bar\}Kept text$/);
+  assert.match(text, /Kept text$/);
+  assert.doesNotMatch(text, /renewcommand/);
+  {
+    const parent = document.createElement("div");
+    document.body.append(parent);
+    const caretView = new EditorView({ state: visualState(doc), parent });
+    refreshVisualWidgets(caretView);
+    caretView.dispatch({ selection: { anchor: doc.indexOf("\\renewcommand{\\foo}") + 4 } });
+    assert.ok((caretView.contentDOM.textContent ?? "").includes("\\renewcommand{\\foo}{bar}"), "the definition is source at the caret");
+    caretView.destroy();
+    parent.remove();
+  }
   assert.doesNotMatch(text, /frenchspacing|clearpage|appendix|thesection|theequation|setcounter|twocolumn\\/);
   // Numbering reads the lines that folded away.
   const state = visualState(doc);

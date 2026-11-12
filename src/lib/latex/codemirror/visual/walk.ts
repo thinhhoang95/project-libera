@@ -2,26 +2,27 @@ import type { EditorState, Text } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
-import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
+import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, isInLatexComment, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
-import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
+import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { latexProjectField } from "../editing";
-import { disabledField, visualConfig } from "./model";
-import { citationNoteText, citationNotes, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
+import { disabledField, macroSourcesField, visualConfig } from "./model";
+import { citationNoteText, citationNotes, prettyrefText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
+import { gameTabular } from "./game";
 import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
   ChipWidget, ColumnsWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  BiographyHeaderWidget, ExampleMarkerWidget, ItemMarkerWidget, QedMarkWidget, LineBreakWidget, LiteralTextWidget, PrintedTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget, type TableExtras,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
@@ -170,7 +171,7 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   newline: 0, linebreak: 0, onehalfspacing: 0, doublespacing: 0, singlespacing: 0, justifying: 0, raggedright: 0, raggedleft: 0, centering: 0,
   frontmatter: 0, mainmatter: 0, backmatter: 0, tableofcontents: 0, listoffigures: 0, listoftables: 0, listoftodos: 0, FloatBarrier: 0, restoregeometry: 0,
   balance: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
-  startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0, let: 0,
+  tightlist: 0, startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0, let: 0,
   // AASTeX's `\restartappendixnumbering` and `\startlongtable` print nothing.
   restartappendixnumbering: 0, startlongtable: 0,
   // MNRAS's `\bsp` (a typesetting note on the last page) and its page range and year metadata.
@@ -183,9 +184,13 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   // (`\renewcommand{\theequation}{S\arabic{equation}}`, only a `\the…` one). Column and spacing switches, TeX groups.
   // Counters and boxes declared (`\newcounter`, chngcntr's `\counterwithin*`, `\newsavebox`): definitions, which print nothing.
   newcounter: 1, counterwithin: 2, counterwithout: 2, newsavebox: 1,
+  // Set-up that prints nothing: numberwithin, cleveref crefalias, zref-clever zcsetup.
+  numberwithin: 2, crefalias: 2, zcsetup: 1,
   appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
   // IEEEtran's `\appendices`; counters stepped where they are.
   appendices: 0, stepcounter: 1, refstepcounter: 1,
+  // IEEEtran's publication-id and running-head switches, `\nobalance`, `\suppressfloats[t]` and `\appendixpage` (an "Appendices" heading, not drawn): print nothing here.
+  IEEEpubidadjcol: 0, IEEEpeerreviewmaketitle: 0, nobalance: 0, suppressfloats: 0, appendixpage: 0,
   begingroup: 0, endgroup: 0,
   // `\eject`, needspace's `\Needspace{16\baselineskip}`, revtex's `\onecolumngrid`/`\twocolumngrid`, `\addtocontents{toc}{…}` and
   // `\AtEndDocument{…}` (run at the end, not here): page-layout lines that print nothing where they stand.
@@ -197,9 +202,18 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   medmuskip: 0, thinmuskip: 0, thickmuskip: 0, relpenalty: 0, binoppenalty: 0, hangindent: 0, hangafter: 0, parindent: 0, parskip: 0,
   baselineskip: 0, lineskip: 0, leftskip: 0, rightskip: 0, parfillskip: 0, tolerance: 0, emergencystretch: 0, hbadness: 0, vbadness: 0,
   widowpenalty: 0, clubpenalty: 0, hyphenpenalty: 0, exhyphenpenalty: 0, tabcolsep: 0, arraycolsep: 0,
+  // TikZ/PGF setup that draws nothing (`\usetikzlibrary{calc}`, `\pgfkeys{…}`, `\pgfmathsetlengthmacro{\w}{width("$x$")}`), a float's
+  // label (`\floatname{algorithm}{Construction}`), algorithmicx's `\algtext*{EndIf}`, a paragraph's break (`\break`).
+  usetikzlibrary: 1, usepgflibrary: 1, usepgfplotslibrary: 1, tcbuselibrary: 1, tcbset: 1, newlength: 1, newtcolorbox: 2, renewtcolorbox: 2, pgfkeys: 1, pgfmathsetlengthmacro: 2, pgfmathsetmacro: 2, floatname: 2, algtext: 1,
+  fontsize: 2, selectfont: 0, break: 0,
+  // More of TeX assignments (itemsep1pt, topsep=0pt, predisplaypenalty=0 followed by relax): see TEX_ASSIGNMENT.
+  itemsep: 0, parsep: 0, topsep: 0, partopsep: 0, labelsep: 0, labelwidth: 0, leftmargin: 0, rightmargin: 0, itemindent: 0, listparindent: 0, columnsep: 0, abovedisplayskip: 0, belowdisplayskip: 0,
+  abovedisplayshortskip: 0, belowdisplayshortskip: 0, predisplaypenalty: 0, postdisplaypenalty: 0, interlinepenalty: 0, brokenpenalty: 0, displaywidowpenalty: 0, floatingpenalty: 0,
 };
+/** Setup commands of LAYOUT_LINE_ARGS that print nothing wherever they stand, so they hide even among other things on a line. */
+const INLINE_SETUP = /^\\(?:pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|usepgfplotslibrary|tcbuselibrary|tcbset|pgfkeys|floatname)$/;
 /** The TeX assignments of LAYOUT_LINE_ARGS that take an `= value` (a glue, a dimension or an integer) rather than a group. */
-const TEX_ASSIGNMENT = /^(?:medmuskip|thinmuskip|thickmuskip|relpenalty|binoppenalty|hangindent|hangafter|parindent|parskip|baselineskip|lineskip|leftskip|rightskip|parfillskip|tolerance|emergencystretch|hbadness|vbadness|widowpenalty|clubpenalty|hyphenpenalty|exhyphenpenalty|tabcolsep|arraycolsep)$/;
+const TEX_ASSIGNMENT = /^(?:itemsep|parsep|topsep|partopsep|labelsep|labelwidth|leftmargin|rightmargin|itemindent|listparindent|columnsep|abovedisplayskip|belowdisplayskip|abovedisplayshortskip|belowdisplayshortskip|predisplaypenalty|postdisplaypenalty|interlinepenalty|brokenpenalty|displaywidowpenalty|floatingpenalty|predisplaysize|medmuskip|thinmuskip|thickmuskip|relpenalty|binoppenalty|hangindent|hangafter|parindent|parskip|baselineskip|lineskip|leftskip|rightskip|parfillskip|tolerance|emergencystretch|hbadness|vbadness|widowpenalty|clubpenalty|hyphenpenalty|exhyphenpenalty|tabcolsep|arraycolsep)$/;
 /** What follows such an assignment's name: an optional `=`, a number with a unit (or none: a penalty), then any `plus`/`minus` glue. */
 const TEX_ASSIGNMENT_VALUE = new RegExp(String.raw`^\s*=?\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|fil+)(?![A-Za-z]))?(?:\s*(?:plus|minus)\s*-?\s*(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp|sp|mu|pc|dd|cc|fil+)(?![A-Za-z]))*`);
 /** A definition's body that writes table rows, cells or rules (`#1 & #2 & #3\\`, `\midrule\multicolumn…`): a row helper. */
@@ -230,26 +244,31 @@ function rowHelperDefinition(text: string, at: number) {
 function layoutLine(state: EditorState, from: number): { from: number; to: number } | null {
   const line = state.doc.lineAt(from);
   if (read(state, line.from, from).trim()) return null;
-  const text = read(state, from, Math.min(state.doc.length, from + 4000));
+  const i = layoutRun(read(state, from, Math.min(state.doc.length, from + 4000)));
+  return i > 0 ? { from: line.from, to: state.doc.lineAt(Math.min(state.doc.length, from + i)).to } : null;
+}
+
+/** How much of the start of `text` (one line) is layout commands with their arguments (see LAYOUT_LINE_ARGS); 0 when something else is on the line. */
+function layoutRun(text: string, partial = false): number {
   let i = 0;
   for (;;) {
     i += /^[ \t]*/.exec(text.slice(i))![0].length;
     if (i >= text.length || text[i] === "\n" || text[i] === "\r" || text[i] === "%") break;
     const command = /^\\([A-Za-z@]+)\*?/.exec(text.slice(i, i + 60));
     const count = command && Object.hasOwn(LAYOUT_LINE_ARGS, command[1]) ? LAYOUT_LINE_ARGS[command[1]] : undefined;
-    if (!command || count === undefined) return null;
+    if (!command || count === undefined) return partial ? i : 0;
     i += command[0].length;
     if (command[1] === "vskip") { i += PRIMITIVE_GLUE.exec(text.slice(i))?.[0].length ?? 0; continue; }
     // `\let\c@lemmaL\c@theorem`: a counter that shares another's count (numbering.ts reads it); no other `\let`.
     if (command[1] === "let") {
       const alias = COUNTER_ALIAS.exec(text.slice(i - command[0].length, i + 80));
-      if (!alias) return null;
+      if (!alias) return 0;
       i += alias[0].length - command[0].length;
       continue;
     }
     if (TEX_ASSIGNMENT.test(command[1])) {
       const value = TEX_ASSIGNMENT_VALUE.exec(text.slice(i));
-      if (!value) return null;
+      if (!value) return 0;
       i += value[0].length;
       continue;
     }
@@ -259,25 +278,25 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
       if (helper > 0) { i = helper; continue; }
     }
     // `\renewcommand` of a counter's format (`{\thesection}` or `\thesection`), of `\qedsymbol`, or of the table row height (`\arraystretch`) only.
-    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\(?:the[A-Za-z]+|qedsymbol|arraystretch)\s*\}|\\(?:the[A-Za-z]+|qedsymbol|arraystretch)(?![A-Za-z]))/.test(text.slice(i, i + 60))) return null;
+    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\(?:the[A-Za-z]+|qedsymbol|arraystretch)\s*\}|\\(?:the[A-Za-z]+|qedsymbol|arraystretch)(?![A-Za-z]))/.test(text.slice(i, i + 60))) return 0;
     // `\newcommand` is only a layout line as a row helper (above).
-    if (command[1] === "newcommand") return null;
+    if (command[1] === "newcommand") return 0;
     const optional = /^[ \t]*\[/.exec(text.slice(i));
     if (optional) {
-      if (LAYOUT_LINE_TEXT_OPTION.test(command[1])) return null;
+      if (LAYOUT_LINE_TEXT_OPTION.test(command[1])) return 0;
       const group = readOptional(text, i + optional[0].length - 1, TEX_GROUPS);
-      if (!group) return null;
+      if (!group) return 0;
       i = group.end;
     }
     for (let k = 0; k < count; k++) {
       const space = /^\s*/.exec(text.slice(i))![0];
-      if (space.includes("\n\n")) return null;
+      if (space.includes("\n\n")) return 0;
       const at = i + space.length;
       // `\setlength\parindent{0pt}`: an unbraced length.
       const unbraced = k === 0 && /^(?:setlength|addtolength|renewcommand|newsavebox)$/.test(command[1]) ? /^\\[A-Za-z@]+/.exec(text.slice(at, at + 60)) : null;
       if (unbraced) { i = at + unbraced[0].length; continue; }
       const group = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
-      if (!group) return null;
+      if (!group) return 0;
       i = group.end;
     }
     // `\newcounter{c}[section]`: the counter it counts within.
@@ -287,11 +306,11 @@ function layoutLine(state: EditorState, from: number): { from: number; to: numbe
       if (group) i = group.end;
     }
   }
-  return i > 0 ? { from: line.from, to: state.doc.lineAt(Math.min(state.doc.length, from + i)).to } : null;
+  return i;
 }
 
 /** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
-const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing|allowbreak|nobreak|nolinebreak|relax)$/;
+const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|tightlist|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing|allowbreak|nobreak|nolinebreak|relax)$/;
 /** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2, "\\resizebox": 3, "\\scalebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
@@ -345,7 +364,9 @@ function definitionsPrelude(text: string): { from: number; to: number } | null {
 }
 
 /** Definitions the grammar parses as unknown commands. */
-const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|numberwithin|crefname|Crefname|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext)$/;
+/** Definition commands whose arguments end with their line when the line ends (`\algtext*{EndIf}`, `\newif\ifdraft`). */
+const NEXT_LINE_STOPS = /^\\(?:algtext|newif)\*?\s*(?:\{[^{}]*\}|\\[A-Za-z@]+)\s*$/;
+const DEFINITION_COMMANDS =/^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|numberwithin|crefname|Crefname|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|newif|newcolumntype)$/;
 const SECTION_CLASSES: Record<string, string> = {
   Book: "cm-vis-hpart", Part: "cm-vis-hpart", Chapter: "cm-vis-h0", Section: "cm-vis-h1", SubSection: "cm-vis-h2",
   SubSubSection: "cm-vis-h3", Paragraph: "cm-vis-h4", SubParagraph: "cm-vis-h4",
@@ -367,7 +388,7 @@ const TEXT_BLOCKS: Record<string, string> = {
   quote: "cm-vis-quote", quotation: "cm-vis-quote", verse: "cm-vis-quote", center: "cm-vis-center", flushleft: "cm-vis-flushleft",
   flushright: "cm-vis-flushright", abstract: "cm-vis-abstract",
   // The appendix package's environment: its lines fold away, its sections are lettered (numbering.ts).
-  appendices: "cm-vis-appendices",
+  appendices: "cm-vis-appendices", APPENDICES: "cm-vis-appendices",
   // `\begin{appendix}`, which runs `\appendix` (KOMA papers): the same.
   appendix: "cm-vis-appendices",
   // `tabbing`: lines of text with tab stops (`\=`, `\>`), drawn as gaps (Featherweight Go's proofs).
@@ -375,7 +396,7 @@ const TEXT_BLOCKS: Record<string, string> = {
   // setspace's line spacing and pdflscape's rotated pages: layout, whose lines fold away (applied economics papers).
   singlespace: "cm-vis-sized", onehalfspace: "cm-vis-sized", doublespace: "cm-vis-sized", spacing: "cm-vis-sized", landscape: "cm-vis-sized",
   // Keywords under an abstract (JMLR, SIAM, IEEE).
-  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords",
+  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords", AMS: "cm-vis-keywords",
   // amsmath's `subequations` (numbering 3a, 3b): its equations are drawn on their own, and its lines fold away.
   subequations: "cm-vis-sized",
   // revtex's `widetext` (text set across both columns): layout, whose lines fold away.
@@ -629,13 +650,25 @@ function drawableEnvironmentCode(code: string): string | null {
  * `\renewcommand{\theteoremarepnum}{\ref{r:#1}}`: "Theorem 1.1"). Null otherwise.
  */
 function namedTheorem(code: string, defs: LatexDefinitions) {
-  const match = /^\s*\\(?:re)?newcommand\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\\begin\s*\{([^{}]+)\}\s*$/.exec(code);
+  // `\renewcommand{\theoremname}{#1}` or `\def\reptheoremlabel{#1}` before the `\begin` (cs.GT 2611.05777's `reptheorem`).
+  const match = /^\s*(?:\\(?:re)?newcommand\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))|\\def\s*\\([A-Za-z@]+))\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\\begin\s*\{([^{}]+)\}\s*$/.exec(code);
   if (!match) return null;
-  const theorem = defs.theorems.get(match[4].trim());
-  const title = theorem?.title.replace(/\\protect\s*/g, "").trim() ?? "";
-  const use = new RegExp(String.raw`\\${match[1] ?? match[2]}(?![A-Za-z@])`, "g");
+  const name = match[1] ?? match[2] ?? match[3];
+  const theorem = defs.theorems.get(match[5].trim());
+  let title = theorem?.title.replace(/\\protect\s*/g, "").trim() ?? "";
+  // The title may reach the argument through another macro (`\newtheorem*{reptheorembody}{\reptheoremheading}` with
+  // `\DeclareRobustCommand{\reptheoremheading}{\Cref{\reptheoremlabel}}`): argument-less macros of the document are read through.
+  for (let pass = 0; pass < 4; pass++) {
+    const next = title.replace(/\\([A-Za-z@]+)(?![A-Za-z@])/g, (whole, macroName: string) => {
+      const macro = macroName === name ? null : macroAt(defs, macroName, Number.MAX_SAFE_INTEGER);
+      return macro && !macro.arity && !macro.optional && !macro.spec && !macro.provided && macro.body.length < 200 && !macro.body.includes("#") ? macro.body.trim() : whole;
+    });
+    if (next === title) break;
+    title = next;
+  }
+  const use = new RegExp(String.raw`\\${name}(?![A-Za-z@])`, "g");
   if (!theorem || theorem.numbered || title.match(use)?.length !== 1) return null;
-  return { theorem, title: title.replace(use, () => match[3].trim()) };
+  return { theorem, title: title.replace(use, () => match[4].trim()) };
 }
 
 /** `inline`: a list run into its paragraph (paralist's `inparaenum`), whose lines are not indented. */
@@ -645,6 +678,8 @@ type ListContext = { node: SyntaxNode; variant: "bullet" | "number" | "descripti
 const PARALIST: Record<string, "enumerate" | "itemize" | "description"> = {
   compactenum: "enumerate", asparaenum: "enumerate", inparaenum: "enumerate", compactitem: "itemize", asparaitem: "itemize", inparaitem: "itemize",
   compactdesc: "description", asparadesc: "description", inparadesc: "description",
+  // enumitem's inline lists (`\begin{enumerate*}`): items run into the paragraph.
+  "enumerate*": "enumerate", "itemize*": "itemize", "description*": "description",
 };
 
 /**
@@ -885,7 +920,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return "";
     });
     if (!drawable) return false;
-    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => /^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) && !/\$/.test(text);
+    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => /^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|textup|textsl|textmd|textsuperscript|textsubscript|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) && !/\$/.test(text);
   };
 
   /** An item marker in the current list for `\item` (or a macro for it) at [at, to]; `optional` is its `[label]`. */
@@ -964,8 +999,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   };
 
   /** Whether a command is inside the argument or group of another (`\IfFileExists{a}{\input{a}}{}`, `{\small \input{x}}`). */
+  /** Groups that only scope layout (`{\setlength{\tabcolsep}{3pt}\input{table}}`): not an argument of anything. */
+  const layoutGroups = new Set<number>();
   const inArgument = (node: SyntaxNode) => {
-    for (let parent = node.parent; parent; parent = parent.parent) if (/^(?:Group|NonEmptyGroup|TextArgument|ShortTextArgument|LongArg|SectioningArgument)$/.test(parent.name)) return true;
+    for (let parent = node.parent; parent; parent = parent.parent) if (!layoutGroups.has(parent.from) && /^(?:Group|NonEmptyGroup|TextArgument|ShortTextArgument|LongArg|SectioningArgument)$/.test(parent.name)) return true;
     return false;
   };
 
@@ -990,6 +1027,24 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     });
   };
 
+  /**
+   * A definition written in the body is source that prints nothing: folded as one unit when it is alone on its lines
+   * (a trailing comment allowed), hidden when it sits on one line of text, else left as it is. False when left.
+   */
+  const foldDefinition = (start: number, end: number) => {
+    const first = doc.lineAt(start);
+    const last = doc.lineAt(end);
+    if (!doc.sliceString(first.from, start).trim() && /^\s*(?:%.*)?$/.test(doc.sliceString(end, last.to))) {
+      collapseLine({ from: first.from, to: last.to }, "layout");
+      consumed.push([first.from, last.to]);
+      return true;
+    }
+    if (first.number !== last.number) return false;
+    emit({ kind: "layout", from: start, to: end, reveal: "touch", replaces: [{ from: start, to: end }] });
+    consumed.push([start, end]);
+    return true;
+  };
+
   tree.iterate({
     from,
     to,
@@ -998,6 +1053,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (SKIPPED.has(name)) {
         // The grammar may end a definition early (`\newcommand*`): its name and body that follow are source too.
         const extent = DEFINITION_NODES.has(name) ? definitionExtentAt(defs, ref.from) : null;
+        const freshDefinition = DEFINITION_NODES.has(name) && !isConsumed(ref);
+        let folded = false;
         if (extent && extent.to > ref.to) consumed.push([ref.from, extent.to]);
         // `\renewcommand{\theequation}{S\arabic{equation}}` in the body: a counter's format, which numbering reads; its
         // line folds away as other layout lines do.
@@ -1005,7 +1062,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // fold away the same way; the line shows again at the cursor.
         if ((name === "RenewCommand" || name === "NewCommand") && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !isConsumed(ref)) {
           const line = layoutLine(state, ref.from);
-          if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
+          if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); folded = true; }
           else if (structural && name === "RenewCommand" && /^\\renewcommand\*?\s*(?:\{\s*\\the[A-Za-z]+\s*\}|\\the[A-Za-z]+(?![A-Za-z]))/.test(read(state, ref.from, Math.min(doc.length, ref.from + 60)))) {
             // In a line of text, or at the start of a group that only scopes it (`{\renewcommand{\thefootnote}{}\footnotetext{…}}`,
             // 2610.30364): hidden, with the group's braces, shown again at the cursor.
@@ -1017,6 +1074,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             const from = scoped ? open.from : ref.from;
             emit({ kind: "layout", from, to: ref.to, reveal: "touch", replaces: [{ from, to: ref.to }] });
             if (scoped) emit({ kind: "layout", from: close.from, to: close.to, reveal: "touch", replaces: [{ from: close.from, to: close.to }] });
+            folded = true;
           }
         }
         // `\let\c@lemmaL\c@theorem` in the body (2611.11388's supplement): counters made to count together, which
@@ -1024,6 +1082,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (name === "Let" && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !isConsumed(ref)) {
           const alias = COUNTER_ALIAS.exec(read(state, ref.from, Math.min(doc.length, ref.from + 80)));
           if (alias) {
+            folded = true;
             const line = layoutLine(state, ref.from);
             if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
             else if (structural) {
@@ -1032,6 +1091,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             }
           }
         }
+        // Any other definition in the body (`\newcommand{\psladder}[3][]{…\begin{tikzpicture}…}`, `\newenvironment`, `\def`, `\let`):
+        // one inert unit. Its body is never drawn; the whole definition folds away like a layout line, shown again at the cursor.
+        // (`\def\@title`, `\@author`, `\@date` are the parts of a hand-made title block, which reads them and draws the
+        // block over them, or leaves them as source when it is not one.)
+        if (freshDefinition && !folded && structural && !/^\\(?:g|e|x)?def\s*\\@(?:title|author|date)(?![A-Za-z@])/.test(read(state, ref.from, Math.min(doc.length, ref.from + 24))) && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !startsDisabled(ref.from)) foldDefinition(ref.from, Math.max(ref.to, extent?.to ?? 0));
         // `\verb|…|`, `\lstinline`, `verbatim`, `lstlisting`, `minted`: code, its text taken as written.
         // (A long block is built in pieces: the piece with its `\end` line draws that line.)
         if (VISIBLE_SKIPPED.has(name) && name !== "Csname" && ref.from < to && (ref.from >= from || name === "VerbatimEnvironment") && ref.from > env.preambleEnd && !isConsumed(ref) && !startsDisabled(ref.from)) drawCode(ref.node, ref.from >= from);
@@ -1069,9 +1133,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (!command || command.from < from || command.from >= to) return;
         const argument = command.getChild("SectioningArgument");
         const inner = argument && argumentInner(argument);
-        if (!argument || !inner || inner.to <= inner.from || hasDirectError(command)) return;
+        if (!argument || !inner || hasDirectError(command)) return;
         const label = trailingLabel(state, node.getChild("Content"), argument.to);
         const end = label ? label.to : argument.to;
+        // `\section*{}` (a class's abstract placeholder, 2611.13868): no title and no number, so nothing is drawn; its line folds away.
+        if (inner.to <= inner.from) {
+          if (!/^\\[A-Za-z]+\*\s*(?:\[[^\]]*\])?\s*\{$/.test(read(state, command.from, inner.from)) || name === "Paragraph" || name === "SubParagraph") return;
+          if (label) consumed.push([label.from, label.to]);
+          emit({ kind: "heading", from: command.from, to: end, reveal: "line", wholeLine: true, replaces: structural ? [{ from: command.from, to: end }] : [], hiddenLines: [{ from: command.from, to: inner.to, class: `cm-vis-heading ${SECTION_CLASSES[name]}` }] });
+          return;
+        }
         if (label) consumed.push([label.from, label.to]);
         // \paragraph and \subparagraph are run-in: only the title is a heading, the text after it is not.
         const runIn = name === "Paragraph" || name === "SubParagraph";
@@ -1093,17 +1164,26 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // Containers that began before the walked range: keep list context for the items inside.
         // So for enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as drawList draws them.
         const generic = name === "Environment" && isGenericList(node) ? genericListHead(node, state) : null;
-        const custom = generic?.kind ?? (name === "Environment" ? defs.lists?.get(environmentName(node, readNode) ?? "") : undefined);
+        const custom = generic?.kind ?? (name === "Environment" ? defs.lists?.get(environmentName(node, readNode) ?? "") ?? PARALIST[environmentName(node, readNode) ?? ""] : undefined);
         if (name === "ListEnvironment" || custom) {
           const formed = wellFormedEnvironment(node, state);
           if (formed) {
             const list = listContext(node, custom ?? formed.name, lists, state, 0);
+            if (custom && (/^inpara/.test(formed.name) || formed.name.endsWith("*")) && !defs.lists?.has(formed.name)) list.inline = true;
             if (generic) { list.template = generic.template; list.plain = generic.plain; }
             if (!list.template && custom && !generic) list.template = customListLabel(defs, formed.name, list.depth);
             list.count = itemsBefore(node, from, state, list.variant === "number" ? enumCounter(list.depth) : null, defs, list.base);
             lists.push(list);
             // A long list is built in pieces (structural.ts): its `\end` line is drawn by the piece it is in.
             if (structural && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "list-end");
+          }
+        }
+        // A wrapper that only folds away (`samepage`, `multicols`) begun in an earlier piece: its `\end` is folded by the piece it is in.
+        else if (structural && name === "Environment") {
+          const wrapperName = environmentName(node, readNode) ?? "";
+          if (Object.hasOwn(WRAPPER_ENVIRONMENTS, wrapperName) && !defs.environments.has(wrapperName)) {
+            const formed = wellFormedEnvironment(node, state);
+            if (formed && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "env-end");
           }
         }
         return;
@@ -1126,6 +1206,32 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (name === "Group") {
         const switched = groupSwitch(node);
         if (!switched) {
+          // `{\hypersetup{linkcolor=black}\tableofcontents}`, `{\setlength{\tabcolsep}{3.5pt}\input{tables/ablation}}`: braces that only
+          // scope layout commands. The braces and the commands fold away (or hide, in a line of text); what follows them is drawn as usual.
+          if (structural && node.from >= from && node.from < to && !hasDirectError(node) && !isConsumed(node)) {
+            const innerText = read(state, node.from + 1, Math.min(node.to - 1, node.from + 1 + 400));
+            // (A list of contents is drawn, not folded: only what comes before it is layout.)
+            const contents = /\\(?:tableofcontents|listoffigures|listoftables|listoftodos)(?![A-Za-z@])/.exec(innerText);
+            const run = innerText.includes("\n") ? 0 : layoutRun(contents ? innerText.slice(0, contents.index) : innerText, true);
+            if (run > 0) {
+              const rest = read(state, node.from + 1 + run, node.to - 1);
+              if (!rest.trim() && foldDefinition(node.from, node.to)) return false;
+              // The list of contents the group scopes the layout of: drawn as the list, over the whole line.
+              const listing = CONTENTS_LISTS[rest.trim()];
+              const span = listing ? aloneOnLines(doc, node.from, node.to) : null;
+              if (listing && span) {
+                consumed.push([span.from, span.to]);
+                emit({ kind: "contents", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new ContentsWidget(listing, span.to - span.from) }] });
+                return false;
+              }
+              if (rest.trim()) {
+                consumed.push([node.from, node.from + 1 + run]);
+                layoutGroups.add(node.from);
+                emit({ kind: "layout", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.from + 1 + run }, { from: node.to - 1, to: node.to }] });
+                return;
+              }
+            }
+          }
           // BibTeX's protective braces (`{G}aussian`, `{PDE}s` in a .bbl) print nothing: hidden, back at the caret. Plain words only,
           // and not the argument of a command (`\foo {x}`).
           const inner = read(state, node.from + 1, node.to - 1);
@@ -1177,8 +1283,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const url = node.getChild("UrlArgument");
           const urlRange = url && argumentInner(url);
           const text = name === "HrefCommand" ? (node.getChild("ShortTextArgument") ?? node.getChild("TextArgument")) : url;
-          const textRange = text && argumentInner(text);
-          if (!urlRange || !textRange || textRange.to <= textRange.from || hasDirectError(node)) return;
+          let textRange = text && argumentInner(text);
+          // bibtex's `\href {url} {text}` and an address followed by a line break (`\href{url}\n  {\emph{Title}}`): the grammar ends the
+          // command at the address, so the text group after it (one space or one line break away) is read here.
+          let hrefEnd = node.to;
+          const loose = name === "HrefCommand" && urlRange && !textRange ? /^[ \t]*(?:\r?\n[ \t]*)?\{/.exec(read(state, node.to, Math.min(doc.length, node.to + 4000))) : null;
+          if (loose) {
+            const group = readGroup(read(state, node.to, Math.min(doc.length, node.to + 4000)), loose[0].length - 1, TEX_GROUPS);
+            if (group) { textRange = { from: node.to + loose[0].length, to: node.to + group.end - 1 }; hrefEnd = node.to + group.end; }
+          }
+          if (!urlRange || !textRange || textRange.to <= textRange.from || (hasDirectError(node) && !loose)) return;
           // A user macro in the address (`\url{\repourl}`, `\href{\site/x}{…}`, 2610.30364) is expanded; one that cannot be stays source.
           const rawUrl = read(state, urlRange.from, urlRange.to);
           const href = rawUrl.includes("\\") ? expandedUrl(rawUrl, node.from) : rawUrl;
@@ -1193,8 +1307,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             return;
           }
           emit({
-            kind: "style", from: node.from, to: node.to, reveal: "touch",
-            replaces: [{ from: node.from, to: textRange.from }, { from: textRange.to, to: node.to }],
+            kind: "style", from: node.from, to: hrefEnd, reveal: "touch",
+            replaces: [{ from: node.from, to: textRange.from }, { from: textRange.to, to: hrefEnd }],
             marks: [{ from: textRange.from, to: textRange.to, class: "cm-vis-link", attributes: { "data-href": href, title } }],
           });
           return;
@@ -1328,6 +1442,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (!structural) return false;
           const argument = node.getChild("LabelArgument");
           const inner = argument && argumentInner(argument);
+          // cleveref's `\label[Property]{key}`: the grammar ends at the `[`; the chip takes the optional type and the group after it.
+          const typed = !argument ? /^\[[^\][{}]*\]\s*\{([^{}]*)\}/.exec(read(state, node.to, Math.min(doc.length, node.to + 300))) : null;
+          if (typed && typed[1].trim()) {
+            const to = node.to + typed[0].length;
+            consumed.push([node.from, to]);
+            emit({ kind: "label", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ChipWidget("label", "\\label", [typed[1].trim()], {}, to - node.from) }] });
+            return false;
+          }
           if (!inner || hasDirectError(node)) return false;
           emit({
             kind: "label", from: node.from, to: node.to, reveal: "strict",
@@ -1371,7 +1493,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const captioned = captionofBlock(node);
           if (captioned && drawFloat(node, captioned) === false) return false;
           // tcolorbox's and mdframed's boxes, and the document's own (`\newtcolorbox`): a frame around their lines.
-          if ((boxEnvironments(doc).has(environmentName(node, readNode) ?? "") || FRAMED_PROSE.test(environmentName(node, readNode) ?? "")) && !defs.environments.has(environmentName(node, readNode) ?? "")) return drawBox(node);
+          if ((boxEnvironments(doc, defs).has(environmentName(node, readNode) ?? "") || FRAMED_PROSE.test(environmentName(node, readNode) ?? "")) && !defs.environments.has(environmentName(node, readNode) ?? "")) return drawBox(node);
           // Side-by-side minipages outside floats: columns.
           if (environmentName(node, readNode) === "minipage" && drawColumns(node) === false) return false;
           return environment(node);
@@ -1435,7 +1557,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "BibliographyStyleCommand": {
           // `\bibliographystyle{plain}` prints nothing: its own line folds away.
-          if (structural && !hasDirectError(node) && aloneOnLines(doc, node.from, node.to)) collapseLine(node, "bibliography-style");
+          if (structural && !hasDirectError(node)) {
+            if (aloneOnLines(doc, node.from, node.to)) collapseLine(node, "bibliography-style");
+            // After a size switch in a group (`{\footnotesize\bibliographystyle{abbrv}`, 2611.07785): hidden where it stands.
+            else emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
+          }
           return false;
         }
         case "IncludeGraphics": {
@@ -1504,7 +1630,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const nameEnd = begin.getChild("EnvNameGroup")?.to ?? begin.to;
     const after = read(state, nameEnd, Math.min(doc.length, nameEnd + 200));
     const spaces = /^\s*/.exec(after)![0].length;
-    const widest = after[spaces] === "{" ? readGroup(after, spaces) : null;
+    let widest = after[spaces] === "{" ? readGroup(after, spaces) : null;
+    // Pandoc's `\begin{CSLReferences}{hanging}{spacing}` has two arguments, both settings.
+    if (formed.name === "CSLReferences" && widest) {
+      const gap = /^\s*/.exec(after.slice(widest.end))![0].length;
+      widest = after[widest.end + gap] === "{" ? readGroup(after, widest.end + gap) : null;
+    }
     const headerEnd = Math.max(begin.to, widest ? nameEnd + widest.end : begin.to);
     consumed.push([begin.from, headerEnd]);
     const book = /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
@@ -1598,7 +1729,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const list = listContext(node, custom ?? formed.name, lists, state, 0);
     if (generic) { list.template = generic.template; list.plain = generic.plain; }
     if (!list.template && defs.lists?.has(formed.name)) list.template = customListLabel(defs, formed.name, list.depth);
-    if (/^inpara/.test(formed.name) && !defs.lists?.has(formed.name)) list.inline = true;
+    if ((/^inpara/.test(formed.name) || formed.name.endsWith("*")) && !defs.lists?.has(formed.name)) list.inline = true;
     lists.push(list);
     if (structural) {
       collapseLine(formed.begin, "list-begin");
@@ -1748,20 +1879,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    */
   function drawBox(node: SyntaxNode): undefined {
     const formed = wellFormedEnvironment(node, state);
-    const use = formed && boxUse(node, state, true);
+    const use = formed && boxUse(node, state, true, defs);
     if (!formed || !use) return undefined;
     const beginSpan = aloneOnLines(doc, formed.begin.from, use.end);
     const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
-    if (!beginSpan || !endSpan || doc.lineAt(beginSpan.from).number !== doc.lineAt(beginSpan.to).number) return undefined;
+    if (!beginSpan || !endSpan) return undefined;
     consumed.push([formed.begin.from, use.end]);
     if (structural) {
       const header = { from: beginSpan.from, to: beginSpan.to };
-      if (use.title) emit({ kind: "env-header", ...header, reveal: "line", wholeLine: true, replaces: [{ ...header, widget: new EnvironmentHeaderWidget("user", `\\textbf{${use.title}}`, null, null, 0) }] });
+      if (use.title) emit({ kind: "env-header", ...header, reveal: "line", wholeLine: true, replaces: [{ ...header, widget: new EnvironmentHeaderWidget("user", `\\textbf{${use.title}}`, null, use.counted ? "counter" : null, use.counted ? formed.begin.from - beginSpan.from : 0, beginSpan.to - beginSpan.from) }] });
       else emit({ kind: "env-begin", ...header, reveal: "line", wholeLine: true, replaces: [header], hiddenLines: [{ ...header, class: "cm-vis-collapsed" }] });
       collapseLine(formed.end, "env-end");
     }
     // The framed lines: the title's, then the content's (the first and last close the frame).
-    const first = doc.lineAt(beginSpan.to).number + (use.title ? 0 : 1);
+    const first = use.title ? doc.lineAt(beginSpan.from).number : doc.lineAt(beginSpan.to).number + 1;
     const last = doc.lineAt(endSpan.from).number - 1;
     if (last < first) return undefined;
     const lines: LineStyle[] = [{ from: doc.line(first).from, to: doc.line(last).to, class: "cm-vis-box" }, { from: doc.line(first).from, to: doc.line(first).from, class: "cm-vis-box-first" }, { from: doc.line(last).from, to: doc.line(last).from, class: "cm-vis-box-last" }];
@@ -1815,8 +1946,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function environment(node: SyntaxNode): false | undefined {
     const formed = wellFormedEnvironment(node, state);
     if (!formed) return undefined;
-    const name = formed.name;
-    if (name === "thebibliography") return bibliography(node, formed);
+    // IEEEtran's `IEEEproof` is amsthm's `proof` (its optional `[Proof of …]` heading and end mark), unless the document defines it.
+    const name = formed.name === "IEEEproof" && !defs.environments.has("IEEEproof") && !defs.theorems.has("IEEEproof") ? "proof" : formed.name;
+    if (name === "thebibliography" || (name === "CSLReferences" && !hasDirectError(node))) return bibliography(node, formed);
     if (name === "frontmatter") return frontMatter(formed);
     if (name === "mathpar" || name === "mathpar*") return mathpar(node, formed);
     // thmtools' `\begin{restatable}[note]{theorem}{name}`: the theorem it names, with its heading over the whole opening.
@@ -1835,6 +1967,24 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (formed.content && formed.content.to > headerEnd) emit({ kind: "env-body", from: headerEnd, to: formed.end.from, reveal: "never", replaces: [], marks: [{ from: headerEnd, to: formed.end.from, class: THEOREM_STYLE_CLASSES[restatedTheorem.style] }] });
       return undefined;
     }
+    // IEEEtran's `\begin{IEEEbiographynophoto}{Name} … \end{IEEEbiographynophoto}` (and `IEEEbiography[{photo}]{Name}`): the
+    // name in bold italics over the biography's text; the photo (an `\includegraphics`) is a "[photo]" mark. Its begin line shows
+    // the source on a click (reveal "line"), as the other environment headers do.
+    if ((name === "IEEEbiographynophoto" || name === "IEEEbiography") && !defs.environments.has(name)) {
+      const nameEnd = formed.begin.getChild("EnvNameGroup")?.to ?? formed.begin.to;
+      const head = /^(\s*\[(?:[^[\]{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\])?\s*\{((?:[^{}\\]|\\[A-Za-z]+\s*)*)\}/.exec(read(state, nameEnd, Math.min(doc.length, nameEnd + 600)));
+      if (!head || (head[1] && !/\\includegraphics/.test(head[1])) || (name === "IEEEbiographynophoto" && head[1])) return undefined;
+      const headerEnd = nameEnd + head[0].length;
+      consumed.push([formed.begin.from, headerEnd]);
+      if (structural) {
+        const span = aloneOnLines(doc, formed.begin.from, headerEnd);
+        const from = span?.from ?? formed.begin.from;
+        const label = `${head[1] ? "[photo] " : ""}${head[2].replace(/\\[A-Za-z]+\s*/g, "").replace(/\s+/g, " ").trim()}`;
+        emit({ kind: "env-header", from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from, to: headerEnd, widget: new BiographyHeaderWidget(label, headerEnd - from) }] });
+        collapseLine(formed.end, "env-end");
+      }
+      return undefined;
+    }
     // CJK's `\begin{CJK}{UTF8}{gbsn} … \end{CJK}` (LongBench's Chinese prompts): its text, with the encoding and font folded away.
     if (name === "CJK" || name === "CJK*") {
       const nameEnd = formed.begin.getChild("EnvNameGroup")?.to ?? formed.begin.to;
@@ -1847,6 +1997,18 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         collapseLine(formed.end, "env-end");
       }
       return undefined;
+    }
+    // sgame's `\begin{game}{2}{2}[Row][Column] … \end{game}` (2611.05706): a strategic-form game, drawn as a table when its rows
+    // and columns are those it declares (read-only: the table is a reading, a click shows the source).
+    if (name === "game" && !defs.environments.has("game") && defs.packages.includes("sgame")) {
+      const game = gameTabular(read(state, node.from, formed.end.from));
+      if (!game) return undefined;
+      if (!structural) return false;
+      const span = aloneOnLines(doc, node.from, node.to);
+      const range = span ?? { from: node.from, to: node.to };
+      consumed.push([node.from, node.to]);
+      emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TableWidget(game.tabular, 0, range.to - range.from, true) }] });
+      return false;
     }
     // A `minipage` in the text (a list set in a narrower box): its text, its opening (with the width) and end folded away.
     if (name === "minipage") {
@@ -2114,7 +2276,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
     if (text === "\\printbibliography") {
       const end = commandArguments(node).filter((arg) => arg.optional).at(-1)?.node.to ?? ctrl.to;
-      const span = aloneOnLines(doc, node.from, end);
+      // A trailing comment (`\printbibliography % print bibliography`, math.ST 2611.09087) is part of the line.
+      const comment = /^[ \t]*%[^\n]*/.exec(read(state, end, doc.lineAt(end).to))?.[0].length ?? 0;
+      const span = aloneOnLines(doc, node.from, end + comment);
       if (!span || hasDirectError(node) || macroAt(defs, "printbibliography", node.from)) return undefined;
       const options = read(state, ctrl.to, end);
       const title = /\btitle\s*=\s*\{?([^,{}\]]+)/.exec(options)?.[1]?.trim();
@@ -2223,6 +2387,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
+    // jmlr's `\tableref{tab:x}` / `\sectionref` / `\appendixref` (jmlrutils.sty: "Table 3"), prettyref's `\prettyref{eq:x}` and cleveref's
+    // `\Cpageref{x}`: a reference chip (clicking it shows the source like any chip, see ChipWidget).
+    {
+      const refName = /^\\([A-Za-z]+)ref$/.exec(text)?.[1];
+      const jmlr = !!refName && Object.hasOwn(JMLR_REF_WORDS, refName) && (/^jmlr/.test(defs.documentClass ?? "") || defs.packages.includes("jmlrutils"));
+      const pretty = text === "\\prettyref" && defs.packages.includes("prettyref") && !macroAt(defs, "prettyref", node.from);
+      const page = /^\\[cC]pageref$/.test(text) && !macroAt(defs, text.slice(1), node.from);
+      if (jmlr || pretty || page) {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        const inner = argument && argumentInner(argument.node);
+        const keys = inner ? read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean) : [];
+        if (inner && argument && keys.length && !keys.some((key) => /[\\{}]/.test(key)) && !hasDirectError(node) && !read(state, ctrl.to, argument.node.from).trim() && (!pretty || prettyrefText(state, keys) !== null)) {
+          if (structural) emit({ kind: "ref", from: node.from, to: argument.node.to, reveal: "strict", replaces: [{ from: node.from, to: argument.node.to, widget: new ChipWidget("ref", text, keys, {}, argument.node.to - node.from) }] });
+          return false;
+        }
+      }
+    }
     // pifont's `\ding{51}`: the dingbat (✓, ✗, ★, ①).
     if (text === "\\ding") {
       const argument = commandArguments(node).find((arg) => !arg.optional);
@@ -2291,8 +2472,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (text === "\\texorpdfstring") {
       const args = commandArguments(node).filter((arg) => !arg.optional);
       const first = args[0] && argumentInner(args[0].node);
-      if (first && args.length === 2 && !hasDirectError(node)) {
-        const end = args[1].node.to;
+      // The bookmark's group on the next line (`\texorpdfstring{Proof of $H$}` newline `{From H}`, 2611.07413): the parser does not
+      // take it as the command's argument, so it is read from the text.
+      const next = args.length === 1 && first ? /^[ \t]*\n?[ \t]*/.exec(read(state, args[0].node.to, Math.min(doc.length, args[0].node.to + 200)))![0].length : 0;
+      const written = next ? argumentGroups(read(state, args[0].node.to, Math.min(doc.length, args[0].node.to + 4000)), args[0].node.to, next, 1)?.[0] : null;
+      if (first && (args.length === 2 || written) && !hasDirectError(node)) {
+        const end = args.length === 2 ? args[1].node.to : written!.close + 1;
         consumed.push([first.to, end]);
         emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: structural ? [{ from: node.from, to: first.from }, { from: first.to, to: end }] : [] });
         return undefined;
@@ -2471,6 +2656,27 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       }
     }
     if (DEFINITION_COMMANDS.test(text)) return skipDefinition(node);
+    // `\detokenize{{instruction}}`: its argument as literal characters (braces and all), in the typewriter face; the source at the caret.
+    if (text === "\\detokenize" && structural && !macroAt(defs, "detokenize", node.from)) {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      const range = argument && argumentInner(argument.node);
+      if (argument && range && argument.node.from === ctrl.to && !hasDirectError(node) && !/[\\%#]/.test(read(state, range.from, range.to))) {
+        const end = argument.node.to;
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end, widget: new LiteralTextWidget(read(state, range.from, range.to), read(state, node.from, end)) }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
+    // ifdraft's `\ifdraft{draft-only code}{}`: in the final version (no `draft` class option) only its second argument is
+    // printed, here nothing: folded away as a unit, shown again at the cursor. A draft document, or text in the second, stays source.
+    if (text === "\\ifdraft" && structural && defs.packages.includes("ifdraft") && !defs.classOptions?.includes("draft") && !macroAt(defs, "ifdraft", node.from)) {
+      const groups = commandArguments(node).filter((arg) => !arg.optional);
+      const last = groups[1];
+      const gap = last ? read(state, groups[0].node.to, last.node.from) : "x";
+      if (groups.length === 2 && !gap.trim() && read(state, last.node.from + 1, last.node.to - 1).trim() === "" && !isConsumed(node) && node.from >= from && node.from < to && foldDefinition(node.from, last.node.to)) return false;
+    }
+    const pandoc = pandocCommand(node, ctrl, text, args);
+    if (pandoc !== null) return pandoc;
     const macro = macroAt(defs, name, node.from);
     // A .bbl's own `\providecommand{\doi}[1]{doi: #1}` (or `{doi: \begingroup \urlstyle{rm}\Url}`) is the stock fallback: `\doi{…}` is drawn as a link below.
     const stockDoi = name === "doi" && !!macro && macro.end !== undefined && macro.end <= doc.length &&/^\\providecommand\s*\{\\doi\}[^]*doi:/.test(read(state, macro.pos, macro.end));
@@ -2487,7 +2693,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (text === "\\bibitem") {
       const keyArgument = args.find((arg) => !arg.optional);
       let env: SyntaxNode | null = node.parent;
-      while (env && !(env.name === "Environment" && environmentName(env, readNode) === "thebibliography")) env = env.parent;
+      while (env && !(env.name === "Environment" && /^(?:thebibliography|CSLReferences)$/.test(environmentName(env, readNode) ?? ""))) env = env.parent;
+      // Pandoc's `\bibitem[\citeproctext]{ref-key}` prints nothing: its `\CSLLeftMargin` has the number.
+      if (env && keyArgument && environmentName(env, readNode) === "CSLReferences" && !hasDirectError(node)) {
+        emit({ kind: "symbol", from: node.from, to: keyArgument.node.to, reveal: "touch", replaces: [{ from: node.from, to: keyArgument.node.to }] });
+        return false;
+      }
       if (env && keyArgument && !hasDirectError(node)) {
         const optional = args.find((arg) => arg.optional && arg.node.to <= keyArgument.node.from);
         const range = optional && argumentInner(optional.node);
@@ -2528,6 +2739,24 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const char = inner ? circledText(read(state, inner.from, inner.to)) : null;
       if (char) {
         emit({ kind: "symbol", from: ctrl.from, to: args[0].node.to, reveal: "touch", replaces: [{ from: ctrl.from, to: args[0].node.to, widget: new SymbolWidget(char, read(state, ctrl.from, args[0].node.to)) }] });
+        return false;
+      }
+    }
+    // `\large{\textbf{APPENDIX}}`: the switch, then a group (the parser hangs it on the command): the group's text, the
+    // switch and the braces hidden until the cursor touches them.
+    if (SIZE_COMMAND.test(text) && args.length === 1 && !args[0].optional && !hasDirectError(node)) {
+      const group = argumentInner(args[0].node);
+      if (group && !read(state, ctrl.to, args[0].node.from).trim()) {
+        emit({ kind: "symbol", from: ctrl.from, to: args[0].node.to, reveal: "touch", replaces: [{ from: ctrl.from, to: group.from }, { from: group.to, to: args[0].node.to }] });
+        return undefined;
+      }
+    }
+    // `\color{black}` is the default colour: a no-op, hidden until the cursor touches it (a group that runs over sections is not
+    // drawn as a coloured group, but this switch in it is still nothing).
+    if (text === "\\color" && args.length === 1 && !args[0].optional && !hasDirectError(node)) {
+      const name = argumentInner(args[0].node);
+      if (name && /^\s*black\s*$/.test(read(state, name.from, name.to)) && !defs.colors.has("black")) {
+        emit({ kind: "symbol", from: ctrl.from, to: args[0].node.to, reveal: "touch", replaces: [{ from: ctrl.from, to: args[0].node.to }] });
         return false;
       }
     }
@@ -2611,9 +2840,28 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (Object.hasOwn(LAYOUT_LINE_ARGS, text.slice(1))) {
       const line = layoutLine(state, node.from);
       if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); return false; }
+      // Among other things on a line (`\ifllncs\else\pagenumbering{roman}\fi`): hidden with its arguments, shown again at the caret.
+      if (structural && INLINE_SETUP.test(text) && !isConsumed(node) && node.from >= from && node.from < to && !hasDirectError(node) && mandatory.length === LAYOUT_LINE_ARGS[text.slice(1)]) {
+        const end = args.length ? Math.max(ctrl.to, ...args.map((arg) => arg.node.to)) : ctrl.to;
+        if (doc.lineAt(end).number === doc.lineAt(node.from).number) {
+          emit({ kind: "layout", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end }] });
+          consumed.push([node.from, end]);
+          return false;
+        }
+      }
+    }
+    // In a line of text (`\item \zcsetup{reftype=Property}\label{x}`): set-up that prints nothing is hidden, its source back at the caret.
+    if (/^\\(?:zcsetup|crefalias|numberwithin)$/.test(text) && !hasDirectError(node) && !macroAt(defs, text.slice(1), node.from)) {
+      const count = text === "\\zcsetup" ? 1 : 2;
+      if (mandatory.length >= count && mandatory.slice(0, count).every((arg, index) => index === 0 || !read(state, mandatory[index - 1].node.to, arg.node.from).trim())) {
+        const end = mandatory[count - 1].node.to;
+        if (structural) emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
     }
     // In a line of text, `\newline` and `\par` are breaks; space and layout commands print nothing (`\vspace{2pt}`, `\noindent`).
-    if (text === "\\newline" || text === "\\par") {
+    if (text === "\\newline" || text === "\\par" || text === "\\break") {
       emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "never", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new LineBreakWidget() }] });
       return undefined;
     }
@@ -2636,6 +2884,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         consumed.push([node.from, end]);
         return undefined;
       }
+    }
+    // llncs's / amsthm's `\qed` (and `\qedsymbol`): the end mark, a square. Right before `\end{proof}` the proof's own footer
+    // draws the mark, so `\qed` there is hidden (its source shows when the caret enters it); elsewhere it is drawn as the mark.
+    if ((text === "\\qed" || text === "\\qedsymbol") && !mandatory.length && !hasDirectError(node)) {
+      const footer = /^\s*\\end\s*\{proof\}/.test(doc.sliceString(ctrl.to, Math.min(doc.length, ctrl.to + 40)));
+      emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to, widget: footer ? undefined : new QedMarkWidget(text) }] });
+      return false;
     }
     if (INLINE_LAYOUT.test(text)) {
       let textFrom = ctrl.to;
@@ -2748,7 +3003,66 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       consumed.push([range.from, range.to]);
       return false;
     }
+    // The same call for a restatable that lives in another file (cs.GT 2611.05777's `\pathconcentrationlemma*` in the appendix, its
+    // `restatable` in rsd.tex): this file cannot read the theorem, so a chip names it; a click opens the source.
+    if (!restated && !args.length && ctrl.name === "CtrlSeq" && read(state, ctrl.to, ctrl.to + 1) === "*" && /^\\[a-z]{6,}$/.test(text)
+      && (defs.packages.includes("thm-restate") || defs.packages.includes("thmtools")) && !macroAt(defs, text.slice(1), node.from) && !hasDirectError(node)) {
+      const end = ctrl.to + 1;
+      if (aloneOnLines(doc, node.from, end)) {
+        if (structural) emit({ kind: "label", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new ChipWidget("label", text, [`${text.slice(1)} (restated)`], {}, end - node.from) }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
     return null;
+  }
+
+  /**
+   * Pandoc's and Quarto's LaTeX output (cs.IT 2611.09366): `\citeproc{ref-key}{{[}1{]}}` (a citation chip printing the bracketed
+   * text), `\tightlist`, `\pandocbounded{…}`, `\passthrough{…}` and the CSL entry wrappers
+   * (`\CSLLeftMargin{{[}1{]} }`, `\CSLRightInline{…}`, `\CSLBlock{…}`, `\CSLIndent{…}`), drawn as what they print though the
+   * document defines them with boxes and lengths. Null when `node` is none of these (or one it cannot read).
+   */
+  function pandocCommand(node: SyntaxNode, ctrl: SyntaxNode, text: string, args: ReturnType<typeof commandArguments>): false | undefined | null {
+    if (!/^\\(?:citeproc|tightlist|pandocbounded|passthrough|CSLLeftMargin|CSLRightInline|CSLBlock|CSLIndent)$/.test(text) || hasDirectError(node) || isConsumed(node)) return null;
+    if (!structural) return null;
+    const mandatory = args.filter((arg) => !arg.optional);
+    if (mandatory.length !== args.length) return null;
+    const inners = mandatory.map((arg) => argumentInner(arg.node));
+    if (inners.some((inner) => !inner)) return null;
+    const printed = (index: number) => {
+      const value = read(state, inners[index]!.from, inners[index]!.to).replace(/\{([[\]])\}/g, "$1");
+      return /[\\{}$%#]/.test(value) ? null : value;
+    };
+    const adjacent = mandatory.every((arg, index) => index === 0 ? read(state, ctrl.to, arg.node.from).trim() === "" : arg.node.from === mandatory[index - 1].node.to);
+    if (!adjacent) return null;
+    if (text === "\\tightlist") {
+      if (args.length) return null;
+      emit({ kind: "symbol", from: node.from, to: ctrl.to, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to }] });
+      return false;
+    }
+    const end = mandatory.length ? mandatory[mandatory.length - 1].node.to : ctrl.to;
+    if (text === "\\citeproc") {
+      const label = mandatory.length === 2 ? printed(1) : null;
+      const own = macroAt(defs, "citeproc", node.from);
+      if (label === null || !label.trim() || (own && !own.body.includes("\\cite{#1}"))) return null;
+      const keys = read(state, inners[0]!.from, inners[0]!.to).split(",").map((key) => key.trim()).filter(Boolean);
+      if (!keys.length) return null;
+      emit({ kind: "cite", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new ChipWidget("cite", "citeproc", keys, {}, end - node.from, [], label.trim()) }] });
+      return false;
+    }
+    if (mandatory.length !== 1) return null;
+    if (text === "\\CSLLeftMargin") {
+      const label = printed(0);
+      if (label !== null && label.trim()) {
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new PrintedTextWidget(label.trim(), read(state, node.from, end)) }] });
+        return false;
+      }
+    }
+    // The rest print their last argument: the wrapper folds away and the text inside is walked.
+    const inner = inners[0]!;
+    emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: inner.from }, { from: inner.to, to: end }] });
+    return undefined;
   }
 
   /**
@@ -2758,12 +3072,18 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function skipDefinition(node: SyntaxNode): false {
     // The definition reader knows where it ends.
     const extent = definitionExtentAt(defs, node.from);
-    if (extent) { consumed.push([node.from, Math.max(node.to, extent.to)]); return false; }
+    const fold = (end: number) => {
+      if (structural && !isConsumed(node) && node.from > env.preambleEnd && node.from >= from && node.from < to && !startsDisabled(node.from) && foldDefinition(node.from, end)) return;
+      consumed.push([node.from, end]);
+    };
+    if (extent) { fold(Math.max(node.to, extent.to)); return false; }
     const text = read(state, node.from, Math.min(doc.length, node.from + 8000));
     let index = /^\\[A-Za-z@]+\*?/.exec(text)![0].length;
     for (let parts = 0; parts < 8; parts++) {
       const space = /^(?:\s|%[^\n]*\n)*/.exec(text.slice(index))![0];
       if (space.includes("\n\n")) break;
+      // A command that takes its arguments on its own line (`\algtext*{EndIf}`, `\newif\ifx`) does not read the next line's.
+      if (space.includes("\n") && NEXT_LINE_STOPS.test(text.slice(0, index))) break;
       const at = index + space.length;
       const name = /^\\[A-Za-z@]+/.exec(text.slice(at));
       const group = name ? null : readGroup(text, at, TEX_GROUPS) ?? readOptional(text, at, TEX_GROUPS);
@@ -2771,7 +3091,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       else if (group) index = group.end;
       else break;
     }
-    consumed.push([node.from, node.from + index]);
+    fold(node.from + index);
     return false;
   }
 
@@ -2937,7 +3257,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     const source = read(state, node.from, Math.min(doc.length, node.from + 4000));
     // Arguments that stay editable text, when the body allows it.
-    const macro = macroAt(defs, name, node.from)!;
+    const own = macroAt(defs, name, node.from)!;
+    // `\renewcommand{\paragraph}{\para}` (2611.07413): a macro of no arguments whose body is another macro takes the arguments
+    // that follow it (TeX reads them for `\para`), so `\paragraph{Title.}` is drawn as `\para{Title.}`.
+    const hop = own.arity === 0 && !own.spec && own.optional === undefined && !own.alias ? /^\s*\\([A-Za-z@]+)\s*$/.exec(own.body) : null;
+    const hopped = hop ? macroAt(defs, hop[1], node.from) : null;
+    const macro = hopped && hopped.arity >= 1 && !hopped.unsupported && !hopped.alias ? hopped : own;
     const plan = transparentPlan(macro, defs);
     const groups = plan ? argumentGroups(source, node.from, 1 + name.length, macro.arity) : null;
     if (broken && !(plan && groups)) return undefined;
@@ -3082,54 +3407,39 @@ function mathDrawing(node: SyntaxNode, state: EditorState) {
 }
 
 /**
- * tcolorbox's and mdframed's boxes, and the document's own (`\newtcolorbox{prompt}[1][]{title=#1}`, `\newmdenv{note}`)
- * as written in the open file, per document version: their names, with the title their options give.
+ * tcolorbox's and mdframed's boxes, and the document's own (`\newtcolorbox{prompt}[1][]{title=#1}`, `\newmdenv{note}`):
+ * those of the project's definitions (a chapter's boxes are in the main file's preamble or a style file) and of the open
+ * file as written, per document version.
  */
-const boxCache = new WeakMap<Text, Map<string, { title: string | null; arity: number }>>();
-export function boxEnvironments(doc: Text) {
-  let boxes = boxCache.get(doc);
-  if (boxes) return boxes;
-  boxes = new Map([["tcolorbox", { title: null, arity: 0 }], ["mdframed", { title: null, arity: 0 }]]);
+const BASE_BOX: LatexBoxDefinition = { title: null, arity: 0, optional: false, counter: false, within: null };
+const boxCache = new WeakMap<Text, { defs: LatexDefinitions | undefined; boxes: Map<string, LatexBoxDefinition> }>();
+export function boxEnvironments(doc: Text, defs?: LatexDefinitions) {
+  const cached = boxCache.get(doc);
+  if (cached && cached.defs === defs) return cached.boxes;
+  const boxes = new Map<string, LatexBoxDefinition>([["tcolorbox", BASE_BOX], ["mdframed", BASE_BOX], ...(defs?.boxes ?? [])]);
   const text = doc.toString();
   if (/\\(?:(?:re)?newtcolorbox|DeclareTColorBox|NewTColorBox|newmdenv)\b/.test(text)) {
-    for (const match of stripTexComments(text).matchAll(/\\(?:(?:re)?newtcolorbox|DeclareTColorBox|NewTColorBox|newmdenv)\s*(?:\[([^\]]*)\])?\s*\{([A-Za-z@*]+)\}/g)) {
-      const after = text.slice((match.index ?? 0) + match[0].length, (match.index ?? 0) + match[0].length + 2000);
-      // `[1]` (arguments) and `[default]`, then the options; xparse's `{O{}}` spec first for `\DeclareTColorBox`.
-      const count = /^\s*\[(\d)\]/.exec(after);
-      const options = /^newmdenv/.test(match[0].slice(1)) ? match[1] ?? "" : (() => {
-        const rest = after.slice(count ? count[0].length : 0).replace(/^\s*\[[^\]]*\]/, "");
-        const group = /^\s*\{/.exec(rest) ? readGroup(rest, rest.indexOf("{"), TEX_GROUPS) : null;
-        return group?.content ?? "";
-      })();
-      boxes.set(match[2], { title: boxTitle(options), arity: count ? Number(count[1]) : 0 });
-    }
+    const own = emptyLatexDefinitions();
+    readBoxDefinitions(text, own);
+    for (const [name, box] of own.boxes ?? []) boxes.set(name, box);
   }
-  boxCache.set(doc, boxes);
+  boxCache.set(doc, { defs, boxes });
   return boxes;
 }
 
-/** A box's title from its options (`title=Prompt`, mdframed's `frametitle={…}`), null without one. */
-function boxTitle(options: string) {
-  const match = /(?:^|,)\s*(?:frame)?title\s*=\s*/.exec(options);
-  if (!match) return null;
-  const rest = options.slice((match.index ?? 0) + match[0].length);
-  const value = rest[0] === "{" ? readGroup(rest, 0, TEX_GROUPS)?.content : /^[^,]*/.exec(rest)?.[0];
-  return value?.trim() || null;
-}
-
-/** A box environment's options and title as used (`\begin{prompt}[Self-RAG]`, `\begin{tcolorbox}[title=…]`), and where its opening ends. */
-function boxUse(node: SyntaxNode, state: EditorState, prose = false) {
+/** A box environment's options and title as used (`\begin{prompt}[Self-RAG]`, `\begin{tcolorbox}[title=…]`, `\begin{BoxBox}[label=…,\n …]{Title}`), and where its opening ends. */
+function boxUse(node: SyntaxNode, state: EditorState, prose = false, defs?: LatexDefinitions) {
   const name = environmentName(node, (from, to) => read(state, from, to)) ?? "";
-  const box = boxEnvironments(state.doc).get(name) ?? (prose && FRAMED_PROSE.test(name) ? { title: null, arity: 0 } : undefined);
+  const box = boxEnvironments(state.doc, defs).get(name) ?? (prose && FRAMED_PROSE.test(name) ? BASE_BOX : undefined);
   const begin = node.getChild("BeginEnv");
   const nameEnd = begin?.getChild("EnvNameGroup")?.to;
   if (!box || !begin || nameEnd === undefined) return null;
-  const after = read(state, nameEnd, Math.min(state.doc.length, nameEnd + 2000));
-  // Its options (or a document box's optional first argument) on the `\begin` line, then its other arguments.
+  const after = read(state, nameEnd, Math.min(state.doc.length, nameEnd + 4000));
+  // Its options (or a document box's optional first argument) after the name, which may run over lines, then its other arguments.
   const args: string[] = [];
   let at = 0;
   const optional = /^[ \t]*\[/.test(after) ? readOptional(after, after.indexOf("["), TEX_GROUPS) : null;
-  if (optional) { args.push(optional.content); at = optional.end; }
+  if (optional) { args.push(optional.content); at = optional.end; } else if (box.optional) args.push("");
   for (let n = args.length; n < box.arity; n++) {
     const open = /^\s*\{/.exec(after.slice(at));
     const group = open ? readGroup(after, at + open[0].length - 1, TEX_GROUPS) : null;
@@ -3138,9 +3448,12 @@ function boxUse(node: SyntaxNode, state: EditorState, prose = false) {
     at = group.end;
   }
   // A document box's title may be its argument (`title=#1`); a title with a parameter not given is not known.
-  const given = name === "tcolorbox" || name === "mdframed" ? boxTitle(args[0] ?? "") : box.title?.replace(/#(\d)/g, (whole, n: string) => args[Number(n) - 1] ?? whole) ?? null;
-  return { title: given && !/#\d/.test(given) ? given : null, end: Math.max(begin.to, nameEnd + at), name };
+  const own = box.optional && args[0] ? boxTitleOf(args[0]) : null;
+  const given = name === "tcolorbox" || name === "mdframed" ? boxTitleOf(args[0] ?? "") : own ?? box.title?.replace(/#(\d)/g, (whole, n: string) => args[Number(n) - 1] ?? whole) ?? null;
+  const title = given && !/#\d/.test(given) ? given : null;
+  return { title, end: Math.max(begin.to, nameEnd + at), name, counted: box.counter && !!title && /\\thetcbcounter(?![A-Za-z@])/.test(title) };
 }
+
 
 /**
  * Whether the figure widget would show everything in a float: its images,
@@ -3165,7 +3478,7 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
   /** The end of a `\subcaption*{…}` note's group, whose text is drawn as the note. */
   let noteUntil = -1;
   /** Where the float's notes start (after its last image, grid or caption): text from there is drawn as a note. */
-  const notesFrom = floatNotesStart(node, state);
+  const notesFrom = floatNotesStart(node, state, defs);
   const notesBefore = notesBeforeCaption(node, state);
   /** Captions per container (the float, or the panel the caption is in). */
   const captions = new Map<number, number>();
@@ -3266,7 +3579,7 @@ function figureCovered(node: SyntaxNode, state: EditorState, defs: LatexDefiniti
       // around it (Neyshabur's `\begin{picture}(0,0)\put(-162,90){$\ell_2$ norm}…`), noted as an overlay.
       if (env === "overpic" || env === "picture") return false;
       // A diagram the PDF draws, and a box whose content is drawn as text (Self-RAG's prompts in a `tcolorbox`).
-      if (DIAGRAM_ENVIRONMENTS[env] || boxEnvironments(state.doc).has(env)) return false;
+      if (DIAGRAM_ENVIRONMENTS[env] || boxEnvironments(state.doc, defs).has(env)) return false;
       // Any other environment is shown as its source (a known one it cannot draw, a forest tree or framed text, as a
       // placeholder naming it), in its place.
       if (env !== "center" && !SIZE_ENVIRONMENTS.has(env) && !PANEL_ENVIRONMENTS.has(env)) { unknown(ref.from, ref.to, SOURCE_PLACEHOLDERS[env]); return false; }
@@ -3590,7 +3903,7 @@ const FLOAT_CONTENT_END = /\\end\s*\{(?:tabular\*?|ruledtabular|tabularx|tabular
  * Where a float's notes start: after its last grid, image, included file or caption. Text from there to the end is the
  * notes applied economics puts under its tables and figures; infinity when the float has no such content.
  */
-function floatNotesStart(node: SyntaxNode, state: EditorState) {
+function floatNotesStart(node: SyntaxNode, state: EditorState, defs?: LatexDefinitions) {
   const begin = node.getChild("BeginEnv");
   const end = node.getChild("EndEnv");
   if (!begin || !end) return Number.POSITIVE_INFINITY;
@@ -3610,7 +3923,7 @@ function floatNotesStart(node: SyntaxNode, state: EditorState) {
     last = Math.max(last, stop);
   }
   // The document's own boxes (`\newtcolorbox{prompt}`) are content too.
-  const boxes = boxEnvironments(state.doc);
+  const boxes = boxEnvironments(state.doc, defs);
   if (boxes.size > 2) for (const match of text.matchAll(/\\end\s*\{([^{}]+)\}/g)) if (boxes.has(match[1].trim())) last = Math.max(last, (match.index ?? 0) + match[0].length);
   return last < 0 ? Number.POSITIVE_INFINITY : begin.to + last;
 }
@@ -3794,7 +4107,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
   const algorithm2e = algorithm2eSpec(node, state, defs);
   const isPanel = (candidate: SyntaxNode) => (candidate.name === "Environment" && environmentName(candidate, readState) === "minipage") || isSubFloat(candidate, readState) || isSubFloatCommand(candidate, readState);
   let valid = true;
-  const notesFrom = floatNotesStart(node, state);
+  const notesFrom = floatNotesStart(node, state, defs);
   const notesBefore = notesBeforeCaption(node, state);
 
   /** The content of a float or panel at `root`, leaving out the panels inside it (`skipPanels`). */
@@ -3947,7 +4260,7 @@ function figureSpec(node: SyntaxNode, env: string, state: EditorState, defs: Lat
         // Labels a `picture` puts over the images: drawn in the PDF only, noted as an overlay.
         if (envName === "picture") { content.overlay = true; return false; }
         // A box (`tcolorbox`, `mdframed`, the document's `\newtcolorbox`): its title and text, in a frame.
-        const box = boxUse(ref.node, state);
+        const box = boxUse(ref.node, state, false, defs);
         const boxContent = ref.node.getChild("EndEnv");
         if (box && boxContent) {
           (content.boxes ??= []).push({ title: box.title, body: read(state, box.end, boxContent.from).trim() });
@@ -4179,7 +4492,7 @@ export function handTitleBlock(state: EditorState, defs: LatexDefinitions, node:
 }
 
 /** `\title`, `\author` and `\date` from the document, for `\maketitle`. */
-const titleCache = new WeakMap<Text, Map<number, ReturnType<typeof scanTitleParts>>>();
+const titleCache = new WeakMap<Text, Map<string, ReturnType<typeof scanTitleParts>>>();
 
 /** The class that decides how the title block reads its commands: JHEP's `jheppub` package (over `article`) gives its own. */
 export function titleClass(defs: { packages: readonly string[] }, documentClass: string | null) {
@@ -4190,8 +4503,13 @@ export function titleClass(defs: { packages: readonly string[] }, documentClass:
 function readTitleParts(state: EditorState, pos: number, documentClass: string | null) {
   let byPos = titleCache.get(state.doc);
   if (!byPos) titleCache.set(state.doc, byPos = new Map());
-  let parts = byPos.get(pos);
-  if (!parts) byPos.set(pos, parts = scanTitleParts(state.doc.sliceString(0, Math.min(pos, 120_000)), documentClass));
+  // The title block's commands in a file the preamble `\input`s (SIAM's shared `ex_shared.tex`, arXiv 2611.09593): read before the document's own.
+  const included = (state.field(macroSourcesField, false) ?? [])
+    .filter((source) => source.key?.startsWith("input:") && /\\(?:title|author)(?![A-Za-z@])/.test(stripTexComments(source.text)))
+    .map((source) => `${source.text}\n`).join("");
+  const key = `${pos}:${included}`;
+  let parts = byPos.get(key);
+  if (!parts) byPos.set(key, parts = scanTitleParts(included + state.doc.sliceString(0, Math.min(pos, 120_000)), documentClass));
   return parts;
 }
 
@@ -4388,18 +4706,18 @@ function abstractIn(content: string) {
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo|makeatletter|makeatother|IEEEpubid|IEEEaftertitletext|IEEEpubidadjcol|markboth|markright)$/;
 /** What ends a run of title declarations rather than staying source inside it: text, sections, environments. */
 const RUN_ENDERS = /^(?:begin|end|part|chapter|section|subsection|subsubsection|paragraph|subparagraph|item|maketitle|par|noindent|indent|bibliography|printbibliography|appendix|label|footnote|textbf|textit|emph|cite|ref|includegraphics|caption)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
-const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/;
+const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|let)$/;
 /**
  * Environments among them: an abstract the class prints with the title (acmart's, amsart's), acmart's CCS metadata,
  * and its teaser figure, which is drawn on its own (the title block stops before it).
  */
-const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp)$/;
+const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp|keywords|IEEEkeywords|comment)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa)$/;
+const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys)$/;
 /** The headings of A&A's structured `\abstract{…}{…}{…}{…}{…}`. */
 const AA_ABSTRACT_LABELS = ["Context", "Aims", "Methods", "Results", "Conclusions"];
 
@@ -4456,7 +4774,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
     // `\begin{abstract} … \end{abstract}` and the other environments the run may hold.
     const begin = /^\\begin\s*\{([^{}]*)\}/.exec(text.slice(i, i + 80));
     const env = begin?.[1].trim();
-    if (begin && env && TITLE_ENVIRONMENTS.test(env) && (env !== "abstract" || abstractWithTitle)) {
+    if (begin && env && TITLE_ENVIRONMENTS.test(env) && (!/^(?:abstract|keywords|IEEEkeywords)$/.test(env) || abstractWithTitle)) {
       const close = new RegExp(String.raw`\\end\s*\{${env}\}`).exec(text.slice(i));
       if (close) {
         const end = i + close.index + close[0].length;
@@ -4464,6 +4782,8 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
         run ??= { start, gaps: [], abstract: null, notes: [] };
         if (env === "teaserfigure") run.gaps.push({ from: start, to: end });
         if (env === "abstract") run.abstract = stripTexComments(text.slice(i + begin[0].length, i + close.index)).trim();
+        // cas-sc's and IEEEojcsys' keywords environment: the block's "Keywords" line (elsarticle's `\sep` separates them).
+        if (env === "keywords" || env === "IEEEkeywords") keywords.push(stripTexComments(text.slice(i + begin[0].length, i + close.index)).replace(/\\sep(?![A-Za-z@])/g, ",").replace(/\s+/g, " ").replace(/\s+,/g, ",").trim());
         i = end;
         continue;
       }
@@ -4474,10 +4794,12 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
     if (command) {
       end = i + command[0].length;
       // A definition's name and parameters (`\newcommand\x[1]{…}`, `\def\x#1{…}`), before its body.
-      if (TITLE_DEFINITIONS.test(command[1])) end += /^\s*(?:\\[A-Za-z@]+|\{\s*\\[A-Za-z@]+\s*\})(?:#\d)*/.exec(text.slice(end, end + 80))?.[0].length ?? 0;
+      if (command[1] === "let") end += /^\s*\\[A-Za-z@]+\s*=?\s*(?:\\[A-Za-z@]+|\\.)/.exec(text.slice(end, end + 120))?.[0].length ?? 0;
+      else if (TITLE_DEFINITIONS.test(command[1])) end +=/^\s*(?:\\[A-Za-z@]+|\{\s*\\[A-Za-z@]+\s*\})(?:#\d)*/.exec(text.slice(end, end + 80))?.[0].length ?? 0;
       for (;;) {
         // A&A's `\abstract` takes five groups, with comment lines between them (2611.07227).
-        const blank = command[1] === "abstract" ? /^(?:\s|%[^\n]*)*/ : /^[ \t]*/;
+        // `\author` with its `{` on the next line (cs.IT 2611.09184): one line break is space to TeX.
+        const blank = command[1] === "abstract" || command[1] === "markboth" ? /^(?:\s|%[^\n]*)*/ : !groups.length && /^(?:title|author)$/.test(command[1]) ? /^[ \t]*(?:\n[ \t]*)?/ : /^[ \t]*/;
         const at = end + (blank.exec(text.slice(end, end + 400))?.[0].length ?? 0);
         const group = text[at] === "[" ? readOptional(text, at, TEX_GROUPS) : text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
         if (!group) break;
@@ -4534,7 +4856,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX, Cambridge's jfp. */
-export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
+export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|cas-[sd]c|lmcs|IEEEojcsys|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
 export const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
 
@@ -4562,6 +4884,14 @@ function lipicsAuthors(text: string) {
   return authors;
 }
 
+/**
+ * The name of a command the document defines as IEEEtran's "`\and` with a line break"
+ * (`\newcommand{\linebreakand}{\end{@IEEEauthorhalign} … \begin{@IEEEauthorhalign}}`, cs.IT 2611.09184), or null.
+ */
+export function authorBreakMacro(text: string) {
+  return /\\(?:re)?newcommand\s*\{\s*\\([A-Za-z]+)\s*\}\s*\{[\s%]*\\end\s*\{@IEEEauthorhalign\}/.exec(text)?.[1] ?? null;
+}
+
 /** The arguments of every `\command[…]{…}` in `text`, outside comments, in order. */
 function commandGroups(text: string, command: string) {
   // sn-jnl's corresponding author is `\author*[1]{…}`.
@@ -4574,6 +4904,8 @@ function commandGroups(text: string, command: string) {
     let depth = 0;
     for (let i = open; i < text.length; i++) {
       if (text[i] === "\\") { i++; continue; }
+      // A comment's braces (cs.IT 2611.09184's `{%Tofar …\thanks{…` author draft) are not the group's.
+      if (text[i] === "%") { const eol = text.indexOf("\n", i); if (eol < 0) break; i = eol; continue; }
       if (text[i] === "{") depth++;
       else if (text[i] === "}" && --depth === 0) { found.push(text.slice(open + 1, i)); break; }
     }
@@ -4588,7 +4920,12 @@ function commandGroups(text: string, command: string) {
  */
 function scanTitleParts(text: string, documentClass: string | null) {
   const last = (command: string) => commandGroups(text, command).at(-1) ?? null;
-  const authors = LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author");
+  // LMCS's `\lmcsorcid{…}` and IEEEojcsys' `\affilmark{1,2}` (a superscript) in a name: the ORCID is not printed in the block.
+  const cleanName = (name: string) => name.replace(/\\lmcsorcid\s*\{[^{}]*\}/g, "").replace(/\\affilmark\s*\{([^{}]*)\}/g, "\\textsuperscript{$1}");
+  // IEEEtran's user macro for "`\and` with a line break" (`\linebreakand`): an author break; comments (a drafted list) are not shown.
+  const breakMacro = authorBreakMacro(text);
+  const plainName = (name: string) => (breakMacro ? stripTexComments(name).replace(new RegExp(`\\\\${breakMacro}(?![A-Za-z@])`, "g"), "\\and") : name);
+  const authors = (LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author")).map(/^(?:lmcs|IEEEojcsys)$/.test(documentClass ?? "") ? cleanName : plainName);
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
   const bodyStart = beginDocumentIndex(text);
   const jhep = documentClass === "jheppub";

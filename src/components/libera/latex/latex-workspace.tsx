@@ -362,6 +362,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   // preamble loads, and theirs. Read live from open tabs (shared ones from
   // their Y.Text), and read again when any of them changes.
   const ownPreamble = draftForAnalysis.slice(0, bodyStartOf(draftForAnalysis) || 0);
+  // The files this one inputs: a body's `\input` of a `\providecommand` list a script generates (2610.16732) defines for the text after it.
+  const bodyInputs = isTex ? readLatexInputs(draftForAnalysis).map((input) => input.path).join("\u0000") : "";
   const [macroSources, setMacroSources] = useState<MacroSource[]>([]);
   const [macroPaths, setMacroPaths] = useState<string[]>([]);
   const macroVersion = useDependencyVersion(macroPaths, readOpenTabs, fileUpdatedAt);
@@ -371,12 +373,12 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     return apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => "");
   }, []);
   const knownFiles = useMemo(() => new Set(files.map((file) => file.path)), [files]);
-  const macroKey = `${rootPath}|${ownPreamble.length}|${hashString(ownPreamble)}|${macroVersion}`;
+  const macroKey = `${rootPath}|${ownPreamble.length}|${hashString(ownPreamble)}|${hashString(bodyInputs)}|${macroVersion}`;
   useEffect(() => {
     if (!isTex) return;
     let cancelled = false;
     void collectMacroSources({
-      filePath, rootPath, ownPreamble, known: knownFiles, readText: readLiveText, version: (path) => String(fileUpdatedAt.get(path) ?? ""),
+      filePath, rootPath, ownPreamble, ownBody: latest.current.draftForAnalysis.slice(ownPreamble.length), known: knownFiles, readText: readLiveText, version: (path) => String(fileUpdatedAt.get(path) ?? ""),
     }).then(({ sources, paths }) => {
       if (cancelled) return;
       setMacroSources((current) => (JSON.stringify(current) === JSON.stringify(sources) ? current : sources));
@@ -420,7 +422,6 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   const [numberingIncludes, setNumberingIncludes] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [includePaths, setIncludePaths] = useState<string[]>([]);
   const includeVersion = useDependencyVersion(includePaths, readOpenTabs, fileUpdatedAt);
-  const bodyInputs = isTex ? readLatexInputs(draftForAnalysis).map((input) => input.path).join("\u0000") : "";
   useEffect(() => {
     if (!isTex) return;
     let cancelled = false;

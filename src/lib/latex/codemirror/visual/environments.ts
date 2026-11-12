@@ -120,6 +120,11 @@ export const WRAPPER_ENVIRONMENTS: Record<string, { args: string; lines?: string
   threeparttable: { args: "" }, ThreePartTable: { args: "" },
   sideways: { args: "" }, turn: { args: "m" }, rotate: { args: "m" }, lscape: { args: "" },
   multicols: { args: "mo" }, "multicols*": { args: "mo" },
+  // Line- and page-breaking only: `sloppypar` (looser lines), `samepage` (no page break inside), the hanging package's
+  // `\begin{hangparas}{3ex}{1}` (a hanging indent for the paragraphs).
+  sloppypar: { args: "" }, samepage: { args: "" }, hangparas: { args: "mm" },
+  // footnote's `savenotes`: a footnote inside a list or table is kept for the end of the block (the footnotes are drawn as they are anyway).
+  savenotes: { args: "" }, "savenotes*": { args: "" },
   // `\begin{lrbox}{\box} … \end{lrbox}` saves its content in a box for `\usebox`: not printed where it is written.
   lrbox: { args: "m", lines: "cm-vis-disabled" },
 };

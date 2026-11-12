@@ -103,6 +103,56 @@ export class SymbolWidget extends VisualWidget {
   }
 }
 
+/** `\qed` and `\qedsymbol` in text: the end-of-proof square; a click shows the command. */
+export class QedMarkWidget extends VisualWidget {
+  constructor(readonly source: string) { super(source); }
+  toDOM(view: EditorView) {
+    const span = el("span", "cm-vis-symbol cm-vis-qed", "□");
+    span.title = this.source;
+    revealOnClick(view, span, this.source.length);
+    return span;
+  }
+}
+
+/** IEEEtran's `\begin{IEEEbiographynophoto}{Name}`: the name in bold italics; a click (or Alt-click) shows the opening's source. */
+export class BiographyHeaderWidget extends VisualWidget {
+  constructor(readonly name: string, readonly length: number) { super(`${name}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-bio-name", this.name);
+    dom.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const from = widgetPos(view, dom);
+      if (from !== null) revealSourceAt(view, from, from + this.length);
+    });
+    return dom;
+  }
+  ignoreEvent() { return true; }
+}
+
+/** `\detokenize{{instruction}}`: its argument as the characters it holds, in the typewriter face; a click shows the command. */
+export class LiteralTextWidget extends VisualWidget {
+  constructor(readonly literal: string, readonly source: string) { super(`${literal}\u0000${source}`); }
+  toDOM(view: EditorView) {
+    const span = el("span", "cm-vis-symbol cm-vis-tt cm-vis-literal", this.literal);
+    span.title = this.source;
+    revealOnClick(view, span, this.source.length);
+    return span;
+  }
+}
+
+/** A command's printed text (Pandoc's `\CSLLeftMargin{{[}1{]} }`, pifont's circled digit): a click shows the command. */
+export class PrintedTextWidget extends VisualWidget {
+  constructor(readonly printed: string, readonly source: string) { super(`printed\u0000${printed}\u0000${source}`); }
+  toDOM(view: EditorView) {
+    const span = el("span", "cm-vis-symbol", this.printed);
+    span.title = this.source;
+    revealOnClick(view, span, this.source.length);
+    return span;
+  }
+  ignoreEvent() { return true; }
+}
+
 /** `\\`: a faint mark where the line breaks. */
 export class LineBreakWidget extends VisualWidget {
   constructor() { super("br"); }
@@ -195,10 +245,11 @@ export class MathWidget extends VisualWidget {
 export class ChipWidget extends VisualWidget {
   /** `index`: an `\index{…}` or `\glossary{…}` entry, which the PDF does not show where it is: a small grey tag, as a label. */
   /** `more`: a multicite's other groups (`\parencites[12]{a}[34]{b}`), each with its keys and notes. */
-  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number, readonly more: ReadonlyArray<{ keys: string[]; notes: { pre?: string; post?: string } }> = []) {
-    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}${more.length ? `\u0000${JSON.stringify(more)}` : ""}`);
+  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number, readonly more: ReadonlyArray<{ keys: string[]; notes: { pre?: string; post?: string } }> = [], readonly fixed?: string) {
+    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}${more.length ? `\u0000${JSON.stringify(more)}` : ""}${fixed === undefined ? "" : `\u0000fixed:${fixed}`}`);
   }
   private text(view: EditorView) {
+    if (this.fixed !== undefined) return this.fixed;
     if (this.kind === "label") return this.keys[0];
     // makeidx's `sort@shown!sub` entries: what each level shows.
     if (this.kind === "index") return this.keys[0].split("!").map((level) => level.slice(level.lastIndexOf("@") + 1).replace(/\|.*$/, "")).join(" › ");
@@ -218,10 +269,11 @@ export class ChipWidget extends VisualWidget {
       const text = this.text(target);
       dom.textContent = text;
       // A reference to a `\tag{$\mathcal{I}$}` (Econometrica's): its math drawn, not its source.
-      if (this.kind === "ref" && /\$[^$]+\$/.test(text)) {
+      // An index entry's math (`\index{$\phi$}`) too; math that cannot be drawn shows without its dollars (the source is the tooltip).
+      if ((this.kind === "ref" || this.kind === "index") && /\$[^$]+\$/.test(text)) {
         dom.replaceChildren(...text.split(/(\$[^$]+\$)/).filter(Boolean).map((part) => {
           const html = /^\$[^$]+\$$/.test(part) ? renderKatex(part.slice(1, -1), false) : null;
-          if (!html) return document.createTextNode(part);
+          if (!html) return document.createTextNode(this.kind === "index" ? part.replace(/\$/g, "") : part);
           const math = el("span", "cm-vis-chip-math");
           math.innerHTML = html;
           return math;
@@ -253,6 +305,7 @@ export class ChipWidget extends VisualWidget {
       event.preventDefault();
       const from = widgetPos(view, dom);
       if (from === null) return;
+      if (this.fixed !== undefined) { revealSourceAt(view, from, from + this.length); return; }
       if (this.kind !== "ref") { editKeysAt(view, from + this.length - 1); return; }
       if (event.altKey) { revealSourceAt(view, from, from + this.length); return; }
       if (followReference(view, this.keys[0])) return;
@@ -1866,15 +1919,27 @@ export class BibliographyListWidget extends VisualWidget {
 
 /** The opening of a theorem, proof, abstract or user environment, drawn as its heading. */
 export class EnvironmentHeaderWidget extends VisualWidget {
-  constructor(readonly variant: "theorem" | "proof" | "abstract" | "user", readonly title: string, readonly note: string | null, readonly kind: NumberingKind | null, readonly numberOffset: number) {
-    super(JSON.stringify([variant, title, note, kind, numberOffset]));
+  constructor(readonly variant: "theorem" | "proof" | "abstract" | "user", readonly title: string, readonly note: string | null, readonly kind: NumberingKind | null, readonly numberOffset: number, readonly length = 0) {
+    super(JSON.stringify([variant, title, note, kind, numberOffset, length]));
   }
   toDOM(view: EditorView) {
     const dom = el("span", `cm-vis-env-header cm-vis-env-header-${this.variant}`);
+    // A box's title (its `\begin` over several lines): a click shows the opening as written.
+    if (this.length) revealOnClick(view, dom, this.length);
     const render = (target: EditorView) => {
       dom.replaceChildren();
       const context = widgetContext(target, dom);
-      if (this.variant === "user") { dom.append(renderLatexFragment(this.title, context)); return; }
+      if (this.variant === "user") {
+        // A numbered box's title (`Box~\thetcbcounter: …`): the number the numbering pass gave the box.
+        let title = this.title;
+        if (this.kind) {
+          const pos = widgetPos(target, dom);
+          const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos + this.numberOffset, this.kind);
+          title = title.replace(/\\thetcbcounter(?![A-Za-z@])\s*/g, entry?.number ?? "");
+        }
+        dom.append(renderLatexFragment(title, context));
+        return;
+      }
       const head = el("span", "cm-vis-env-title");
       let number = "";
       if (this.kind) {

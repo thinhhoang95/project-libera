@@ -155,7 +155,11 @@ test("2611.11388 notation_table.tex: row helpers (\\ntrow, \\ntgroup) and \\arra
   assert.ok(!text.includes("\\ntrow"), "the row helper's definition is folded");
   assert.ok(!text.includes("\\ntgroup"), "the group helper's definition is folded");
   assert.ok(!text.includes("\\renewcommand{\\arraystretch}"), "\\arraystretch is folded");
-  assert.ok(text.includes("\\newcommand{\\plain}"), "a definition that writes no rows is still source");
+  // Round 5: every body definition is one inert unit, folded; one that writes no rows is source again at the caret.
+  assert.ok(!text.includes("\\newcommand{\\plain}"), "a definition that writes no rows is folded too");
+  view.dispatch({ selection: { anchor: NOTATION.indexOf("\\newcommand{\\plain}") + 4 } });
+  assert.ok((view.contentDOM.textContent ?? "").includes("\\newcommand{\\plain}[1]{plain #1}"), "a definition that writes no rows is still source at the caret");
+  view.dispatch({ selection: { anchor: 0 } });
   const figure = view.contentDOM.querySelector(".cm-vis-figure-table")!;
   const rows = [...figure.querySelectorAll("tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent?.trim()));
   assert.deepEqual(rows.slice(0, 1), [["Symbol", "Meaning", "Definition"]]);

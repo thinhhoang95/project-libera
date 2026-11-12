@@ -124,7 +124,7 @@ function numberBody(key: string, text: string, preamble: LatexDefinitions, seed?
 /** Where the last `\appendix` (or `appendices` environment) of a text is, or -1. */
 function lastAppendix(text: string) {
   let at = -1;
-  for (const match of text.matchAll(/\\appendix(?![A-Za-z@])|\\begin\s*\{appendices\}/g)) if (!isInLatexComment(text, match.index ?? 0)) at = match.index ?? 0;
+  for (const match of text.matchAll(/\\appendix(?![A-Za-z@])|\\begin\s*\{(?:appendices|APPENDICES)\}/g)) if (!isInLatexComment(text, match.index ?? 0)) at = match.index ?? 0;
   return at;
 }
 

@@ -31,6 +31,12 @@ const ACMART = /^acmart$/;
 const LLNCS = /^(?:llncs|svjour3?|svmult|aa)$/;
 const ELSARTICLE = /^elsarticle$/;
 const SNJNL = /^sn-jnl$/;
+// Elsevier's CAS classes (cas-sc, cas-dc): elsarticle's commands with the address as `organization={…}, city={…}` keys.
+const CAS = /^cas-[sd]c$/;
+// The Logical Methods in Computer Science class: `\author[Short]{Name}[a]`, then an `\address` and `\email` per mark.
+const LMCS = /^lmcs$/;
+// IEEE Open Journal of Control Systems: `\author{Name\affilmark{1,2}}`, `\affil{…}` numbered by their order.
+const OJCSYS = /^IEEEojcsys$/;
 
 type Use = { name: string; optional: string | null; arg: SourceSpan & { latex: string }; at: number };
 
@@ -95,6 +101,28 @@ function acmAffiliation(latex: string) {
   return parts ? parts.join(", ") : latex.trim();
 }
 
+/** Elsevier CAS's `organization={…}, city={…}, country={…}` as the line it prints; null when it is not key-value. */
+function casAffiliation(latex: string): string | null {
+  const pieces: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < latex.length; i++) {
+    if (latex[i] === "\\") { i++; continue; }
+    if (latex[i] === "{") depth++;
+    else if (latex[i] === "}") depth--;
+    else if (latex[i] === "," && depth === 0) { pieces.push(latex.slice(start, i)); start = i + 1; }
+  }
+  pieces.push(latex.slice(start));
+  const values: string[] = [];
+  for (const piece of pieces) {
+    if (!piece.trim()) continue;
+    const match = /^\s*[A-Za-z]+\s*=\s*([\s\S]*?)\s*$/.exec(piece);
+    if (!match) return null;
+    values.push(match[1].replace(/^\{([\s\S]*)\}$/, "$1").trim());
+  }
+  return values.length ? values.join(", ") : null;
+}
+
 /**
  * The lines a class adds to its title block, from the commands in `text` (document positions from `offset`), for a
  * block that draws `authorCount` authors. Null for a class without them, or when the commands cannot be matched to
@@ -152,7 +180,7 @@ export function frontMatterDetails(text: string, offset: number, documentClass: 
     }
     return details;
   }
-  if ((ELSARTICLE.test(documentClass) && frontmatterEnv) || SNJNL.test(documentClass)) {
+  if ((ELSARTICLE.test(documentClass) && frontmatterEnv) || SNJNL.test(documentClass) || CAS.test(documentClass)) {
     // elsarticle: `\author[a,b]{…}` takes the addresses labelled a and b (one unlabelled address is everyone's);
     // `\ead{…}` is the last author's email; `\cortext`, `\tnotetext` and `\fntext` are notes. Springer Nature's sn-jnl
     // does the same with `\author*[1,2]{…}`, `\affil[1]{…}` and `\email{…}`.
@@ -162,6 +190,11 @@ export function frontMatterDetails(text: string, offset: number, documentClass: 
     for (const use of all) {
       if (use.name !== "address" && use.name !== "affiliation" && use.name !== "affil") continue;
       const line = trimmedLine("", use.arg.latex, use.arg.from);
+      if (CAS.test(documentClass)) {
+        // The key-value address is printed as one line, so its text is not the argument: a click shows the source.
+        const printed = casAffiliation(line.latex);
+        if (printed !== null) { line.latex = printed; line.source = null; }
+      }
       if (use.optional?.trim()) addresses.set(use.optional.trim(), line);
       else unlabelled.push(line);
     }
@@ -186,6 +219,43 @@ export function frontMatterDetails(text: string, offset: number, documentClass: 
     // Several unlabelled addresses (one per author group): listed after the authors.
     if (unlabelled.length > 1) details.places = unlabelled;
     return details;
+  }
+  if (LMCS.test(documentClass)) {
+    // `\author[Short]{Name}[a]` takes the address and email of the group marked `a`; the `\address`es (each with the `\email`
+    // after it) are the groups a, b, c in order.
+    const all = uses(text, offset, ["author", "address", "email"]);
+    const groups: FrontLine[][] = [];
+    for (const use of all) {
+      if (use.name === "address") groups.push([trimmedLine("", use.arg.latex, use.arg.from)]);
+      else if (use.name === "email") { if (!groups.length) return null; groups.at(-1)!.push(trimmedLine("Email: ", use.arg.latex, use.arg.from)); }
+    }
+    let author = -1;
+    for (const use of all) {
+      if (use.name !== "author") continue;
+      const mark = /^\s*\[([A-Za-z])\]/.exec(text.slice(use.arg.to - offset + 1, use.arg.to - offset + 20))?.[1].toLowerCase();
+      const group = mark ? groups[mark.charCodeAt(0) - 97] : undefined;
+      for (let k = authorIndices(use); k > 0; k--) {
+        if (++author >= authorCount) return null;
+        if (group) details.authorLines[author].push(...group);
+      }
+    }
+    return author + 1 === authorCount ? details : null;
+  }
+  if (OJCSYS.test(documentClass)) {
+    // `\affil{…}` are numbered in order, the number each author's `\affilmark{1,2}` gives; `\authornote` is a note.
+    const all = uses(text, offset, ["author", "affil", "authornote"]);
+    const places = all.filter((use) => use.name === "affil").map((use) => trimmedLine("", use.arg.latex, use.arg.from));
+    let author = -1;
+    for (const use of all) {
+      if (use.name === "authornote") { details.notes.push(trimmedLine("Note: ", use.arg.latex, use.arg.from)); continue; }
+      if (use.name !== "author") continue;
+      const labels = [...use.arg.latex.matchAll(/\\affilmark\s*\{([^{}]*)\}/g)].flatMap((match) => match[1].split(",").map((label) => label.trim()));
+      for (let k = authorIndices(use); k > 0; k--) {
+        if (++author >= authorCount) return null;
+        for (const label of labels) { const place = places[Number(label) - 1]; if (place) details.authorLines[author].push(place); }
+      }
+    }
+    return author + 1 === authorCount ? details : null;
   }
   // AAAI's `\affiliations{…}` (aaai25.sty, in the article class): its lines after the authors.
   const affiliations = uses(text, offset, ["affiliations"]).at(-1);

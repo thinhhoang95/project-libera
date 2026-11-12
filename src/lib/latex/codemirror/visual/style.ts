@@ -48,7 +48,7 @@ function build(view: EditorView): DecorationSet {
       else if (node.name === "Environment") {
         const name = environmentName(node, (start, end) => state.doc.sliceString(start, end));
         const user = name ? defs.environments.get(name) : undefined;
-        if (name && (defs.theorems.has(name) || (user && wrappedTheorem(user.begin, user.end, defs)) || name === "proof" || name === "abstract" || /^(?:quote|quotation|verse|center|flushleft|flushright)$/.test(name) || boxEnvironments(state.doc).has(name))) from = Math.min(from, node.from);
+        if (name && (defs.theorems.has(name) || (user && wrappedTheorem(user.begin, user.end, defs)) || name === "proof" || name === "IEEEproof" || name === "abstract" || /^(?:quote|quotation|verse|center|flushleft|flushright)$/.test(name) || boxEnvironments(state.doc, defs).has(name))) from = Math.min(from, node.from);
       }
     }
     walkConstructs({

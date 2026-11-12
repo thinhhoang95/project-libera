@@ -24,7 +24,7 @@ export type XparseArgument = { type: "m" } | { type: "o" } | { type: "O"; defaul
   | { type: "R"; open: string; close: string; default: string } | { type: "D"; open: string; close: string; default: string }
   | { type: "e"; token: string; group: number; default?: string }
   /** A TeX `\def` parameter with a delimiter (`\def\set#1:#2{…}`): the tokens up to `delimiter`, outside braces. */
-  | { type: "u"; delimiter: string };
+  | { type: "u"; delimiter: string; /** Literal text that must follow the name at once, with no argument (`\def\+Bound{…}`). */ prefix?: boolean };
 
 export type LatexMacro = {
   name: string;
@@ -126,6 +126,8 @@ export type LatexDefinitions = {
   /** `\numberwithin{c}{within}` only: counters printed with their parent's number first (`\newcounter[within]` resets but prints alone). */
   counterPrefix: Map<string, string>;
   crefNames: Map<string, { singular: string; plural: string; capital?: boolean }>;
+  /** tcolorbox's `\newtcolorbox` and mdframed's `\newmdenv` boxes of the document and its packages, by environment name. */
+  boxes?: Map<string, LatexBoxDefinition>;
   documentClass: string | null;
   packages: string[];
   /** The options a package was loaded with (`\usepackage[ruled,vlined]{algorithm2e}`), by package name. */
@@ -182,7 +184,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -485,6 +487,8 @@ function highestParameter(body: string) {
  */
 function delimitedSpec(parameters: string, body: string): XparseArgument[] | null {
   const text = parameters.trim();
+  // `\def\+Bound{…}`: plain characters after the name, no parameter. A use must continue with exactly that text.
+  if (text && !text.includes("#") && !/[\\{}%]/.test(text)) return highestParameter(body) === 0 ? [{ type: "u", delimiter: text, prefix: true }] : null;
   if (!text.startsWith("#")) return null;
   const spec: XparseArgument[] = [];
   const pattern = /#([1-9])([^#{}%]*)/y;
@@ -794,7 +798,7 @@ function selfReferent(name: string, body: string) {
  * (neurips_2020.sty's `\section` is `\@startsection{section}{1}{\z@}…`, its `\small` a font size):
  * that does not change what they show. The document's own redefinitions do.
  */
-const DRAWN_BUILTINS = new Set([
+export const DRAWN_BUILTINS = new Set([
   "part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph", "appendix",
   "title", "author", "date", "thanks", "and", "maketitle", "caption", "label", "ref", "eqref", "cite", "footnote", "footnotemark", "footnotetext",
   // Citations and references, which a template's own natbib.sty or hyperref.sty defines (ICLR's and ACL's ship natbib.sty).
@@ -1002,6 +1006,8 @@ function mathSymbolBody(mathClass: string, font: string, position: number): stri
     else if (font === "operators" && /[!()*+,\-./:;=?@[\]]/.test(char)) symbol = `\\text{${char}}`;
   } else if (font === "largesymbols" || font === "cmlargesymbols") symbol = LARGE_SYMBOLS[position] ?? null;
   else if (font === "AMSb" && /[A-Z]/.test(char)) symbol = `\\mathbb{${char}}`;
+  // The Shafarevich-Tate group's Cyrillic Sha, the OT2 encoding's letter X (`\DeclareSymbolFont{cyrletters}{OT2}{wncyr}{m}{n}`, 2611.11566).
+  else if (font === "cyrletters" && (position === 0x58 || position === 0x78)) symbol = `\\mathord{\\text{${position === 0x58 ? "Ш" : "ш"}}}`;
   if (!symbol) return null;
   const wrapper = MATH_CLASSES[mathClass.replace(/^\\/, "").trim()];
   if (wrapper === undefined) return null;
@@ -1020,7 +1026,7 @@ function texNumber(text: string) {
 }
 
 /** Commands whose definitions are global whatever the group (`\gdef`, and xparse's, which are made with expl3's global `\cs_new`). */
-const GLOBAL_DEFINITIONS = /^(?:gdef|xdef|DeclareMathOperator|(?:New|Renew|Provide|Declare)(?:Expandable)?DocumentCommand)$/;
+const GLOBAL_DEFINITIONS = /^(?:gdef|xdef|DeclareMathOperator|SetKw(?:Function|Data)?|(?:New|Renew|Provide|Declare)(?:Expandable)?DocumentCommand)$/;
 
 /**
  * Reads the definitions in `source` into `defs`. `bodyStart` is where the
@@ -1330,7 +1336,13 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         const restyled = /^[Rr]enew/.test(command) && context.file !== undefined && PACKAGE_FILE.test(context.file);
         if (!restyled) {
           if (uncertain) { note(defs.unsupported, name, `${name} is defined under a condition`); defs.environments.delete(name); }
-          else if (supported) defs.environments.set(name, { name, arity, optional, spec, begin: begin.content, end: endCode.content, pos });
+          else if (supported) {
+            defs.environments.set(name, { name, arity, optional, spec, begin: begin.content, end: endCode.content, pos });
+            // `\newenvironment{myparagraph}[1]{…}{}` also defines `\myparagraph`: with nothing to end, `\myparagraph{Title}` is used as a command (cs.PL 2610.26599).
+            if (!command.endsWith("DocumentEnvironment") && arity > 0 && !endCode.content.trim() && /^[A-Za-z]+$/.test(name) && !defs.macros.get(name)?.length) {
+              addMacro(context, { name, arity, optional, body: begin.content, pos, file: context.file }, "new");
+            }
+          }
           else defs.environments.delete(name);
         }
       }
@@ -1387,6 +1399,15 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           within: sibling ? undefined : within || undefined, numbered: !/^(?:no|false)$/i.test(values.get("numbered") ?? ""), style,
         });
       }
+    } else if (command === "newsiamthm" || command === "newsiamremark") {
+      // SIAM's `\newsiamthm{claim}{Claim}` and `\newsiamremark{remark}{Remark}`: numbered with the theorems, an italic or an upright body.
+      const nameGroup = readGroupAt(source, index);
+      const title = nameGroup && readGroupAt(source, nameGroup.end);
+      if (!nameGroup || !title || /[#\\]/.test(nameGroup.content)) continue;
+      end = title.end;
+      const name = nameGroup.content.trim();
+      if (uncertain) { note(defs.unsupported, name, `${name} is defined under a condition`); defs.theorems.delete(name); }
+      else defs.theorems.set(name, { name, title: title.content.trim(), counter: "theorem", numbered: true, style: command === "newsiamthm" ? "plain" : "remark" });
     } else if (command === "newtheorem") {
       const nameGroup = readGroupAt(source, index);
       if (!nameGroup) continue;
@@ -1682,6 +1703,7 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [counter, within] of defs.counterWithin) parts.push(`${counter}<${within}`);
   for (const [counter, within] of defs.counterPrefix) parts.push(`${counter}<<${within}`);
   for (const [key, names] of defs.crefNames) parts.push(`${key}=${names.singular}/${names.plural}`);
+  for (const [name, box] of defs.boxes ?? []) parts.push(`box:${name}:${JSON.stringify(box)}`);
   parts.push(defs.documentClass ?? "", String(defs.secnumdepth ?? ""), defs.graphicsPaths.join("|"));
   for (const [name, list] of defs.packageOptions) parts.push(`pkg:${name}:${list.join(",")}`);
   for (const [name, color] of defs.colors) parts.push(`color:${name}:${color.model}:${color.value}`);
@@ -1722,8 +1744,98 @@ export function collectLatexDefinitions(sources: readonly DefinitionSource[], op
     readLatexDefinitions(source.text, defs, { file: source.path, load: loader(source.path, 1) });
   }
   if (open) readLatexDefinitions(open.text, defs, { bodyStart: open.bodyStart, load: loader("", 1) });
+  // The boxes of every file read (a chapter's boxes are in the main file's preamble or a style file).
+  for (const source of sources) if (BOX_DEFINITION.test(source.text)) readBoxDefinitions(source.text, defs);
+  if (open && BOX_DEFINITION.test(open.text)) readBoxDefinitions(open.text, defs);
   defs.fingerprint = definitionsFingerprint(defs);
   return defs;
+}
+
+/** A box environment of tcolorbox or mdframed: its title as its options give it, its arguments, and its counter. */
+export type LatexBoxDefinition = {
+  /** The title its options give (`title={Box~\thetcbcounter: #2}`), with its `#n` still in it; null without one. */
+  title: string | null;
+  /** The arguments it takes (`[2][]`: two, the first optional); 0 for `\newmdenv` and boxes with no `[n]`. */
+  arity: number;
+  /** Whether the first argument is optional (given a default: `[2][]`). */
+  optional: boolean;
+  /** `auto counter`: the box is numbered (`\thetcbcounter`); `number within=section` restarts that count in each section. */
+  counter: boolean;
+  within: string | null;
+};
+
+const BOX_DEFINITION_COMMAND = String.raw`(?:(?:re)?newtcolorbox|DeclareTColorBox|NewTColorBox|newmdenv)`;
+const BOX_DEFINITION = new RegExp(String.raw`\\${BOX_DEFINITION_COMMAND}(?![A-Za-z@])`);
+
+/** A box's title from its options (`title=Prompt`, mdframed's `frametitle={…}`), null without one. */
+export function boxTitleOf(options: string) {
+  const match = /(?:^|,)\s*(?:frame)?title\s*=\s*/.exec(options);
+  if (!match) return null;
+  const rest = options.slice((match.index ?? 0) + match[0].length);
+  const value = rest[0] === "{" ? readGroup(rest, 0, TEX_GROUPS)?.content : /^[^,]*/.exec(rest)?.[0];
+  return value?.trim() || null;
+}
+
+/**
+ * `\newtcolorbox[auto counter,number within=section]{Name}[2][]{title={Box~\thetcbcounter: #2},…,#1}` (its options may
+ * span lines, and so may the header), `\newtcolorbox{Name}{…}`, `\DeclareTColorBox{Name}{O{}m}{…}` and
+ * mdframed's `\newmdenv[options]{Name}`: the names with the title, arguments and counter, in `defs.boxes`.
+ * `\Crefname={Box}{Boxes}` among the options names the box for cleveref.
+ */
+export function readBoxDefinitions(source: string, defs: LatexDefinitions) {
+  const text = source.includes("%") ? source.replace(/(^|[^\\])((?:\\\\)*)%[^\n]*/g, "$1$2") : source;
+  const boxes = defs.boxes ??= new Map();
+  for (const match of text.matchAll(new RegExp(String.raw`\\(${BOX_DEFINITION_COMMAND})\*?(?![A-Za-z@])`, "g"))) {
+    let at = (match.index ?? 0) + match[0].length;
+    const skip = () => { at += /^\s*/.exec(text.slice(at))![0].length; };
+    skip();
+    // The initialisation options (`[auto counter,…]`) before the name; mdframed's are the box's own.
+    let init = "";
+    if (text[at] === "[") {
+      const group = readOptional(text, at, TEX_GROUPS);
+      if (!group) continue;
+      init = group.content;
+      at = group.end;
+      skip();
+    }
+    const name = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
+    if (!name || !/^[A-Za-z@*]+$/.test(name.content.trim())) continue;
+    at = name.end;
+    let arity = 0;
+    let optional = false;
+    let options = "";
+    if (match[1] === "newmdenv") options = init;
+    else {
+      skip();
+      // xparse's argument specification of `\DeclareTColorBox{Name}{O{}m}{…}`: only the box's options come first.
+      if (/^(?:DeclareTColorBox|NewTColorBox)$/.test(match[1]) && text[at] === "{") {
+        const spec = readGroup(text, at, TEX_GROUPS);
+        if (!spec) continue;
+        at = spec.end;
+        skip();
+      } else {
+        const count = /^\[(\d)\]/.exec(text.slice(at));
+        if (count) {
+          arity = Number(count[1]);
+          at += count[0].length;
+          skip();
+          if (text[at] === "[") {
+            const fallback = readOptional(text, at, TEX_GROUPS);
+            if (!fallback) continue;
+            optional = true;
+            at = fallback.end;
+            skip();
+          }
+        }
+      }
+      const body = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
+      options = body?.content ?? "";
+    }
+    const within = /(?:^|,)\s*number\s+within\s*=\s*([A-Za-z]+)/.exec(init)?.[1] ?? null;
+    boxes.set(name.content.trim(), { title: boxTitleOf(options), arity, optional, counter: /(?:^|,)\s*auto\s+counter\s*(?:,|$)/.test(init), within });
+    const crefname = /(?:^|,)\s*Crefname\s*=\s*\{([^{}]*)\}\s*\{([^{}]*)\}/.exec(init);
+    if (crefname) defs.crefNames.set(`${name.content.trim()}:capital`, { singular: crefname[1].trim(), plural: crefname[2].trim(), capital: true });
+  }
 }
 
 /** Where the document body starts: after `\begin{document}`, or 0 for a chapter file without one. */
@@ -1762,8 +1874,16 @@ export function conditionalFacts(defs: LatexDefinitions, pos: number, math?: boo
     constant: (name) => constantOf(macroAt(defs, name, pos)),
     defined: (name) => definedState(defs, macroAt(defs, name, pos), name),
     switchState: (name) => switchAt(defs, name, pos),
+    classOption: (option) => ieeeClassOption(defs, option),
     math,
   };
+}
+
+/** IEEEtran's options that are off unless given: `\ifCLASSOPTIONcaptionsoff`, `compsoc`, `conference`, `peerreview`. */
+const IEEE_OFF_BY_DEFAULT = new Set(["captionsoff", "compsoc", "comsoc", "conference", "peerreview", "peerreviewca", "draftcls", "draftclsnofoot", "technote", "transmag", "cspaper", "nofonttune", "romanappendices"]);
+function ieeeClassOption(defs: LatexDefinitions, option: string) {
+  if (defs.documentClass !== "IEEEtran" || !IEEE_OFF_BY_DEFAULT.has(option)) return undefined;
+  return defs.classOptions?.includes(option) ?? false;
 }
 
 const factsKeys = new WeakMap<LatexDefinitions, string>();
@@ -1859,7 +1979,7 @@ export function readLatexInputs(source: string) {
 export { inComment as isInLatexComment };
 
 /** Classes whose theorems are known here, with their options (their `.cls` is rarely in the project, and reads only through its conditionals). */
-const KNOWN_THEOREM_CLASSES = /^(?:llncs|(?:lipics|oasics)(?:-v\d+)?|acmart)$/;
+const KNOWN_THEOREM_CLASSES = /^(?:llncs|(?:lipics|oasics)(?:-v\d+)?|acmart|siamart\d*|siamonline\d*|siamltex)$/;
 
 /**
  * The theorems a well-known class defines, for the names the document has not defined (the document's own
@@ -1887,6 +2007,11 @@ function addClassTheorems(defs: LatexDefinitions, cls: string, optionText: strin
       add(name, name[0].toUpperCase() + name.slice(1), plain.has(name) ? "plain" : "remark", same ? "theorem" : name, !same && sect ? "section" : undefined);
       if (fresh && !same && !sect && reset && !defs.counterWithin.has(name)) defs.counterWithin.set(name, "section");
     }
+  } else if (/^siam/.test(cls)) {
+    // SIAM's classes: `theorem`, and `lemma`, `corollary`, `proposition` and `definition` sharing its counter (all italic body,
+    // as `\newsiamthm` makes them). Remarks are the paper's `\newsiamremark{remark}{Remark}`.
+    add("theorem", "Theorem", "plain", "theorem");
+    for (const name of ["lemma", "corollary", "proposition", "definition"]) add(name, name[0].toUpperCase() + name.slice(1), "plain", "theorem");
   } else if (cls === "acmart") {
     if (options.some((option) => /^acmthm\s*=\s*false$/.test(option))) return;
     add("theorem", "Theorem", "plain", "theorem", "section");

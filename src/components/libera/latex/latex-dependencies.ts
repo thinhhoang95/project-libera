@@ -82,7 +82,7 @@ const DEFINES = /\\(?:newcommand|renewcommand|providecommand|DeclareRobustComman
  * has (nowfnt.cls) gives its theorems first.
  */
 export async function collectMacroSources(options: {
-  filePath: string; rootPath: string; ownPreamble: string; known: ReadonlySet<string>; readText: ReadText; version: (path: string) => string;
+  filePath: string; rootPath: string; ownPreamble: string; ownBody?: string; known: ReadonlySet<string>; readText: ReadText; version: (path: string) => string;
 }): Promise<{ sources: MacroSource[]; paths: string[] }> {
   const { filePath, rootPath, known, version } = options;
   // Finding the chapter and reading the sources read the same files: once each.
@@ -124,6 +124,8 @@ export async function collectMacroSources(options: {
   }
   const seen = new Set<string>([filePath, rootPath]);
   let queue = loadsOf(text, rootPath, known, true).map((load) => ({ ...load, loadedBy: loader, body: load.pos >= bodyFrom }));
+  // What the open file inputs in its own body applies from there on: the open file's reader reaches that `\input` and reads the file.
+  if (options.ownBody) queue.push(...loadsOf(options.ownBody, rootPath, known, false).map((load) => ({ ...load, loadedBy: "", body: true })));
   let preambleReads = 0;
   let bodyReads = 0;
   for (let depth = 0; queue.length && depth < MAX_DEPTH; depth++) {
