@@ -1088,7 +1088,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         // Any other definition in the body (`\newcommand{\psladder}[3][]{…\begin{tikzpicture}…}`, `\newenvironment`, `\def`, `\let`):
         // one inert unit. Its body is never drawn; the whole definition folds away like a layout line, shown again at the cursor.
-        if (freshDefinition && !folded && structural && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !startsDisabled(ref.from)) foldDefinition(ref.from, Math.max(ref.to, extent?.to ?? 0));
+        // (`\def\@title`, `\@author`, `\@date` are the parts of a hand-made title block, which reads them and draws the
+        // block over them, or leaves them as source when it is not one.)
+        if (freshDefinition && !folded && structural && !/^\\(?:g|e|x)?def\s*\\@(?:title|author|date)(?![A-Za-z@])/.test(read(state, ref.from, Math.min(doc.length, ref.from + 24))) && ref.from > env.preambleEnd && ref.from >= from && ref.from < to && !startsDisabled(ref.from)) foldDefinition(ref.from, Math.max(ref.to, extent?.to ?? 0));
         // `\verb|…|`, `\lstinline`, `verbatim`, `lstlisting`, `minted`: code, its text taken as written.
         // (A long block is built in pieces: the piece with its `\end` line draws that line.)
         if (VISIBLE_SKIPPED.has(name) && name !== "Csname" && ref.from < to && (ref.from >= from || name === "VerbatimEnvironment") && ref.from > env.preambleEnd && !isConsumed(ref) && !startsDisabled(ref.from)) drawCode(ref.node, ref.from >= from);

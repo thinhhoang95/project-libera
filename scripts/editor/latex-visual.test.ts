@@ -1238,7 +1238,14 @@ See \cref{tab:notation}.
   // The `\refstepcounter` line (counter commands print nothing, text round) folds from its line's start, indentation
   // included: the bodies end where that line starts.
   const bodiesEnd = doc.lastIndexOf("\n", doc.indexOf("\\refstepcounter")) + 1;
-  assert.ok(list.every((entry) => { const from = Number(entry.split(":")[1]); return from < definitions || from >= bodiesEnd; }), `nothing in definition bodies is drawn: ${list.join(" ")}`);
+  // Round 5: each definition is folded as one inert `layout` unit (shown as source at the caret); nothing else, no widget,
+  // is drawn from inside a body.
+  assert.ok(list.every((entry) => { const [kind, from] = entry.split(":"); return kind === "layout" || Number(from) < definitions || Number(from) >= bodiesEnd; }), `nothing in definition bodies is drawn: ${list.join(" ")}`);
+  for (const name of ["\\newcommand{\\COrow}", "\\newcommand{\\COsection}", "\\providecommand{\\COnote}"]) {
+    const start = doc.indexOf(name);
+    const lineEnd = doc.indexOf("\n", start);
+    assert.ok(list.some((entry) => { const [kind, from, to] = entry.split(":"); return kind === "layout" && Number(from) <= start && Number(to) >= lineEnd; }), `${name} is one folded unit`);
+  }
   const row = list.find((entry) => entry.startsWith("macro:"));
   assert.ok(row, "the row is drawn as its expansion");
   const [, rowFrom, rowTo] = row!.split(":").map(Number);
