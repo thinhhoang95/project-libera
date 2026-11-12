@@ -753,9 +753,14 @@ export class NotebookServiceImpl implements NotebookService {
     if (binding && !sameNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding)) return null;
     const outcome = readNotebookLifecycle(this.lifecycleDirectory, marker);
     if (!outcome) return null;
+    const originalRoot = await statIfExists(root).catch(() => null);
     const current = await readMarker(root).catch(() => null);
     if (!current || !sameNotebookIdentity(marker, current)) return outcome;
-    if (outcome === "local") await deleteMarker(root);
+    if (outcome === "local") {
+      // The root and marker are checked again immediately before the removal.
+      const guard = this.cleanupGuard(root, originalRoot, (latest) => latest !== null && sameNotebookIdentity(marker, latest));
+      await deleteMarker(root, guard).catch((error: unknown) => { if (!(error instanceof WriteCancelledError)) throw error; });
+    }
     else if (!current.revoked) await writeMarker(root, { ...current, revoked: true, revokedAt: new Date().toISOString() }, {
       root,
       canCommit: async () => {
@@ -1140,6 +1145,16 @@ export class NotebookServiceImpl implements NotebookService {
     });
   }
 
+  /** Fences a destructive step on the captured folder identity and its sharing marker. */
+  private cleanupGuard(root: string, original: Awaited<ReturnType<typeof statIfExists>>, owns: (marker: SharedMarker | null) => boolean): WriteGuard {
+    return { root, canCommit: async () => {
+      const current = await statIfExists(root).catch(() => null);
+      if (!original || !current || !current.isDirectory() || current.isSymbolicLink() || current.dev !== original.dev ||
+          current.ino !== original.ino || current.birthtimeMs !== original.birthtimeMs) return false;
+      return owns(await readMarker(root).catch(() => null));
+    } };
+  }
+
   /**
    * After the project was deleted on the server: stops syncing and forgets
    * it. Every installation preserves its latest text and returns its own
@@ -1147,14 +1162,22 @@ export class NotebookServiceImpl implements NotebookService {
    */
   private async removeLocally(handle: ProjectHandle): Promise<void> {
     const { projectId } = handle;
+    // Identity of the folder as it was when the takedown began; every
+    // destructive step below re-validates it instead of trusting this check.
+    const originalRoot = await statIfExists(handle.root).catch(() => null);
     await handle.runtime?.stop({ preserveContent: true });
     await this.rememberEnded(handle, "local");
     handle.runtime = null;
     // The folder may meanwhile hold another share's marker; that one stays.
     const marker = await readMarker(handle.root).catch(() => null);
     if (this.matchesMarker(handle, marker)) {
-      if (handle.writer) await deleteSharePlan(handle.root);
-      if (this.matchesMarker(handle, await readMarker(handle.root).catch(() => null))) await deleteMarker(handle.root);
+      const guard = this.cleanupGuard(handle.root, originalRoot, (latest) => this.matchesMarker(handle, latest));
+      try {
+        if (handle.writer) await deleteSharePlan(handle.root, guard);
+        await deleteMarker(handle.root, guard);
+      } catch (error) {
+        if (!(error instanceof WriteCancelledError)) throw error;
+      }
     }
     this.deps.host.store.deleteProject(projectId);
     this.projects.delete(projectId);

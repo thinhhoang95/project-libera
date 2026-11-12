@@ -682,7 +682,7 @@ export class SharedProject {
       if (record.docId) {
         this.releaseDoc(record.docId);
         this.dropReconciliations(record.docId);
-        await deleteBase(this.info.root, record.docId).catch(() => undefined);
+        await deleteBase(this.info.root, record.docId, this.diskGuard()).catch(() => undefined);
       }
       this.missingSince.delete(fileId);
     }
@@ -766,7 +766,7 @@ export class SharedProject {
     this.state.layout = next;
     for (const directory of vacated) {
       if (directory && directory !== ".") {
-        await pruneEmptyDirectories(this.info.root, directory, (relative) => layout.directories.has(relative));
+        await pruneEmptyDirectories(this.info.root, directory, (relative) => layout.directories.has(relative), this.diskGuard());
       }
     }
     if (layoutChanged) {
@@ -990,7 +990,7 @@ export class SharedProject {
     await this.archive(record.path);
     // Writing it back made its folders again if they were deleted with it.
     const inUse = (relative: string) => Object.values(this.state.layout).some((other) => other.path === relative || other.path.startsWith(`${relative}/`));
-    await pruneEmptyDirectories(this.info.root, path.posix.dirname(record.path), inUse);
+    await pruneEmptyDirectories(this.info.root, path.posix.dirname(record.path), inUse, this.diskGuard());
   }
 
   private refuse(relative: string, error: unknown): void {

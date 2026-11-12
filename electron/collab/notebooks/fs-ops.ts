@@ -369,11 +369,13 @@ export async function walkNotebook(root: string, limit = 50_000): Promise<Notebo
 }
 
 /** Removes empty directories from `relative` upwards, stopping at the root or a non-empty one. */
-export async function pruneEmptyDirectories(root: string, relative: string, keep: (relative: string) => boolean): Promise<void> {
+export async function pruneEmptyDirectories(root: string, relative: string, keep: (relative: string) => boolean, guard?: WriteGuard): Promise<void> {
   let current = relative;
   while (current && current !== ".") {
     if (keep(current)) return;
     try {
+      // Fence each removal: the root may have been replaced since the caller's checks.
+      await checkWriteGuard(guard);
       await fs.rmdir(path.join(root, ...current.split("/")));
     } catch {
       return;
