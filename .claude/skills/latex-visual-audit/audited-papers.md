@@ -61,3 +61,30 @@ Passed to `fetch --exclude` so a new round picks new papers. Add each round's id
 | cs.CL | 2611.13560 | MLSys class, `\twocolumn[{…}]`, 50 files |
 | cs.DS | 2611.10440 | longtables with 25 KB of macro expansion |
 | q-bio.NC | 2610.40511 | ICLR 2027 |
+
+## 2026-11-12, round 5 (20 papers, docs/audits/2026-11-12-latex-visual-paper-review-5.md)
+
+| Category | arXiv id | Notable |
+|---|---|---|
+| math.NT | 2611.11566 | `\DeclareMathSymbol{\Sha}`, `\hyperref` in math |
+| math.AP | 2611.12463 | `\tag{\textbf{i}}` refs |
+| math.OC | 2611.12757 | IEEEojcsys front matter, `$…\)` |
+| math.ST | 2611.09087 | `\printbibliography` |
+| math.DG | 2611.11400 | enumitem `label=\textup{(\roman*)}`, `\href` with a line break |
+| math.NA | 2611.11466 | siamart predefined theorems, `AMS` |
+| cs.CC | 2611.07413 | llncs, zref-clever `\zcsetup`, `\newtcolorbox` with counters, body `\newenvironment` |
+| cs.PL | 2610.37006 | LMCS, `\def\+Bound`, `\mbox{\sc …}` in math |
+| cs.CR | 2611.11859 | `\mathpalette`/`\ooalign`, 28 files |
+| cs.DB | 2611.03327 | clean |
+| cs.GT | 2611.05777 | TikZ inside body `\newcommand`, `reptheorem`, thm-restate |
+| cs.SE | 2611.12982 | `\numberwithin{table}{section}` |
+| cs.LG | 2611.14059 | jmlr `\tableref`, `\ifmlhdemo` |
+| stat.ML | 2611.11460 | NeurIPS, 31 files, `hypbox` |
+| cs.CV | 2611.13868 | IEEEtran biographies |
+| cs.AI | 2611.13971 | Elsevier CAS front matter |
+| econ.TH | 2611.01431 | INFORMS `APPENDICES`, `\prettyref` |
+| econ.EM | 2610.41963 | clean |
+| econ.GN | 2610.39843 | clean |
+| q-fin.MF | 2610.16732 | macros from a body `\input` |
+
+Skipped: cs.SE 2611.11216 (PDF only), econ.GN 2610.39844 (too small).

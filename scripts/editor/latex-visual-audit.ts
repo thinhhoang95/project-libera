@@ -160,6 +160,9 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   const parsed = EditorState.create({ doc, extensions: [latexLanguageSupport(filePath, "tree")] });
   ensureSyntaxTree(parsed, doc.length, 20_000);
   let state = EditorState.create({ doc, selection: { anchor: doc.length }, extensions: [latexLanguageSupport(filePath, "tree"), latexVisualState(), latexVisualMode({ documentPath: filePath })] });
+  // The Visual build gives the parser 400 ms; a 200 KB paper on a busy machine needs more, and a half-parsed tree
+  // reads as "nothing drawn". The editor redraws as parsing goes on; here the tree is finished first.
+  ensureSyntaxTree(state, doc.length, 60_000);
   state = state.update({ effects: [setMacroSources.of(sources), setNumberingStart.of(start), setNumberingIncludes.of(includes)] }).state;
   for (let guard = 0; state.field(structuralField).pending.length && guard < 5000; guard++) {
     const next = state.field(structuralField).pending[0];
