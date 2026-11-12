@@ -430,6 +430,9 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
   const overlayActor: Actor = { kind: "system", reason: "decision", onBehalfOf: accountId };
 
   const outcome = await context.rooms.batch(docId, async (batch) => {
+    // Authorization from before the queue wait can be stale: check again, then fence every commit.
+    const current = await requireDocumentAction(db, docId, accountId, "decide", actor);
+    const fence = { projectId: current.projectId, role: current.role };
     const { annotations, content } = batch.docs;
     const overlay = overlayOf(annotations);
     const results = new Map<string, Result>();
@@ -516,6 +519,7 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
               replaceRange(text, range.start, range.end, member.replacement);
               return anchorRange(text, range.start, range.start + member.replacement.length);
             },
+            fence,
           );
           appliedSeqs.set(member.id, serverSeq);
           changes.set(member.id, {
@@ -535,7 +539,7 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
       // Statuses are recorded even if a later write failed, so what was
       // applied is never offered for acceptance again.
       if (changes.size > 0) {
-        await batch.transact("annotations", overlayActor, { source: "system" }, (doc) => writeRecords(doc, changes.values()));
+        await batch.transact("annotations", overlayActor, { source: "system" }, (doc) => writeRecords(doc, changes.values()), fence);
       }
     }
     return { results, changes, appliedSeqs, checkpoint, serverSeq: batch.serverSeq(), units: live.length };
@@ -622,6 +626,8 @@ export async function revertSuggestion(context: ServerContext, accountId: string
   requireTextDocument(access);
 
   const outcome = await context.rooms.batch(docId, async (batch) => {
+    const fresh = await requireDocumentAction(db, docId, accountId, "decide", actor);
+    const fence = { projectId: fresh.projectId, role: fresh.role };
     const record = parseRecord(suggestionId, overlayOf(batch.docs.annotations).get(suggestionId));
     if (!record) throw new HttpError("not-found", "Suggestion not found.");
     if (record.status !== "accepted") throw new HttpError("conflict", `Only accepted suggestions can be reverted (this one is ${record.status}).`);
@@ -639,6 +645,7 @@ export async function revertSuggestion(context: ServerContext, accountId: string
         replaceRange(text, range.start, range.end, record.baseQuote);
         return anchorRange(text, range.start, range.start + record.baseQuote.length);
       },
+      fence,
     );
     const reopened: SuggestionRecord = {
       ...record,
@@ -653,7 +660,7 @@ export async function revertSuggestion(context: ServerContext, accountId: string
       updatedAt: Date.now(),
     };
     await batch.transact("annotations", { kind: "system", reason: "decision", onBehalfOf: accountId }, { source: "system" }, (doc) =>
-      writeRecords(doc, [reopened]),
+      writeRecords(doc, [reopened]), fence,
     );
     return { outcome: "reverted" as const, serverSeq, record };
   });

@@ -138,6 +138,12 @@ async function threadWithAccess(context: ServerContext, accountId: string, threa
   return { thread, access };
 }
 
+/** Inside a write transaction: fresh membership, locked until commit, so the policy below sees the current role. */
+async function lockedAccess(trx: Kysely<DB>, access: DocAccess, accountId: string): Promise<DocAccess> {
+  const role = await lockProjectAction(trx, access.projectId, accountId, "comment", bindActor(accountId, undefined));
+  return { ...access, role };
+}
+
 /** Commenters manage their own threads; editors and owners manage anyone's. */
 function canManageThread(thread: ThreadRow, access: DocAccess, accountId: string): boolean {
   return thread.account_id === accountId || roleAtLeast(access.role, "editor");
@@ -369,13 +375,17 @@ export async function editMessage(context: ServerContext, accountId: string, mes
 
   const mentioned = await memberMentions(db, access.projectId, body.mentions, accountId);
   const now = new Date();
-  const row = await db
-    .updateTable("messages")
-    .set({ body: body.body, mentions: JSON.stringify(mentioned), edited_at: now })
-    .where("id", "=", messageId)
-    .returningAll()
-    .executeTakeFirstOrThrow();
-  await db.updateTable("threads").set({ updated_at: now }).where("id", "=", thread.id).execute();
+  const row = await db.transaction().execute(async (trx) => {
+    await lockedAccess(trx, access, accountId);
+    const updated = await trx
+      .updateTable("messages")
+      .set({ body: body.body, mentions: JSON.stringify(mentioned), edited_at: now })
+      .where("id", "=", messageId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await trx.updateTable("threads").set({ updated_at: now }).where("id", "=", thread.id).execute();
+    return updated;
+  });
   await changed(context, thread.id);
   // Only people newly mentioned by the edit; the others were told already.
   const added = mentioned.filter((id) => !message.mentions.includes(id));
@@ -396,12 +406,18 @@ export async function deleteMessage(context: ServerContext, accountId: string, m
   if (!message.deleted_at) {
     const now = new Date();
     // The text is dropped, not kept hidden: deleting is meant to remove it.
-    await db
-      .updateTable("messages")
-      .set({ deleted_at: now, body: "", mentions: JSON.stringify([]) })
-      .where("id", "=", messageId)
-      .execute();
-    await db.updateTable("threads").set({ updated_at: now }).where("id", "=", thread.id).execute();
+    await db.transaction().execute(async (trx) => {
+      const fresh = await lockedAccess(trx, access, accountId);
+      if (message.account_id !== accountId && fresh.role !== "owner") {
+        throw new HttpError("forbidden", "You can only delete your own messages.");
+      }
+      await trx
+        .updateTable("messages")
+        .set({ deleted_at: now, body: "", mentions: JSON.stringify([]) })
+        .where("id", "=", messageId)
+        .execute();
+      await trx.updateTable("threads").set({ updated_at: now }).where("id", "=", thread.id).execute();
+    });
     await changed(context, thread.id);
   }
   return { status: 204, body: null };
@@ -417,16 +433,22 @@ export async function setThreadStatus(context: ServerContext, accountId: string,
   if (thread.status === body.status) return { status: 200, body: await loadThread(db, threadId) };
   const now = new Date();
   const resolved = body.status === "resolved";
-  await db
-    .updateTable("threads")
-    .set({
-      status: body.status,
-      updated_at: now,
-      resolved_by: resolved ? accountId : null,
-      resolved_at: resolved ? now : null,
-    })
-    .where("id", "=", threadId)
-    .execute();
+  await db.transaction().execute(async (trx) => {
+    const fresh = await lockedAccess(trx, access, accountId);
+    if (!canManageThread(thread, fresh, accountId)) {
+      throw new HttpError("forbidden", "Commenters can only change the status of their own threads.");
+    }
+    await trx
+      .updateTable("threads")
+      .set({
+        status: body.status,
+        updated_at: now,
+        resolved_by: resolved ? accountId : null,
+        resolved_at: resolved ? now : null,
+      })
+      .where("id", "=", threadId)
+      .execute();
+  });
   const updated = await changed(context, threadId);
   if (resolved && thread.account_id !== accountId) {
     await notify(context, [
@@ -448,17 +470,23 @@ export async function reattachThread(context: ServerContext, accountId: string, 
   if (!canManageThread(thread, access, accountId)) {
     throw new HttpError("forbidden", "Commenters can only reattach their own threads.");
   }
-  await context.db
-    .updateTable("threads")
-    .set({
-      anchor_id: body.anchorId,
-      quote_text: body.quote,
-      // A reattached thread has an anchor again; a resolved one stays resolved.
-      status: thread.status === "detached" ? "open" : thread.status,
-      updated_at: new Date(),
-    })
-    .where("id", "=", threadId)
-    .execute();
+  await context.db.transaction().execute(async (trx) => {
+    const fresh = await lockedAccess(trx, access, accountId);
+    if (!canManageThread(thread, fresh, accountId)) {
+      throw new HttpError("forbidden", "Commenters can only reattach their own threads.");
+    }
+    await trx
+      .updateTable("threads")
+      .set({
+        anchor_id: body.anchorId,
+        quote_text: body.quote,
+        // A reattached thread has an anchor again; a resolved one stays resolved.
+        status: thread.status === "detached" ? "open" : thread.status,
+        updated_at: new Date(),
+      })
+      .where("id", "=", threadId)
+      .execute();
+  });
   return { status: 200, body: await changed(context, threadId) };
 }
 
@@ -467,7 +495,13 @@ export async function deleteThread(context: ServerContext, accountId: string, th
   if (!canManageThread(thread, access, accountId)) {
     throw new HttpError("forbidden", "Only the thread's author or an editor can delete it.");
   }
-  await context.db.updateTable("threads").set({ deleted_at: new Date(), updated_at: new Date() }).where("id", "=", threadId).execute();
+  await context.db.transaction().execute(async (trx) => {
+    const fresh = await lockedAccess(trx, access, accountId);
+    if (!canManageThread(thread, fresh, accountId)) {
+      throw new HttpError("forbidden", "Only the thread's author or an editor can delete it.");
+    }
+    await trx.updateTable("threads").set({ deleted_at: new Date(), updated_at: new Date() }).where("id", "=", threadId).execute();
+  });
   await changed(context, threadId, EventKind.ThreadDeleted);
   return { status: 204, body: null };
 }
