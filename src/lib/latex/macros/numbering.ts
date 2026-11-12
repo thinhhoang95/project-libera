@@ -1087,7 +1087,13 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const tag = open ? readGroup(row, open.index + open[0].length - 1, TEX_GROUPS)?.content.trim() : undefined;
           if (tag === undefined) return null;
           const counted = /^\s*\\theequation\s*$/.test(tag);
-          return { number: counted ? format("equation") : plainTagText(tag), tagged: !counted };
+          // The document's macros in a formula of the tag are expanded (`\tag{$\measConst$}`, 2611.11553): a reference draws it with KaTeX, which has no macros.
+          const shown = counted ? "" : plainTagText(tag).split(/(\$[^$]*\$)/).map((part, index) => {
+            if (!(index % 2) || !part.includes("\\")) return part;
+            const expanded = expandLatexMacros(part.slice(1, -1), defs, { mode: "math", pos: node.from });
+            return expanded.ok ? `$${expanded.text}$` : part;
+          }).join("");
+          return { number: counted ? format("equation") : shown, tagged: !counted };
         };
         if (name === "EquationEnvironment") {
           let number: string | null = null;

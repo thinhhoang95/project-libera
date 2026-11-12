@@ -245,7 +245,8 @@ export class ChipWidget extends VisualWidget {
       const text = this.text(target);
       dom.textContent = text;
       // A reference to a `\tag{$\mathcal{I}$}` (Econometrica's): its math drawn, not its source.
-      if (this.kind === "ref" && /\$[^$]+\$/.test(text)) {
+      // An index entry with a formula (`\index{$\mathcal{S}(Z)$}`, 2611.09689) likewise.
+      if ((this.kind === "ref" || this.kind === "index") && /\$[^$]+\$/.test(text)) {
         dom.replaceChildren(...text.split(/(\$[^$]+\$)/).filter(Boolean).map((part) => {
           const html = /^\$[^$]+\$$/.test(part) ? renderKatex(part.slice(1, -1), false) : null;
           if (!html) return document.createTextNode(part);

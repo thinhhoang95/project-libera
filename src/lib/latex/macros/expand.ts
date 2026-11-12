@@ -252,6 +252,13 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   // A definition that cannot be rendered: the use stays source.
   if (macro.unsupported) return false;
   if (macro.mathOnly && context.mode === "text") return false;
+  // algorithm2e's `\SetKwFunction{FindErrors}{FindErrors}` (also `\SetKwData`, `\SetKw`), used in a formula outside an algorithm
+  // (2611.09366): the word in the style algorithm2e gives it by default, `\FuncSty` and `\DataSty` are sans serif, `\KwSty` bold.
+  if (macro.package === "algorithm2e") {
+    const keyword = /^\\SetKw(Function|Data)?\s*\{\s*\\?[A-Za-z@]+\s*\}\s*\{([^{}]*)\}$/.exec(macro.body.trim());
+    if (!keyword || context.mode !== "math") return false;
+    return { text: `\\${keyword[1] ? "textsf" : "textbf"}{${keyword[2]}}`, end: index + match[0].length };
+  }
   if (depth >= MAX_MACRO_DEPTH || --context.budget < 0) return false;
   const read = readMacroArguments(source, index + match[0].length, macro);
   if (!read) return false;

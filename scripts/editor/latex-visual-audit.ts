@@ -14,6 +14,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import { JSDOM } from "jsdom";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
@@ -29,7 +30,7 @@ import { chapterNumberingStart } from "../../src/lib/latex/macros/project-number
 import { collectLatexDefinitions, isInLatexComment } from "../../src/lib/latex/macros/definitions";
 import { collectBodyIncludes, collectMacroSources } from "../../src/components/libera/latex/latex-dependencies";
 import katex from "katex";
-import { forKatex, KATEX_MACROS, katexForEnvironment } from "../../src/lib/latex/codemirror/visual/math-render";
+import { forKatex, KATEX_MACROS, katexForEnvironment, loadMhchem } from "../../src/lib/latex/codemirror/visual/math-render";
 import { expandLatexMacros } from "../../src/lib/latex/macros/expand";
 import { subfilesRootPath } from "../../src/lib/latex/project";
 
@@ -142,6 +143,9 @@ const lineAt = (text: string, pos: number) => {
 
 async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<string>, read: (path: string) => string) {
   const doc = read(filePath);
+  // The app loads KaTeX's mhchem the first time a formula uses `\ce`, and draws it again; the audit loads it up front.
+  // Under tsx `import()` finds the extension's ESM build, which registers on another KaTeX than the CommonJS one used here: load the CommonJS build too.
+  if (/\\(?:ce|pu)\s*\{/.test(doc)) { createRequire(import.meta.url)("katex/contrib/mhchem"); await loadMhchem(); }
   const readText = async (path: string) => read(path);
   const bodyMatch = firstBegin(doc);
   const ownPreamble = doc.slice(0, bodyMatch ? bodyMatch.index : 0);
@@ -196,6 +200,8 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
     try {
       const element = widget.toDOM(view);
       element.querySelectorAll(".katex-mathml, pre, code, .cm-vis-tt, .cm-vis-raw, [data-source-only]").forEach((node) => node.remove());
+      // A backslash KaTeX drew as a symbol of its own (`\backslash`, `\setminus` written `\backslash`) is not a command left in the text.
+      element.querySelectorAll("span").forEach((node) => { if (!node.children.length && node.textContent === "\\") node.textContent = "⧵"; });
       shownText = element.textContent ?? "";
     } catch (error) {
       junk.push(`${lineOf(doc, from)}: widget threw ${(error as Error).message.slice(0, 80)}`);

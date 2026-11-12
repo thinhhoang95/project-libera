@@ -30,7 +30,9 @@ export const COVERAGE_MACROS: Record<string, string> = {
   "\\space": "\\ ",
   "\\nobreakspace": "\\ ",
   // esint's clockwise and counterclockwise contour integrals (limits at the side, as `\oint` takes them in text).
-  "\\varointclockwise": "\\mathop{\\text{∲}}\\nolimits",
+  // esint's integral with a dash through it (the average `\fint_{B_r} u`, 2611.11553), limits at the side.
+  "\\fint": "\\mathop{\\text{⨏}}\\nolimits",
+  "\\varointclockwise":"\\mathop{\\text{∲}}\\nolimits",
   "\\ointctrclockwise": "\\mathop{\\text{∳}}\\nolimits",
   // stmaryrd: arrows and operators with a counterpart in Unicode or in KaTeX's symbols.
   "\\longmapsfrom": "\\mathrel{\\text{⟻}}",
