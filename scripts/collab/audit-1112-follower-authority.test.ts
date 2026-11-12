@@ -119,14 +119,15 @@ test("DATA-5: a Markdown image takes the next free name when the manifest holds 
   });
 });
 
-test("DATA-6: a notebook export and a raw read use the host's version of a lagging file", async () => {
+test("DATA-6: a notebook export uses the host's version of a lagging file; a view reads the working file", async () => {
   await withShared(async ({ notebook, host }) => {
     writeFileSync(path.join(notebook, "photo.png"), "stale bytes on disk");
     host.blobs.set("photo.png", Buffer.from("current shared bytes"));
     const archive = await JSZip.loadAsync((await createNotebookZip("Shared")).body);
     assert.equal(await archive.file("Shared/photo.png")!.async("string"), "current shared bytes");
     assert.equal(await archive.file("Shared/note.md")!.async("string"), "note\n", "a file the manifest does not hold comes from the disk");
-    assert.equal((await getRawFile("Shared/photo.png")).body.toString(), "current shared bytes");
+    // The raw route serves every viewer, so it stays on the working file (no host round trip per view).
+    assert.equal((await getRawFile("Shared/photo.png")).body.toString(), "stale bytes on disk");
   });
 });
 

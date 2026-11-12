@@ -491,11 +491,13 @@ export class CollabHost {
     });
     // A command held back for this document's unsynced edits can go as soon as they are acknowledged.
     hub.onStatus((status) => {
-      // Only for a command this gate is actually holding: any other queued command keeps its own backoff.
-      if (status.pending !== 0 || this.heldCommands.size === 0) return;
-      for (const held of this.heldCommands.values()) {
-        if (held.docId === docId) { this.commandsInstance?.retryNow(); return; }
-      }
+      if (status.pending !== 0) return;
+      // Only the command at the head of the queue, and only when it is for this
+      // document and is either held by this gate or has not been tried yet: a
+      // command that is failing for another reason keeps its own backoff.
+      const head = this.commandsInstance?.list()[0];
+      if (!head || !("docId" in head.command) || head.command.docId !== docId) return;
+      if (head.attempts === 0 || this.heldCommands.has(head.id)) this.commandsInstance?.retryNow();
     });
     hub.onRejected((edit) => {
       // The reason and server message only; edit.rejectedText is the user's text.
