@@ -70,6 +70,7 @@ import {
   type WriteGuard,
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
+import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState } from "./scan-reads";
 import { PdfCommentService } from "./pdf-comments";
 import { AUDIO_EXTENSIONS } from "../../../src/lib/storage/constants";
 import { PdfMarksRuntime } from "./pdf-marks";
@@ -1805,15 +1806,27 @@ export class SharedProject {
       this.missingSince.clear();
       return;
     }
+    const scanReads = scanReadState(this);
+    // A tree over the walk cap is walked again only after a growing delay.
+    if (scanReads.blockedUntil > Date.now()) return;
     const walkStartedAt = performance.now();
     const walked = await this.walk();
     if (!walked.complete) {
       // Neither a cap nor repeated partial subtree coverage establishes a
       // deletion. Restart the grace period after a complete observation.
       this.missingSince.clear();
-      this.scheduleRetry();
+      if (walked.truncated) {
+        const delay = noteTruncatedWalk(scanReads, this.ctx.timings.retryMs, Date.now());
+        if (!scanReads.warnedTruncated) {
+          scanReads.warnedTruncated = true;
+          this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: the folder holds more than 50000 files and folders, so external changes are not imported; checking again in ${Math.round(delay / 1000)} s.`);
+        }
+        this.scheduleScan(delay);
+      } else this.scheduleRetry();
       return;
     }
+    scanReads.incompleteWalks = 0;
+    scanReads.warnedTruncated = false;
     // The folder can disappear while the asynchronous walk is running.
     if (!(await this.rootAvailable())) {
       this.missingSince.clear();
@@ -1846,6 +1859,8 @@ export class SharedProject {
     const touched = new Set<string>();
     const accountId = this.canEdit ? await this.ctx.accountId().catch(() => "") : "";
     let needsRetry = false;
+    /** The shortest wait until a file another program is still changing counts as quiet. */
+    let quietDeferMs = Infinity;
 
     for (const [fileId, record] of Object.entries(this.state.layout)) {
       if ([...skipped].some((item) => record.path === item || record.path.startsWith(`${item}/`))) {
@@ -1884,7 +1899,7 @@ export class SharedProject {
         continue;
       }
       const absolute = await resolveInside(this.info.root, record.path).catch(() => null);
-      const read = absolute ? await readWithin(absolute, HYDRATION_WAIT_MS) : null;
+      const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, seen) : null;
       if (read === SLOW_READ) {
         needsRetry = true;
         continue;
@@ -1910,6 +1925,13 @@ export class SharedProject {
           Object.assign(record, { size: seen.size, mtimeMs: seen.mtimeMs });
           this.saveSoon();
         }
+        continue;
+      }
+      // Another program may still be writing these bytes: the verification
+      // stays pending and the file is judged once it has been quiet a while.
+      const stillChanging = quietWaitMs(seen, now);
+      if (stillChanging > 0) {
+        quietDeferMs = Math.min(quietDeferMs, stillChanging);
         continue;
       }
       if (record.kind === "doc" && record.docId) {
@@ -1963,7 +1985,16 @@ export class SharedProject {
     if (!this.canEdit) return;
 
     // New files and folders the layout does not know.
-    const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array; hash: string }> = [];
+    const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array | null; hash: string }> = [];
+    /** Bytes still to read this scan, and bytes of new files held in memory. */
+    let readBudget = SCAN_READ_BUDGET_BYTES;
+    let retainedBytes = 0;
+    // A rename needs the new file's bytes only when a missing record has its size.
+    const missingSizes = new Set<number | undefined>();
+    for (const fileId of missing) {
+      const record = this.state.layout[fileId];
+      if (record && record.kind !== "folder" && record.hash) missingSizes.add(record.size);
+    }
     for (const [relative, entry] of files) {
       if (known.has(relative)) continue;
       // An external LaTeX build's products would be uploaded again at every compile.
@@ -1975,14 +2006,41 @@ export class SharedProject {
       // remain available; leave unexplained disk bytes untouched.
       // Judge a file only once it has arrived; the poll comes back to it.
       if (mayStillBeCopying(entry, now)) continue;
+      // And once no program has changed it for a while: a copy can pause
+      // with some of its bytes in place.
+      const stillChanging = quietWaitMs(entry, now);
+      if (stillChanging > 0) {
+        quietDeferMs = Math.min(quietDeferMs, stillChanging);
+        continue;
+      }
+      // Reading an online-only file downloads it: decide from the stat first.
+      // Above the server's limit nothing could be uploaded; with the adoption
+      // fence up nothing is shared, so bytes matter only to a rename, a
+      // returning removed file, or a Dropbox conflict copy.
+      if (entry.size > MAX_UPLOAD_BYTES) {
+        if (!scanReads.oversized.has(relative)) {
+          scanReads.oversized.add(relative);
+          this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${relative} is larger than the ${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB a shared file can be, so it is not shared.`);
+        }
+        continue;
+      }
+      if (this.state.externalAdoptionRequired
+        && !missingSizes.has(entry.size) && !missingSizes.has(undefined)
+        && !this.retired.has(manifestPathKey(relative)) && !this.conflictCopyOf(relative, "")) continue;
+      // One scan hydrates a bounded amount; the rest waits for the next.
+      if (entry.size > readBudget) {
+        needsRetry = true;
+        continue;
+      }
       const absolute = await resolveInside(this.info.root, relative).catch(() => null);
-      const read = absolute ? await readWithin(absolute, HYDRATION_WAIT_MS) : null;
+      const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, entry) : null;
       if (read === SLOW_READ) {
         needsRetry = true;
         continue;
       }
-      const bytes = read;
+      let bytes: Uint8Array | null = read;
       if (!bytes) continue;
+      readBudget -= entry.size;
       const hash = sha256(bytes);
       const conflictOf = this.isLateCopy(relative, hash, entry.mtimeMs) ? null : this.conflictCopyOf(relative, hash);
       if (this.isLateCopy(relative, hash, entry.mtimeMs) || conflictOf) {
@@ -1994,6 +2052,9 @@ export class SharedProject {
         touched.add(relative);
         continue;
       }
+      // Contents are kept only up to a budget; the rest is read again when shared.
+      if (retainedBytes + bytes.byteLength > FRESH_RETAIN_BYTES) bytes = null;
+      else retainedBytes += bytes.byteLength;
       fresh.push({ entry, bytes, hash });
     }
 
@@ -2038,7 +2099,17 @@ export class SharedProject {
     if (this.canEdit) {
       for (const candidate of fresh) {
         if (this.state.externalAdoptionRequired) continue;
-        const created = await this.createFromDisk(candidate.entry, candidate.bytes, candidate.hash, accountId, now);
+        let candidateBytes = candidate.bytes;
+        if (!candidateBytes) {
+          const absolute = await resolveInside(this.info.root, candidate.entry.relative).catch(() => null);
+          const again = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, candidate.entry) : null;
+          if (!again || again === SLOW_READ || sha256(again) !== candidate.hash) {
+            needsRetry = true;
+            continue;
+          }
+          candidateBytes = again;
+        }
+        const created = await this.createFromDisk(candidate.entry, candidateBytes, candidate.hash, accountId, now);
         if (!created) {
           needsRetry = true;
           continue;
@@ -2091,6 +2162,7 @@ export class SharedProject {
       this.treeChanged(previous, this.state.layout);
       this.filesChanged([...touched]);
     }
+    if (quietDeferMs !== Infinity) this.scheduleScan(Math.ceil(quietDeferMs) + 50);
     if (needsRetry) this.scheduleRetry();
   }
 
@@ -2265,6 +2337,7 @@ export class SharedProject {
       hash = sha256(bytes);
       entry = { ...entry, size: stripped.size, mtimeMs: stripped.mtimeMs };
     }
+    const rewrittenHere = stripped !== null;
     // Retries of the same path+content reuse their IDs so a create whose reply was lost lands on the same server document (STALE-6).
     const attemptKey = `${entry.relative}\0${hash}`;
     const attempt = this.importAttempts.get(attemptKey) ?? { fileId: randomId("fil"), docId: randomId("doc") };
@@ -2273,8 +2346,12 @@ export class SharedProject {
     const classified = classifyFile(entry.relative, bytes);
     const stillCurrent = async () => {
       if (this.follower || !(await this.rootAvailable())) return false;
-      const current = await readIfExists(await resolveInside(this.info.root, entry.relative));
-      return current !== null && sha256(current) === hash;
+      const target = await resolveInside(this.info.root, entry.relative);
+      const current = await readIfExists(target);
+      if (current === null || sha256(current) !== hash) return false;
+      // Unchanged since the scan saw it quiet, and not touched again since.
+      const after = await statIfExists(target);
+      return after !== null && after.size === entry.size && after.mtimeMs === entry.mtimeMs && (rewrittenHere || quietWaitMs(after, Date.now()) === 0);
     };
     try {
       if (classified.kind === "doc") {

@@ -544,6 +544,8 @@ export interface NotebookWalk {
   skipped: string[];
   /** False means unvisited paths are unknown, never confirmed deletions. */
   complete: boolean;
+  /** The walk stopped at its entry cap (the tree is too large), not because something vanished. */
+  truncated?: boolean;
 }
 
 /**
@@ -554,6 +556,7 @@ export async function walkNotebook(root: string, limit = 50_000): Promise<Notebo
   const entries: WalkEntry[] = [];
   const skipped: string[] = [];
   let complete = true;
+  let truncated = false;
   const visit = async (directory: string, prefix: string) => {
     let names: string[];
     try {
@@ -564,7 +567,7 @@ export async function walkNotebook(root: string, limit = 50_000): Promise<Notebo
     }
     names.sort();
     for (const name of names) {
-      if (entries.length >= limit) { complete = false; return; }
+      if (entries.length >= limit) { complete = false; truncated = true; return; }
       const relative = prefix ? `${prefix}/${name}` : name;
       if (isIgnoredName(name)) continue;
       if (!prefix && name.toLowerCase() === ARCHIVE_DIRECTORY) continue;
@@ -585,7 +588,7 @@ export async function walkNotebook(root: string, limit = 50_000): Promise<Notebo
     }
   };
   await visit(root, "");
-  return { entries, skipped, complete };
+  return { entries, skipped, complete, ...(truncated ? { truncated } : {}) };
 }
 
 /** Removes empty directories from `relative` upwards, stopping at the root or a non-empty one. */
