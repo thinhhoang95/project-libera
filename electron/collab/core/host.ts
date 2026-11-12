@@ -118,7 +118,16 @@ async function probeServer(serverUrl: string, fetchImpl?: FetchLike): Promise<bo
   }
 }
 
+/**
+ * How long (counted while attempts are being made) a command waits for its
+ * document's earlier edits to be acknowledged. Edits that can never be
+ * acknowledged must not hold every later command in the FIFO queue for good.
+ */
+const COMMAND_HOLD_MAX_MS = 120_000;
+
 export class CollabHost {
+  /** Commands currently held back for a document's unacknowledged edits, by command row id. */
+  private readonly heldCommands = new Map<string, { docId: string; waitedMs: number; lastSeen: number }>();
   private readonly options: CollabHostOptions;
   private readonly clock: Clock;
   private readonly logger: Logger;
@@ -176,8 +185,15 @@ export class CollabHost {
           const reason = store.getDocMeta(command.docId)?.readOnlyReason;
           if (reason !== "access-revoked" && reason !== "document-deleted" &&
               store.unackedSummary(command.docId).some((entry) => entry.createdAt <= row.createdAt)) {
-            throw new ApiClientError("network", 0, "Waiting for earlier changes to this document to sync.");
+            const now = this.clock.now();
+            const held = this.heldCommands.get(row.id) ?? { docId: command.docId, waitedMs: 0, lastSeen: now };
+            // Gaps between attempts (offline, backoff) count for little; only active waiting adds up.
+            held.waitedMs += Math.min(Math.max(0, now - held.lastSeen), 15_000);
+            held.lastSeen = now;
+            this.heldCommands.set(row.id, held);
+            if (held.waitedMs < COMMAND_HOLD_MAX_MS) throw new ApiClientError("network", 0, "Waiting for earlier changes to this document to sync.");
           }
+          this.heldCommands.delete(row.id);
         }
         if (command.kind !== "thread.create" || !isPdfDocId(command.docId)) return;
         const hub = this.acquire(command.docId);
@@ -475,7 +491,11 @@ export class CollabHost {
     });
     // A command held back for this document's unsynced edits can go as soon as they are acknowledged.
     hub.onStatus((status) => {
-      if (status.pending === 0 && this.commandsInstance?.list().some((row) => "docId" in row.command && row.command.docId === docId)) this.commandsInstance.retryNow();
+      // Only for a command this gate is actually holding: any other queued command keeps its own backoff.
+      if (status.pending !== 0 || this.heldCommands.size === 0) return;
+      for (const held of this.heldCommands.values()) {
+        if (held.docId === docId) { this.commandsInstance?.retryNow(); return; }
+      }
     });
     hub.onRejected((edit) => {
       // The reason and server message only; edit.rejectedText is the user's text.
