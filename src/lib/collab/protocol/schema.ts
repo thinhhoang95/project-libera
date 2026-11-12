@@ -231,6 +231,23 @@ export function docKindForPath(path: string): DocKind | null {
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
 const FORBIDDEN_CHARACTERS = /[<>:"|?*\u0000-\u001f\\]/;
 
+/** Most file systems cap one name at 255 UTF-8 bytes (ext4, NTFS counts UTF-16 units, so bytes are the stricter bound). */
+export const MAX_SEGMENT_BYTES = 255;
+
+export function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const char of value) {
+    const code = char.codePointAt(0) as number;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
+
+/** A plain id (document id, file id): safe to use as a file name, never a path. */
+export function isPlainId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value);
+}
+
 /**
  * Validates a manifest path. Returns an error message, or null when the path
  * is safe to materialize on Windows, macOS and Linux.
@@ -243,7 +260,7 @@ export function manifestPathError(path: string): string | null {
   for (const segment of segments) {
     if (segment.length === 0) return "Path has an empty segment.";
     if (segment === "." || segment === "..") return "Path may not contain . or .. segments.";
-    if (segment.length > 255) return "A path segment is too long.";
+    if (segment.length > 255 || utf8ByteLength(segment) > MAX_SEGMENT_BYTES) return "A path segment is too long.";
     if (FORBIDDEN_CHARACTERS.test(segment)) return "Path contains a forbidden character.";
     if (WINDOWS_RESERVED.test(segment)) return "Path uses a reserved Windows name.";
     if (/[. ]$/.test(segment)) return "A path segment may not end with a dot or space.";

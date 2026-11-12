@@ -29,6 +29,7 @@ import {
   type ProvenanceSource,
   type Role,
 } from "../protocol.js";
+import { isClientId } from "../ids.js";
 
 /**
  * Keys each changed Y type reported in the probe transaction (null: an
@@ -378,8 +379,16 @@ export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKi
       if (!isPlainRecord(entry)) return `files/${key} must be a plain JSON object.`;
       const problem = album ? albumEntryViolation(entry) : manifestPathError(entry.path as string);
       if (problem) return `files/${key}: ${problem}`;
+      const identity = album ? null : notebookEntryIdentityViolation(entry);
+      if (identity) return `files/${key}: ${identity}`;
     }
   }
+  return null;
+}
+
+/** A document id becomes a file name on every client, so it must be a plain id (the syntax the documents API enforces). */
+function notebookEntryIdentityViolation(entry: JsonRecord): string | null {
+  if (entry.docId !== undefined && !isClientId(entry.docId)) return "The document id is not a valid id.";
   return null;
 }
 
