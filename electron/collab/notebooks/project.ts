@@ -65,6 +65,7 @@ import {
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
 import { PdfCommentService } from "./pdf-comments";
+import { AUDIO_EXTENSIONS } from "../../../src/lib/storage/constants";
 import { PdfMarksRuntime } from "./pdf-marks";
 import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
@@ -2037,6 +2038,30 @@ export class SharedProject {
     return moved.every((entry) => isShareablePath(entry.path)) ? moved : [];
   }
 
+  /**
+   * A recording's companion transcript (`<recording>.transcript`, shared as a
+   * blob next to it) is identified in the manifest, so it moves or goes in the
+   * recording's own transaction instead of a disk-dependent second request.
+   */
+  private transcriptCompanion(entries: ManifestEntry[], relative: string): ManifestEntry[] {
+    if (this.info.album || !AUDIO_EXTENSIONS.has(path.posix.extname(relative).toLowerCase())) return [];
+    return entriesUnder(entries, `${relative}.transcript`).filter((entry) => entry.kind !== "folder");
+  }
+
+  /** The renamed recording's transcript at its new path; none when the destination is occupied. */
+  private transcriptCompanionMoves(doc: Y.Doc, from: string, to: string, now: number): ManifestEntry[] {
+    if (from === to || !AUDIO_EXTENSIONS.has(path.posix.extname(to).toLowerCase())) return [];
+    const entries = [...readManifest(doc).values()];
+    const moving = this.transcriptCompanion(entries, from);
+    if (moving.length !== 1) return [];
+    const next = `${to}.transcript`;
+    const key = manifestPathKey(next);
+    const displayed = computeLayout(entries).paths;
+    const taken = entries.some((entry) => entry.fileId !== moving[0].fileId && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === key);
+    if (taken || !isShareablePath(next)) return [];
+    return [{ ...moving[0], path: next, updatedAt: now }];
+  }
+
   private pathFree(doc: Y.Doc, relative: string, except?: string, folder = false): boolean {
     const key = manifestPathKey(relative);
     return [...readManifest(doc).values()].every((entry) => {
@@ -2218,6 +2243,19 @@ export class SharedProject {
                 map.set(entry.fileId, entryRecord(entry));
                 paths.push(entry.path);
               }
+              if (!folder) {
+                for (const entry of this.transcriptCompanionMoves(doc, relative, to, now)) {
+                  map.set(entry.fileId, entryRecord(entry));
+                  paths.push(entry.path);
+                }
+                // A recording renamed to another type leaves no transcript behind.
+                if (!AUDIO_EXTENSIONS.has(path.posix.extname(to).toLowerCase())) {
+                  for (const entry of this.transcriptCompanion([...readManifest(doc).values()], relative)) {
+                    map.delete(entry.fileId);
+                    paths.push(entry.path);
+                  }
+                }
+              }
               // A file that becomes another type keeps none of its ink, as in a local notebook.
               if (!sameKind) {
                 for (const entry of this.inkCompanions(doc, relative)) {
@@ -2238,6 +2276,10 @@ export class SharedProject {
             const displayed = computeLayout(this.entries.values()).paths;
             await this.writeManifest((map, doc) => {
               for (const entry of removing) map.delete(entry.fileId);
+              for (const entry of this.transcriptCompanion([...readManifest(doc).values()], relative)) {
+                map.delete(entry.fileId);
+                paths.push(entry.path);
+              }
               // Someone deleted it on purpose, so its ink goes too (archived on disk like the file).
               for (const entry of this.inkCompanions(doc, relative)) {
                 map.delete(entry.fileId);

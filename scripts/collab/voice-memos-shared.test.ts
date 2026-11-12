@@ -137,7 +137,7 @@ test("a transcript in a shared notebook is a companion blob members receive, nev
 });
 
 test("shared recording operations carry companion transcripts and preserve ambiguous local waveforms", async () => {
-  await withSharedNotebook(async ({ host }) => {
+  await withSharedNotebook(async ({ root, host }) => {
     await writeTranscript("Shared/memos/memo.m4a", TRANSCRIPT);
     const peaks = audioPeaksPath("Shared", ["memos", "memo.m4a"]);
     mkdirSync(path.dirname(peaks), { recursive: true });
@@ -145,17 +145,16 @@ test("shared recording operations carry companion transcripts and preserve ambig
     host.ops.length = 0;
 
     await moveSharedFile("Shared/memos/memo.m4a", "Shared/memos", "standup.m4a");
-    assert.deepEqual(host.ops.map((op) => [op.op, op.path, op.to]), [
-      ["rename", "memos/memo.m4a", "memos/standup.m4a"],
-      ["rename", "memos/memo.m4a.transcript", "memos/standup.m4a.transcript"],
-    ]);
+    // The host moves the companion in the recording's own manifest change (STALE-2).
+    assert.deepEqual(host.ops.map((op) => [op.op, op.path, op.to]), [["rename", "memos/memo.m4a", "memos/standup.m4a"]]);
+    renameSync(path.join(root, "Shared", "memos", "memo.m4a.transcript"), path.join(root, "Shared", "memos", "standup.m4a.transcript"));
     assert.equal((await readTranscript("Shared/memos/standup.m4a")).transcript?.segments[0].text, "The budget is approved.");
     assert.ok(!existsSync(audioPeaksPath("Shared", ["memos", "standup.m4a"])));
     assert.ok(existsSync(peaks), "identity-less waveform bytes remain at their recovery source");
 
     host.ops.length = 0;
     await deleteSharedFile("Shared/memos/standup.m4a");
-    assert.deepEqual(host.ops.map((op) => [op.op, op.path]), [["delete", "memos/standup.m4a"], ["delete", "memos/standup.m4a.transcript"]]);
+    assert.deepEqual(host.ops.map((op) => [op.op, op.path]), [["delete", "memos/standup.m4a"]]);
     assert.ok(!existsSync(audioPeaksPath("Shared", ["memos", "standup.m4a"])));
   });
 });
