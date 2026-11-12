@@ -311,7 +311,8 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     const body = folderLeaseBody.parse(request.body);
     await requireProjectAction(db, projectId, accountId, "read");
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + Math.min(MAX_LEASE_MS, Math.max(MIN_LEASE_MS, body.ttlMs)));
+    const grantedTtlMs = Math.min(MAX_LEASE_MS, Math.max(MIN_LEASE_MS, body.ttlMs));
+    const expiresAt = new Date(now.getTime() + grantedTtlMs);
     const taken = await db
       .insertInto("folder_leases")
       .values({ project_id: projectId, account_id: accountId, folder_id: body.folderId, holder: body.holder, expires_at: expiresAt, updated_at: now })
@@ -324,7 +325,7 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
       .returning(["holder", "expires_at", "contended_at"])
       .executeTakeFirst();
     if (taken) {
-      return { folderId: body.folderId, holder: taken.holder, granted: true, expiresAt: iso(taken.expires_at), contended: taken.contended_at !== null };
+      return { folderId: body.folderId, holder: taken.holder, granted: true, expiresAt: iso(taken.expires_at), ttlMs: grantedTtlMs, contended: taken.contended_at !== null };
     }
     // Held by another installation: remember that the folder has contenders,
     // so its holder learns it at the next renewal.

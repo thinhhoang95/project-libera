@@ -519,9 +519,11 @@ export class NotebookServiceImpl implements NotebookService {
     try {
       const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs }, { timeoutMs: Math.min(5000, Math.max(100, Math.floor(this.leaseTtlMs / 3))) });
       if (!this.started || this.releasing) return { outcome: "unavailable", contended: false };
-      handle.leaseDeadline = lease.granted
-        ? requestedAt + Math.max(0, Math.min(this.leaseTtlMs, Date.parse(lease.expiresAt ?? "") - Date.now()))
-        : 0;
+      // A duration measured from before the request on the monotonic clock:
+      // never the server's absolute expiry against this device's wall clock,
+      // which a skewed clock turns into a zero-length (or overlong) lease.
+      const grantedMs = typeof lease.ttlMs === "number" && Number.isFinite(lease.ttlMs) && lease.ttlMs > 0 ? lease.ttlMs : this.leaseTtlMs;
+      handle.leaseDeadline = lease.granted ? requestedAt + Math.min(this.leaseTtlMs, grantedMs) : 0;
       return { outcome: lease.granted ? "granted" : "refused", contended: lease.contended === true };
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 404) {
