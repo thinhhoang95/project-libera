@@ -16,6 +16,7 @@ import * as Y from "yjs";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
 import { MessageType, type UpdateMessage } from "../../../src/lib/collab/protocol/messages";
 import type { Subdoc } from "../../../src/lib/collab/protocol/roles";
+import { SyncLimits } from "../../../src/lib/collab/protocol/version";
 import type { Clock, Logger, TimerHandle } from "./clock";
 import type { HostStore, OutboundBatch } from "./store";
 
@@ -27,7 +28,25 @@ export interface OutboundTransport {
 export interface OutboundLimits {
   batchWindowMs: number;
   batchMaxBytes: number;
+  /** Largest single update the server accepts; bigger ones can never be sent. */
+  maxUpdateBytes?: number;
+  /** At most this many batches are written to a connection before an ack frees room. */
+  maxOutstandingBatches?: number;
+  /** At most this many unacknowledged bytes are in flight (one batch may exceed it alone). */
+  maxOutstandingBytes?: number;
 }
+
+/** An update that exceeds the server's per-update limit and so can never be sent. */
+export interface UnsendableUpdate {
+  subdoc: Subdoc;
+  bytes: number;
+  limit: number;
+}
+
+const DEFAULT_MAX_OUTSTANDING_BATCHES = 32;
+const DEFAULT_MAX_OUTSTANDING_BYTES = 4 * 1024 * 1024;
+/** A resend of the oldest outstanding batch waits this long without any acknowledgement progress. */
+const ACK_TIMEOUT_MS = 15_000;
 
 export interface OutboundOptions {
   docId: string;
@@ -37,6 +56,8 @@ export interface OutboundOptions {
   logger: Logger;
   /** Time slice for forming batches before yielding to the event loop. */
   sliceMs?: number;
+  /** Called once per update that is too large to send; it is skipped, not retried. */
+  onUnsendable?: (update: UnsendableUpdate) => void;
 }
 
 interface PendingEntry {
@@ -88,11 +109,16 @@ export class OutboundQueue {
   private readonly limits: OutboundLimits;
   private readonly logger: Logger;
   private readonly sliceMs: number;
+  private readonly onUnsendable: ((update: UnsendableUpdate) => void) | undefined;
   private readonly unbatched = new Map<Subdoc, PendingEntry[]>();
   private batches: OutboundBatch[];
   private transport: OutboundTransport | null = null;
   /** clientSeqs already written to the current connection. */
   private sent = new Set<number>();
+  private sentAt = new Map<number, number>();
+  private lastProgressAt = 0;
+  private forceRetry = false;
+  private readonly reportedUnsendable = new Set<string>();
   private timer: TimerHandle | null = null;
   private forming = false;
   private epoch = 0;
@@ -108,6 +134,7 @@ export class OutboundQueue {
     this.limits = options.limits;
     this.logger = options.logger;
     this.sliceMs = options.sliceMs ?? 6;
+    this.onUnsendable = options.onUnsendable;
     this.batches = this.store.outboundBatches(this.docId);
     for (const row of this.store.unbatchedUpdates(this.docId)) {
       const provenance = row.origin?.kind === "local" ? row.origin.provenance : undefined;
@@ -186,6 +213,7 @@ export class OutboundQueue {
       ]);
       const update = encodeMissing(subdoc, known);
       if (!hasStructs(update)) continue;
+      if (this.tooLarge(subdoc, update.length, `missing:${subdoc}`)) continue;
       const batch = this.store.createBatch(this.docId, subdoc, [], update);
       this.batches.push(batch);
       this.sendBatch(batch);
@@ -197,6 +225,8 @@ export class OutboundQueue {
     this.transport = null;
     this.epoch += 1;
     this.sent.clear();
+    this.sentAt.clear();
+    this.forceRetry = false;
     if (this.timer) this.clock.clearTimeout(this.timer);
     this.timer = null;
     this.clearRetry();
@@ -205,6 +235,7 @@ export class OutboundQueue {
 
   /** An explicit transient error must make progress even while pings succeed. */
   retry(): void {
+    this.forceRetry = true;
     this.scheduleRetry(Math.min(30_000, 1000 * 2 ** Math.min(this.retryAttempt, 5)));
   }
 
@@ -227,7 +258,21 @@ export class OutboundQueue {
       this.retryAttempt += 1;
       // The bytes and clientSeq remain persisted and unchanged. Resends are
       // idempotent both after a lost ack and after a failed server commit.
-      this.sent.clear();
+      if (this.forceRetry) {
+        // The server reported a transient error: resend the (bounded) window.
+        this.forceRetry = false;
+        this.sent.clear();
+        this.sentAt.clear();
+      } else {
+        // Otherwise only the oldest outstanding batch, and only when no
+        // acknowledgement arrived for a full timeout (progress resets this).
+        const oldest = this.batches.find((batch) => this.sent.has(batch.clientSeq));
+        const lastActivity = Math.max(this.lastProgressAt, oldest ? this.sentAt.get(oldest.clientSeq) ?? 0 : 0);
+        if (oldest && this.clock.now() - lastActivity >= ACK_TIMEOUT_MS) {
+          this.sent.delete(oldest.clientSeq);
+          this.sentAt.delete(oldest.clientSeq);
+        }
+      }
       this.sendUnsent();
       this.scheduleRetry(Math.min(30_000, 1000 * 2 ** Math.min(this.retryAttempt, 5)));
     }, delayMs);
@@ -286,6 +331,8 @@ export class OutboundQueue {
     }
     if (!subdoc) return null;
     const queue = this.unbatched.get(subdoc) as PendingEntry[];
+    while (queue.length > 0 && this.tooLarge(subdoc, queue[0].update.length, `local:${queue[0].localSeq}`)) queue.shift();
+    if (queue.length === 0) return this.formOne();
     const first = queue[0];
     const group: PendingEntry[] = [first];
     let bytes = first.update.length;
@@ -308,12 +355,47 @@ export class OutboundQueue {
     return batch;
   }
 
-  private sendUnsent(): void {
-    for (const batch of this.batches) this.sendBatch(batch);
+  /** Reports an update over the server limit once; the caller skips it. */
+  private tooLarge(subdoc: Subdoc, bytes: number, key: string): boolean {
+    const limit = this.limits.maxUpdateBytes ?? SyncLimits.maxUpdateBytes;
+    if (bytes <= limit) return false;
+    if (!this.reportedUnsendable.has(key)) {
+      this.reportedUnsendable.add(key);
+      this.logger.error(`An update of ${bytes} bytes for ${this.docId}/${subdoc} exceeds the ${limit}-byte limit and cannot be synced.`);
+      this.onUnsendable?.({ subdoc, bytes, limit });
+    }
+    return true;
   }
 
-  private sendBatch(batch: OutboundBatch): void {
-    if (!this.transport || this.sent.has(batch.clientSeq)) return;
+  /** Writes unsent batches in clientSeq order while the outstanding window has room. */
+  private sendUnsent(): void {
+    if (!this.transport) return;
+    const maxBatches = this.limits.maxOutstandingBatches ?? DEFAULT_MAX_OUTSTANDING_BATCHES;
+    const maxBytes = this.limits.maxOutstandingBytes ?? DEFAULT_MAX_OUTSTANDING_BYTES;
+    let count = 0;
+    let bytes = 0;
+    for (const batch of this.batches) {
+      if (!this.sent.has(batch.clientSeq)) continue;
+      count += 1;
+      bytes += batch.update.length;
+    }
+    for (const batch of this.batches) {
+      if (this.sent.has(batch.clientSeq)) continue;
+      if (this.tooLarge(batch.subdoc, batch.update.length, `batch:${batch.clientSeq}`)) continue;
+      if (count >= maxBatches || (count > 0 && bytes + batch.update.length > maxBytes)) break;
+      if (!this.transmit(batch)) break;
+      count += 1;
+      bytes += batch.update.length;
+    }
+    this.scheduleRetry();
+  }
+
+  private sendBatch(_batch: OutboundBatch): void {
+    this.sendUnsent();
+  }
+
+  private transmit(batch: OutboundBatch): boolean {
+    if (!this.transport) return false;
     const message: UpdateMessage = {
       type: MessageType.Update,
       docId: this.docId,
@@ -322,8 +404,10 @@ export class OutboundQueue {
       update: batch.update,
       ...(batch.provenance ? { provenance: batch.provenance } : {}),
     };
-    if (this.transport.send(message)) this.sent.add(batch.clientSeq);
-    this.scheduleRetry();
+    if (!this.transport.send(message)) return false;
+    this.sent.add(batch.clientSeq);
+    this.sentAt.set(batch.clientSeq, this.clock.now());
+    return true;
   }
 
   /** The server acknowledged a batch. Returns the covered local_seqs, or null for a duplicate ack. */
@@ -332,16 +416,23 @@ export class OutboundQueue {
     const localSeqs = this.store.ackBatch(this.docId, clientSeq, serverSeq);
     if (index >= 0) this.batches.splice(index, 1);
     this.sent.delete(clientSeq);
+    this.sentAt.delete(clientSeq);
+    this.lastProgressAt = this.clock.now();
+    this.retryAttempt = 0;
     if (this.batches.length === 0) {
       this.clearRetry();
-      this.retryAttempt = 0;
+    } else {
+      this.sendUnsent();
     }
     return localSeqs;
   }
 
   /** Forgets a sub-document's queue after a reject rollback (the store rows are wiped by the hub). */
   dropSubdoc(subdoc: Subdoc): void {
-    for (const batch of this.batches) if (batch.subdoc === subdoc) this.sent.delete(batch.clientSeq);
+    for (const batch of this.batches) if (batch.subdoc === subdoc) {
+      this.sent.delete(batch.clientSeq);
+      this.sentAt.delete(batch.clientSeq);
+    }
     this.batches = this.batches.filter((batch) => batch.subdoc !== subdoc);
     this.unbatched.delete(subdoc);
     if (this.batches.length === 0) this.clearRetry();

@@ -75,6 +75,7 @@ import { PdfMarksRuntime } from "./pdf-marks";
 import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
+import { chunkTextEdits } from "./text-edit-chunks";
 
 /** Where a notebook keeps its files' ink (INK_DIR in src/lib/storage/constants.ts). */
 const INK_DIRECTORY = "_ink";
@@ -1441,19 +1442,23 @@ export class SharedProject {
   private applyText(hub: DocHub, from: string, to: string, provenance: Provenance): void {
     const edits = diffText(from, to);
     if (edits.length === 0) return;
-    hub.applyLocalChange(
-      "content",
-      (doc) => {
-        const text = doc.getText(ContentKeys.source);
-        if (text.toString() !== from) throw new Error("The shared text changed while edits were computed.");
-        for (let index = edits.length - 1; index >= 0; index -= 1) {
-          const edit = edits[index];
-          if (edit.end > edit.start) text.delete(edit.start, edit.end - edit.start);
-          if (edit.text) text.insert(edit.start, edit.text);
-        }
-      },
-      provenance,
-    );
+    // A single update over the server's limit can never sync, so a very large
+    // edit goes in several transactions, applied from the back so earlier offsets stay valid.
+    const chunks = chunkTextEdits(edits);
+    chunks.forEach((chunk, chunkIndex) => {
+      hub.applyLocalChange(
+        "content",
+        (doc) => {
+          const text = doc.getText(ContentKeys.source);
+          if (chunkIndex === 0 && text.toString() !== from) throw new Error("The shared text changed while edits were computed.");
+          for (const op of chunk) {
+            if (op.del > 0) text.delete(op.pos, op.del);
+            if (op.text) text.insert(op.pos, op.text);
+          }
+        },
+        provenance,
+      );
+    });
   }
 
   // ------------------------------------------------------------ reconciliations

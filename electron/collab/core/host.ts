@@ -20,6 +20,7 @@ import { Compactor, type CompactorOptions } from "./compaction";
 import { DivergenceChecker, type DivergenceCheckerOptions } from "./divergence";
 import { DocHub, type RejectedEdit, type ReplicaConnection } from "./doc-hub";
 import { PendingCommands, type PendingCommandEvent } from "./pending-commands";
+import { recoveryDirFor, replayRecoveryFiles } from "./recovery";
 import type { ReplicaPort } from "./ports";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { DocHubRegistry, type AcquireOptions } from "./registry";
@@ -154,6 +155,8 @@ export class CollabHost {
     if (this.storeInstance) return;
     const store = new HostStore({ path: this.options.dbPath, now: () => this.clock.now() });
     this.storeInstance = store;
+    // Local edits a previous run could not save to SQLite are replayed first.
+    replayRecoveryFiles(recoveryDirFor(this.options.dbPath), store, this.logger);
     this.compactor =
       this.options.compaction === false
         ? null
@@ -166,7 +169,16 @@ export class CollabHost {
     });
     this.commandsInstance = new PendingCommands({
       store,
-      beforeSend: (command) => {
+      beforeSend: (command, row) => {
+        // A decision or checkpoint depends on this device's earlier offline edits of the
+        // document: wait until the server has acknowledged everything written before it.
+        if (command.kind === "suggestions.decide" || command.kind === "revision.create") {
+          const reason = store.getDocMeta(command.docId)?.readOnlyReason;
+          if (reason !== "access-revoked" && reason !== "document-deleted" &&
+              store.unackedSummary(command.docId).some((entry) => entry.createdAt <= row.createdAt)) {
+            throw new ApiClientError("network", 0, "Waiting for earlier changes to this document to sync.");
+          }
+        }
         if (command.kind !== "thread.create" || !isPdfDocId(command.docId)) return;
         const hub = this.acquire(command.docId);
         try {
@@ -459,6 +471,11 @@ export class CollabHost {
       logger: this.logger,
       limits: this.options.limits,
       compactor: this.compactor,
+      recoveryDir: recoveryDirFor(this.options.dbPath),
+    });
+    // A command held back for this document's unsynced edits can go as soon as they are acknowledged.
+    hub.onStatus((status) => {
+      if (status.pending === 0 && this.commandsInstance?.list().some((row) => "docId" in row.command && row.command.docId === docId)) this.commandsInstance.retryNow();
     });
     hub.onRejected((edit) => {
       // The reason and server message only; edit.rejectedText is the user's text.
