@@ -56,6 +56,10 @@ export const TEXT_WRAPPERS: Record<string, { args: Array<string | null>; open?: 
   "\\framebox": { args: ["cm-vis-fbox"] },
   "\\makebox": { args: [""] },
   "\\parbox": { args: [null, ""] },
+  // `\smash[b]{…}` only changes the box's height: in text it is its argument.
+  "\\smash": { args: [""] },
+  // threeparttable's `\tnote{c}` (a table note's mark, outside a row too: in a caption or a line of text): a superscript.
+  "\\tnote": { args: ["cm-vis-sup"] },
   // url's and hyperref's unlinked paths, in the typewriter face.
   "\\nolinkurl": { args: ["cm-vis-tt"] },
   "\\path": { args: ["cm-vis-tt"] },
