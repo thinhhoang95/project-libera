@@ -182,7 +182,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -1387,6 +1387,15 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           within: sibling ? undefined : within || undefined, numbered: !/^(?:no|false)$/i.test(values.get("numbered") ?? ""), style,
         });
       }
+    } else if (command === "newsiamthm" || command === "newsiamremark") {
+      // SIAM's `\newsiamthm{claim}{Claim}` and `\newsiamremark{remark}{Remark}`: numbered with the theorems, an italic or an upright body.
+      const nameGroup = readGroupAt(source, index);
+      const title = nameGroup && readGroupAt(source, nameGroup.end);
+      if (!nameGroup || !title || /[#\\]/.test(nameGroup.content)) continue;
+      end = title.end;
+      const name = nameGroup.content.trim();
+      if (uncertain) { note(defs.unsupported, name, `${name} is defined under a condition`); defs.theorems.delete(name); }
+      else defs.theorems.set(name, { name, title: title.content.trim(), counter: "theorem", numbered: true, style: command === "newsiamthm" ? "plain" : "remark" });
     } else if (command === "newtheorem") {
       const nameGroup = readGroupAt(source, index);
       if (!nameGroup) continue;
@@ -1859,7 +1868,7 @@ export function readLatexInputs(source: string) {
 export { inComment as isInLatexComment };
 
 /** Classes whose theorems are known here, with their options (their `.cls` is rarely in the project, and reads only through its conditionals). */
-const KNOWN_THEOREM_CLASSES = /^(?:llncs|(?:lipics|oasics)(?:-v\d+)?|acmart)$/;
+const KNOWN_THEOREM_CLASSES = /^(?:llncs|(?:lipics|oasics)(?:-v\d+)?|acmart|siamart\d*|siamonline\d*|siamltex)$/;
 
 /**
  * The theorems a well-known class defines, for the names the document has not defined (the document's own
@@ -1887,6 +1896,11 @@ function addClassTheorems(defs: LatexDefinitions, cls: string, optionText: strin
       add(name, name[0].toUpperCase() + name.slice(1), plain.has(name) ? "plain" : "remark", same ? "theorem" : name, !same && sect ? "section" : undefined);
       if (fresh && !same && !sect && reset && !defs.counterWithin.has(name)) defs.counterWithin.set(name, "section");
     }
+  } else if (/^siam/.test(cls)) {
+    // SIAM's classes: `theorem`, and `lemma`, `corollary`, `proposition` and `definition` sharing its counter (all italic body,
+    // as `\newsiamthm` makes them). Remarks are the paper's `\newsiamremark{remark}{Remark}`.
+    add("theorem", "Theorem", "plain", "theorem");
+    for (const name of ["lemma", "corollary", "proposition", "definition"]) add(name, name[0].toUpperCase() + name.slice(1), "plain", "theorem");
   } else if (cls === "acmart") {
     if (options.some((option) => /^acmthm\s*=\s*false$/.test(option))) return;
     add("theorem", "Theorem", "plain", "theorem", "section");
