@@ -752,6 +752,32 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
   return savedFile(liberaPath, copiedText === undefined ? node.size : Buffer.byteLength(copiedText), async () => copiedText);
 }
 
+/** The host refused a createOnly write because the path is taken in the manifest. */
+function isSharedNameTaken(error: unknown) {
+  return error instanceof SharedWriteError && error.status === 409 && error.code === "conflict";
+}
+
+/**
+ * Creates a new blob under the first name that is free on disk AND in the
+ * host's manifest (a follower's disk can lag it): each attempt is createOnly,
+ * and the host's "already exists" refusal moves on to the next candidate.
+ */
+async function createSharedBlobAtFreeName(directory: string, libraryPath: (name: string) => string, fileName: string, bytes: Uint8Array, options: SharedWriteOptions): Promise<string> {
+  const extension = path.extname(fileName);
+  const stem = path.basename(fileName, extension);
+  for (let index = 0; index < 1000; index += 1) {
+    const candidate = index === 0 ? fileName : `${stem}-${index}${extension}`;
+    if (await pathExists(path.join(directory, candidate))) continue;
+    try {
+      await writeSharedBlob(libraryPath(candidate), bytes, { ...options, createOnly: true });
+      return candidate;
+    } catch (error) {
+      if (!isSharedNameTaken(error)) throw error;
+    }
+  }
+  throw new StorageError(`Could not find a free name for ${fileName}.`, 409);
+}
+
 /** writeUploadedFile for a shared notebook: the upload becomes a manifest blob (or a document, for text files). */
 export async function writeSharedUpload(notebook: string, upload: File, destinationPath?: string, options: SharedWriteOptions = {}): Promise<LiberaFileNode> {
   await ensureAdminRoot();
@@ -764,7 +790,11 @@ export async function writeSharedUpload(notebook: string, upload: File, destinat
   const targetParts = [...destination.pathParts, safeName];
   if (await pathExists(filePathFromParts(destination.notebook, targetParts))) throw new StorageError(`File already exists: ${safeName}`, 409);
   const liberaPath = relativeFilePath(destination.notebook, targetParts);
-  await writeSharedBlob(liberaPath, new Uint8Array(await upload.arrayBuffer()), options);
+  // createOnly: the disk may lag the manifest, so a free name here proves nothing about the shared notebook.
+  await writeSharedBlob(liberaPath, new Uint8Array(await upload.arrayBuffer()), { ...options, createOnly: true }).catch((error) => {
+    if (isSharedNameTaken(error)) throw new StorageError(`File already exists: ${safeName}`, 409);
+    throw error;
+  });
   notifySearchChanges([liberaPath]);
   return savedNode(liberaPath, upload.size);
 }
@@ -776,12 +806,11 @@ export async function writeSharedMarkdownImageAsset(documentPath: string, upload
   assertMarkdownFileName(name);
   await stat(filePathFromParts(notebook, pathParts));
   const safeName = normalizeAssetFileName(ensureImageName(upload.name));
-  const available = await findAvailableFilePath(markdownAssetsDirectoryPathFromParts(notebook, pathParts), safeName);
-  const assetPath = `${markdownAssetsPathPrefix(pathParts)}/${available.name}`;
-  await writeSharedBlob(`${notebook}/${assetPath}`, new Uint8Array(await upload.arrayBuffer()), options);
+  const assetName = await createSharedBlobAtFreeName(markdownAssetsDirectoryPathFromParts(notebook, pathParts), (name) => `${notebook}/${markdownAssetsPathPrefix(pathParts)}/${name}`, safeName, new Uint8Array(await upload.arrayBuffer()), options);
+  const assetPath = `${markdownAssetsPathPrefix(pathParts)}/${assetName}`;
   return {
     assetPath,
-    markdown: `![${path.basename(available.name, path.extname(available.name))}](${assetPath})`,
+    markdown: `![${path.basename(assetName, path.extname(assetName))}](${assetPath})`,
     rawUrl: `/api/markdown-assets/raw?document=${encodeURIComponent(relativeFilePath(notebook, pathParts))}&asset=${encodeURIComponent(assetPath)}`,
   };
 }
@@ -797,10 +826,8 @@ export async function saveSharedEditedImageCopy(relativePath: string, edits: Pho
   const { format, extension } = editedPhotoFormat(name);
   const body = await renderEditedPhoto(filePathFromParts(notebook, pathParts), edits, format);
   const directoryParts = pathParts.slice(0, -1);
-  const available = await findAvailableFilePath(itemPath(notebook, directoryParts), `${path.basename(name, path.extname(name))} (edited)${extension}`);
-  const targetParts = [...directoryParts, available.name];
-  const liberaPath = relativeFilePath(notebook, targetParts);
-  await writeSharedBlob(liberaPath, new Uint8Array(body), options);
+  const editedName = await createSharedBlobAtFreeName(itemPath(notebook, directoryParts), (candidate) => relativeFilePath(notebook, [...directoryParts, candidate]), `${path.basename(name, path.extname(name))} (edited)${extension}`, new Uint8Array(body), options);
+  const liberaPath = relativeFilePath(notebook, [...directoryParts, editedName]);
   await copyInkThroughEdit(relativeFilePath(notebook, pathParts), liberaPath, edits);
   notifySearchChanges([liberaPath]);
   return { file: await savedNode(liberaPath, body.byteLength), tree: await getTree() };
