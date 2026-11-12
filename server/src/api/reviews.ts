@@ -20,7 +20,7 @@ import type { Kysely, Selectable } from "kysely";
 import * as Y from "yjs";
 import { z } from "zod";
 
-import { projectRole, requireDocumentAction, writeAudit } from "../auth/access.js";
+import { lockProjectAction, projectRole, requireDocumentAction, writeAudit } from "../auth/access.js";
 import type { ServerContext } from "../context.js";
 import type { DB, ReviewAssignmentsTable, ReviewsTable } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
@@ -359,6 +359,8 @@ export async function createReview(context: ServerContext, accountId: string, do
   const reviewId = newId("rvw");
   const stored: StoredScope = { ...body.scope, fingerprints: {} };
   const base = await context.rooms.batch(docId, async (batch) => {
+    // Authorization from before the queue wait can be stale: check again, then fence the write.
+    const fresh = await requireDocumentAction(db, docId, accountId, "request-review", actor);
     if (body.scope.kind === "range") {
       const anchorId = body.scope.anchorId;
       if (!scopeAnchor(batch.docs.annotations, anchorId)) {
@@ -368,12 +370,14 @@ export async function createReview(context: ServerContext, accountId: string, do
       const record: ReviewScopeRecord = { reviewId, anchorId, createdBy: accountId, createdAt: Date.now() };
       await batch.transact("annotations", actor, { source: "system" }, (doc) =>
         doc.getMap<unknown>(AnnotationKeys.reviewScopes).set(reviewId, record),
+        { projectId: fresh.projectId, role: fresh.role },
       );
     }
     return insertRevision(context, { docId, serverSeq: batch.serverSeq(), kind: "review-base", label: null, createdBy: accountId });
   });
 
   await db.transaction().execute(async (trx) => {
+    await lockProjectAction(trx, access.projectId, accountId, "request-review", actor);
     await trx
       .insertInto("reviews")
       .values({
@@ -469,6 +473,7 @@ export async function decideReview(context: ServerContext, accountId: string, re
   });
 
   await db.transaction().execute(async (trx) => {
+    await lockProjectAction(trx, access.projectId, accountId, "read");
     // Row lock: two reviewers deciding at once must not lose each other's fingerprint.
     const locked = await trx.selectFrom("reviews").select("scope").where("id", "=", reviewId).forUpdate().executeTakeFirstOrThrow();
     const current = locked.scope as unknown as StoredScope;
@@ -524,7 +529,13 @@ export async function closeReview(context: ServerContext, accountId: string, rev
     throw new HttpError("forbidden", "Only the requester or the project owner can close a review.");
   }
   if (review.status !== "closed") {
-    await db.updateTable("reviews").set({ status: "closed", closed_at: new Date() }).where("id", "=", reviewId).execute();
+    await db.transaction().execute(async (trx) => {
+      const fresh = await lockProjectAction(trx, access.projectId, accountId, "read");
+      if (review.requested_by !== accountId && fresh !== "owner") {
+        throw new HttpError("forbidden", "Only the requester or the project owner can close a review.");
+      }
+      await trx.updateTable("reviews").set({ status: "closed", closed_at: new Date() }).where("id", "=", reviewId).execute();
+    });
     await writeAudit(db, {
       projectId: access.projectId,
       actor: bindActor(accountId, undefined),

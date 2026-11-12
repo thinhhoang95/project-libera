@@ -189,7 +189,10 @@ export function registerDocumentRoutes(app: FastifyInstance, context: ServerCont
     const actor = bindActor(accountId, undefined);
     const access = await requireDocumentAction(db, docId, accountId, "manage-files", actor);
     if (access.kind === "manifest") throw new HttpError("bad-request", "The manifest is deleted with its project.");
-    await db.updateTable("documents").set({ deleted_at: new Date() }).where("id", "=", docId).execute();
+    await db.transaction().execute(async (trx) => {
+      await lockProjectAction(trx, access.projectId, accountId, "manage-files", actor);
+      await trx.updateTable("documents").set({ deleted_at: new Date() }).where("id", "=", docId).execute();
+    });
     await writeAudit(db, { projectId: access.projectId, actor, accountId, action: "document.delete", target: docId });
     notifyRooms(context, "documentDeleted", (rooms) => rooms.documentDeleted(docId));
     return reply.status(204).send();

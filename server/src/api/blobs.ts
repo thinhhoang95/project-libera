@@ -8,6 +8,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { lockProjectAction, requireProjectAction } from "../auth/access.js";
+import { lockBlobHash } from "../blobs/gc.js";
 import { getBlobStore, isBlobHash } from "../blobs/index.js";
 import type { ServerContext } from "../context.js";
 import type { BlobsTable } from "../db/types.js";
@@ -73,27 +74,49 @@ export function registerBlobRoutes(app: FastifyInstance, context: ServerContext)
         throw new HttpError("bad-request", "The body does not match the hash in the URL.", { expected: hash, actual });
       }
 
-      const existing = await db
-        .selectFrom("blobs")
-        .selectAll()
-        .where("project_id", "=", projectId)
-        .where("hash", "=", hash)
-        .executeTakeFirst();
       const store = getBlobStore(context);
-      // Re-put even when the row exists, in case the bytes were lost from the store.
-      if (!existing || !(await store.has(hash))) await store.put(hash, body, mimeOf(request.headers["content-type"]));
-      if (existing) return reply.status(200).send(blobInfo(existing));
-
-      // Access is checked again as the row commits: the body took time to arrive.
-      const row = await db.transaction().execute(async (trx) => {
-        await lockProjectAction(trx, projectId, accountId, "manage-files");
-        return trx
-          .insertInto("blobs")
-          .values({ project_id: projectId, hash, size: body.byteLength, mime: mimeOf(request.headers["content-type"]), created_by: accountId })
-          .onConflict((conflict) => conflict.columns(["project_id", "hash"]).doNothing())
-          .returningAll()
-          .executeTakeFirst();
-      });
+      let created = false;
+      let wroteObject = false;
+      let row: Selectable<BlobsTable> | undefined;
+      try {
+        // One transaction from authorization to the row's commit: access is
+        // checked again (the body took time to arrive) before any object is
+        // written, and blob-gc cannot delete the object in between because
+        // it takes the same per-hash lock for its final recheck.
+        const outcome = await db.transaction().execute(async (trx) => {
+          await lockProjectAction(trx, projectId, accountId, "manage-files");
+          await lockBlobHash(trx, hash);
+          const existing = await trx
+            .selectFrom("blobs")
+            .selectAll()
+            .where("project_id", "=", projectId)
+            .where("hash", "=", hash)
+            .executeTakeFirst();
+          // Re-put even when the row exists, in case the bytes were lost from the store.
+          const present = await store.has(hash);
+          if (!existing || !present) {
+            await store.put(hash, body, mimeOf(request.headers["content-type"]));
+            wroteObject = !present;
+          }
+          if (existing) return { row: existing, created: false };
+          const inserted = await trx
+            .insertInto("blobs")
+            .values({ project_id: projectId, hash, size: body.byteLength, mime: mimeOf(request.headers["content-type"]), created_by: accountId })
+            .onConflict((conflict) => conflict.columns(["project_id", "hash"]).doNothing())
+            .returningAll()
+            .executeTakeFirst();
+          return { row: inserted, created: true };
+        });
+        row = outcome.row;
+        created = outcome.created && Boolean(row);
+      } catch (error) {
+        // The object may now exist with no row: let blob-gc reclaim it after its grace period.
+        if (wroteObject) {
+          await db.insertInto("blob_orphans").values({ hash }).onConflict((conflict) => conflict.column("hash").doNothing()).execute().catch(() => undefined);
+        }
+        throw error;
+      }
+      if (row && !created) return reply.status(200).send(blobInfo(row));
       if (row) return reply.status(201).send(blobInfo(row));
       const raced = await db
         .selectFrom("blobs")

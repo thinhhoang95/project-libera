@@ -15,7 +15,7 @@ import { requireDocumentAction, writeAudit, type DocAccess } from "../auth/acces
 import type { ServerContext } from "../context.js";
 import type { DB, RevisionsTable } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
-import { newId } from "../ids.js";
+import { newId, sha256Hex } from "../ids.js";
 import { PdfKeys, PdfMarkFields } from "../protocol.js";
 import {
   ApiRoutes,
@@ -33,7 +33,7 @@ import { diffText } from "../text/diff.js";
 import { locateSection } from "../text/locate.js";
 import { applyTextEdits, sourceText } from "../text/ytext.js";
 import { registerCommandHandler } from "./commands.js";
-import { aiHintSchema, iso, loadUsers, pathId, publish, requireAccount, route, userOrUnknown } from "./common.js";
+import { aiHintSchema, iso, isUniqueViolation, loadUsers, pathId, publish, requireAccount, route, userOrUnknown } from "./common.js";
 import type { HandlerResult } from "./threads.js";
 
 type RevisionRow = Selectable<RevisionsTable>;
@@ -80,12 +80,12 @@ export function requireTextDocument(access: DocAccess): void {
  */
 export async function insertRevision(
   context: ServerContext,
-  input: { docId: string; serverSeq: number; kind: RevisionKind; label?: string | null; createdBy: string | null },
+  input: { docId: string; serverSeq: number; kind: RevisionKind; label?: string | null; createdBy: string | null; id?: string },
 ): Promise<Revision> {
   const row = await context.db
     .insertInto("revisions")
     .values({
-      id: newId("rev"),
+      id: input.id ?? newId("rev"),
       doc_id: input.docId,
       server_seq: input.serverSeq,
       label: input.label ?? null,
@@ -134,7 +134,12 @@ export async function listRevisions(context: ServerContext, accountId: string, d
   return rows.map((row) => revisionInfo(row, users));
 }
 
-export async function createRevision(context: ServerContext, accountId: string, docId: string, input: unknown): Promise<HandlerResult> {
+/** The revision id a queued command always creates, so a replay after a crash finds it instead of making a second. */
+function commandRevisionId(accountId: string, commandId: string): string {
+  return `rev_${sha256Hex(`${accountId}:${commandId}`).slice(0, 40)}`;
+}
+
+export async function createRevision(context: ServerContext, accountId: string, docId: string, input: unknown, commandId?: string): Promise<HandlerResult> {
   const { db } = context;
   const body = createRevisionBody.parse(input ?? {});
   const kind = body.kind ?? "named";
@@ -159,8 +164,25 @@ export async function createRevision(context: ServerContext, accountId: string, 
       return { status: 200, body: await revisionWithUsers(db, latest) };
     }
   }
-  const revision = await insertRevision(context, { docId, serverSeq, kind, label: body.label ?? null, createdBy: accountId });
-  return { status: 201, body: revision };
+  if (!commandId) {
+    const revision = await insertRevision(context, { docId, serverSeq, kind, label: body.label ?? null, createdBy: accountId });
+    return { status: 201, body: revision };
+  }
+  const id = commandRevisionId(accountId, commandId);
+  const replayed = async (): Promise<HandlerResult | null> => {
+    const existing = await db.selectFrom("revisions").selectAll().where("id", "=", id).where("doc_id", "=", docId).executeTakeFirst();
+    return existing ? { status: 201, body: await revisionWithUsers(db, existing) } : null;
+  };
+  const first = await replayed();
+  if (first) return first;
+  try {
+    return { status: 201, body: await insertRevision(context, { docId, serverSeq, kind, label: body.label ?? null, createdBy: accountId, id }) };
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+    const raced = await replayed();
+    if (raced) return raced;
+    throw error;
+  }
 }
 
 export async function revisionContent(context: ServerContext, accountId: string, docId: string, revisionId: string): Promise<RevisionContent> {
@@ -256,6 +278,8 @@ export async function restoreRevision(context: ServerContext, accountId: string,
 
   const systemActor: Actor = { kind: "system", reason: "restore", onBehalfOf: accountId };
   const outcome = await context.rooms.batch(docId, async (batch) => {
+    // Authorization from before the queue wait can be stale: check again, then fence the commit.
+    const currentAccess = await requireDocumentAction(db, docId, accountId, "restore", actor);
     const current = sourceText(batch.docs.content).toString();
     let from = 0;
     let to = current.length;
@@ -281,7 +305,7 @@ export async function restoreRevision(context: ServerContext, accountId: string,
     if (edits.length === 0) return { serverSeq: batch.serverSeq(), checkpoint, edits: 0 };
     const { serverSeq } = await batch.transact("content", systemActor, { source: "restore" }, (doc) => {
       applyTextEdits(sourceText(doc), edits);
-    });
+    }, { projectId: currentAccess.projectId, role: currentAccess.role });
     return { serverSeq, checkpoint, edits: edits.length };
   });
 
@@ -313,7 +337,7 @@ const revisionParams = z.object({ docId: pathId, revisionId: pathId });
 const onDoc = z.object({ docId: pathId });
 
 registerCommandHandler("revision.create", (context, accountId, command) =>
-  createRevision(context, accountId, onDoc.parse(command).docId, command.body),
+  createRevision(context, accountId, onDoc.parse(command).docId, command.body, command.id),
 );
 
 export function registerRevisionRoutes(app: FastifyInstance, context: ServerContext): void {
