@@ -27,6 +27,8 @@ What we protect: unshared local notes and files, the user's credentials (collabo
 | Role changes, member removal and account revocation are pushed to open rooms, which re-check or close the account's documents (`access-revoked`). | `server/src/sync/`, `server/src/admin/routes.ts` |
 | The client role is a UI hint only. The host turns a rejection into a rollback with "Copy my unsynced text"; it never trusts its own idea of the role. | `electron/collab/core/doc-hub.ts` |
 
+**Not enforced: a second writable channel.** Roles are enforced for traffic that reaches the server. A notebook folder that several people can write through OneDrive is a second channel with its own permissions. A collaborative viewer with OneDrive write access can change files in that folder, and an editor's or owner's installation imports them as external edits under that account's authority. Private data in the folder (`.libera/` bookkeeping, `_archive/`, recovery copies and sidecars) also follows OneDrive access instead of collaborative roles. Each contributor must use their own folder; see [notebook sync](../features/notebook-sync.md#a-onedrive-folder-that-several-people-can-write-bypasses-collaborative-roles).
+
 **Remaining:** a member who has a role can read everything in the project for as long as they have it, and keeps any copy they made. Revocation stops future sync, not what is already on their disk.
 
 ## 2. Collaborator content is untrusted
