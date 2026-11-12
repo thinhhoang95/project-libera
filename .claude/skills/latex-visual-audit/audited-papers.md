@@ -88,3 +88,35 @@ Passed to `fetch --exclude` so a new round picks new papers. Add each round's id
 | q-fin.MF | 2610.16732 | macros from a body `\input` |
 
 Skipped: cs.SE 2611.11216 (PDF only), econ.GN 2610.39844 (too small).
+
+## 2026-11-12, round 6 (50 papers, docs/audits/2026-11-12-latex-visual-paper-review-6.md)
+
+- cs.AI: 2611.13960 2611.13966
+- cs.CC: 2611.04680 2611.04776
+- cs.CR: 2611.10776 2611.10830
+- cs.CV: 2611.13849 2611.13851
+- cs.DB: 2610.38404 2610.38605
+- cs.DS: 2611.10283 2611.10293
+- cs.GT: 2611.05705 2611.05706
+- cs.IT: 2611.09184 2611.09366
+- cs.LG: 2611.14035 2611.14046
+- cs.PL: 2610.26599 2610.28682
+- cs.SE: 2611.11192 2611.11213
+- econ.EM: 2610.41722 2610.41881
+- econ.GN: 2610.39097 2610.39375
+- econ.TH: 2611.01195 2611.05417
+- math.AP: 2611.11530 2611.11553
+- math.CO: 2611.12329 2611.12330
+- math.DG: 2611.09689 2611.09697
+- math.FA: 2611.07728 2611.07785
+- math.NA: 2611.09574 2611.09593
+- math.NT: 2611.09681 2611.09711
+- math.OC: 2611.12089 2611.12134
+- math.PR: 2611.09811 2611.10139
+- math.ST: 2611.04598 2611.04705
+- q-fin.MF: 2610.13543 2610.14524
+- stat.ML: 2611.11386 2611.11387
+
+Notable: math.DG 2611.09697 (`\def` with `&` and `\\` parameters swallowed the file), cs.IT 2611.09366 (Pandoc/Quarto output),
+cs.PL 2610.26599 (etoolbox text macros, 54 files), math.AP 2611.11553 (`\m@th`), math.NA 2611.09593 (SIAM shared preamble),
+stat.ML 2611.11386 (macro debris in captions). Skipped: math.ST 2611.04612 (PDF only).
