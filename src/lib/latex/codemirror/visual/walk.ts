@@ -5,7 +5,7 @@ import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { definitionExtentAround, definitionExtentAt, isInLatexComment, macroAt, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
-import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
+import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
@@ -13,7 +13,7 @@ import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "
 import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { latexProjectField } from "../editing";
 import { disabledField, visualConfig } from "./model";
-import { citationNoteText, citationNotes, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
+import { citationNoteText, citationNotes, prettyrefText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
@@ -183,6 +183,8 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   // (`\renewcommand{\theequation}{S\arabic{equation}}`, only a `\the…` one). Column and spacing switches, TeX groups.
   // Counters and boxes declared (`\newcounter`, chngcntr's `\counterwithin*`, `\newsavebox`): definitions, which print nothing.
   newcounter: 1, counterwithin: 2, counterwithout: 2, newsavebox: 1,
+  // Set-up that prints nothing: numberwithin, cleveref crefalias, zref-clever zcsetup.
+  numberwithin: 2, crefalias: 2, zcsetup: 1,
   appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
   // IEEEtran's `\appendices`; counters stepped where they are.
   appendices: 0, stepcounter: 1, refstepcounter: 1,
@@ -345,7 +347,7 @@ function definitionsPrelude(text: string): { from: number; to: number } | null {
 }
 
 /** Definitions the grammar parses as unknown commands. */
-const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|numberwithin|crefname|Crefname|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext)$/;
+const DEFINITION_COMMANDS = /^\\(?:providecommand|DeclareRobustCommand|DeclareMathOperator|(?:New|Renew|Provide|Declare)Document(?:Command|Environment)|gdef|edef|xdef|crefname|Crefname|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext)$/;
 const SECTION_CLASSES: Record<string, string> = {
   Book: "cm-vis-hpart", Part: "cm-vis-hpart", Chapter: "cm-vis-h0", Section: "cm-vis-h1", SubSection: "cm-vis-h2",
   SubSubSection: "cm-vis-h3", Paragraph: "cm-vis-h4", SubParagraph: "cm-vis-h4",
@@ -629,13 +631,25 @@ function drawableEnvironmentCode(code: string): string | null {
  * `\renewcommand{\theteoremarepnum}{\ref{r:#1}}`: "Theorem 1.1"). Null otherwise.
  */
 function namedTheorem(code: string, defs: LatexDefinitions) {
-  const match = /^\s*\\(?:re)?newcommand\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\\begin\s*\{([^{}]+)\}\s*$/.exec(code);
+  // `\renewcommand{\theoremname}{#1}` or `\def\reptheoremlabel{#1}` before the `\begin` (cs.GT 2611.05777's `reptheorem`).
+  const match = /^\s*(?:\\(?:re)?newcommand\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))|\\def\s*\\([A-Za-z@]+))\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\\begin\s*\{([^{}]+)\}\s*$/.exec(code);
   if (!match) return null;
-  const theorem = defs.theorems.get(match[4].trim());
-  const title = theorem?.title.replace(/\\protect\s*/g, "").trim() ?? "";
-  const use = new RegExp(String.raw`\\${match[1] ?? match[2]}(?![A-Za-z@])`, "g");
+  const name = match[1] ?? match[2] ?? match[3];
+  const theorem = defs.theorems.get(match[5].trim());
+  let title = theorem?.title.replace(/\\protect\s*/g, "").trim() ?? "";
+  // The title may reach the argument through another macro (`\newtheorem*{reptheorembody}{\reptheoremheading}` with
+  // `\DeclareRobustCommand{\reptheoremheading}{\Cref{\reptheoremlabel}}`): argument-less macros of the document are read through.
+  for (let pass = 0; pass < 4; pass++) {
+    const next = title.replace(/\\([A-Za-z@]+)(?![A-Za-z@])/g, (whole, macroName: string) => {
+      const macro = macroName === name ? null : macroAt(defs, macroName, Number.MAX_SAFE_INTEGER);
+      return macro && !macro.arity && !macro.optional && !macro.spec && !macro.provided && macro.body.length < 200 && !macro.body.includes("#") ? macro.body.trim() : whole;
+    });
+    if (next === title) break;
+    title = next;
+  }
+  const use = new RegExp(String.raw`\\${name}(?![A-Za-z@])`, "g");
   if (!theorem || theorem.numbered || title.match(use)?.length !== 1) return null;
-  return { theorem, title: title.replace(use, () => match[3].trim()) };
+  return { theorem, title: title.replace(use, () => match[4].trim()) };
 }
 
 /** `inline`: a list run into its paragraph (paralist's `inparaenum`), whose lines are not indented. */
@@ -885,7 +899,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return "";
     });
     if (!drawable) return false;
-    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => /^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) && !/\$/.test(text);
+    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => /^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|textup|textsl|textmd|textsuperscript|textsubscript|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) && !/\$/.test(text);
   };
 
   /** An item marker in the current list for `\item` (or a macro for it) at [at, to]; `optional` is its `[label]`. */
@@ -1177,8 +1191,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const url = node.getChild("UrlArgument");
           const urlRange = url && argumentInner(url);
           const text = name === "HrefCommand" ? (node.getChild("ShortTextArgument") ?? node.getChild("TextArgument")) : url;
-          const textRange = text && argumentInner(text);
-          if (!urlRange || !textRange || textRange.to <= textRange.from || hasDirectError(node)) return;
+          let textRange = text && argumentInner(text);
+          // bibtex's `\href {url} {text}` and an address followed by a line break (`\href{url}\n  {\emph{Title}}`): the grammar ends the
+          // command at the address, so the text group after it (one space or one line break away) is read here.
+          let hrefEnd = node.to;
+          const loose = name === "HrefCommand" && urlRange && !textRange ? /^[ \t]*(?:\r?\n[ \t]*)?\{/.exec(read(state, node.to, Math.min(doc.length, node.to + 4000))) : null;
+          if (loose) {
+            const group = readGroup(read(state, node.to, Math.min(doc.length, node.to + 4000)), loose[0].length - 1, TEX_GROUPS);
+            if (group) { textRange = { from: node.to + loose[0].length, to: node.to + group.end - 1 }; hrefEnd = node.to + group.end; }
+          }
+          if (!urlRange || !textRange || textRange.to <= textRange.from || (hasDirectError(node) && !loose)) return;
           // A user macro in the address (`\url{\repourl}`, `\href{\site/x}{…}`, 2610.30364) is expanded; one that cannot be stays source.
           const rawUrl = read(state, urlRange.from, urlRange.to);
           const href = rawUrl.includes("\\") ? expandedUrl(rawUrl, node.from) : rawUrl;
@@ -1193,8 +1215,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             return;
           }
           emit({
-            kind: "style", from: node.from, to: node.to, reveal: "touch",
-            replaces: [{ from: node.from, to: textRange.from }, { from: textRange.to, to: node.to }],
+            kind: "style", from: node.from, to: hrefEnd, reveal: "touch",
+            replaces: [{ from: node.from, to: textRange.from }, { from: textRange.to, to: hrefEnd }],
             marks: [{ from: textRange.from, to: textRange.to, class: "cm-vis-link", attributes: { "data-href": href, title } }],
           });
           return;
@@ -1328,6 +1350,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (!structural) return false;
           const argument = node.getChild("LabelArgument");
           const inner = argument && argumentInner(argument);
+          // cleveref's `\label[Property]{key}`: the grammar ends at the `[`; the chip takes the optional type and the group after it.
+          const typed = !argument ? /^\[[^\][{}]*\]\s*\{([^{}]*)\}/.exec(read(state, node.to, Math.min(doc.length, node.to + 300))) : null;
+          if (typed && typed[1].trim()) {
+            const to = node.to + typed[0].length;
+            consumed.push([node.from, to]);
+            emit({ kind: "label", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ChipWidget("label", "\\label", [typed[1].trim()], {}, to - node.from) }] });
+            return false;
+          }
           if (!inner || hasDirectError(node)) return false;
           emit({
             kind: "label", from: node.from, to: node.to, reveal: "strict",
@@ -2114,7 +2144,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
     if (text === "\\printbibliography") {
       const end = commandArguments(node).filter((arg) => arg.optional).at(-1)?.node.to ?? ctrl.to;
-      const span = aloneOnLines(doc, node.from, end);
+      // A trailing comment (`\printbibliography % print bibliography`, math.ST 2611.09087) is part of the line.
+      const comment = /^[ \t]*%[^\n]*/.exec(read(state, end, doc.lineAt(end).to))?.[0].length ?? 0;
+      const span = aloneOnLines(doc, node.from, end + comment);
       if (!span || hasDirectError(node) || macroAt(defs, "printbibliography", node.from)) return undefined;
       const options = read(state, ctrl.to, end);
       const title = /\btitle\s*=\s*\{?([^,{}\]]+)/.exec(options)?.[1]?.trim();
@@ -2221,6 +2253,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
         if (structural && keys.length) emit({ kind: "ref", from: node.from, to: argument.node.to, reveal: "strict", replaces: [{ from: node.from, to: argument.node.to, widget: new ChipWidget("ref", text, keys, {}, argument.node.to - node.from) }] });
         return false;
+      }
+    }
+    // jmlr's `\tableref{tab:x}` / `\sectionref` / `\appendixref` (jmlrutils.sty: "Table 3"), prettyref's `\prettyref{eq:x}` and cleveref's
+    // `\Cpageref{x}`: a reference chip (clicking it shows the source like any chip, see ChipWidget).
+    {
+      const refName = /^\\([A-Za-z]+)ref$/.exec(text)?.[1];
+      const jmlr = !!refName && Object.hasOwn(JMLR_REF_WORDS, refName) && (/^jmlr/.test(defs.documentClass ?? "") || defs.packages.includes("jmlrutils"));
+      const pretty = text === "\\prettyref" && defs.packages.includes("prettyref") && !macroAt(defs, "prettyref", node.from);
+      const page = /^\\[cC]pageref$/.test(text) && !macroAt(defs, text.slice(1), node.from);
+      if (jmlr || pretty || page) {
+        const argument = commandArguments(node).find((arg) => !arg.optional);
+        const inner = argument && argumentInner(argument.node);
+        const keys = inner ? read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean) : [];
+        if (inner && argument && keys.length && !keys.some((key) => /[\\{}]/.test(key)) && !hasDirectError(node) && !read(state, ctrl.to, argument.node.from).trim() && (!pretty || prettyrefText(state, keys) !== null)) {
+          if (structural) emit({ kind: "ref", from: node.from, to: argument.node.to, reveal: "strict", replaces: [{ from: node.from, to: argument.node.to, widget: new ChipWidget("ref", text, keys, {}, argument.node.to - node.from) }] });
+          return false;
+        }
       }
     }
     // pifont's `\ding{51}`: the dingbat (✓, ✗, ★, ①).
@@ -2612,6 +2661,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const line = layoutLine(state, node.from);
       if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); return false; }
     }
+    // In a line of text (`\item \zcsetup{reftype=Property}\label{x}`): set-up that prints nothing is hidden, its source back at the caret.
+    if (/^\\(?:zcsetup|crefalias|numberwithin)$/.test(text) && !hasDirectError(node) && !macroAt(defs, text.slice(1), node.from)) {
+      const count = text === "\\zcsetup" ? 1 : 2;
+      if (mandatory.length >= count && mandatory.slice(0, count).every((arg, index) => index === 0 || !read(state, mandatory[index - 1].node.to, arg.node.from).trim())) {
+        const end = mandatory[count - 1].node.to;
+        if (structural) emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
     // In a line of text, `\newline` and `\par` are breaks; space and layout commands print nothing (`\vspace{2pt}`, `\noindent`).
     if (text === "\\newline" || text === "\\par") {
       emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "never", replaces: [{ from: ctrl.from, to: ctrl.to, widget: new LineBreakWidget() }] });
@@ -2747,6 +2806,17 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       emit({ kind: "env-header", from: range.from, to: range.to, reveal: "line", wholeLine: true, replaces: [{ from: range.from, to: range.to, widget: new RestatedTheoremWidget(text.slice(1), restatedTheorem.title, restated.note, !!restatedTheorem.numbered) }] });
       consumed.push([range.from, range.to]);
       return false;
+    }
+    // The same call for a restatable that lives in another file (cs.GT 2611.05777's `\pathconcentrationlemma*` in the appendix, its
+    // `restatable` in rsd.tex): this file cannot read the theorem, so a chip names it; a click opens the source.
+    if (!restated && !args.length && ctrl.name === "CtrlSeq" && read(state, ctrl.to, ctrl.to + 1) === "*" && /^\\[a-z]{6,}$/.test(text)
+      && (defs.packages.includes("thm-restate") || defs.packages.includes("thmtools")) && !macroAt(defs, text.slice(1), node.from) && !hasDirectError(node)) {
+      const end = ctrl.to + 1;
+      if (aloneOnLines(doc, node.from, end)) {
+        if (structural) emit({ kind: "label", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new ChipWidget("label", text, [`${text.slice(1)} (restated)`], {}, end - node.from) }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
     }
     return null;
   }

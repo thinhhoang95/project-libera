@@ -587,7 +587,7 @@ function buildrelForKatex(latex: string) {
 }
 
 /** Commands that draw nothing in a formula: page breaking (`\displaybreak[2]`, `\allowdisplaybreaks`), labels in their forms (cleveref's `\label[type]{key}`, `\zlabel`, `\ltxlabel`). */
-const DRAWS_NOTHING = /\\(?:displaybreak|allowdisplaybreaks)(?![A-Za-z@])\s*(?:\[\s*\d?\s*\])?|\\(?:label|zlabel|ltxlabel|sublabel)\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}|\\smashoperator(?![A-Za-z@])\s*(?:\[[^\]]*\])?/g;
+const DRAWS_NOTHING = /\\(?:displaybreak|allowdisplaybreaks)(?![A-Za-z@])\s*(?:\[\s*\d?\s*\])?|\\(?:label|zlabel|ltxlabel|sublabel)\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}|\\zcsetup\s*\{[^{}]*\}|\\smashoperator(?![A-Za-z@])\s*(?:\[[^\]]*\])?/g;
 
 const SIZE_ENVIRONMENT =/\\(?:begin|end)\s*\{(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)\}/g;
 
@@ -635,7 +635,7 @@ export function forKatex(latex: string) {
   // `\nulldelimiterspace=0pt` sets the width (KATEX_MACROS has its value for `\kern-\nulldelimiterspace`): not drawn.
   if (out.includes("\\nulldelimiterspace")) out = out.replace(/\\nulldelimiterspace\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|mu|bp|mm|cm|in)|\\setlength\s*\{?\s*\\nulldelimiterspace\s*\}?\s*\{[^{}]*\}/g, "");
   // Page breaks and labels in their forms draw nothing (`\displaybreak[2]` in an align, cleveref's `\label[lemma]{x}`).
-  if (/\\(?:displaybreak|allowdisplaybreaks|label|zlabel|ltxlabel|sublabel|smashoperator)(?![A-Za-z@])/.test(out)) out = out.replace(DRAWS_NOTHING, "");
+  if (/\\(?:displaybreak|allowdisplaybreaks|label|zlabel|ltxlabel|sublabel|zcsetup|smashoperator)(?![A-Za-z@])/.test(out)) out = out.replace(DRAWS_NOTHING, "");
   // Commutative diagrams: xy's `\xymatrix{…}` and tikz-cd (math-diagram.ts), as arrays of objects and arrows.
   if (out.includes("\\xymatrix") || out.includes("{tikzcd}")) out = diagramsForKatex(out);
   // `\renewcommand{\arraystretch}{1.6}` and `\setlength{\arraycolsep}{7pt}` inside a display: KaTeX reads the stretch as `\def\arraystretch`; the column gaps are fixed.
