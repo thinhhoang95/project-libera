@@ -372,7 +372,7 @@ export class SyncServer {
         return session.sendReject(message, "annotation-ownership", violation);
       }
     } else if (subdoc === "manifest") {
-      const violation = manifestViolation(room.shadow(subdoc), changed, room.projectKind, session.accountId, open.role);
+      const violation = manifestViolation(room.shadow(subdoc), changed, room.projectKind, session.accountId, open.role, room.live(subdoc));
       if (violation) {
         room.discardShadow(subdoc);
         return session.sendReject(message, "invalid-update", violation);

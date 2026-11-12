@@ -334,7 +334,7 @@ function suggestionTransitionViolation(
  * a safe path. A shared album's manifest holds photos only: flat blob entries
  * with a photo extension, and plain photo records keyed by their fileId.
  */
-export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKind: ProjectKind = "notebook", accountId = "", role: Role = "viewer"): string | null {
+export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKind: ProjectKind = "notebook", accountId = "", role: Role = "viewer", before?: Y.Doc): string | null {
   const album = projectKind === "album";
   for (const [type, keys] of changed) {
     const root = rootName(after, type);
@@ -363,7 +363,7 @@ export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKi
     }
     if (root === ManifestKeys.photos) {
       if (!album) return "Only shared albums have photo details.";
-      const problem = albumPhotosViolation(after, type, keys, accountId);
+      const problem = albumPhotosViolation(after, type, keys, accountId, before);
       if (problem) return problem;
       continue;
     }
@@ -391,7 +391,7 @@ function albumEntryViolation(entry: JsonRecord): string | null {
   return null;
 }
 
-function albumPhotosViolation(after: Y.Doc, type: SharedType, keys: Set<string | null>, accountId: string): string | null {
+function albumPhotosViolation(after: Y.Doc, type: SharedType, keys: Set<string | null>, accountId: string, before?: Y.Doc): string | null {
   if (type._item !== null) return "Photo details must be plain JSON values.";
   if (!(type instanceof Y.Map)) return "photos must be a map.";
   const photos = type;
@@ -402,6 +402,17 @@ function albumPhotosViolation(after: Y.Doc, type: SharedType, keys: Set<string |
     if (!isPlainRecord(record)) return `photos/${key} must be a plain JSON object.`;
     if (record.fileId !== key) return `photos/${key}: fileId must match its key.`;
     if (typeof record.addedBy !== "string" || !record.addedBy) return `photos/${key}: addedBy is required.`;
+    if (before) {
+      // Attribution drives what is kept when a contributor leaves: it is set once and never rewritten.
+      const previous = before.getMap<unknown>(ManifestKeys.photos).get(key);
+      if (isPlainRecord(previous)) {
+        if (record.addedBy !== previous.addedBy) return `photos/${key}: addedBy cannot change.`;
+      } else {
+        const entry = before.getMap<unknown>(ManifestKeys.files).get(key);
+        const uploader = isPlainRecord(entry) && typeof entry.createdBy === "string" ? entry.createdBy : undefined;
+        if (record.addedBy !== accountId && record.addedBy !== uploader) return `photos/${key}: addedBy must be you.`;
+      }
+    }
     if (typeof record.caption === "string" && record.caption.length > MAX_ALBUM_CAPTION_LENGTH) return `photos/${key}: the caption is too long.`;
     if (record.originalHash !== undefined && (typeof record.originalHash !== "string" || !/^[0-9a-f]{64}$/.test(record.originalHash))) {
       return `photos/${key}: originalHash must be a sha256.`;
