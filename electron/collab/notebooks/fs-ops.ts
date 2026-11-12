@@ -318,7 +318,10 @@ async function linkExclusive(source: string, destination: string): Promise<boole
     const code = (error as NodeJS.ErrnoException).code ?? "";
     if (code === "EEXIST") throw new DestinationTakenError(destination);
     if (LINK_UNSUPPORTED.has(code)) return false;
-    throw error;
+    // A cloud provider can refuse a link for reasons of its own (an
+    // online-only placeholder, a provider-specific errno). The claim-and-rename
+    // path still moves such a file, and reports a genuinely missing source.
+    return false;
   }
 }
 
