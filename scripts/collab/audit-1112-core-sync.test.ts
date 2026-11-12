@@ -45,7 +45,7 @@ function opened(diff: Uint8Array, serverSeq = 1): OpenedMessage {
 
 function remoteUpdate(text: string): Uint8Array {
   const doc = new Y.Doc();
-  let captured = new Uint8Array();
+  let captured: Uint8Array = new Uint8Array();
   doc.on("update", (update: Uint8Array) => {
     captured = update;
   });
