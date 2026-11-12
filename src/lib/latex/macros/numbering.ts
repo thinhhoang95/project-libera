@@ -442,6 +442,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   const prefix = new Map<string, string>([...defs.counterPrefix]);
   if (chapters) for (const name of ["equation", "figure", "table", "footnote", "lstlisting"]) if (!within.has(name)) { within.set(name, "chapter"); if (name !== "footnote") prefix.set(name, "chapter"); }
   for (const theorem of defs.theorems.values()) if (theorem.within && theorem.counter === theorem.name) { within.set(theorem.name, theorem.within); prefix.set(theorem.name, theorem.within); }
+  // tcolorbox's `auto counter` boxes (`\newtcolorbox[auto counter,number within=section]{Name}`): a counter each, printed with its parent's number first.
+  for (const [name, box] of defs.boxes ?? []) if (box.counter && box.within) { within.set(`tcb@${name}`, box.within); prefix.set(`tcb@${name}`, box.within); }
   for (let i = 1; i < SECTION_COUNTERS.length; i++) { within.set(SECTION_COUNTERS[i], SECTION_COUNTERS[i - 1]); prefix.set(SECTION_COUNTERS[i], SECTION_COUNTERS[i - 1]); }
   if (!chapters) { within.delete("section"); prefix.delete("section"); }
   // A counter numbered within itself, directly or through others (`\numberwithin{equation}{equation}`), is
@@ -1200,6 +1202,23 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           subequations.push({ node: node.from, parent, saved: value("equation") });
           counters.set("equation", 0);
           setTarget({ number: parent, kind: "equation", pos: node.from });
+          return;
+        }
+        // A tcolorbox of the document with `auto counter`: its own count (`\thetcbcounter` in its title), and its `label=` key names it.
+        const box = defs.boxes?.get(env);
+        if (box && !defs.environments.has(env) && !defs.theorems.has(env)) {
+          let number: string | null = null;
+          if (box.counter) {
+            step(`tcb@${env}`);
+            number = format(`tcb@${env}`);
+            entries.push({ pos: node.from, kind: "counter", number });
+          }
+          const opening = /^\\begin\s*\{[^{}]+\}\s*(\[)?/.exec(read(node.from, Math.min(node.to, node.from + 4000)));
+          const options = opening?.[1] ? readOptional(read(node.from, Math.min(node.to, node.from + 4000)), opening[0].length - 1, TEX_GROUPS)?.content : null;
+          const key = options ? /(?:^|,)\s*label\s*=\s*(?:\{([^{}]*)\}|([^,\]]*))/.exec(stripTexComments(options)) : null;
+          const label = key ? (key[1] ?? key[2]).trim() : "";
+          if (number && label) labels.set(label, { number, kind: "counter", pos: node.from, type: env });
+          if (number) setTarget({ number, kind: "counter", pos: node.from, type: env });
           return;
         }
         // thmtools' restatable typesets the theorem it names.

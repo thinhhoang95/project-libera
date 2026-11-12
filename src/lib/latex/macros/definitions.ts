@@ -126,6 +126,8 @@ export type LatexDefinitions = {
   /** `\numberwithin{c}{within}` only: counters printed with their parent's number first (`\newcounter[within]` resets but prints alone). */
   counterPrefix: Map<string, string>;
   crefNames: Map<string, { singular: string; plural: string; capital?: boolean }>;
+  /** tcolorbox's `\newtcolorbox` and mdframed's `\newmdenv` boxes of the document and its packages, by environment name. */
+  boxes?: Map<string, LatexBoxDefinition>;
   documentClass: string | null;
   packages: string[];
   /** The options a package was loaded with (`\usepackage[ruled,vlined]{algorithm2e}`), by package name. */
@@ -1695,6 +1697,7 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [counter, within] of defs.counterWithin) parts.push(`${counter}<${within}`);
   for (const [counter, within] of defs.counterPrefix) parts.push(`${counter}<<${within}`);
   for (const [key, names] of defs.crefNames) parts.push(`${key}=${names.singular}/${names.plural}`);
+  for (const [name, box] of defs.boxes ?? []) parts.push(`box:${name}:${JSON.stringify(box)}`);
   parts.push(defs.documentClass ?? "", String(defs.secnumdepth ?? ""), defs.graphicsPaths.join("|"));
   for (const [name, list] of defs.packageOptions) parts.push(`pkg:${name}:${list.join(",")}`);
   for (const [name, color] of defs.colors) parts.push(`color:${name}:${color.model}:${color.value}`);
@@ -1735,8 +1738,98 @@ export function collectLatexDefinitions(sources: readonly DefinitionSource[], op
     readLatexDefinitions(source.text, defs, { file: source.path, load: loader(source.path, 1) });
   }
   if (open) readLatexDefinitions(open.text, defs, { bodyStart: open.bodyStart, load: loader("", 1) });
+  // The boxes of every file read (a chapter's boxes are in the main file's preamble or a style file).
+  for (const source of sources) if (BOX_DEFINITION.test(source.text)) readBoxDefinitions(source.text, defs);
+  if (open && BOX_DEFINITION.test(open.text)) readBoxDefinitions(open.text, defs);
   defs.fingerprint = definitionsFingerprint(defs);
   return defs;
+}
+
+/** A box environment of tcolorbox or mdframed: its title as its options give it, its arguments, and its counter. */
+export type LatexBoxDefinition = {
+  /** The title its options give (`title={Box~\thetcbcounter: #2}`), with its `#n` still in it; null without one. */
+  title: string | null;
+  /** The arguments it takes (`[2][]`: two, the first optional); 0 for `\newmdenv` and boxes with no `[n]`. */
+  arity: number;
+  /** Whether the first argument is optional (given a default: `[2][]`). */
+  optional: boolean;
+  /** `auto counter`: the box is numbered (`\thetcbcounter`); `number within=section` restarts that count in each section. */
+  counter: boolean;
+  within: string | null;
+};
+
+const BOX_DEFINITION_COMMAND = String.raw`(?:(?:re)?newtcolorbox|DeclareTColorBox|NewTColorBox|newmdenv)`;
+const BOX_DEFINITION = new RegExp(String.raw`\\${BOX_DEFINITION_COMMAND}(?![A-Za-z@])`);
+
+/** A box's title from its options (`title=Prompt`, mdframed's `frametitle={…}`), null without one. */
+export function boxTitleOf(options: string) {
+  const match = /(?:^|,)\s*(?:frame)?title\s*=\s*/.exec(options);
+  if (!match) return null;
+  const rest = options.slice((match.index ?? 0) + match[0].length);
+  const value = rest[0] === "{" ? readGroup(rest, 0, TEX_GROUPS)?.content : /^[^,]*/.exec(rest)?.[0];
+  return value?.trim() || null;
+}
+
+/**
+ * `\newtcolorbox[auto counter,number within=section]{Name}[2][]{title={Box~\thetcbcounter: #2},…,#1}` (its options may
+ * span lines, and so may the header), `\newtcolorbox{Name}{…}`, `\DeclareTColorBox{Name}{O{}m}{…}` and
+ * mdframed's `\newmdenv[options]{Name}`: the names with the title, arguments and counter, in `defs.boxes`.
+ * `\Crefname={Box}{Boxes}` among the options names the box for cleveref.
+ */
+export function readBoxDefinitions(source: string, defs: LatexDefinitions) {
+  const text = source.includes("%") ? source.replace(/(^|[^\\])((?:\\\\)*)%[^\n]*/g, "$1$2") : source;
+  const boxes = defs.boxes ??= new Map();
+  for (const match of text.matchAll(new RegExp(String.raw`\\(${BOX_DEFINITION_COMMAND})\*?(?![A-Za-z@])`, "g"))) {
+    let at = (match.index ?? 0) + match[0].length;
+    const skip = () => { at += /^\s*/.exec(text.slice(at))![0].length; };
+    skip();
+    // The initialisation options (`[auto counter,…]`) before the name; mdframed's are the box's own.
+    let init = "";
+    if (text[at] === "[") {
+      const group = readOptional(text, at, TEX_GROUPS);
+      if (!group) continue;
+      init = group.content;
+      at = group.end;
+      skip();
+    }
+    const name = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
+    if (!name || !/^[A-Za-z@*]+$/.test(name.content.trim())) continue;
+    at = name.end;
+    let arity = 0;
+    let optional = false;
+    let options = "";
+    if (match[1] === "newmdenv") options = init;
+    else {
+      skip();
+      // xparse's argument specification of `\DeclareTColorBox{Name}{O{}m}{…}`: only the box's options come first.
+      if (/^(?:DeclareTColorBox|NewTColorBox)$/.test(match[1]) && text[at] === "{") {
+        const spec = readGroup(text, at, TEX_GROUPS);
+        if (!spec) continue;
+        at = spec.end;
+        skip();
+      } else {
+        const count = /^\[(\d)\]/.exec(text.slice(at));
+        if (count) {
+          arity = Number(count[1]);
+          at += count[0].length;
+          skip();
+          if (text[at] === "[") {
+            const fallback = readOptional(text, at, TEX_GROUPS);
+            if (!fallback) continue;
+            optional = true;
+            at = fallback.end;
+            skip();
+          }
+        }
+      }
+      const body = text[at] === "{" ? readGroup(text, at, TEX_GROUPS) : null;
+      options = body?.content ?? "";
+    }
+    const within = /(?:^|,)\s*number\s+within\s*=\s*([A-Za-z]+)/.exec(init)?.[1] ?? null;
+    boxes.set(name.content.trim(), { title: boxTitleOf(options), arity, optional, counter: /(?:^|,)\s*auto\s+counter\s*(?:,|$)/.test(init), within });
+    const crefname = /(?:^|,)\s*Crefname\s*=\s*\{([^{}]*)\}\s*\{([^{}]*)\}/.exec(init);
+    if (crefname) defs.crefNames.set(`${name.content.trim()}:capital`, { singular: crefname[1].trim(), plural: crefname[2].trim(), capital: true });
+  }
 }
 
 /** Where the document body starts: after `\begin{document}`, or 0 for a chapter file without one. */
