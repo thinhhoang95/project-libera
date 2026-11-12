@@ -75,12 +75,12 @@ export async function readShared(absolute: string, ms: number, observed: { size:
   }
 }
 
-/** Milliseconds until a file counts as quiet (0: it has not changed for IMPORT_QUIET_MS). */
-export function quietWaitMs(entry: { mtimeMs: number; ctimeMs?: number }, now: number): number {
+/** Milliseconds until a file counts as quiet (0: it has not changed for `quietMs`). */
+export function quietWaitMs(entry: { mtimeMs: number; ctimeMs?: number }, now: number, quietMs = IMPORT_QUIET_MS): number {
   // A time in the future (a copy from a skewed clock) says nothing about when it changed.
   const modified = entry.mtimeMs <= now ? entry.mtimeMs : 0;
   const changed = entry.ctimeMs !== undefined && entry.ctimeMs <= now ? entry.ctimeMs : 0;
-  return Math.max(0, IMPORT_QUIET_MS - (now - Math.max(modified, changed)));
+  return Math.max(0, quietMs - (now - Math.max(modified, changed)));
 }
 
 interface ScanReadState {

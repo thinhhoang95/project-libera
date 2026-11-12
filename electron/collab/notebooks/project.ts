@@ -151,6 +151,8 @@ export interface Timings {
   largeFileVerifyMs: number;
   /** Delay before a shared PDF's sidecar copy is rewritten. */
   pdfWriteMs: number;
+  /** How long a new or externally changed file must stay untouched (mtime and ctime) before it is imported. */
+  importQuietMs: number;
 }
 
 export const DEFAULT_TIMINGS: Timings = {
@@ -167,6 +169,7 @@ export const DEFAULT_TIMINGS: Timings = {
   verifyMs: 60_000,
   largeFileVerifyMs: 30 * 60_000,
   pdfWriteMs: 60_000,
+  importQuietMs: 3000,
 };
 
 export interface ProjectInfo {
@@ -1929,7 +1932,7 @@ export class SharedProject {
       }
       // Another program may still be writing these bytes: the verification
       // stays pending and the file is judged once it has been quiet a while.
-      const stillChanging = quietWaitMs(seen, now);
+      const stillChanging = quietWaitMs(seen, now, this.ctx.timings.importQuietMs);
       if (stillChanging > 0) {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
         continue;
@@ -2008,7 +2011,7 @@ export class SharedProject {
       if (mayStillBeCopying(entry, now)) continue;
       // And once no program has changed it for a while: a copy can pause
       // with some of its bytes in place.
-      const stillChanging = quietWaitMs(entry, now);
+      const stillChanging = quietWaitMs(entry, now, this.ctx.timings.importQuietMs);
       if (stillChanging > 0) {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
         continue;
@@ -2351,7 +2354,7 @@ export class SharedProject {
       if (current === null || sha256(current) !== hash) return false;
       // Unchanged since the scan saw it quiet, and not touched again since.
       const after = await statIfExists(target);
-      return after !== null && after.size === entry.size && after.mtimeMs === entry.mtimeMs && (rewrittenHere || quietWaitMs(after, Date.now()) === 0);
+      return after !== null && after.size === entry.size && after.mtimeMs === entry.mtimeMs && (rewrittenHere || quietWaitMs(after, Date.now(), this.ctx.timings.importQuietMs) === 0);
     };
     try {
       if (classified.kind === "doc") {
