@@ -41,6 +41,8 @@ export const KATEX_MACROS: Record<string, string> = {
   "\\protect": "",
   "\\xspace": "",
   "\\@": "",
+  // `\m@th` is `\mathsurround=0pt` (`\newcommand*{\defeq}{\mathrel{\rlap{\raisebox{0.3ex}{$\m@th\cdot$}}…}}`, 2611.11553).
+  "\\m@th": "",
   "\\leavevmode": "",
   "\\ensuremath": "#1",
   // The TeX.SX `\widebar` (a bar sized to its argument, built from box arithmetic the reader leaves out): a bar.
@@ -574,9 +576,38 @@ function arraysForKatex(latex: string) {
       .replace(/\\noalign\s*\{\s*\\hrule\s*\}/g, "\\hline ")
       .replace(/\\noalign\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, "")
       .replace(/\\(?:cline|hhline)\s*\{[^{}]*\}|\\cmidrule\s*(?:\[[^\]]*\]\s*)?(?:\([^)]*\)\s*)?\{[^{}]*\}/g, "");
-    out = replaceGroups(out, /\\multicolumn\s*\{\s*(\d+)\s*\}\s*\{[^{}]*\}\s*/g, (content) => `{${content}}`, (match, content) => `{${content}}${"&".repeat(Math.max(0, Math.min(Number(match[1]), 40) - 1))}`);
+    // The column spec may hold groups itself (`{@{}c@{}}`, 2610.26599).
+    out = replaceGroups(out, /\\multicolumn\s*\{\s*(\d+)\s*\}\s*\{(?:[^{}]|\{[^{}]*\})*\}\s*/g, (content) => `{${content}}`, (match, content) => `{${content}}${"&".repeat(Math.max(0, Math.min(Number(match[1]), 40) - 1))}`);
   }
   return out;
+}
+
+/** graphicx's `\reflectbox{\ensuremath{\mapsto}}` (the `\mapsfrom` of 2611.09689): the arrows whose mirror image is a symbol; others stay (KaTeX rejects `\reflectbox`, so the formula stays source). */
+const MIRRORED_ARROWS: Record<string, string> = {
+  mapsto: "\\text{↤}", longmapsto: "\\text{⟻}", to: "\\leftarrow", rightarrow: "\\leftarrow", longrightarrow: "\\longleftarrow", Rightarrow: "\\Leftarrow",
+  Longrightarrow: "\\Longleftarrow", hookrightarrow: "\\hookleftarrow", rightharpoonup: "\\leftharpoonup", rightharpoondown: "\\leftharpoondown",
+  twoheadrightarrow: "\\twoheadleftarrow", implies: "\\impliedby",
+};
+function reflectboxForKatex(latex: string) {
+  return latex.replace(/\\reflectbox\s*\{\s*(?:\\ensuremath\s*\{\s*\\([A-Za-z]+)\s*\}|\$\s*\\([A-Za-z]+)\s*\$|\\([A-Za-z]+))\s*\}/g, (whole, a?: string, b?: string, c?: string) => {
+    const mirrored = MIRRORED_ARROWS[(a ?? b ?? c)!];
+    return mirrored ? `\\mathord{${mirrored}}` : whole;
+  });
+}
+
+/** `\romannumeral2` as its letters and `\MakeUppercase{ii}` as capitals (the `\II` of 2611.09689: `\textup{\MakeUppercase{\romannumeral2}}`). */
+function romanCaseForKatex(latex: string) {
+  const numerals: Array<[number, string]> = [[1000, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"], [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"]];
+  return latex
+    .replace(/\\romannumeral\s*(\d{1,4})(?![\d])\s*/g, (whole, digits: string) => {
+      let rest = Number(digits);
+      if (rest < 1 || rest > 3999) return whole;
+      let out = "";
+      for (const [value, letters] of numerals) for (; rest >= value; rest -= value) out += letters;
+      return out;
+    })
+    .replace(/\\MakeUppercase\s*\{([^{}\\]*)\}/g, (_, text: string) => text.toUpperCase())
+    .replace(/\\MakeLowercase\s*\{([^{}\\]*)\}/g, (_, text: string) => text.toLowerCase());
 }
 
 /** The lengths that shape an array: `\arraystretch` becomes KaTeX's own macro (its arrays read it), the others (column gaps, rule widths) are dropped. */
@@ -622,6 +653,13 @@ export function forKatex(latex: string) {
   // `\hyperref[def:RF]{\textup{(RF)}}` in a formula (2611.11566's `\RF`): a link, whose text is drawn.
   if (out.includes("\\footnotemark")) out = out.replace(/\\footnotemark\s*\[[^\]]*\]/g, "\\footnotemark ");
   if (out.includes("\\hyperref")) out = out.replace(/\\hyperref\s*\[[^\]]*\]/g, "");
+  // A footnote at the end of a display (`F(\nu')\geq F(\nu).\footnote{We say $…$ if …}`, 2611.05417): its mark, a superscript
+  // star as `\footnotemark`'s; the note's text (with formulas of its own) is in the source, which a click opens.
+  if (/\\footnote(?![A-Za-z@])/.test(out)) out = replaceGroups(out, /\\footnote(?![A-Za-z@])\s*(?:\[[^\]]*\]\s*)?/g, () => "{}^{\\ast}");
+  // hyperref's anchor before a `\label` (Quarto's `\begin{equation}\phantomsection\label{eq-x}…`, 2611.09366) draws nothing.
+  if (out.includes("\\phantomsection")) out = out.replace(/\\phantomsection(?![A-Za-z@])\s*/g, "");
+  if (out.includes("\\reflectbox")) out = reflectboxForKatex(out);
+  if (out.includes("\\romannumeral") || out.includes("\\MakeUppercase") || out.includes("\\MakeLowercase")) out = romanCaseForKatex(out);
   if (out.includes("\\textsc")) out = textscForKatex(out);
   if (out.includes("\\mathpalette")) out = mathpaletteForKatex(out);
   if (out.includes("\\ooalign")) out = ooalignForKatex(out);

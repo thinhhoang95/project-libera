@@ -81,20 +81,41 @@ export const latexParser = packageParser.configure({
 /** How far a document's start is read for its `\begin{document}`: a preamble is shorter. */
 const PREAMBLE_LIMIT = 32_000;
 const BEGIN_DOCUMENT = /^\\begin\s*\{document\}/;
+/** `\def\name` (and `\gdef`, `\edef`, `\xdef`): what comes before the parameter text. */
+const DEFINITION_HEAD = /^\\[gex]?def(?![A-Za-z@])\s*\\(?:[A-Za-z@]+|[^A-Za-z@])/;
 
 /**
  * The `{`s still open where the preamble ends (`\newcommand{\bad}[1]{\textbf{#1}` being typed, its `}` not yet
  * written), and where the body starts; null for a preamble whose groups all close, or a file without one.
  */
-export function unclosedPreambleBraces(input: Pick<Input, "length" | "read">): { positions: number[]; end: number } | null {
+export function unclosedPreambleBraces(input: Pick<Input, "length" | "read">): { positions: number[]; edits: Map<number, string>; end: number } | null {
   const head = input.read(0, Math.min(input.length, PREAMBLE_LIMIT));
   if (!head.includes("\\begin")) return null;
   const open: number[] = [];
+  /**
+   * A `\def` whose parameter text has several delimiters, or `&` or `\\` in it (`\def\textmatrix#1&#2\\#3&#4\\{…}`), is
+   * more than the grammar reads: it ends the definition at the first one and the rest of the file is its body. The
+   * parameter text is read as `#1#2#3#4` and spaces (same length), which the grammar takes.
+   */
+  const edits = new Map<number, string>();
   for (let i = 0; i < head.length; i++) {
     const char = head.charCodeAt(i);
     if (char === BACKSLASH) {
       if (head.startsWith("\\begin", i) && BEGIN_DOCUMENT.test(head.slice(i, i + 24))) {
-        return open.length ? { positions: open, end: i } : null;
+        return open.length || edits.size ? { positions: open, edits, end: i } : null;
+      }
+      const def = DEFINITION_HEAD.exec(head.slice(i, i + 80));
+      if (def) {
+        const from = i + def[0].length;
+        let to = from;
+        while (to < head.length && to < from + 300 && !"{%\n".includes(head[to])) to++;
+        const text = head.slice(from, to);
+        const rest = text.split(/#[1-9]/).filter((part) => part !== "");
+        if (head[to] === "{" && text.startsWith("#") && (rest.length >= 2 || rest.some((part) => /&|\\\\/.test(part)))) {
+          const kept = (text.match(/#[1-9]/g) ?? []).join("");
+          const patched = kept.padEnd(text.length, " ");
+          for (let n = 0; n < text.length; n++) if (patched[n] !== text[n]) edits.set(from + n, patched[n]);
+        }
       }
       i++;
     } else if (char === 37 /* % */) {
@@ -109,12 +130,13 @@ export function unclosedPreambleBraces(input: Pick<Input, "length" | "read">): {
 
 /** The input with the preamble's unclosed `{`s read as spaces: the same length, so every position stays where it is. */
 class PatchedInput implements Input {
-  constructor(readonly inner: Input, readonly positions: readonly number[]) {}
+  constructor(readonly inner: Input, readonly positions: readonly number[], readonly edits: ReadonlyMap<number, string>) {}
   get length() { return this.inner.length; }
   get lineChunks() { return this.inner.lineChunks; }
   private patch(text: string, from: number) {
     let out = text;
     for (const at of this.positions) if (at >= from && at < from + out.length) out = `${out.slice(0, at - from)} ${out.slice(at - from + 1)}`;
+    for (const [at, fill] of this.edits) if (at >= from && at < from + out.length) out = `${out.slice(0, at - from)}${fill}${out.slice(at - from + 1)}`;
     return out;
   }
   chunk(from: number) { return this.patch(this.inner.chunk(from), from); }
@@ -141,7 +163,7 @@ export class PreambleSafeParser extends Parser {
       const end = Math.min(input.length, Math.max(patch.end, before ?? 0) + 256);
       fragments = TreeFragment.applyChanges(fragments, [{ fromA: 0, toA: end, fromB: 0, toB: end }]);
     }
-    const parse = this.inner.createParse(patch ? new PatchedInput(input, patch.positions) : input, fragments, ranges);
+    const parse = this.inner.createParse(patch ? new PatchedInput(input, patch.positions, patch.edits) : input, fragments, ranges);
     if (!patch) return parse;
     return {
       advance() {

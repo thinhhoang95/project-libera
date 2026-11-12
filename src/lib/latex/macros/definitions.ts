@@ -1026,7 +1026,7 @@ function texNumber(text: string) {
 }
 
 /** Commands whose definitions are global whatever the group (`\gdef`, and xparse's, which are made with expl3's global `\cs_new`). */
-const GLOBAL_DEFINITIONS = /^(?:gdef|xdef|DeclareMathOperator|(?:New|Renew|Provide|Declare)(?:Expandable)?DocumentCommand)$/;
+const GLOBAL_DEFINITIONS = /^(?:gdef|xdef|DeclareMathOperator|SetKw(?:Function|Data)?|(?:New|Renew|Provide|Declare)(?:Expandable)?DocumentCommand)$/;
 
 /**
  * Reads the definitions in `source` into `defs`. `bodyStart` is where the
