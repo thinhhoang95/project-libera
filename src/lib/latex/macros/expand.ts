@@ -1,6 +1,6 @@
 import { MAX_MACRO_DEPTH, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import { evaluateIfThenElse, evaluateTexConditionals } from "./conditionals";
-import { conditionalFacts, macroAt, type LatexDefinitions, type LatexMacro, type XparseArgument } from "./definitions";
+import { DRAWN_BUILTINS, conditionalFacts, macroAt, type LatexDefinitions, type LatexMacro, type XparseArgument } from "./definitions";
 
 /* Expanding the document's macros (docs/latex-visual-editor-plan.md §7.4).
  * In math, uses are substituted into the formula before KaTeX sees it; in
@@ -269,6 +269,15 @@ function withoutMeasuring(body: string) {
 /** TeX's own machinery left in an expansion: `\csname`, `\expandafter`, registers, and `@` internals (`\@ifundefined`, `\f@size`, `\strip@pt`). */
 const TEX_INTERNALS = /\\(?:csname|endcsname|expandafter|noexpand|edef|xdef|gdef|dimen|skip|count|setbox|dimexpr|numexpr|glueexpr)(?![A-Za-z@])|\\(?:[A-Za-z]+@[A-Za-z@]*|@[A-Za-z][A-Za-z@]*)/;
 
+/** `\numexpr171+1\relax` with written-out integers (`\ding{\numexpr171+#1\relax}`): the sum, left to right with `+` and `-`. */
+function evaluateNumexpr(text: string) {
+  if (!text.includes("\\numexpr")) return text;
+  return text.replace(/\\numexpr\s*(\d+(?:\s*[+-]\s*\d+)*)\s*(?:\\relax(?![A-Za-z@]))?/g, (_all, sum: string) => {
+    const parts = sum.match(/[+-]?\s*\d+/g) ?? [];
+    return String(parts.reduce((total, part) => total + Number(part.replace(/\s+/g, "")), 0));
+  });
+}
+
 /** Idioms with `@` that are not debris: cvpr's `\futurelet\@let@token` (the renderer reads its `\ifx`), an undecided `\if@switch`, `\@ifnextchar`, `\@ifstar`, and a box's width (`\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax}`). */
 const KNOWN_INTERNALS = /\\@let@token|\\if@[A-Za-z@]*|\\@(?:ifnextchar|ifstar)(?![A-Za-z@])|\\algorithmic@(?:begin|end)(?![A-Za-z@])|\\(?:begin\{(?:minipage|tcolorbox)\}|parbox)\s*(?:\[[^\]]*\]\s*)*\{(?:[^{}]|\{[^{}]*\})*\}/g;
 
@@ -311,11 +320,13 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
     const facts = conditionalFacts(context.defs, context.pos, context.mode === "math");
     body = evaluateTexConditionals(evaluateIfThenElse(body, facts), facts);
   }
+  body = evaluateNumexpr(body);
   const inner = expandText(body, context, depth + 1);
-  if (inner === null) return false;
+  if (inner === null) return DRAWN_BUILTINS.has(match[1]) ? null : false;
   // An expansion that still holds TeX's internals (`\csname bn@#1\endcsname`, `\@ifundefined`, `\@latex@warning`, `\dimen@`: a
   // macro that builds a box from registers, stat.ML 2611.11386's `\bn{…}`) would be drawn as debris: the use stays source.
-  if (context.mode === "text" && TEX_INTERNALS.test(inner.replace(KNOWN_INTERNALS, ""))) return false;
+  // A command the editor draws itself (`\cref`, `\eqref`, a user shim around `\Cref` built on `\csname`) is drawn natively instead.
+  if (context.mode === "text" && TEX_INTERNALS.test(inner.replace(KNOWN_INTERNALS, ""))) return DRAWN_BUILTINS.has(match[1]) ? null : false;
   // A control word right after the expansion must not run into it (`\x y` → `\alpha y`, not `\alphay`).
   const next = source[end] ?? "";
   const glue = /[A-Za-z@]$/.test(inner) && /\\[A-Za-z@]+$/.test(inner) && /[A-Za-z@]/.test(next) ? " " : "";

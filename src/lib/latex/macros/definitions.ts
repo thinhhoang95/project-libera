@@ -798,7 +798,7 @@ function selfReferent(name: string, body: string) {
  * (neurips_2020.sty's `\section` is `\@startsection{section}{1}{\z@}…`, its `\small` a font size):
  * that does not change what they show. The document's own redefinitions do.
  */
-const DRAWN_BUILTINS = new Set([
+export const DRAWN_BUILTINS = new Set([
   "part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph", "appendix",
   "title", "author", "date", "thanks", "and", "maketitle", "caption", "label", "ref", "eqref", "cite", "footnote", "footnotemark", "footnotetext",
   // Citations and references, which a template's own natbib.sty or hyperref.sty defines (ICLR's and ACL's ship natbib.sty).

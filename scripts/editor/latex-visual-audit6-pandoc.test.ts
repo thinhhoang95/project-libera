@@ -230,3 +230,35 @@ test("a stray \\hyperlink or \\hypertarget outside a macro prints its text, \\if
   view.destroy();
   view.dom.parentElement?.remove();
 });
+
+const CREF_SHIM = `\\usepackage{cleveref}
+\\makeatletter
+\\newcommand{\\@creflabel}[1]{%
+  \\expandafter\\ifx\\csname r@#1\\endcsname\\relax
+    Ref.~\\ref{#1}%
+  \\else
+    Section~\\ref{#1}%
+  \\fi
+}
+\\newcommand{\\Cref}[1]{%
+  \\def\\@crefsep{}%
+  \\@for\\@crefi:=#1\\do{\\@crefsep\\@creflabel{\\@crefi}\\def\\@crefsep{, }}%
+}
+\\newcommand{\\cref}[1]{\\Cref{#1}}
+\\makeatother
+`;
+
+test("a \\cref shim built on \\csname and \\@for is drawn as the reference the editor draws itself (cs.AI 2611.13960)", () => {
+  const body = "\\section{Setup}\\label{sec:setup}\nAs shown in \\cref{sec:setup}, it works.";
+  const text = bodyText(body, undefined, CREF_SHIM);
+  assert.doesNotMatch(text, /\\c?ref|csname/);
+  assert.match(text, /As shown in .*1.*, it works[.]/);
+  clickReveals(body, ".cm-vis-ref", "\\cref{sec:setup}", CREF_SHIM);
+});
+
+test("\\ding of a \\numexpr sum written out draws the pifont symbol (cs.DB 2610.38404)", () => {
+  const preamble = "\\usepackage{pifont}\\usepackage{xcolor}\n\\newcommand{\\stepnum}[1]{\\textcolor[HTML]{B2182B}{\\ding{\\numexpr171+#1\\relax}}}\n";
+  const text = bodyText("Step \\stepnum{1} then \\stepnum{3}.", undefined, preamble);
+  assert.doesNotMatch(text, /stepnum|numexpr|\\ding/);
+  assert.match(text, /Step .+ then .+[.]/);
+});
