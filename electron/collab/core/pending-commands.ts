@@ -32,7 +32,7 @@ export interface PendingCommandsOptions {
   clock?: Clock;
   random?: () => number;
   logger?: Logger;
-  beforeSend?: (command: Command) => void | Promise<void>;
+  beforeSend?: (command: Command, row: PendingCommandRow) => void | Promise<void>;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
 }
@@ -101,6 +101,14 @@ export class PendingCommands {
     }
   }
 
+  /** Something a deferred command was waiting for happened: retry now instead of at the next backoff tick. */
+  retryNow(): void {
+    if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.attempt = 0;
+    this.kick();
+  }
+
   /** Starts the replay loop unless it is running or waiting for a retry. */
   kick(): void {
     if (this.stopped || this.running || this.retryTimer || !this.online || !this.api) return;
@@ -129,7 +137,7 @@ export class PendingCommands {
       let body: unknown;
       let error: { code: string; message: string } | undefined;
       try {
-        await this.options.beforeSend?.(next.command);
+        await this.options.beforeSend?.(next.command, next);
         const result = await api.postCommand(next.command);
         status = result.status;
         body = result.body;
