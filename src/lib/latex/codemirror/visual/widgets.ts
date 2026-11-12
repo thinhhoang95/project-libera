@@ -103,6 +103,17 @@ export class SymbolWidget extends VisualWidget {
   }
 }
 
+/** `\detokenize{{instruction}}`: its argument as the characters it holds, in the typewriter face; a click shows the command. */
+export class LiteralTextWidget extends VisualWidget {
+  constructor(readonly literal: string, readonly source: string) { super(`${literal}\u0000${source}`); }
+  toDOM(view: EditorView) {
+    const span = el("span", "cm-vis-symbol cm-vis-tt cm-vis-literal", this.literal);
+    span.title = this.source;
+    revealOnClick(view, span, this.source.length);
+    return span;
+  }
+}
+
 /** `\\`: a faint mark where the line breaks. */
 export class LineBreakWidget extends VisualWidget {
   constructor() { super("br"); }
@@ -1866,15 +1877,27 @@ export class BibliographyListWidget extends VisualWidget {
 
 /** The opening of a theorem, proof, abstract or user environment, drawn as its heading. */
 export class EnvironmentHeaderWidget extends VisualWidget {
-  constructor(readonly variant: "theorem" | "proof" | "abstract" | "user", readonly title: string, readonly note: string | null, readonly kind: NumberingKind | null, readonly numberOffset: number) {
-    super(JSON.stringify([variant, title, note, kind, numberOffset]));
+  constructor(readonly variant: "theorem" | "proof" | "abstract" | "user", readonly title: string, readonly note: string | null, readonly kind: NumberingKind | null, readonly numberOffset: number, readonly length = 0) {
+    super(JSON.stringify([variant, title, note, kind, numberOffset, length]));
   }
   toDOM(view: EditorView) {
     const dom = el("span", `cm-vis-env-header cm-vis-env-header-${this.variant}`);
+    // A box's title (its `\begin` over several lines): a click shows the opening as written.
+    if (this.length) revealOnClick(view, dom, this.length);
     const render = (target: EditorView) => {
       dom.replaceChildren();
       const context = widgetContext(target, dom);
-      if (this.variant === "user") { dom.append(renderLatexFragment(this.title, context)); return; }
+      if (this.variant === "user") {
+        // A numbered box's title (`Box~\thetcbcounter: …`): the number the numbering pass gave the box.
+        let title = this.title;
+        if (this.kind) {
+          const pos = widgetPos(target, dom);
+          const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos + this.numberOffset, this.kind);
+          title = title.replace(/\\thetcbcounter(?![A-Za-z@])\s*/g, entry?.number ?? "");
+        }
+        dom.append(renderLatexFragment(title, context));
+        return;
+      }
       const head = el("span", "cm-vis-env-title");
       let number = "";
       if (this.kind) {

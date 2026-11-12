@@ -159,9 +159,10 @@ test("\\let\\c@lemmaL\\c@theorem makes the counters count together, and its line
   // At the cursor the line is source again, so it can be edited.
   const at = doc.indexOf("\\let\\c@lemmaL") + 8;
   assert.match(visibleText(doc, at).text, /\\let\\c@lemmaL\\c@theorem/);
-  // A `\let` of anything else is not understood: it stays source.
+  // A `\let` of anything else is a definition in the body (audit 5): one inert unit that prints nothing, folded away like the others and shown at the cursor.
   const other = doc.replace("\\let\\c@remark\\c@theorem", "\\let\\foo\\bar");
-  assert.match(visibleText(other, 0).text, /\\let\\foo\\bar/);
+  assert.doesNotMatch(visibleText(other, 0).text, /\\let\\foo\\bar/);
+  assert.match(visibleText(other, other.indexOf("\\let\\foo") + 6).text, /\\let\\foo\\bar/);
 });
 
 test("a preamble's \\let of counter registers aliases the counters too (2611.11388)", () => {
