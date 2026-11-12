@@ -2,7 +2,7 @@
 // containment checks, and the walk the watcher and the import share.
 
 import { createHash, randomBytes } from "node:crypto";
-import { promises as fs, type Stats } from "node:fs";
+import { existsSync, promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 
 import { manifestPathError } from "../../../src/lib/collab/protocol/schema";
@@ -35,7 +35,39 @@ export function isIgnoredName(name: string): boolean {
   if (name.startsWith(".") || name.startsWith("~$")) return true;
   const lower = name.toLowerCase();
   if (lower === "thumbs.db" || lower === "desktop.ini" || lower === "__macosx") return true;
+  if (isSqliteSidecar(name)) return true;
   return /(\.tmp|\.swp|\.swx|\.crdownload|\.part|~)$/i.test(name);
+}
+
+/**
+ * The write-ahead log, shared-memory and rollback-journal files of a SQLite
+ * database (`app.db-wal`). Copying them apart from their database, or over an
+ * open connection, corrupts it, so they are never shared or materialized.
+ */
+export function isSqliteSidecar(name: string): boolean {
+  return /\.(db|db3|sqlite|sqlite3|sdb|s3db|sl3)-(wal|shm|journal)$/i.test(name);
+}
+
+/**
+ * Whether a file is a SQLite database that is open right now, judged by a
+ * sidecar (`-wal`, `-shm`, `-journal`) beside it. Such a database is not
+ * imported; a closed one (no sidecar) is shared like any other file.
+ */
+export function isActiveSqliteDatabase(root: string, relative: string): boolean {
+  if (!/\.(db|db3|sqlite|sqlite3|sdb|s3db|sl3)$/i.test(relative)) return false;
+  const absolute = path.join(root, ...relative.split("/"));
+  return ["-wal", "-shm", "-journal"].some((suffix) => existsSync(absolute + suffix));
+}
+
+/**
+ * Whether a change at this notebook-relative path is outside what the import
+ * ever shares (an ignored name in any segment, or the top-level archive), so
+ * the watcher need not schedule a scan for it. Shared by the watcher and walk.
+ */
+export function isExcludedPath(relative: string): boolean {
+  const segments = relative.split("/").filter(Boolean);
+  if (segments.length > 0 && segments[0].toLowerCase() === ARCHIVE_DIRECTORY) return true;
+  return segments.some(isIgnoredName);
 }
 
 /**
