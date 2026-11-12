@@ -107,33 +107,64 @@ async function readTranscriptFile(file: string) {
   }
 }
 
+/**
+ * What a correction kept on this computer was based on: the shared transcript's
+ * identity when it was made (it may be shared only while that is still current),
+ * `create` when there was none, `offline` when the host's state was unknown.
+ */
+type SharedBase = { fileId: string; blobHash: string } | { create: true } | { offline: true };
+type PendingBase = Exclude<SharedBase, { offline: true }>;
+
+/** Marks a local sidecar in a shared notebook as a correction not yet shared: it is read in preference to the companion. */
+const PENDING_KEY = "_liberaPendingShare";
+
+async function readSidecarFile(file: string): Promise<{ transcript: Transcript; pending: PendingBase | null } | null> {
+  try {
+    const value = JSON.parse(await readFile(file, "utf8"));
+    const transcript = parseTranscript(value);
+    if (!transcript) return null;
+    const mark = value?.[PENDING_KEY];
+    const pending = mark && typeof mark === "object" ? ("create" in mark ? { create: true as const } : typeof mark.fileId === "string" && typeof mark.blobHash === "string" ? { fileId: mark.fileId, blobHash: mark.blobHash } : { create: true as const }) : null;
+    return { transcript, pending };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
 /** The transcript, and whether the audio changed since it was made. */
-export async function readTranscript(relativePath: string): Promise<{ transcript: Transcript | null; stale: boolean; shared: boolean }> {
+export async function readTranscript(relativePath: string): Promise<{ transcript: Transcript | null; stale: boolean; shared: boolean; pending?: boolean }> {
   const { audio, sidecar, companion } = locate(relativePath);
   const stats = await stat(audio).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
   if (!stats?.isFile()) return { transcript: null, stale: false, shared: false };
-  const fromCompanion = companion ? await readTranscriptFile(companion) : null;
-  const transcript = fromCompanion ?? await readTranscriptFile(sidecar);
+  // A correction that could not be shared stays visible until it is shared or discarded.
+  const local = await readSidecarFile(sidecar);
+  const pending = Boolean(companion && local?.pending);
+  const fromCompanion = companion && !pending ? await readTranscriptFile(companion) : null;
+  const transcript = pending ? local!.transcript : fromCompanion ?? local?.transcript ?? null;
   if (!transcript) return { transcript: null, stale: false, shared: false };
   // Older transcripts only stored size. New transcripts use portable content
   // identity, detecting same-size replacements without penalizing copies/sync.
   const stale = stats.size !== transcript.audio.size || Boolean(transcript.audio.contentHash && await readFileContentHash(audio) !== transcript.audio.contentHash);
-  return { transcript, stale, shared: Boolean(fromCompanion) };
+  return { transcript, stale, shared: Boolean(fromCompanion), ...(pending ? { pending } : {}) };
 }
 
-async function writeLocal(file: string, transcript: Transcript, audio: string, signature: string, contentHash?: string) {
-  await writeJsonForSource(file, transcript, audio, signature, contentHash);
+async function writeLocal(file: string, transcript: Transcript, audio: string, signature: string, contentHash?: string, pending?: PendingBase) {
+  await writeJsonForSource(file, pending ? { ...transcript, [PENDING_KEY]: pending } : transcript, audio, signature, contentHash);
 }
+
+/** A shared-transcript write lost to a newer shared version. */
+class TranscriptShareConflict extends Error {}
 
 /**
  * Write atomically, so a crash never leaves half a transcript, and let Global
  * Search index it. In a shared notebook it goes to the members through the
  * collab host; when that is refused, it is kept on this computer.
  */
-export async function writeTranscript(relativePath: string, transcript: Transcript, options: { expectedSignature?: string; expectedContentHash?: string } = {}): Promise<{ shared: boolean }> {
+export async function writeTranscript(relativePath: string, transcript: Transcript, options: { expectedSignature?: string; expectedContentHash?: string; sharedBase?: SharedBase; throwOnConflict?: boolean } = {}): Promise<{ shared: boolean }> {
   // A file a notebook migration is moving is written after the migration.
   await assertNotMigrating(relativePath);
   const { audio, sidecar, companion } = locate(relativePath);
@@ -148,18 +179,23 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
   }
   await assertFileSignature(audio, signature);
   let shared = false;
-  if (companion) {
+  const base = options.sharedBase;
+  if (companion && !(base && "offline" in base)) {
     try {
       const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
-      await writeSharedBlob(transcriptCompanionPath(relativePath), new TextEncoder().encode(JSON.stringify(transcript)));
+      // An edit replaces only the exact shared version it was made from.
+      const precondition = base ? ("create" in base ? { createOnly: true } : { expectedFileId: base.fileId, expectedBlobHash: base.blobHash }) : {};
+      await writeSharedBlob(transcriptCompanionPath(relativePath), new TextEncoder().encode(JSON.stringify(transcript)), precondition);
       shared = true;
       // The shared copy supersedes one kept here before.
       await rm(sidecar, { force: true });
     } catch (error) {
+      if (base && !("offline" in base) && options.throwOnConflict && (error as { status?: number }).status === 409) throw new TranscriptShareConflict("The shared transcript changed.");
       console.warn(`The transcript of ${relativePath} is kept on this computer: ${error instanceof Error ? error.message : error}`);
     }
   }
-  if (!shared) await writeLocal(sidecar, transcript, audio, signature, options.expectedContentHash);
+  // In a shared notebook a copy kept here is a pending correction, read until it is shared or discarded.
+  if (!shared) await writeLocal(sidecar, transcript, audio, signature, options.expectedContentHash, companion ? (base && !("offline" in base) ? base : { create: true }) : undefined);
   await assertFileSignature(audio, signature);
   notifySearchChanges([relativePath]);
   return { shared };
@@ -169,15 +205,57 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
 export async function renameTranscriptSpeakers(relativePath: string, names: Record<string, string>) {
   // A file a notebook migration is moving is written after the migration.
   await assertNotMigrating(relativePath);
-  const { transcript } = await readTranscript(relativePath);
-  if (!transcript) throw new StorageError("This recording has no transcript yet.", 404);
-  transcript.speakers = transcript.speakers.map((speaker, index) => {
-    const requested = names[String(index)];
-    if (typeof requested !== "string") return speaker;
-    return { ...speaker, name: requested.trim().slice(0, 80) || `Speaker ${index + 1}` };
+  return mutateTranscript(relativePath, (transcript) => {
+    transcript.speakers = transcript.speakers.map((speaker, index) => {
+      const requested = names[String(index)];
+      if (typeof requested !== "string") return speaker;
+      return { ...speaker, name: requested.trim().slice(0, 80) || `Speaker ${index + 1}` };
+    });
+    return transcript;
   });
-  await writeTranscript(relativePath, transcript);
-  return transcript;
+}
+
+/**
+ * Applies an edit to the transcript's authoritative version: in a shared
+ * notebook the host's current bytes (a disk copy may lag another member's
+ * newer transcript), replaced only if they are still that version. When
+ * another member saves first, the edit is made again on their version.
+ */
+async function mutateTranscript(relativePath: string, apply: (transcript: Transcript) => Transcript) {
+  const attempts = 3;
+  for (let attempt = 1; ; attempt += 1) {
+    const { transcript, base } = await loadForEdit(relativePath);
+    if (!transcript) throw new StorageError("This recording has no transcript yet.", 404);
+    const edited = apply(transcript);
+    try {
+      await writeTranscript(relativePath, edited, { sharedBase: base, throwOnConflict: attempt < attempts });
+      return edited;
+    } catch (error) {
+      if (!(error instanceof TranscriptShareConflict)) throw error;
+    }
+  }
+}
+
+async function loadForEdit(relativePath: string): Promise<{ transcript: Transcript | null; base?: SharedBase }> {
+  const { companion, sidecar } = locate(relativePath);
+  const current = await readTranscript(relativePath);
+  if (!companion) return { transcript: current.transcript };
+  // A correction kept here continues from the version it was made on.
+  const local = await readSidecarFile(sidecar);
+  if (local?.pending) return { transcript: local.transcript, base: local.pending };
+  if (!current.transcript && !(await stat(locate(relativePath).audio).then((s) => s.isFile(), () => false))) return { transcript: null };
+  try {
+    const { readSharedBlob } = await import("@/lib/collab/shared-writes");
+    const authority = await readSharedBlob(transcriptCompanionPath(relativePath));
+    if (authority.contentBase64 === null) return { transcript: current.transcript, base: { create: true } };
+    const base = { fileId: authority.fileId!, blobHash: authority.blobHash! };
+    let parsed: Transcript | null = null;
+    try { parsed = parseTranscript(JSON.parse(Buffer.from(authority.contentBase64, "base64").toString("utf8"))); } catch { /* unreadable: replaced below */ }
+    return { transcript: parsed ?? current.transcript, base };
+  } catch {
+    // The host's state is unknown, so the edit is kept here rather than replacing it blindly.
+    return { transcript: current.transcript, base: { offline: true } };
+  }
 }
 
 /**
@@ -186,22 +264,24 @@ export async function renameTranscriptSpeakers(relativePath: string, names: Reco
  * the text.
  */
 export async function editTranscriptSegments(relativePath: string, value: unknown) {
-  const { transcript } = await readTranscript(relativePath);
-  if (!transcript) throw new StorageError("This recording has no transcript yet.", 404);
-  const segments = cleanSegments(value, transcript.speakers.length);
-  if (!segments) throw new StorageError("The transcript edits are not readable.");
-  transcript.segments = segments;
-  transcript.speakers = transcript.speakers.map((speaker, index) => ({ ...speaker, segments: segments.filter((segment) => segment.speaker === index).length }));
-  transcript.stats = { ...transcript.stats, words: countWords(segments) };
-  await writeTranscript(relativePath, transcript);
-  return transcript;
+  return mutateTranscript(relativePath, (transcript) => {
+    const segments = cleanSegments(value, transcript.speakers.length);
+    if (!segments) throw new StorageError("The transcript edits are not readable.");
+    transcript.segments = segments;
+    transcript.speakers = transcript.speakers.map((speaker, index) => ({ ...speaker, segments: segments.filter((segment) => segment.speaker === index).length }));
+    transcript.stats = { ...transcript.stats, words: countWords(segments) };
+    return transcript;
+  });
 }
 
 export async function deleteTranscript(relativePath: string) {
   const { sidecar, companion } = locate(relativePath);
-  if (companion && await stat(companion).then(() => true, () => false)) {
+  if (companion) {
     const { deleteSharedEntry } = await import("@/lib/collab/shared-writes");
-    await deleteSharedEntry(transcriptCompanionPath(relativePath));
+    // The manifest decides whether there is a companion; the disk may not have it yet.
+    await deleteSharedEntry(transcriptCompanionPath(relativePath)).catch(async (error: unknown) => {
+      if (await stat(companion).then(() => true, () => false)) throw error;
+    });
   }
   await rm(sidecar, { force: true });
   notifySearchChanges([relativePath]);
