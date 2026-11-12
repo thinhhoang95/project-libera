@@ -18,7 +18,7 @@ export const SYMBOL_COMMANDS: Record<string, string> = {
   // amssymb's tick, in text (results tables).
   "\\checkmark": "✓",
   "\\textbackslash": "\\", "\\textasciitilde": "~", "\\textasciicircum": "^", "\\textbar": "|", "\\textless": "<", "\\textgreater": ">",
-  "\\textquoteleft": "‘", "\\textquoteright": "’", "\\textquotedblleft": "“", "\\textquotedblright": "”", "\\guillemotleft": "«", "\\guillemotright": "»",
+  "\\textquoteleft": "‘", "\\lq": "‘", "\\rq": "’","\\textquoteright": "’", "\\textquotedblleft": "“", "\\textquotedblright": "”", "\\guillemotleft": "«", "\\guillemotright": "»",
   "\\pounds": "£", "\\euro": "€", "\\textdegree": "°", "\\textmu": "µ", "\\i": "ı", "\\j": "ȷ", "\\ss": "ß", "\\ae": "æ", "\\AE": "Æ",
   "\\oe": "œ", "\\OE": "Œ", "\\o": "ø", "\\O": "Ø", "\\aa": "å", "\\AA": "Å", "\\l": "ł", "\\L": "Ł",
   "\\LaTeX": "LaTeX", "\\TeX": "TeX", "\\LaTeXe": "LaTeX2ε", "\\BibTeX": "BibTeX", "\\quad": " ", "\\qquad": "  ",

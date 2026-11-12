@@ -207,6 +207,25 @@ function withoutLabelBraces(label: string) {
   return /[\\$]/.test(label) ? label : label.replace(/[{}]/g, "");
 }
 
+/**
+ * An equation's `\tag{\textbf{i}}` as the text a reference prints (math.AP 2611.12463): styles outside a formula give their
+ * text (a chip is plain text), so `\ref` never shows a raw command; a formula (`$\mathcal{I}$`) stays.
+ */
+export function plainTagText(tag: string) {
+  return tag.split(/(\$[^$]*\$)/).map((part, index) => {
+    if (index % 2) return part;
+    let text = part;
+    for (let guard = 0; guard < 6; guard++) {
+      const next = text
+        .replace(/\\(?:textbf|textit|textrm|textup|textsl|textsf|texttt|textsc|textmd|textnormal|emph|text|mbox)\s*\{([^{}]*)\}/g, "$1")
+        .replace(/\{\s*\\(?:bf|it|rm|sf|tt|sl|em|sc)\s+([^{}]*)\}/g, "$1");
+      if (next === text) break;
+      text = next;
+    }
+    return text;
+  }).join("");
+}
+
 /** The label an `enumerate` item shows: `1.`, `(a)`, or a custom `[(i)]` / `label=(\alph*)` template. */
 export function enumerateItemLabel(count: number, depth: number, template: string | null) {
   if (template) {
@@ -1066,7 +1085,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const tag = open ? readGroup(row, open.index + open[0].length - 1, TEX_GROUPS)?.content.trim() : undefined;
           if (tag === undefined) return null;
           const counted = /^\s*\\theequation\s*$/.test(tag);
-          return { number: counted ? format("equation") : tag, tagged: !counted };
+          return { number: counted ? format("equation") : plainTagText(tag), tagged: !counted };
         };
         if (name === "EquationEnvironment") {
           let number: string | null = null;
@@ -1221,7 +1240,14 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       }
       if (name === "Label") {
         const argument = node.getChild("LabelArgument");
-        if (!argument) return false;
+        if (!argument) {
+          // cleveref's `\label[Property]{key}` (cs.CC 2611.07413, cs.GT 2611.05777): the grammar stops at the `[`; the label is the group
+          // after it, and the optional text is its cleveref type.
+          const typed = /^\[([^\]\[{}]*)\]\s*\{([^{}]*)\}/.exec(read(node.to, Math.min(tree.length, node.to + 300)));
+          const typedTarget = currentTarget();
+          if (typed && typed[2].trim() && typedTarget && !lineLabelAt.has(node.from)) labels.set(typed[2].trim(), typed[1].trim() ? { ...typedTarget, type: typed[1].trim() } : typedTarget);
+          return false;
+        }
         if (lineLabelAt.has(node.from)) return false;
         const key = read(argument.from, argument.to).replace(/^\{|\}$/g, "").trim();
         const target = currentTarget();
@@ -1348,6 +1374,14 @@ const FANCYREF_NAMES: Record<string, string> = {
   sec: "section", chap: "chapter", fig: "figure", tab: "table", eq: "equation", enum: "item", fn: "footnote", part: "part",
 };
 
+/** The words of jmlr's `\<name>ref` commands (`\tablerefname`, `\tablesrefname`). */
+export const JMLR_REF_WORDS: Record<string, [string, string]> = {
+  section: ["Section", "Sections"], equation: ["Equation", "Equations"], table: ["Table", "Tables"], figure: ["Figure", "Figures"],
+  algorithm: ["Algorithm", "Algorithms"], theorem: ["Theorem", "Theorems"], lemma: ["Lemma", "Lemmas"], remark: ["Remark", "Remarks"],
+  corollary: ["Corollary", "Corollaries"], definition: ["Definition", "Definitions"], conjecture: ["Conjecture", "Conjectures"],
+  axiom: ["Axiom", "Axioms"], example: ["Example", "Examples"], appendix: ["Appendix", "Appendices"], part: ["Part", "Parts"],
+};
+
 /** What a reference command shows for a label: `\ref` "2.1", `\eqref` "(3)", `\cref` "fig. 1", `\Cref` "Figure 1", `\autoref` "section 2". */
 export function referenceText(command: string, targets: Array<LabelTarget | null>, defs: LatexDefinitions, keys: string[]) {
   const name = command.replace(/^\\/, "").replace(/\*$/, "");
@@ -1356,6 +1390,13 @@ export function referenceText(command: string, targets: Array<LabelTarget | null
   if (name === "eqref") return numbers.map((number) => `(${number})`).join(", ");
   if (name === "pageref" || name === "vpageref") return targets.map((target) => (target?.kind === "page" ? target.number : "?")).join(", ");
   if (name === "nameref") return first?.title ?? numbers[0];
+  // jmlr's `\tableref{a,b}`, `\sectionref{x}`, `\appendixref{y}` (jmlrutils.sty's `\objectref`): "Tables 1 and 2", "Appendix A".
+  const word = /ref$/.test(name) && Object.hasOwn(JMLR_REF_WORDS, name.replace(/ref$/, "")) ? JMLR_REF_WORDS[name.replace(/ref$/, "")] : null;
+  if (word) {
+    const list = numbers.map((number) => (name === "equationref" ? `(${number})` : number));
+    const joined = list.length > 2 ? `${list.slice(0, -1).join(", ")} and ${list.at(-1)}` : list.join(" and ");
+    return `${word[list.length > 1 ? 1 : 0]} ${joined}`;
+  }
   // fancyref's `\fref{sec:intro}` and `\Fref{fig:a}`: the word comes from the label's prefix.
   if (name === "fref" || name === "Fref") {
     const word = FANCYREF_NAMES[keys[0]?.split(":")[0] ?? ""];

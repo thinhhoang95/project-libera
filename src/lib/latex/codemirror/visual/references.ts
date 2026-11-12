@@ -114,7 +114,8 @@ export function plainTexText(text: string) {
     const command = /^\\(?:[A-Za-z]+ ?|.)/.exec(text.slice(i))?.[0] ?? "\\";
     const name = command.trimEnd();
     const symbol = CONTROL_SYMBOLS[name] ?? SYMBOL_COMMANDS[name];
-    out += symbol ?? name;
+    // A command with no printed form gives its argument's text, never its own name (`n\textsuperscript{o}`, 2611.11859).
+    out += symbol ?? (/^\\[A-Za-z]/.test(name) ? "" : name);
     i += command.length;
   }
   return out;
@@ -190,6 +191,8 @@ const NOTE_MATH_SYMBOLS: Record<string, string> = {
 const NOTE_MATH_SPACED = /^\\(?:pm|mp|times|cdot|sim|approx|simeq|le|leq|ge|geq|ne|neq|to)$/;
 const NOTE_SUPERSCRIPTS: Record<string, string> = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹", "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼", "(": "⁽", ")": "⁾", n: "ⁿ", i: "ⁱ" };
 const NOTE_SUBSCRIPTS: Record<string, string> = { "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉", "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎" };
+const NOTE_SUPER_LETTERS: Record<string, string> = { ...NOTE_SUPERSCRIPTS, o: "ᵒ", e: "ᵉ", r: "ʳ", s: "ˢ", t: "ᵗ", d: "ᵈ", a: "ᵃ", m: "ᵐ", h: "ʰ", " ": " " };
+const NOTE_SUB_LETTERS: Record<string, string> = { ...NOTE_SUBSCRIPTS, a: "ₐ", e: "ₑ", o: "ₒ", i: "ᵢ", n: "ₙ", r: "ᵣ", x: "ₓ" };
 /** Commands of a formula that print their argument's text (`{\rm mas\,yr^{-1}}`). */
 const NOTE_MATH_WRAPPERS = /^\\(?:mathrm|mathit|mathbf|mathsf|mathtt|mathnormal|text|textrm|textit|textbf|mbox|operatorname)$/;
 const NOTE_MATH_SPACES = /^\\(?:,|;|:|>| |quad|qquad|thinspace|enspace)$/;
@@ -318,6 +321,16 @@ export function citationNoteText(note: string, depth = 0, cite?: NestedCite): st
     }
     const group = readGroup(note, after);
     if (/^\\(?:hspace|hskip)\*?$/.test(command) && group) { i = group.end; continue; }
+    // `n\textsuperscript{o} 10` (2611.11859): a script of letters, as the superscript characters when they all exist.
+    if (/^\\text(?:super|sub)script$/.test(command) && group) {
+      const inner = citationNoteText(group.content, depth + 1, cite);
+      if (inner === null) return null;
+      const map = command === "\\textsuperscript" ? NOTE_SUPER_LETTERS : NOTE_SUB_LETTERS;
+      const letters = [...inner];
+      out += letters.every((letter) => map[letter] !== undefined) ? letters.map((letter) => map[letter]).join("") : inner;
+      i = group.end;
+      continue;
+    }
     if (NOTE_WRAPPERS.test(command) && group) {
       const inner = citationNoteText(group.content, depth + 1, cite);
       if (inner === null) return null;
@@ -442,8 +455,53 @@ export function referenceChipText(command: string, keys: string[], numbering: La
   return referenceText(command, targets, defs, keys);
 }
 
+/** prettyref's usual formats, by the label's prefix (`eq:`, `sec:`): the text with `#` for the label's number. */
+const PRETTYREF_DEFAULTS: Record<string, string> = {
+  eq: "(#)", sec: "Section #", subsec: "Section #", chap: "Chapter #", fig: "Figure #", tab: "Table #", thm: "Theorem #", lem: "Lemma #", prop: "Proposition #",
+  cor: "Corollary #", def: "Definition #", rem: "Remark #", ex: "Example #", app: "Appendix #", alg: "Algorithm #", ass: "Assumption #", claim: "Claim #",
+};
+const documentRefFormats = new WeakMap<Text, Map<string, string>>();
+/** The document's `\newrefformat{eq}{(\ref{#1})}` (prettyref), by prefix, cached per document version. */
+function refFormatsInDocument(doc: Text) {
+  let found = documentRefFormats.get(doc);
+  if (found) return found;
+  found = new Map();
+  const text = doc.sliceString(0, Math.min(doc.length, 400_000)).replace(/(^|[^\\])%[^\n]*/g, "$1");
+  for (const match of text.matchAll(/\\newrefformat\s*\{([^{}]*)\}\s*\{/g)) {
+    const group = readGroup(text, match.index + match[0].length - 1);
+    if (group) found.set(match[1].trim(), group.content);
+  }
+  documentRefFormats.set(doc, found);
+  return found;
+}
+
+/**
+ * prettyref's `\prettyref{eq:x}` (econ.TH 2611.01431): the label's prefix picks the format (`\newrefformat`, else the usual
+ * word: "Section 2", "(3)"), the number comes from the label. Null when the prefix has no format, or the format holds anything
+ * but its reference and plain text: the command then stays source.
+ */
+export function prettyrefText(state: EditorState, keys: string[]): string | null {
+  const formats = refFormatsInDocument(state.doc);
+  const texts: string[] = [];
+  for (const key of keys) {
+    const prefix = key.split(":")[0].trim();
+    const own = key.includes(":") ? formats.get(prefix) : undefined;
+    const usual = key.includes(":") ? PRETTYREF_DEFAULTS[prefix] : undefined;
+    const number = referenceChipText("\\ref", [key], visualNumbering(state), visualAux(state), visualDefinitions(state));
+    let text: string | null = null;
+    if (own !== undefined) {
+      const filled = own.replace(/\\ref\s*\{#1\}/g, () => number).replace(/\\(?:,|;|:| )/g, " ").replace(/~/g, " ").replace(/[{}]/g, "");
+      text = /[\\#]/.test(filled) ? null : filled;
+    } else if (usual !== undefined && Object.hasOwn(PRETTYREF_DEFAULTS, prefix)) text = usual.replace("#", () => number);
+    if (text === null) return null;
+    texts.push(text);
+  }
+  return texts.length ? texts.join(", ") : null;
+}
+
 /** Reference and citation text from an editor state. */
 export function stateReferenceText(state: EditorState, command: string, keys: string[]) {
+  if (command === "\\prettyref") return prettyrefText(state, keys) ?? keys.join(", ");
   return referenceChipText(command, keys, visualNumbering(state), visualAux(state), visualDefinitions(state));
 }
 
