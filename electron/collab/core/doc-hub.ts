@@ -35,6 +35,7 @@ import { Emitter, consoleLogger, systemClock } from "./clock";
 import type { CompactionTarget, Compactor } from "./compaction";
 import { OutboundQueue, hasStructs, type OutboundLimits, type OutboundTransport } from "./outbound";
 import type { ReplicaPort } from "./ports";
+import { writeRecoveryFile } from "./recovery";
 import { StatusTracker, type StatusInputs } from "./status";
 import type { DocKindTag, DocMetaRow, HostStore, ReadOnlyReason, RejectedEditRow } from "./store";
 
@@ -91,6 +92,11 @@ export interface DocHubOptions {
   logger?: Logger;
   limits?: Partial<OutboundLimits>;
   compactor?: Compactor | null;
+  /**
+   * Directory for updates that could not be written to SQLite when the hub
+   * closes. The host replays them into the store on its next start.
+   */
+  recoveryDir?: string;
 }
 
 interface CommittedUpdate {
@@ -200,6 +206,13 @@ export class DocHub implements CompactionTarget {
   private connectionDetail: string | undefined;
   private persistError: string | undefined;
   private persistRetry: TimerHandle | null = null;
+  private readonly recoveryDir: string | undefined;
+  /** A remote update could not be stored: ignore live remotes and re-open from the durable state. */
+  private resyncPending = false;
+  private resyncTimer: TimerHandle | null = null;
+  private resyncError: string | undefined;
+  /** A local update exceeded the server limit; shown until the document is closed. */
+  private unsendableDetail: string | undefined;
   private lastLocalUpdate: { origin: Origin; update: Uint8Array } | null = null;
   private closed = false;
 
@@ -209,6 +222,7 @@ export class DocHub implements CompactionTarget {
     this.clock = options.clock ?? systemClock;
     this.logger = options.logger ?? consoleLogger;
     this.compactor = options.compactor ?? null;
+    this.recoveryDir = options.recoveryDir;
 
     const stored = this.store.getDocMeta(this.docId);
     this.kind = options.kind ?? stored?.kind ?? "file";
@@ -235,6 +249,14 @@ export class DocHub implements CompactionTarget {
       limits: {
         batchWindowMs: options.limits?.batchWindowMs ?? SyncLimits.batchWindowMs,
         batchMaxBytes: options.limits?.batchMaxBytes ?? SyncLimits.batchMaxBytes,
+        ...(options.limits?.maxUpdateBytes !== undefined ? { maxUpdateBytes: options.limits.maxUpdateBytes } : {}),
+        ...(options.limits?.maxOutstandingBatches !== undefined ? { maxOutstandingBatches: options.limits.maxOutstandingBatches } : {}),
+        ...(options.limits?.maxOutstandingBytes !== undefined ? { maxOutstandingBytes: options.limits.maxOutstandingBytes } : {}),
+      },
+      onUnsendable: (update) => {
+        this.unsendableDetail = `A change to this document (${Math.ceil(update.bytes / 1024)} KiB) is larger than the ${Math.floor(update.limit / 1024)} KiB sync limit and cannot be synced. It is kept on this device; split the edit into smaller changes.`;
+        this.broadcast({ t: "error", docId: this.docId, message: this.unsendableDetail });
+        this.status.changed(true);
       },
     });
     this.status = new StatusTracker(this.clock, () => this.statusInputs());
@@ -381,6 +403,11 @@ export class DocHub implements CompactionTarget {
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** Local updates applied in memory but not yet written to SQLite (0 means every accepted edit is durable). */
+  get unpersistedCount(): number {
+    return this.unpersisted.length;
   }
 
   get readOnlyReason(): ReadOnlyReason | null {
@@ -573,7 +600,13 @@ export class DocHub implements CompactionTarget {
         return;
       }
       case "server":
-        if (origin.persistEffective) this.persistAcked(subdoc, update, origin.serverSeq, { kind: "server" });
+        if (origin.persistEffective) {
+          try {
+            this.persistAcked(subdoc, update, origin.serverSeq, { kind: "server" });
+          } catch {
+            // Recorded by persistAcked; a resync re-opens from the durable state.
+          }
+        }
         this.broadcast({ t: "update", docId: this.docId, subdoc, update, origin: "server" });
         this.changes.emit({ subdoc, update, origin: "server" });
         return;
@@ -631,9 +664,37 @@ export class DocHub implements CompactionTarget {
     serverSeq: number,
     origin: { kind: "server" } | { kind: "remote"; userId: string; clientId: string; provenance?: Provenance },
   ): void {
-    const localSeq = this.store.appendAcked(this.docId, subdoc, update, origin, serverSeq);
+    let localSeq: number;
+    try {
+      localSeq = this.store.appendAcked(this.docId, subdoc, update, origin, serverSeq);
+    } catch (error) {
+      this.noteRemotePersistFailure(error);
+      throw error;
+    }
+    this.resyncError = undefined;
     this.hasData = true;
     this.noteAppended(subdoc, localSeq, update.length);
+  }
+
+  /**
+   * A server update could not be stored. The server will not send it again,
+   * so later live updates are ignored and the document re-opens from its last
+   * durable state vector once storage may have recovered.
+   */
+  private noteRemotePersistFailure(error: unknown): void {
+    this.resyncError = error instanceof Error ? error.message : String(error);
+    this.logger.error(`Could not persist a server update for ${this.docId}; it will be fetched again`, error);
+    this.broadcast({ t: "error", docId: this.docId, message: `Could not save on this device: ${this.resyncError}` });
+    this.resyncPending = true;
+    if (!this.resyncTimer && !this.closed) {
+      this.resyncTimer = this.clock.setTimeout(() => {
+        this.resyncTimer = null;
+        if (this.closed || !this.resyncPending) return;
+        this.resyncPending = false;
+        this.link?.reopen();
+      }, 1000);
+    }
+    this.status.changed();
   }
 
   private noteAppended(subdoc: Subdoc, localSeq: number, bytes: number): void {
@@ -675,6 +736,10 @@ export class DocHub implements CompactionTarget {
 
   /** The socket finished hello/welcome (transport) or dropped (null). */
   connectionChanged(transport: HubTransport | null, detail?: string): void {
+    // Every connection opens the document from its durable state again.
+    this.resyncPending = false;
+    if (this.resyncTimer) this.clock.clearTimeout(this.resyncTimer);
+    this.resyncTimer = null;
     this.transport = transport;
     this.link = transport;
     this.connected = transport !== null;
@@ -712,6 +777,12 @@ export class DocHub implements CompactionTarget {
       if (!doc) continue;
       serverStateVectors.set(entry.subdoc, entry.stateVector);
       this.applyServerUpdate(entry.subdoc, doc, entry.diff, message.serverSeq);
+    }
+    if (this.resyncPending) {
+      // The server's state did not reach disk: do not mark the document
+      // loaded or advance its server sequence; the resync re-opens it.
+      this.status.changed();
+      return;
     }
     this.store.noteServerSeq(this.docId, message.serverSeq);
     this.hasData = true;
@@ -799,12 +870,18 @@ export class DocHub implements CompactionTarget {
   handleRemote(message: RemoteMessage): void {
     const doc = this.docs.get(message.subdoc);
     if (!doc || this.closed) return;
-    this.persistAcked(message.subdoc, message.update, message.serverSeq, {
-      kind: "remote",
-      userId: message.userId,
-      clientId: message.clientId,
-      ...(message.provenance ? { provenance: message.provenance } : {}),
-    });
+    // After a failed append, later broadcasts could depend on the missing one.
+    if (this.resyncPending) return;
+    try {
+      this.persistAcked(message.subdoc, message.update, message.serverSeq, {
+        kind: "remote",
+        userId: message.userId,
+        clientId: message.clientId,
+        ...(message.provenance ? { provenance: message.provenance } : {}),
+      });
+    } catch {
+      return;
+    }
     try {
       Y.applyUpdate(doc, message.update, REMOTE_ORIGIN);
     } catch (error) {
@@ -932,7 +1009,8 @@ export class DocHub implements CompactionTarget {
       lastAckAt: this.lastAckAt,
       readOnlyReason: this.meta.readOnlyReason,
       ...(this.connectionDetail ? { connectionDetail: this.connectionDetail } : {}),
-      ...(this.persistError ? { persistError: this.persistError } : {}),
+      ...(this.persistError || this.resyncError ? { persistError: (this.persistError ?? this.resyncError) as string } : {}),
+      ...(this.unsendableDetail ? { blockedDetail: this.unsendableDetail } : {}),
     };
   }
 
@@ -950,11 +1028,19 @@ export class DocHub implements CompactionTarget {
   /** Closes the hub. Replicas still attached get `closed` and their ports are closed. */
   close(reason = "hub-closed"): void {
     if (this.closed) return;
-    // Keep retrying a failed commit one last time; anything still failing
-    // stays only in replicas' memory, which the error already reported.
+    // Keep retrying a failed commit one last time; anything still failing is
+    // written to the recovery directory so the next start can replay it.
     this.drainUnpersisted();
+    if (this.unpersisted.length > 0) {
+      const saved = this.recoveryDir
+        ? writeRecoveryFile(this.recoveryDir, this.docId, this.unpersisted, this.clock.now(), this.logger)
+        : false;
+      if (saved) this.unpersisted.length = 0;
+      else this.logger.error(`Closing ${this.docId} with ${this.unpersisted.length} local updates that could not be saved anywhere`);
+    }
     this.closed = true;
     if (this.persistRetry) this.clock.clearTimeout(this.persistRetry);
+    if (this.resyncTimer) this.clock.clearTimeout(this.resyncTimer);
     for (const replica of [...this.replicas]) {
       replica.post({ t: "closed", docId: this.docId, reason });
       replica.detach(true);

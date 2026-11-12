@@ -28,6 +28,8 @@ export interface StatusInputs {
   connectionDetail?: string;
   /** Last local persistence failure, shown until the next successful commit. */
   persistError?: string;
+  /** A permanent problem with this document's sync (for example an update over the size limit). */
+  blockedDetail?: string;
 }
 
 export function computeStatus(inputs: StatusInputs, now: number): SyncStatus {
@@ -60,6 +62,7 @@ export function computeStatus(inputs: StatusInputs, now: number): SyncStatus {
   } else {
     state = "saved-remote";
   }
+  if (inputs.blockedDetail) detail = inputs.blockedDetail;
   if (inputs.persistError) detail = `Could not save on this device: ${inputs.persistError}`;
   return detail ? { state, ...base, detail } : { state, ...base };
 }
