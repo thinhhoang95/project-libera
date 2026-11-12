@@ -141,6 +141,18 @@ export class LiteralTextWidget extends VisualWidget {
   }
 }
 
+/** A command's printed text (Pandoc's `\CSLLeftMargin{{[}1{]} }`, pifont's circled digit): a click shows the command. */
+export class PrintedTextWidget extends VisualWidget {
+  constructor(readonly printed: string, readonly source: string) { super(`printed\u0000${printed}\u0000${source}`); }
+  toDOM(view: EditorView) {
+    const span = el("span", "cm-vis-symbol", this.printed);
+    span.title = this.source;
+    revealOnClick(view, span, this.source.length);
+    return span;
+  }
+  ignoreEvent() { return true; }
+}
+
 /** `\\`: a faint mark where the line breaks. */
 export class LineBreakWidget extends VisualWidget {
   constructor() { super("br"); }
@@ -233,10 +245,11 @@ export class MathWidget extends VisualWidget {
 export class ChipWidget extends VisualWidget {
   /** `index`: an `\index{…}` or `\glossary{…}` entry, which the PDF does not show where it is: a small grey tag, as a label. */
   /** `more`: a multicite's other groups (`\parencites[12]{a}[34]{b}`), each with its keys and notes. */
-  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number, readonly more: ReadonlyArray<{ keys: string[]; notes: { pre?: string; post?: string } }> = []) {
-    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}${more.length ? `\u0000${JSON.stringify(more)}` : ""}`);
+  constructor(readonly kind: "cite" | "ref" | "label" | "index", readonly command: string, readonly keys: string[], readonly notes: { pre?: string; post?: string }, readonly length: number, readonly more: ReadonlyArray<{ keys: string[]; notes: { pre?: string; post?: string } }> = [], readonly fixed?: string) {
+    super(`${kind}\u0000${command}\u0000${keys.join(",")}\u0000${notes.pre ?? ""}\u0000${notes.post ?? ""}\u0000${length}${more.length ? `\u0000${JSON.stringify(more)}` : ""}${fixed === undefined ? "" : `\u0000fixed:${fixed}`}`);
   }
   private text(view: EditorView) {
+    if (this.fixed !== undefined) return this.fixed;
     if (this.kind === "label") return this.keys[0];
     // makeidx's `sort@shown!sub` entries: what each level shows.
     if (this.kind === "index") return this.keys[0].split("!").map((level) => level.slice(level.lastIndexOf("@") + 1).replace(/\|.*$/, "")).join(" › ");
@@ -292,6 +305,7 @@ export class ChipWidget extends VisualWidget {
       event.preventDefault();
       const from = widgetPos(view, dom);
       if (from === null) return;
+      if (this.fixed !== undefined) { revealSourceAt(view, from, from + this.length); return; }
       if (this.kind !== "ref") { editKeysAt(view, from + this.length - 1); return; }
       if (event.altKey) { revealSourceAt(view, from, from + this.length); return; }
       if (followReference(view, this.keys[0])) return;

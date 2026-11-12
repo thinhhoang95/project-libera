@@ -243,6 +243,32 @@ const MATH_ENVIRONMENT_NAMES = /^(?:equation|align|alignat|flalign|gather|multli
 const DEFINING = /^\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator)\*?\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)/;
 
 /** The use of a macro at `index` (which holds a backslash), expanded, or null when it is not a usable macro. */
+/**
+ * A box macro's measuring, which typesets nothing: `\setbox0=\hbox{#1}%` and `\setlength{\@tempdima}{\dimexpr\wd0+13pt}` before a
+ * `tcolorbox` (cs.SE 2611.11192's `\mybox`). Text mode only reads what follows.
+ */
+function withoutMeasuring(body: string) {
+  if (!body.includes("\\setbox") && !body.includes("\\@temp")) return body;
+  const pattern = /\\setbox\s*\\?[A-Za-z0-9@]+\s*=?\s*\\[hv]box\s*(?=\{)|\\setlength\s*\{\s*\\@temp[a-z]+\s*\}\s*(?=\{)/g;
+  let output = "";
+  let copied = 0;
+  for (let match = pattern.exec(body); match; match = pattern.exec(body)) {
+    const group = readGroup(body, match.index + match[0].length, TEX_GROUPS);
+    if (!group) break;
+    // The comment that ends its line goes with it.
+    let end = group.end;
+    const comment = /^[ \t]*%[^\n]*\n?[ \t]*/.exec(body.slice(end));
+    if (comment) end += comment[0].length;
+    output += body.slice(copied, match.index);
+    copied = end;
+    pattern.lastIndex = end;
+  }
+  return output + body.slice(copied);
+}
+
+/** TeX's own machinery left in an expansion: `\csname`, `\expandafter`, registers, and `@` internals (`\@ifundefined`, `\f@size`, `\strip@pt`). */
+const TEX_INTERNALS = /\\(?:csname|endcsname|expandafter|noexpand|edef|xdef|gdef|dimen|skip|count|setbox|dimexpr|numexpr|glueexpr)(?![A-Za-z@])|\\(?:[A-Za-z]+@[A-Za-z@]*|@[A-Za-z][A-Za-z@]*)/;
+
 function expandUse(source: string, index: number, context: Context, depth: number): { text: string; end: number } | null | false {
   // A control word, or a control symbol the document defines (GRF's `\newcommand{\1}{\mathbf{1}}`).
   const match = /^\\([A-Za-z@]+|[0-9!*+|<>?()[\]])/.exec(source.slice(index, index + 80));
@@ -259,7 +285,7 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   // A `\let` copy of LaTeX's own command saved before the document redefines it (`\let\oldemph\emph`, then
   // `\renewcommand{\emph}[1]{\textcolor{red}{\oldemph{#1}}}`) stands for the original, not the redefinition.
   if (macro.alias && new RegExp(String.raw`\\${match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z@])`).test(macroAt(context.defs, macro.body.slice(1), context.pos)?.body ?? "")) return { text: macro.body, end: read.end };
-  let body = evaluateConditionals(substituteArguments(macro.body, read.args));
+  let body = withoutMeasuring(evaluateConditionals(substituteArguments(macro.body, read.args)));
   // `\newcommand{\foo}{\@ifstar{\foo@star}{\foo@plain}}`: the starred or plain form, by whether a `*` follows the use.
   let end = read.end;
   const star = !macro.arity && !macro.spec ? /^\s*\\@ifstar(?![A-Za-z@])/.exec(body) : null;
@@ -277,6 +303,9 @@ function expandUse(source: string, index: number, context: Context, depth: numbe
   }
   const inner = expandText(body, context, depth + 1);
   if (inner === null) return false;
+  // An expansion that still holds TeX's internals (`\csname bn@#1\endcsname`, `\@ifundefined`, `\@latex@warning`, `\dimen@`: a
+  // macro that builds a box from registers, stat.ML 2611.11386's `\bn{…}`) would be drawn as debris: the use stays source.
+  if (context.mode === "text" && TEX_INTERNALS.test(inner)) return false;
   // A control word right after the expansion must not run into it (`\x y` → `\alpha y`, not `\alphay`).
   const next = source[end] ?? "";
   const glue = /[A-Za-z@]$/.test(inner) && /\\[A-Za-z@]+$/.test(inner) && /[A-Za-z@]/.test(next) ? " " : "";
