@@ -2173,6 +2173,11 @@ export class SharedProject {
             const api = this.ctx.host.api;
             if (!api) throw new ControlError(401, "needs-sign-in", "Sign in to the collaboration server.");
             const hash = sha256(bytes);
+            // Identical bytes: nothing to upload, and no manifest change to sync.
+            if (hash === existing.blobHash) {
+              paths.push(computeLayout(this.entries.values()).paths.get(existing.fileId) ?? existing.path);
+              break;
+            }
             // Upload first: a manifest entry must never name a blob the server lacks.
             await api.uploadBlob(this.info.projectId, bytes, existing.mime ?? mimeForPath(existing.path));
             const current = this.readEntries().get(existing.fileId);
