@@ -24,7 +24,7 @@ export type XparseArgument = { type: "m" } | { type: "o" } | { type: "O"; defaul
   | { type: "R"; open: string; close: string; default: string } | { type: "D"; open: string; close: string; default: string }
   | { type: "e"; token: string; group: number; default?: string }
   /** A TeX `\def` parameter with a delimiter (`\def\set#1:#2{…}`): the tokens up to `delimiter`, outside braces. */
-  | { type: "u"; delimiter: string };
+  | { type: "u"; delimiter: string; /** Literal text that must follow the name at once, with no argument (`\def\+Bound{…}`). */ prefix?: boolean };
 
 export type LatexMacro = {
   name: string;
@@ -485,6 +485,8 @@ function highestParameter(body: string) {
  */
 function delimitedSpec(parameters: string, body: string): XparseArgument[] | null {
   const text = parameters.trim();
+  // `\def\+Bound{…}`: plain characters after the name, no parameter. A use must continue with exactly that text.
+  if (text && !text.includes("#") && !/[\\{}%]/.test(text)) return highestParameter(body) === 0 ? [{ type: "u", delimiter: text, prefix: true }] : null;
   if (!text.startsWith("#")) return null;
   const spec: XparseArgument[] = [];
   const pattern = /#([1-9])([^#{}%]*)/y;
@@ -1002,6 +1004,8 @@ function mathSymbolBody(mathClass: string, font: string, position: number): stri
     else if (font === "operators" && /[!()*+,\-./:;=?@[\]]/.test(char)) symbol = `\\text{${char}}`;
   } else if (font === "largesymbols" || font === "cmlargesymbols") symbol = LARGE_SYMBOLS[position] ?? null;
   else if (font === "AMSb" && /[A-Z]/.test(char)) symbol = `\\mathbb{${char}}`;
+  // The Shafarevich-Tate group's Cyrillic Sha, the OT2 encoding's letter X (`\DeclareSymbolFont{cyrletters}{OT2}{wncyr}{m}{n}`, 2611.11566).
+  else if (font === "cyrletters" && (position === 0x58 || position === 0x78)) symbol = `\\mathord{\\text{${position === 0x58 ? "Ш" : "ш"}}}`;
   if (!symbol) return null;
   const wrapper = MATH_CLASSES[mathClass.replace(/^\\/, "").trim()];
   if (wrapper === undefined) return null;
