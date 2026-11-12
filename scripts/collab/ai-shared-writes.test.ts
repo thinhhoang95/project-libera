@@ -8,6 +8,7 @@
 // against the real host and server.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -265,6 +266,11 @@ class FakeHost {
         });
         return this.send(response, 200, { paths: [liberaPath] });
       }
+    }
+    if (request.method === "GET" && /\/projects\/[^/]+\/file-blob$/.test(url.pathname)) {
+      // The manifest's blob at a path, or none (then the disk copy is the only one).
+      const bytes = this.blobs.get(url.searchParams.get("path") ?? "");
+      return this.send(response, 200, bytes ? { fileId: "fil_stub", blobHash: createHash("sha256").update(bytes).digest("hex"), contentBase64: bytes.toString("base64") } : { contentBase64: null });
     }
     return this.send(response, 404, { error: { code: "not-found", message: `No route ${request.method} ${url.pathname}` } });
   }

@@ -44,6 +44,7 @@ import {
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { getFileNode, getTree } from "@/lib/storage/tree";
 import { readLiberaFile } from "@/lib/storage/files";
+import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
@@ -544,6 +545,41 @@ async function savedFile(liberaPath: string, size: number, content: () => Promis
   return isTextFileType(file.fileType) ? { file, content: await content() } : { file, rawUrl: rawFileUrl(file.path) };
 }
 
+/**
+ * Whether the host's manifest holds a file (or, with `folder`, a folder) at
+ * this path. A follower's disk can lag the manifest, so the disk saying "not
+ * here" is not the shared notebook's answer. Any failure to ask answers no.
+ */
+async function sharedEntryKnown(liberaPath: string, options: SharedWriteOptions, folder: boolean): Promise<boolean> {
+  try {
+    const target = manifestTarget(liberaPath);
+    const result = await readProjectBlob(target.projectId, target.path, hostConfig(liberaPath, options));
+    // A blob answers with its bytes; a folder or a document is the host's 409 "not a binary file".
+    return result?.contentBase64 != null && !folder;
+  } catch (error) {
+    return error instanceof CollabHostError && error.status === 409 && error.code === "conflict";
+  }
+}
+
+/** assertDirectoryExists, except that a folder the manifest knows but the disk has not received yet exists. */
+async function assertSharedDirectoryExists(directory: string, liberaPath: string, message: string, options: SharedWriteOptions) {
+  try {
+    await assertDirectoryExists(directory, message);
+  } catch (error) {
+    if (!(await sharedEntryKnown(liberaPath, options, true))) throw error;
+  }
+}
+
+/** getFileNode, or a size-less stand-in for a file the manifest has and the disk has not received yet. */
+async function getSharedFileNode(notebook: string, pathParts: string[], options: SharedWriteOptions) {
+  try {
+    return await getFileNode(notebook, pathParts);
+  } catch (error) {
+    if (!(await sharedEntryKnown(relativeFilePath(notebook, pathParts), options, false))) throw error;
+    return { size: 0 };
+  }
+}
+
 export async function createSharedMarkdownFile(notebook: string, name: string, content = "", parentPath?: string, options: SharedWriteOptions = {}) {
   await ensureAdminRoot();
   const parent = parentPath
@@ -552,8 +588,8 @@ export async function createSharedMarkdownFile(notebook: string, name: string, c
   const safeName = ensureMarkdownName(name);
   const targetParts = [...parent.pathParts, safeName];
   const parentDirectory = itemPath(parent.notebook, parent.pathParts);
-  if (!(await pathExists(parentDirectory))) throw new StorageError("Notebook does not exist.", 404);
-  await assertDirectoryExists(parentDirectory, "Destination folder is not a folder.");
+  if (!parent.pathParts.length && !(await pathExists(parentDirectory))) throw new StorageError("Notebook does not exist.", 404);
+  await assertSharedDirectoryExists(parentDirectory, relativeFilePath(parent.notebook, parent.pathParts), "Destination folder is not a folder.", options);
   if (await pathExists(filePathFromParts(parent.notebook, targetParts))) throw new StorageError("File already exists.", 409);
   const liberaPath = relativeFilePath(parent.notebook, targetParts);
   await createSharedFile(liberaPath, content, options);
@@ -566,7 +602,7 @@ export async function createSharedFolder(parentPath: string, name: string, optio
   await ensureAdminRoot();
   const parent = splitDirectoryPath(parentPath);
   const safeName = assertSafeSegment(name, "Folder name");
-  await assertDirectoryExists(itemPath(parent.notebook, parent.pathParts), "Parent folder was not found.");
+  await assertSharedDirectoryExists(itemPath(parent.notebook, parent.pathParts), relativeFilePath(parent.notebook, parent.pathParts), "Parent folder was not found.", options);
   const targetParts = [...parent.pathParts, safeName];
   if (await pathExists(itemPath(parent.notebook, targetParts))) throw new StorageError("Folder already exists.", 409);
   const liberaPath = relativeFilePath(parent.notebook, targetParts);
@@ -600,8 +636,8 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   if (destination.notebook !== current.notebook || !sharedManifestPath(nextPath)) {
     throw new StorageError("Files in a shared notebook can only be moved within that notebook.");
   }
-  const moving = await getFileNode(current.notebook, current.pathParts);
-  await assertDirectoryExists(itemPath(destination.notebook, destination.pathParts), "Destination folder was not found.");
+  const moving = await getSharedFileNode(current.notebook, current.pathParts, options);
+  await assertSharedDirectoryExists(itemPath(destination.notebook, destination.pathParts), relativeFilePath(destination.notebook, destination.pathParts), "Destination folder was not found.", options);
   const target = filePathFromParts(destination.notebook, nextParts);
   if (sourcePath !== nextPath && await pathExists(target) && !(await sameItem(filePathFromParts(current.notebook, current.pathParts), target))) {
     throw new StorageError("Destination file already exists.", 409);
@@ -626,7 +662,7 @@ export async function deleteSharedFile(relativePath: string, options: SharedWrit
   await ensureAdminRoot();
   const current = splitFilePath(relativePath);
   const liberaPath = relativeFilePath(current.notebook, current.pathParts);
-  await getFileNode(current.notebook, current.pathParts);
+  await getSharedFileNode(current.notebook, current.pathParts, options);
   const target = manifestTarget(liberaPath);
   const config = hostConfig(liberaPath, options);
   await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
@@ -655,7 +691,7 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
   const nextPath = relativeFilePath(current.notebook, parts);
   const source = manifestTarget(sourcePath);
   if (!sharedManifestPath(nextPath)) throw new StorageError("A shared folder cannot be moved into the local archive.");
-  await assertDirectoryExists(itemPath(current.notebook, current.pathParts), "Folder was not found.");
+  await assertSharedDirectoryExists(itemPath(current.notebook, current.pathParts), sourcePath, "Folder was not found.", options);
   if (sourcePath !== nextPath && await pathExists(itemPath(current.notebook, parts))) {
     // The host places a folder's files back into the folder the disk already has, so its case would not change.
     if (await sameItem(itemPath(current.notebook, current.pathParts), itemPath(current.notebook, parts))) {
@@ -677,7 +713,7 @@ export async function deleteSharedFolder(relativePath: string, options: SharedWr
   if (!current.pathParts.length) throw new StorageError("Use notebook delete to remove a notebook.");
   const liberaPath = relativeFilePath(current.notebook, current.pathParts);
   const target = manifestTarget(liberaPath);
-  await assertDirectoryExists(itemPath(current.notebook, current.pathParts), "Folder was not found.");
+  await assertSharedDirectoryExists(itemPath(current.notebook, current.pathParts), liberaPath, "Folder was not found.", options);
   const config = hostConfig(liberaPath, options);
   await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
   await removeFileMetadataPathPrefix(liberaPath);
@@ -741,7 +777,9 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
         return { ...mark, id: fresh(mark.id), ...(mark.space ? { space: fresh(mark.space) } : {}) };
       });
     }
-    await writeSharedBlob(liberaPath, new Uint8Array(await readFile(filePathFromParts(current.notebook, current.pathParts))), { ...options, createOnly: true, pdfSeed });
+    // The host's current version of the source, not a working file that may lag it.
+    const sourceBytes = (await readSharedAuthorityBytes(relativePath)) ?? await readFile(filePathFromParts(current.notebook, current.pathParts));
+    await writeSharedBlob(liberaPath, new Uint8Array(sourceBytes), { ...options, createOnly: true, pdfSeed });
     if (node.fileType === "audio") await copyTranscript(relativePath, liberaPath);
     // A copy's marks are its own. On a notebook with live PDFs, the host merges them into the copy's document.
     if (node.fileType === "pdf" && !(await listProjects(hostConfig(liberaPath, options))).find((project) => project.notebook === destination.notebook)?.pdfLive) {
@@ -824,7 +862,7 @@ export async function saveSharedEditedImageCopy(relativePath: string, edits: Pho
   // sharp is loaded only when an image is actually edited.
   const { editedPhotoFormat, renderEditedPhoto } = await import("@/lib/photo-edits-server");
   const { format, extension } = editedPhotoFormat(name);
-  const body = await renderEditedPhoto(filePathFromParts(notebook, pathParts), edits, format);
+  const body = await renderEditedPhoto((await readSharedAuthorityBytes(relativePath)) ?? filePathFromParts(notebook, pathParts), edits, format);
   const directoryParts = pathParts.slice(0, -1);
   const editedName = await createSharedBlobAtFreeName(itemPath(notebook, directoryParts), (candidate) => relativeFilePath(notebook, [...directoryParts, candidate]), `${path.basename(name, path.extname(name))} (edited)${extension}`, new Uint8Array(body), options);
   const liberaPath = relativeFilePath(notebook, [...directoryParts, editedName]);
