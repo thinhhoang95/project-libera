@@ -54,8 +54,8 @@ text/citations/front matter/macros/project files. Each issue gets: paper folder,
 
 ## 4. Fan out fixers
 
-Commit the current state on a branch first (`fix/latex-visual-audit-<n>`): worktrees start from HEAD. Spawn one Opus
-agent per area with `isolation: "worktree"`, all in one message. Each brief contains:
+Commit the current state on a branch first (`fix/latex-visual-audit-<n>`): worktrees start from HEAD. Spawn one Sonnet
+agent per area (`model: "sonnet"`) with `isolation: "worktree"`, all in one message. Each brief contains:
 - context: the code map above, `docs/audits/` of the last round, `docs/latex-visual-editor-plan.md`;
 - the rules: show only what is understood, else leave source; **every rendered widget must stay editable: clicking it
   (mousedown) reveals the raw source for editing, and Alt-click/double-click keep working. Copy how existing widgets do
@@ -82,7 +82,9 @@ npm run audit:latex-visual -- audit <scratch>/papers <scratch>/out-merged
 ```
 
 While reviewing each agent's diff, check that every new widget has a click-to-source path and a test for it (no
-`ignoreEvent() { return true; }` widget without a `mousedown` that reveals its source).
+`ignoreEvent() { return true; }` widget without a `mousedown` that reveals its source). Also sweep the whole of
+widgets.ts (not just the diff) once per round: every `WidgetType` subclass must have such a path, and a test must
+click it. Any widget lacking one is a bug to fix on the round branch, since the user could not edit that command.
 
 Compare `out-base/summary.txt` with `out-merged/summary.txt`. If a merge broke a test, fix it on the round branch.
 Check a couple of the papers in the running app if a dev server is available.
