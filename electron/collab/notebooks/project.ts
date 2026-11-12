@@ -554,6 +554,40 @@ export class SharedProject {
     }
   }
 
+  /**
+   * Best effort on a device that learns ANOTHER device took the project down:
+   * make every current binary local while the server (or this device's blob
+   * cache) can still supply it. Never throws and never blocks the takedown.
+   * Returns the paths whose current bytes could not be made local, or null
+   * when the manifest was unavailable to tell.
+   */
+  async preserveBinariesAfterTakedown(): Promise<string[] | null> {
+    if (!this.manifestHub || this.manifestRebuilt) return null;
+    let entries: Map<string, ManifestEntry>;
+    try { entries = this.readEntries(); } catch { return null; }
+    const layout = computeLayout(entries.values());
+    const guard = this.diskGuard(true);
+    const missing: string[] = [];
+    for (const entry of entries.values()) {
+      if (entry.kind !== "blob" || !entry.blobHash) continue;
+      const relative = layout.paths.get(entry.fileId);
+      if (!relative) continue;
+      try {
+        const target = await resolveInside(this.info.root, relative);
+        const disk = await readIfExists(target);
+        const expected = disk === null ? null : sha256(disk);
+        if (expected === entry.blobHash) continue;
+        const bytes = await this.blobBytes(entry.blobHash);
+        if (!bytes || sha256(bytes) !== entry.blobHash) { missing.push(relative); continue; }
+        if (disk && !this.info.album) await this.archive(relative, contentGuard(target, expected, guard));
+        await writeFileAtomic(target, bytes, contentGuard(target, disk && !this.info.album ? null : expected, guard));
+      } catch {
+        missing.push(relative);
+      }
+    }
+    return missing;
+  }
+
   /** True once every manifest entry has been placed on disk (join waits on this). */
   isMaterialized(): boolean {
     if (!this.manifestReady()) return false;
