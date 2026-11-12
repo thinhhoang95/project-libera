@@ -76,6 +76,12 @@ export interface LocalProject {
   kind?: ProjectKind;
   /** The notebook's PDFs have live marks (docs/collaboration/pdf-realtime-plan.md). */
   pdfLive?: boolean;
+  /**
+   * Files dropped into the notebook are not shared automatically because its
+   * bookkeeping was missing or unreadable when this device became its writer.
+   * POST ControlRoutes.adoptExternal(projectId) after reviewing them.
+   */
+  externalAdoption?: { required: true; reason: string };
 }
 
 // ---------------------------------------------------------------- shared albums
@@ -649,6 +655,8 @@ export const ControlRoutes = {
   invitation: (projectId: string, invitationId: string) =>
     `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
   leave: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/leave`,
+  /** POST → 204: the user reviewed the unexplained files; the notebook may share them again. */
+  adoptExternal: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/adopt-external`,
   resolve: "/docs/resolve",
   /** GET ?path= → ResolvedPdf | null. */
   pdfResolve: "/pdf-docs/resolve",

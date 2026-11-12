@@ -33,7 +33,7 @@ function parseEntry(fileId: string, value: unknown): ManifestEntry | null {
   const record = value as Record<string, unknown>;
   if (typeof record.path !== "string" || !ENTRY_KINDS.includes(record.kind as ManifestEntryKind)) return null;
   const kind = record.kind as ManifestEntryKind;
-  if (kind === "doc" && (!isPlainId(record.docId) ||!DOC_KINDS.includes(record.docKind as DocKind))) return null;
+  if (kind === "doc" && (!isPlainId(record.docId) || !DOC_KINDS.includes(record.docKind as DocKind))) return null;
   if (kind === "blob" && (typeof record.blobHash !== "string" || !/^[0-9a-f]{64}$/.test(record.blobHash))) return null;
   return {
     fileId,

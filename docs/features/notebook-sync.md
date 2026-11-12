@@ -181,6 +181,17 @@ Account sign-in and notebook membership are separate. Signing in through a devic
 | Different remembered account/server | No silent account switch or cross-account folder adoption. | `never switches a remembered account silently`, `Continue refuses a different account or server than the displayed offer`. |
 | Password change or revocation during grant exchange | Exchange cannot install a surviving unauthorized session; old grant copies remain revoked. | [server auth](../../server/test/api-auth.test.ts), [credential review](../collaboration/credential-sync-review.md). |
 
+## A OneDrive folder that several people can write bypasses collaborative roles
+
+Collaborative roles (owner, editor, viewer) are enforced by the collaboration server. OneDrive permissions are a separate system, and the notebook folder sits on the OneDrive side of that boundary. When one physical OneDrive folder is writable by several people, each of their installations treats files that appear in it as external edits.
+
+- Each contributor needs their own copy of the notebook folder, in their own OneDrive (or other storage), joined with their own account. A folder is never meant to be a shared transport between collaborators.
+- If a folder is shared through OneDrive with write access to someone who is a collaborative viewer, that person can change the files through OneDrive. An editor or owner installation that syncs the same folder imports the change as its own external edit and sends it to the server with that account's valid authority. The server cannot tell the difference, so the viewer role is not enforced.
+- Everything under the folder follows OneDrive access, not collaborative roles: `.libera/` (including `collab/state.json`, `moving/`, `base/` and `incoming/`, which can hold recent shared text and unimported external edits), the `_archive/` recovery folder, and sidecar and `*.invalid-*` copies. Anyone with OneDrive read access can read them.
+- Share a notebook with other people through Libera's collaborative invitation, not by sharing the OneDrive folder. Treat a OneDrive-shared notebook folder as readable and writable by every OneDrive member with that access, whatever their collaborative role.
+
+There is no reliable automatic signal for this today: a marker belonging to another account does not by itself prove a second writer, so Libera does not guess. A full solution would need per-contributor folder ownership verified by the host (for example a per-device identity file in the folder), and review of externally originated changes whenever the folder shows a writer other than this installation.
+
 ## Adding or changing behavior
 
 For every sync change, choose the operation and path (A or B), permission role, writer/follower state, project lifecycle, each network's availability, and whether local/cloud/server data is current. Add an interaction row for its event ordering, then a test with two **separate** cloud roots whenever cloud delivery matters. Delay files, state and marker independently; include a restart before the last event. Assert server manifest/text, each host's durable queue, both disks/archives, marker state, permissions and whether local deletion/rejoin works.

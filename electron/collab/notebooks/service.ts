@@ -1004,6 +1004,7 @@ export class NotebookServiceImpl implements NotebookService {
       reconcilePending: handle.runtime?.reconcilePending ?? handle.reconcilePending,
       ...(handle.kind === "album" ? { kind: "album" as const } : {}),
       ...(handle.runtime?.pdfs.enabled ? { pdfLive: true } : {}),
+      ...(handle.runtime?.externalAdoption.required ? { externalAdoption: { required: true as const, reason: handle.runtime.externalAdoption.reason ?? "recorded" } } : {}),
     }));
   }
 
@@ -1874,6 +1875,12 @@ export class NotebookServiceImpl implements NotebookService {
       const runtime = this.project(request.params.projectId);
       if (!runtime) throw new ControlError(404, "not-found", "This notebook is not running here.");
       await runtime.enablePdfLive();
+      return { status: 204 };
+    }));
+    router.add("POST", decodeURIComponent(ControlRoutes.adoptExternal(":projectId")), wrap(async (request) => {
+      const runtime = this.project(request.params.projectId);
+      if (!runtime) throw new ControlError(404, "not-found", "This notebook is not running here.");
+      await runtime.adoptExternal();
       return { status: 204 };
     }));
     router.add("POST", ControlRoutes.join, wrap(async (request) => ({ body: await this.join(request.body as JoinProjectRequest) })));

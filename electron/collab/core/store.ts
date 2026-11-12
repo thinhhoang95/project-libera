@@ -1143,6 +1143,11 @@ export class HostStore {
     this.run(`INSERT OR IGNORE INTO project_adoption_fences (project_id) VALUES (?)`, projectId);
   }
 
+  /** Explicit review done by the user: files in the notebook may be adopted again (audit DL-6). */
+  clearExternalAdoption(projectId: string): void {
+    this.run(`DELETE FROM project_adoption_fences WHERE project_id = ?`, projectId);
+  }
+
   requiresExternalAdoption(projectId: string): boolean {
     return !!this.get(`SELECT project_id FROM project_adoption_fences WHERE project_id = ?`, projectId);
   }

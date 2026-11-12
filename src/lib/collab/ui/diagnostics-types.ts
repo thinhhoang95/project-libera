@@ -101,7 +101,7 @@ export interface HostDiagnostics {
     commands: number;
     docsWithUnacked: number;
   };
-  projects: Array<{ projectId: string; role: string; revoked: boolean; reconcilePending: number; docs: number }>;
+  projects: Array<{ projectId: string; role: string; revoked: boolean; reconcilePending: number; externalAdoptionRequired?: boolean; docs: number }>;
   docs: DiagnosticsDoc[];
   counters: DiagnosticsCounters;
   divergence: DivergenceRecord[];

@@ -137,7 +137,7 @@ export function buildDiagnostics(runtime: CollabRuntime, now = Date.now()): Host
     } catch {
       docs = 0;
     }
-    return { projectId: project.projectId, role: project.role, revoked: project.revoked, reconcilePending: project.reconcilePending, docs };
+    return { projectId: project.projectId, role: project.role, revoked: project.revoked, reconcilePending: project.reconcilePending, ...(project.externalAdoption ? { externalAdoptionRequired: true } : {}), docs };
   });
 
   // Open hubs first, then every known doc of every project, newest-opened first.

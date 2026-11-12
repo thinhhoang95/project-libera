@@ -111,6 +111,8 @@ export interface ProjectState {
   reconciliations: Reconciliation[];
   /** Missing bookkeeping cannot authorize automatic adoption of unexplained files. */
   externalAdoptionRequired?: boolean;
+  /** Why the fence was set, for status ("missing-state" | "invalid-state"). */
+  externalAdoptionReason?: string;
   /**
    * The project/folder this bookkeeping belongs to, stamped on every write.
    * Files written before the stamp existed have none and are accepted once.
@@ -171,7 +173,7 @@ export function emptyState(): ProjectState {
 export async function readState(root: string, guard?: WriteGuard, expected?: StateIdentity): Promise<ProjectState> {
   const file = path.join(stateDirectory(root), "state.json");
   const bytes = await readIfExists(file);
-  if (!bytes) return { ...emptyState(), externalAdoptionRequired: true };
+  if (!bytes) return { ...emptyState(), externalAdoptionRequired: true, externalAdoptionReason: "missing-state" };
   let value: unknown;
   try { value = JSON.parse(bytes.toString("utf8")); } catch { /* Preserve the unreadable input below. */ }
   if (validState(value) && !identityMismatch(value.identity, expected)) return value;
@@ -183,7 +185,7 @@ export async function readState(root: string, guard?: WriteGuard, expected?: Sta
       if (error.code !== "EEXIST") throw error;
     });
   }
-  return { ...emptyState(), externalAdoptionRequired: true };
+  return { ...emptyState(), externalAdoptionRequired: true, externalAdoptionReason: "invalid-state" };
 }
 
 const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
