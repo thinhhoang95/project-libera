@@ -23,7 +23,7 @@ import { diffText } from "../../../electron/collab/notebooks/text-diff";
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { StorageError } from "@/lib/storage/errors";
 import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, getFileType, normalizeAssetFileName } from "@/lib/storage/file-types";
-import { copyTranscript, followSharedAudioChanges, transcriptCompanionPath } from "@/lib/storage/transcripts";
+import { copyTranscript, followSharedAudioChanges } from "@/lib/storage/transcripts";
 import { followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
 import { copyInkThroughEdit } from "@/lib/storage/ink";
 import { assertDirectoryExists, copyFileIfExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
@@ -482,19 +482,6 @@ export async function deleteSharedEntry(liberaPath: string, options: SharedWrite
   });
 }
 
-/** A recording's companion transcript follows it; a missing one is fine. */
-async function moveCompanionTranscript(fromPath: string, toPath: string, config: HostClientConfig) {
-  const from = transcriptCompanionPath(fromPath);
-  const source = sharedManifestPath(from);
-  const destination = sharedManifestPath(transcriptCompanionPath(toPath));
-  if (!source || !destination) return;
-  const [notebook, ...parts] = from.split("/");
-  if (!(await pathExists(filePathFromParts(notebook, parts)))) return;
-  await host(from, () => fileOp(source.projectId, { op: "rename", path: source.path, to: destination.path }, config)).catch((error: unknown) => {
-    console.warn(`The transcript of ${fromPath} did not follow it: ${error instanceof Error ? error.message : error}`);
-  });
-}
-
 // ------------------------------------------------------------ Libera's file writers, for shared targets
 //
 // The upload, Markdown image, edited-image and "save to notebook folder"
@@ -645,8 +632,7 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   const config = hostConfig(sourcePath, options);
   await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: nextParts.join("/") }, config));
   if (getFileType(current.name) === "audio" && sourcePath !== nextPath) {
-    if (getFileType(safeName) === "audio") await moveCompanionTranscript(sourcePath, nextPath, config);
-    else await deleteSharedEntry(transcriptCompanionPath(sourcePath), { config }).catch(() => undefined);
+    // The host moved (or dropped) the companion transcript in the same manifest change.
     await followSharedAudioChanges([{ from: sourcePath, to: nextPath }], []);
   }
   // A PDF's local side-cars (annotations, outline, definitions, text cache) follow it now, before the host's event does.
@@ -667,7 +653,7 @@ export async function deleteSharedFile(relativePath: string, options: SharedWrit
   const config = hostConfig(liberaPath, options);
   await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
   if (getFileType(current.name) === "audio") {
-    await deleteSharedEntry(transcriptCompanionPath(liberaPath), { config }).catch(() => undefined);
+    // The host deleted the companion transcript in the same manifest change.
     await followSharedAudioChanges([], [liberaPath]);
   }
   // This user deleted it, so their own notes on it go too, as in a local notebook.
