@@ -50,6 +50,7 @@ export function parseReplicaMessage(value: unknown): ReplicaToHub | null {
     case "update":
       if (!isSubdoc(message.subdoc) || !isBytes(message.update)) return null;
       if (message.provenance !== undefined && (typeof message.provenance !== "object" || message.provenance === null)) return null;
+      if (message.seq !== undefined && !(Number.isSafeInteger(message.seq) && (message.seq as number) > 0)) return null;
       return message as unknown as ReplicaToHub;
     case "awareness":
       return isBytes(message.update) ? (message as unknown as ReplicaToHub) : null;

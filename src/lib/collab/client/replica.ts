@@ -59,6 +59,12 @@ export interface ReplicaSnapshot {
   error: string | null;
   /** Increases each time the content sub-document is rebuilt; editors rebind on change. */
   generation: number;
+  /**
+   * False from the moment the host process was lost until a replacement host
+   * answered the re-attach and this window's edits were handed over again.
+   * Edits made meanwhile stay in this window (see `hasUnconfirmedWork`).
+   */
+  hostConnected: boolean;
 }
 
 export interface ReplicaOptions {
@@ -108,7 +114,17 @@ export class CollabReplica {
   private sentAt = 0;
   private readonly schedule: (flush: () => void) => void;
   private readonly defaultProvenance: Provenance;
-  private snapshot: ReplicaSnapshot = { attached: false, meta: null, status: null, rejection: null, closed: null, error: null, generation: 0 };
+  private snapshot: ReplicaSnapshot = { attached: false, meta: null, status: null, rejection: null, closed: null, error: null, generation: 0, hostConnected: true };
+  // Updates carry a per-port sequence number; the hub acknowledges it once the
+  // update is in SQLite. Anything sent but not acknowledged may exist only in
+  // this window's memory, so it counts as unconfirmed work.
+  private sentSeq = 0;
+  private ackedSeq = 0;
+  // The port was replaced while work was unconfirmed (or edits were made while
+  // detached): once the new hub answers the attach, this window's whole state
+  // is sent as one update per sub-document. Yjs makes repeating that safe.
+  private needsResync = false;
+  private resyncPending = false;
   private readonly listeners = new Set<() => void>();
   private readonly rebuildListeners = new Set<(subdoc: Subdoc) => void>();
   private readonly attachedWaiters: Array<() => void> = [];
@@ -120,7 +136,7 @@ export class CollabReplica {
     if (isHubMessage(event.data)) this.receive(event.data);
   };
 
-  constructor(readonly docId: string, private readonly port: ReplicaMessagePort, options: ReplicaOptions = {}) {
+  constructor(readonly docId: string, private port: ReplicaMessagePort, options: ReplicaOptions = {}) {
     this.schedule = options.schedule ?? defaultSchedule;
     this.defaultProvenance = options.defaultProvenance ?? { source: "typing" };
     for (const subdoc of FILE_SUBDOCS) this.installDoc(subdoc, new Y.Doc());
@@ -254,6 +270,9 @@ export class CollabReplica {
       this.queue = [];
       return;
     }
+    // The port belongs to a dead host: keep the edits queued; the resync after
+    // re-attaching sends them.
+    if (this.resyncPending) return;
     const queued = this.queue;
     this.queue = [];
     // Consecutive updates of one sub-document with the same provenance merge
@@ -270,7 +289,7 @@ export class CollabReplica {
       }
       const update = group.length === 1 ? group[0] : Y.mergeUpdates(group);
       this.sentAt = Date.now();
-      this.post({ t: "update", docId: this.docId, subdoc: first.subdoc, update, ...(first.provenance ? { provenance: first.provenance } : {}) });
+      this.post({ t: "update", docId: this.docId, subdoc: first.subdoc, update, ...(first.provenance ? { provenance: first.provenance } : {}), seq: ++this.sentSeq });
       index = next;
     }
   }
@@ -312,8 +331,14 @@ export class CollabReplica {
         const firstStatus = !this.snapshot.attached;
         this.publish({ status: message.status, attached: true });
         if (firstStatus) for (const resolve of this.attachedWaiters.splice(0)) resolve();
+        if (this.resyncPending) this.completeReattach();
         return;
       }
+      case "ack":
+        if (message.seq > this.ackedSeq) this.ackedSeq = Math.min(message.seq, this.sentSeq);
+        // Observers of the unsaved count learn that everything is confirmed now.
+        if (this.ackedSeq >= this.sentSeq && !this.queue.length) this.publish({});
+        return;
       case "rejected":
         this.handleRejected(message.subdoc, message.reason, message.rejectedText ?? "");
         return;
@@ -358,6 +383,67 @@ export class CollabReplica {
   /* ---- Lifecycle ---------------------------------------------------------------- */
 
   get isDestroyed(): boolean { return this.destroyed; }
+
+  /**
+   * Edits that the host has not confirmed as saved: queued, sent but not yet
+   * acknowledged, or waiting for a lost host to be replaced. A window must not
+   * close or update while this is true.
+   */
+  hasUnconfirmedWork(): boolean {
+    if (this.destroyed || this.snapshot.closed) return false;
+    return this.queue.length > 0 || this.ackedSeq < this.sentSeq || this.needsResync || this.resyncPending;
+  }
+
+  /** The host process died: stop posting to its port and count the tab as unsaved until `rebind`. */
+  hostLost(): void {
+    if (this.destroyed || this.resyncPending) return;
+    this.resyncPending = true;
+    this.needsResync = this.needsResync || this.ackedSeq < this.sentSeq;
+    this.publish({ hostConnected: false });
+  }
+
+  /**
+   * Re-attaches to a replacement host over a fresh `port` (the old one belongs
+   * to a dead process). The hub answers with what this window lacks; once its
+   * status arrives, everything this window holds that the hub may lack is sent
+   * back (completeReattach).
+   */
+  rebind(port: ReplicaMessagePort): void {
+    if (this.destroyed) {
+      try { port.close(); } catch { /* already closed */ }
+      return;
+    }
+    this.port.removeEventListener("message", this.onPortMessage);
+    try { this.port.close(); } catch { /* the old process is gone */ }
+    this.port = port;
+    this.needsResync = this.needsResync || this.ackedSeq < this.sentSeq;
+    this.resyncPending = true;
+    // Sequence numbers are per port.
+    this.sentSeq = 0;
+    this.ackedSeq = 0;
+    if (this.snapshot.hostConnected) this.publish({ hostConnected: false });
+    port.addEventListener("message", this.onPortMessage);
+    port.start?.();
+    this.attach();
+  }
+
+  private completeReattach() {
+    this.resyncPending = false;
+    const resync = this.needsResync || this.queue.length > 0;
+    this.needsResync = false;
+    // Queued edits first, so they keep their provenance; the full state after
+    // them carries whatever else the old host never persisted.
+    this.flush();
+    if (resync) {
+      for (const [subdoc, doc] of this.docs) {
+        this.sentAt = Date.now();
+        this.post({ t: "update", docId: this.docId, subdoc, update: Y.encodeStateAsUpdate(doc), seq: ++this.sentSeq });
+      }
+    }
+    // The new hub has not heard this window's presence.
+    if (this.awareness.getLocalState() !== null) this.post({ t: "awareness", docId: this.docId, update: encodeAwarenessUpdate(this.awareness, [this.awareness.clientID]) });
+    this.publish({ hostConnected: true });
+  }
 
   /** Sends what is queued, withdraws this window's presence, detaches and closes the port. */
   destroy(): void {

@@ -50,7 +50,12 @@ export interface DocMetaState {
 
 export type ReplicaToHub =
   | { t: "attach"; docId: string; stateVectors: Partial<Record<Subdoc, Uint8Array>> }
-  | { t: "update"; docId: string; subdoc: Subdoc; update: Uint8Array; provenance?: Provenance }
+  /**
+   * `seq` numbers the replica's updates per port (1, 2, ...). The hub answers
+   * with `ack` once everything up to it is in SQLite; without a `seq` nothing
+   * is acknowledged.
+   */
+  | { t: "update"; docId: string; subdoc: Subdoc; update: Uint8Array; provenance?: Provenance; seq?: number }
   | { t: "awareness"; docId: string; update: Uint8Array }
   | { t: "detach"; docId: string };
 
@@ -62,6 +67,8 @@ export type HubToReplica =
   | { t: "status"; docId: string; status: SyncStatus }
   | { t: "rejected"; docId: string; subdoc: Subdoc; reason: string; rejectedText?: string }
   | { t: "closed"; docId: string; reason: string }
+  /** Every update of this port up to and including `seq` is committed to the host's SQLite. */
+  | { t: "ack"; docId: string; seq: number }
   | { t: "error"; docId: string; message: string };
 
 /** Origins used for Yjs transactions so bindings can tell edits apart. */
