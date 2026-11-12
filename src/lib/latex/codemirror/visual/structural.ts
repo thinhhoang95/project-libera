@@ -83,7 +83,7 @@ const WIDEN = new Set([
 // `\mbox{…}` (drawn upright, as `\textrm{…}`) is a style like the others: a `}` typed lines after its `{` closes it.
 WIDEN.add("MathTextCommand");
 const TABULAR_ENVIRONMENTS = /^(?:tabular\*?|tabularx|tabulary|longtable\*?|xltabular)$/;
-const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices|appendix|thebibliography|widetext|subequations|singlespace|onehalfspace|doublespace|spacing|landscape|tabbing|keywords|IEEEkeywords|keyword|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;
+const RENDERED_ENVIRONMENTS = /^(?:proof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices|APPENDICES|IEEEbiography|IEEEbiographynophoto|appendix|AMS|thebibliography|widetext|subequations|singlespace|onehalfspace|doublespace|spacing|landscape|tabbing|keywords|IEEEkeywords|keyword|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;
 
 /** Where the folded preamble ends: the `\begin{document}` line, or the command itself when body text follows it on that line. */
 export function preambleEndOf(state: EditorState) {

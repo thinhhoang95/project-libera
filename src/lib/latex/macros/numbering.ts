@@ -1156,7 +1156,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         }
         // The appendix package's `appendices` environment letters its sections, as `\appendix` does; so does
         // `\begin{appendix}`, which runs `\appendix` (the KOMA minimum-wage paper's sections 7–18 are A–L).
-        if (env === "appendices" || env === "appendix") {
+        if (env === "appendices" || env === "APPENDICES" || env === "appendix") {
           appendix = true;
           if (env === "appendix") cleverefAppendix = true;
           appendixAt = Math.min(appendixAt, here);

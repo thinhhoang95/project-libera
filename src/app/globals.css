@@ -3408,6 +3408,7 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 /* An item of an inline list (paralist's `inparaenum`): its label in the text, not hanging in the margin. */
 .cm-vis-item.cm-vis-item-inline { margin-left: 0; min-width: 0; padding-right: .3em; }
 .cm-vis-keywords-label { font-weight: 700; }
+.cm-vis-bio-name { font-weight: 700; font-style: italic; }
 .cm-vis-macro { border-bottom: 1px dotted color-mix(in srgb, var(--primary) 55%, transparent); cursor: pointer; }
 .cm-vis-linebreak { padding-inline: 2px; color: var(--muted-foreground); font-family: var(--font-sans); font-size: .75em; opacity: .5; }
 .cm-vis-logo { font-variant: small-caps; letter-spacing: .02em; }

@@ -103,6 +103,22 @@ export class SymbolWidget extends VisualWidget {
   }
 }
 
+/** IEEEtran's `\begin{IEEEbiographynophoto}{Name}`: the name in bold italics; a click (or Alt-click) shows the opening's source. */
+export class BiographyHeaderWidget extends VisualWidget {
+  constructor(readonly name: string, readonly length: number) { super(`${name}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-bio-name", this.name);
+    dom.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const from = widgetPos(view, dom);
+      if (from !== null) revealSourceAt(view, from, from + this.length);
+    });
+    return dom;
+  }
+  ignoreEvent() { return true; }
+}
+
 /** `\\`: a faint mark where the line breaks. */
 export class LineBreakWidget extends VisualWidget {
   constructor() { super("br"); }

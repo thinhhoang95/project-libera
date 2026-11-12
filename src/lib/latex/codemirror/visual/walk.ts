@@ -21,7 +21,7 @@ import { argumentGroups, transparentPlan } from "./transparent";
 import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
   ChipWidget, ColumnsWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  BiographyHeaderWidget, ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget, type TableExtras,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
@@ -367,7 +367,7 @@ const TEXT_BLOCKS: Record<string, string> = {
   quote: "cm-vis-quote", quotation: "cm-vis-quote", verse: "cm-vis-quote", center: "cm-vis-center", flushleft: "cm-vis-flushleft",
   flushright: "cm-vis-flushright", abstract: "cm-vis-abstract",
   // The appendix package's environment: its lines fold away, its sections are lettered (numbering.ts).
-  appendices: "cm-vis-appendices",
+  appendices: "cm-vis-appendices", APPENDICES: "cm-vis-appendices",
   // `\begin{appendix}`, which runs `\appendix` (KOMA papers): the same.
   appendix: "cm-vis-appendices",
   // `tabbing`: lines of text with tab stops (`\=`, `\>`), drawn as gaps (Featherweight Go's proofs).
@@ -375,7 +375,7 @@ const TEXT_BLOCKS: Record<string, string> = {
   // setspace's line spacing and pdflscape's rotated pages: layout, whose lines fold away (applied economics papers).
   singlespace: "cm-vis-sized", onehalfspace: "cm-vis-sized", doublespace: "cm-vis-sized", spacing: "cm-vis-sized", landscape: "cm-vis-sized",
   // Keywords under an abstract (JMLR, SIAM, IEEE).
-  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords",
+  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords", AMS: "cm-vis-keywords",
   // amsmath's `subequations` (numbering 3a, 3b): its equations are drawn on their own, and its lines fold away.
   subequations: "cm-vis-sized",
   // revtex's `widetext` (text set across both columns): layout, whose lines fold away.
@@ -1069,9 +1069,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (!command || command.from < from || command.from >= to) return;
         const argument = command.getChild("SectioningArgument");
         const inner = argument && argumentInner(argument);
-        if (!argument || !inner || inner.to <= inner.from || hasDirectError(command)) return;
+        if (!argument || !inner || hasDirectError(command)) return;
         const label = trailingLabel(state, node.getChild("Content"), argument.to);
         const end = label ? label.to : argument.to;
+        // `\section*{}` (a class's abstract placeholder, 2611.13868): no title and no number, so nothing is drawn; its line folds away.
+        if (inner.to <= inner.from) {
+          if (!/^\\[A-Za-z]+\*\s*(?:\[[^\]]*\])?\s*\{$/.test(read(state, command.from, inner.from)) || name === "Paragraph" || name === "SubParagraph") return;
+          if (label) consumed.push([label.from, label.to]);
+          emit({ kind: "heading", from: command.from, to: end, reveal: "line", wholeLine: true, replaces: structural ? [{ from: command.from, to: end }] : [], hiddenLines: [{ from: command.from, to: inner.to, class: `cm-vis-heading ${SECTION_CLASSES[name]}` }] });
+          return;
+        }
         if (label) consumed.push([label.from, label.to]);
         // \paragraph and \subparagraph are run-in: only the title is a heading, the text after it is not.
         const runIn = name === "Paragraph" || name === "SubParagraph";
@@ -1833,6 +1840,24 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         collapseLine(formed.end, "env-end");
       }
       if (formed.content && formed.content.to > headerEnd) emit({ kind: "env-body", from: headerEnd, to: formed.end.from, reveal: "never", replaces: [], marks: [{ from: headerEnd, to: formed.end.from, class: THEOREM_STYLE_CLASSES[restatedTheorem.style] }] });
+      return undefined;
+    }
+    // IEEEtran's `\begin{IEEEbiographynophoto}{Name} … \end{IEEEbiographynophoto}` (and `IEEEbiography[{photo}]{Name}`): the
+    // name in bold italics over the biography's text; the photo (an `\includegraphics`) is a "[photo]" mark. Its begin line shows
+    // the source on a click (reveal "line"), as the other environment headers do.
+    if ((name === "IEEEbiographynophoto" || name === "IEEEbiography") && !defs.environments.has(name)) {
+      const nameEnd = formed.begin.getChild("EnvNameGroup")?.to ?? formed.begin.to;
+      const head = /^(\s*\[(?:[^[\]{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\])?\s*\{((?:[^{}\\]|\\[A-Za-z]+\s*)*)\}/.exec(read(state, nameEnd, Math.min(doc.length, nameEnd + 600)));
+      if (!head || (head[1] && !/\\includegraphics/.test(head[1])) || (name === "IEEEbiographynophoto" && head[1])) return undefined;
+      const headerEnd = nameEnd + head[0].length;
+      consumed.push([formed.begin.from, headerEnd]);
+      if (structural) {
+        const span = aloneOnLines(doc, formed.begin.from, headerEnd);
+        const from = span?.from ?? formed.begin.from;
+        const label = `${head[1] ? "[photo] " : ""}${head[2].replace(/\\[A-Za-z]+\s*/g, "").replace(/\s+/g, " ").trim()}`;
+        emit({ kind: "env-header", from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from, to: headerEnd, widget: new BiographyHeaderWidget(label, headerEnd - from) }] });
+        collapseLine(formed.end, "env-end");
+      }
       return undefined;
     }
     // CJK's `\begin{CJK}{UTF8}{gbsn} … \end{CJK}` (LongBench's Chinese prompts): its text, with the encoding and font folded away.
@@ -4388,18 +4413,18 @@ function abstractIn(content: string) {
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo)$/;
 /** What ends a run of title declarations rather than staying source inside it: text, sections, environments. */
 const RUN_ENDERS = /^(?:begin|end|part|chapter|section|subsection|subsubsection|paragraph|subparagraph|item|maketitle|par|noindent|indent|bibliography|printbibliography|appendix|label|footnote|textbf|textit|emph|cite|ref|includegraphics|caption)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
-const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/;
+const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|let)$/;
 /**
  * Environments among them: an abstract the class prints with the title (acmart's, amsart's), acmart's CCS metadata,
  * and its teaser figure, which is drawn on its own (the title block stops before it).
  */
-const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp)$/;
+const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp|keywords|IEEEkeywords)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa)$/;
+const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys)$/;
 /** The headings of A&A's structured `\abstract{…}{…}{…}{…}{…}`. */
 const AA_ABSTRACT_LABELS = ["Context", "Aims", "Methods", "Results", "Conclusions"];
 
@@ -4456,7 +4481,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
     // `\begin{abstract} … \end{abstract}` and the other environments the run may hold.
     const begin = /^\\begin\s*\{([^{}]*)\}/.exec(text.slice(i, i + 80));
     const env = begin?.[1].trim();
-    if (begin && env && TITLE_ENVIRONMENTS.test(env) && (env !== "abstract" || abstractWithTitle)) {
+    if (begin && env && TITLE_ENVIRONMENTS.test(env) && (!/^(?:abstract|keywords|IEEEkeywords)$/.test(env) || abstractWithTitle)) {
       const close = new RegExp(String.raw`\\end\s*\{${env}\}`).exec(text.slice(i));
       if (close) {
         const end = i + close.index + close[0].length;
@@ -4464,6 +4489,8 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
         run ??= { start, gaps: [], abstract: null, notes: [] };
         if (env === "teaserfigure") run.gaps.push({ from: start, to: end });
         if (env === "abstract") run.abstract = stripTexComments(text.slice(i + begin[0].length, i + close.index)).trim();
+        // cas-sc's and IEEEojcsys' keywords environment: the block's "Keywords" line (elsarticle's `\sep` separates them).
+        if (env === "keywords" || env === "IEEEkeywords") keywords.push(stripTexComments(text.slice(i + begin[0].length, i + close.index)).replace(/\\sep(?![A-Za-z@])/g, ",").replace(/\s+/g, " ").replace(/\s+,/g, ",").trim());
         i = end;
         continue;
       }
@@ -4474,7 +4501,8 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
     if (command) {
       end = i + command[0].length;
       // A definition's name and parameters (`\newcommand\x[1]{…}`, `\def\x#1{…}`), before its body.
-      if (TITLE_DEFINITIONS.test(command[1])) end += /^\s*(?:\\[A-Za-z@]+|\{\s*\\[A-Za-z@]+\s*\})(?:#\d)*/.exec(text.slice(end, end + 80))?.[0].length ?? 0;
+      if (command[1] === "let") end += /^\s*\\[A-Za-z@]+\s*=?\s*(?:\\[A-Za-z@]+|\\.)/.exec(text.slice(end, end + 120))?.[0].length ?? 0;
+      else if (TITLE_DEFINITIONS.test(command[1])) end +=/^\s*(?:\\[A-Za-z@]+|\{\s*\\[A-Za-z@]+\s*\})(?:#\d)*/.exec(text.slice(end, end + 80))?.[0].length ?? 0;
       for (;;) {
         // A&A's `\abstract` takes five groups, with comment lines between them (2611.07227).
         const blank = command[1] === "abstract" ? /^(?:\s|%[^\n]*)*/ : /^[ \t]*/;
@@ -4534,7 +4562,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX, Cambridge's jfp. */
-export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
+export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|cas-[sd]c|lmcs|IEEEojcsys|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
 export const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
 
@@ -4588,7 +4616,9 @@ function commandGroups(text: string, command: string) {
  */
 function scanTitleParts(text: string, documentClass: string | null) {
   const last = (command: string) => commandGroups(text, command).at(-1) ?? null;
-  const authors = LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author");
+  // LMCS's `\lmcsorcid{…}` and IEEEojcsys' `\affilmark{1,2}` (a superscript) in a name: the ORCID is not printed in the block.
+  const cleanName = (name: string) => name.replace(/\\lmcsorcid\s*\{[^{}]*\}/g, "").replace(/\\affilmark\s*\{([^{}]*)\}/g, "\\textsuperscript{$1}");
+  const authors = (LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author")).map(/^(?:lmcs|IEEEojcsys)$/.test(documentClass ?? "") ? cleanName : (name) => name);
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
   const bodyStart = beginDocumentIndex(text);
   const jhep = documentClass === "jheppub";
