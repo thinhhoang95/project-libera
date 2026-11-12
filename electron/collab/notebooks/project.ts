@@ -33,6 +33,7 @@ import type { DocHub } from "../core/doc-hub";
 import type { CollabHost } from "../core/host";
 import { ControlError } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
+import { clearMoveJournal, recoverInterruptedMoves, writeMoveJournal } from "./move-journal";
 import {
   ARCHIVE_DIRECTORY,
   PathRefusedError,
@@ -289,6 +290,8 @@ export class SharedProject {
   private pdfLiveSnapshot = false;
   private readonly baselineMissing = new Set<string>();
   private readonly uploadedBlobs = new Map<string, Uint8Array>();
+  /** IDs chosen for an automatic import of a path+content, kept across uncertain outcomes. */
+  private readonly importAttempts = new Map<string, { fileId: string; docId: string }>();
   private dirtyPaths = new Set<string>();
   private verifyAll = false;
   /**
@@ -336,6 +339,14 @@ export class SharedProject {
     if (!project.follower) project.state = await readState(info.root, project.diskGuard());
     if (project.state.externalAdoptionRequired) ctx.host.store.requireExternalAdoption(info.projectId);
     if (ctx.host.store.requiresExternalAdoption(info.projectId)) project.state.externalAdoptionRequired = true;
+    if (!project.follower && !info.album) {
+      // Staged bytes of a move an earlier run never finished (STALE-3).
+      const recovered = await recoverInterruptedMoves(info.root, project.diskGuard()).catch((error) => {
+        ctx.logger.warn(`Shared notebook ${info.notebook}: could not resolve interrupted moves`, error);
+        return [];
+      });
+      for (const move of recovered) if (move.outcome === "archived") ctx.logger.warn(`Shared notebook ${info.notebook}: an interrupted move's file was kept in the archive as ${move.archivedAs}`);
+    }
     if (!info.follower) {
       // State/marker can arrive ahead of files through a cloud provider.
       // Absence at startup or takeover is not an observed user deletion.
@@ -707,7 +718,15 @@ export class SharedProject {
         }
         // Never reuse an interrupted move's sole recovery artifact.
         const staging = path.join(this.info.root, ...STATE_DIRECTORY, "moving", `${fileId}-${randomId("move")}`);
-        await movePath(source, staging, this.diskGuard());
+        const journalled = !this.info.album;
+        // Journal first: a crash after staging must not leave bytes with no record of where they were going.
+        if (journalled) await writeMoveJournal(this.info.root, { fileId, source: record.path, destination: desired, staged: path.basename(staging), ...(record.hash ? { hash: record.hash } : {}), stagedAt: Date.now() }, this.diskGuard());
+        try {
+          await movePath(source, staging, this.diskGuard());
+        } catch (error) {
+          if (journalled) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
+          throw error;
+        }
         staged.push({ fileId, staging, record });
       } catch (error) {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not move ${record.path}`, error);
@@ -719,6 +738,7 @@ export class SharedProject {
         const target = await resolveInside(this.info.root, desired);
         if (await statIfExists(target)) await this.archive(desired);
         await movePath(staging, target, this.diskGuard());
+        if (!this.info.album) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
         next[fileId] = { ...record, path: desired };
         this.missingSince.delete(fileId);
       } catch (error) {
@@ -1358,6 +1378,23 @@ export class SharedProject {
 
   private dropReconciliations(docId: string): void {
     this.state.reconciliations = this.state.reconciliations.filter((item) => item.docId !== docId);
+  }
+
+  /** The fence that stops files dropped into the notebook from being shared automatically, and why (DL-6). */
+  get externalAdoption(): { required: boolean; reason?: string } {
+    return this.state.externalAdoptionRequired ? { required: true, reason: this.state.externalAdoptionReason ?? "recorded" } : { required: false };
+  }
+
+  /** The user reviewed the unexplained files: clear the fence so the next scan may share them. */
+  adoptExternal(): Promise<void> {
+    if (this.follower) return Promise.reject(new ControlError(409, "read-only", "Only the device that writes this notebook's files can adopt external files."));
+    return this.enqueueExplicit(async () => {
+      this.ctx.host.store.clearExternalAdoption(this.info.projectId);
+      delete this.state.externalAdoptionRequired;
+      delete this.state.externalAdoptionReason;
+      if (await this.rootAvailable()) await writeState(this.info.root, this.state, this.diskGuard());
+      this.scheduleScan(0);
+    });
   }
 
   get reconcilePending(): number {
@@ -2056,7 +2093,11 @@ export class SharedProject {
       hash = sha256(bytes);
       entry = { ...entry, size: stripped.size, mtimeMs: stripped.mtimeMs };
     }
-    const fileId = randomId("fil");
+    // Retries of the same path+content reuse their IDs so a create whose reply was lost lands on the same server document (STALE-6).
+    const attemptKey = `${entry.relative}\0${hash}`;
+    const attempt = this.importAttempts.get(attemptKey) ?? { fileId: randomId("fil"), docId: randomId("doc") };
+    this.importAttempts.set(attemptKey, attempt);
+    const fileId = attempt.fileId;
     const classified = classifyFile(entry.relative, bytes);
     const stillCurrent = async () => {
       if (this.follower || !(await this.rootAvailable())) return false;
@@ -2065,9 +2106,10 @@ export class SharedProject {
     };
     try {
       if (classified.kind === "doc") {
-        const docId = randomId("doc");
+        const docId = attempt.docId;
         await createSharedDocument(api, this.info.projectId, { docId, fileId }, classified.docKind, classified.text);
         if (!(await stillCurrent())) return null;
+        this.importAttempts.delete(attemptKey);
         this.state.layout[fileId] = { path: entry.relative, kind: "doc", docId, docKind: classified.docKind, hash, size: entry.size, mtimeMs: entry.mtimeMs };
         await writeBase(this.info.root, docId, classified.text, this.diskGuard());
         this.ctx.host.store.upsertDoc({ docId, projectId: this.info.projectId, fileId, path: entry.relative, materializedHash: hash });
@@ -2076,6 +2118,7 @@ export class SharedProject {
       const mime = mimeForPath(entry.relative);
       await api.uploadBlob(this.info.projectId, bytes, mime);
       if (!(await stillCurrent())) return null;
+      this.importAttempts.delete(attemptKey);
       this.state.layout[fileId] = { path: entry.relative, kind: "blob", hash, size: entry.size, mtimeMs: entry.mtimeMs };
       this.ctx.host.store.putBlob({ hash, localPath: path.join(this.info.root, ...entry.relative.split("/")), size: bytes.byteLength });
       return { fileId, path: entry.relative, kind: "blob", blobHash: hash, size: bytes.byteLength, mime, createdBy: accountId, createdAt: now, updatedAt: now };
