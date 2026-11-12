@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { recordPdfAnnotationsSource } from "@/lib/storage/annotations";
+import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { cachedPdfIdentity, parsePdfIdentity, type PdfIdentity } from "@/lib/storage/pdf-identity";
@@ -80,11 +81,16 @@ const sidecarIdentity = (json: unknown) => parsePdfIdentity((json as { source?: 
 
 /** Sets a side-car aside, with where it came from. */
 async function setAside(notebook: string, store: KindStore, sidecarPath: string, originalPath: string) {
-  const json = await readJson(sidecarPath);
+  const text = await readFile(sidecarPath, "utf8").catch(() => null);
+  if (text === null) return;
+  let json: unknown = null;
+  try { json = JSON.parse(text); } catch { return; }
   if (json === null) return;
   const record: OrphanRecord = { kind: store.kind, originalPath, orphanedAt: new Date().toISOString(), source: sidecarIdentity(json), sidecar: json };
   const name = `${Date.now()}-${randomUUID().slice(0, 8)}-${path.basename(sidecarPath)}`;
   await writeJsonAtomically(path.join(orphanedSidecarsDirectoryPath(notebook, store.kind), name), record);
+  // Newer bytes written while the record was saved are not what was set aside: keep them.
+  if (await readFile(sidecarPath, "utf8").catch(() => null) !== text) return;
   await rm(sidecarPath, { force: true });
 }
 
@@ -229,7 +235,11 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
 
   let reattached = 0;
   let setAsideCount = 0;
-  for (const found of missing) {
+  // A shared notebook's files have stable identities and its absences may be cloud lag:
+  // content matching must not pick another PDF, and nothing is set aside or expires
+  // here. Moves and removals reach it through followSharedPdfChanges.
+  const shared = Boolean(sharedNotebookMarker(notebook));
+  for (const found of shared ? [] : missing) {
     const identity = sidecarIdentity(await readJson(found.sidecarPath));
     const target = identity ? await match(found.store.kind, identity) : null;
     if (target) {
@@ -255,7 +265,12 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
   for (const { file, record } of stored) {
     const store = KINDS.find((candidate) => candidate.kind === record.kind)!;
     let target: string | null = null;
-    if (record.source) target = await match(record.kind, record.source);
+    if (shared) {
+      // Only back under its old path, and only as the same bytes.
+      const original = splitFilePath(record.originalPath);
+      const current = record.source && await pdfExists(record.originalPath) ? await cachedPdfIdentity(filePathFromParts(original.notebook, original.pathParts)).catch(() => null) : null;
+      if (current && record.source && current.contentHash === record.source.contentHash && !withSidecar.get(record.kind)!.has(record.originalPath.toLowerCase())) target = record.originalPath;
+    } else if (record.source) target = await match(record.kind, record.source);
     // Without a recorded identity, only the PDF coming back under its old path is its own.
     else if (await pdfExists(record.originalPath) && !withSidecar.get(record.kind)!.has(record.originalPath.toLowerCase())) target = record.originalPath;
     if (target) {
@@ -269,7 +284,7 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
         continue;
       }
     }
-    if (now - Date.parse(record.orphanedAt) > ORPHAN_RETENTION_MS) await rm(file, { force: true });
+    if (!shared && now - Date.parse(record.orphanedAt) > ORPHAN_RETENTION_MS) await rm(file, { force: true });
   }
   return { reattached, setAside: setAsideCount };
 }
