@@ -1409,6 +1409,7 @@ export class NotebookServiceImpl implements NotebookService {
     if (existing && !existing.projectId && existing.files.some((file) => file.uploaded)) throw new ControlError(409, "invalid-checkpoint", "Uploaded entries have no recorded project identity; the checkpoint was preserved.");
     const operationId = existing?.operationId ?? randomId("share");
     let checkpointed = false;
+    let finished = false;
     let installedMarker: SharedMarker | null = null;
     const guard: WriteGuard = { root, canCommit: async () => {
       if (!this.started || this.releasing || this.deps.host.api !== api || this.deps.host.accountId !== accountId) return false;
@@ -1539,7 +1540,8 @@ export class NotebookServiceImpl implements NotebookService {
         await createSharedDocument(api, projectId, { docId: file.docId as string, fileId: file.fileId }, file.docKind!, texts.get(file.path) ?? "");
         file.uploaded = true;
         done += 1;
-        await savePlan();
+        // One compact journal line instead of rewriting every initial text payload.
+        await recordShareUpload(root, file, guard);
         this.progress(notebook, { phase: "importing-documents", done, total: documents.length });
       }
 
@@ -1554,10 +1556,9 @@ export class NotebookServiceImpl implements NotebookService {
         }
         await checkWriteGuard(guard);
         await api.uploadBlob(projectId, bytes, file.mime ?? "application/octet-stream");
-        if (album) await recordShareUpload(root, file, guard);
         file.uploaded = true;
         done += 1;
-        if (!album) await savePlan();
+        await recordShareUpload(root, file, guard);
         this.progress(notebook, { phase: "uploading-files", done, total: blobs.length });
       }
 
@@ -1681,6 +1682,7 @@ export class NotebookServiceImpl implements NotebookService {
       await checkWriteGuard(guard);
       await this.run(handle);
       await deleteSharePlan(root, guard);
+      finished = true;
       await fs.rm(recoveryFile, { force: true });
       this.progress(notebook, { phase: "done", done: files.length, total: files.length });
       this.deps.emit({ t: "project-changed", projectId });
@@ -1696,6 +1698,10 @@ export class NotebookServiceImpl implements NotebookService {
         notes: album ? [] : [LOCAL_REVIEW_NOTE, ARCHIVE_NOTE],
       };
     } catch (error) {
+      // Completions are only journaled while sharing; compact them into the
+      // plan once on an interruption (the profile copy first, as a removed
+      // cloud root must still leave a complete recovery checkpoint).
+      if (!album && checkpointed && !finished) await savePlan().catch(() => undefined);
       throw toControlError(error);
     }
   }
