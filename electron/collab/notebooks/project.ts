@@ -39,7 +39,10 @@ import {
   PathRefusedError,
   WriteCancelledError,
   STATE_DIRECTORY,
-  availableName,
+  FileBusyError,
+  flushToDisk,
+  movePathUnique,
+  writeFileUnique,
   contentGuard,
   decodeText,
   encodeText,
@@ -493,7 +496,9 @@ export class SharedProject {
         const text = runtime.hub.getText("content");
         const bytes = encodeText(text);
         const target = await resolveInside(this.info.root, record.path);
-        const disk = await readIfExists(target);
+        const disk = await readWithin(target, HYDRATION_WAIT_MS);
+        // Stopping must not wait on a stalled provider: keep the text in the archive instead.
+        if (disk === SLOW_READ) throw new WriteCancelledError();
         let expected = disk === null ? null : sha256(disk);
         if (disk && sha256(disk) !== sha256(bytes) && sha256(disk) !== record.hash &&
             decodeText(disk) !== await readBase(this.info.root, record.docId)) {
@@ -512,9 +517,7 @@ export class SharedProject {
         try {
           if (error instanceof WriteCancelledError && runtime && await guard.canCommit()) {
             const directory = path.join(this.info.root, ARCHIVE_DIRECTORY);
-            const name = await availableName(directory, `${path.posix.basename(record.path)}.${runtime.docId}.shared`);
-            const recovery = path.join(directory, name);
-            await writeFileAtomic(recovery, encodeText(runtime.hub.getText("content")), contentGuard(recovery, null, guard));
+            await writeFileUnique(directory, `${path.posix.basename(record.path)}.${runtime.docId}.shared`, encodeText(runtime.hub.getText("content")), guard);
             archived = true;
           }
         } catch (recoveryError) {
@@ -546,7 +549,8 @@ export class SharedProject {
         const bytes = await this.blobBytes(entry.blobHash);
         if (!bytes || sha256(bytes) !== entry.blobHash) throw new ControlError(503, "offline", `Could not preserve ${relative}. The shared project was kept.`);
         const target = await resolveInside(this.info.root, relative);
-        const disk = await readIfExists(target);
+        const disk = await readWithin(target, HYDRATION_WAIT_MS);
+        if (disk === SLOW_READ) throw new ControlError(503, "offline", `${relative} is still downloading from the cloud folder. The shared project was kept; retry taking it down.`);
         let expected = disk === null ? null : sha256(disk);
         if (expected !== entry.blobHash) {
           if (disk && !this.info.album) {
@@ -555,6 +559,23 @@ export class SharedProject {
           }
           await writeFileAtomic(target, bytes, contentGuard(target, expected, guard));
         }
+      }
+      // The server project is deleted next: make the exported (and previously
+      // materialized text) files and their folders durable first.
+      const exported: string[] = [];
+      for (const [fileId, relative] of layout.paths) {
+        if (entries.get(fileId)?.kind === "folder") continue;
+        exported.push(await resolveInside(this.info.root, relative).catch(() => ""));
+      }
+      const files = exported.filter(Boolean);
+      const folders = new Set<string>([this.info.root]);
+      for (const file of files) {
+        for (let folder = path.dirname(file); folder.length > this.info.root.length && !folders.has(folder); folder = path.dirname(folder)) folders.add(folder);
+      }
+      try { await flushToDisk(files, [...folders].sort((a, b) => b.length - a.length)); }
+      catch (error) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not flush the exported files to disk`, error);
+        throw new ControlError(503, "offline", "Could not make the exported files durable. The shared project was kept.");
       }
       if (!await current()) throw new ControlError(409, "conflict", "The notebook changed during its local export. Retry taking it down.");
       return sequence;
@@ -918,7 +939,9 @@ export class SharedProject {
     }
     // A valid local delivery needs no HTTP round trip. All destination
     // decisions below still use a fresh read after any download has finished.
-    const delivered = await readIfExists(target);
+    // A provider that stalls must not hold the project queue (handoff, takedown, stop wait on it).
+    const delivered = await readWithin(target, HYDRATION_WAIT_MS).catch(() => null);
+    if (delivered === SLOW_READ) return false;
     const bytes = delivered && sha256(delivered) === hash ? delivered : await this.blobBytes(hash);
     if (!bytes) return false;
     const guard = this.diskGuard();
@@ -934,7 +957,8 @@ export class SharedProject {
     try {
       // Network waits can outlive an external edit. Observe the destination
       // after downloading, and verify that observation at each disk commit.
-      const existing = await readIfExists(target);
+      const existing = await readWithin(target, HYDRATION_WAIT_MS);
+      if (existing === SLOW_READ) return false;
       const existingHash = existing === null ? null : sha256(existing);
       expected = existingHash;
       const existingStats = await statIfExists(target);
@@ -967,8 +991,8 @@ export class SharedProject {
     if (uploaded) return uploaded;
     const cached = this.ctx.host.store.getBlob(hash);
     if (cached) {
-      const bytes = await readIfExists(cached.localPath).catch(() => null);
-      if (bytes && sha256(bytes) === hash) return bytes;
+      const bytes = await readWithin(cached.localPath, HYDRATION_WAIT_MS).catch(() => null);
+      if (bytes && bytes !== SLOW_READ && sha256(bytes) === hash) return bytes;
     }
     const api = this.ctx.host.api;
     if (!api) return null;
@@ -1001,8 +1025,7 @@ export class SharedProject {
       return;
     }
     const archiveRoot = path.join(this.info.root, ARCHIVE_DIRECTORY);
-    const name = await availableName(archiveRoot, path.posix.basename(relative));
-    await movePath(source, path.join(archiveRoot, name), guard);
+    await movePathUnique(source, archiveRoot, path.posix.basename(relative), guard);
   }
 
   /** Keep the latest CRDT text as well as any distinct on-disk version. */
@@ -1020,9 +1043,7 @@ export class SharedProject {
     // Write CRDT recovery directly to a new archive path. Never replace the
     // live file during archive IO: an external writer may still be editing it.
     const archiveRoot = path.join(this.info.root, ARCHIVE_DIRECTORY);
-    const name = await availableName(archiveRoot, path.posix.basename(record.path));
-    const recovery = path.join(archiveRoot, name);
-    await writeFileAtomic(recovery, encodeText(text), contentGuard(recovery, null, this.diskGuard()));
+    await writeFileUnique(archiveRoot, path.posix.basename(record.path), encodeText(text), this.diskGuard());
     await this.archive(record.path);
     // Writing it back made its folders again if they were deleted with it.
     const inUse = (relative: string) => Object.values(this.state.layout).some((other) => other.path === relative || other.path.startsWith(`${relative}/`));
@@ -1236,7 +1257,8 @@ export class SharedProject {
     }
     const text = runtime.hub.getText("content");
     const hash = sha256(encodeText(text));
-    const disk = await readIfExists(target);
+    const disk = await readWithin(target, HYDRATION_WAIT_MS);
+    if (disk === SLOW_READ) { this.scheduleRetry(); return; }
     let expected = disk === null ? null : sha256(disk);
     if (disk) {
       const diskHash = sha256(disk);
@@ -1290,12 +1312,26 @@ export class SharedProject {
       this.scheduleScan(0); this.scheduleRetry(); return false;
     }
     setMaterialized(record, hash, stats.size, stats.mtimeMs);
-    await writeBase(this.info.root, runtime.docId, text, this.diskGuard());
+    await this.writeBaseOrRetry(record, runtime.docId, text);
     this.baselineMissing.delete(runtime.fileId);
     this.ctx.host.store.upsertDoc({ docId: runtime.docId, projectId: this.info.projectId, fileId: runtime.fileId, path: record.path, materializedHash: hash });
     this.saveSoon();
     this.filesChanged([record.path]);
     return true;
+  }
+
+  /**
+   * Writes the merge base. A busy base file is no longer overwritten in place;
+   * the record is left unmaterialized so the next pass adopts the (identical)
+   * file again and rewrites the base from the shared text.
+   */
+  private async writeBaseOrRetry(record: LayoutRecord, docId: string, text: string): Promise<void> {
+    try { await writeBase(this.info.root, docId, text, this.diskGuard()); }
+    catch (error) {
+      if (!(error instanceof FileBusyError)) throw error;
+      record.hash = undefined;
+      this.scheduleRetry();
+    }
   }
 
   /** Records bytes already on disk as the materialized state of a document. */
@@ -1305,7 +1341,7 @@ export class SharedProject {
     const changed = record.hash !== hash;
     setMaterialized(record, hash, stats?.size, stats?.mtimeMs);
     if (record.docId) {
-      if (changed) await writeBase(this.info.root, record.docId, text, this.diskGuard());
+      if (changed) await this.writeBaseOrRetry(record, record.docId, text);
       this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: hash });
     }
     this.saveSoon();
