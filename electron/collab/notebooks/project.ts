@@ -602,6 +602,40 @@ export class SharedProject {
     }
   }
 
+  /**
+   * Best effort on a device that learns ANOTHER device took the project down:
+   * make every current binary local while the server (or this device's blob
+   * cache) can still supply it. Never throws and never blocks the takedown.
+   * Returns the paths whose current bytes could not be made local, or null
+   * when the manifest was unavailable to tell.
+   */
+  async preserveBinariesAfterTakedown(): Promise<string[] | null> {
+    if (!this.manifestHub || this.manifestRebuilt) return null;
+    let entries: Map<string, ManifestEntry>;
+    try { entries = this.readEntries(); } catch { return null; }
+    const layout = computeLayout(entries.values());
+    const guard = this.diskGuard(true);
+    const missing: string[] = [];
+    for (const entry of entries.values()) {
+      if (entry.kind !== "blob" || !entry.blobHash) continue;
+      const relative = layout.paths.get(entry.fileId);
+      if (!relative) continue;
+      try {
+        const target = await resolveInside(this.info.root, relative);
+        const disk = await readIfExists(target);
+        const expected = disk === null ? null : sha256(disk);
+        if (expected === entry.blobHash) continue;
+        const bytes = await this.blobBytes(entry.blobHash);
+        if (!bytes || sha256(bytes) !== entry.blobHash) { missing.push(relative); continue; }
+        if (disk && !this.info.album) await this.archive(relative, contentGuard(target, expected, guard));
+        await writeFileAtomic(target, bytes, contentGuard(target, disk && !this.info.album ? null : expected, guard));
+      } catch {
+        missing.push(relative);
+      }
+    }
+    return missing;
+  }
+
   /** True once every manifest entry has been placed on disk (join waits on this). */
   isMaterialized(): boolean {
     if (!this.manifestReady()) return false;
@@ -730,7 +764,7 @@ export class SharedProject {
       if (record.docId) {
         this.releaseDoc(record.docId);
         this.dropReconciliations(record.docId);
-        await deleteBase(this.info.root, record.docId).catch(() => undefined);
+        await deleteBase(this.info.root, record.docId, this.diskGuard()).catch(() => undefined);
       }
       this.missingSince.delete(fileId);
     }
@@ -823,7 +857,7 @@ export class SharedProject {
     this.state.layout = next;
     for (const directory of vacated) {
       if (directory && directory !== ".") {
-        await pruneEmptyDirectories(this.info.root, directory, (relative) => layout.directories.has(relative));
+        await pruneEmptyDirectories(this.info.root, directory, (relative) => layout.directories.has(relative), this.diskGuard());
       }
     }
     if (layoutChanged) {
@@ -1047,7 +1081,7 @@ export class SharedProject {
     await this.archive(record.path);
     // Writing it back made its folders again if they were deleted with it.
     const inUse = (relative: string) => Object.values(this.state.layout).some((other) => other.path === relative || other.path.startsWith(`${relative}/`));
-    await pruneEmptyDirectories(this.info.root, path.posix.dirname(record.path), inUse);
+    await pruneEmptyDirectories(this.info.root, path.posix.dirname(record.path), inUse, this.diskGuard());
   }
 
   private refuse(relative: string, error: unknown): void {

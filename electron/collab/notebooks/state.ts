@@ -162,7 +162,9 @@ export async function writeMarker(root: string, marker: SharedMarker, guard?: Wr
   await writeJson(path.join(root, SHARED_MARKER_FILE), marker, guard);
 }
 
-export async function deleteMarker(root: string): Promise<void> {
+export async function deleteMarker(root: string, guard?: WriteGuard): Promise<void> {
+  // Re-validate immediately before the destructive step, not before earlier IO.
+  await checkWriteGuard(guard);
   await fs.rm(path.join(root, SHARED_MARKER_FILE), { force: true });
 }
 
@@ -238,7 +240,8 @@ export async function writeBase(root: string, docId: string, text: string, guard
   await writeFileAtomic(baseFile(root, docId), Buffer.from(text, "utf8"), guard);
 }
 
-export async function deleteBase(root: string, docId: string): Promise<void> {
+export async function deleteBase(root: string, docId: string, guard?: WriteGuard): Promise<void> {
+  await checkWriteGuard(guard);
   await fs.rm(baseFile(root, docId), { force: true });
 }
 
@@ -283,7 +286,8 @@ export async function readSharePlan(root: string): Promise<SharePlan | null> {
     try {
       const upload = JSON.parse(line) as { fileId: string; blobHash: string };
       const file = byId.get(upload.fileId);
-      if (file?.kind === "blob" && file.blobHash === upload.blobHash) file.uploaded = true;
+      // Documents are journaled too: their plan entry keeps the hash of the uploaded text.
+      if ((file?.kind === "blob" || file?.kind === "doc") && file.blobHash === upload.blobHash) file.uploaded = true;
     } catch { /* An interrupted append must not prevent resuming the other uploads. */ }
   }
   return value;

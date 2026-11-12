@@ -243,6 +243,19 @@ export function folderNameFor(projectName: string): string {
   return name || "Shared notebook";
 }
 
+/** Album cleanup that is persisted in profile storage until every item is gone (STALE-5). */
+interface AlbumCleanup {
+  version: 1;
+  projectId: string;
+  manifestDocId: string;
+  folderId?: string;
+  writer: boolean;
+  root: string;
+  rootId: { dev: number; ino: number; birthtimeMs: number };
+  /** Top-level names still to remove. */
+  remove: string[];
+}
+
 function toControlError(error: unknown): unknown {
   if (error instanceof ApiClientError) {
     if (error.status === 0) return new ControlError(503, "offline", "The collaboration server cannot be reached.");
@@ -807,6 +820,7 @@ export class NotebookServiceImpl implements NotebookService {
   private async adoptMarkers(): Promise<void> {
     const api = this.deps.host.api;
     const accountId = api ? await this.accountId().catch(() => null) : null;
+    await this.retryAlbumCleanups().catch((error) => this.logger.warn("Shared album cleanup could not be retried.", error));
     const roots = await this.folderRoots();
     // A duplicate that is gone no longer needs reporting.
     for (const [known, entry] of this.unjoined) if (entry.reason === "duplicate-root" && !roots.includes(known)) this.unjoined.delete(known);
@@ -851,9 +865,14 @@ export class NotebookServiceImpl implements NotebookService {
     if (binding && !sameNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding)) return null;
     const outcome = readNotebookLifecycle(this.lifecycleDirectory, marker);
     if (!outcome) return null;
+    const originalRoot = await statIfExists(root).catch(() => null);
     const current = await readMarker(root).catch(() => null);
     if (!current || !sameNotebookIdentity(marker, current)) return outcome;
-    if (outcome === "local") await deleteMarker(root);
+    if (outcome === "local") {
+      // The root and marker are checked again immediately before the removal.
+      const guard = this.cleanupGuard(root, originalRoot, (latest) => latest !== null && sameNotebookIdentity(marker, latest));
+      await deleteMarker(root, guard).catch((error: unknown) => { if (!(error instanceof WriteCancelledError)) throw error; });
+    }
     else if (!current.revoked) await writeMarker(root, { ...current, revoked: true, revokedAt: new Date().toISOString() }, {
       root,
       canCommit: async () => {
@@ -1185,6 +1204,9 @@ export class NotebookServiceImpl implements NotebookService {
     handle.revoking = true;
     try {
       const runtime = handle.runtime;
+      const originalRoot = await statIfExists(handle.root).catch(() => null);
+      // Binaries the server can still supply are fetched before access ends for good.
+      const notCurrent = await runtime?.preserveBinariesAfterTakedown().catch(() => null);
       if (runtime) {
         handle.index = indexOf(runtime.indexedDocs());
         handle.reconcilePending = runtime.reconcilePending;
@@ -1194,6 +1216,9 @@ export class NotebookServiceImpl implements NotebookService {
       // Revocation is terminal for this account on every copy. A follower must
       // not wait for an offline former writer to make its recovery copy deletable.
       const marker = await readMarker(handle.root).catch(() => null);
+      if (notCurrent?.length && this.matchesMarker(handle, marker)) {
+        await this.recordIncompleteTakedown(handle, notCurrent, this.cleanupGuard(handle.root, originalRoot, (latest) => this.matchesMarker(handle, latest)));
+      }
       if (this.matchesMarker(handle, marker)) await writeMarker(handle.root, { ...marker, revoked: true, revokedAt: new Date().toISOString() }, {
         root: handle.root,
         canCommit: async () => this.matchesMarker(handle, await readMarker(handle.root).catch(() => null)),
@@ -1246,6 +1271,31 @@ export class NotebookServiceImpl implements NotebookService {
     });
   }
 
+  /** Lists, inside the (local-only) archive, the files that are not current here after a takedown. */
+  private async recordIncompleteTakedown(handle: ProjectHandle, paths: string[], guard: WriteGuard): Promise<void> {
+    this.logger.warn(`Shared notebook ${handle.name}: ${paths.length} file(s) are not current locally after the project was taken down: ${paths.join(", ")}`);
+    const lines = [
+      "Access to this shared notebook ended (it was taken down or you were removed) before these files finished arriving on this device.",
+      "The copies in the notebook folder are missing or older than the last shared version, and the server can no longer supply the newer ones.",
+      "If your cloud folder (for example OneDrive) delivers them later they will be current again; otherwise ask a collaborator for them.",
+      "",
+      ...paths,
+      "",
+    ];
+    await writeFileAtomic(path.join(handle.root, ARCHIVE_DIRECTORY, "shared-takedown-incomplete-files.txt"), Buffer.from(lines.join("\n"), "utf8"), guard)
+      .catch((error: unknown) => { if (!(error instanceof WriteCancelledError)) this.logger.warn("Could not record the files missing after takedown.", error); });
+  }
+
+  /** Fences a destructive step on the captured folder identity and its sharing marker. */
+  private cleanupGuard(root: string, original: { dev: number; ino: number; birthtimeMs: number } | null, owns: (marker: SharedMarker | null) => boolean): WriteGuard {
+    return { root, canCommit: async () => {
+      const current = await statIfExists(root).catch(() => null);
+      if (!original || !current || !current.isDirectory() || current.isSymbolicLink() || current.dev !== original.dev ||
+          current.ino !== original.ino || current.birthtimeMs !== original.birthtimeMs) return false;
+      return owns(await readMarker(root).catch(() => null));
+    } };
+  }
+
   /**
    * After the project was deleted on the server: stops syncing and forgets
    * it. Every installation preserves its latest text and returns its own
@@ -1253,14 +1303,27 @@ export class NotebookServiceImpl implements NotebookService {
    */
   private async removeLocally(handle: ProjectHandle): Promise<void> {
     const { projectId } = handle;
+    // Identity of the folder as it was when the takedown began; every
+    // destructive step below re-validates it instead of trusting this check.
+    const originalRoot = await statIfExists(handle.root).catch(() => null);
+    // Another device may have taken the project down while binaries were not
+    // delivered here yet: fetch what can still be had, and remember the rest.
+    const notCurrent = handle.kind === "album" ? [] : await handle.runtime?.preserveBinariesAfterTakedown().catch(() => null);
     await handle.runtime?.stop({ preserveContent: true });
     await this.rememberEnded(handle, "local");
     handle.runtime = null;
     // The folder may meanwhile hold another share's marker; that one stays.
     const marker = await readMarker(handle.root).catch(() => null);
     if (this.matchesMarker(handle, marker)) {
-      if (handle.writer) await deleteSharePlan(handle.root);
-      if (this.matchesMarker(handle, await readMarker(handle.root).catch(() => null))) await deleteMarker(handle.root);
+      const guard = this.cleanupGuard(handle.root, originalRoot, (latest) => this.matchesMarker(handle, latest));
+      try {
+        if (notCurrent?.length) await this.recordIncompleteTakedown(handle, notCurrent, guard);
+        else if (notCurrent === null) this.logger.warn(`Shared notebook ${handle.name}: the file list was unavailable, so binaries could not be verified after the takedown.`);
+        if (handle.writer) await deleteSharePlan(handle.root, guard);
+        await deleteMarker(handle.root, guard);
+      } catch (error) {
+        if (!(error instanceof WriteCancelledError)) throw error;
+      }
     }
     this.deps.host.store.deleteProject(projectId);
     this.projects.delete(projectId);
@@ -1276,20 +1339,6 @@ export class NotebookServiceImpl implements NotebookService {
    */
   private async takeAlbumAway(handle: ProjectHandle): Promise<void> {
     const originalRoot = await statIfExists(handle.root);
-    const currentRoot = async () => {
-      const current = await statIfExists(handle.root);
-      return !!originalRoot && !!current && current.isDirectory() && !current.isSymbolicLink() &&
-        current.dev === originalRoot.dev && current.ino === originalRoot.ino && current.birthtimeMs === originalRoot.birthtimeMs;
-    };
-    const canRemove = async () => await currentRoot() && this.matchesMarker(handle, await readMarker(handle.root).catch(() => null));
-    const removeOwned = async (name: string) => {
-      const detached = path.join(this.lifecycleDirectory, "album-cleanup", randomId("removed"));
-      await fs.mkdir(path.dirname(detached), { recursive: true });
-      if (!await canRemove()) return;
-      try { await fs.rename(path.join(handle.root, name), detached); }
-      catch (error) { if (isNotFound(error)) return; throw error; }
-      await fs.rm(detached, { recursive: true, force: true });
-    };
     const runtime = handle.runtime;
     const photos = runtime?.albumState().photos ?? [];
     await runtime?.stop();
@@ -1302,29 +1351,122 @@ export class NotebookServiceImpl implements NotebookService {
     {
       const accountId = this.cachedAccountId ?? (await this.accountId().catch(() => null));
       const marker = await readMarker(handle.root).catch(() => null);
-      // The writer, or a follower of this account (see above); canRemove then
+      // The writer, or a follower of this account (see above); the cleanup then
       // rechecks the folder and its sharing identity before every removal.
       const ours = marker && (handle.writer ? this.ownsMarker(marker, handle.projectId) : this.markerAuthorityMatches(marker));
-      if (marker && ours && await canRemove()) {
-        for (const photo of photos) {
-          if (accountId && photo.addedBy === accountId) continue;
-          if (!await canRemove()) break;
-          await removeOwned(photo.name).catch(() => undefined);
-        }
-        for (const name of [ARCHIVE_DIRECTORY, ".libera", SHARE_PENDING_FILE, ".libera-share-uploaded.jsonl"]) {
-          if (!await canRemove()) break;
-          await removeOwned(name).catch(() => undefined);
-        }
-        if (await canRemove()) await removeOwned(SHARED_MARKER_FILE);
-        // Nothing of this account's left: the folder goes too.
-        const left = await fs.readdir(handle.root).catch(() => ["?"]);
-        if (left.length === 0 && await currentRoot()) await fs.rmdir(handle.root).catch(() => undefined);
+      if (marker && ours && originalRoot?.isDirectory() && !originalRoot.isSymbolicLink() && this.matchesMarker(handle, marker)) {
+        await this.runAlbumCleanup({
+          version: 1,
+          projectId: handle.projectId,
+          manifestDocId: handle.manifestDocId,
+          ...(handle.folderId ? { folderId: handle.folderId } : {}),
+          writer: handle.writer,
+          root: handle.root,
+          rootId: { dev: originalRoot.dev, ino: originalRoot.ino, birthtimeMs: originalRoot.birthtimeMs },
+          remove: [
+            ...photos.filter((photo) => !(accountId && photo.addedBy === accountId)).map((photo) => photo.name),
+            ARCHIVE_DIRECTORY, ".libera", SHARE_PENDING_FILE, ".libera-share-uploaded.jsonl",
+          ],
+        });
       }
     }
     this.deps.host.store.deleteProject(handle.projectId);
     this.projects.delete(handle.projectId);
     this.deps.emit({ t: "project-changed", projectId: handle.projectId });
     this.deps.statusChanged?.();
+  }
+
+  private albumCleanupFile(projectId: string): string {
+    return path.join(this.lifecycleDirectory, "album-cleanup", `pending-${sha256(Buffer.from(projectId)).slice(0, 32)}.json`);
+  }
+
+  /**
+   * Removes what the leaving account does not own from an album folder. What
+   * cannot be removed now (busy file, cross-volume folder) is persisted, and
+   * the sharing marker stays as the folder's identity until it is done, so a
+   * later tick retries it instead of forgetting it.
+   */
+  private async runAlbumCleanup(entry: AlbumCleanup): Promise<void> {
+    const file = this.albumCleanupFile(entry.projectId);
+    const probe = { projectId: entry.projectId, manifestDocId: entry.manifestDocId, folderId: entry.folderId, root: entry.root } as ProjectHandle;
+    const guard = this.cleanupGuard(entry.root, entry.rootId, (marker) =>
+      this.matchesMarker(probe, marker) && (entry.writer ? this.ownsMarker(marker, entry.projectId) : this.markerAuthorityMatches(marker)));
+    const rootGuard = this.cleanupGuard(entry.root, entry.rootId, () => true);
+    const detach = async (name: string): Promise<string | null> => {
+      await checkWriteGuard(guard);
+      const target = path.join(entry.root, name);
+      const detached = path.join(this.lifecycleDirectory, "album-cleanup", randomId("removed"));
+      await fs.mkdir(path.dirname(detached), { recursive: true });
+      await checkWriteGuard(guard);
+      try {
+        await fs.rename(target, detached);
+        await fs.rm(detached, { recursive: true, force: true }).catch(() => undefined);
+        return null;
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+      }
+      // The folder is on another volume than profile storage: quarantine it
+      // beside its siblings, which makes it ours alone, then delete it.
+      const quarantine = `.libera-removing-${randomId("q")}`;
+      await checkWriteGuard(guard);
+      try { await fs.rename(target, path.join(entry.root, quarantine)); }
+      catch (error) { if (isNotFound(error)) return null; throw error; }
+      try { await fs.rm(path.join(entry.root, quarantine), { recursive: true, force: true }); return null; }
+      catch { return quarantine; }
+    };
+    const remaining: string[] = [];
+    try {
+      for (const name of entry.remove) {
+        // Album entries are top-level names; anything else is not ours to remove.
+        if (!name || name === "." || name === ".." || /[\\/]/.test(name)) continue;
+        try {
+          const leftover = await detach(name);
+          if (leftover) remaining.push(leftover);
+        } catch (error) {
+          if (error instanceof WriteCancelledError) throw error;
+          remaining.push(name);
+        }
+      }
+      if (remaining.length === 0) {
+        await detach(SHARED_MARKER_FILE).then((leftover) => { if (leftover) remaining.push(leftover); }, (error: unknown) => {
+          if (error instanceof WriteCancelledError) throw error;
+          remaining.push(SHARED_MARKER_FILE);
+        });
+      }
+    } catch (error) {
+      // The folder was replaced or now belongs to someone else: nothing here is ours.
+      if (!(error instanceof WriteCancelledError)) throw error;
+      await fs.rm(file, { force: true });
+      return;
+    }
+    if (remaining.length > 0) {
+      await writeFileAtomic(file, Buffer.from(JSON.stringify({ ...entry, remove: remaining })));
+      this.logger.warn(`Shared album ${path.basename(entry.root)}: ${remaining.length} item(s) could not be removed yet; they will be retried.`);
+      return;
+    }
+    await fs.rm(file, { force: true });
+    // Nothing of this account's left: the folder goes too.
+    const left = await fs.readdir(entry.root).catch(() => ["?"]);
+    if (left.length === 0 && await rootGuard.canCommit()) await fs.rmdir(entry.root).catch(() => undefined);
+  }
+
+  /** Retries album cleanups an earlier tick could not finish. */
+  private async retryAlbumCleanups(): Promise<void> {
+    const directory = path.join(this.lifecycleDirectory, "album-cleanup");
+    const names = await fs.readdir(directory).catch(() => [] as string[]);
+    for (const name of names) {
+      if (!/^pending-[0-9a-f]{32}\.json$/.test(name) || !this.started) continue;
+      let entry: AlbumCleanup | null = null;
+      try { entry = JSON.parse((await fs.readFile(path.join(directory, name))).toString("utf8")) as AlbumCleanup; } catch { /* Unreadable: left for inspection. */ }
+      if (!entry || entry.version !== 1 || typeof entry.projectId !== "string" || typeof entry.root !== "string" || !Array.isArray(entry.remove) ||
+          !entry.remove.every((item) => typeof item === "string") || typeof entry.rootId?.ino !== "number") continue;
+      const pending = entry;
+      // A project that is joined again owns its folder once more.
+      if (this.projects.has(pending.projectId)) { await fs.rm(path.join(directory, name), { force: true }); continue; }
+      await this.locked(`project:${pending.projectId}`, () => this.runAlbumCleanup(pending))
+        .catch((error) => this.logger.warn(`Shared album cleanup for ${path.basename(pending.root)} will be retried.`, error));
+    }
   }
 
   // ------------------------------------------------------------ albums
@@ -1492,6 +1634,7 @@ export class NotebookServiceImpl implements NotebookService {
     if (existing && !existing.projectId && existing.files.some((file) => file.uploaded)) throw new ControlError(409, "invalid-checkpoint", "Uploaded entries have no recorded project identity; the checkpoint was preserved.");
     const operationId = existing?.operationId ?? randomId("share");
     let checkpointed = false;
+    let finished = false;
     let installedMarker: SharedMarker | null = null;
     const guard: WriteGuard = { root, canCommit: async () => {
       if (!this.started || this.releasing || this.deps.host.api !== api || this.deps.host.accountId !== accountId) return false;
@@ -1622,7 +1765,8 @@ export class NotebookServiceImpl implements NotebookService {
         await createSharedDocument(api, projectId, { docId: file.docId as string, fileId: file.fileId }, file.docKind!, texts.get(file.path) ?? "");
         file.uploaded = true;
         done += 1;
-        await savePlan();
+        // One compact journal line instead of rewriting every initial text payload.
+        await recordShareUpload(root, file, guard);
         this.progress(notebook, { phase: "importing-documents", done, total: documents.length });
       }
 
@@ -1637,10 +1781,9 @@ export class NotebookServiceImpl implements NotebookService {
         }
         await checkWriteGuard(guard);
         await api.uploadBlob(projectId, bytes, file.mime ?? "application/octet-stream");
-        if (album) await recordShareUpload(root, file, guard);
         file.uploaded = true;
         done += 1;
-        if (!album) await savePlan();
+        await recordShareUpload(root, file, guard);
         this.progress(notebook, { phase: "uploading-files", done, total: blobs.length });
       }
 
@@ -1764,6 +1907,7 @@ export class NotebookServiceImpl implements NotebookService {
       await checkWriteGuard(guard);
       await this.run(handle);
       await deleteSharePlan(root, guard);
+      finished = true;
       await fs.rm(recoveryFile, { force: true });
       this.progress(notebook, { phase: "done", done: files.length, total: files.length });
       this.deps.emit({ t: "project-changed", projectId });
@@ -1779,6 +1923,10 @@ export class NotebookServiceImpl implements NotebookService {
         notes: album ? [] : [LOCAL_REVIEW_NOTE, ARCHIVE_NOTE],
       };
     } catch (error) {
+      // Completions are only journaled while sharing; compact them into the
+      // plan once on an interruption (the profile copy first, as a removed
+      // cloud root must still leave a complete recovery checkpoint).
+      if (!album && checkpointed && !finished) await savePlan().catch(() => undefined);
       throw toControlError(error);
     }
   }
