@@ -203,19 +203,19 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
             <div
               ref={popoverRef}
               aria-label="Notifications"
-              className="libera-collab-popover fixed z-[60] flex max-h-[min(32rem,calc(100vh-16px))] w-80 flex-col overflow-hidden rounded-xl"
+              className="libera-collab-popover fixed z-[60] flex max-h-[min(32rem,calc(100vh-16px))] w-[22rem] max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl"
               id={popoverId}
               role="dialog"
               style={{ left: anchor.left, bottom: anchor.bottom }}
               onKeyDown={onPopoverKeyDown}
             >
               <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-                <h2 className="text-sm font-semibold">Notifications</h2>
-                <label className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground" title="Also show notifications on the desktop while Libera is in the background">
+                <h2 className="min-w-0 truncate text-sm font-semibold">Notifications</h2>
+                <label className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground" title="Also show notifications on the desktop while Libera is in the background">
                   <input checked={desktopAlerts} type="checkbox" onChange={(event) => setDesktopAlerts(event.target.checked)} /> Desktop alerts
                 </label>
                 <button
-                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
                   data-popover-focus
                   disabled={!unread}
                   type="button"

@@ -20,6 +20,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
 import { DocumentChatPanel, type AgentWorkspaceBridge, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
+import { useDetachedWindow } from "@/components/libera/detached-window";
 import { ImageGalleryView } from "@/components/libera/image-gallery-view";
 import { requestSharedAlbum } from "@/components/libera/gallery-store";
 import { SearchView } from "@/components/libera/global-search/search-view";
@@ -264,11 +265,28 @@ export function LiberaApp({
     panelWriter.schedule({ kind: "panel", value: { width, collapsed } });
   }, [panelWriter]);
 
+  // The AI panel can move to its own window; it stays mounted here and renders there.
+  // Closing that window closes the panel, like its close button; it opens docked next time.
+  const detachedChat = useDetachedWindow({
+    name: "libera-chat-window", title: "Libera AI", width: 480, height: 820,
+    onClosed: () => { setChatCollapsed(true); saveChatPanel(chatWidth, true); },
+  });
+  const chatDetached = !!detachedChat.container;
+  const { close: closeDetachedChat, focus: focusDetachedChat, open: openDetachedChat } = detachedChat;
   const changeChatCollapsed = useCallback((collapsed: boolean) => {
-    if (collapsed === chatCollapsed) return;
+    if (chatDetached) {
+      // Hiding the detached panel closes its window; showing it brings the window forward.
+      if (!collapsed) { focusDetachedChat(); return; }
+      closeDetachedChat();
+    } else if (collapsed === chatCollapsed) return;
     setChatCollapsed(collapsed);
     saveChatPanel(chatWidth, collapsed);
-  }, [chatWidth, chatCollapsed, saveChatPanel]);
+  }, [chatWidth, chatCollapsed, chatDetached, closeDetachedChat, focusDetachedChat, saveChatPanel]);
+  const changeChatDetached = useCallback((detached: boolean) => {
+    if (detached) openDetachedChat();
+    else closeDetachedChat();
+  }, [closeDetachedChat, openDetachedChat]);
+  const chatDocked = !chatCollapsed && !chatDetached;
 
   // The photo open in the gallery viewer is the AI chat's context while it is on screen.
   const [galleryViewingPhoto, setGalleryViewingPhoto] = useState<GalleryPhoto | null>(null);
@@ -490,7 +508,7 @@ export function LiberaApp({
 
     return clampSidebarWidth(
       clientX - (layoutBounds?.left ?? 0),
-      layoutBounds ? layoutBounds.width - (chatCollapsed ? 0 : chatWidth) : undefined,
+      layoutBounds ? layoutBounds.width - (chatDocked ? chatWidth : 0) : undefined,
     );
   }
 
@@ -692,7 +710,7 @@ export function LiberaApp({
         style={
           {
             "--libera-sidebar-width": `${notebooksCollapsed ? 48 : sidebarWidth}px`,
-            "--libera-chat-width": `${chatCollapsed ? 0 : chatWidth}px`,
+            "--libera-chat-width": `${chatDocked ? chatWidth : 0}px`,
           } as CSSProperties
         }
       >
@@ -843,8 +861,8 @@ export function LiberaApp({
           </div>
         </section>
 
-        <DocumentChatPanel agentWorkspace={agentWorkspace} viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
-        {!chatCollapsed && <div
+        <DocumentChatPanel agentWorkspace={agentWorkspace} viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} detachedContainer={detachedChat.container} onDetachedChange={changeChatDetached} />
+        {chatDocked && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
           className="absolute bottom-0 top-0 z-40 hidden w-1.5 translate-x-1/2 cursor-col-resize touch-none focus-visible:bg-accent lg:block"

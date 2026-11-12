@@ -4,12 +4,14 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SetStateAction } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type SetStateAction } from "react";
 import { Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, CheckCheck, AudioLines, ImagePlus, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2, FileDiff } from "lucide-react";
 import { speakMarkdown, toggleSpeech } from "@/lib/tts/player";
 import { useSpeech } from "./read-aloud";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
+import { createPortal } from "react-dom";
+import { PortalDocumentContext } from "./detached-window";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { copyRenderedMarkdownSelection } from "@/lib/markdown-clipboard";
@@ -349,7 +351,7 @@ export type AgentWorkspaceBridge = {
   openFile: (path: string) => void;
 };
 
-export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft, agentWorkspace }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; attachmentRequest?: { id: string; tab: OpenTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void; viewedPhoto?: ChatViewedPhoto | null; agentWorkspace?: AgentWorkspaceBridge }) {
+export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft, agentWorkspace, detachedContainer = null, onDetachedChange }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; attachmentRequest?: { id: string; tab: OpenTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void; viewedPhoto?: ChatViewedPhoto | null; agentWorkspace?: AgentWorkspaceBridge; /** Set while the panel is shown in its own window: the panel renders into it. */ detachedContainer?: HTMLElement | null; /** Moves the panel to its own window (true) or back into the main window (false). */ onDetachedChange?: (detached: boolean) => void }) {
   const review = useMarkdownReview();
   // Agent runs finish after awaits; reach the review of whatever document is open then.
   const reviewRef = useRef(review);
@@ -408,9 +410,11 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   // Files under manual review can change outside this window (another window, a sync).
   useEffect(() => {
     const refresh = () => void agentReviewStore.refresh();
+    const host = detachedContainer?.ownerDocument.defaultView;
     window.addEventListener("focus", refresh);
-    return () => window.removeEventListener("focus", refresh);
-  }, []);
+    host?.addEventListener("focus", refresh);
+    return () => { window.removeEventListener("focus", refresh); host?.removeEventListener("focus", refresh); };
+  }, [detachedContainer]);
   const speech = useSpeech();
   // Agent runs call back into the workspace after awaits; always use the latest bridge.
   const agentWorkspaceRef = useRef(agentWorkspace);
@@ -1353,6 +1357,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     if (action === "manage-chats") { setSettingsOpen(true); return; }
     if (action === "search") { setSearchOpen(true); searchInputRef.current?.focus(); return; }
     if (action === "auto-read") { changeAutoRead(!autoRead); return; }
+    if (action === "detach") { onDetachedChange?.(!detachedContainer); return; }
     if (!selectedChat?.messages.length || (action !== "save-md" && action !== "save-notebook" && action !== "create-draft")) return;
     const snapshot = { fileName: chatExportFileName(selectedChat.title), content: exportChatMarkdown(selectedChat, mathMarkers, macroScope) };
     if (action === "create-draft") { onCreateDraft(snapshot); return; }
@@ -1391,6 +1396,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           { id: "decrease-font-size", label: "Decrease Font Size", enabled: !fontSizeSaving && fontSize > MIN_CHAT_FONT_SIZE },
           { type: "separator" },
           { id: "auto-read", label: "Auto Read", type: "checkbox", checked: autoRead },
+          ...(onDetachedChange ? [{ type: "separator" as const }, { id: "detach", label: detachedContainer ? "Return to Main Window" : "Open in Separate Window" }] : []),
         ],
       });
       await handleChatAction(action);
@@ -1451,9 +1457,13 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
 
   // Keep chat state and selection shortcuts alive while removing all panel UI.
   if (collapsed) return null;
-  if (review?.chatReview) return <ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />;
+  // Detached: the panel stays mounted here (state, requests, editor bridges) and renders into its window.
+  const place = (panel: ReactNode) => detachedContainer
+    ? createPortal(<PortalDocumentContext.Provider value={detachedContainer.ownerDocument}>{panel}</PortalDocumentContext.Provider>, detachedContainer)
+    : panel;
+  if (review?.chatReview) return place(<ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />);
 
-  return <aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card" data-ai-active={pending}>
+  return place(<aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card" data-ai-active={pending}>
     <AiPanelGlow active={pending} />
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="libera-chat-header libera-window-drag-region flex shrink-0 items-center gap-1 px-3">
@@ -1474,7 +1484,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         </div>
         <button className={buttonClass} aria-label="New chat" title="New chat" disabled={!chat?.messages.length} onClick={startNewChat}><Plus size={16} /></button>
         <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
-        <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label="Close AI panel" title="Close AI panel" onClick={() => onCollapsedChange(true)}><X size={17} /></button>
+        <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label={detachedContainer ? "Close AI window" : "Close AI panel"} title={detachedContainer ? "Close AI window" : "Close AI panel"} onClick={() => onCollapsedChange(true)}><X size={17} /></button>
       </header>
       {searchOpen && <div role="search" className="libera-chat-search libera-window-no-drag flex shrink-0 items-center gap-1.5 border-b border-border px-3 py-2">
         <label className="libera-chat-search-field flex h-8 min-w-0 flex-1 cursor-text items-center gap-2 rounded-lg border border-input px-2.5 transition-shadow focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
@@ -1675,6 +1685,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("create-draft")}>Create a new draft</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-md")}>Save MD file</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-notebook")}>Save to Notebook or Folder</button>
+        {onDetachedChange && <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted" onClick={() => void handleChatAction("detach")}>{detachedContainer ? "Return to Main Window" : "Open in Separate Window"}</button>}
       </div>
     </ModalDialog>
     {exportSnapshot && <DocumentChatExportDialog snapshot={exportSnapshot} onClose={() => setExportSnapshot(null)} onSaved={onExportSaved} onSaveToNotebook={onSaveToNotebook} />}
@@ -1685,5 +1696,5 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       onRename={(id, title) => updateChat(id, (current) => ({ ...current, title, titleEdited: true }))}
       onDelete={deleteChats}
     />}
-  </aside>;
+  </aside>);
 }

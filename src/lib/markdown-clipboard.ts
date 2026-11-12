@@ -73,7 +73,12 @@ function cloneSelected(node: Node, range: Range, citations: CitationTokens): Nod
     if (node.parentElement?.matches("pre > code") && end === node.textContent!.length && node.textContent!.endsWith("\n")) end--;
     return end > start ? node.ownerDocument!.createTextNode(node.textContent!.slice(start, end)) : null;
   }
-  if (!(node instanceof HTMLElement)) return null;
+  // By node type, not instanceof: a chat in a detached window has that window's element classes.
+  if (node.nodeType !== Node.ELEMENT_NODE || (node as Element).namespaceURI !== "http://www.w3.org/1999/xhtml") return null;
+  return cloneSelectedElement(node as HTMLElement, range, citations);
+}
+
+function cloneSelectedElement(node: HTMLElement, range: Range, citations: CitationTokens): Node | null {
   if (node.matches("[data-libera-bibliography]")) return null;
   if (node.matches("[data-libera-citation]")) {
     // getAttribute returns the token with the attribute's HTML escaping undone.

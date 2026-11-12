@@ -1,10 +1,11 @@
 "use client";
 
 import { X } from "lucide-react";
-import { useEffect, useId, useMemo, useRef } from "react";
+import { useContext, useEffect, useId, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 import "../../../electron/modal-dialog.css";
+import { PortalDocumentContext } from "./detached-window";
 
 /** Open dialogs, oldest first: Escape and Tab belong to the topmost (a dialog opened from another). */
 const openDialogs: string[] = [];
@@ -12,7 +13,7 @@ const openDialogs: string[] = [];
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
 
 function focusableIn(container: HTMLElement) {
-  return [...container.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((element) => element.offsetParent !== null || element === document.activeElement);
+  return [...container.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((element) => element.offsetParent !== null || element === container.ownerDocument.activeElement);
 }
 
 type ModalDialogProps = {
@@ -38,15 +39,17 @@ export function ModalDialog({
 }: ModalDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
+  // A dialog opened from a panel in a detached window belongs in that window.
+  const hostDocument = useContext(PortalDocumentContext) ?? (typeof document === "undefined" ? null : document);
 
   const onCloseRef = useRef(onClose);
   const sectionRef = useRef<HTMLElement>(null);
   // What had focus as the dialog opened, read while rendering: before a field takes focus with autoFocus.
   const opener = useMemo(() => {
-    if (!open || typeof document === "undefined") return null;
-    const active = document.activeElement as HTMLElement | null;
-    return active && typeof active.focus === "function" && active !== document.body ? active : null;
-  }, [open]);
+    if (!open || !hostDocument) return null;
+    const active = hostDocument.activeElement as HTMLElement | null;
+    return active && typeof active.focus === "function" && active !== hostDocument.body ? active : null;
+  }, [open, hostDocument]);
   useEffect(() => {
     onCloseRef.current = onClose;
   });
@@ -60,7 +63,9 @@ export function ModalDialog({
     // Focus moves into the dialog (unless a field took it with autoFocus) and returns where it was on close.
     const section = sectionRef.current;
     const previous = opener && !section?.contains(opener) ? opener : null;
-    if (section && !section.contains(document.activeElement)) {
+    const doc = section?.ownerDocument ?? document;
+    const view = doc.defaultView ?? window;
+    if (section && !section.contains(doc.activeElement)) {
       const body = section.querySelector<HTMLElement>(".libera-dialog-body");
       (focusableIn(body ?? section)[0] ?? section).focus();
     }
@@ -77,15 +82,15 @@ export function ModalDialog({
       if (!focusable.length) { event.preventDefault(); sectionRef.current.focus(); return; }
       const first = focusable[0];
       const last = focusable.at(-1)!;
-      const active = document.activeElement;
+      const active = doc.activeElement;
       if (!sectionRef.current.contains(active)) { event.preventDefault(); first.focus(); }
       else if (event.shiftKey && active === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && active === last) { event.preventDefault(); first.focus(); }
     }
 
-    window.addEventListener("keydown", handleKeyDown);
+    view.addEventListener("keydown", handleKeyDown);
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
+      view.removeEventListener("keydown", handleKeyDown);
       openDialogs.splice(openDialogs.lastIndexOf(titleId), 1);
       // Without scrolling: a tall opener (an editor) would otherwise jump to its top or its caret.
       if (previous?.isConnected) previous.focus({ preventScroll: true });
@@ -147,5 +152,5 @@ export function ModalDialog({
     </div>
   );
 
-  return typeof document !== "undefined" ? createPortal(dialog, document.body) : null;
+  return hostDocument ? createPortal(dialog, hostDocument.body) : null;
 }

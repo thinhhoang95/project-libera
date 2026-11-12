@@ -53,8 +53,8 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
   const dictation = useDictation((spoken) => {
     const { value: current, onChange: change } = latest.current;
     const input = composerRef.current;
-    const start = input && document.activeElement === input ? input.selectionStart : current.length;
-    const end = input && document.activeElement === input ? input.selectionEnd : current.length;
+    const start = input && input.ownerDocument.activeElement === input ? input.selectionStart : current.length;
+    const end = input && input.ownerDocument.activeElement === input ? input.selectionEnd : current.length;
     const before = current.slice(0, start);
     const after = current.slice(end);
     const inserted = `${before && !/\s$/.test(before) ? " " : ""}${spoken}${after && !/^\s/.test(after) ? " " : ""}`;
@@ -153,7 +153,7 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
           if (event.key === "Escape") { event.preventDefault(); setInvocation(null); return; }
           if ((event.key === "ArrowDown" || event.key === "ArrowUp") && matchCount) {
             event.preventDefault(); const next = (index + (event.key === "ArrowDown" ? 1 : -1) + matchCount) % matchCount;
-            setSelected(next); window.document.getElementById(`${listId}-${next}`)?.scrollIntoView?.({ block: "nearest" }); return;
+            setSelected(next); event.currentTarget.ownerDocument.getElementById(`${listId}-${next}`)?.scrollIntoView?.({ block: "nearest" }); return;
           }
           if ((event.key === "Enter" && !event.shiftKey) || (event.key === "Tab" && matchCount)) {
             event.preventDefault(); chooseMatch(index); return;

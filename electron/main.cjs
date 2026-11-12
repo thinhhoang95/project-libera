@@ -127,6 +127,11 @@ let isQuitting = false;
 let rendererStateReady = false;
 const statefulContents = new Set();
 const childWindows = new Set();
+// Pop-outs that show part of their opener's page (the detached AI panel): an
+// about:blank window the opener renders into, so its menus come over the
+// opener's IPC. Maps each to the window that opened it.
+const DETACHED_PANEL_FRAME_NAMES = new Set(["libera-chat-window"]);
+const detachedPanelWindows = new Map();
 let startupInProgress = true;
 let quitRequested = false;
 let shutdownPromise = null;
@@ -2197,10 +2202,19 @@ function installRendererAppMenuHandlers() {
 
 function installNativeMenuHandlers() {
   ipcMain.handle("menu:popup", (event, input) => {
-    const window = getWindowFromIpcEvent(event);
+    let window = getWindowFromIpcEvent(event);
 
     if (!window) {
       return null;
+    }
+
+    // A menu opened from a detached panel arrives from its opener: show it in
+    // the pop-out the user is working in. Its coordinates are that window's.
+    let frame = event.senderFrame;
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused && focused !== window && !focused.isDestroyed() && detachedPanelWindows.get(focused) === window) {
+      window = focused;
+      frame = null;
     }
 
     return new Promise((resolve) => {
@@ -2226,8 +2240,8 @@ function installNativeMenuHandlers() {
         popupOptions.y = y;
       }
 
-      if (event.senderFrame) {
-        popupOptions.frame = event.senderFrame;
+      if (frame) {
+        popupOptions.frame = frame;
       }
 
       Menu.buildFromTemplate(template).popup(popupOptions);
@@ -2448,6 +2462,15 @@ function isExternalBrowserUrl(url) {
     const parsedUrl = new URL(url);
 
     return parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** A mailto: link (the About dialog's Feedback button), handed to the default mail app. */
+function isMailtoUrl(url) {
+  try {
+    return new URL(url).protocol === "mailto:";
   } catch {
     return false;
   }
@@ -2729,7 +2752,32 @@ async function createMainWindow(url) {
   const childWindowSizes = new Map([["/markdown-preview", [900, 800]], ["/file-window", [1000, 850]], ["/latex-pdf-window", [900, 1000]]]);
   const childWindowSize = (targetUrl) =>
     isSameOrigin(targetUrl, url) ? childWindowSizes.get(new URL(targetUrl).pathname) : undefined;
-  mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl, frameName }) => {
+    // The detached AI panel: an empty window the page renders the panel into.
+    if (DETACHED_PANEL_FRAME_NAMES.has(frameName) && (targetUrl === "about:blank" || targetUrl === "")) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          width: 480,
+          height: 820,
+          minWidth: 320,
+          minHeight: 400,
+          title: APP_DISPLAY_NAME,
+          icon: getIconPath(),
+          frame: true,
+          transparent: false,
+          titleBarStyle: "default",
+          autoHideMenuBar: true,
+          backgroundColor: nativeTheme.shouldUseDarkColors ? "#1f1f1f" : "#ffffff",
+          webPreferences: {
+            session: getProfileSession(),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          },
+        },
+      };
+    }
     const size = childWindowSize(targetUrl);
     if (size) {
       return {
@@ -2760,8 +2808,13 @@ async function createMainWindow(url) {
 
     return { action: "deny" };
   });
-  mainWindow.webContents.on("did-create-window", (child) => {
+  mainWindow.webContents.on("did-create-window", (child, { frameName }) => {
     trackChildWindow(child);
+    if (DETACHED_PANEL_FRAME_NAMES.has(frameName)) {
+      const opener = mainWindow;
+      detachedPanelWindows.set(child, opener);
+      child.on("closed", () => detachedPanelWindows.delete(child));
+    }
     enableNativePinch(child.webContents);
     child.setMenuBarVisibility(false);
     child.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
@@ -2785,7 +2838,7 @@ async function createMainWindow(url) {
 
     event.preventDefault();
 
-    if (isExternalBrowserUrl(targetUrl)) {
+    if (isExternalBrowserUrl(targetUrl) || isMailtoUrl(targetUrl)) {
       void shell.openExternal(targetUrl);
     }
   });
