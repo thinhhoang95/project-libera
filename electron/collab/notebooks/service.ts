@@ -592,7 +592,12 @@ export class NotebookServiceImpl implements NotebookService {
             if (!this.started || this.releasing) return;
             const key = `project:${handle.projectId}`;
             // The renewal itself never queues behind the lifecycle lock.
-            const renewed = !handle.revoked && handle.runtime && handle.folderId && this.projects.get(handle.projectId) === handle ? await this.lease(handle) : undefined;
+            // Only while the folder still carries this project's marker: an
+            // installation that cannot write here must let its lease lapse so
+            // another one can take the folder over.
+            const renewable = !handle.revoked && handle.runtime && handle.folderId && this.projects.get(handle.projectId) === handle &&
+              this.matchesMarker(handle, await readMarker(handle.root).catch(() => null));
+            const renewed = renewable ? await this.lease(handle) : undefined;
             // A project whose lock is held (takedown, join...) does the rest next tick.
             if (this.locks.has(key)) continue;
             const current = handle;
@@ -699,6 +704,8 @@ export class NotebookServiceImpl implements NotebookService {
   private async holdsProjectState(projectId: string, root: string): Promise<boolean> {
     const state = await readState(root).catch(() => null);
     if (!state || state.externalAdoptionRequired) return false;
+    // Bookkeeping stamped for this project is the direct evidence; unstamped (older) files fall back to their documents.
+    if (state.identity) return state.identity.projectId === projectId;
     return Object.values(state.layout).some((record) => record.kind === "doc" && typeof record.docId === "string" && this.deps.host.store.getDocMeta(record.docId)?.projectId === projectId);
   }
 
