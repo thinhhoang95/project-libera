@@ -9,7 +9,7 @@
 
 import type * as Y from "yjs";
 
-import { ManifestKeys, manifestPathKey, type DocKind, type ManifestEntry, type ManifestEntryKind } from "../../../src/lib/collab/protocol/schema";
+import { isPlainId, ManifestKeys, manifestPathKey, MAX_SEGMENT_BYTES, utf8ByteLength, type DocKind, type ManifestEntry, type ManifestEntryKind } from "../../../src/lib/collab/protocol/schema";
 import { isShareablePath } from "./fs-ops";
 
 const ENTRY_KINDS: readonly ManifestEntryKind[] = ["doc", "blob", "folder"];
@@ -28,10 +28,12 @@ export function readManifest(doc: Y.Doc): Map<string, ManifestEntry> {
 
 function parseEntry(fileId: string, value: unknown): ManifestEntry | null {
   if (typeof value !== "object" || value === null) return null;
+  // Ids become file names (base files), so a malformed one is never trusted.
+  if (!isPlainId(fileId)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.path !== "string" || !ENTRY_KINDS.includes(record.kind as ManifestEntryKind)) return null;
   const kind = record.kind as ManifestEntryKind;
-  if (kind === "doc" && (typeof record.docId !== "string" || !DOC_KINDS.includes(record.docKind as DocKind))) return null;
+  if (kind === "doc" && (!isPlainId(record.docId) ||!DOC_KINDS.includes(record.docKind as DocKind))) return null;
   if (kind === "blob" && (typeof record.blobHash !== "string" || !/^[0-9a-f]{64}$/.test(record.blobHash))) return null;
   return {
     fileId,
@@ -69,9 +71,14 @@ function compareEntries(a: ManifestEntry, b: ManifestEntry): number {
 function withSuffix(name: string, index: number): string {
   const dot = name.lastIndexOf(".");
   const hasExtension = dot > 0;
-  const stem = hasExtension ? name.slice(0, dot) : name;
+  let stem = hasExtension ? name.slice(0, dot) : name;
   const extension = hasExtension ? name.slice(dot) : "";
-  return `${stem} (${index})${extension}`;
+  const suffix = ` (${index})${extension}`;
+  // A name at the limit must still fit once the suffix is added.
+  const chars = [...stem];
+  while (chars.length > 1 && utf8ByteLength(chars.join("")) + utf8ByteLength(suffix) > MAX_SEGMENT_BYTES) chars.pop();
+  stem = chars.join("");
+  return `${stem}${suffix}`;
 }
 
 export function computeLayout(entries: Iterable<ManifestEntry>): Layout {

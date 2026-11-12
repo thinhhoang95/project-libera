@@ -333,7 +333,11 @@ export class SharedProject {
     // A follower's layout comes from the manifest alone; state.json and its
     // reconciliations belong to the writer.
     const project = new SharedProject(ctx, info, emptyState());
-    if (!project.follower) project.state = await readState(info.root, project.diskGuard());
+    if (!project.follower) {
+      const identity = { projectId: info.projectId, manifestDocId: info.manifestDocId, ...(info.folderId ? { folderId: info.folderId } : {}) };
+      project.state = await readState(info.root, project.diskGuard(), identity);
+      project.state.identity = identity;
+    }
     if (project.state.externalAdoptionRequired) ctx.host.store.requireExternalAdoption(info.projectId);
     if (ctx.host.store.requiresExternalAdoption(info.projectId)) project.state.externalAdoptionRequired = true;
     if (!info.follower) {

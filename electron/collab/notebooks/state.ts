@@ -111,6 +111,24 @@ export interface ProjectState {
   reconciliations: Reconciliation[];
   /** Missing bookkeeping cannot authorize automatic adoption of unexplained files. */
   externalAdoptionRequired?: boolean;
+  /**
+   * The project/folder this bookkeeping belongs to, stamped on every write.
+   * Files written before the stamp existed have none and are accepted once.
+   */
+  identity?: StateIdentity;
+}
+
+export interface StateIdentity {
+  projectId: string;
+  manifestDocId: string;
+  folderId?: string;
+}
+
+/** Whether bookkeeping stamped for another project/folder is being read as this one's. */
+function identityMismatch(stamped: StateIdentity | undefined, expected: StateIdentity | undefined): boolean {
+  if (!stamped || !expected) return false;
+  if (stamped.projectId !== expected.projectId || stamped.manifestDocId !== expected.manifestDocId) return true;
+  return stamped.folderId !== undefined && expected.folderId !== undefined && stamped.folderId !== expected.folderId;
 }
 
 function stateDirectory(root: string): string {
@@ -150,13 +168,13 @@ export function emptyState(): ProjectState {
   return { version: 1, layout: {}, reconciliations: [] };
 }
 
-export async function readState(root: string, guard?: WriteGuard): Promise<ProjectState> {
+export async function readState(root: string, guard?: WriteGuard, expected?: StateIdentity): Promise<ProjectState> {
   const file = path.join(stateDirectory(root), "state.json");
   const bytes = await readIfExists(file);
   if (!bytes) return { ...emptyState(), externalAdoptionRequired: true };
   let value: unknown;
   try { value = JSON.parse(bytes.toString("utf8")); } catch { /* Preserve the unreadable input below. */ }
-  if (validState(value)) return value;
+  if (validState(value) && !identityMismatch(value.identity, expected)) return value;
   // Keep the exact bytes before rebuilding an uncertain baseline. Creating a
   // sibling never recreates a missing root, and never overwrites an earlier copy.
   if (guard) {
@@ -175,6 +193,8 @@ const hashValue = (value: unknown): value is string => typeof value === "string"
 
 function validState(value: unknown): value is ProjectState {
   if (!plain(value) || value.version !== 1 || !plain(value.layout) || !Array.isArray(value.reconciliations)) return false;
+  if (value.identity !== undefined && !(plain(value.identity) && safeId(value.identity.projectId) && safeId(value.identity.manifestDocId) &&
+      (value.identity.folderId === undefined || typeof value.identity.folderId === "string"))) return false;
   const entries = Object.entries(value.layout);
   if (entries.length > 50_000 || value.reconciliations.length > 50_000) return false;
   for (const [fileId, record] of entries) {
@@ -196,7 +216,15 @@ export async function writeState(root: string, state: ProjectState, guard?: Writ
 }
 
 function baseFile(root: string, docId: string): string {
-  return path.join(stateDirectory(root), "base", `${docId}.txt`);
+  // Document ids come from the shared manifest; never let one name a path.
+  if (!/^[A-Za-z0-9_-]{1,200}$/.test(docId)) throw new Error("Refusing a base file for a malformed document id.");
+  const directory = path.join(stateDirectory(root), "base");
+  const target = path.join(directory, `${docId}.txt`);
+  const relative = path.relative(directory, target);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || relative.includes(path.sep)) {
+    throw new Error("Refusing a base file outside the base directory.");
+  }
+  return target;
 }
 
 export async function readBase(root: string, docId: string): Promise<string | null> {
