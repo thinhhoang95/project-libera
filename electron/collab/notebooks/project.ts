@@ -1923,7 +1923,7 @@ export class SharedProject {
           continue;
         }
         operations.push((map, doc) => {
-          if (this.isLateCopy(created.path, candidate.hash, candidate.entry.mtimeMs) ||!this.pathFree(doc, created.path)) {
+          if (this.isLateCopy(created.path, candidate.hash, candidate.entry.mtimeMs) || !this.pathFree(doc, created.path)) {
             delete this.state.layout[created.fileId];
             return;
           }
