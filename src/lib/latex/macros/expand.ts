@@ -123,7 +123,7 @@ export function readMacroArguments(source: string, index: number, macro: Pick<La
       } else if (argument.type === "u") {
         // TeX skips the spaces after a control word, not those between later parameters.
         const read = readUntil(source, n === 0 ? skipSpaces(source, index) : index, argument.delimiter);
-        if (!read) return null;
+        if (!read || (argument.prefix && read.value !== "")) return null;
         args.push(read.value);
         index = read.end;
       } else if (argument.type === "e") {

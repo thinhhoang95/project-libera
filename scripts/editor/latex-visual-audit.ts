@@ -145,7 +145,7 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   const readText = async (path: string) => read(path);
   const bodyMatch = firstBegin(doc);
   const ownPreamble = doc.slice(0, bodyMatch ? bodyMatch.index : 0);
-  const { sources } = await collectMacroSources({ filePath, rootPath, ownPreamble, known, readText, version: () => "1" });
+  const { sources } = await collectMacroSources({ filePath, rootPath, ownPreamble, ownBody: doc.slice(ownPreamble.length), known, readText, version: () => "1" });
   let start: NumberingStart | null = null;
   if (rootPath !== filePath) {
     const rootSource = sources.find((source: MacroSource) => source.path === rootPath);

@@ -27,6 +27,11 @@ export const KATEX_MACROS: Record<string, string> = {
   // LaTeX's text box and old slanted switch in formulas (`$\left[ \mbox{UNK} \right]$`, `$\text{\sl N}$`).
   "\\mbox": "\\text{#1}",
   "\\sl": "\\it",
+  // The old emphasis switch in a text box (`$\mbox{\em ``ab''}$`, 2610.37006): italic.
+  "\\em": "\\it",
+  // A footnote's mark in a display (`\text{arbitrary, otherwise.}\footnotemark` in a `cases`, 2611.11859): a superscript star,
+  // as the text layer draws it; the note itself is the `\footnotetext` after the display.
+  "\\footnotemark": "{}^{\\ast}",
   // relsize's one-step larger and smaller formulas (YOLO's `\mathlarger{\mathbbm{1}}`).
   "\\mathlarger": "{\\large #1}",
   "\\mathsmaller": "{\\small #1}",
@@ -145,7 +150,18 @@ function ooalignRows(content: string) {
 function ooalignCell(row: string) {
   const math = /^\$([^$]*)\$$/.exec(row);
   if (math) return math[1];
+  // A small raised letter (`\raisebox{1.2\height}{\scalebox{0.5}{\ \rm R}}`, 2611.11859's `\rgets`): the letter in a smaller size, raised by that many of its heights.
+  const raised = /^\\raisebox\s*\{\s*(\d*\.?\d+)\s*\\height\s*\}\s*\{\s*\\scalebox\s*\{\s*(\d*\.?\d+)\s*\}\s*\{\s*(?:\\ )?\s*(?:\\rm\s*)?([A-Za-z])\s*\}\s*\}$/.exec(row);
+  if (raised) {
+    const scale = Number(raised[2]);
+    return `\\raisebox{${(Number(raised[1]) * scale * 0.7).toFixed(2)}em}{${scale <= 0.55 ? "\\tiny" : scale <= 0.75 ? "\\scriptsize" : "\\small"} ${raised[3]}}`;
+  }
   return /^[^\\{}$&#%^_~]+$/.test(row) ? `\\text{${row}}` : null;
+}
+
+/** `\mathpalette\cmd\relax` where `\cmd` is an `\ooalign` once its macro is expanded: the overlay, which does not depend on the style. */
+function mathpaletteForKatex(latex: string) {
+  return replaceGroups(latex, /\\mathpalette\s*\\ooalign\s*/g, (content) => `\\ooalign{${content}}`);
 }
 
 /**
@@ -156,7 +172,7 @@ function ooalignCell(row: string) {
 function ooalignForKatex(latex: string) {
   return replaceGroups(latex, /\\ooalign\s*/g, (content) => {
     const rows = ooalignRows(content);
-    const centred = rows.map((row) => /^\\(?:hfill?|hss)(?![A-Za-z])\s*([\s\S]*?)\s*\\(?:hfill?|hss)$/.exec(row)?.[1]);
+    const centred = rows.map((row) => /^\\(?:hfill?|hss|hidewidth)(?![A-Za-z])\s*([\s\S]*?)\s*\\(?:hfill?|hss|hidewidth)$/.exec(row)?.[1]);
     const cells = rows.map((row, index) => ooalignCell(centred[index] ?? row));
     const over = centred.findIndex((row) => row !== undefined);
     if (rows.length !== 2 || cells.includes(null) || over < 0 || centred[1 - over] !== undefined) return `\\ooalign{${content}}`;
@@ -587,7 +603,7 @@ function buildrelForKatex(latex: string) {
 }
 
 /** Commands that draw nothing in a formula: page breaking (`\displaybreak[2]`, `\allowdisplaybreaks`), labels in their forms (cleveref's `\label[type]{key}`, `\zlabel`, `\ltxlabel`). */
-const DRAWS_NOTHING = /\\(?:displaybreak|allowdisplaybreaks)(?![A-Za-z@])\s*(?:\[\s*\d?\s*\])?|\\(?:label|zlabel|ltxlabel|sublabel)\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}|\\smashoperator(?![A-Za-z@])\s*(?:\[[^\]]*\])?/g;
+const DRAWS_NOTHING = /\\(?:displaybreak|allowdisplaybreaks)(?![A-Za-z@])\s*(?:\[\s*\d?\s*\])?|\\zcsetup\s*\{[^{}]*\}|\\(?:label|zlabel|ltxlabel|sublabel)\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}|\\smashoperator(?![A-Za-z@])\s*(?:\[[^\]]*\])?/g;
 
 const SIZE_ENVIRONMENT =/\\(?:begin|end)\s*\{(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)\}/g;
 
@@ -601,7 +617,13 @@ const UNBRACED_ARGUMENT = /\\(hat|widehat|tilde|widetilde|bar|overline|underline
 export function forKatex(latex: string) {
   // `\raise.17ex\hbox{…}` (Mask R-CNN's `\app`, a raised ∼): KaTeX has no \raise or \lower; the box is drawn in place.
   let out = latex.includes("\\raise") || latex.includes("\\lower") ? latex.replace(RAISE, "") : latex;
+  // The small-capitals switch in a text box (`$F\in\mbox{\sc Files}$`, 2610.37006): `\textsc`.
+  if (out.includes("\\sc")) out = out.replace(/\\(mbox|text|textrm|textnormal)\s*\{\s*\\sc(?![A-Za-z@])\s*([^{}]*)\}/g, "\\$1{\\textsc{$2}}");
+  // `\hyperref[def:RF]{\textup{(RF)}}` in a formula (2611.11566's `\RF`): a link, whose text is drawn.
+  if (out.includes("\\footnotemark")) out = out.replace(/\\footnotemark\s*\[[^\]]*\]/g, "\\footnotemark ");
+  if (out.includes("\\hyperref")) out = out.replace(/\\hyperref\s*\[[^\]]*\]/g, "");
   if (out.includes("\\textsc")) out = textscForKatex(out);
+  if (out.includes("\\mathpalette")) out = mathpaletteForKatex(out);
   if (out.includes("\\ooalign")) out = ooalignForKatex(out);
   // booktabs' rules in a formula's array (2611.11191's `\begin{array}…\toprule … \midrule`): KaTeX's `\hline`.
   // `\addlinespace` is space between rows; `\cmidrule` (a partial rule, which KaTeX cannot draw) stays: source.
@@ -635,7 +657,7 @@ export function forKatex(latex: string) {
   // `\nulldelimiterspace=0pt` sets the width (KATEX_MACROS has its value for `\kern-\nulldelimiterspace`): not drawn.
   if (out.includes("\\nulldelimiterspace")) out = out.replace(/\\nulldelimiterspace\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|mu|bp|mm|cm|in)|\\setlength\s*\{?\s*\\nulldelimiterspace\s*\}?\s*\{[^{}]*\}/g, "");
   // Page breaks and labels in their forms draw nothing (`\displaybreak[2]` in an align, cleveref's `\label[lemma]{x}`).
-  if (/\\(?:displaybreak|allowdisplaybreaks|label|zlabel|ltxlabel|sublabel|smashoperator)(?![A-Za-z@])/.test(out)) out = out.replace(DRAWS_NOTHING, "");
+  if (/\\(?:displaybreak|allowdisplaybreaks|label|zlabel|ltxlabel|sublabel|smashoperator|zcsetup)(?![A-Za-z@])/.test(out)) out = out.replace(DRAWS_NOTHING, "");
   // Commutative diagrams: xy's `\xymatrix{…}` and tikz-cd (math-diagram.ts), as arrays of objects and arrows.
   if (out.includes("\\xymatrix") || out.includes("{tikzcd}")) out = diagramsForKatex(out);
   // `\renewcommand{\arraystretch}{1.6}` and `\setlength{\arraycolsep}{7pt}` inside a display: KaTeX reads the stretch as `\def\arraystretch`; the column gaps are fixed.
