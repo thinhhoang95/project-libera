@@ -43,6 +43,8 @@ import {
   decodeText,
   encodeText,
   ensureDirectory,
+  isActiveSqliteDatabase,
+  isExcludedPath,
   isFinderCopy,
   isGeneratedPath,
   isNotFound,
@@ -1426,7 +1428,7 @@ export class SharedProject {
     try {
       this.watcher = watch(this.info.root, { recursive: true }, (_event, name) => {
         const relative = typeof name === "string" ? name.split(path.sep).join("/") : "";
-        if (relative && relative.split("/").some((segment) => segment.startsWith(".libera"))) return;
+        if (relative && isExcludedPath(relative)) return;
         if (relative) {
           this.dirtyPaths.add(relative);
           this.noteReported(relative);
@@ -1804,6 +1806,8 @@ export class SharedProject {
       if (known.has(relative)) continue;
       // An external LaTeX build's products would be uploaded again at every compile.
       if (isGeneratedPath(relative)) continue;
+      // An open SQLite database (sidecar beside it) cannot be copied consistently.
+      if (isActiveSqliteDatabase(this.info.root, relative)) continue;
       // A fresh device without bookkeeping cannot distinguish a new file
       // from a delayed copy of a deleted identity. Explicit file operations
       // remain available; leave unexplained disk bytes untouched.
@@ -1818,8 +1822,8 @@ export class SharedProject {
       const bytes = read;
       if (!bytes) continue;
       const hash = sha256(bytes);
-      const conflictOf = this.isLateCopy(relative, hash) ? null : this.conflictCopyOf(relative, hash);
-      if (this.isLateCopy(relative, hash) || conflictOf) {
+      const conflictOf = this.isLateCopy(relative, hash, entry.mtimeMs) ? null : this.conflictCopyOf(relative, hash);
+      if (this.isLateCopy(relative, hash, entry.mtimeMs) || conflictOf) {
         const guard = this.diskGuard();
         const canCommit = guard.canCommit;
         guard.canCommit = async () => await canCommit() && this.pathFree(this.manifestDoc(), relative);
@@ -1878,7 +1882,7 @@ export class SharedProject {
           continue;
         }
         operations.push((map, doc) => {
-          if (this.isLateCopy(created.path, candidate.hash) || !this.pathFree(doc, created.path)) {
+          if (this.isLateCopy(created.path, candidate.hash, candidate.entry.mtimeMs) ||!this.pathFree(doc, created.path)) {
             delete this.state.layout[created.fileId];
             return;
           }
@@ -1928,8 +1932,13 @@ export class SharedProject {
     if (needsRetry) this.scheduleRetry();
   }
 
+  /** When this process retired each path, and when it started (the cutoff for paths retired earlier). */
+  private readonly retiredAt = new Map<string, number>();
+  private readonly startedAt = Date.now();
+
   private retirePath(relative: string, hashes: string[] = []): void {
     const key = manifestPathKey(relative);
+    this.retiredAt.set(key, Date.now());
     const known = this.retired.get(key);
     const added = hashes.filter((hash) => !known?.has(hash));
     if (known && added.length === 0) return;
@@ -1942,9 +1951,18 @@ export class SharedProject {
    * late delivery from a sync client), not a file someone just put there.
    * Only the bytes can tell, so a path whose old bytes are unknown stays safe.
    */
-  private isLateCopy(relative: string, hash: string): boolean {
-    const hashes = this.retired.get(manifestPathKey(relative));
-    return hashes !== undefined && (hashes.size === 0 || hashes.has(hash));
+  private isLateCopy(relative: string, hash: string, mtimeMs?: number): boolean {
+    const key = manifestPathKey(relative);
+    const hashes = this.retired.get(key);
+    if (hashes === undefined) return false;
+    if (hashes.size === 0 || hashes.has(hash)) return true;
+    // A finite hash history cannot prove where late bytes came from: an older
+    // version delivered after a delete is not in it, but a sync client keeps
+    // its original mtime. Unknown bytes count as a new file only when written
+    // after the retirement (this process's, else its own start); older ones
+    // are set aside in `_archive`, never deleted.
+    if (mtimeMs === undefined) return true;
+    return mtimeMs <= (this.retiredAt.get(key) ?? this.startedAt);
   }
 
   private reportArchived(relative: string, reason: "removed" | "conflict-copy" = "removed"): void {
@@ -1974,10 +1992,15 @@ export class SharedProject {
     const candidates: Array<{ name: string; certain: boolean }> = [];
     const dropbox = /^(.+?) \([^()]*conflicted copy[^()]*\)$/i.exec(stem);
     if (dropbox) candidates.push({ name: dropbox[1] + extension, certain: true });
-    const device = /^(.+)-[^-]+$/.exec(stem);
-    if (device) candidates.push({ name: device[1] + extension, certain: false });
     const numbered = /^(.+?)(?: \d+| \(\d+\))$/.exec(stem);
     if (numbered) candidates.push({ name: numbered[1] + extension, certain: false });
+    // "name-COMPUTER-NAME.ext": computer names hold hyphens too, so try every
+    // split point, the longest original name first.
+    for (const base of numbered ? [stem, numbered[1]] : [stem]) {
+      for (let at = base.lastIndexOf("-"); at > 0; at = base.lastIndexOf("-", at - 1)) {
+        candidates.push({ name: base.slice(0, at) + extension, certain: false });
+      }
+    }
     for (const { name, certain } of candidates) {
       const original = directory === "." ? name : `${directory}/${name}`;
       const key = manifestPathKey(original);
