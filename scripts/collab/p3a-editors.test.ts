@@ -42,13 +42,17 @@ async function settle(ms = 0) {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 }
 
-function stubFetch(answer: (url: string, body: Record<string, unknown>) => unknown) {
+/** Answers `route` and records the requests to it. The editors also load settings when they mount
+ * (the LaTeX paste options, the AI model list): those get an empty answer and are not recorded, so
+ * a test reads the AI request itself and not whichever fetch happened to come first. */
+function stubFetch(route: string, answer: (body: Record<string, unknown>) => unknown) {
   const original = globalThis.fetch;
-  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const requests: Array<Record<string, unknown>> = [];
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    if (url !== route) return Response.json({});
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-    requests.push({ url, body });
-    return Response.json(answer(url, body));
+    requests.push(body);
+    return Response.json(answer(body));
   }) as typeof fetch;
   return { requests, restore: () => { globalThis.fetch = original; } };
 }
@@ -245,7 +249,7 @@ const latexProps = {
 
 test("AI Rewrite in LaTeX on a shared tab creates an AI suggestion, and on a regular tab still applies its hunks", async () => {
   const source = "\\section{Intro}\nThis sentence is rather long-winded.\n";
-  const fetchStub = stubFetch(() => ({ rewrittenText: "This is short." }));
+  const fetchStub = stubFetch("/api/ai-rewrite", () => ({ rewrittenText: "This is short." }));
   const tab = await sharedTab({ text: source, kind: "latex", path: "Thesis/main.tex" });
   const { LatexEditor } = await import("../../src/components/libera/latex/latex-editor");
   const host = document.createElement("div");
@@ -260,7 +264,7 @@ test("AI Rewrite in LaTeX on a shared tab creates an AI suggestion, and on a reg
     const errors: string[] = [];
     await act(async () => { await runLatexAi(view, "rewrite", { from, to }, "Shorter", (message) => { if (message) errors.push(message); }); });
     assert.deepEqual(errors, []);
-    assert.equal(fetchStub.requests[0].url, "/api/ai-rewrite");
+    assert.deepEqual(fetchStub.requests.map((request) => request.text), ["This sentence is rather long-winded."], "one rewrite request, for the selection");
     assert.equal(view.state.doc.toString(), source, "the text is unchanged until someone accepts");
     assert.equal(tab.session.replica.text(), source);
     assert.equal(view.state.field(reviewHunksField).length, 0, "no applied hunks");
@@ -308,7 +312,7 @@ async function openContextMenu(editor: Editor, from: number, to: number) {
 
 test("AI Rewrite and Suggest edit in Visual on a shared tab create overlay suggestions; a regular tab keeps the tracked rewrite", async () => {
   const text = "First paragraph.\n\nRewrite this part please.\n";
-  const fetchStub = stubFetch(() => ({ rewrittenText: "Rewritten **nicely**." }));
+  const fetchStub = stubFetch("/api/ai-rewrite", () => ({ rewrittenText: "Rewritten **nicely**." }));
   const tab = await sharedTab({ text });
   const editor = new Editor({ extensions: [...createMarkdownExtensions("Shared/note.md"), TiptapCollabHistory, TiptapChanges.configure({ documentPath: "Shared/note.md" })], content: "", contentType: "markdown" });
   document.body.append(editor.view.dom);
@@ -327,7 +331,7 @@ test("AI Rewrite and Suggest edit in Visual on a shared tab create overlay sugge
     await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Rewrite selected text"]')!.click(); });
     await waitFor(() => listSuggestions(tab.session.replica.annotations).length === 1, 3000, "the AI suggestion");
     assert.deepEqual(errors, []);
-    assert.equal(fetchStub.requests[0].body.text, "Rewrite this part please.", "the AI sees the source text it will replace");
+    assert.deepEqual(fetchStub.requests.map((request) => request.text), ["Rewrite this part please."], "the AI sees the source text it will replace");
     const [ai] = listSuggestions(tab.session.replica.annotations);
     assert.deepEqual([ai.actor.kind, (ai.actor as { feature?: string }).feature, ai.baseQuote, ai.replacement], ["ai", "rewrite", "Rewrite this part please.", "Rewritten **nicely**."]);
     assert.equal(tab.session.replica.text(), text, "the document is unchanged until accepted");
