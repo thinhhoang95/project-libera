@@ -61,6 +61,8 @@ export interface SharedDocRegistryOptions {
   replicaOptions?: ReplicaOptions;
   /** Whether live documents can be attached at all (the desktop bridge exists). */
   available?: () => boolean;
+  /** First wait between attempts to re-attach to a restarted host (doubles up to 10 s). Defaults to 1 s. */
+  reconnectDelayMs?: number;
 }
 
 interface DocEntry {
@@ -71,6 +73,10 @@ interface DocEntry {
   ready: Promise<SharedDocSession>;
   failed: string | null;
   unsubscribe: Array<() => void>;
+  /** A re-attach to a restarted host is running. */
+  reconnecting?: boolean;
+  /** Another host generation arrived meanwhile: attach once more when this attempt ends. */
+  reconnectAgain?: boolean;
 }
 
 interface TabBinding {
@@ -96,6 +102,7 @@ export class SharedDocRegistry {
   private readonly attachImpl: (docId: string) => Promise<ReplicaMessagePort>;
   private readonly replicaOptions: ReplicaOptions | undefined;
   private readonly availableImpl: () => boolean;
+  private readonly reconnectDelayMs: number;
   private readonly resolutions = new Map<string, { value: ResolvedDoc | null } | Promise<ResolvedDoc | null>>();
   private readonly entries = new Map<string, DocEntry>();
   private readonly tabs = new Map<string, TabBinding>();
@@ -115,6 +122,7 @@ export class SharedDocRegistry {
     });
     this.availableImpl = options.available ?? (() => getCollabBridge() !== null);
     this.replicaOptions = options.replicaOptions;
+    this.reconnectDelayMs = options.reconnectDelayMs ?? 1000;
     this.stopEvents = (options.subscribeEvents ?? subscribeHostEvents)((event) => this.handleHostEvent(event));
     if (typeof window !== "undefined") {
       // The hub commits on receipt, so flushing the frame batch is all that is
@@ -184,7 +192,14 @@ export class SharedDocRegistry {
   }
 
   private handleHostEvent(event: HostEvent) {
-    if (event.t === "tree-changed") {
+    if (event.t === "host-down") {
+      // The ports of the dead process carry nothing any more: keep the edits
+      // in this window and count them as unsaved until the replacement is up.
+      for (const entry of this.entries.values()) entry.session?.replica.hostLost();
+      this.emit();
+    } else if (event.t === "host-ready") {
+      for (const entry of [...this.entries.values()]) this.reconnectEntry(entry);
+    } else if (event.t === "tree-changed") {
       const removed = new Set(event.removed);
       for (const binding of this.tabs.values()) {
         if (!removed.has(binding.path)) continue;
@@ -194,6 +209,51 @@ export class SharedDocRegistry {
       this.invalidate({ paths: [...event.added, ...event.removed, ...event.moves.flatMap((move) => [move.from, move.to])] });
     } else if (event.t === "files-changed") this.invalidate({ paths: event.paths, projectId: event.paths.length ? undefined : event.projectId });
     else if (event.t === "project-changed") this.invalidate({ projectId: event.projectId });
+  }
+
+  /**
+   * A (re)started host does not know this window's replicas: ask for a fresh
+   * port, retrying while the host is still coming up, and let the replica
+   * re-attach and hand over whatever the old host never confirmed.
+   */
+  private reconnectEntry(entry: DocEntry) {
+    if (!entry.session) return;
+    if (entry.reconnecting) {
+      entry.reconnectAgain = true;
+      return;
+    }
+    entry.reconnecting = true;
+    void (async () => {
+      let delay = this.reconnectDelayMs;
+      while (true) {
+        entry.reconnectAgain = false;
+        const replica = entry.session?.replica;
+        if (!replica || replica.isDestroyed || this.entries.get(entry.docId) !== entry) break;
+        replica.hostLost();
+        try {
+          const port = await this.attachImpl(entry.docId);
+          if (replica.isDestroyed || this.entries.get(entry.docId) !== entry) {
+            port.close();
+            break;
+          }
+          replica.rebind(port);
+          this.emit();
+          if (!entry.reconnectAgain) break;
+        } catch {
+          // The host is not accepting ports yet (restarting): try again.
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          delay = Math.min(delay * 2, 10_000);
+        }
+      }
+      entry.reconnecting = false;
+    })();
+  }
+
+  /** Shared documents holding edits the host has not confirmed as saved (host lost, or acknowledgements pending). */
+  unconfirmedDocumentCount(): number {
+    let count = 0;
+    for (const entry of this.entries.values()) if (entry.session?.replica.hasUnconfirmedWork()) count += 1;
+    return count;
   }
 
   /* ---- Replicas, ref-counted by docId -------------------------------------------- */

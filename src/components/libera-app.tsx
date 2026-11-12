@@ -60,6 +60,7 @@ import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } fro
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
 import { type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
+import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
 import { ReadAloudBar } from "@/components/libera/read-aloud";
 import { AiActivityCard } from "@/components/libera/ai-activity-ui";
@@ -196,11 +197,19 @@ export function LiberaApp({
   }, []);
 
   useEffect(() => {
-    // Shared tabs count as 0: their edits are already in the host's SQLite.
+    // Shared tabs count as 0: their edits are already in the host's SQLite,
+    // unless the host was lost or has not confirmed them yet.
     const sharedTabIds = workspace.sharedTabIds;
-    const unsavedDocumentCount = dirtyDocumentCount(workspace.tabs, (tabId) => sharedTabIds.has(tabId));
-
-    void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
+    const registry = getSharedDocRegistry();
+    let published = -1;
+    const publish = () => {
+      const unsavedDocumentCount = dirtyDocumentCount(workspace.tabs, (tabId) => sharedTabIds.has(tabId)) + registry.unconfirmedDocumentCount();
+      if (unsavedDocumentCount === published) return;
+      published = unsavedDocumentCount;
+      void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
+    };
+    publish();
+    return registry.subscribe(publish);
   }, [workspace.tabs, workspace.sharedTabIds]);
 
   useEffect(() => {

@@ -570,6 +570,12 @@ export interface AuditPage {
 /** Events the host pushes to every window (through main and the preload). */
 export type HostEvent =
   | { t: "status"; status: HostStatus }
+  /**
+   * Published by Electron main (not the host): the host process (re)started
+   * and listens, or died. Replica ports of an earlier generation are dead.
+   */
+  | { t: "host-ready"; generation: number }
+  | { t: "host-down"; generation: number }
   | { t: "share-progress"; notebook: string; progress: ShareProgress }
   | { t: "reconcile-needed"; reconciliation: Reconciliation }
   | { t: "notification"; notification: NotificationInfo }

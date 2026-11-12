@@ -495,6 +495,7 @@ export class DocHub implements CompactionTarget {
           return;
         }
         this.applyReplicaUpdate(replica, message.subdoc, message.update, message.provenance);
+        if (message.seq !== undefined) this.ackReplicaUpdate(replica, message.seq);
         break;
       case "awareness":
         try {
@@ -559,6 +560,19 @@ export class DocHub implements CompactionTarget {
         message: `Dropped an update for ${subdoc} that depends on discarded state; rebuild from the hub's state.`,
       });
     }
+  }
+
+  /** Acks a replica's update once every local update (this one included) is in SQLite. */
+  private readonly replicaAcksWaiting: Array<{ replica: ReplicaConnection; seq: number }> = [];
+
+  private ackReplicaUpdate(replica: ReplicaConnection, seq: number): void {
+    this.replicaAcksWaiting.push({ replica, seq });
+    this.flushReplicaAcks();
+  }
+
+  private flushReplicaAcks(): void {
+    if (this.unpersisted.length > 0) return;
+    for (const { replica, seq } of this.replicaAcksWaiting.splice(0)) replica.post({ t: "ack", docId: this.docId, seq });
   }
 
   /** @internal Called by ReplicaConnection.detach. */
@@ -643,6 +657,7 @@ export class DocHub implements CompactionTarget {
             for (const entry of this.drainUnpersisted()) {
               this.outbound.enqueue(entry.subdoc, entry.localSeq, entry.update, entry.provenance);
             }
+            this.flushReplicaAcks();
             this.status.changed();
           }, 1000);
         }

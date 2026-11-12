@@ -4593,7 +4593,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
-      if (tabs.some((tab) => !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) || pendingSaves.anyDirty(tabs.map((tab) => tab.file.path))) {
+      if (tabs.some((tab) => !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) || pendingSaves.anyDirty(tabs.map((tab) => tab.file.path)) || getSharedDocRegistry().unconfirmedDocumentCount() > 0) {
         event.preventDefault();
         event.returnValue = "";
       }

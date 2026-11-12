@@ -143,6 +143,7 @@ function createCollabHost(options = {}) {
   let readyWaiters = [];
   let lastConnection = "";
   let handlersInstalled = false;
+  let hostGeneration = 0;
 
   // The preload asks synchronously whether to expose window.liberaCollab;
   // register before any window exists, whether or not the flag is on.
@@ -200,6 +201,10 @@ function createCollabHost(options = {}) {
         if (process.env.LIBERA_COLLAB_HOST_URL) process.env.LIBERA_COLLAB_HOST_URL = url;
         log.info(`[collab-host] Ready at ${url} (store schema ${message.storeSchemaVersion}).`);
         settleReady(null);
+        // A new host generation: replicas still holding ports of the previous
+        // process re-attach and resync (src/lib/collab/client/registry.ts).
+        hostGeneration += 1;
+        broadcast({ t: "host-ready", generation: hostGeneration });
         return;
       }
       case "fatal":
@@ -257,6 +262,9 @@ function createCollabHost(options = {}) {
       if (stopping) return;
       log.error(`[collab-host] Exited with code ${code}${wasReady ? "" : " before it was ready"}.`);
       settleReady(new Error(`The collaboration host exited with code ${code}.`));
+      // Open shared tabs hold ports to the dead process: they keep their
+      // edits and count as unsaved until the next host-ready.
+      broadcast({ t: "host-down", generation: hostGeneration });
       scheduleRestart();
     });
     post({
