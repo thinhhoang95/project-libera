@@ -103,6 +103,17 @@ export class SymbolWidget extends VisualWidget {
   }
 }
 
+/** `\qed` and `\qedsymbol` in text: the end-of-proof square; a click shows the command. */
+export class QedMarkWidget extends VisualWidget {
+  constructor(readonly source: string) { super(source); }
+  toDOM(view: EditorView) {
+    const span = el("span", "cm-vis-symbol cm-vis-qed", "□");
+    span.title = this.source;
+    revealOnClick(view, span, this.source.length);
+    return span;
+  }
+}
+
 /** IEEEtran's `\begin{IEEEbiographynophoto}{Name}`: the name in bold italics; a click (or Alt-click) shows the opening's source. */
 export class BiographyHeaderWidget extends VisualWidget {
   constructor(readonly name: string, readonly length: number) { super(`${name}\u0000${length}`); }
@@ -245,10 +256,11 @@ export class ChipWidget extends VisualWidget {
       const text = this.text(target);
       dom.textContent = text;
       // A reference to a `\tag{$\mathcal{I}$}` (Econometrica's): its math drawn, not its source.
-      if (this.kind === "ref" && /\$[^$]+\$/.test(text)) {
+      // An index entry's math (`\index{$\phi$}`) too; math that cannot be drawn shows without its dollars (the source is the tooltip).
+      if ((this.kind === "ref" || this.kind === "index") && /\$[^$]+\$/.test(text)) {
         dom.replaceChildren(...text.split(/(\$[^$]+\$)/).filter(Boolean).map((part) => {
           const html = /^\$[^$]+\$$/.test(part) ? renderKatex(part.slice(1, -1), false) : null;
-          if (!html) return document.createTextNode(part);
+          if (!html) return document.createTextNode(this.kind === "index" ? part.replace(/\$/g, "") : part);
           const math = el("span", "cm-vis-chip-math");
           math.innerHTML = html;
           return math;

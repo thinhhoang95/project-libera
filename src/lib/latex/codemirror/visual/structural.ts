@@ -84,7 +84,7 @@ const WIDEN = new Set([
 // `\mbox{…}` (drawn upright, as `\textrm{…}`) is a style like the others: a `}` typed lines after its `{` closes it.
 WIDEN.add("MathTextCommand");
 const TABULAR_ENVIRONMENTS = /^(?:tabular\*?|tabularx|tabulary|longtable\*?|xltabular)$/;
-const RENDERED_ENVIRONMENTS = /^(?:proof|IEEEproof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices|APPENDICES|IEEEbiography|IEEEbiographynophoto|appendix|AMS|thebibliography|widetext|subequations|singlespace|onehalfspace|doublespace|spacing|landscape|tabbing|keywords|IEEEkeywords|keyword|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;
+const RENDERED_ENVIRONMENTS = /^(?:game|proof|IEEEproof|abstract|quote|quotation|verse|center|flushleft|flushright|ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement|appendices|APPENDICES|IEEEbiography|IEEEbiographynophoto|appendix|AMS|thebibliography|widetext|subequations|singlespace|onehalfspace|doublespace|spacing|landscape|tabbing|keywords|IEEEkeywords|keyword|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)$/;
 
 /** Where the folded preamble ends: the `\begin{document}` line, or the command itself when body text follows it on that line. */
 export function preambleEndOf(state: EditorState) {
@@ -219,7 +219,7 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
           const defs = visualDefinitions(state);
           // Floats and tabulars the grammar does not name (`algorithm`, `table*`, `tabular*`) are drawn whole too;
           // so are enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as the lists the grammar knows.
-          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name) || boxEnvironments(state.doc, defs).has(name) || FRAMED_PROSE.test(name) || (wholeLists && GENERIC_LISTS.test(name)) || (wholeLists && !!defs.lists?.has(name)));
+          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name) || boxEnvironments(state.doc, defs).has(name) || FRAMED_PROSE.test(name) || (wholeLists && GENERIC_LISTS.test(name)) || (wholeLists && /^(?:(?:enumerate|itemize|description)\*|(?:compact|aspara|inpara)(?:enum|item|desc))$/.test(name)) || (wholeLists && !!defs.lists?.has(name)));
         }
         // A group opened by a font or size switch (`{\tt …}`, `{    \it …}`) is drawn whole: an edit whose `}` now closes
         // one opened lines before (`\begin{algorithmic}` becoming `\be\eqnralgorithmic}`) draws it from its `{`.

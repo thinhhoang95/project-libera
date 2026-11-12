@@ -18,10 +18,11 @@ import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectEr
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
+import { gameTabular } from "./game";
 import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
   ChipWidget, ColumnsWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  BiographyHeaderWidget, ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, LiteralTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  BiographyHeaderWidget, ExampleMarkerWidget, ItemMarkerWidget, QedMarkWidget, LineBreakWidget, LiteralTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget, type TableExtras,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
@@ -677,6 +678,8 @@ type ListContext = { node: SyntaxNode; variant: "bullet" | "number" | "descripti
 const PARALIST: Record<string, "enumerate" | "itemize" | "description"> = {
   compactenum: "enumerate", asparaenum: "enumerate", inparaenum: "enumerate", compactitem: "itemize", asparaitem: "itemize", inparaitem: "itemize",
   compactdesc: "description", asparadesc: "description", inparadesc: "description",
+  // enumitem's inline lists (`\begin{enumerate*}`): items run into the paragraph.
+  "enumerate*": "enumerate", "itemize*": "itemize", "description*": "description",
 };
 
 /**
@@ -1161,17 +1164,26 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // Containers that began before the walked range: keep list context for the items inside.
         // So for enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as drawList draws them.
         const generic = name === "Environment" && isGenericList(node) ? genericListHead(node, state) : null;
-        const custom = generic?.kind ?? (name === "Environment" ? defs.lists?.get(environmentName(node, readNode) ?? "") : undefined);
+        const custom = generic?.kind ?? (name === "Environment" ? defs.lists?.get(environmentName(node, readNode) ?? "") ?? PARALIST[environmentName(node, readNode) ?? ""] : undefined);
         if (name === "ListEnvironment" || custom) {
           const formed = wellFormedEnvironment(node, state);
           if (formed) {
             const list = listContext(node, custom ?? formed.name, lists, state, 0);
+            if (custom && (/^inpara/.test(formed.name) || formed.name.endsWith("*")) && !defs.lists?.has(formed.name)) list.inline = true;
             if (generic) { list.template = generic.template; list.plain = generic.plain; }
             if (!list.template && custom && !generic) list.template = customListLabel(defs, formed.name, list.depth);
             list.count = itemsBefore(node, from, state, list.variant === "number" ? enumCounter(list.depth) : null, defs, list.base);
             lists.push(list);
             // A long list is built in pieces (structural.ts): its `\end` line is drawn by the piece it is in.
             if (structural && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "list-end");
+          }
+        }
+        // A wrapper that only folds away (`samepage`, `multicols`) begun in an earlier piece: its `\end` is folded by the piece it is in.
+        else if (structural && name === "Environment") {
+          const wrapperName = environmentName(node, readNode) ?? "";
+          if (Object.hasOwn(WRAPPER_ENVIRONMENTS, wrapperName) && !defs.environments.has(wrapperName)) {
+            const formed = wellFormedEnvironment(node, state);
+            if (formed && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "env-end");
           }
         }
         return;
@@ -1545,7 +1557,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "BibliographyStyleCommand": {
           // `\bibliographystyle{plain}` prints nothing: its own line folds away.
-          if (structural && !hasDirectError(node) && aloneOnLines(doc, node.from, node.to)) collapseLine(node, "bibliography-style");
+          if (structural && !hasDirectError(node)) {
+            if (aloneOnLines(doc, node.from, node.to)) collapseLine(node, "bibliography-style");
+            // After a size switch in a group (`{\footnotesize\bibliographystyle{abbrv}`, 2611.07785): hidden where it stands.
+            else emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
+          }
           return false;
         }
         case "IncludeGraphics": {
@@ -1708,7 +1724,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const list = listContext(node, custom ?? formed.name, lists, state, 0);
     if (generic) { list.template = generic.template; list.plain = generic.plain; }
     if (!list.template && defs.lists?.has(formed.name)) list.template = customListLabel(defs, formed.name, list.depth);
-    if (/^inpara/.test(formed.name) && !defs.lists?.has(formed.name)) list.inline = true;
+    if ((/^inpara/.test(formed.name) || formed.name.endsWith("*")) && !defs.lists?.has(formed.name)) list.inline = true;
     lists.push(list);
     if (structural) {
       collapseLine(formed.begin, "list-begin");
@@ -1976,6 +1992,18 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         collapseLine(formed.end, "env-end");
       }
       return undefined;
+    }
+    // sgame's `\begin{game}{2}{2}[Row][Column] … \end{game}` (2611.05706): a strategic-form game, drawn as a table when its rows
+    // and columns are those it declares (read-only: the table is a reading, a click shows the source).
+    if (name === "game" && !defs.environments.has("game") && defs.packages.includes("sgame")) {
+      const game = gameTabular(read(state, node.from, formed.end.from));
+      if (!game) return undefined;
+      if (!structural) return false;
+      const span = aloneOnLines(doc, node.from, node.to);
+      const range = span ?? { from: node.from, to: node.to };
+      consumed.push([node.from, node.to]);
+      emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new TableWidget(game.tabular, 0, range.to - range.from, true) }] });
+      return false;
     }
     // A `minipage` in the text (a list set in a narrower box): its text, its opening (with the width) and end folded away.
     if (name === "minipage") {
@@ -2439,8 +2467,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (text === "\\texorpdfstring") {
       const args = commandArguments(node).filter((arg) => !arg.optional);
       const first = args[0] && argumentInner(args[0].node);
-      if (first && args.length === 2 && !hasDirectError(node)) {
-        const end = args[1].node.to;
+      // The bookmark's group on the next line (`\texorpdfstring{Proof of $H$}` newline `{From H}`, 2611.07413): the parser does not
+      // take it as the command's argument, so it is read from the text.
+      const next = args.length === 1 && first ? /^[ \t]*\n?[ \t]*/.exec(read(state, args[0].node.to, Math.min(doc.length, args[0].node.to + 200)))![0].length : 0;
+      const written = next ? argumentGroups(read(state, args[0].node.to, Math.min(doc.length, args[0].node.to + 4000)), args[0].node.to, next, 1)?.[0] : null;
+      if (first && (args.length === 2 || written) && !hasDirectError(node)) {
+        const end = args.length === 2 ? args[1].node.to : written!.close + 1;
         consumed.push([first.to, end]);
         emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: structural ? [{ from: node.from, to: first.from }, { from: first.to, to: end }] : [] });
         return undefined;
@@ -2698,6 +2730,24 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
+    // `\large{\textbf{APPENDIX}}`: the switch, then a group (the parser hangs it on the command): the group's text, the
+    // switch and the braces hidden until the cursor touches them.
+    if (SIZE_COMMAND.test(text) && args.length === 1 && !args[0].optional && !hasDirectError(node)) {
+      const group = argumentInner(args[0].node);
+      if (group && !read(state, ctrl.to, args[0].node.from).trim()) {
+        emit({ kind: "symbol", from: ctrl.from, to: args[0].node.to, reveal: "touch", replaces: [{ from: ctrl.from, to: group.from }, { from: group.to, to: args[0].node.to }] });
+        return undefined;
+      }
+    }
+    // `\color{black}` is the default colour: a no-op, hidden until the cursor touches it (a group that runs over sections is not
+    // drawn as a coloured group, but this switch in it is still nothing).
+    if (text === "\\color" && args.length === 1 && !args[0].optional && !hasDirectError(node)) {
+      const name = argumentInner(args[0].node);
+      if (name && /^\s*black\s*$/.test(read(state, name.from, name.to)) && !defs.colors.has("black")) {
+        emit({ kind: "symbol", from: ctrl.from, to: args[0].node.to, reveal: "touch", replaces: [{ from: ctrl.from, to: args[0].node.to }] });
+        return false;
+      }
+    }
     // `{\small …}`: one size here, so the switch is hidden until the cursor touches it.
     if (SIZE_COMMAND.test(text) && !args.length) {
       emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to }] });
@@ -2822,6 +2872,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         consumed.push([node.from, end]);
         return undefined;
       }
+    }
+    // llncs's / amsthm's `\qed` (and `\qedsymbol`): the end mark, a square. Right before `\end{proof}` the proof's own footer
+    // draws the mark, so `\qed` there is hidden (its source shows when the caret enters it); elsewhere it is drawn as the mark.
+    if ((text === "\\qed" || text === "\\qedsymbol") && !mandatory.length && !hasDirectError(node)) {
+      const footer = /^\s*\\end\s*\{proof\}/.test(doc.sliceString(ctrl.to, Math.min(doc.length, ctrl.to + 40)));
+      emit({ kind: "symbol", from: ctrl.from, to: ctrl.to, reveal: "touch", replaces: [{ from: ctrl.from, to: ctrl.to, widget: footer ? undefined : new QedMarkWidget(text) }] });
+      return false;
     }
     if (INLINE_LAYOUT.test(text)) {
       let textFrom = ctrl.to;
@@ -3140,7 +3197,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     const source = read(state, node.from, Math.min(doc.length, node.from + 4000));
     // Arguments that stay editable text, when the body allows it.
-    const macro = macroAt(defs, name, node.from)!;
+    const own = macroAt(defs, name, node.from)!;
+    // `\renewcommand{\paragraph}{\para}` (2611.07413): a macro of no arguments whose body is another macro takes the arguments
+    // that follow it (TeX reads them for `\para`), so `\paragraph{Title.}` is drawn as `\para{Title.}`.
+    const hop = own.arity === 0 && !own.spec && own.optional === undefined && !own.alias ? /^\s*\\([A-Za-z@]+)\s*$/.exec(own.body) : null;
+    const hopped = hop ? macroAt(defs, hop[1], node.from) : null;
+    const macro = hopped && hopped.arity >= 1 && !hopped.unsupported && !hopped.alias ? hopped : own;
     const plan = transparentPlan(macro, defs);
     const groups = plan ? argumentGroups(source, node.from, 1 + name.length, macro.arity) : null;
     if (broken && !(plan && groups)) return undefined;
