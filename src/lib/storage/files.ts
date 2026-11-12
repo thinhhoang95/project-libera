@@ -705,7 +705,11 @@ export async function getRawFile(relativePath: string) {
   const node = await getFileNode(notebook, pathParts);
 
   return {
-    body: (await readSharedAuthorityBytes(relativePath)) ?? await readFile(targetPath),
+    // The working file, also in a shared notebook: this serves every viewer
+    // (images, PDFs, audio), so it must not round-trip each read through the
+    // host. A follower's view refreshes when the new bytes arrive; copies and
+    // exports, which outlive the moment, read the host's version instead.
+    body: await readFile(targetPath),
     contentType: getContentType(name, fileType),
     node,
   };
