@@ -9,11 +9,17 @@ import {
  *
  * A structurally numbered document numbers every heading from its highest
  * heading level down ("1.", "1.1", "1.1.1"). Optionally the first level-1
- * heading is the document's title and carries no number.
+ * heading is the document's title and carries no number, and numbering can
+ * stop at a depth: with `maxDepth` 3, headings get "1.2.3" but nothing deeper.
+ * Depth counts from the highest heading level in use, so it need not match
+ * the Markdown heading level.
  */
 export type HeadingNumberingOptions = {
   /** The first level-1 heading is the title: it is left unnumbered. */
   skipTitle: boolean;
+  /** The deepest numbered level (1-6); deeper headings carry no number.
+   * Unset or 0: every level is numbered. */
+  maxDepth?: number;
 };
 
 export type HeadingNumberingSettings = HeadingNumberingOptions & {
@@ -61,10 +67,12 @@ export function getStructuralHeadingNumbers(
   if (!numbered.length) return headings.map(() => null);
   const baseLevel = Math.min(...numbered.map(({ level }) => level));
   const trailingDot = usesTrailingDot(numbered);
+  const maxDepth = options.maxDepth || MAX_HEADING_LEVEL;
   const counters = Array.from({ length: MAX_HEADING_LEVEL }, () => 0);
   return headings.map(({ level }, index) => {
     if (index === title) return null;
     const depth = level - baseLevel + 1;
+    if (depth > maxDepth) return null;
     for (let counter = 0; counter < depth - 1; counter += 1) {
       if (!counters[counter]) counters[counter] = 1;
     }
@@ -76,17 +84,20 @@ export function getStructuralHeadingNumbers(
 }
 
 /** A document opened for the first time counts as structurally numbered when
- * every heading except a possible title already carries a number. */
-export function detectStructuralHeadingNumbering(headings: HeadingSummary[]) {
+ * every heading except a possible title, down to `maxDepth`, already carries a
+ * number. */
+export function detectStructuralHeadingNumbering(headings: HeadingSummary[], maxDepth = 0) {
   const title = titleIndex(headings, { skipTitle: true });
   const rest = headings.filter((_, index) => index !== title);
-  return rest.length > 0 && rest.every(({ text }) => headingNumberPrefixLength(text) > 0);
+  if (!rest.length) return false;
+  const deepest = Math.min(...rest.map(({ level }) => level)) + (maxDepth || MAX_HEADING_LEVEL) - 1;
+  return rest.every(({ level, text }) => level > deepest || headingNumberPrefixLength(text) > 0);
 }
 
 /** Detection for a Markdown source; null while the document is empty (it may
  * not have loaded yet). */
-export function detectMarkdownHeadingNumbering(value: string) {
-  return value.trim() ? detectStructuralHeadingNumbering(getNumberableMarkdownHeadings(value)) : null;
+export function detectMarkdownHeadingNumbering(value: string, maxDepth = 0) {
+  return value.trim() ? detectStructuralHeadingNumbering(getNumberableMarkdownHeadings(value), maxDepth) : null;
 }
 
 /** How much of a heading's text is a number run. */

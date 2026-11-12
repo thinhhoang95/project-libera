@@ -42,7 +42,7 @@ import {
 import type { MarkdownHeadingEnumerationScope } from "@/lib/markdown-heading-enumeration";
 import { detectMarkdownHeadingNumbering } from "@/lib/markdown-heading-numbering";
 import { HeadingNumberingControl } from "./heading-numbering-control";
-import { saveDocumentHeadingNumbering, saveHeadingNumberingSkipTitle, useHeadingNumbering } from "./heading-numbering-state";
+import { saveDocumentHeadingNumbering, saveHeadingNumberingMaxDepth, saveHeadingNumberingSkipTitle, useHeadingNumbering } from "./heading-numbering-state";
 
 import { ModalDialog } from "./modal-dialog";
 import { MarkdownLinkInput } from "./markdown-link-input";
@@ -208,7 +208,7 @@ export function MarkdownToolbar({
     left: 0,
     top: 0,
   });
-  const headingNumbering = useHeadingNumbering(documentPath, () => detectMarkdownHeadingNumbering(markdownContent));
+  const headingNumbering = useHeadingNumbering(documentPath, (maxDepth) => detectMarkdownHeadingNumbering(markdownContent, maxDepth));
 
   const getHighlightMenuPosition = useCallback(() => {
     return getFloatingMenuPosition(highlightButtonRef.current, HIGHLIGHT_MENU_WIDTH);
@@ -588,6 +588,7 @@ export function MarkdownToolbar({
         <HeadingNumberingControl
           buttonClassName="toolbar-button"
           enabled={headingNumbering.enabled}
+          maxDepth={headingNumbering.maxDepth ?? 0}
           skipTitle={headingNumbering.skipTitle}
           onEnumerateSelected={(startAt) => onEnumerateHeadings("selected", startAt)}
           onNumberAll={onNumberHeadings}
@@ -595,6 +596,7 @@ export function MarkdownToolbar({
             saveDocumentHeadingNumbering(documentPath, false);
             onRemoveHeadingNumbers();
           }}
+          onMaxDepthChange={saveHeadingNumberingMaxDepth}
           onSkipTitleChange={saveHeadingNumberingSkipTitle}
           onToggle={(enabled) => saveDocumentHeadingNumbering(documentPath, enabled)}
         />

@@ -606,7 +606,7 @@ test("visual toolbar and right-click menus expose and execute heading actions", 
     const chevron = host.querySelector<HTMLButtonElement>('[aria-label="Heading numbering options"]')!;
     await act(async () => { chevron.click(); });
     const numberingMenu = document.querySelector('[aria-label="Heading numbering"]')!;
-    for (const label of ['Skip the first level-1 heading', 'Enumerate All Headings', 'Remove All Heading Numbers', 'Enumerate Selected Headings']) assert.ok(numberingMenu.textContent?.includes(label), label);
+    for (const label of ['Skip the first level-1 heading', 'Number up to level', 'Enumerate All Headings', 'Remove All Heading Numbers', 'Enumerate Selected Headings']) assert.ok(numberingMenu.textContent?.includes(label), label);
     const enumerate = Array.from(numberingMenu.querySelectorAll('button')).find((button) => button.textContent?.includes('Enumerate All Headings'))!;
     await act(async () => { enumerate.click(); });
     // The title (the first level-1 heading) is skipped by default.

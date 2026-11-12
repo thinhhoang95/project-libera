@@ -32,7 +32,7 @@ import { aiSuggestionNotice, imageSourceRange } from "@/lib/collab/client/sugges
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 import { detectStructuralHeadingNumbering } from "@/lib/markdown-heading-numbering";
 import { HeadingNumberingControl } from "./heading-numbering-control";
-import { readHeadingNumberingSkipTitle, saveDocumentHeadingNumbering, saveHeadingNumberingSkipTitle, useHeadingNumbering } from "./heading-numbering-state";
+import { readHeadingNumberingOptions, saveDocumentHeadingNumbering, saveHeadingNumberingMaxDepth, saveHeadingNumberingSkipTitle, useHeadingNumbering } from "./heading-numbering-state";
 import { PasteMenuItems, readClipboardText, type ClipboardText, type MenuPasteMode } from "./paste-menu-items";
 
 type ImageSelection = EditorRange & { src: string; alt: string };
@@ -67,14 +67,14 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
   const pendingRef = useRef<{ controller: AbortController; dispose: () => void } | null>(null);
   useEffect(() => (working ? beginAiActivity({ label: AI_ACTION_LABELS[working], cancel: () => pendingRef.current?.controller.abort() }) : undefined), [working]);
   const hasHeadings = useEditorState({ editor, selector: ({ editor: current }) => hasTiptapHeadings(current.state.doc) });
-  const headingNumbering = useHeadingNumbering(documentPath, () => {
+  const headingNumbering = useHeadingNumbering(documentPath, (maxDepth) => {
     const { doc } = editor.state;
     if (doc.content.size <= 2) return null;
     const headings: { level: number; text: string }[] = [];
     doc.descendants((node) => {
       if (node.type.name === "heading") headings.push({ level: node.attrs.level, text: node.textContent });
     });
-    return detectStructuralHeadingNumbering(headings);
+    return detectStructuralHeadingNumbering(headings, maxDepth);
   });
   const sharedRef = useRef(shared);
   useEffect(() => { sharedRef.current = shared; });
@@ -320,10 +320,12 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
       buttonClassName="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 aria-pressed:bg-muted aria-pressed:text-foreground"
       disabled={!!working}
       enabled={headingNumbering.enabled}
+      maxDepth={headingNumbering.maxDepth ?? 0}
       skipTitle={headingNumbering.skipTitle}
       onEnumerateSelected={hasHeadings ? (startAt) => { enumerateTiptapHeadings(editor, "selected", editor.state.selection, startAt); editor.commands.focus(); } : undefined}
-      onNumberAll={() => { numberTiptapHeadings(editor, { skipTitle: readHeadingNumberingSkipTitle() }); editor.commands.focus(); }}
+      onNumberAll={() => { numberTiptapHeadings(editor, readHeadingNumberingOptions()); editor.commands.focus(); }}
       onRemoveAll={() => { saveDocumentHeadingNumbering(documentPath, false); removeTiptapHeadingNumbers(editor); editor.commands.focus(); }}
+      onMaxDepthChange={saveHeadingNumberingMaxDepth}
       onSkipTitleChange={saveHeadingNumberingSkipTitle}
       onToggle={(enabled) => saveDocumentHeadingNumbering(documentPath, enabled)}
     />

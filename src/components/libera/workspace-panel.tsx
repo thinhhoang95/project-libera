@@ -95,7 +95,7 @@ import {
   getMarkdownHeadingNumberingChanges,
   getMarkdownHeadingNumberRemovalChanges,
 } from "@/lib/markdown-heading-numbering";
-import { readHeadingNumberingSkipTitle } from "./heading-numbering-state";
+import { readHeadingNumberingOptions } from "./heading-numbering-state";
 import type {
   MarkdownHeadingEnumerationScope,
 } from "@/lib/markdown-heading-enumeration";
@@ -1657,7 +1657,7 @@ function WorkspacePanelContent({
   function numberActiveMarkdownHeadings() {
     transformActiveMarkdownHeadings((draft) => applyTextChanges(
       draft,
-      getMarkdownHeadingNumberingChanges(draft, { skipTitle: readHeadingNumberingSkipTitle() }),
+      getMarkdownHeadingNumberingChanges(draft, readHeadingNumberingOptions()),
     ));
   }
 

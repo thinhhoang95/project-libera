@@ -155,9 +155,9 @@ export function MarkdownCodeMirrorEditor({
     latest.current = { onChange, onSelectionChange, onInsertImageFile, onViewChange, smartPaste, mathMarkers, referenceNotebook: referenceRender?.notebook ?? null };
   });
   // Structural heading numbering, read by the view's dispatch handler.
-  // Switching it on (or changing its title setting) renumbers now; opening a
+  // Switching it on (or changing its title or level setting) renumbers now; opening a
   // document never edits it.
-  const headingNumbering = useHeadingNumbering(activeFilePath, () => detectMarkdownHeadingNumbering(value));
+  const headingNumbering = useHeadingNumbering(activeFilePath, (maxDepth) => detectMarkdownHeadingNumbering(value, maxDepth));
   const headingNumberingRef = useRef(headingNumbering);
   useLayoutEffect(() => {
     const previous = headingNumberingRef.current;

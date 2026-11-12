@@ -318,7 +318,7 @@ export function MarkdownEditor({
   const referenceRender = useReferenceRender();
   const citationHover = useEditorCitationHover();
   const composingRef = useRef(false);
-  const headingNumbering = useHeadingNumbering(activeFilePath, () => detectMarkdownHeadingNumbering(value));
+  const headingNumbering = useHeadingNumbering(activeFilePath, (maxDepth) => detectMarkdownHeadingNumbering(value, maxDepth));
   const headingNumberingRef = useRef(headingNumbering);
   const renumberingRef = useRef(false);
   // Switching numbering on (or changing its title setting) renumbers now;

@@ -41,6 +41,23 @@ test("structural numbers start at the highest level and can skip the title", () 
   );
 });
 
+test("numbering can stop at a depth counted from the highest level in use", () => {
+  const headings = [1, 2, 3, 4, 3, 2].map((level) => ({ level, text: "" }));
+  assert.deepEqual(getStructuralHeadingNumbers(headings, { maxDepth: 2, skipTitle: false }), ["1.", "1.1", null, null, null, "1.2"]);
+  // With the title skipped, level 2 is depth 1: level 4 is depth 3.
+  assert.deepEqual(getStructuralHeadingNumbers(headings, { maxDepth: 3, skipTitle: true }), [null, "1.", "1.1", "1.1.1", "1.2", "2."]);
+  assert.deepEqual(getStructuralHeadingNumbers(headings, { maxDepth: 0, skipTitle: true }), [null, "1.", "1.1", "1.1.1", "1.2", "2."]);
+  // Numbers past the limit are removed.
+  const value = "# T\n\n## 1. A\n\n### 1.1 B\n\n#### 1.1.1 C\n\n## D";
+  assert.equal(
+    applyTextChanges(value, getMarkdownHeadingNumberingChanges(value, { maxDepth: 2, skipTitle: true })),
+    "# T\n\n## 1. A\n\n### 1.1 B\n\n#### C\n\n## 2. D",
+  );
+  // A document numbered to a depth is detected as numbered under that limit.
+  assert.equal(detectMarkdownHeadingNumbering("# T\n\n## 1. A\n\n### 1.1 B\n\n#### C", 2), true);
+  assert.equal(detectMarkdownHeadingNumbering("# T\n\n## 1. A\n\n### 1.1 B\n\n#### C"), false);
+});
+
 test("renumbering source text fixes numbers, strips the title's and skips code", () => {
   const value = "# 1. Report\n\n## Intro\n\n```\n## code\n```\n\n### 7. Scope\n\n## 9 Method\n";
   assert.equal(renumber(value), "# Report\n\n## 1. Intro\n\n```\n## code\n```\n\n### 1.1 Scope\n\n## 2. 9 Method\n");

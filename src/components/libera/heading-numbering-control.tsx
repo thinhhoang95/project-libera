@@ -6,19 +6,23 @@ import { createPortal } from "react-dom";
 
 const MENU_WIDTH = 288;
 const MENU_GAP = 6;
+const DEPTH_CHOICES = [0, 1, 2, 3, 4, 5, 6];
 const itemClass = "flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 
 /**
  * The heading numbering toolbar control, the same in every Markdown editor: a
  * toggle that makes the document structurally numbered, and a chevron menu with
- * "Skip the first level-1 heading", one-off numbering and removing numbers.
+ * "Skip the first level-1 heading", the deepest numbered level, one-off
+ * numbering and removing numbers.
  */
 export function HeadingNumberingControl({
   buttonClassName,
   disabled = false,
   enabled,
+  maxDepth,
   skipTitle,
   onEnumerateSelected,
+  onMaxDepthChange,
   onNumberAll,
   onRemoveAll,
   onSkipTitleChange,
@@ -27,9 +31,12 @@ export function HeadingNumberingControl({
   buttonClassName: string;
   disabled?: boolean;
   enabled: boolean;
+  /** The deepest numbered level, or 0 for every level. */
+  maxDepth: number;
   skipTitle: boolean;
   /** Numbers only the selected headings from a start value (when numbering is off). */
   onEnumerateSelected?: (startAt: number) => void;
+  onMaxDepthChange: (maxDepth: number) => void;
   onNumberAll: () => void;
   onRemoveAll: () => void;
   onSkipTitleChange: (skipTitle: boolean) => void;
@@ -129,6 +136,31 @@ export function HeadingNumberingControl({
           </span>
           Skip the first level-1 heading (title)
         </button>
+        <div className="px-2.5 py-2">
+          <div id="heading-numbering-max-depth" className="text-xs font-medium text-muted-foreground">
+            Number up to level
+          </div>
+          <div role="group" aria-labelledby="heading-numbering-max-depth" className="mt-1 flex gap-1">
+            {DEPTH_CHOICES.map((depth) => (
+              <button
+                key={depth}
+                type="button"
+                role="menuitemradio"
+                aria-checked={maxDepth === depth}
+                aria-label={depth ? `Number up to level ${depth}` : "Number every level"}
+                title={depth ? `Number headings down to ${Array.from({ length: depth }, (_, index) => index + 1).join(".")}` : "Number every heading level"}
+                // A ring, not `border`: the global `button.border` rule would
+                // override the selected background.
+                className={`h-7 min-w-0 flex-1 rounded-md text-xs font-medium ring-1 ring-inset ${maxDepth === depth
+                  ? "bg-primary text-primary-foreground ring-primary"
+                  : "text-foreground ring-border hover:bg-muted"}`}
+                onClick={() => onMaxDepthChange(depth)}
+              >
+                {depth || "All"}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="my-1 border-t border-border" />
         <button type="button" role="menuitem" className={itemClass} onClick={() => run(onNumberAll)}>
           <ListOrdered aria-hidden className="h-4 w-4 text-muted-foreground" />

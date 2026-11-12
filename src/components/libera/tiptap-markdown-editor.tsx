@@ -228,7 +228,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const shared = !!collab;
   const markPaste = useCallback(() => sharedRef.current?.setNextProvenance({ source: "paste" }), []);
   // Structural heading numbering, handed to the TiptapHeadingNumbering plugin.
-  const headingNumbering = useHeadingNumbering(documentPath, () => shared ? null : detectMarkdownHeadingNumbering(value));
+  const headingNumbering = useHeadingNumbering(documentPath, (maxDepth) => shared ? null : detectMarkdownHeadingNumbering(value, maxDepth));
   const appliedNumberingRef = useRef<{ editor: Editor; settings: HeadingNumberingSettings } | null>(null);
   // Citation nodes, the `@` popup and the citation popover (references lane).
   const citations = useTiptapCitations();

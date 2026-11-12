@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, ChevronRight, Folder, Loader2, Plus, Search } from "lucide-react";
+import { FileSelectionActions } from "./file-selection-actions";
 import { apiRequest } from "./api-client";
 import type { InterruptedMigration, MigrationPlan, MigrationRequest, MigrationResult } from "@/lib/storage/migration";
 import type { LiberaFileNode, LiberaNotebookGroup, LiberaNotebookNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
@@ -313,8 +314,7 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
           <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/30 p-2">
             <Search aria-hidden className="h-4 w-4 text-muted-foreground" />
             <input aria-label="Find files and folders" className="min-w-20 flex-1 bg-transparent text-sm outline-none" placeholder="Find files and folders…" value={query} onChange={(event) => setQuery(event.target.value)} />
-            <button type="button" className="text-xs underline" onClick={() => setSelected(new Set(filesUnder(sourceChildren).map((file) => file.path)))}>Select all</button>
-            <button type="button" className="text-xs underline" onClick={() => setSelected(new Set())}>Clear</button>
+            <FileSelectionActions onSelectAll={() => setSelected(new Set(filesUnder(sourceChildren).map((file) => file.path)))} onClear={() => setSelected(new Set())} />
           </div>
           <div className="max-h-[36vh] min-h-28 overflow-auto p-2">
             {sourceChildren.map((node) => <MigrationRow key={node.path} node={node} selected={selected} query={query.trim().toLowerCase()} onToggle={(files, checked) => setSelected((current) => {
