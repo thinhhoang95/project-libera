@@ -54,6 +54,7 @@ import {
   deleteSharePlan,
   readMarker,
   readSharePlan,
+  readState,
   recordShareUpload,
   writeBase,
   writeMarker,
@@ -92,7 +93,7 @@ export interface UnjoinedFolder {
   projectId: string;
   /** The server answered 404 (not a member, or deleted) or 403. */
   status: 404 | 403 | 409;
-  reason?: "unreadable-marker" | "ambiguous-copy";
+  reason?: "unreadable-marker" | "ambiguous-copy" | "needs-recovery" | "duplicate-root";
 }
 
 /**
@@ -648,6 +649,7 @@ export class NotebookServiceImpl implements NotebookService {
     // A present marker, even an unreadable one, is not ours to replace.
     if (await statIfExists(file) || !(await statIfExists(root))) {
       this.markerMissingSince.delete(root);
+      if (this.unjoined.get(root)?.reason === "needs-recovery") this.unjoined.delete(root);
       return false;
     }
     const binding = readNotebookBinding(this.lifecycleDirectory, root);
@@ -660,6 +662,13 @@ export class NotebookServiceImpl implements NotebookService {
     if (!api || !this.markerAuthorityMatches(binding)) return false;
     const project = await api.getProject(projectId).catch(() => null);
     if (!project || project.manifestDocId !== binding.manifestDocId) return false;
+    // Root existence plus a missing marker is not evidence that this is still
+    // the notebook: an unrelated directory may sit at the old path now.
+    if (!(await this.holdsProjectState(projectId, root))) {
+      if (!this.unjoined.has(root)) this.logger.warn(`Shared notebook ${path.basename(root)}: its sharing marker is missing and the folder cannot be shown to be the original, so it was not restored; recover it explicitly.`);
+      this.unjoined.set(root, { notebook: path.basename(root), projectId, status: 409, reason: "needs-recovery" });
+      return false;
+    }
     // The writer is claimed again through the lease.
     const restored: SharedMarker = { ...binding };
     delete restored.writer;
@@ -669,6 +678,13 @@ export class NotebookServiceImpl implements NotebookService {
     this.markerMissingSince.delete(root);
     this.logger.warn(`Shared notebook ${path.basename(root)}: its sharing marker was missing and has been restored.`);
     return true;
+  }
+
+  /** The folder's own bookkeeping names documents this host knows as belonging to the project (evidence it is the original directory). */
+  private async holdsProjectState(projectId: string, root: string): Promise<boolean> {
+    const state = await readState(root).catch(() => null);
+    if (!state || state.externalAdoptionRequired) return false;
+    return Object.values(state.layout).some((record) => record.kind === "doc" && typeof record.docId === "string" && this.deps.host.store.getDocMeta(record.docId)?.projectId === projectId);
   }
 
   private async checkLease(handle: ProjectHandle): Promise<void> {
