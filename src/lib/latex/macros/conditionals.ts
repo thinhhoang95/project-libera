@@ -15,6 +15,8 @@ export type ConditionalFacts = {
   switchState?: (name: string) => boolean | null | undefined;
   /** Whether the text is read in a formula (`\ifmmode`); undefined when not known. */
   math?: boolean;
+  /** IEEEtran's `\ifCLASSOPTIONcaptionsoff` (name without the prefix): whether that class option is given; undefined for another class or an option not known. */
+  classOption?: (option: string) => boolean | undefined;
 };
 
 /** TeX's own conditionals (and engine tests): each is closed by a `\fi`. */
@@ -205,6 +207,9 @@ export function decideConditional(text: string, at: number, name: string, facts:
     return named && state !== undefined ? { value: state, end: skipAfterWord(text, at + named[0].length) } : null;
   }
   const state = facts.switchState?.(name);
+  const option = state === undefined ? /^ifCLASSOPTION([A-Za-z@]+)$/.exec(name) : null;
+  const given = option ? facts.classOption?.(option[1]) : undefined;
+  if (given !== undefined) return { value: given, end: skipAfterWord(text, at) };
   return state === undefined || state === null ? null : { value: state, end: skipAfterWord(text, at) };
 }
 
@@ -232,6 +237,43 @@ function conditionalExtent(text: string, from: number, facts: ConditionalFacts) 
 }
 
 /**
+ * `\ifcase<number> A \or B \or C \else D \fi` with the number written out (`\dingnum{3}`'s `\ifcase3`): the branch it
+ * takes and where its `\fi` ends; null when the number is not known or the conditional is not closed.
+ */
+function decideCase(text: string, at: number, facts: ConditionalFacts): { text: string; end: number } | null {
+  const number = readInteger(text, at, facts);
+  if (!number) return null;
+  const token = /\\[^A-Za-z@]|%[^\n]*|\\(if[A-Za-z@]*|fi|else|or)(?![A-Za-z@])/g;
+  token.lastIndex = number.end;
+  // The branches: where each starts (after its `\or` or `\else`) and ends (at the next marker at this level).
+  const starts = [number.end];
+  let elseStart = -1;
+  const stops: number[] = [];
+  let depth = 0;
+  for (let match = token.exec(text); match; match = token.exec(text)) {
+    const name = match[1];
+    if (!name) continue;
+    const end = match.index + match[0].length;
+    if (name === "fi") {
+      if (depth === 0) {
+        stops.push(match.index);
+        const branches = starts.length;
+        const index = number.value;
+        const range = index >= 0 && index < branches ? { from: starts[index], to: stops[index] } : elseStart >= 0 ? { from: elseStart, to: match.index } : null;
+        return { text: range ? text.slice(range.from, range.to) : "", end };
+      }
+      depth--;
+    } else if (name === "or" || name === "else") {
+      if (depth > 0) continue;
+      stops.push(match.index);
+      if (name === "or" && elseStart < 0) starts.push(end);
+      else if (name === "else") elseStart = end;
+    } else if (opensConditional(name, text, end, facts)) depth++;
+  }
+  return null;
+}
+
+/**
  * The conditionals in a macro's expansion replaced by the branch they take, where it is known (estout's
  * `\def\sym#1{\ifmmode^{#1}\else\(^{#1}\)\fi}` in text is `\(^{#1}\)`). One that is not decided stays whole, so
  * the expansion still shows it is TeX programming.
@@ -246,6 +288,14 @@ export function evaluateTexConditionals(text: string, facts: ConditionalFacts, d
     if (!name) continue;
     const after = match.index + match[0].length;
     if (!opensConditional(name, text, after, facts)) continue;
+    if (name === "ifcase") {
+      const chosen = decideCase(text, after, facts);
+      if (!chosen) break;
+      output += text.slice(copied, match.index) + evaluateTexConditionals(chosen.text, facts, depth + 1);
+      copied = skipAfterWord(text, chosen.end);
+      token.lastIndex = chosen.end;
+      continue;
+    }
     const extent = conditionalExtent(text, after, facts);
     if (!extent) break;
     const decided = decideConditional(text, after, name, facts);
@@ -325,7 +375,7 @@ function decideIfThenTest(test: string, facts: ConditionalFacts): boolean | null
  * `\nottoggle`, `\ifbool{b}`, `\notbool`, `\ifdef{\cmd}`, `\ifndef`, `\ifundef`, `\ifcsdef{name}`, `\ifcsundef`,
  * `\ifdefempty{\cmd}`, and `\ifthenelse{test}`.
  */
-export const BRACED_CONDITIONAL = /^(?:(?:if|not)(?:toggle|bool)|if(?:def|ndef|undef|csdef|csundef|defempty)|ifthenelse)$/;
+export const BRACED_CONDITIONAL = /^(?:(?:if|not)(?:toggle|bool)|if(?:def|ndef|undef|csdef|csundef|defempty)|ifthenelse|ifstrequal|ifstrempty|ifblank|notblank)$/;
 
 /** etoolbox's toggles share the switches' table (definitions.ts), under this prefix: `\newtoggle{long}` is `toggle:long`. */
 export const TOGGLE_PREFIX = "toggle:";
@@ -341,7 +391,14 @@ export type BracedConditional = {
 /** One `{…}` group or one command after spaces: a braced test's argument. */
 function bracedArgument(text: string, at: number) {
   let i = at;
-  while (/\s/.test(text[i] ?? "")) i++;
+  // (A comment between the arguments ends its line: Pandoc's and many authors' `%` at a line's end.)
+  for (;;) {
+    while (/\s/.test(text[i] ?? "")) i++;
+    if (text[i] !== "%") break;
+    const end = text.indexOf("\n", i);
+    if (end < 0) return null;
+    i = end + 1;
+  }
   if (text[i] === "{") {
     const group = readGroup(text, i, TEX_GROUPS);
     return group ? { content: group.content, from: i, end: group.end } : null;
@@ -357,13 +414,19 @@ function bracedArgument(text: string, at: number) {
 export function decideBracedConditional(text: string, at: number, name: string, facts: ConditionalFacts): BracedConditional | null {
   if (!BRACED_CONDITIONAL.test(name)) return null;
   const test = bracedArgument(text, at);
-  const yes = test && bracedArgument(text, test.end);
+  // `\ifstrequal{a}{b}{yes}{no}` has two strings to compare.
+  const other = test && name === "ifstrequal" ? bracedArgument(text, test.end) : null;
+  const yes = test && (name === "ifstrequal" ? other && bracedArgument(text, other.end) : bracedArgument(text, test.end));
   const no = yes && bracedArgument(text, yes.end);
-  if (!test || !yes || !no || text[yes.from] !== "{" || text[no.from] !== "{") return null;
+  if (!test || !yes || !no || text[yes.from] !== "{" || text[no.from] !== "{" || (name === "ifstrequal" && (!other || text[other.from] !== "{"))) return null;
   const argument = test.content.trim();
   const command = /^\\?([A-Za-z@]+)$/.exec(argument)?.[1];
   let value: boolean | null = null;
-  if (name === "ifthenelse") value = decideIfThenTest(test.content, facts);
+  // Plain strings (no commands, parameters or groups) compare as written; anything else is not read.
+  const literal = (content: string) => !/[\\#{}%]/.test(content);
+  if (name === "ifstrequal") value = other && literal(test.content) && literal(other.content) ? test.content === other.content : null;
+  else if (name === "ifstrempty" || name === "ifblank" || name === "notblank") value = literal(test.content) ? !test.content.trim() : null;
+  else if (name === "ifthenelse") value = decideIfThenTest(test.content, facts);
   else if (/toggle$/.test(name)) value = command ? facts.switchState?.(`${TOGGLE_PREFIX}${command}`) ?? null : null;
   else if (/bool$/.test(name)) value = command ? facts.switchState?.(`if${command}`) ?? null : null;
   else if (name === "ifdefempty") {

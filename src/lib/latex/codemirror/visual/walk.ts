@@ -21,7 +21,7 @@ import { argumentGroups, transparentPlan } from "./transparent";
 import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
   ChipWidget, ColumnsWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  BiographyHeaderWidget, ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, LiteralTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  BiographyHeaderWidget, ExampleMarkerWidget, ItemMarkerWidget, LineBreakWidget, LiteralTextWidget, PrintedTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget, type TableExtras,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
@@ -170,7 +170,7 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   newline: 0, linebreak: 0, onehalfspacing: 0, doublespacing: 0, singlespacing: 0, justifying: 0, raggedright: 0, raggedleft: 0, centering: 0,
   frontmatter: 0, mainmatter: 0, backmatter: 0, tableofcontents: 0, listoffigures: 0, listoftables: 0, listoftodos: 0, FloatBarrier: 0, restoregeometry: 0,
   balance: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
-  startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0, let: 0,
+  tightlist: 0, startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0, let: 0,
   // AASTeX's `\restartappendixnumbering` and `\startlongtable` print nothing.
   restartappendixnumbering: 0, startlongtable: 0,
   // MNRAS's `\bsp` (a typesetting note on the last page) and its page range and year metadata.
@@ -201,14 +201,14 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   widowpenalty: 0, clubpenalty: 0, hyphenpenalty: 0, exhyphenpenalty: 0, tabcolsep: 0, arraycolsep: 0,
   // TikZ/PGF setup that draws nothing (`\usetikzlibrary{calc}`, `\pgfkeys{…}`, `\pgfmathsetlengthmacro{\w}{width("$x$")}`), a float's
   // label (`\floatname{algorithm}{Construction}`), algorithmicx's `\algtext*{EndIf}`, a paragraph's break (`\break`).
-  usetikzlibrary: 1, usepgflibrary: 1, pgfkeys: 1, pgfmathsetlengthmacro: 2, pgfmathsetmacro: 2, floatname: 2, algtext: 1,
+  usetikzlibrary: 1, usepgflibrary: 1, usepgfplotslibrary: 1, tcbuselibrary: 1, tcbset: 1, newlength: 1, newtcolorbox: 2, renewtcolorbox: 2, pgfkeys: 1, pgfmathsetlengthmacro: 2, pgfmathsetmacro: 2, floatname: 2, algtext: 1,
   fontsize: 2, selectfont: 0, break: 0,
   // More of TeX assignments (itemsep1pt, topsep=0pt, predisplaypenalty=0 followed by relax): see TEX_ASSIGNMENT.
   itemsep: 0, parsep: 0, topsep: 0, partopsep: 0, labelsep: 0, labelwidth: 0, leftmargin: 0, rightmargin: 0, itemindent: 0, listparindent: 0, columnsep: 0, abovedisplayskip: 0, belowdisplayskip: 0,
   abovedisplayshortskip: 0, belowdisplayshortskip: 0, predisplaypenalty: 0, postdisplaypenalty: 0, interlinepenalty: 0, brokenpenalty: 0, displaywidowpenalty: 0, floatingpenalty: 0,
 };
 /** Setup commands of LAYOUT_LINE_ARGS that print nothing wherever they stand, so they hide even among other things on a line. */
-const INLINE_SETUP = /^\\(?:pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|pgfkeys|floatname)$/;
+const INLINE_SETUP = /^\\(?:pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|usepgfplotslibrary|tcbuselibrary|tcbset|pgfkeys|floatname)$/;
 /** The TeX assignments of LAYOUT_LINE_ARGS that take an `= value` (a glue, a dimension or an integer) rather than a group. */
 const TEX_ASSIGNMENT = /^(?:itemsep|parsep|topsep|partopsep|labelsep|labelwidth|leftmargin|rightmargin|itemindent|listparindent|columnsep|abovedisplayskip|belowdisplayskip|abovedisplayshortskip|belowdisplayshortskip|predisplaypenalty|postdisplaypenalty|interlinepenalty|brokenpenalty|displaywidowpenalty|floatingpenalty|predisplaysize|medmuskip|thinmuskip|thickmuskip|relpenalty|binoppenalty|hangindent|hangafter|parindent|parskip|baselineskip|lineskip|leftskip|rightskip|parfillskip|tolerance|emergencystretch|hbadness|vbadness|widowpenalty|clubpenalty|hyphenpenalty|exhyphenpenalty|tabcolsep|arraycolsep)$/;
 /** What follows such an assignment's name: an optional `=`, a number with a unit (or none: a penalty), then any `plus`/`minus` glue. */
@@ -307,7 +307,7 @@ function layoutRun(text: string, partial = false): number {
 }
 
 /** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
-const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing|allowbreak|nobreak|nolinebreak|relax)$/;
+const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|tightlist|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing|allowbreak|nobreak|nolinebreak|relax)$/;
 /** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2, "\\resizebox": 3, "\\scalebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
@@ -1612,7 +1612,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const nameEnd = begin.getChild("EnvNameGroup")?.to ?? begin.to;
     const after = read(state, nameEnd, Math.min(doc.length, nameEnd + 200));
     const spaces = /^\s*/.exec(after)![0].length;
-    const widest = after[spaces] === "{" ? readGroup(after, spaces) : null;
+    let widest = after[spaces] === "{" ? readGroup(after, spaces) : null;
+    // Pandoc's `\begin{CSLReferences}{hanging}{spacing}` has two arguments, both settings.
+    if (formed.name === "CSLReferences" && widest) {
+      const gap = /^\s*/.exec(after.slice(widest.end))![0].length;
+      widest = after[widest.end + gap] === "{" ? readGroup(after, widest.end + gap) : null;
+    }
     const headerEnd = Math.max(begin.to, widest ? nameEnd + widest.end : begin.to);
     consumed.push([begin.from, headerEnd]);
     const book = /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
@@ -1924,7 +1929,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const formed = wellFormedEnvironment(node, state);
     if (!formed) return undefined;
     const name = formed.name;
-    if (name === "thebibliography") return bibliography(node, formed);
+    if (name === "thebibliography" || (name === "CSLReferences" && !hasDirectError(node))) return bibliography(node, formed);
     if (name === "frontmatter") return frontMatter(formed);
     if (name === "mathpar" || name === "mathpar*") return mathpar(node, formed);
     // thmtools' `\begin{restatable}[note]{theorem}{name}`: the theorem it names, with its heading over the whole opening.
@@ -2635,6 +2640,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const gap = last ? read(state, groups[0].node.to, last.node.from) : "x";
       if (groups.length === 2 && !gap.trim() && read(state, last.node.from + 1, last.node.to - 1).trim() === "" && !isConsumed(node) && node.from >= from && node.from < to && foldDefinition(node.from, last.node.to)) return false;
     }
+    const pandoc = pandocCommand(node, ctrl, text, args);
+    if (pandoc !== null) return pandoc;
     const macro = macroAt(defs, name, node.from);
     // A .bbl's own `\providecommand{\doi}[1]{doi: #1}` (or `{doi: \begingroup \urlstyle{rm}\Url}`) is the stock fallback: `\doi{…}` is drawn as a link below.
     const stockDoi = name === "doi" && !!macro && macro.end !== undefined && macro.end <= doc.length &&/^\\providecommand\s*\{\\doi\}[^]*doi:/.test(read(state, macro.pos, macro.end));
@@ -2651,7 +2658,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (text === "\\bibitem") {
       const keyArgument = args.find((arg) => !arg.optional);
       let env: SyntaxNode | null = node.parent;
-      while (env && !(env.name === "Environment" && environmentName(env, readNode) === "thebibliography")) env = env.parent;
+      while (env && !(env.name === "Environment" && /^(?:thebibliography|CSLReferences)$/.test(environmentName(env, readNode) ?? ""))) env = env.parent;
+      // Pandoc's `\bibitem[\citeproctext]{ref-key}` prints nothing: its `\CSLLeftMargin` has the number.
+      if (env && keyArgument && environmentName(env, readNode) === "CSLReferences" && !hasDirectError(node)) {
+        emit({ kind: "symbol", from: node.from, to: keyArgument.node.to, reveal: "touch", replaces: [{ from: node.from, to: keyArgument.node.to }] });
+        return false;
+      }
       if (env && keyArgument && !hasDirectError(node)) {
         const optional = args.find((arg) => arg.optional && arg.node.to <= keyArgument.node.from);
         const range = optional && argumentInner(optional.node);
@@ -2943,6 +2955,54 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       }
     }
     return null;
+  }
+
+  /**
+   * Pandoc's and Quarto's LaTeX output (cs.IT 2611.09366): `\citeproc{ref-key}{{[}1{]}}` (a citation chip printing the bracketed
+   * text), `\tightlist`, `\pandocbounded{…}`, `\passthrough{…}` and the CSL entry wrappers
+   * (`\CSLLeftMargin{{[}1{]} }`, `\CSLRightInline{…}`, `\CSLBlock{…}`, `\CSLIndent{…}`), drawn as what they print though the
+   * document defines them with boxes and lengths. Null when `node` is none of these (or one it cannot read).
+   */
+  function pandocCommand(node: SyntaxNode, ctrl: SyntaxNode, text: string, args: ReturnType<typeof commandArguments>): false | undefined | null {
+    if (!/^\\(?:citeproc|tightlist|pandocbounded|passthrough|CSLLeftMargin|CSLRightInline|CSLBlock|CSLIndent)$/.test(text) || hasDirectError(node) || isConsumed(node)) return null;
+    if (!structural) return null;
+    const mandatory = args.filter((arg) => !arg.optional);
+    if (mandatory.length !== args.length) return null;
+    const inners = mandatory.map((arg) => argumentInner(arg.node));
+    if (inners.some((inner) => !inner)) return null;
+    const printed = (index: number) => {
+      const value = read(state, inners[index]!.from, inners[index]!.to).replace(/\{([[\]])\}/g, "$1");
+      return /[\\{}$%#]/.test(value) ? null : value;
+    };
+    const adjacent = mandatory.every((arg, index) => index === 0 ? read(state, ctrl.to, arg.node.from).trim() === "" : arg.node.from === mandatory[index - 1].node.to);
+    if (!adjacent) return null;
+    if (text === "\\tightlist") {
+      if (args.length) return null;
+      emit({ kind: "symbol", from: node.from, to: ctrl.to, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to }] });
+      return false;
+    }
+    const end = mandatory.length ? mandatory[mandatory.length - 1].node.to : ctrl.to;
+    if (text === "\\citeproc") {
+      const label = mandatory.length === 2 ? printed(1) : null;
+      const own = macroAt(defs, "citeproc", node.from);
+      if (label === null || !label.trim() || (own && !own.body.includes("\\cite{#1}"))) return null;
+      const keys = read(state, inners[0]!.from, inners[0]!.to).split(",").map((key) => key.trim()).filter(Boolean);
+      if (!keys.length) return null;
+      emit({ kind: "cite", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new ChipWidget("cite", "citeproc", keys, {}, end - node.from, [], label.trim()) }] });
+      return false;
+    }
+    if (mandatory.length !== 1) return null;
+    if (text === "\\CSLLeftMargin") {
+      const label = printed(0);
+      if (label !== null && label.trim()) {
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new PrintedTextWidget(label.trim(), read(state, node.from, end)) }] });
+        return false;
+      }
+    }
+    // The rest print their last argument: the wrapper folds away and the text inside is walked.
+    const inner = inners[0]!;
+    emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: inner.from }, { from: inner.to, to: end }] });
+    return undefined;
   }
 
   /**

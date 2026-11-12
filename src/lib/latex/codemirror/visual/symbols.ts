@@ -59,6 +59,9 @@ export const TEXT_WRAPPERS: Record<string, { args: Array<string | null>; open?: 
   // url's and hyperref's unlinked paths, in the typewriter face.
   "\\nolinkurl": { args: ["cm-vis-tt"] },
   "\\path": { args: ["cm-vis-tt"] },
+  // hyperref's internal links and anchors (`\hyperlink{target}{text}`, Pandoc's `\hypertarget{id}{}`): their text, the target hidden.
+  "\\hyperlink": { args: [null, ""] },
+  "\\hypertarget": { args: [null, ""] },
   // A note in the margin: a small note where it is written.
   "\\marginpar": { args: ["cm-vis-margin-note"] },
   "\\marginnote": { args: ["cm-vis-margin-note"] },

@@ -1336,7 +1336,13 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         const restyled = /^[Rr]enew/.test(command) && context.file !== undefined && PACKAGE_FILE.test(context.file);
         if (!restyled) {
           if (uncertain) { note(defs.unsupported, name, `${name} is defined under a condition`); defs.environments.delete(name); }
-          else if (supported) defs.environments.set(name, { name, arity, optional, spec, begin: begin.content, end: endCode.content, pos });
+          else if (supported) {
+            defs.environments.set(name, { name, arity, optional, spec, begin: begin.content, end: endCode.content, pos });
+            // `\newenvironment{myparagraph}[1]{…}{}` also defines `\myparagraph`: with nothing to end, `\myparagraph{Title}` is used as a command (cs.PL 2610.26599).
+            if (!command.endsWith("DocumentEnvironment") && arity > 0 && !endCode.content.trim() && /^[A-Za-z]+$/.test(name) && !defs.macros.get(name)?.length) {
+              addMacro(context, { name, arity, optional, body: begin.content, pos, file: context.file }, "new");
+            }
+          }
           else defs.environments.delete(name);
         }
       }
@@ -1868,8 +1874,16 @@ export function conditionalFacts(defs: LatexDefinitions, pos: number, math?: boo
     constant: (name) => constantOf(macroAt(defs, name, pos)),
     defined: (name) => definedState(defs, macroAt(defs, name, pos), name),
     switchState: (name) => switchAt(defs, name, pos),
+    classOption: (option) => ieeeClassOption(defs, option),
     math,
   };
+}
+
+/** IEEEtran's options that are off unless given: `\ifCLASSOPTIONcaptionsoff`, `compsoc`, `conference`, `peerreview`. */
+const IEEE_OFF_BY_DEFAULT = new Set(["captionsoff", "compsoc", "comsoc", "conference", "peerreview", "peerreviewca", "draftcls", "draftclsnofoot", "technote", "transmag", "cspaper", "nofonttune", "romanappendices"]);
+function ieeeClassOption(defs: LatexDefinitions, option: string) {
+  if (defs.documentClass !== "IEEEtran" || !IEEE_OFF_BY_DEFAULT.has(option)) return undefined;
+  return defs.classOptions?.includes(option) ?? false;
 }
 
 const factsKeys = new WeakMap<LatexDefinitions, string>();

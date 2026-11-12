@@ -201,7 +201,8 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
       junk.push(`${lineOf(doc, from)}: widget threw ${(error as Error).message.slice(0, 80)}`);
       return;
     }
-    const bad = /\\[a-zA-Z]{2,}|\bundefined\b|\bNaN\b|\[object Object\]/.exec(shownText);
+    // "undefined" is junk when it stands alone, not as an English word between others ("Ratios are undefined (–) when …").
+    const bad = /\\[a-zA-Z]{2,}|(?<![A-Za-z,;] )\bundefined\b(?! [A-Za-z])|\bNaN\b|\[object Object\]/.exec(shownText);
     if (bad) junk.push(`${lineOf(doc, from)}: shows "${shownText.slice(Math.max(0, bad.index - 40), bad.index + 60).replace(/\s+/g, " ")}"  from  ${doc.slice(from, Math.min(to, from + 100)).replace(/\n/g, " ")}`);
   });
   // A branch TeX skips (`\iffalse…\fi`, a discarding macro's argument) is faded on purpose, not left as source.
