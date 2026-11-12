@@ -69,6 +69,7 @@ import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { assertNotMigrating, itemLibraryPath } from "@/lib/storage/migration-fence";
+import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
 
 /** Reads a file for a tab. Text files come with their content, except plain
  * text files that are too large or turn out to be binary: those throw when
@@ -546,12 +547,15 @@ export async function copyFileToDirectory(
   const sharedSource = isSharedNotebookPath(relativePath);
   const sharedText = sharedSource && isTextFileType(currentFileType) ? await readSharedTextForCopy(relativePath) : null;
   const livePdf = sharedSource && currentFileType === "pdf" ? await livePdfAnnotationsForCopy(relativePath) : null;
+  // Likewise for a binary: the host's current bytes, not a lagging working file.
+  const sharedBytes = sharedSource && !isTextFileType(currentFileType) ? await readSharedAuthorityBytes(relativePath) : null;
 
   let available;
   for (;;) {
     available = await findAvailableFilePath(destinationPath, requestedName);
     try {
-      await copyFile(filePathFromParts(current.notebook, current.pathParts), available.path, constants.COPYFILE_EXCL);
+      if (sharedBytes) await writeFile(available.path, sharedBytes, { flag: "wx" });
+      else await copyFile(filePathFromParts(current.notebook, current.pathParts), available.path, constants.COPYFILE_EXCL);
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -701,7 +705,7 @@ export async function getRawFile(relativePath: string) {
   const node = await getFileNode(notebook, pathParts);
 
   return {
-    body: await readFile(targetPath),
+    body: (await readSharedAuthorityBytes(relativePath)) ?? await readFile(targetPath),
     contentType: getContentType(name, fileType),
     node,
   };

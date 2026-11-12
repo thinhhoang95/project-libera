@@ -280,7 +280,9 @@ export class SharedProject {
   /** manifestPathKey of each path fs.watch reported, with when (performance.now()). */
   private readonly reportedAt = new Map<string, number>();
   /** Paths a follower is waiting on: whether each should be on disk, and until when to wait. */
-  private readonly awaitedOnDisk = new Map<string, { present: boolean; until: number }>();
+  private readonly awaitedOnDisk = new Map<string, { present: boolean; until: number; blob?: { hash: string; size: number }; probed?: string }>();
+  /** A follower's last-read manifest blob versions: a same-path replacement changes the hash, not the layout. */
+  private followerBlobs: Map<string, { hash: string; size: number }> | null = null;
   private followerDiskTimer: ReturnType<typeof setInterval> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   /** state.json is behind the in-memory state; kept until a write succeeds. */
@@ -902,11 +904,32 @@ export class SharedProject {
     }
     for (const [fileId, record] of Object.entries(next)) if (record.docId) this.ensureDoc(record.docId, fileId);
     this.pdfs.sync(this.entries.values(), layout.paths);
-    if (JSON.stringify(previous) === JSON.stringify(next)) return;
+    const blobs = new Map<string, { hash: string; size: number }>();
+    for (const [fileId, entry] of this.entries) if (entry.kind === "blob" && entry.blobHash && layout.paths.has(fileId)) blobs.set(fileId, { hash: entry.blobHash, size: entry.size ?? -1 });
+    const knownBlobs = this.followerBlobs;
+    this.followerBlobs = blobs;
+    if (JSON.stringify(previous) === JSON.stringify(next)) {
+      // Same names, new bytes: the old file on disk is not the arrival.
+      if (knownBlobs && Object.keys(previous).length > 0) this.awaitReplacedBlobs(knownBlobs, blobs, next);
+      return;
+    }
     this.state.layout = next;
     this.ctx.layoutChanged(this.info.projectId);
     this.treeChanged(previous, next);
     this.awaitDisk(previous, next);
+    if (knownBlobs) this.awaitReplacedBlobs(knownBlobs, blobs, next);
+  }
+
+  /** Blobs that kept their path but not their bytes: wait for the disk file to reach the new hash. */
+  private awaitReplacedBlobs(known: Map<string, { hash: string; size: number }>, blobs: Map<string, { hash: string; size: number }>, next: Record<string, LayoutRecord>): void {
+    const until = Date.now() + FOLLOWER_DISK_WAIT_MS;
+    for (const [fileId, blob] of blobs) {
+      const before = known.get(fileId);
+      if (before && before.hash !== blob.hash && next[fileId]) this.awaitedOnDisk.set(next[fileId].path, { present: true, until, blob });
+    }
+    if (this.awaitedOnDisk.size === 0 || this.followerDiskTimer) return;
+    this.followerDiskTimer = setInterval(() => void this.checkAwaitedDisk(), this.ctx.timings.followerDiskMs);
+    this.followerDiskTimer.unref?.();
   }
 
   /**
@@ -937,7 +960,19 @@ export class SharedProject {
     const arrived: string[] = [];
     for (const [relative, awaited] of [...this.awaitedOnDisk]) {
       const target = await resolveInside(this.info.root, relative).catch(() => null);
-      const settled = target !== null && (await statIfExists(target) !== null) === awaited.present;
+      let settled = target !== null && (await statIfExists(target) !== null) === awaited.present;
+      if (settled && awaited.blob && target !== null) {
+        // Hashing a large file every second is the cost to avoid: hash only a
+        // file of the expected size whose size or mtime moved since the last look.
+        const stats = await statIfExists(target);
+        const signature = stats ? `${stats.size}:${stats.mtimeMs}` : "";
+        settled = false;
+        if (stats && (awaited.blob.size < 0 || stats.size === awaited.blob.size) && signature !== awaited.probed) {
+          awaited.probed = signature;
+          const bytes = await readIfExists(target);
+          settled = bytes !== null && sha256(bytes) === awaited.blob.hash;
+        }
+      }
       if (settled) arrived.push(relative);
       if (settled || Date.now() >= awaited.until) this.awaitedOnDisk.delete(relative);
     }
@@ -2328,6 +2363,11 @@ export class SharedProject {
             const api = this.ctx.host.api;
             if (!api) throw new ControlError(401, "needs-sign-in", "Sign in to the collaboration server.");
             const hash = sha256(bytes);
+            // Identical bytes: nothing to upload, and no manifest change to sync.
+            if (hash === existing.blobHash) {
+              paths.push(computeLayout(this.entries.values()).paths.get(existing.fileId) ?? existing.path);
+              break;
+            }
             // Upload first: a manifest entry must never name a blob the server lacks.
             await api.uploadBlob(this.info.projectId, bytes, existing.mime ?? mimeForPath(existing.path));
             const current = this.readEntries().get(existing.fileId);

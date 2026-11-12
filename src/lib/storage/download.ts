@@ -4,6 +4,7 @@ import JSZip from "jszip";
 import { IGNORED_DOWNLOAD_ENTRIES } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { ensureAdminRoot, notebookPath, assertSafeSegment } from "@/lib/storage/paths";
+import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
 
 function sanitizeZipName(name: string) {
   return (
@@ -18,7 +19,7 @@ function shouldSkipDownloadEntry(name: string) {
   return name.startsWith("._") || IGNORED_DOWNLOAD_ENTRIES.has(name);
 }
 
-async function addDirectoryToZip(zip: JSZip, rootPath: string, currentPath: string) {
+async function addDirectoryToZip(zip: JSZip, rootPath: string, currentPath: string, notebookName: string) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -31,12 +32,15 @@ async function addDirectoryToZip(zip: JSZip, rootPath: string, currentPath: stri
 
     if (entry.isDirectory()) {
       zip.folder(relativePath);
-      await addDirectoryToZip(zip, rootPath, entryPath);
+      await addDirectoryToZip(zip, rootPath, entryPath, notebookName);
       continue;
     }
 
     if (entry.isFile()) {
-      zip.file(relativePath, await readFile(entryPath));
+      // A shared notebook's working file can lag the host: export its current shared version.
+      // Hidden bookkeeping (.libera, the marker) is never part of the shared notebook.
+      const hidden = relativePath.split("/").some((segment) => segment.startsWith("."));
+      zip.file(relativePath, (hidden ? null : await readSharedAuthorityBytes(`${notebookName}/${relativePath}`)) ?? await readFile(entryPath));
     }
   }
 }
@@ -59,7 +63,7 @@ export async function createNotebookZip(name: string) {
     throw new StorageError("Could not prepare notebook download.", 500);
   }
 
-  await addDirectoryToZip(rootFolder, targetPath, targetPath);
+  await addDirectoryToZip(rootFolder, targetPath, targetPath, safeName);
 
   return {
     fileName: `${rootFolderName}.zip`,
