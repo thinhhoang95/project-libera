@@ -1249,7 +1249,10 @@ export class NotebookServiceImpl implements NotebookService {
       if (!handle) throw new ControlError(404, "not-found", "Shared notebook not found on this device.");
       if (handle.role !== "owner") throw new ControlError(403, "forbidden", "Only the owner can take down this notebook.");
       // Finish pending materialization before the server closes the documents.
-      await handle.runtime?.whenIdle();
+      // Bounded: continuous edits or watcher events must not keep the takedown pending forever.
+      if (handle.runtime && !(await handle.runtime.whenIdle(this.joinTimeoutMs))) {
+        throw new ControlError(503, "unavailable", "This notebook is still syncing changes. Retry taking it down in a moment.");
+      }
       if (!(await api.version()).guardedProjectDeletion) throw new ControlError(409, "update-required", "Update the collaboration server before taking down this notebook safely.");
       if (!handle.runtime) throw new ControlError(503, "offline", "Open and sync this notebook before taking it down.");
       const sequence = await handle.runtime.prepareLocalConversion();
