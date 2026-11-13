@@ -129,7 +129,9 @@ export function latexDefinitionDiagnostics(): Extension {
       const projectChanged = update.startState.field(latexProjectField, false) !== update.state.field(latexProjectField, false);
       // Only a `setDiagnosticsEffect` replaces the lint state (a compile's diagnostics); other effects (numbering, cursors, parser progress) leave it as is.
       const replaced = !this.dispatching && update.transactions.some((tr) => tr.effects.some((effect) => effect.is(setDiagnosticsEffect)));
-      if (update.docChanged || defsChanged || projectChanged || replaced) this.schedule();
+      // The paths files are looked up from (a tab renamed or moved reconfigures them).
+      const configChanged = update.startState.facet(visualConfig) !== update.state.facet(visualConfig);
+      if (update.docChanged || defsChanged || projectChanged || configChanged || replaced) this.schedule();
     }
     schedule() {
       if (this.timer) clearTimeout(this.timer);
