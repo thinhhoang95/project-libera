@@ -33,14 +33,14 @@ function visibleRanges(view: EditorView) {
   return ranges;
 }
 
-function build(view: EditorView): DecorationSet {
+function build(view: EditorView, padded: Array<{ from: number; to: number }>): DecorationSet {
   const state = view.state;
   const tree = syntaxTree(state);
   const defs = visualDefinitions(state);
   const structural = state.field(structuralField, false);
   const ranges: Array<Range<Decoration>> = [];
   const seenLines = new Set<string>();
-  for (const visible of visibleRanges(view)) {
+  for (const visible of padded) {
     let from = visible.from;
     // Start at the outermost styled construct around the top of the range.
     for (let node: SyntaxNode | null = tree.resolveInner(from, 1); node; node = node.parent) {
@@ -58,7 +58,8 @@ function build(view: EditorView): DecorationSet {
         if (mark.to > mark.from) ranges.push(Decoration.mark({ class: mark.class, attributes: mark.attributes }).range(mark.from, mark.to));
       }
       for (const line of construct.lines ?? []) {
-        for (let pos = state.doc.lineAt(line.from).from; pos <= line.to;) {
+        // Lines that end before the padded range starts are never drawn (the viewport lies inside it).
+        for (let pos = Math.max(state.doc.lineAt(line.from).from, visible.from); pos <= line.to;) {
           const current = state.doc.lineAt(pos);
           if (current.from > visible.to + MARGIN) break;
           const key = `${current.from}:${line.class}`;
@@ -77,12 +78,19 @@ function build(view: EditorView): DecorationSet {
 
 export const visualStylePlugin = ViewPlugin.fromClass(class {
   decorations: DecorationSet;
-  constructor(view: EditorView) { this.decorations = build(view); }
+  /** The padded ranges the last build walked. */
+  padded: Array<{ from: number; to: number }>;
+  constructor(view: EditorView) { this.padded = visibleRanges(view); this.decorations = build(view, this.padded); }
   update(update: ViewUpdate) {
-    if (update.docChanged || update.viewportChanged || syntaxTree(update.startState) !== syntaxTree(update.state)
-      || update.startState.field(definitionsField, false) !== update.state.field(definitionsField, false)
-      || update.startState.field(structuralField, false)?.preambleOpen !== update.state.field(structuralField, false)?.preambleOpen) {
-      this.decorations = build(update.view);
+    const unchanged = !update.docChanged && syntaxTree(update.startState) === syntaxTree(update.state)
+      && update.startState.field(definitionsField, false) === update.state.field(definitionsField, false)
+      && update.startState.field(structuralField, false)?.preambleOpen === update.state.field(structuralField, false)?.preambleOpen;
+    // A scroll within what the last build walked: every mark and line class on screen is already there.
+    if (unchanged && update.viewportChanged
+      && update.view.visibleRanges.every((range) => this.padded.some((walked) => range.from >= walked.from && range.to <= walked.to))) return;
+    if (!unchanged || update.viewportChanged) {
+      this.padded = visibleRanges(update.view);
+      this.decorations = build(update.view, this.padded);
     }
   }
 }, { decorations: (plugin) => plugin.decorations });
