@@ -1,4 +1,4 @@
-import { forEachDiagnostic, setDiagnostics, type Diagnostic } from "@codemirror/lint";
+import { forEachDiagnostic, setDiagnostics, setDiagnosticsEffect, type Diagnostic } from "@codemirror/lint";
 import type { EditorState, Extension } from "@codemirror/state";
 import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { isInLatexComment, readLatexInputs, type LatexDefinitionNote } from "../../macros/definitions";
@@ -121,12 +121,15 @@ function sameDiagnostics(a: readonly Diagnostic[], b: readonly Diagnostic[]) {
 export function latexDefinitionDiagnostics(): Extension {
   return ViewPlugin.fromClass(class {
     timer: ReturnType<typeof setTimeout> | null = null;
+    /** True while our own `setDiagnostics` is dispatched: it needs no second pass. */
+    dispatching = false;
     constructor(readonly view: EditorView) { this.schedule(); }
     update(update: ViewUpdate) {
       const defsChanged = visualDefinitions(update.startState) !== visualDefinitions(update.state);
       const projectChanged = update.startState.field(latexProjectField, false) !== update.state.field(latexProjectField, false);
-      // A transaction with effects may have replaced the lint state (a compile's diagnostics).
-      if (update.docChanged || defsChanged || projectChanged || update.transactions.some((tr) => tr.effects.length)) this.schedule();
+      // Only a `setDiagnosticsEffect` replaces the lint state (a compile's diagnostics); other effects (numbering, cursors, parser progress) leave it as is.
+      const replaced = !this.dispatching && update.transactions.some((tr) => tr.effects.some((effect) => effect.is(setDiagnosticsEffect)));
+      if (update.docChanged || defsChanged || projectChanged || replaced) this.schedule();
     }
     schedule() {
       if (this.timer) clearTimeout(this.timer);
@@ -139,7 +142,8 @@ export function latexDefinitionDiagnostics(): Extension {
       const shown: Diagnostic[] = [];
       forEachDiagnostic(view.state, (diagnostic, from, to) => (diagnostic.source === DEFINITION_DIAGNOSTIC_SOURCE ? shown : others).push({ ...diagnostic, from, to }));
       if (sameDiagnostics(shown.sort((a, b) => a.from - b.from), next)) return;
-      view.dispatch(setDiagnostics(view.state, [...others, ...next]));
+      this.dispatching = true;
+      try { view.dispatch(setDiagnostics(view.state, [...others, ...next])); } finally { this.dispatching = false; }
     }
     destroy() { if (this.timer) clearTimeout(this.timer); }
   });

@@ -37,7 +37,7 @@ import type { SuggestionRecord } from "../protocol/schema";
 import { relativeRange } from "../anchors";
 import { aiEditAnnotation, collabSuggestOnly } from "../bindings/codemirror";
 import { inlineReplacementEditing } from "./codemirror";
-import { buildSuggestion, listSuggestions, newSuggestionId, resolveSuggestion, suggestionsMap, type ResolvedSuggestion, type SuggestionsTarget } from "./model";
+import { buildSuggestion, listSuggestions, memoizedText, newSuggestionId, resolveSuggestion, suggestionsMap, type ResolvedSuggestion, type SuggestionsTarget } from "./model";
 
 /**
  * Let one transaction change content directly even in suggest mode (editors
@@ -225,10 +225,13 @@ export function suggestMode(options: SuggestModeOptions): SuggestMode {
   });
   const active = (state: EditorState) => state.field(enabledField) || state.field(forcedField);
 
-  const ownPending = (): ResolvedSuggestion[] => listSuggestions(map, { status: "pending", createdBy })
-    .filter((record) => record.actor.kind === "user")
-    .map((record) => resolveSuggestion(ytext, record))
-    .filter((item) => !item.isStale);
+  const ownPending = (): ResolvedSuggestion[] => {
+    const text = memoizedText(ytext);
+    return listSuggestions(map, { status: "pending", createdBy })
+      .filter((record) => record.actor.kind === "user")
+      .map((record) => resolveSuggestion(ytext, record, text))
+      .filter((item) => !item.isStale);
+  };
 
   /** Marks a transaction so ySync does not write it to the Y.Text (composition text and its rollback). */
   const localOnly = (state: EditorState) => {
@@ -305,6 +308,8 @@ export function suggestMode(options: SuggestModeOptions): SuggestMode {
 
   const apply = (ops: SuggestOp[]) => {
     if (!ops.length) return;
+    // The transaction only writes the suggestions map, never the Y.Text, so its text is read once.
+    const text = memoizedText(ytext);
     map.doc!.transact(() => {
       for (const op of ops) {
         if (op.kind === "create") {
@@ -320,7 +325,7 @@ export function suggestMode(options: SuggestModeOptions): SuggestMode {
         else if (op.kind === "replace") map.set(op.id, { ...record, replacement: op.replacement, updatedAt: now() });
         else {
           const range = relativeRange(ytext, op.start, op.end);
-          map.set(op.id, { ...record, start: range.start, end: range.end, baseQuote: ytext.toString().slice(op.start, op.end), replacement: op.replacement, updatedAt: now() });
+          map.set(op.id, { ...record, start: range.start, end: range.end, baseQuote: text().slice(op.start, op.end), replacement: op.replacement, updatedAt: now() });
         }
       }
     }, origin);
