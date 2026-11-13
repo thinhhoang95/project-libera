@@ -83,6 +83,50 @@ function pairMacros(defs: LatexDefinitions) {
 const regionCache = new WeakMap<LatexDefinitions, { text: string; regions: MacroEnvironmentRegion[] }>();
 
 /**
+ * `regions` (sorted by `from`) without those another one contains, in one sweep. A region is kept unless another contains
+ * it and is not the same range: identical ranges all stay.
+ */
+export function outermostRegions<T extends { from: number; to: number }>(regions: readonly T[]): T[] {
+  const outer: T[] = [];
+  // The largest end among regions that start before this group's start.
+  let before = -Infinity;
+  for (let start = 0; start < regions.length;) {
+    let end = start;
+    let top = -Infinity;
+    while (end < regions.length && regions[end].from === regions[start].from) top = Math.max(top, regions[end++].to);
+    for (let at = start; at < end; at++) if (before < regions[at].to && top <= regions[at].to) outer.push(regions[at]);
+    before = Math.max(before, top);
+    start = end;
+  }
+  return outer;
+}
+
+/**
+ * `regions` (sorted by `from`) without those another one contains, in one sweep: an earlier one that contains it (the same
+ * range too), or a later one that starts at the same place, contains it and is not the same range.
+ */
+export function withoutContained<T extends { from: number; to: number }>(regions: readonly T[]): T[] {
+  const outer: T[] = [];
+  let before = -Infinity;
+  for (let start = 0; start < regions.length;) {
+    let end = start;
+    while (end < regions.length && regions[end].from === regions[start].from) end++;
+    // The largest end among the group's later members, from the back.
+    const later = new Array<number>(end - start);
+    let after = -Infinity;
+    for (let at = end - 1; at >= start; at--) { later[at - start] = after; after = Math.max(after, regions[at].to); }
+    let earlier = before;
+    for (let at = start; at < end; at++) {
+      if (earlier < regions[at].to && later[at - start] <= regions[at].to) outer.push(regions[at]);
+      earlier = Math.max(earlier, regions[at].to);
+    }
+    before = earlier;
+    start = end;
+  }
+  return outer;
+}
+
+/**
  * The environments a document opens through a macro, from that use to the
  * matching close (another macro, or a literal `\end{env}`). Comments and the
  * definitions themselves are skipped. Empty, at no cost, when the document has
@@ -123,7 +167,7 @@ export function macroEnvironmentRegions(source: string | (() => string), defs: L
   }
   regions.sort((a, b) => a.from - b.from);
   // Only the outermost regions: an inner one is drawn with its outer one.
-  const outer = regions.filter((region, index) => !regions.some((other, at) => at !== index && other.from <= region.from && other.to >= region.to && (other.from !== region.from || other.to !== region.to)));
+  const outer = outermostRegions(regions);
   regionCache.set(defs, { text, regions: outer });
   return outer;
 }
@@ -200,7 +244,7 @@ export function disabledRegions(text: string, discarding: ReadonlyMap<string, nu
   if (cached && cached.names === names) return cached.regions;
   const regions = [...falseRegions(text, defs), ...discardedRegions(text, used, discarding), ...(comments ? commentRegions(text) : [])].sort((a, b) => a.from - b.from);
   // Only the outermost: a `\cut{…}` inside `\iffalse` is left out with it.
-  const outer = regions.filter((region, index) => !regions.some((other, at) => at !== index && other.from <= region.from && other.to >= region.to && (at < index || other.from !== region.from || other.to !== region.to)));
+  const outer = withoutContained(regions);
   if (disabledCache.size > 8) disabledCache.clear();
   disabledCache.set(text, { names, regions: outer });
   return outer;

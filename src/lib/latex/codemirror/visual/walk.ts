@@ -7,12 +7,12 @@ import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, n
 import { expansionState, placeAtCall } from "./macro-provenance";
 import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
-import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroEnvironmentRegions, macroPassThrough, structureMacroNames, type MacroEnvironmentRegion } from "../../macros/structure";
+import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroPassThrough, structureMacroNames } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
 import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
 import { latexProjectField } from "../editing";
-import { disabledField, macroSourcesField, visualConfig } from "./model";
+import { disabledField, macroRegionsFor, macroSourcesField, visualConfig } from "./model";
 import { citationNoteText, citationNotes, prettyrefText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
@@ -607,15 +607,8 @@ function splitItems(body: string): string[] | null {
   return items;
 }
 
-/** The environments a document opens and closes through macros, per document version. */
-const regionCache = new WeakMap<Text, { defs: LatexDefinitions; regions: MacroEnvironmentRegion[] }>();
-export function macroRegionsFor(doc: Text, defs: LatexDefinitions) {
-  const cached = regionCache.get(doc);
-  if (cached?.defs === defs) return cached.regions;
-  const regions = macroEnvironmentRegions(() => doc.toString(), defs);
-  regionCache.set(doc, { defs, regions });
-  return regions;
-}
+// The environments a document opens and closes through macros are kept in model.ts, where edits carry them over.
+export { macroRegionsFor };
 
 function environmentCode(code: string) {
   return code.replace(LAYOUT_NOISE, (_, item?: string) => (item !== undefined ? item : "")).replace(/\s+/g, " ").trim();
