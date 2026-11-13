@@ -923,6 +923,8 @@ test("visual editor renders tagged block equations in display mode and keeps inl
     await act(async () => {
       root.render(createElement(TiptapMarkdownEditor, {
         documentPath: 'Notebook/math.md',
+        // `$$` is an inline pair by default; this note uses it for display blocks.
+        mathMarkers: { inlineMathMarkers: '$ $', blockMathMarkers: '$$ $$' },
         value: String.raw`Inline $x^2$.
 
 $$
