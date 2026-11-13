@@ -183,6 +183,20 @@ function syncMirror(textarea: HTMLTextAreaElement): boolean {
   return Boolean(mirrorTextNode);
 }
 
+// Empties the hidden mirror so a closed editor does not keep the last
+// document's text and layout tree alive for the rest of the session. The next
+// measurement re-syncs it exactly as a first use would, so releasing only ever
+// costs that one re-sync.
+export function releaseTextareaMeasurements() {
+  if (mirrorElement) {
+    mirrorElement.textContent = "";
+  }
+
+  mirrorTextNode = undefined;
+  mirrorValue = null;
+  mirrorLayoutKey = "";
+}
+
 function createMeasurer(textarea: HTMLTextAreaElement): TextareaMeasurer | null {
   if (!syncMirror(textarea) || !mirrorElement || !mirrorTextNode) {
     return null;

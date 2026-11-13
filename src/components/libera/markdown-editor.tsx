@@ -46,6 +46,7 @@ import type {
 import {
   getTextareaClientPointForOffset,
   getTextareaOffsetAtPoint,
+  releaseTextareaMeasurements,
 } from "@/lib/textarea-position";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
@@ -504,6 +505,8 @@ export function MarkdownEditor({
       if (selectionChangeTimeoutRef.current !== null) {
         window.clearTimeout(selectionChangeTimeoutRef.current);
       }
+
+      releaseTextareaMeasurements();
     };
   }, []);
 
