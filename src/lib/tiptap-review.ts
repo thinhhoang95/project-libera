@@ -251,6 +251,7 @@ function hashText(text: string) {
  * diffed against the live nodes. Suggestions that cannot be mapped exactly are
  * left to the review panel rather than shown in the wrong place. */
 export function tiptapReviewChanges(editor: Editor, source: string, suggestions: { id: string; label: string; edits: ReviewEdit[] }[]): TrackedChange[] {
+  if (!suggestions.length) return [];
   const markdown = editor.markdown;
   const blocks = markdown ? tiptapReviewBlocks(editor, source) : [];
   if (!markdown || !blocks.length) return [];

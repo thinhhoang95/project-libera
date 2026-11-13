@@ -427,12 +427,15 @@ export const TiptapChanges = Extension.create<{ documentPath: string }>({
             const size = newState.doc.content.size;
             const channel = meta.channel;
             const incoming = meta.changes.filter((change) => change.from >= 0 && change.from <= change.to && change.to <= size).map((change) => (channel ? { ...change, channel } : change));
-            changes = [...changes.filter((change) => change.mode !== "preview" || change.channel !== channel), ...incoming];
+            // An empty update onto a channel with no previews leaves the set of
+            // changes as it is, so keep its identity (the bar compares by it).
+            if (incoming.length || changes.some((change) => change.mode === "preview" && change.channel === channel))
+              changes = [...changes.filter((change) => change.mode !== "preview" || change.channel !== channel), ...incoming];
             if (channel === undefined) decide = meta.decide;
             else deciders = { ...deciders, [channel]: meta.decide ?? (() => {}) };
           }
           if (changes === value.changes && decide === value.decide && deciders === value.deciders) return value;
-          changes = [...changes].sort((a, b) => a.from - b.from || a.to - b.to);
+          if (changes !== value.changes) changes = [...changes].sort((a, b) => a.from - b.from || a.to - b.to);
           return { changes, decide, ...(deciders ? { deciders } : {}), decorations: changes.length ? changeDecorations(newState.doc, changes, documentPath) : DecorationSet.empty };
         },
       },
