@@ -21,6 +21,21 @@ type ProjectBibEntry = NonNullable<ReturnType<typeof projectOf>>["bibEntries"][n
 const projectOf = (state: EditorState) => state.field(latexProjectField, false);
 /** The project's entries by key, built once per list (a chip looks its keys up on every refresh). */
 const bibIndexes = new WeakMap<readonly ProjectBibEntry[], Map<string, ProjectBibEntry[]>>();
+type LibraryEntry = NonNullable<NonNullable<ReturnType<typeof projectOf>>["libraryEntries"]>[number];
+/** The library's entries by key and alias; the first entry in list order wins, as `find` returns it. */
+const libraryIndexes = new WeakMap<readonly LibraryEntry[], Map<string, LibraryEntry>>();
+function libraryIndex(list: readonly LibraryEntry[]) {
+  let index = libraryIndexes.get(list);
+  if (!index) {
+    index = new Map();
+    for (const candidate of list) {
+      if (!index.has(candidate.key)) index.set(candidate.key, candidate);
+      for (const alias of candidate.aliases) if (!index.has(alias)) index.set(alias, candidate);
+    }
+    libraryIndexes.set(list, index);
+  }
+  return index;
+}
 
 export function bibLookup(state: EditorState): BibLookup {
   const project = projectOf(state);
@@ -34,7 +49,7 @@ export function bibLookup(state: EditorState): BibLookup {
   const entries = index;
   return (key) => {
     const matches = entries.get(key) ?? [];
-    const entry = matches[0] ?? project?.libraryEntries?.find((candidate) => candidate.key === key || candidate.aliases.includes(key));
+    const entry = matches[0] ?? (project?.libraryEntries ? libraryIndex(project.libraryEntries).get(key) : undefined);
     if (!entry) return null;
     // A `.bib` entry comes first, but how the citation prints is the compiled bibliography's (a numeric `.bbl`'s [3]).
     const compiled = matches.find((candidate) => candidate.label !== undefined || candidate.citeAuthor !== undefined || candidate.number !== undefined);
