@@ -168,6 +168,27 @@ export async function readWorkspaceMetadata(): Promise<LiberaWorkspaceMetadata> 
   }
 }
 
+/**
+ * For checks: whether the file that holds stars, tags and the notebook panel's
+ * state can be read. readWorkspaceMetadata takes a damaged file for an empty
+ * one; this says so. Read only.
+ */
+export async function inspectWorkspaceMetadata(): Promise<{ metadata: LiberaWorkspaceMetadata; damaged?: string }> {
+  let text: string;
+  try { text = await readFile(workspaceMetadataPath(), "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { metadata: normalizeWorkspaceMetadata(undefined) };
+    return { metadata: normalizeWorkspaceMetadata(undefined), damaged: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    const value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("it is not a settings object");
+    return { metadata: normalizeWorkspaceMetadata(value) };
+  } catch (error) {
+    return { metadata: normalizeWorkspaceMetadata(undefined), damaged: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function writeWorkspaceMetadata(metadata: LiberaWorkspaceMetadata) {
   await writeJsonState(workspaceMetadataPath(), normalizeWorkspaceMetadata(metadata));
 }

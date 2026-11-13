@@ -95,6 +95,48 @@ export function isSlideChartDataFile(data: string | undefined) {
   return Boolean(data && FILE_DATA_REGEX.test(data.trim()));
 }
 
+/** A path relative to the deck's folder, as a workspace path (no escaping the notebook). */
+export function resolveDeckRelativePath(documentPath: string, relative: string) {
+  const parts = documentPath.split("/").slice(0, -1);
+  const notebookDepth = 1;
+
+  for (const segment of relative.trim().split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (parts.length > notebookDepth) parts.pop();
+      continue;
+    }
+    parts.push(segment);
+  }
+
+  return parts.join("/");
+}
+
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})\s*([\w-]*)/;
+
+/** ```chart blocks in Markdown, with the line each starts on; examples inside longer fences are skipped. */
+export function slideChartBlocks(source: string) {
+  const lines = source.split(/\r?\n/);
+  const blocks: { line: number; code: string }[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const open = FENCE_OPEN.exec(lines[index]);
+    if (!open) continue;
+    const fence = open[1];
+    const closes = (line: string) => line.trim().startsWith(fence[0].repeat(fence.length)) && !line.trim().replace(/^[`~]+/, "").trim();
+    const body: string[] = [];
+    let end = index + 1;
+    while (end < lines.length && !closes(lines[end])) {
+      body.push(lines[end]);
+      end += 1;
+    }
+    if (open[2] === "chart") blocks.push({ line: index + 1, code: body.join("\n") });
+    index = end;
+  }
+
+  return blocks;
+}
+
 function stringValue(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return typeof value === "string" && value.trim() ? value.trim() : undefined;

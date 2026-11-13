@@ -314,6 +314,15 @@ export async function recordMovedRunFiles(moves: ReadonlyMap<string, MovedRunFil
   }
 }
 
+/** A folder moved in the app (rename, archive): every file the runs recorded under it follows. */
+export async function recordMovedRunFolder(from: string, to: string) {
+  const moves = new Map<string, MovedRunFile>();
+  for (const file of (await listRunFiles()).files) {
+    if (file.path.startsWith(`${from}/`)) moves.set(file.path, { to: to + file.path.slice(from.length) });
+  }
+  await recordMovedRunFiles(moves);
+}
+
 /** The files undo history can restore, where each is now: for checks. Read only. */
 export async function listRunFiles(): Promise<{ files: { runId: string; path: string; recordedPath: string; reverted: boolean; shared: boolean }[]; unreadable: number }> {
   let names: string[];

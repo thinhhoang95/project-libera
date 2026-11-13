@@ -71,18 +71,26 @@ export function isVisibleTreeEntry(name: string, linked = false) {
 /**
  * A notebook's visible files (library paths), without the tree's upkeep: no
  * index, prune or reconcile, so a check can read a notebook without changing
- * it. The archive is left out. `onHidden` sees each entry the tree hides.
+ * it. The archive is left out unless `includeArchive`. `onHidden` sees each
+ * entry the tree hides. `unreadable` lists the folders that could not be
+ * listed (a folder that raced away is not one), so "exactly one file has this
+ * name" can be told from "one that could be seen".
  */
-export async function listVisibleNotebookFiles(notebook: string, { limit = 20_000, onHidden }: { limit?: number; onHidden?: (libraryPath: string, name: string) => void } = {}) {
+export async function listVisibleNotebookFiles(notebook: string, { limit = 20_000, onHidden, includeArchive = false }: { limit?: number; onHidden?: (libraryPath: string, name: string) => void; includeArchive?: boolean } = {}) {
   const linked = getLinkedFolders().some((folder) => folder.name === notebook);
   const root = notebookPath(notebook);
   const files: string[] = [];
+  const unreadable: string[] = [];
   let truncated = false;
   const walk = async (parts: string[]) => {
     let entries;
-    try { entries = await readdir(path.join(root, ...parts), { withFileTypes: true }); } catch { return; }
+    try { entries = await readdir(path.join(root, ...parts), { withFileTypes: true }); }
+    catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) unreadable.push([notebook, ...parts].join("/"));
+      return;
+    }
     for (const entry of entries) {
-      if (!parts.length && entry.name === ARCHIVE_DIR) continue;
+      if (!parts.length && entry.name === ARCHIVE_DIR && !includeArchive) continue;
       if (!isVisibleTreeEntry(entry.name, linked)) { onHidden?.([notebook, ...parts, entry.name].join("/"), entry.name); continue; }
       if (files.length >= limit) { truncated = true; return; }
       if (entry.isDirectory()) await walk([...parts, entry.name]);
@@ -90,7 +98,7 @@ export async function listVisibleNotebookFiles(notebook: string, { limit = 20_00
     }
   };
   await walk([]);
-  return { files, truncated };
+  return { files, truncated, unreadable };
 }
 
 /** Targeted search updates use the same exclusions as a full library walk. */

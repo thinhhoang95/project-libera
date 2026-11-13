@@ -1,19 +1,20 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, realpath, rm, rmdir } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { pruneReviews } from "@/lib/agent/review-store";
+import { pythonSidecarDocumentPath } from "@/lib/python/sidecar";
 import { regenerateBibMirror } from "@/lib/references/bib-mirror";
 import { readTetherTarget, untetherBibFile } from "@/lib/references/bib-tether";
 import { MARKDOWN_ASSETS_DIR, ORPHANED_SIDECARS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { inkFolderPath } from "@/lib/storage/ink";
-import { verifyNotebook, type CleanupAction, type IntegrityFinding } from "@/lib/storage/integrity";
+import { verifyNotebook, type CleanupAction, type IntegrityFinding, type IntegrityLimits } from "@/lib/storage/integrity";
 import { deleteReviewKey } from "@/lib/storage/markdown-reviews";
 import { assertSafeSegment, notebookPath, notebookSystemDirectoryPath, splitFilePath, withReadOnlyStorage } from "@/lib/storage/paths";
 import { refreshNotebookCitations } from "@/lib/storage/reference-citations";
 import { readReferenceLibrary, updateReferenceLibrary } from "@/lib/storage/references";
-import { assertRepairable, planNotebookRepair } from "@/lib/storage/repair";
+import { assertRepairable, planNotebookRepair, type RepairPlan } from "@/lib/storage/repair";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { setFileTagsForPath, setStarredFilePath } from "@/lib/storage/workspace-metadata";
@@ -34,7 +35,10 @@ import { setFileTagsForPath, setStarredFilePath } from "@/lib/storage/workspace-
 // instead of following their file). Applying runs the check again and is
 // refused if the plan changed (a token). Broken links, missing images and
 // LaTeX files, unreadable or damaged files and unfinished migrations are not
-// stale: they stay listed for you to set right.
+// stale: they stay listed for you to set right. Two things are never offered
+// either: records Try to fix could not pair only because several files have
+// their file's name (they may belong to one of them), and anything a check that
+// ran only in part found (it can't tell what is stale).
 
 export type CleanupItem = {
   path: string;
@@ -45,8 +49,19 @@ export type CleanupItem = {
   /** Something people made is deleted for good. */
   lost: boolean;
 };
-export type CleanupPlan = { notebook: string; items: CleanupItem[]; /** Findings Acknowledge leaves: they need you, or clear themselves when the notebook is next opened. */ remaining: number; token: string };
+export type CleanupPlan = {
+  notebook: string;
+  items: CleanupItem[];
+  /** Findings Acknowledge leaves: they need you, or clear themselves when the notebook is next opened. */
+  remaining: number;
+  /** Why some of them were left out, when it is not obvious. */
+  notes: string[];
+  token: string;
+};
 export type CleanupResult = { notebook: string; cleared: number; problems: string[] };
+
+/** For tests: the check's limits, to reproduce a check that could only partly run. */
+export type CleanupOptions = { limits?: Partial<IntegrityLimits> };
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
@@ -74,8 +89,9 @@ function describe(actions: CleanupAction[]): { consequence: string; lost: boolea
       if (first.kind === "ink") return { consequence: "All ink drawn on it is deleted for good.", lost: true };
       return { consequence: `Its ${side.what} ${side.what.endsWith("s") ? "are" : "is"} deleted for good.`, lost: true };
     }
-    case "ink-files": return { consequence: `${plural(first.names.length, "ink file")} that ${first.names.length === 1 ? "is" : "are"} never shown ${first.names.length === 1 ? "is" : "are"} deleted for good.`, lost: true };
-    case "set-aside": return { consequence: `${plural(actions.length, "side file")} (annotations, outlines, definitions) ${actions.length === 1 ? "is" : "are"} deleted for good: ${actions.length === 1 ? "it" : "they"} no longer come back with ${actions.length === 1 ? "its file" : "their files"}.`, lost: true };
+    // Ink files of a page the file doesn't have, or drawn on another version of it: the finding says which.
+    case "ink-files": return { consequence: `${plural(first.names.length, "ink file")} ${first.names.length === 1 ? "is" : "are"} deleted for good; the file's other ink is kept.`, lost: true };
+    case "set-aside": return { consequence: `${plural(actions.length, "side file")} (annotations, outlines, definitions, ink) ${actions.length === 1 ? "is" : "are"} deleted for good: ${actions.length === 1 ? "it" : "they"} no longer come back with ${actions.length === 1 ? "its file" : "their files"}.`, lost: true };
     case "asset": return first.path.toLowerCase().endsWith(".py")
       ? { consequence: "The Python code is deleted for good.", lost: true }
       : { consequence: "The image is deleted for good. An open note that is not saved yet and shows it loses it.", lost: true };
@@ -92,30 +108,82 @@ function describe(actions: CleanupAction[]): { consequence: string; lost: boolea
 
 const keyOf = (action: CleanupAction) => JSON.stringify(action);
 
-async function collect(notebook: string) {
-  const report = await verifyNotebook(notebook);
-  const clearable = report.findings.filter((finding): finding is IntegrityFinding & { clear: CleanupAction[] } => !!finding.clear?.length);
+/** The path a set-aside file was kept for, from its record; null when it has none. */
+async function setAsideOrigin(notebook: string, file: string) {
+  try {
+    const parts = file.split("/").map(assertName);
+    const root = path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR);
+    // Ink: a record next to an ink folder; the others: the record holds the side file.
+    const record = parts[0] === "ink" && parts.length > 2 ? path.join(root, "ink", parts[1], "record.json") : path.join(root, ...parts);
+    const { originalPath } = JSON.parse(await readFile(record, "utf8")) as { originalPath?: unknown };
+    return typeof originalPath === "string" ? originalPath : null;
+  } catch { return null; }
+}
+
+/** The file whose records an action removes: the one whose absence made it stale. */
+async function subjectOf(notebook: string, action: CleanupAction) {
+  if (action.gone) return action.gone;
+  switch (action.type) {
+    case "set-aside": return setAsideOrigin(notebook, action.file);
+    case "asset": return action.path.toLowerCase().endsWith(".py") ? pythonSidecarDocumentPath(action.path) : null;
+    case "side-file": case "ink-files": return action.filePath;
+    case "star": case "tags": case "review": case "agent-review": case "attachment": return action.path;
+    default: return null;
+  }
+}
+
+async function collect(notebook: string, repair: RepairPlan, options: CleanupOptions) {
+  const report = await verifyNotebook(notebook, { limits: options.limits });
+  // What a check that ran only in part found can't be told stale: a loop that protects records may not have run.
+  const partial = new Set(report.checks.filter((check) => check.status === "incomplete" || check.status === "failed").map((check) => check.id));
+  // Records of a name that Try to fix could not pair for there being several files by it: one of them may be the file.
+  const ambiguous = new Set(repair.unmatched.filter((item) => item.candidates.length).map((item) => item.from));
+  const clearable: Array<IntegrityFinding & { clear: CleanupAction[] }> = [];
+  let held = 0;
+  let heldPartial = 0;
+  let reduced = 0;
+  for (const finding of report.findings) {
+    if (!finding.clear?.length) continue;
+    if (partial.has(finding.check)) { heldPartial += 1; continue; }
+    const clear: CleanupAction[] = [];
+    for (const action of finding.clear) {
+      const subject = ambiguous.size ? await subjectOf(notebook, action) : null;
+      if (subject && ambiguous.has(subject)) held += 1; else clear.push(action);
+    }
+    if (clear.length < finding.clear.length) reduced += 1;
+    if (clear.length) clearable.push({ ...finding, clear });
+  }
   const actions = new Map<string, CleanupAction>();
   for (const finding of clearable) for (const action of finding.clear) actions.set(keyOf(action), action);
   const token = createHash("sha256").update(JSON.stringify([...actions.keys()].sort())).digest("hex").slice(0, 32);
-  return { report, clearable, actions: [...actions.values()], token };
+  const notes: string[] = [];
+  if (held) notes.push(`${plural(held, "record")} left out: more than one file has the name of the file ${held === 1 ? "it was" : "they were"} kept for, so ${held === 1 ? "it" : "they"} may belong to one of them.`);
+  if (heldPartial) notes.push(`${plural(heldPartial, "finding")} left out: a check that ran only in part can't tell what is stale.`);
+  const remaining = report.findings.length - clearable.length + reduced;
+  return { report, clearable, actions: [...actions.values()], token, remaining, notes };
 }
 
+/** What Try to fix can still move, which Acknowledge would delete instead; returns what it could not pair. */
 async function assertNothingToMove(notebook: string) {
-  const { moves } = await planNotebookRepair(notebook);
-  if (moves.length) throw new StorageError(`Try to fix can still give ${plural(moves.length, "moved file")} ${moves.length === 1 ? "its" : "their"} records back. Use Try to fix first, so they are not deleted.`, 409);
+  const repair = await planNotebookRepair(notebook);
+  const { moves } = repair;
+  if (moves.length) {
+    const named = moves.slice(0, 3).map((move) => `${move.from} -> ${move.to}`).join(", ");
+    throw new StorageError(`Try to fix can still give ${plural(moves.length, "moved file")} ${moves.length === 1 ? "its" : "their"} records back (${named}${moves.length > 3 ? ", ..." : ""}). Use Try to fix first, so they are not deleted. If it can't move them, fix what it reports first.`, 409);
+  }
+  return repair;
 }
 
 /** What Acknowledge would remove, and what each costs. Reads only, from the first guard on (paths.ts withReadOnlyStorage). */
-export function planNotebookCleanup(name: string): Promise<CleanupPlan> {
+export function planNotebookCleanup(name: string, options: CleanupOptions = {}): Promise<CleanupPlan> {
   return withReadOnlyStorage(async () => {
     const notebook = assertRepairable(name);
-    await assertNothingToMove(notebook);
-    const { report, clearable, token } = await collect(notebook);
+    const { clearable, token, remaining, notes } = await collect(notebook, await assertNothingToMove(notebook), options);
     return {
       notebook,
       items: clearable.map((finding) => ({ path: finding.path, message: finding.message, ...describe(finding.clear) })),
-      remaining: report.findings.length - clearable.length,
+      remaining,
+      notes,
       token,
     };
   });
@@ -188,7 +256,10 @@ async function perform(notebook: string, action: CleanupAction) {
     }
     case "set-aside": {
       const root = path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR);
-      await remove(notebook, path.join(root, ...action.file.split("/").map(assertName)));
+      const file = path.join(root, ...action.file.split("/").map(assertName));
+      await remove(notebook, file);
+      // Ink is set aside as a folder: its emptied folder goes once its last file does.
+      await removeEmptyParents(file, path.join(root, action.file.split("/")[0]));
       return;
     }
     case "asset": {
@@ -229,14 +300,13 @@ async function perform(notebook: string, action: CleanupAction) {
 const label = (action: CleanupAction) => "path" in action ? action.path : "filePath" in action ? action.filePath : action.type;
 
 /** Removes what the plan the token names listed; planned again first, and refused if anything changed since. */
-export async function applyNotebookCleanup(name: string, token: string): Promise<CleanupResult> {
+export async function applyNotebookCleanup(name: string, token: string, options: CleanupOptions = {}): Promise<CleanupResult> {
   const notebook = assertRepairable(name);
   const { listInterruptedMigrations } = await import("@/lib/storage/migration");
   if ((await listInterruptedMigrations()).some((migration) => migration.source === notebook || migration.destination.notebook === notebook)) {
     throw new StorageError("A migration involving this notebook did not finish. Finish or stop it in Migration first.", 409);
   }
-  await assertNothingToMove(notebook);
-  const current = await collect(notebook);
+  const current = await collect(notebook, await assertNothingToMove(notebook), options);
   if (current.token !== token) throw new StorageError("The notebook changed since this was prepared. Check it again.", 409);
 
   const problems: string[] = [];

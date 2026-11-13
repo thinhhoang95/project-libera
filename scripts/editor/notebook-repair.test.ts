@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import fsp, { mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
+import { emptyInkAuthorFile } from "../../src/lib/ink/codec";
+import { reconcilePdfSidecars } from "../../src/lib/storage/pdf-sidecars";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "../../src/lib/python/sidecar";
 import { addReviewThreads, findReview, loadReview, moveReviewPaths } from "../../src/lib/storage/markdown-reviews";
 import { inspectReviewKeys } from "../../src/lib/storage/review-files";
-import { inkFolderPath } from "../../src/lib/storage/ink";
-import { audioPeaksPath, definitionsPath, filePathFromParts, getAdminRoot, getStateRoot, imageAnnotationsPath, pdfAnnotationsPath, pdfOutlinePath, transcriptPath } from "../../src/lib/storage/paths";
+import { inkFolderPath, reconcileInkFolders } from "../../src/lib/storage/ink";
+import { audioPeaksPath, definitionsPath, filePathFromParts, getAdminRoot, getStateRoot, imageAnnotationsPath, notebookPath, orphanedSidecarsDirectoryPath, pdfAnnotationsPath, pdfOutlinePath, transcriptPath } from "../../src/lib/storage/paths";
 import { readReferenceLibrary } from "../../src/lib/storage/references";
+import { applyNotebookCleanup, planNotebookCleanup } from "../../src/lib/storage/cleanup";
 import { applyNotebookRepair, planNotebookRepair } from "../../src/lib/storage/repair";
 import { pruneAudioSidecars } from "../../src/lib/storage/transcripts";
 import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
-import { assertNotebookSound, seeded, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
+import { assertNotebookSound, SEEDED_INK, seeded, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
 
 /** What Finder does: the file moves, nothing else. */
 async function finderMove(from: string, to: string) {
@@ -68,7 +71,7 @@ test("files moved in Finder get their records back by name, and the notebook is 
   assert.equal(await readFile(pdfOutlinePath("Nb", ["reading", "a.pdf"]), "utf8"), seeded("outline"));
   assert.equal(await readFile(definitionsPath("Nb", ["journal", "n.md"]), "utf8"), seeded("note-definitions"));
   assert.ok(await exists(pdfAnnotationsPath("Nb", ["reading", "a.pdf"])));
-  assert.ok(await exists(path.join(inkFolderPath("Nb", ["reading", "a.pdf"]), "me.json")));
+  assert.ok(await exists(path.join(inkFolderPath("Nb", ["reading", "a.pdf"]), SEEDED_INK)));
   assert.ok(await exists(imageAnnotationsPath("Nb", ["reading", "figures", "fig.png"])));
   assert.equal(await readFile(path.join(getAdminRoot(), ...pythonSidecarPath("Nb/journal/n.md").split("/")), "utf8").then((code) => code.includes("print('hi')")), true);
   assert.ok(!(await exists(transcriptPath("Nb", ["audio", "memo.m4a"]))));
@@ -203,4 +206,255 @@ test("one of several files of a name is never picked for having no records of it
   const plan = await planNotebookRepair("Nb");
   assert.deepEqual(plan.moves, []);
   assert.deepEqual(plan.unmatched.map((item) => [item.from, item.reason]), [["Nb/old/x.pdf", "several"]]);
+}));
+
+const inkFile = (key = "aaaaaaaaaa") => JSON.stringify(emptyInkAuthorFile({ key }, { unit: "pt", width: 100, height: 100 }));
+const annotations = JSON.stringify({ version: 2, marks: [{ id: "m1" }] });
+
+/** The tree's upkeep after a Finder move: a first load sees the side files orphaned, one 31 s later sets them aside. */
+async function upkeep(notebook: string) {
+  const now = Date.now();
+  for (const at of [now, now + 31_000]) {
+    await reconcileInkFolders(notebook, [], { now: at });
+    await reconcilePdfSidecars(notebook, [], { now: at });
+  }
+}
+
+test("ink and side files the tree's upkeep set aside follow their file, and are put back without replacing anything", () => withTemporaryLibrary(["Nb"], async () => {
+  // A starred note with ink, and a PDF with annotations and an outline, moved in Finder.
+  await writeLibraryFile("Nb/a/x.md", "# X\n");
+  await setStarredFilePath("Nb/a/x.md", true);
+  await writeAt(path.join(inkFolderPath("Nb", ["a", "x.md"]), "text.aaaaaaaaaa.ink"), inkFile());
+  await writeLibraryFile("Nb/a/p.pdf", "%PDF");
+  await writeAt(pdfAnnotationsPath("Nb", ["a", "p.pdf"]), annotations);
+  await writeAt(pdfOutlinePath("Nb", ["a", "p.pdf"]), seeded("outline"));
+  await finderMove("Nb/a/x.md", "Nb/b/x.md");
+  await finderMove("Nb/a/p.pdf", "Nb/b/p.pdf");
+  await upkeep("Nb");
+  assert.ok(!(await exists(inkFolderPath("Nb", ["a", "x.md"]))), "the ink was set aside");
+  assert.ok(!(await exists(pdfAnnotationsPath("Nb", ["a", "p.pdf"]))), "the annotations were set aside");
+
+  const plan = await planNotebookRepair("Nb");
+  assert.deepEqual(plan.moves, [
+    { from: "Nb/a/p.pdf", to: "Nb/b/p.pdf", records: ["annotations", "outline"] },
+    { from: "Nb/a/x.md", to: "Nb/b/x.md", records: ["ink", "star"] },
+  ]);
+  const result = await applyNotebookRepair("Nb", plan.token);
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.moved.length, 2);
+  assert.ok(await exists(path.join(inkFolderPath("Nb", ["b", "x.md"]), "text.aaaaaaaaaa.ink")));
+  assert.equal(JSON.parse(await readFile(pdfAnnotationsPath("Nb", ["b", "p.pdf"]), "utf8")).marks[0].id, "m1");
+  assert.deepEqual(JSON.parse(await readFile(pdfOutlinePath("Nb", ["b", "p.pdf"]), "utf8")), JSON.parse(seeded("outline")));
+  assert.deepEqual(await readdir(orphanedSidecarsDirectoryPath("Nb", "ink")), [], "the record directory went with it");
+  assert.deepEqual(await readdir(orphanedSidecarsDirectoryPath("Nb", "annotations")), []);
+  assert.deepEqual((await planNotebookRepair("Nb")).moves, []);
+}));
+
+test("a set-aside side file never replaces what the file found has: the pair is its own", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/a/x.md", "# X\n");
+  await writeAt(path.join(inkFolderPath("Nb", ["a", "x.md"]), "text.aaaaaaaaaa.ink"), inkFile());
+  await writeLibraryFile("Nb/a/p.pdf", "%PDF");
+  await writeAt(pdfAnnotationsPath("Nb", ["a", "p.pdf"]), annotations);
+  await finderMove("Nb/a/x.md", "Nb/b/x.md");
+  await finderMove("Nb/a/p.pdf", "Nb/b/p.pdf");
+  await upkeep("Nb");
+  // Each has ink or annotations of its own by the time the check is made.
+  await writeAt(path.join(inkFolderPath("Nb", ["b", "x.md"]), "text.bbbbbbbbbb.ink"), inkFile("bbbbbbbbbb"));
+  await writeAt(pdfAnnotationsPath("Nb", ["b", "p.pdf"]), JSON.stringify({ version: 2, marks: [{ id: "own" }] }));
+  const plan = await planNotebookRepair("Nb");
+  assert.deepEqual(plan.moves, []);
+  assert.deepEqual(plan.unmatched.map((item) => [item.from, item.reason]), [["Nb/a/p.pdf", "own"], ["Nb/a/x.md", "own"]]);
+  assert.equal((await readdir(orphanedSidecarsDirectoryPath("Nb", "ink"))).length, 1, "kept for Acknowledge or a later match");
+}));
+
+test("a file moved into the archive is found there, and counts toward several", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/a/x.md", "# X\n");
+  await setStarredFilePath("Nb/a/x.md", true);
+  await mkdir(path.join(notebookPath("Nb"), "_archive"), { recursive: true });
+  await rename(filePathFromParts("Nb", ["a", "x.md"]), path.join(notebookPath("Nb"), "_archive", "x.md"));
+  const alone = await planNotebookRepair("Nb");
+  assert.deepEqual(alone.moves, [{ from: "Nb/a/x.md", to: "Nb/_archive/x.md", records: ["star"] }]);
+  // Another file of the name in view: the archived one is not guessed.
+  await writeLibraryFile("Nb/c/x.md", "# Other\n");
+  const crowded = await planNotebookRepair("Nb");
+  assert.deepEqual(crowded.moves, []);
+  assert.deepEqual(crowded.unmatched.map((item) => [item.reason, item.candidates]), [["several", ["Nb/_archive/x.md", "Nb/c/x.md"]]]);
+}));
+
+test("a folder that can't be listed stops the plan; one that raced away does not", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/a/x.md", "# X\n");
+  await setStarredFilePath("Nb/a/x.md", true);
+  await finderMove("Nb/a/x.md", "Nb/b/x.md");
+  await mkdir(path.join(notebookPath("Nb"), "locked"));
+  const original = fsp.readdir;
+  const failing = (code: string) => mock.method(fsp, "readdir", ((target: string, ...rest: unknown[]) => String(target).endsWith(`${path.sep}locked`)
+    ? Promise.reject(Object.assign(new Error(code), { code }))
+    : (original as (...args: unknown[]) => unknown)(target, ...rest)) as typeof fsp.readdir);
+  try {
+    failing("EACCES");
+    await assert.rejects(planNotebookRepair("Nb"), /1 folder of Nb could not be read \(Nb\/locked\)/);
+    mock.restoreAll();
+    failing("ENOENT");
+    assert.equal((await planNotebookRepair("Nb")).moves.length, 1);
+  } finally {
+    mock.restoreAll();
+  }
+}));
+
+test("names are matched under Unicode form and case", () => withTemporaryLibrary(["Nb"], async () => {
+  const nfc = "Bài giảng.pdf";
+  const nfd = nfc.normalize("NFD");
+  assert.notEqual(nfc, nfd);
+  // A sync client gives the name back decomposed.
+  await writeLibraryFile(`Nb/a/${nfc}`, "%PDF");
+  await setStarredFilePath(`Nb/a/${nfc}`, true);
+  await rm(filePathFromParts("Nb", ["a", nfc]));
+  await writeLibraryFile(`Nb/b/${nfd}`, "%PDF");
+  // A rename that only changes case, in place.
+  await writeLibraryFile("Nb/p/Paper.pdf", "%PDF");
+  await setFileTagsForPath("Nb/p/Paper.pdf", ["x"]);
+  await rename(filePathFromParts("Nb", ["p", "Paper.pdf"]), filePathFromParts("Nb", ["p", "paper.tmp"]));
+  await rename(filePathFromParts("Nb", ["p", "paper.tmp"]), filePathFromParts("Nb", ["p", "paper.pdf"]));
+  const plan = await planNotebookRepair("Nb");
+  assert.deepEqual(plan.moves, [
+    { from: `Nb/a/${nfc}`, to: `Nb/b/${nfd}`, records: ["star"] },
+    { from: "Nb/p/Paper.pdf", to: "Nb/p/paper.pdf", records: ["tags"] },
+  ]);
+  assert.deepEqual((await applyNotebookRepair("Nb", plan.token)).problems, []);
+  assert.deepEqual((await readWorkspaceMetadata()).fileTags, { "Nb/p/paper.pdf": ["x"] });
+}));
+
+test("files that fold to one name are several", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/a/x.png", "png");
+  await setFileTagsForPath("Nb/a/x.png", ["t"]);
+  await rm(filePathFromParts("Nb", ["a", "x.png"]));
+  await writeLibraryFile("Nb/b/X.png", "one");
+  await writeLibraryFile("Nb/c/x.png", "two");
+  const plan = await planNotebookRepair("Nb");
+  assert.deepEqual(plan.unmatched.map((item) => [item.reason, item.candidates]), [["several", ["Nb/b/X.png", "Nb/c/x.png"]]]);
+}));
+
+test("a side file whose destination is taken is said, and a pair that moved nothing is not reported moved", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/b/x.pdf", "%PDF");
+  await writeAt(pdfAnnotationsPath("Nb", ["a", "x.pdf"]), annotations);
+  const plan = await planNotebookRepair("Nb");
+  assert.equal(plan.moves.length, 1);
+  // Someone saves annotations at the destination after the plan: the copy refuses to replace them.
+  const copy = fsp.copyFile;
+  mock.method(fsp, "copyFile", (async (source: string, destination: string, ...rest: [number?]) => {
+    await writeAt(destination, "saved meanwhile");
+    return (copy as (...args: unknown[]) => Promise<void>)(source, destination, ...rest);
+  }) as typeof fsp.copyFile);
+  try {
+    const result = await applyNotebookRepair("Nb", plan.token);
+    assert.deepEqual(result.moved, []);
+    assert.match(result.problems.join("\n"), /annotations of Nb\/a\/x\.pdf stayed/);
+  } finally {
+    mock.restoreAll();
+  }
+  assert.equal(await readFile(pdfAnnotationsPath("Nb", ["b", "x.pdf"]), "utf8"), "saved meanwhile");
+  assert.ok(await exists(pdfAnnotationsPath("Nb", ["a", "x.pdf"])), "the old one stays");
+  const again = await planNotebookRepair("Nb");
+  assert.deepEqual(again.moves, [], "the next plan does not move it again");
+  assert.deepEqual(again.unmatched.map((item) => item.reason), ["own"]);
+}));
+
+test("a pair with a reserved segment does not stop the others, and a failed side file leaves a plan that converges", () => withTemporaryLibrary(["Nb"], async () => {
+  // A star at a path no file can have (_assets is reserved), whose name a file has.
+  await writeLibraryFile("Nb/b/r.md", "# R\n");
+  await setStarredFilePath("Nb/_assets/r.md", true);
+  // A PDF with annotations and an outline, whose outline can't be copied once.
+  await writeLibraryFile("Nb/b/x.pdf", "%PDF");
+  await writeAt(pdfAnnotationsPath("Nb", ["a", "x.pdf"]), annotations);
+  await writeAt(pdfOutlinePath("Nb", ["a", "x.pdf"]), seeded("outline"));
+  const plan = await planNotebookRepair("Nb");
+  assert.equal(plan.moves.length, 2);
+  const copy = fsp.copyFile;
+  mock.method(fsp, "copyFile", (async (source: string, ...rest: unknown[]) => {
+    if (source === pdfOutlinePath("Nb", ["a", "x.pdf"])) throw Object.assign(new Error("denied"), { code: "EACCES" });
+    return (copy as (...args: unknown[]) => Promise<void>)(source, ...rest);
+  }) as typeof fsp.copyFile);
+  try {
+    const result = await applyNotebookRepair("Nb", plan.token);
+    assert.equal(result.problems.length, 2);
+    assert.match(result.problems.join("\n"), /Nb\/_assets\/r\.md/);
+    assert.match(result.problems.join("\n"), /Nb\/a\/x\.pdf could not follow it to Nb\/b\/x\.pdf: denied/);
+  } finally {
+    mock.restoreAll();
+  }
+  assert.ok(await exists(pdfAnnotationsPath("Nb", ["b", "x.pdf"])), "what moved before the failure stays moved");
+  const next = await planNotebookRepair("Nb");
+  assert.deepEqual(next.moves.map((move) => [move.from, move.records]), [["Nb/_assets/r.md", ["star"]], ["Nb/a/x.pdf", ["outline"]]], "only what is left is planned again");
+}));
+
+test("a Finder round trip: files and a folder moved, the tree's upkeep run, Try to fix and Acknowledge never offer a moved file's records for deletion", () => withTemporaryLibrary(["Nb"], async () => {
+  await seedNotebook("Nb");
+  // The seeded note gets a link and an image embed by path, comments, ink and code; it moves with its folder.
+  const note = "Nb/notes/n.md";
+  const content = `${await readFile(filePathFromParts("Nb", ["notes", "n.md"]), "utf8")}\n[the paper](../papers/a.pdf)\n`;
+  await writeLibraryFile(note, content);
+  await addReviewThreads(note, content, [{ range: { start: 0, end: 6 }, text: "a comment" }]);
+  await writeAt(path.join(inkFolderPath("Nb", ["notes", "n.md"]), "text.aaaaaaaaaa.ink"), seeded("note-ink"));
+  await writeAt(path.join(getAdminRoot(), ...pythonSidecarPath(note).split("/")), "print('hi')\n");
+  await setStarredFilePath("Nb/papers/a.pdf", true);
+  await setStarredFilePath(note, true);
+  await setFileTagsForPath("Nb/audio/memo.m4a", ["meeting"]);
+  await writeReferenceLibrary("Nb", [{ key: "a2026", attachments: ["Nb/papers/a.pdf"] }]);
+  await assertNotebookSound("Nb", { severities: ["error", "warning", "info"], allow: ["info indexes: "] });
+
+  // Files moved in Finder, and a folder renamed.
+  await finderMove("Nb/papers/a.pdf", "Nb/reading/a.pdf");
+  await finderMove("Nb/papers/fig.png", "Nb/reading/figures/fig.png");
+  await finderMove("Nb/audio/memo.m4a", "Nb/recordings/memo.m4a");
+  await finderMove("Nb/notes", "Nb/journal");
+  const moved = [
+    ["Nb/papers/a.pdf", "Nb/reading/a.pdf"],
+    ["Nb/papers/fig.png", "Nb/reading/figures/fig.png"],
+    ["Nb/audio/memo.m4a", "Nb/recordings/memo.m4a"],
+    ["Nb/notes/n.md", "Nb/journal/n.md"],
+  ];
+  const touched = moved.flat();
+  /** What a check would offer to delete for good that belongs to a moved file, apart from caches (which are made again). */
+  const offered = (items: { path: string; message: string }[]) => items.filter((item) => touched.includes(item.path) && !/out of date|cache|waveform/i.test(item.message));
+
+  // The tree's upkeep: a first load sees the side files orphaned, one 31 s later sets them aside.
+  await upkeep("Nb");
+  // The check lists the records as stale, but Acknowledge offers nothing while Try to fix can still give them back.
+  await assert.rejects(planNotebookCleanup("Nb"), /Use Try to fix first/);
+
+  const plan = await planNotebookRepair("Nb");
+  assert.deepEqual(plan.moves.map((move) => [move.from, move.to]).sort(), [...moved].sort());
+  assert.deepEqual(plan.unmatched, []);
+  const result = await applyNotebookRepair("Nb", plan.token);
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.moved.length, 4);
+
+  // Acknowledge, as the dialog does after Try to fix.
+  const cleanup = await planNotebookCleanup("Nb");
+  assert.deepEqual(offered(cleanup.items), [], "Acknowledge offers nothing that belongs to a moved file");
+  assert.deepEqual(cleanup.items.filter((item) => item.lost), [], "nothing people made is offered");
+  const cleaned = await applyNotebookCleanup("Nb", cleanup.token);
+  assert.deepEqual(cleaned.problems, []);
+
+  // Every record of a moved file is where its file is.
+  assert.ok(await exists(pdfAnnotationsPath("Nb", ["reading", "a.pdf"])));
+  assert.ok(await exists(path.join(inkFolderPath("Nb", ["reading", "a.pdf"]), SEEDED_INK)));
+  assert.ok(await exists(imageAnnotationsPath("Nb", ["reading", "figures", "fig.png"])));
+  assert.equal(await readFile(transcriptPath("Nb", ["recordings", "memo.m4a"]), "utf8"), seeded("transcript"));
+  assert.ok(await exists(path.join(inkFolderPath("Nb", ["journal", "n.md"]), "text.aaaaaaaaaa.ink")));
+  assert.equal((await findReview("Nb/journal/n.md"))?.threads.length, 1);
+  assert.equal(await findReview("Nb/notes/n.md"), null);
+  assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths.sort(), ["Nb/journal/n.md", "Nb/reading/a.pdf"]);
+  assert.ok((await readFile(path.join(getAdminRoot(), ...pythonSidecarPath("Nb/journal/n.md").split("/")), "utf8")).startsWith("print('hi')"));
+
+  // Sound again, except what no move rewrites: the note's link and its image embed, by library path.
+  const allowed = [
+    'warning links: Nb/journal/n.md: The link "../papers/a.pdf" finds no file.',
+    "error images: Nb/journal/n.md: Shows Nb/papers/fig.png, which is missing.",
+  ];
+  const report = await assertNotebookSound("Nb", { severities: ["error", "warning", "info"], allow: ["info indexes: ", ...allowed] });
+  const described = report.findings.map((finding) => `${finding.severity} ${finding.check}: ${finding.path}: ${finding.message}`);
+  for (const expected of allowed) assert.equal(described.filter((text) => text.includes(expected)).length, 1, `${expected} is reported once`);
+  assert.deepEqual((await planNotebookRepair("Nb")).moves, [], "nothing is left to find");
+  assert.deepEqual((await planNotebookCleanup("Nb")).items, [], "nothing stale is left");
 }));

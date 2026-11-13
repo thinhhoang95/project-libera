@@ -7,11 +7,13 @@ import { DEFINITIONS_VERSION } from "../../src/lib/definitions";
 import { pythonSidecarPath } from "../../src/lib/python/sidecar";
 import { applyNotebookCleanup, planNotebookCleanup } from "../../src/lib/storage/cleanup";
 import { addReviewThreads, deleteReviewKey, findReview } from "../../src/lib/storage/markdown-reviews";
-import { inkFolderPath } from "../../src/lib/storage/ink";
+import { emptyInkAuthorFile } from "../../src/lib/ink/codec";
+import { inkFolderPath, reconcileInkFolders } from "../../src/lib/storage/ink";
+import { reconcilePdfSidecars } from "../../src/lib/storage/pdf-sidecars";
 import { definitionsDirectoryPath, definitionsPath, filePathFromParts, getAdminRoot, notebookPath, orphanedSidecarsDirectoryPath, pdfAnnotationsPath, transcriptPath } from "../../src/lib/storage/paths";
 import { readReferenceLibrary } from "../../src/lib/storage/references";
 import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
-import { assertNotebookSound, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
+import { assertNotebookSound, SEEDED_INK, seeded, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
 
 const exists = (target: string) => stat(target).then(() => true, () => false);
 const gone = (relative: string) => { const [notebook, ...parts] = relative.split("/"); return rm(filePathFromParts(notebook, parts), { force: true }); };
@@ -121,10 +123,10 @@ test("ink set aside for a file that is back goes to it, and is never offered to 
   // Set aside without the file's bytes recorded: the file back under its old path is its own (ink.ts reconcileInkFolders).
   const kept = path.join(orphanedSidecarsDirectoryPath("Nb", "ink"), "1-abcd");
   await writeAt(path.join(kept, "record.json"), JSON.stringify({ originalPath: "Nb/a.pdf", orphanedAt: new Date().toISOString(), source: null }));
-  await writeAt(path.join(kept, "ink", "me.json"), "{}");
+  await writeAt(path.join(kept, "ink", SEEDED_INK), seeded("pdf-ink"));
   const plan = await planNotebookCleanup("Nb");
   assert.deepEqual(plan.items, []);
-  assert.ok(await exists(path.join(kept, "ink", "me.json")));
+  assert.ok(await exists(path.join(kept, "ink", SEEDED_INK)));
 }));
 
 test("a missing attachment to another notebook's file is detached from that reference only", () => withTemporaryLibrary(["Nb", "Other"], async () => {
@@ -161,4 +163,91 @@ test("a side file reached through a link out of the notebook is never deleted", 
   } finally {
     await rm(outside, { recursive: true, force: true });
   }
+}));
+
+const inkFile = () => JSON.stringify(emptyInkAuthorFile({ key: "aaaaaaaaaa" }, { unit: "pt", width: 100, height: 100 }));
+
+/** The tree's upkeep after a Finder move: a first load sees the side files orphaned, one 31 s later sets them aside. */
+async function upkeep(notebook: string) {
+  const now = Date.now();
+  for (const at of [now, now + 31_000]) {
+    await reconcileInkFolders(notebook, [], { now: at });
+    await reconcilePdfSidecars(notebook, [], { now: at });
+  }
+}
+
+test("ink set aside for a file that is gone is offered as ink, and removed with the record", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/a/x.md", "# X\n");
+  await writeAt(path.join(inkFolderPath("Nb", ["a", "x.md"]), "text.aaaaaaaaaa.ink"), inkFile());
+  await gone("Nb/a/x.md");
+  await upkeep("Nb");
+  const plan = await planNotebookCleanup("Nb");
+  const aside = plan.items.find((item) => /kept for files/.test(item.message));
+  assert.ok(aside?.lost);
+  assert.match(aside.consequence, /annotations, outlines, definitions, ink\)/);
+  const result = await applyNotebookCleanup("Nb", plan.token);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(await readdir(orphanedSidecarsDirectoryPath("Nb", "ink")), []);
+}));
+
+test("a starred note with ink moved in Finder and set aside is paired by Try to fix, not offered to Acknowledge", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/a/x.md", "# X\n");
+  await setStarredFilePath("Nb/a/x.md", true);
+  await writeAt(path.join(inkFolderPath("Nb", ["a", "x.md"]), "text.aaaaaaaaaa.ink"), inkFile());
+  await mkdir(path.join(notebookPath("Nb"), "b"));
+  await rename(filePathFromParts("Nb", ["a", "x.md"]), filePathFromParts("Nb", ["b", "x.md"]));
+  await upkeep("Nb");
+  await assert.rejects(planNotebookCleanup("Nb"), /Nb\/a\/x\.md -> Nb\/b\/x\.md/);
+}));
+
+test("records of a name several files have are kept, not offered as stale", () => withTemporaryLibrary(["Nb"], async () => {
+  for (const folder of ["a", "b"]) {
+    await writeLibraryFile(`Nb/${folder}/notes.md`, `# ${folder}\n`);
+    await setStarredFilePath(`Nb/${folder}/notes.md`, true);
+  }
+  // Both folders are renamed in Finder: two missing paths share a name, so Try to fix pairs neither.
+  await rename(path.join(notebookPath("Nb"), "a"), path.join(notebookPath("Nb"), "c"));
+  await rename(path.join(notebookPath("Nb"), "b"), path.join(notebookPath("Nb"), "d"));
+  // Something that is plainly stale goes with them.
+  await writeLibraryFile("Nb/lost.md", "x");
+  await setStarredFilePath("Nb/lost.md", true);
+  await gone("Nb/lost.md");
+  const plan = await planNotebookCleanup("Nb");
+  assert.deepEqual(plan.items.map((item) => item.path), ["Nb/lost.md"]);
+  assert.ok(plan.remaining >= 2);
+  assert.match(plan.notes.join("\n"), /more than one file has the name/);
+  const result = await applyNotebookCleanup("Nb", plan.token);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths.sort(), ["Nb/a/notes.md", "Nb/b/notes.md"]);
+}));
+
+test("a set-aside side file whose name several files have is kept", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/a/x.md", "# X\n");
+  await writeAt(path.join(inkFolderPath("Nb", ["a", "x.md"]), "text.aaaaaaaaaa.ink"), inkFile());
+  await mkdir(path.join(notebookPath("Nb"), "b"));
+  await mkdir(path.join(notebookPath("Nb"), "c"));
+  await rename(filePathFromParts("Nb", ["a", "x.md"]), filePathFromParts("Nb", ["b", "x.md"]));
+  await writeLibraryFile("Nb/c/x.md", "# Another\n");
+  await upkeep("Nb");
+  const plan = await planNotebookCleanup("Nb");
+  assert.deepEqual(plan.items, []);
+  assert.match(plan.notes.join("\n"), /more than one file has the name/);
+  await applyNotebookCleanup("Nb", plan.token);
+  assert.equal((await readdir(orphanedSidecarsDirectoryPath("Nb", "ink"))).length, 1);
+}));
+
+test("what a check that ran only in part found is not offered", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/a.md", "a");
+  await setStarredFilePath("Nb/a.md", true);
+  await gone("Nb/a.md");
+  const whole = await planNotebookCleanup("Nb");
+  assert.equal(whole.items.length, 1);
+  const options = { limits: { entries: 0 } };
+  const partial = await planNotebookCleanup("Nb", options);
+  assert.deepEqual(partial.items, []);
+  assert.ok(partial.remaining >= 1);
+  assert.match(partial.notes.join("\n"), /ran only in part/);
+  const result = await applyNotebookCleanup("Nb", partial.token, options);
+  assert.equal(result.cleared, 0);
+  assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths, ["Nb/a.md"]);
 }));
