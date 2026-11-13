@@ -435,8 +435,11 @@ export function LatexEditor({
     const text = current.state.doc.toString();
     if (text !== lastPublishedRef.current) {
       lastPublishedRef.current = text;
-      publishedRef.current.push(text);
-      if (publishedRef.current.length > 20) publishedRef.current.shift();
+      // The adopt-outside-changes effect never reads these on a shared tab: keep no copies of the document there.
+      if (!initialRef.current.collab) {
+        publishedRef.current.push(text);
+        if (publishedRef.current.length > 20) publishedRef.current.shift();
+      }
       callbacks.current.onChange(text);
     }
     return text;
