@@ -73,7 +73,11 @@ import { focusedCanvasPane } from "@/lib/canvas-layout";
 import type { GalleryPhoto } from "@/lib/image-generation";
 import type { PhotoEdits } from "@/lib/photo-edits";
 import type { ChatNotebookExport } from "./document-chat-export-dialog";
-import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
+import { flushSync } from "react-dom";
+import {
+  readClosedViewStates, rememberClosedViewStates, remapClosedViewStates, removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar,
+  withinPath, type ClosedViewStates, type WorkspaceFileChange,
+} from "@/lib/workspaces";
 import type { MigrationRequest, MigrationResult } from "@/lib/storage/migration";
 import type { MigrationPreset } from "./notebook-migration-dialog";
 import type { ReferenceMoveResult } from "@/lib/references/moves";
@@ -351,6 +355,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     tabsRef.current = tabs;
   }, [tabs]);
   const [activeTabId, setActiveTabId] = useState("");
+  // Where closed files were left, saved with the workspace so reopening one returns there.
+  const [closedViewStates, setClosedViewStates] = useState<ClosedViewStates>({});
+  const closedViewStatesRef = useRef(closedViewStates);
+  useLayoutEffect(() => {
+    closedViewStatesRef.current = closedViewStates;
+  }, [closedViewStates]);
   const [selectedNotebookName, setSelectedNotebookName] = useState("");
   const notebookSelectionWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/preferences/last-notebook", {
     method: "PUT", body, keepalive: !window.liberaPersistence,
@@ -434,8 +444,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   // host's SQLite is their journal (journalTab).
   const workspaceSession = useMemo(() => ({
     tabs: tabs.map((tab) => journalTab(tab, (tabId) => sharedTabIds.has(tabId))),
-    activeTabId, selectedNotebookName, expandedPaths: [...expanded], canvasLayout,
-  }), [tabs, sharedTabIds, activeTabId, selectedNotebookName, expanded, canvasLayout]);
+    activeTabId, selectedNotebookName, expandedPaths: [...expanded], canvasLayout, closedViewStates,
+  }), [tabs, sharedTabIds, activeTabId, selectedNotebookName, expanded, canvasLayout, closedViewStates]);
   const workspaceManager = useSavedWorkspaces({
     authenticated, tree, refreshTree, session: workspaceSession,
     readDraft: (tab) => (sharedRegistry.isSharedTab(tab.id) ? tab.saved : getTabDraft(tab)),
@@ -446,6 +456,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       activeTabHistoryRef.current = [];
       setTabs(session.tabs);
       setActiveTabId(session.activeTabId);
+      const closed = readClosedViewStates(session.closedViewStates);
+      closedViewStatesRef.current = closed;
+      setClosedViewStates(closed);
       canvas.restore(session.canvasLayout, session.tabs.map((tab) => tab.id), session.activeTabId);
       setSelectedNotebookName(session.selectedNotebookName);
       applyExpanded(new Set(session.expandedPaths));
@@ -1027,7 +1040,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       );
       if (workspaceEpoch !== workspaceManager.epoch.current) return;
       const draft = payload.content ?? "";
-      const pendingViewState = pendingOpenViewStateByPathRef.current[file.path];
+      const requestedViewState = pendingOpenViewStateByPathRef.current[file.path];
+      // A reopened file returns to where it was left; a request to reveal a passage still wins.
+      const closedViewState = closedViewStatesRef.current[payload.file.path]?.viewState;
+      const pendingViewState = closedViewState
+        ? mergeOpenTabViewState(closedViewState, requestedViewState ?? {})
+        : requestedViewState;
       const nextTab: OpenTab = {
         id: payload.file.path,
         file: payload.file,
@@ -1059,6 +1077,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         rememberTabDraft(nextTab.id, draft);
         return [...currentTabs, nextTab];
       });
+      if (closedViewState) {
+        setClosedViewStates((current) => {
+          if (!current[payload.file.path]) return current;
+          const rest = { ...current };
+          delete rest[payload.file.path];
+          return rest;
+        });
+      }
       showOpenedTab(nextTab.id, placement);
       recordFileInteraction(payload.file);
     } catch (error) {
@@ -1309,7 +1335,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     for (const tab of tabs) if (tabIds.includes(tab.id)) pendingSaves.discard(tab.file.path);
   }
 
-  const closeTabsWithoutConfirm = useCallback((tabIds: string[]) => {
+  const closeTabsWithoutConfirm = useCallback((tabIds: string[], options: { remember?: boolean } = {}) => {
     const closingTabIds = new Set(tabIds);
 
     if (!closingTabIds.size) {
@@ -1317,6 +1343,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const closingTabs = tabs.filter((currentTab) => closingTabIds.has(currentTab.id));
+
+    if (options.remember !== false) {
+      // Read the mounted viewers' latest scroll and selection, which they
+      // report only after a short pause, before their tabs go away.
+      flushSync(captureCanvasViewState);
+      const latestClosing = tabsRef.current.filter((currentTab) => closingTabIds.has(currentTab.id));
+      setClosedViewStates((current) => rememberClosedViewStates(current, latestClosing));
+    }
 
     closingTabs.forEach((tab) => forgetTabDraft(tab.id));
     setTabs((currentTabs) =>
@@ -1354,7 +1388,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const changed = new Map(reconciled.tabs.map((tab) => [tab.id, tab]));
       setTabs((currentTabs) => currentTabs.map((tab) => isGalleryTab(tab) ? changed.get(tab.id) ?? tab : tab));
     }
-    if (reconciled.closedTabIds.length) closeTabsWithoutConfirm(reconciled.closedTabIds);
+    // Called from an effect, and photos that were deleted have no place to keep.
+    if (reconciled.closedTabIds.length) closeTabsWithoutConfirm(reconciled.closedTabIds, { remember: false });
   }, [closeTabsWithoutConfirm, galleryContents, tabs]);
 
   const closeTab = useCallback((tabId: string) => {
@@ -3680,6 +3715,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       ),
     );
     setActiveTabId((current) => (current === fromPath ? nextId : current));
+    setClosedViewStates((current) => remapClosedViewStates(current, (path) => (path === fromPath ? nextId : path)));
   }
 
   // Shared working-copy writes can change links without changing the file layout.
@@ -4107,6 +4143,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           ? `${nextPath}/${current.slice(folder.path.length + 1)}`
           : current,
       );
+      setClosedViewStates((current) => remapClosedViewStates(current, (path) =>
+        withinPath(path, folder.path) ? `${nextPath}${path.slice(folder.path.length)}` : path));
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : "Could not rename folder.");
     }

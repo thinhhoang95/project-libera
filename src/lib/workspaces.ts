@@ -1,5 +1,5 @@
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
-import type { OpenTab } from "@/components/libera/types";
+import type { OpenTab, OpenTabViewState } from "@/components/libera/types";
 import { mapCanvasLayoutTabIds, type CanvasLayout } from "@/lib/canvas-layout";
 import type { LiberaNotebookGroup, LiberaNotebookViewOptions, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
@@ -84,7 +84,10 @@ export type WorkspaceSession = {
   expandedPaths: string[];
   // Split panes of the document canvas. Optional: older snapshots open as a single pane.
   canvasLayout?: CanvasLayout;
+  /** Where each recently closed file was left, by path, so reopening it returns there. Optional: older snapshots have none. */
+  closedViewStates?: ClosedViewStates;
 };
+export type ClosedViewStates = Record<string, { viewState: OpenTabViewState; closedAt: number }>;
 export type SavedWorkspace = {
   id: string;
   name: string;
@@ -112,6 +115,57 @@ export function workspaceStructureToken(session: WorkspaceSession) {
     canvas: session.canvasLayout?.root,
   });
 }
+/** How many closed files keep their place; the least recently closed are forgotten first. */
+export const CLOSED_VIEW_STATE_LIMIT = 100;
+
+/** A view state without its one-shot requests (reveal a line, follow a link), which must not replay on reopening. */
+export function lastingViewState(viewState: OpenTabViewState): OpenTabViewState {
+  const next: OpenTabViewState = {};
+  if (viewState.audio) { next.audio = { ...viewState.audio }; delete next.audio.reveal; }
+  if (viewState.image) { next.image = { ...viewState.image }; delete next.image.revealSelectedAnnotation; }
+  if (viewState.latex) { next.latex = { ...viewState.latex }; delete next.latex.revealLine; delete next.latex.revealRange; }
+  if (viewState.markdown) { next.markdown = { ...viewState.markdown }; delete next.markdown.reveal; }
+  if (viewState.pdf) { next.pdf = { ...viewState.pdf }; delete next.pdf.reveal; delete next.pdf.revealSelectedAnnotation; }
+  if (viewState.text) { next.text = { ...viewState.text }; delete next.text.reveal; }
+  return next;
+}
+
+/** Records where closing file tabs were left, keeping the most recent `CLOSED_VIEW_STATE_LIMIT`. */
+export function rememberClosedViewStates(states: ClosedViewStates, tabs: OpenTab[], closedAt = Date.now()): ClosedViewStates {
+  const remembered = tabs.filter((tab) => tab.viewState && !tab.untitled && !tab.standaloneSaveId && !tab.gallery && !tab.page);
+  if (!remembered.length) return states;
+  const next = { ...states };
+  for (const tab of remembered) {
+    const viewState = lastingViewState(tab.viewState!);
+    if (Object.values(viewState).some(Boolean)) next[tab.file.path] = { viewState, closedAt };
+  }
+  const paths = Object.keys(next);
+  if (paths.length <= CLOSED_VIEW_STATE_LIMIT) return next;
+  const kept = paths.sort((a, b) => next[b].closedAt - next[a].closedAt).slice(0, CLOSED_VIEW_STATE_LIMIT);
+  return Object.fromEntries(kept.map((path) => [path, next[path]]));
+}
+
+/** Saved data is read defensively: a malformed entry is dropped, never fatal to the workspace. */
+export function readClosedViewStates(value: unknown): ClosedViewStates {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([, entry]) => {
+    const item = entry as { viewState?: unknown; closedAt?: unknown } | null;
+    return !!item && typeof item === "object" && !!item.viewState && typeof item.viewState === "object" && Number.isFinite(item.closedAt);
+  })) as ClosedViewStates;
+}
+
+/** Follows a moved file or folder (`from` → `to`). */
+export function remapClosedViewStates(states: ClosedViewStates, remap: (path: string) => string): ClosedViewStates {
+  let changed = false;
+  const next: ClosedViewStates = {};
+  for (const [path, entry] of Object.entries(states)) {
+    const moved = remap(path);
+    if (moved !== path) changed = true;
+    next[moved] = entry;
+  }
+  return changed ? next : states;
+}
+
 export const withinPath = (path: string, parent: string) => path === parent || path.startsWith(`${parent}/`);
 
 export function workspaceIncludesPath(scope: WorkspaceScope, path: string) {
@@ -237,6 +291,7 @@ export function remapWorkspacePathsMany(library: WorkspaceLibrary, moves: { from
     ...value, activeTabId: remap(value.activeTabId), selectedNotebookName: remap(value.selectedNotebookName),
     expandedPaths: value.expandedPaths.map(remap),
     ...(value.canvasLayout ? { canvasLayout: mapCanvasLayoutTabIds(value.canvasLayout, remap) } : {}),
+    ...(value.closedViewStates ? { closedViewStates: remapClosedViewStates(readClosedViewStates(value.closedViewStates), remap) } : {}),
     tabs: value.tabs.map((tab) => {
       if (tab.gallery || tab.page) return tab; // Gallery photos and app pages live outside notebooks.
       const path = remap(tab.file.path);

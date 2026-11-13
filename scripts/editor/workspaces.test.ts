@@ -10,7 +10,8 @@ import { createRoot } from "react-dom/client";
 import { useLiberaWorkspace } from "../../src/components/libera/use-libera-workspace";
 import { emptyTree } from "../../src/components/libera/api-client";
 import { toggleWorkspacePath } from "../../src/components/libera/workspaces-panel";
-import { createWorkspaceView, saveWorkspaceGroup, emptyWorkspaceLibrary, emptyWorkspaceSession, filterWorkspaceTree, parseWorkspaceLibrary, remapWorkspacePaths, trackWorkspaceFileChange, workspaceIncludesPath, type WorkspaceLibrary } from "../../src/lib/workspaces";
+import { CLOSED_VIEW_STATE_LIMIT, createWorkspaceView, saveWorkspaceGroup, emptyWorkspaceLibrary, emptyWorkspaceSession, filterWorkspaceTree, parseWorkspaceLibrary, readClosedViewStates, rememberClosedViewStates, remapWorkspacePaths, trackWorkspaceFileChange, workspaceIncludesPath, type WorkspaceLibrary } from "../../src/lib/workspaces";
+import type { OpenTab } from "../../src/components/libera/types";
 import { readWorkspaces, writeWorkspaces } from "../../src/lib/storage/workspaces";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTree } from "../../src/lib/types";
 import { NotebookHome } from "../../src/components/libera/notebook-home";
@@ -240,6 +241,89 @@ test("workspace sessions preserve order, active tab, unsaved drafts, view state,
   } finally {
     await act(async () => { root.unmount(); });
     globalThis.fetch = originalFetch;
+    dom.window.close();
+  }
+});
+
+test("closed files remember their lasting place, newest first, without replaying one-shot reveals", () => {
+  const tab = (path: string, viewState: OpenTab["viewState"], extra: Partial<OpenTab> = {}): OpenTab => ({ id: path, file: file(path), draft: "", saved: "", status: "clean", viewState, ...extra });
+  const remembered = rememberClosedViewStates({}, [
+    tab("Notes/x.tex", { latex: { editorScrollTop: 40, visualScrollPos: 900, editorMode: "visual", revealLine: { line: 3, nonce: 1 } } }),
+    tab("Notes/y.pdf", { pdf: { scrollTop: 10, reveal: { page: 2, nonce: 1 }, revealSelectedAnnotation: true } }),
+    tab("Untitled 1", { markdown: { editorScrollTop: 5 } }, { untitled: true }),
+    tab("Notes/nothing.md", undefined),
+  ], 5);
+  assert.deepEqual(Object.keys(remembered).sort(), ["Notes/x.tex", "Notes/y.pdf"]);
+  assert.deepEqual(remembered["Notes/x.tex"], { viewState: { latex: { editorScrollTop: 40, visualScrollPos: 900, editorMode: "visual" } }, closedAt: 5 });
+  assert.deepEqual(remembered["Notes/y.pdf"].viewState, { pdf: { scrollTop: 10 } });
+  let many = remembered;
+  for (let index = 0; index < CLOSED_VIEW_STATE_LIMIT; index += 1) many = rememberClosedViewStates(many, [tab(`Notes/${index}.md`, { markdown: { editorScrollTop: index } })], 10 + index);
+  assert.equal(Object.keys(many).length, CLOSED_VIEW_STATE_LIMIT);
+  assert.equal(many["Notes/x.tex"], undefined, "the least recently closed are forgotten first");
+  assert.deepEqual(readClosedViewStates({ ok: { viewState: {}, closedAt: 1 }, bad: { closedAt: "x" }, worse: null }), { ok: { viewState: {}, closedAt: 1 } });
+  assert.deepEqual(readClosedViewStates([1]), {});
+  const library: WorkspaceLibrary = { ...emptyWorkspaceLibrary(), librarySession: { ...emptyWorkspaceSession(), closedViewStates: { "Notes/Research/a.md": { viewState: { markdown: { editorScrollTop: 1 } }, closedAt: 1 } } } };
+  assert.deepEqual(Object.keys(remapWorkspacePaths(library, "Notes/Research", "Notes/Archive").librarySession!.closedViewStates!), ["Notes/Archive/a.md"]);
+});
+
+test("closing a tab keeps its place through a restart, and reopening the file returns there", async () => {
+  const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
+  for (const key of ["window", "document", "navigator", "HTMLElement"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const originalFetch = globalThis.fetch;
+  let disk = emptyWorkspaceLibrary();
+  const files = [a, b, c, d];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith("/api/workspaces")) {
+      if (init?.method === "PUT") { disk = parseWorkspaceLibrary(JSON.parse(String(init.body))); return Response.json({ saved: true }); }
+      return Response.json(disk);
+    }
+    if (String(url).startsWith("/api/files?")) {
+      const requested = new URL(String(url), "http://localhost").searchParams.get("path");
+      return Response.json({ file: files.find((item) => item.path === requested), content: requested?.endsWith(".md") ? "saved content" : undefined });
+    }
+    if (String(url).startsWith("/api/tree")) return Response.json(tree);
+    return Response.json({});
+  };
+  let workspace!: ReturnType<typeof useLiberaWorkspace>["workspace"];
+  function Harness() { workspace = useLiberaWorkspace(true).workspace; return null; }
+  let root = createRoot(document.getElementById("root")!);
+  const render = async () => { await act(async () => { root.render(createElement(StrictMode, null, createElement(Harness))); }); };
+  try {
+    await render();
+    await act(async () => { await workspace.openFile(a); });
+    await act(async () => { workspace.setActiveTabViewState({ markdown: { editorMode: "source", editorScrollTop: 321, selectionStart: 4, selectionEnd: 9, reveal: { start: 1, end: 2, nonce: 1 } } }); });
+    await act(async () => { await workspace.openFile(b); });
+    await act(async () => { workspace.setActiveTabViewState({ pdf: { scrollTop: 777, zoom: 125 } }); });
+    await act(async () => { workspace.closeTab(a.path); });
+    assert.deepEqual(workspace.tabs.map((tab) => tab.id), [b.path]);
+    await act(async () => { await workspace.openFile(a); });
+    assert.deepEqual(workspace.tabs.find((tab) => tab.id === a.path)?.viewState?.markdown,
+      { editorMode: "source", editorScrollTop: 321, selectionStart: 4, selectionEnd: 9 }, "reopening returns to the place, not to the old reveal");
+    await act(async () => { workspace.closeTab(a.path); workspace.closeTab(b.path); });
+    assert.equal(workspace.tabs.length, 0);
+
+    let checkpoint = "";
+    window.liberaWorkspaces = { checkpoint: (body) => { checkpoint = body; return { saved: true }; } };
+    await act(async () => { window.dispatchEvent(new dom.window.Event("pagehide")); });
+    await act(async () => { root.unmount(); });
+    window.localStorage.clear();
+    disk = parseWorkspaceLibrary(JSON.parse(checkpoint));
+    assert.deepEqual(Object.keys(disk.librarySession?.closedViewStates ?? {}).sort(), [a.path, b.path]);
+    root = createRoot(document.getElementById("root")!);
+    await render();
+    assert.equal(workspace.tabs.length, 0);
+    await act(async () => { await workspace.openFile(b); });
+    assert.equal(workspace.tabs[0].viewState?.pdf?.scrollTop, 777);
+    assert.equal(workspace.tabs[0].viewState?.pdf?.zoom, 125);
+    // A request to show a passage still wins over the remembered place.
+    await act(async () => { await workspace.openFile(a, { viewState: { markdown: { editorScrollTop: 5 } } }); });
+    assert.equal(workspace.tabs.find((tab) => tab.id === a.path)?.viewState?.markdown?.editorScrollTop, 5);
+    assert.equal(workspace.tabs.find((tab) => tab.id === a.path)?.viewState?.markdown?.selectionStart, 4);
+  } finally {
+    await act(async () => { root.unmount(); });
+    globalThis.fetch = originalFetch;
+    delete window.liberaWorkspaces;
     dom.window.close();
   }
 });

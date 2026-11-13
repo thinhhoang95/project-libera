@@ -40,7 +40,7 @@ import { latexSnippetCompletionSource } from "@/lib/latex/codemirror/snippets";
 import { snippetBodyFromSelection } from "@/lib/latex/snippets";
 import { decideReviewHunks, latexReviewExtension, reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
 import { readCodeMirrorScroll, restoreCodeMirrorScroll } from "@/lib/codemirror-scroll";
-import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll-anchor";
+import { codeMirrorReflowAdapter, keepScrollOnReflow, type EditorScrollState } from "@/lib/reflow-scroll-anchor";
 import {
   compiledLocationForPosition, latexSyncExtension, markCompileShown, markCompileStarted, positionForCompiledLine, revealPosition,
 } from "@/lib/latex/codemirror/sync";
@@ -190,6 +190,29 @@ function visualExtensions(documentPath: string, rootPath: string) {
 }
 const VIEW_STATE_DELAY_MS = 300;
 
+type ModeScroll = { source?: EditorScrollState; visual?: EditorScrollState };
+
+/** The Source mode's place is kept in `editorScroll*`, the Visual mode's in `visualScroll*`. */
+function savedModeScroll(state: LatexTabViewState | undefined, visual: boolean): EditorScrollState | undefined {
+  if (!state) return undefined;
+  const saved: EditorScrollState = visual
+    ? { editorScrollLeft: state.visualScrollLeft, editorScrollOffset: state.visualScrollOffset, editorScrollPos: state.visualScrollPos, editorScrollTop: state.visualScrollTop }
+    : { editorScrollLeft: state.editorScrollLeft, editorScrollOffset: state.editorScrollOffset, editorScrollPos: state.editorScrollPos, editorScrollTop: state.editorScrollTop };
+  return Object.values(saved).some((value) => value !== undefined) ? saved : undefined;
+}
+
+function initialModeScroll(state: LatexTabViewState | undefined, editorMode: LatexEditorMode): ModeScroll {
+  const source = savedModeScroll(state, false);
+  // Tabs saved before the modes had separate places kept the Visual mode's in `editorScroll*`.
+  return { source, visual: savedModeScroll(state, true) ?? (editorMode === "visual" ? source : undefined) };
+}
+
+function modeScrollPatch(scroll: EditorScrollState, visual: boolean): LatexTabViewState {
+  return visual
+    ? { visualScrollLeft: scroll.editorScrollLeft, visualScrollOffset: scroll.editorScrollOffset, visualScrollPos: scroll.editorScrollPos, visualScrollTop: scroll.editorScrollTop }
+    : scroll;
+}
+
 /** The part of a line TeX had read when it stopped, from its "l.12 …" context
  * line, so the error can be underlined where it happened. */
 function errorRange(lineText: string, details: string | undefined) {
@@ -234,6 +257,9 @@ export function LatexEditor({
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelRestoreRef = useRef<(() => void) | null>(null);
+  /** Where each mode was left, so switching modes returns to it. */
+  const modeScrollRef = useRef<ModeScroll | null>(null);
+  modeScrollRef.current ??= initialModeScroll(initialViewState, editorMode);
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
   const [pasteDialog, setPasteDialog] = useState<PasteDialogState | null>(null);
   const [pasteNotice, setPasteNotice] = useState<PasteNoticeState | null>(null);
@@ -447,11 +473,14 @@ export function LatexEditor({
 
   const reportViewState = useCallback((target: EditorView) => {
       const selection = target.state.selection.main;
+      const visual = isVisualModeOn(target.state);
+      const scroll = readCodeMirrorScroll(target);
+      modeScrollRef.current![visual ? "visual" : "source"] = scroll;
       callbacks.current.onViewStateChange({
         selectionStart: selection.anchor,
         selectionEnd: selection.head,
         line: target.state.doc.lineAt(selection.head).number,
-        ...readCodeMirrorScroll(target),
+        ...modeScrollPatch(scroll, visual),
       });
   }, []);
   useCanvasViewStateCapture(() => {
@@ -585,7 +614,8 @@ export function LatexEditor({
     binding?.attach(created);
     viewRef.current = created;
     setView(created);
-    cancelRestoreRef.current = restore ? restoreCodeMirrorScroll(created, restore, () => { cancelRestoreRef.current = null; }) : null;
+    const savedScroll = modeScrollRef.current![visual ? "visual" : "source"];
+    cancelRestoreRef.current = savedScroll ? restoreCodeMirrorScroll(created, savedScroll, () => { cancelRestoreRef.current = null; }) : null;
     if (!cancelRestoreRef.current && restore?.selectionStart !== undefined) {
       created.dispatch({ effects: EditorView.scrollIntoView(created.state.selection.main.head, { y: "center" }) });
     }
@@ -712,6 +742,14 @@ export function LatexEditor({
       return;
     }
     visualPathsRef.current = visualActive ? paths : null;
+    // Each mode keeps its own place: note where the outgoing mode was (unless
+    // it never reached its restored place), then return to where the incoming one was left.
+    if (cancelRestoreRef.current) {
+      cancelRestoreRef.current();
+      cancelRestoreRef.current = null;
+    } else reportViewState(view);
+    if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
+    const saved = modeScrollRef.current![visualActive ? "visual" : "source"];
     const selection = visualActive ? visualEntrySelection(view.state) : null;
     view.dispatch({
       effects: [
@@ -719,9 +757,10 @@ export function LatexEditor({
         lineNumbersCompartment.reconfigure(visualActive ? [] : lineNumbers()),
       ],
       ...(selection ? { selection } : {}),
-      scrollIntoView: true,
+      scrollIntoView: !saved,
     });
-  }, [compileRoot, documentPath, view, visualActive]);
+    if (saved) cancelRestoreRef.current = restoreCodeMirrorScroll(view, saved, () => { cancelRestoreRef.current = null; });
+  }, [compileRoot, documentPath, reportViewState, view, visualActive]);
 
   // Spelling is checked in the Visual mode only, when the setting is on (spellcheck.ts says why).
   const spellcheckOn = latexSpellcheckActive(spellcheckSetting, visualActive);

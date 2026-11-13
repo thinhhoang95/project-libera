@@ -283,6 +283,63 @@ test("a tab opened in the Visual mode leaves the preamble, follows renames and c
   }
 });
 
+test("the Source and Visual modes each return to their own place, across mode switches and reopening", async () => {
+  Object.defineProperty(globalThis, "Window", { value: dom.window.Window, configurable: true });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(dom.window.Range.prototype, { getClientRects: () => [], getBoundingClientRect: () => new dom.window.DOMRect() });
+  for (const key of ["DocumentFragment", "HTMLTableCellElement", "DOMParser"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
+  const { LatexEditor } = await import("../../src/components/libera/latex/latex-editor");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const editorRef = { current: null as LatexEditorHandle | null };
+  const source = "\\documentclass{article}\n\\begin{document}\n" + "A paragraph of text.\n\n".repeat(300) + "\\end{document}\n";
+  let saved: LatexTabViewState = {};
+  async function render(editorMode: "source" | "visual", key = "tab") {
+    await act(async () => {
+      root.render(createElement(LatexEditor, {
+        key, documentPath: "Thesis/main.tex", fileName: "main.tex", value: source, fontFamily: "monospace", fontSizePx: 14, lineHeight: 1.6,
+        initialViewState: saved, diagnostics: [], project: { labels: [], bibEntries: [], files: [] }, editorRef,
+        onChange: () => {}, onEdit: () => {}, onCompile: () => {}, onForwardSync: () => {}, onAiError: () => {}, onAddSnippet: () => {},
+        onViewStateChange: (patch) => { saved = { ...saved, ...patch }; },
+        editorMode,
+      }));
+    });
+    // The mode switch's effect runs as that act ends; its place is restored in the next frame.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  }
+  const scroller = () => editorRef.current!.view.scrollDOM;
+  try {
+    await render("source");
+    scroller().scrollTop = 1200;
+    await render("visual");
+    assert.equal(saved.editorScrollTop, 1200, "leaving the Source mode notes where it was");
+    scroller().scrollTop = 300;
+    await render("source");
+    assert.equal(saved.visualScrollTop, 300, "leaving the Visual mode notes its own place");
+    assert.equal(saved.editorScrollTop, 1200);
+    assert.equal(scroller().scrollTop, 1200, "the Source mode returns to its place");
+    await render("visual");
+    assert.equal(scroller().scrollTop, 300, "the Visual mode returns to its place");
+
+    // Reopened (a new editor), each mode still has its own place.
+    await act(async () => root.render(createElement("div", null, "Another tab")));
+    await render("visual", "reopened");
+    assert.equal(scroller().scrollTop, 300);
+    await render("source", "reopened");
+    assert.equal(scroller().scrollTop, 1200);
+
+    // A tab saved before the modes had separate places opens in the Visual mode where it was.
+    await act(async () => root.render(createElement("div", null, "Another tab")));
+    saved = { editorMode: "visual", editorScrollTop: 640 };
+    await render("visual", "legacy");
+    assert.equal(scroller().scrollTop, 640);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
 test("command snippets produce valid LaTeX, including escaped braces", () => {
   for (const name of ["frac", "left\\{", "date", "includegraphics", "newcommand", "lim"]) {
     const command = LATEX_COMMANDS.find((candidate) => candidate.name === name)!;
