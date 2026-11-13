@@ -18,18 +18,25 @@ import { followReference, refreshVisualWidgets } from "./widgets";
 
 const NUMBERING_DELAY = 150;
 
-/** Included files' parse trees, kept while their texts stay the same. */
-const includedTrees = new Map<string, IncludedFile>();
-function includedFile(text: string | undefined): IncludedFile | null {
-  if (text === undefined) return null;
-  let file = includedTrees.get(text);
-  // The least recently used goes first: an unchanged chapter keeps its tree (and its numbering, numbering.ts) while another is edited.
-  if (file) includedTrees.delete(text);
-  else file = { tree: latexParser.parse(text), read: (from, to) => text.slice(from, to) };
-  includedTrees.set(text, file);
-  // As many as a body's includes are followed (latex-dependencies.ts): a project's files stay parsed between pauses.
-  if (includedTrees.size > 400) includedTrees.delete(includedTrees.keys().next().value!);
-  return file;
+/**
+ * One view's included files' parse trees, by include key: one per key, replaced when its text changes (an edited chapter's
+ * old versions are not kept), and an unchanged one keeps its object (and its numbering, numbering.ts) between pauses.
+ */
+class IncludedTrees {
+  private readonly files = new Map<string, { text: string; file: IncludedFile }>();
+  get(key: string, text: string | undefined): IncludedFile | null {
+    if (text === undefined) return null;
+    const kept = this.files.get(key);
+    if (kept && kept.text === text) return kept.file;
+    const file: IncludedFile = { tree: latexParser.parse(text), read: (from, to) => text.slice(from, to) };
+    this.files.set(key, { text, file });
+    return file;
+  }
+  /** Lets go of the files of keys that are no longer included. */
+  keep(keys: { has(key: string): boolean } | null) {
+    for (const key of [...this.files.keys()]) if (!keys?.has(key)) this.files.delete(key);
+  }
+  clear() { this.files.clear(); }
 }
 
 type IdleWindow = { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number; cancelIdleCallback?: (handle: number) => void };
@@ -43,6 +50,7 @@ const cancelIdle = (handle: number) => {
 /** Numbers headings, equations, figures and labels after a pause, and refreshes the widgets that show numbers. */
 export const numberingPlugin = ViewPlugin.fromClass(class {
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private readonly included = new IncludedTrees();
   constructor(readonly view: EditorView) { this.schedule(0); }
   update(update: ViewUpdate) {
     const state = update.state;
@@ -70,8 +78,9 @@ export const numberingPlugin = ViewPlugin.fromClass(class {
     const includes = state.field(numberingIncludesField, false);
     const numbering = computeLatexNumbering(tree, (from, to) => state.doc.sliceString(from, to), visualDefinitions(state), {
       start: state.field(numberingStartField, false),
-      includes: includes?.size ? (name) => includedFile(includes.get(loadKey("input", name))) : null,
+      includes: includes?.size ? (name) => { const key = loadKey("input", name); return this.included.get(key, includes.get(key)); } : null,
     });
+    this.included.keep(includes ?? null);
     if (numbering.fingerprint !== state.field(numberingField, false)?.fingerprint) this.view.dispatch({ effects: setNumbering.of(numbering) });
   }
   /** A full refresh queued, or one of the widgets that moved: a full one covers both. */
@@ -82,7 +91,7 @@ export const numberingPlugin = ViewPlugin.fromClass(class {
     this.refreshQueued = moved ? "moved" : "all";
     if (first) queueMicrotask(() => { const kind = this.refreshQueued; this.refreshQueued = null; refreshVisualWidgets(this.view, kind === "moved"); });
   }
-  destroy() { if (this.timer !== null) clearTimeout(this.timer); }
+  destroy() { if (this.timer !== null) clearTimeout(this.timer); this.included.clear(); }
 });
 
 /** Builds the pending pieces of a long document while idle, the ones on screen first. */
@@ -94,16 +103,23 @@ export const pendingFiller = ViewPlugin.fromClass(class {
   constructor(readonly view: EditorView) { this.maybeSchedule(); }
   update(update: ViewUpdate) {
     // A piece on screen that is not built yet goes first, without waiting for idle time.
-    if (update.viewportChanged || update.docChanged || update.transactions.some((tr) => tr.effects.some((effect) => effect.is(buildPendingEffect)))) this.maybeSchedule();
+    // A tree that grew has more to build: the filler wakes up again (it schedules nothing while the parser is behind the pending pieces).
+    if (update.viewportChanged || update.docChanged || syntaxTree(update.startState) !== syntaxTree(update.state) || update.transactions.some((tr) => tr.effects.some((effect) => effect.is(buildPendingEffect)))) this.maybeSchedule();
     else if (update.startState.field(structuralField, false)?.pending !== update.state.field(structuralField, false)?.pending) this.maybeSchedule();
   }
   private next() {
-    const pending = this.view.state.field(structuralField, false)?.pending ?? [];
+    const state = this.view.state;
+    // Only what the parser has reached can be built: past the end of the tree a build puts the range back unchanged (and the
+    // filler would ask again at once, for ever, on a file longer than the parser's background reach).
+    const reached = syntaxTree(state).length;
+    const whole = reached >= state.doc.length;
+    const pending = (state.field(structuralField, false)?.pending ?? []).filter((range) => whole || range.from < reached);
     if (!pending.length) return null;
     const { from: top, to: bottom } = this.view.viewport;
     const visible = pending.find((range) => range.from < bottom && range.to > top);
     if (visible) {
-      const from = Math.max(visible.from, top - CHUNK / 2);
+      let from = Math.max(visible.from, top - CHUNK / 2);
+      if (!whole && from >= reached) from = visible.from;
       return { from, to: Math.min(visible.to, from + CHUNK), visible: true };
     }
     const after = pending.find((range) => range.from >= bottom) ?? pending[0];
@@ -154,13 +170,23 @@ const remoteOutlineField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+/** An outline set as sorted text: where each outline is, its colour and whose it is. */
+function outlineKeys(set: DecorationSet) {
+  const keys: string[] = [];
+  for (const cursor = set.iter(); cursor.value; cursor.next()) {
+    const attributes = (cursor.value.spec as { attributes?: { style?: string; title?: string } }).attributes;
+    keys.push(JSON.stringify([cursor.from, cursor.to, attributes?.style ?? null, attributes?.title ?? null]));
+  }
+  return keys.sort();
+}
+
 type AwarenessEvents = { on: (event: string, fn: () => void) => void; off: (event: string, fn: () => void) => void };
 
 /** Outlines the construct each collaborator's cursor is in; it is never revealed for you. */
 const remoteOutlinePlugin = ViewPlugin.fromClass(class {
   private listener: (() => void) | null = null;
   private awareness: AwarenessEvents | null = null;
-  private scheduled = false;
+  private scheduled: number | null = null;
   constructor(readonly view: EditorView) {
     const config = view.state.facet(ySyncFacet) as unknown as { awareness?: AwarenessEvents | null; ytext?: unknown } | undefined;
     if (!config?.awareness || !config.ytext) return;
@@ -175,9 +201,8 @@ const remoteOutlinePlugin = ViewPlugin.fromClass(class {
     if (update.docChanged) this.schedule();
   }
   private schedule() {
-    if (this.scheduled) return;
-    this.scheduled = true;
-    requestAnimationFrame(() => { this.scheduled = false; this.refresh(); });
+    if (this.scheduled !== null) return;
+    this.scheduled = requestAnimationFrame(() => { this.scheduled = null; this.refresh(); });
   }
   private refresh() {
     const config = this.view.state.facet(ySyncFacet) as unknown as { awareness?: Parameters<typeof remoteUsers>[0]; ytext?: Parameters<typeof remoteUsers>[1] } | undefined;
@@ -192,9 +217,14 @@ const remoteOutlinePlugin = ViewPlugin.fromClass(class {
     const next = ranges.length ? Decoration.set(ranges, true) : Decoration.none;
     const current = this.view.state.field(remoteOutlineField, false);
     if (current && current.size === 0 && next.size === 0) return;
+    // The field maps its outlines through edits, so it is the current ones that are compared: an unchanged outline is no transaction.
+    if (current && outlineKeys(current).join("\n") === outlineKeys(next).join("\n")) return;
     this.view.dispatch({ effects: setRemoteOutlines.of(next) });
   }
-  destroy() { if (this.listener && this.awareness) this.awareness.off("change", this.listener); }
+  destroy() {
+    if (this.listener && this.awareness) this.awareness.off("change", this.listener);
+    if (this.scheduled !== null) cancelAnimationFrame(this.scheduled);
+  }
 });
 
 export const remoteOutlines = [remoteOutlineField, remoteOutlinePlugin];
