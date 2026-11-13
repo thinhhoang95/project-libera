@@ -3,7 +3,8 @@ import type { Range } from "@codemirror/state";
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode } from "@lezer/common";
 import { environmentName, wrappedTheorem } from "../../macros/numbering";
-import { definitionsField, visualDefinitions } from "./model";
+import { latexProjectField } from "../editing";
+import { auxField, definitionsField, disabledField, macroSourcesField, numberingField, visualConfig, visualDefinitions } from "./model";
 import { structuralField } from "./structural";
 import { boxEnvironments, walkConstructs } from "./walk";
 
@@ -76,20 +77,34 @@ function build(view: EditorView, padded: Array<{ from: number; to: number }>): D
   return Decoration.set(ranges, true);
 }
 
+/** What a walk may read besides the document, its tree and the definitions: a build is as fresh as these were. */
+function walkInputs(view: EditorView): unknown[] {
+  const state = view.state;
+  return [
+    state.field(latexProjectField, false), state.facet(visualConfig), state.field(macroSourcesField, false), state.field(disabledField, false),
+    state.field(auxField, false), state.field(numberingField, false),
+  ];
+}
+
 export const visualStylePlugin = ViewPlugin.fromClass(class {
   decorations: DecorationSet;
   /** The padded ranges the last build walked. */
   padded: Array<{ from: number; to: number }>;
-  constructor(view: EditorView) { this.padded = visibleRanges(view); this.decorations = build(view, this.padded); }
+  /** `walkInputs` as the last build found them. */
+  inputs: unknown[];
+  constructor(view: EditorView) { this.padded = visibleRanges(view); this.inputs = walkInputs(view); this.decorations = build(view, this.padded); }
   update(update: ViewUpdate) {
     const unchanged = !update.docChanged && syntaxTree(update.startState) === syntaxTree(update.state)
       && update.startState.field(definitionsField, false) === update.state.field(definitionsField, false)
       && update.startState.field(structuralField, false)?.preambleOpen === update.state.field(structuralField, false)?.preambleOpen;
-    // A scroll within what the last build walked: every mark and line class on screen is already there.
+    // A scroll within what the last build walked: every mark and line class on screen is already there. (Not when
+    // something else a walk reads changed since: a scroll has always drawn with the project and labels as they are now.)
     if (unchanged && update.viewportChanged
-      && update.view.visibleRanges.every((range) => this.padded.some((walked) => range.from >= walked.from && range.to <= walked.to))) return;
+      && update.view.visibleRanges.every((range) => this.padded.some((walked) => range.from >= walked.from && range.to <= walked.to))
+      && walkInputs(update.view).every((input, index) => input === this.inputs[index])) return;
     if (!unchanged || update.viewportChanged) {
       this.padded = visibleRanges(update.view);
+      this.inputs = walkInputs(update.view);
       this.decorations = build(update.view, this.padded);
     }
   }
