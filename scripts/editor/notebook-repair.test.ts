@@ -10,6 +10,7 @@ import { inspectReviewKeys } from "../../src/lib/storage/review-files";
 import { inkFolderPath, reconcileInkFolders } from "../../src/lib/storage/ink";
 import { audioPeaksPath, definitionsPath, filePathFromParts, getAdminRoot, getStateRoot, imageAnnotationsPath, notebookPath, orphanedSidecarsDirectoryPath, pdfAnnotationsPath, pdfOutlinePath, transcriptPath } from "../../src/lib/storage/paths";
 import { readReferenceLibrary } from "../../src/lib/storage/references";
+import { applyNotebookCleanup, planNotebookCleanup } from "../../src/lib/storage/cleanup";
 import { applyNotebookRepair, planNotebookRepair } from "../../src/lib/storage/repair";
 import { pruneAudioSidecars } from "../../src/lib/storage/transcripts";
 import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
@@ -384,4 +385,76 @@ test("a pair with a reserved segment does not stop the others, and a failed side
   assert.ok(await exists(pdfAnnotationsPath("Nb", ["b", "x.pdf"])), "what moved before the failure stays moved");
   const next = await planNotebookRepair("Nb");
   assert.deepEqual(next.moves.map((move) => [move.from, move.records]), [["Nb/_assets/r.md", ["star"]], ["Nb/a/x.pdf", ["outline"]]], "only what is left is planned again");
+}));
+
+test("a Finder round trip: files and a folder moved, the tree's upkeep run, Try to fix and Acknowledge never offer a moved file's records for deletion", () => withTemporaryLibrary(["Nb"], async () => {
+  await seedNotebook("Nb");
+  // The seeded note gets a link and an image embed by path, comments, ink and code; it moves with its folder.
+  const note = "Nb/notes/n.md";
+  const content = `${await readFile(filePathFromParts("Nb", ["notes", "n.md"]), "utf8")}\n[the paper](../papers/a.pdf)\n`;
+  await writeLibraryFile(note, content);
+  await addReviewThreads(note, content, [{ range: { start: 0, end: 6 }, text: "a comment" }]);
+  await writeAt(path.join(inkFolderPath("Nb", ["notes", "n.md"]), "text.aaaaaaaaaa.ink"), seeded("note-ink"));
+  await writeAt(path.join(getAdminRoot(), ...pythonSidecarPath(note).split("/")), "print('hi')\n");
+  await setStarredFilePath("Nb/papers/a.pdf", true);
+  await setStarredFilePath(note, true);
+  await setFileTagsForPath("Nb/audio/memo.m4a", ["meeting"]);
+  await writeReferenceLibrary("Nb", [{ key: "a2026", attachments: ["Nb/papers/a.pdf"] }]);
+  await assertNotebookSound("Nb", { severities: ["error", "warning", "info"], allow: ["info indexes: "] });
+
+  // Files moved in Finder, and a folder renamed.
+  await finderMove("Nb/papers/a.pdf", "Nb/reading/a.pdf");
+  await finderMove("Nb/papers/fig.png", "Nb/reading/figures/fig.png");
+  await finderMove("Nb/audio/memo.m4a", "Nb/recordings/memo.m4a");
+  await finderMove("Nb/notes", "Nb/journal");
+  const moved = [
+    ["Nb/papers/a.pdf", "Nb/reading/a.pdf"],
+    ["Nb/papers/fig.png", "Nb/reading/figures/fig.png"],
+    ["Nb/audio/memo.m4a", "Nb/recordings/memo.m4a"],
+    ["Nb/notes/n.md", "Nb/journal/n.md"],
+  ];
+  const touched = moved.flat();
+  /** What a check would offer to delete for good that belongs to a moved file, apart from caches (which are made again). */
+  const offered = (items: { path: string; message: string }[]) => items.filter((item) => touched.includes(item.path) && !/out of date|cache|waveform/i.test(item.message));
+
+  // The tree's upkeep: a first load sees the side files orphaned, one 31 s later sets them aside.
+  await upkeep("Nb");
+  // The check lists the records as stale, but Acknowledge offers nothing while Try to fix can still give them back.
+  await assert.rejects(planNotebookCleanup("Nb"), /Use Try to fix first/);
+
+  const plan = await planNotebookRepair("Nb");
+  assert.deepEqual(plan.moves.map((move) => [move.from, move.to]).sort(), [...moved].sort());
+  assert.deepEqual(plan.unmatched, []);
+  const result = await applyNotebookRepair("Nb", plan.token);
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.moved.length, 4);
+
+  // Acknowledge, as the dialog does after Try to fix.
+  const cleanup = await planNotebookCleanup("Nb");
+  assert.deepEqual(offered(cleanup.items), [], "Acknowledge offers nothing that belongs to a moved file");
+  assert.deepEqual(cleanup.items.filter((item) => item.lost), [], "nothing people made is offered");
+  const cleaned = await applyNotebookCleanup("Nb", cleanup.token);
+  assert.deepEqual(cleaned.problems, []);
+
+  // Every record of a moved file is where its file is.
+  assert.ok(await exists(pdfAnnotationsPath("Nb", ["reading", "a.pdf"])));
+  assert.ok(await exists(path.join(inkFolderPath("Nb", ["reading", "a.pdf"]), SEEDED_INK)));
+  assert.ok(await exists(imageAnnotationsPath("Nb", ["reading", "figures", "fig.png"])));
+  assert.equal(await readFile(transcriptPath("Nb", ["recordings", "memo.m4a"]), "utf8"), seeded("transcript"));
+  assert.ok(await exists(path.join(inkFolderPath("Nb", ["journal", "n.md"]), "text.aaaaaaaaaa.ink")));
+  assert.equal((await findReview("Nb/journal/n.md"))?.threads.length, 1);
+  assert.equal(await findReview("Nb/notes/n.md"), null);
+  assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths.sort(), ["Nb/journal/n.md", "Nb/reading/a.pdf"]);
+  assert.ok((await readFile(path.join(getAdminRoot(), ...pythonSidecarPath("Nb/journal/n.md").split("/")), "utf8")).startsWith("print('hi')"));
+
+  // Sound again, except what no move rewrites: the note's link and its image embed, by library path.
+  const allowed = [
+    'warning links: Nb/journal/n.md: The link "../papers/a.pdf" finds no file.',
+    "error images: Nb/journal/n.md: Shows Nb/papers/fig.png, which is missing.",
+  ];
+  const report = await assertNotebookSound("Nb", { severities: ["error", "warning", "info"], allow: ["info indexes: ", ...allowed] });
+  const described = report.findings.map((finding) => `${finding.severity} ${finding.check}: ${finding.path}: ${finding.message}`);
+  for (const expected of allowed) assert.equal(described.filter((text) => text.includes(expected)).length, 1, `${expected} is reported once`);
+  assert.deepEqual((await planNotebookRepair("Nb")).moves, [], "nothing is left to find");
+  assert.deepEqual((await planNotebookCleanup("Nb")).items, [], "nothing stale is left");
 }));
