@@ -317,6 +317,10 @@ export function MarkdownEditor({
   const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
   const referenceRender = useReferenceRender();
   const citationHover = useEditorCitationHover();
+  // Hover lookups are coalesced to one per animation frame, using the latest pointer.
+  const citationPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const citationFrameRef = useRef<number | null>(null);
+  const runCitationHoverRef = useRef<() => void>(() => {});
   const composingRef = useRef(false);
   const headingNumbering = useHeadingNumbering(activeFilePath, (maxDepth) => detectMarkdownHeadingNumbering(value, maxDepth));
   const headingNumberingRef = useRef(headingNumbering);
@@ -492,6 +496,11 @@ export function MarkdownEditor({
         window.cancelAnimationFrame(fileLinkPopupFrameRef.current);
       }
 
+      if (citationFrameRef.current !== null) {
+        window.cancelAnimationFrame(citationFrameRef.current);
+        citationFrameRef.current = null;
+      }
+
       if (selectionChangeTimeoutRef.current !== null) {
         window.clearTimeout(selectionChangeTimeoutRef.current);
       }
@@ -609,6 +618,8 @@ export function MarkdownEditor({
     });
   }
 
+  runCitationHoverRef.current = runCitationHover;
+
   /** The citation under the pointer, for the hover card and Ctrl/Cmd+click. */
   function citationAtPointer(textarea: HTMLTextAreaElement, clientX: number, clientY: number) {
     const text = editorValueRef.current;
@@ -618,8 +629,29 @@ export function MarkdownEditor({
       (at) => getTextareaClientPointForOffset(textarea, at), referenceKeyResolver(referenceRender));
   }
 
+  function cancelCitationHoverFrame() {
+    if (citationFrameRef.current !== null) {
+      window.cancelAnimationFrame(citationFrameRef.current);
+      citationFrameRef.current = null;
+    }
+    citationPointerRef.current = null;
+  }
+
   function handleCitationPointer(event: MouseEvent<HTMLTextAreaElement>) {
-    const found = citationAtPointer(event.currentTarget, event.clientX, event.clientY);
+    citationPointerRef.current = { clientX: event.clientX, clientY: event.clientY };
+    if (citationFrameRef.current !== null) return;
+    citationFrameRef.current = window.requestAnimationFrame(() => {
+      citationFrameRef.current = null;
+      runCitationHoverRef.current();
+    });
+  }
+
+  function runCitationHover() {
+    const pointer = citationPointerRef.current;
+    const textarea = textareaRef.current;
+    citationPointerRef.current = null;
+    if (!pointer || !textarea) return;
+    const found = citationAtPointer(textarea, pointer.clientX, pointer.clientY);
     if (!found) {
       citationHover.show(null);
       return;
@@ -1163,7 +1195,7 @@ export function MarkdownEditor({
           if (found && openCitationAttachment(referenceRender, found.citation)) event.preventDefault();
         }}
         onMouseMove={handleCitationPointer}
-        onMouseLeave={() => citationHover.show(null)}
+        onMouseLeave={() => { cancelCitationHoverFrame(); citationHover.show(null); }}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onKeyDown={handleEditorKeyDown}
