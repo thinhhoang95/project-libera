@@ -214,6 +214,12 @@ const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
 const MARKDOWN_PROGRAMMATIC_SCROLL_GRACE_MS = 250;
 const MARKDOWN_PREVIEW_RENDER_DELAY_MS = 250;
 const MARKDOWN_PREVIEW_USER_SCROLL_GRACE_MS = 1000;
+// How long scroll positions wait for the scrolling to pause before they are stored.
+const MARKDOWN_SCROLL_VIEW_STATE_DELAY_MS = 150;
+const MARKDOWN_SCROLL_VIEW_STATE_KEYS: ReadonlySet<string> = new Set<keyof MarkdownTabViewState>([
+  "editorScrollLeft", "editorScrollTop", "previewScrollLeft", "previewScrollTop",
+  "visualScrollLeft", "visualScrollTop", "visualScrollAnchorPos", "visualScrollAnchorOffset",
+]);
 const MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS = 0.6;
 const MARKDOWN_SPLIT_STORAGE_KEY = "libera.markdownEditorPreviewSplitPercent";
 const MAX_MARKDOWN_SPLIT_PERCENT = 76;
@@ -846,15 +852,81 @@ function WorkspacePanelContent({
   );
   const editorKey = sharedCodeMirror ? `${activeTabId}:shared:${sharedGeneration}` : activeTabId;
 
+  // Scroll positions reported once per frame wait here: storing each one would
+  // re-render the whole workspace while scrolling. They are stored when the
+  // scrolling pauses, with the next other view-state update, when the canvas
+  // is captured (tab switch, mode switch, journal) and on unmount.
+  const pendingScrollViewStateRef = useRef<{ tabId: string; patch: MarkdownTabViewState; timer: number | null } | null>(null);
+  const setViewStateRef = useRef(onSetViewState);
+  const storedMarkdownViewStateRef = useRef(activeMarkdownViewState);
+  useLayoutEffect(() => {
+    setViewStateRef.current = onSetViewState;
+    storedMarkdownViewStateRef.current = activeMarkdownViewState;
+  });
+  const takePendingScrollViewState = useCallback((tabId: string | null | undefined) => {
+    const pending = pendingScrollViewStateRef.current;
+    if (!pending) return undefined;
+    if (pending.timer !== null) window.clearTimeout(pending.timer);
+    pendingScrollViewStateRef.current = null;
+    // Positions held for another tab go to that tab.
+    if (pending.tabId !== tabId) {
+      setViewStateRef.current({ markdown: pending.patch }, pending.tabId);
+      return undefined;
+    }
+    return pending.patch;
+  }, []);
+  const flushScrollViewState = useCallback(() => {
+    const pending = pendingScrollViewStateRef.current;
+    if (!pending) return;
+    const patch = takePendingScrollViewState(pending.tabId);
+    if (patch) setViewStateRef.current({ markdown: patch }, pending.tabId);
+  }, [takePendingScrollViewState]);
+  useCanvasViewStateCapture(flushScrollViewState);
+  useLayoutEffect(() => flushScrollViewState, [flushScrollViewState]);
+
   const updateMarkdownViewState = useCallback(
     (patch: MarkdownTabViewState) => {
       if (!activeTabId) {
         return;
       }
 
-      onSetViewState({ markdown: patch }, activeTabId);
+      // Held scroll positions are older than this update, so it wins over them.
+      const held = takePendingScrollViewState(activeTabId);
+      onSetViewState({ markdown: held ? { ...held, ...patch } : patch }, activeTabId);
     },
-    [activeTabId, onSetViewState],
+    [activeTabId, onSetViewState, takePendingScrollViewState],
+  );
+
+  /** A per-frame report from a scrolling editor or preview: scroll positions
+   * wait for a pause, anything else that changed (the outline's line, a
+   * selection) is stored now, as it always was. */
+  const reportMarkdownScrollViewState = useCallback(
+    (patch: MarkdownTabViewState) => {
+      if (!activeTabId) return;
+      const stored = storedMarkdownViewStateRef.current;
+      const urgent = (Object.keys(patch) as (keyof MarkdownTabViewState)[])
+        .some((key) => !MARKDOWN_SCROLL_VIEW_STATE_KEYS.has(key) && patch[key] !== stored?.[key]);
+      if (urgent) {
+        updateMarkdownViewState(patch);
+        return;
+      }
+      const held = takePendingScrollViewState(activeTabId);
+      const tabId = activeTabId;
+      // Only the positions wait; the rest of the patch already matches what is stored.
+      const positions: MarkdownTabViewState = {};
+      for (const key of Object.keys(patch) as (keyof MarkdownTabViewState)[]) {
+        if (MARKDOWN_SCROLL_VIEW_STATE_KEYS.has(key)) Object.assign(positions, { [key]: patch[key] });
+      }
+      pendingScrollViewStateRef.current = {
+        tabId,
+        patch: { ...held, ...positions },
+        timer: window.setTimeout(() => {
+          const pending = pendingScrollViewStateRef.current;
+          if (pending?.tabId === tabId) { pending.timer = null; flushScrollViewState(); }
+        }, MARKDOWN_SCROLL_VIEW_STATE_DELAY_MS),
+      };
+    },
+    [activeTabId, flushScrollViewState, takePendingScrollViewState, updateMarkdownViewState],
   );
 
   // A one-shot request (Global Search) to select a passage. The visual editor
@@ -1201,7 +1273,7 @@ function WorkspacePanelContent({
         offset: syncAnchorOffset,
         viewportProgress: MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
       });
-      updateMarkdownViewState({
+      reportMarkdownScrollViewState({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
         line: getMarkdownLineForOffset(editor.value, syncAnchorOffset),
@@ -1215,7 +1287,7 @@ function WorkspacePanelContent({
 
       const now = window.performance.now();
       if (now <= programmaticPreviewScrollUntilRef.current) {
-        updateMarkdownViewState({ editorScrollLeft: editor.scrollLeft, editorScrollTop: editor.scrollTop,
+        reportMarkdownScrollViewState({ editorScrollLeft: editor.scrollLeft, editorScrollTop: editor.scrollTop,
           previewScrollLeft: previewPane.scrollLeft, previewScrollTop: previewPane.scrollTop });
         return;
       }
@@ -1238,7 +1310,7 @@ function WorkspacePanelContent({
         syncTextareaToMarkdownPreview(sourcePosition ?? undefined);
       }
 
-      updateMarkdownViewState({
+      reportMarkdownScrollViewState({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
         line:
@@ -1299,7 +1371,7 @@ function WorkspacePanelContent({
     syncMarkdownPreviewToTextarea,
     syncTextareaToMarkdownPreview,
     textareaRef,
-    updateMarkdownViewState,
+    reportMarkdownScrollViewState,
   ]);
 
   const lastSyncedMarkdownRef = useRef(activeMarkdownDraft);
@@ -1915,7 +1987,7 @@ function WorkspacePanelContent({
               lineHeight={markdownPreferences.baseLineHeight}
               markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange}
               initialViewState={activeMarkdownViewState}
-              onViewStateChange={updateMarkdownViewState}
+              onViewStateChange={reportMarkdownScrollViewState}
               onChange={sharedVisual ? ignoreSharedDraft : handleMarkdownDraftChange} onSave={onSave}
               onRegisterDraft={sharedVisual ? undefined : registerMarkdownDraft}
               onOpenFileLink={handleOpenMarkdownFileLink}
