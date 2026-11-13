@@ -1,6 +1,7 @@
 import { Extension, mergeAttributes, textblockTypeInputRule, type JSONContent, type NodeViewRenderer } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
+import { Marked, type marked } from "marked";
 import Code from "@tiptap/extension-code";
 import CodeBlock from "@tiptap/extension-code-block";
 import Highlight from "@tiptap/extension-highlight";
@@ -305,7 +306,9 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
       },
       parseMarkdown: (token, h) => ({ type: "paragraph", content: h.parseInline(token.tokens ?? []) }),
     }),
-    LiberaMarkdown, LiberaHighlight, LiberaTextStyle, LiberaFontSize, LiberaLineHeight, Color,
+    // TipTap registers its tokenizers on the marked instance, so each editor gets its own;
+    // the global one would grow by every tokenizer of every editor and slow every parse.
+    LiberaMarkdown.configure({ marked: new Marked() as unknown as typeof marked }), LiberaHighlight, LiberaTextStyle, LiberaFontSize, LiberaLineHeight, Color,
     TableKit, LiberaTaskList, TaskItem.configure({ nested: true }),
     Image.extend({
       addNodeView() {
