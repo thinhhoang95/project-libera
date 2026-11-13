@@ -1,4 +1,5 @@
-import { lstat, readdir, readFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { hasUnreadableLinkPosition, resolveMarkdownFileLink } from "@/lib/markdown-file-links";
 import { getAdminRoot, getLinkedFolders, notebookPath, notebookSystemDirectoryPath } from "@/lib/storage/paths";
@@ -57,22 +58,45 @@ export function resolveLinkTargetWith(href: string, sourcePath: string, exists: 
 
 /**
  * Which library paths are files on disk, checked once each and remembered for
- * one check. A path that could not be checked (no permission, a drive error)
- * is `unknown`, never reported as missing.
+ * one check. The match is exact, as the app's own: its tree is built from
+ * `readdir` names and stars, tags, reviews, attachments and links match paths
+ * by string, so `Paper.pdf` is not there when the file is `paper.pdf` (which
+ * macOS and Windows would open), and a name that differs only in Unicode
+ * normalization is not there either. Each folder is listed once, and every
+ * name on the way must be in its folder's listing. A path that could not be
+ * checked (no permission, a drive error) is `unknown`, never reported as
+ * missing.
  */
 export function fileExistence() {
   const known = new Map<string, "file" | "absent" | "unknown">();
+  const listings = new Map<string, Promise<Map<string, Dirent> | "absent" | "unknown">>();
+  const list = (directory: string) => {
+    if (!listings.has(directory)) {
+      listings.set(directory, readdir(directory, { withFileTypes: true }).then(
+        (entries) => new Map(entries.map((entry) => [entry.name, entry] as const)),
+        (error): "absent" | "unknown" => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "absent" : "unknown",
+      ));
+    }
+    return listings.get(directory)!;
+  };
+  const stateOf = async (libraryPath: string): Promise<"file" | "absent" | "unknown"> => {
+    const [notebook, ...parts] = libraryPath.split("/");
+    if (!notebook || !parts.length || parts.some((part) => !part || part === "." || part === "..")) return "absent";
+    let directory = notebookPath(notebook);
+    for (const [index, part] of parts.entries()) {
+      const entries = await list(directory);
+      if (typeof entries === "string") return entries;
+      const entry = entries.get(part);
+      if (!entry) return "absent";
+      if (index === parts.length - 1) return entry.isFile() ? "file" : "absent";
+      directory = path.join(directory, part);
+    }
+    return "absent";
+  };
   return {
     async check(libraryPaths: Iterable<string>) {
       for (const libraryPath of libraryPaths) {
-        if (known.has(libraryPath)) continue;
-        let state: "file" | "absent" | "unknown" = "absent";
-        const [notebook, ...parts] = libraryPath.split("/");
-        if (notebook && parts.length && !parts.some((part) => !part || part === "." || part === "..")) {
-          try { state = (await lstat(path.join(notebookPath(notebook), ...parts))).isFile() ? "file" : "absent"; }
-          catch (error) { state = ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "absent" : "unknown"; }
-        }
-        known.set(libraryPath, state);
+        if (!known.has(libraryPath)) known.set(libraryPath, await stateOf(libraryPath));
       }
     },
     exists: (libraryPath: string) => known.get(libraryPath) === "file",

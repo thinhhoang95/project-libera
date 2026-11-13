@@ -11,6 +11,7 @@ import {
   isSlideChartDataFile,
   parseSlideChartCsv,
   parseSlideChartSpec,
+  resolveDeckRelativePath,
   slideChartInlineTable,
   slideSeriesPalette,
   type SlideChartTable,
@@ -41,23 +42,6 @@ function themeTokens(theme: string) {
 function chartPixelRatio(mode: SlideBlockMode) {
   const base = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
   return mode === "preview" ? base : Math.min(4, Math.max(3, base * 2));
-}
-
-/** A path relative to the deck's folder, as a workspace path (no escaping the notebook). */
-function resolveDeckRelativePath(documentPath: string, relative: string) {
-  const parts = documentPath.split("/").slice(0, -1);
-  const notebookDepth = 1;
-
-  for (const segment of relative.trim().split("/")) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (parts.length > notebookDepth) parts.pop();
-      continue;
-    }
-    parts.push(segment);
-  }
-
-  return parts.join("/");
 }
 
 function BlockMessage({ children }: { children: string }) {

@@ -84,6 +84,8 @@ export type InkFolderInspection = {
   droppedStrokes: number;
   /** The bytes of the file the ink was drawn on, as each author file recorded them. */
   sources: InkSource[];
+  /** The same, with the author file that recorded each. */
+  sourceFiles: { name: string; source: InkSource }[];
   bytes: number;
 };
 
@@ -93,7 +95,7 @@ export type InkFolderInspection = {
  * listed throws.
  */
 export async function inspectInkFolder(folder: string, fileType: string): Promise<InkFolderInspection> {
-  const result: InkFolderInspection = { unreadable: [], misplaced: [], droppedStrokes: 0, sources: [], bytes: 0 };
+  const result: InkFolderInspection = { unreadable: [], misplaced: [], droppedStrokes: 0, sources: [], sourceFiles: [], bytes: 0 };
   for (const name of await readdir(folder)) {
     // Other files (a sync service's conflict copy, system files) are not ink.
     const parsed = parseInkFileName(name);
@@ -108,7 +110,7 @@ export async function inspectInkFolder(folder: string, fileType: string): Promis
     if (!file || file.author.key !== parsed.author) { result.unreadable.push(name); continue; }
     const strokes = (stored as { strokes?: unknown }).strokes;
     result.droppedStrokes += Math.max(0, (Array.isArray(strokes) ? strokes.length : 0) - file.strokes.length);
-    if (file.source) result.sources.push(file.source);
+    if (file.source) { result.sources.push(file.source); result.sourceFiles.push({ name, source: file.source }); }
   }
   return result;
 }

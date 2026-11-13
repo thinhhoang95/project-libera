@@ -1,5 +1,5 @@
 import { isMarkdownSlidesPath, parseMarkdownSlides } from "@/lib/markdown-slides";
-import { parseSlideChartSpec } from "@/lib/slide-charts";
+import { parseSlideChartSpec, slideChartBlocks } from "@/lib/slide-charts";
 import { getFileType } from "@/lib/storage/file-types";
 import { readCurrentText, resolve, type ToolContext } from "../tools";
 
@@ -98,36 +98,12 @@ flowchart LR
 `;
 
 const CHECK_STATE = "markdown-live-blocks";
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})\s*([\w-]*)/;
-
-/** ```chart blocks in Markdown, with the line each starts on; examples inside longer fences are skipped. */
-function chartBlocks(source: string) {
-  const lines = source.split(/\r?\n/);
-  const blocks: { line: number; code: string }[] = [];
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const open = FENCE_OPEN.exec(lines[index]);
-    if (!open) continue;
-    const fence = open[1];
-    const closes = (line: string) => line.trim().startsWith(fence[0].repeat(fence.length)) && !line.trim().replace(/^[`~]+/, "").trim();
-    const body: string[] = [];
-    let end = index + 1;
-    while (end < lines.length && !closes(lines[end])) {
-      body.push(lines[end]);
-      end += 1;
-    }
-    if (open[2] === "chart") blocks.push({ line: index + 1, code: body.join("\n") });
-    index = end;
-  }
-
-  return blocks;
-}
 
 /** What a parse can tell is wrong with a Markdown file: broken chart settings, and a deck's invalid settings. */
 export function markdownLiveBlockProblems(source: string, { deck = false } = {}) {
   const problems = deck ? parseMarkdownSlides(source).diagnostics.map((item) => (item.line ? `line ${item.line}: ${item.message}` : item.message)) : [];
 
-  for (const block of chartBlocks(source)) {
+  for (const block of slideChartBlocks(source)) {
     const parsed = parseSlideChartSpec(block.code);
     if ("error" in parsed) problems.push(`line ${block.line}, chart: ${parsed.error}`);
   }

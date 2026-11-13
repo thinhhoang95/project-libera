@@ -197,6 +197,22 @@ export async function inspectReviewKeys(root: string): Promise<{ keys: string[];
 }
 
 /**
+ * Index entries whose document file is not on disk (not synced yet, or lost),
+ * without touching anything or taking the lock. Empty when the index can't be
+ * read (inspectReviewKeys says so).
+ */
+export async function inspectMissingReviewDocuments(root: string): Promise<{ id: string; key: string }[]> {
+  const absent: { id: string; key: string }[] = [];
+  let index: Map<string, string>;
+  try { index = await readIndexFile(root) ?? new Map<string, string>(); } catch { return absent; }
+  for (const [id, key] of index) {
+    try { await stat(documentPath(root, id)); }
+    catch (error) { if (missing(error)) absent.push({ id, key }); }
+  }
+  return absent;
+}
+
+/**
  * The stored documents of `key` without touching anything (for checks and
  * plans), like inspectReviewKeys. Null when the index or one of them can't be
  * read (not synced yet, damaged), so the caller can't take it for empty.
