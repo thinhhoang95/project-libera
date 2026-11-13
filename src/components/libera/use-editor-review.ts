@@ -174,6 +174,8 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
   const r = useMarkdownReview();
   const latest = useRef(r);
   useLayoutEffect(() => { latest.current = r; }, [r]);
+  // The editor whose last preview dispatch carried no ranges and no changes.
+  const idleEditor = useRef<Editor | null>(null);
   const register = r?.register;
   useEffect(() => {
     if (!editor || !register) return;
@@ -270,6 +272,13 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       if (session.length) void review.action("decision", { ids: session, decision });
       else if (agent.length) void review.action("agent-decision", { ids: agent, decision });
     };
+    // Nothing to draw and nothing drawn: the dispatch would only rebuild empty
+    // state. `decide` reads `latest`, so the one installed earlier stays valid.
+    // The first run for an editor, and any run after a non-empty one, dispatch.
+    const empty = !ranges.length && !changes.length;
+    const drawn = tiptapChangesKey.getState(editor.state), highlighted = tiptapReviewKey.getState(editor.state);
+    if (empty && idleEditor.current === editor && drawn?.decide && !drawn.changes.some((change) => change.mode === "preview" && change.channel === undefined) && !highlighted?.find().length) return;
+    idleEditor.current = empty ? editor : null;
     editor.view.dispatch(editor.state.tr.setMeta(tiptapReviewKey, ranges).setMeta(tiptapChangesKey, { type: "preview", changes, decide } satisfies TiptapChangesMeta));
   }, [editor, r?.doc, r?.enabled, r?.selection, lastValue, sharedDoc, read]);
 }
