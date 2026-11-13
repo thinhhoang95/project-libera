@@ -89,7 +89,8 @@ function describe(actions: CleanupAction[]): { consequence: string; lost: boolea
       if (first.kind === "ink") return { consequence: "All ink drawn on it is deleted for good.", lost: true };
       return { consequence: `Its ${side.what} ${side.what.endsWith("s") ? "are" : "is"} deleted for good.`, lost: true };
     }
-    case "ink-files": return { consequence: `${plural(first.names.length, "ink file")} that ${first.names.length === 1 ? "is" : "are"} never shown ${first.names.length === 1 ? "is" : "are"} deleted for good.`, lost: true };
+    // Ink files of a page the file doesn't have, or drawn on another version of it: the finding says which.
+    case "ink-files": return { consequence: `${plural(first.names.length, "ink file")} ${first.names.length === 1 ? "is" : "are"} deleted for good; the file's other ink is kept.`, lost: true };
     case "set-aside": return { consequence: `${plural(actions.length, "side file")} (annotations, outlines, definitions, ink) ${actions.length === 1 ? "is" : "are"} deleted for good: ${actions.length === 1 ? "it" : "they"} no longer come back with ${actions.length === 1 ? "its file" : "their files"}.`, lost: true };
     case "asset": return first.path.toLowerCase().endsWith(".py")
       ? { consequence: "The Python code is deleted for good.", lost: true }

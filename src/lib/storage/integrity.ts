@@ -255,6 +255,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   });
   budget.visit(visible.files.length);
   counts.files = visible.files.length;
+  const unreadableFolders = `${plural(visible.unreadable.length, "folder")} could not be read (${visible.unreadable.slice(0, 3).join(", ")}${visible.unreadable.length > 3 ? ", …" : ""}), so files in ${visible.unreadable.length === 1 ? "it" : "them"} were not seen.`;
   const notes = await readMarkdownAssetDocuments(notebook);
   counts.notes = notes.documents.length;
   for (const note of notes.documents) budget.read(note.content.length);
@@ -308,6 +309,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       catch { add({ severity: "error", path: notebook, message: "The notebook's settings file can't be read, so its color, emoji and group are the defaults.", fix: "Restore it from your sync service's version history; saving the notebook's settings writes a new one." }); }
     }
     if (visible.truncated) return `${notebook} has more files than one check reads (${visible.files.length}).`;
+    if (visible.unreadable.length) return unreadableFolders;
   });
 
   await run("sidecars", async (add) => {
@@ -461,6 +463,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     await walk(setAside);
     if (kept.length) add({ severity: "info", path: notebook, message: `${kept.length} side ${kept.length === 1 ? "file is" : "files are"} kept for files that left the notebook outside the app, in case they come back.`, clear: kept });
     if (unreadable.length || unreadSidecars) return `${unreadable.length + unreadSidecars} side ${unreadable.length + unreadSidecars === 1 ? "file or folder" : "files or folders"} could not be read.`;
+    // A file back in a folder that could not be listed is not seen to be back: what is kept for it can't be called stale.
+    if (visible.unreadable.length) return unreadableFolders;
   });
 
   await run("assets", async (add) => {

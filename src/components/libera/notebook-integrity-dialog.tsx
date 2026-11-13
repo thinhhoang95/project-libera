@@ -287,6 +287,7 @@ function CleanupPlanView({ plan, lost, understood, onUnderstood }: { plan: Clean
         </ul>
       </section>
       : <p role="status" className="font-medium">Nothing stale is left to remove.</p>}
+    {plan.notes.map((note) => <p key={note} className="text-xs text-muted-foreground">{note}</p>)}
     {plan.remaining > 0 && <p className="text-xs text-muted-foreground">{plural(plan.remaining, "other finding")} {plan.remaining === 1 ? "is" : "are"} not removed: broken links, missing images or LaTeX files and damaged files need you to set them right. Side files that follow a file found again and indexes catch up when the notebook is refreshed, right after this.</p>}
   </div>;
 }

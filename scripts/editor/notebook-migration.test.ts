@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { assertNotebookSound, seeded, seedNotebook, splitLibraryPath, withTemporaryLibrary, writeAt, writeLibraryFile } from "./notebook-test-helpers";
+import { assertNotebookSound, SEEDED_INK, seeded, seedNotebook, splitLibraryPath, withTemporaryLibrary, writeAt, writeLibraryFile } from "./notebook-test-helpers";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -72,7 +72,7 @@ test("a mixed batch moves with every sidecar, image and record, and leaves nothi
   assert.equal(await read(pdfOutlinePath(pdf.notebook, pdf.parts)), seeded("outline"));
   assert.equal(await read(pdfTextCachePath(pdf.notebook, pdf.parts)), seeded("text-cache"));
   assert.equal(await read(definitionsPath(pdf.notebook, pdf.parts)), seeded("pdf-definitions"));
-  assert.equal(await read(path.join(inkFolderPath(pdf.notebook, pdf.parts), "me.json")), seeded("pdf-ink"));
+  assert.equal(await read(path.join(inkFolderPath(pdf.notebook, pdf.parts), SEEDED_INK)), seeded("pdf-ink"));
   assert.ok(existsSync(imageAnnotationsPath("Dst", ["papers", "fig.png"])));
   assert.equal(await read(transcriptPath("Dst", ["audio", "memo.m4a"])), seeded("transcript"));
   assert.equal(await read(audioPeaksPath("Dst", ["audio", "memo.m4a"])), seeded("peaks"));

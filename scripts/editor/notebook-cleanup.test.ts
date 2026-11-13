@@ -13,7 +13,7 @@ import { reconcilePdfSidecars } from "../../src/lib/storage/pdf-sidecars";
 import { definitionsDirectoryPath, definitionsPath, filePathFromParts, getAdminRoot, notebookPath, orphanedSidecarsDirectoryPath, pdfAnnotationsPath, transcriptPath } from "../../src/lib/storage/paths";
 import { readReferenceLibrary } from "../../src/lib/storage/references";
 import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
-import { assertNotebookSound, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
+import { assertNotebookSound, SEEDED_INK, seeded, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
 
 const exists = (target: string) => stat(target).then(() => true, () => false);
 const gone = (relative: string) => { const [notebook, ...parts] = relative.split("/"); return rm(filePathFromParts(notebook, parts), { force: true }); };
@@ -123,10 +123,10 @@ test("ink set aside for a file that is back goes to it, and is never offered to 
   // Set aside without the file's bytes recorded: the file back under its old path is its own (ink.ts reconcileInkFolders).
   const kept = path.join(orphanedSidecarsDirectoryPath("Nb", "ink"), "1-abcd");
   await writeAt(path.join(kept, "record.json"), JSON.stringify({ originalPath: "Nb/a.pdf", orphanedAt: new Date().toISOString(), source: null }));
-  await writeAt(path.join(kept, "ink", "me.json"), "{}");
+  await writeAt(path.join(kept, "ink", SEEDED_INK), seeded("pdf-ink"));
   const plan = await planNotebookCleanup("Nb");
   assert.deepEqual(plan.items, []);
-  assert.ok(await exists(path.join(kept, "ink", "me.json")));
+  assert.ok(await exists(path.join(kept, "ink", SEEDED_INK)));
 }));
 
 test("a missing attachment to another notebook's file is detached from that reference only", () => withTemporaryLibrary(["Nb", "Other"], async () => {

@@ -13,7 +13,7 @@ import { readReferenceLibrary } from "../../src/lib/storage/references";
 import { applyNotebookRepair, planNotebookRepair } from "../../src/lib/storage/repair";
 import { pruneAudioSidecars } from "../../src/lib/storage/transcripts";
 import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
-import { assertNotebookSound, seeded, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
+import { assertNotebookSound, SEEDED_INK, seeded, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
 
 /** What Finder does: the file moves, nothing else. */
 async function finderMove(from: string, to: string) {
@@ -70,7 +70,7 @@ test("files moved in Finder get their records back by name, and the notebook is 
   assert.equal(await readFile(pdfOutlinePath("Nb", ["reading", "a.pdf"]), "utf8"), seeded("outline"));
   assert.equal(await readFile(definitionsPath("Nb", ["journal", "n.md"]), "utf8"), seeded("note-definitions"));
   assert.ok(await exists(pdfAnnotationsPath("Nb", ["reading", "a.pdf"])));
-  assert.ok(await exists(path.join(inkFolderPath("Nb", ["reading", "a.pdf"]), "me.json")));
+  assert.ok(await exists(path.join(inkFolderPath("Nb", ["reading", "a.pdf"]), SEEDED_INK)));
   assert.ok(await exists(imageAnnotationsPath("Nb", ["reading", "figures", "fig.png"])));
   assert.equal(await readFile(path.join(getAdminRoot(), ...pythonSidecarPath("Nb/journal/n.md").split("/")), "utf8").then((code) => code.includes("print('hi')")), true);
   assert.ok(!(await exists(transcriptPath("Nb", ["audio", "memo.m4a"]))));

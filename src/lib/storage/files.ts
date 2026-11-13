@@ -6,7 +6,8 @@ import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
 import { isEmptyReview, type ReviewDocument } from "@/lib/markdown-review";
 import { inspectReviewDocuments } from "./review-files";
 import { readWorkspaceMetadata } from "./workspace-metadata";
-import { detachReferenceAttachments, moveReferenceAttachments, remapReferenceAttachments } from "./references";
+import { detachReferenceAttachments, inspectReferenceLibrary, moveReferenceAttachments } from "./references";
+import { libraryNotebookNames } from "./library-links";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
 import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -318,6 +319,14 @@ const RECORD_NAMES: Record<string, string> = {
  * which is what opening a note makes.
  */
 async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string) {
+  const names = await leftoverRecords(notebook, parts, fileType);
+  if (!names.length) return;
+  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+  throw new StorageError(`${relativeFilePath(notebook, parts)} still has the ${list} of a file that was there before. Check the notebook to give them to a file or remove them, then move again.`, 409);
+}
+
+/** What records of a file that was there before a path still holds (assertNoLeftoverRecords). Reads only. */
+async function leftoverRecords(notebook: string, parts: string[], fileType: string) {
   const relative = relativeFilePath(notebook, parts);
   const kept = new Set<string>();
   const caches = new Set(SIDECAR_KINDS.filter((kind) => kind.cache).map((kind) => kind.id));
@@ -334,13 +343,13 @@ async function assertNoLeftoverRecords(notebook: string, parts: string[], fileTy
   const metadata = await readWorkspaceMetadata();
   if (metadata.starredFilePaths.includes(relative)) kept.add("star");
   if (metadata.fileTags[relative]) kept.add("tags");
-  let attached = false;
-  await remapReferenceAttachments((attachment) => { if (attachment === relative) attached = true; return attachment; }).catch(() => []);
-  if (attached) kept.add("reference attachment");
-  if (!kept.size) return;
-  const names = [...kept];
-  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
-  throw new StorageError(`${relative} still has the ${list} of a file that was there before. Check the notebook to give them to a file or remove them, then move again.`, 409);
+  // Every library may attach it; read as the check reads them (no lock, no quarantine of a damaged one).
+  for (const library of await libraryNotebookNames()) {
+    const inspected = await inspectReferenceLibrary(library).catch(() => null);
+    if (!inspected || "damaged" in inspected) continue;
+    if (Object.values(inspected.library?.entries ?? {}).some((entry) => entry.attachments.some((attachment) => attachment.kind !== "url" && attachment.path === relative))) { kept.add("reference attachment"); break; }
+  }
+  return [...kept];
 }
 
 function suggestedCopyName(name: string) {
@@ -589,14 +598,19 @@ export async function archiveFile(relativePath: string) {
   await mkdir(archiveDirectoryPath, { recursive: true });
 
   const currentFileType = assertSupportedFileName(current.name);
-  const available = await findAvailableFilePath(archiveDirectoryPath, current.name);
-  const safeNextName = available.name;
+  // The archive picks its own name: one that holds no file, nor records of a file that was there before.
+  const extension = path.extname(current.name);
+  const stem = path.basename(current.name, extension);
+  let safeNextName = current.name;
+  for (let index = 1; await pathExists(path.join(archiveDirectoryPath, safeNextName)) || (await leftoverRecords(current.notebook, [ARCHIVE_DIR, safeNextName], currentFileType)).length; index += 1) {
+    safeNextName = `${stem}-${index}${extension}`;
+  }
+  const available = { name: safeNextName, path: path.join(archiveDirectoryPath, safeNextName) };
   const nextFileType = assertSupportedFileName(safeNextName);
   const nextParts = [ARCHIVE_DIR, safeNextName];
   const currentPath = filePathFromParts(current.notebook, current.pathParts);
   const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
   const nextRelativePath = relativeFilePath(current.notebook, nextParts);
-  await assertNoLeftoverRecords(current.notebook, nextParts, nextFileType);
 
   if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
   if (currentFileType === "image") await migrateImageAnnotations(current.notebook, current.pathParts);

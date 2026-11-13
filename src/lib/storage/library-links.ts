@@ -82,7 +82,9 @@ export function fileExistence() {
   const stateOf = async (libraryPath: string): Promise<"file" | "absent" | "unknown"> => {
     const [notebook, ...parts] = libraryPath.split("/");
     if (!notebook || !parts.length || parts.some((part) => !part || part === "." || part === "..")) return "absent";
-    let directory = notebookPath(notebook);
+    // A linked folder that is not connected on this computer can't be checked.
+    let directory: string;
+    try { directory = notebookPath(notebook); } catch { return "unknown"; }
     for (const [index, part] of parts.entries()) {
       const entries = await list(directory);
       if (typeof entries === "string") return entries;

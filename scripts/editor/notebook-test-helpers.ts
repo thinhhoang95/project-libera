@@ -10,6 +10,7 @@ import { writeMarkdownImageAsset } from "../../src/lib/storage/markdown-assets";
 import { setMigrationFaultForTests } from "../../src/lib/storage/migration";
 import { emptyReferenceLibrary } from "../../src/lib/references/library-ops";
 import { DEFINITIONS_VERSION } from "../../src/lib/definitions";
+import { emptyInkAuthorFile } from "../../src/lib/ink/codec";
 import { PDF_OUTLINE_VERSION } from "../../src/lib/pdf-outline";
 import { TRANSCRIPT_VERSION } from "../../src/lib/transcription/types";
 import type { ReferenceEntry, ReferenceLibrarySettings } from "../../src/lib/references/types";
@@ -91,6 +92,9 @@ export async function writeReferenceLibrary(notebook: string, entries: { key: st
  * and the notebook check accepts it.
  */
 const SEEDED_PDF = "%PDF-1.4 a";
+const SEEDED_INK_AUTHOR = "aaaaaaaaaa";
+/** The name of a seeded ink file: page 1, by the seeded author (lib/ink/authors.ts). */
+export const SEEDED_INK = `page-0001.${SEEDED_INK_AUTHOR}.ink`;
 
 export const seeded = (label: string) => {
   if (label === "outline") return JSON.stringify({ version: PDF_OUTLINE_VERSION, documentPath: label, entries: [] });
@@ -99,6 +103,8 @@ export const seeded = (label: string) => {
   // Caches as their owners read them, made for the seeded PDF.
   if (label === "text-cache") return JSON.stringify({ version: 3, pdfContentHash: label, pageCount: 1, path: label, pdfUpdatedAt: "", pdfSize: SEEDED_PDF.length, generatedAt: label, pages: [{ pageNumber: 1, text: label }] });
   if (label === "peaks") return JSON.stringify({ key: `seed:${label}`, duration: 1, peaks: [0] });
+  // An author file the ink reader accepts, without a recorded source.
+  if (label.endsWith("-ink")) return `${JSON.stringify(emptyInkAuthorFile({ key: SEEDED_INK_AUTHOR }, { unit: "pt", width: 612, height: 792 }))}\n`;
   return JSON.stringify({ seed: label });
 };
 
@@ -111,14 +117,15 @@ export const seeded = (label: string) => {
 export async function seedNotebook(notebook: string) {
   const pdf = ["papers", "a.pdf"];
   await writeLibraryFile(`${notebook}/papers/a.pdf`, SEEDED_PDF);
-  await writeAt(pdfAnnotationsPath(notebook, pdf), JSON.stringify({ version: 2, marks: [{ id: "m1" }] }));
+  // As the readers take it; `seed` lets a test tell where it went (`m1`).
+  await writeAt(pdfAnnotationsPath(notebook, pdf), JSON.stringify({ annotations: [], comments: [], seed: "m1" }));
   await writeAt(pdfOutlinePath(notebook, pdf), seeded("outline"));
   await writeAt(pdfTextCachePath(notebook, pdf), seeded("text-cache"));
   await writeAt(definitionsPath(notebook, pdf), seeded("pdf-definitions"));
-  await writeAt(path.join(inkFolderPath(notebook, pdf), "me.json"), seeded("pdf-ink"));
+  await writeAt(path.join(inkFolderPath(notebook, pdf), SEEDED_INK), seeded("pdf-ink"));
 
   await writeLibraryFile(`${notebook}/papers/fig.png`, Buffer.from("png-bytes"));
-  await writeAt(imageAnnotationsPath(notebook, ["papers", "fig.png"]), JSON.stringify({ version: 2, marks: [] }));
+  await writeAt(imageAnnotationsPath(notebook, ["papers", "fig.png"]), JSON.stringify({ annotations: [] }));
 
   await writeLibraryFile(`${notebook}/audio/memo.m4a`, Buffer.from("audio"));
   await writeAt(transcriptPath(notebook, ["audio", "memo.m4a"]), seeded("transcript"));
@@ -139,10 +146,10 @@ const describe = (finding: IntegrityFinding) => `${finding.severity} ${finding.c
  * pass `severities` to include notes). `allow` names findings a test expects,
  * as text that a finding's description contains.
  */
-export async function assertNotebookSound(notebook: string, { allow = [], severities = ["error", "warning"] }: { allow?: string[]; severities?: IntegritySeverity[] } = {}) {
+export async function assertNotebookSound(notebook: string, { allow = [], severities = ["error", "warning"], partial = false }: { allow?: string[]; severities?: IntegritySeverity[]; /** A check that could only partly run is allowed: it can't say the notebook is sound. */ partial?: boolean } = {}) {
   const report = await verifyNotebook(notebook);
   const unexpected = [
-    ...report.checks.filter((check) => check.status === "failed").map((check) => `check failed ${check.id}: ${check.note}`),
+    ...report.checks.filter((check) => check.status === "failed" || (!partial && check.status === "incomplete")).map((check) => `check ${check.status} ${check.id}: ${check.note}`),
     ...report.findings.filter((finding) => severities.includes(finding.severity)).map(describe).filter((text) => !allow.some((expected) => text.includes(expected))),
   ];
   assert.deepEqual(unexpected, [], `${notebook} is not sound`);
