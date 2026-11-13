@@ -9,6 +9,8 @@ import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
 // from each source's main file's folder (`\subimport` from its own), through
 // `\graphicspath`, with `\includegraphics*` and extension-less graphics, and
 // bibliographies also from the notebook folder (BIBINPUTS, latex/build.ts).
+// A name TeX can't be asked about without expanding macros (`#1`, `\figdir/a`)
+// is not resolved: it is counted as `unresolved`, never reported missing.
 // Main files are found through the include graph. Used by the migration
 // review (files left behind) and the notebook check (files missing).
 
@@ -24,6 +26,11 @@ export type LatexReference = {
 };
 
 const GRAPHICS_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg", ".eps"];
+const INCLUDE_EXTENSIONS = [".tex"];
+const PDF_EXTENSIONS = [".pdf"];
+
+/** A name that depends on a macro (`#1` in a definition, `\figdir`): TeX would only know it after expanding. */
+const needsExpansion = (reference: string) => /[#\\]/.test(reference);
 
 function graphicsPaths(text: string) {
   const match = /\\graphicspath\s*\{((?:\s*\{[^}]*\})+)\s*\}/.exec(stripLatexComments(text));
@@ -52,12 +59,15 @@ export async function latexDependencies(notebook: string, files: readonly string
     const resolved = resolveRelativeNotebookPath(base, reference);
     // Outside the notebook (another notebook, `..` past its folder): not this check's to judge.
     if (!resolved || !resolved.startsWith(`${notebook}/`)) return [];
-    return path.extname(resolved) ? [resolved] : [resolved, ...extensions.map((extension) => `${resolved}${extension}`)];
+    // TeX tries the name as written, then with each extension: a dot in
+    // `plot.v2` is not an extension unless it is one of theirs.
+    return extensions.includes(path.extname(resolved).toLowerCase()) ? [resolved] : [resolved, ...extensions.map((extension) => `${resolved}${extension}`)];
   };
 
   const dependencies = new Map<string, Set<string>>();
   const references = new Map<string, LatexReference[]>();
   const mainFiles = new Map<string, Set<string>>();
+  const unresolved = new Set<string>();
   const visit = (root: string, file: string, prefixes: string[], seen: Set<string>) => {
     if (seen.has(file)) return;
     seen.add(file);
@@ -70,11 +80,13 @@ export async function latexDependencies(notebook: string, files: readonly string
     references.set(file, written);
     const note = (kind: LatexReference["kind"], reference: string, candidates: string[]) => {
       if (!candidates.length) return;
+      if (needsExpansion(reference)) { unresolved.add(`${file}\0${reference}`); return; }
       if (!written.some((item) => item.kind === kind && item.written === reference)) written.push({ kind, written: reference, candidates });
       for (const candidate of candidates) if (visible.has(candidate)) needs.add(candidate);
     };
     for (const include of readLatexIncludes(text)) {
-      const targets = resolveFrom(include.relativeToFile ? file : root, include.path);
+      if (needsExpansion(include.path)) { unresolved.add(`${file}\0${include.path}`); continue; }
+      const targets = resolveFrom(include.relativeToFile ? file : root, include.path, INCLUDE_EXTENSIONS);
       note("include", include.path, targets);
       for (const target of targets) if (texts.has(target)) visit(root, target, prefixes, seen);
     }
@@ -82,7 +94,17 @@ export async function latexDependencies(notebook: string, files: readonly string
       const fromRoot = resolveFrom(root, bibliography);
       note("bibliography", bibliography, [...fromRoot, ...resolveFrom(`${notebook}/main.tex`, bibliography).filter((candidate) => !fromRoot.includes(candidate))]);
     }
-    for (const match of stripLatexComments(text).matchAll(/\\includegraphics\*?\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
+    const stripped = stripLatexComments(text);
+    // pdfpages and listings read their file from the main file's folder too.
+    for (const match of stripped.matchAll(/\\includepdf\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
+      const reference = match[1].trim();
+      note("include", reference, resolveFrom(root, reference, PDF_EXTENSIONS));
+    }
+    for (const match of stripped.matchAll(/\\lstinputlisting\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
+      const reference = match[1].trim();
+      note("include", reference, resolveFrom(root, reference));
+    }
+    for (const match of stripped.matchAll(/\\includegraphics\*?\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
       const reference = match[1].trim();
       note("graphics", reference, ["", ...prefixes].flatMap((prefix) => resolveFrom(root, `${prefix}${reference}`, GRAPHICS_EXTENSIONS)));
     }
@@ -92,5 +114,5 @@ export async function latexDependencies(notebook: string, files: readonly string
   for (const root of roots) visit(root, root, graphicsPaths(texts.get(root)!), new Set());
   // Sources no main file includes are read on their own.
   for (const file of texts.keys()) if (!mainFiles.has(file)) visit(file, file, [], new Set());
-  return { dependencies, references, mainFiles, incomplete };
+  return { dependencies, references, mainFiles, incomplete, unresolved: unresolved.size };
 }

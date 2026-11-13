@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DEFINITIONS_FILE_TYPES, parseDefinitionsFile } from "@/lib/definitions";
+import { parseInkFileName } from "@/lib/ink/authors";
 import { parsePdfOutlineFile } from "@/lib/pdf-outline";
 import { inspectImageSidecar, inspectPdfSidecar } from "@/lib/storage/annotations";
 import { inspectPdfTextCache } from "@/lib/storage/pdf-text-cache";
@@ -198,9 +199,6 @@ async function entries(directory: string, unreadable?: string[]): Promise<Dirent
   }
 }
 
-/** Finder and Windows metadata never make a folder a file's ink folder. */
-const SYSTEM_JUNK = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
-
 /**
  * Every per-file sidecar on disk in a notebook (SIDECAR_KINDS), with the
  * file path it belongs to. Read only; the orphan report and the notebook
@@ -213,9 +211,12 @@ export async function listSidecars(notebook: string): Promise<{ sidecars: Listed
     const root = kind.directoryPath(notebook, []);
     const walk = async (directory: string, parts: string[]) => {
       const children = await entries(directory, unreadable);
-      if (kind.layout === "folder" && parts.length && children.some((child) => child.isFile() && !SYSTEM_JUNK.has(child.name))) {
+      // A file's ink folder holds ink files the reader accepts (as listInkFolders
+      // does). Stray files (a sync conflict copy, system files) don't make a
+      // folder one, and a folder of other files may hold the ink folders of the
+      // files inside it, so subfolders are walked either way.
+      if (kind.layout === "folder" && parts.length && children.some((child) => child.isFile() && parseInkFileName(child.name))) {
         listed.push({ kind: kind.id, kindInfo: kind, path: directory, filePath: `${notebook}/${parts.join("/")}`, fileParts: parts });
-        return;
       }
       for (const child of children) {
         const target = path.join(directory, child.name);

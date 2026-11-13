@@ -11,16 +11,18 @@ import { emptyInkAuthorFile } from "../../src/lib/ink/codec";
 import { createMarkdownFileLinkDestination } from "../../src/lib/markdown-file-links";
 import { searchIndexFile } from "../../src/lib/search/settings";
 import { inkFolderPath } from "../../src/lib/storage/ink";
+import { reviewsDirectory } from "../../src/lib/storage/review-files";
+import { listSidecars } from "../../src/lib/storage/sidecars";
 import { verifyNotebook, type IntegrityReport } from "../../src/lib/storage/integrity";
 import { writeMarkdownImageAsset } from "../../src/lib/storage/markdown-assets";
 import { linkIndexPath } from "../../src/lib/storage/notebook-links";
 import { createNotebook } from "../../src/lib/storage/notebooks";
-import { audioPeaksPath, definitionsPath, filePathFromParts, getAdminRoot, notebookPath, orphanedSidecarsDirectoryPath, pdfAnnotationsPath, pdfTextCachePath, transcriptPath } from "../../src/lib/storage/paths";
+import { audioPeaksPath, definitionsPath, filePathFromParts, getAdminRoot, getStateRoot, notebookPath, orphanedSidecarsDirectoryPath, pdfAnnotationsPath, pdfTextCachePath, transcriptPath, workspaceMetadataPath } from "../../src/lib/storage/paths";
 import { citationIndexPath } from "../../src/lib/storage/reference-citations";
 import { seedNotebook, writeReferenceLibrary } from "./notebook-test-helpers";
 import { setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
 import { currentReferenceJobRunner, setReferenceJobRunner } from "../../src/lib/references/jobs";
-import { resetBibTethers } from "../../src/lib/references/bib-tether";
+import { resetBibTethers, tetherBibFile } from "../../src/lib/references/bib-tether";
 
 async function withLibrary(run: () => Promise<void>) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-integrity-"));
@@ -304,4 +306,146 @@ test("the check calls nothing that writes, linked folders included", () => withL
   } finally {
     await rm(project, { recursive: true, force: true });
   }
+}));
+
+// ---- What is an ink folder, what is people's work, exact names, LaTeX, stores, indexes, charts
+
+const AAAA = "aaaaaaaaaa";
+
+test("a stray file in a folder of ink folders does not make it one file's ink folder", () => withLibrary(async () => {
+  await file("Nb/old/a.pdf", "%PDF-a");
+  await file("Nb/old/b.pdf", "%PDF-b");
+  await raw(path.join(inkFolderPath("Nb", ["old", "a.pdf"]), `page-0001.${AAAA}.ink`), ink(AAAA));
+  await raw(path.join(inkFolderPath("Nb", ["old", "b.pdf"]), `page-0001.${AAAA}.ink`), ink(AAAA));
+  // A sync conflict copy and system files beside the two ink folders.
+  await raw(path.join(inkFolderPath("Nb", ["old"]), "conflict (1).txt"), "stray");
+  await raw(path.join(inkFolderPath("Nb", ["old"]), ".DS_Store"), "x");
+  await raw(path.join(inkFolderPath("Nb", ["old"]), `page-0001.${AAAA}.ink.sync-conflict`), "{}");
+
+  assert.deepEqual((await listSidecars("Nb")).sidecars.filter((sidecar) => sidecar.kind === "ink").map((sidecar) => sidecar.filePath).sort(), ["Nb/old/a.pdf", "Nb/old/b.pdf"]);
+  assert.deepEqual(of(await verifyNotebook("Nb"), "sidecars"), [], "no 'Saved ink of Nb/old', and the ink of both PDFs is found");
+}));
+
+test("a size mismatch clears only what can be made again: not annotations, not ink drawn on the current version", () => withLibrary(async () => {
+  await file("Nb/p.pdf", "%PDF-1");
+  await raw(pdfAnnotationsPath("Nb", ["p.pdf"]), JSON.stringify({ annotations: [], comments: [], source: { size: 99, contentHash: "a".repeat(64) } }));
+  const folder = inkFolderPath("Nb", ["p.pdf"]);
+  await raw(path.join(folder, `page-0001.${AAAA}.ink`), ink(AAAA, { source: { size: 6, sha256: sha256("%PDF-1") } }));
+  await raw(path.join(folder, `page-0002.${AAAA}.ink`), ink(AAAA, { source: { size: 99, sha256: "b".repeat(64) } }));
+  await file("Nb/m.m4a", "audio!!");
+  await raw(transcriptPath("Nb", ["m.m4a"]), JSON.stringify({ version: 1, audio: { size: 5, duration: 60 }, speakers: [], segments: [] }));
+
+  const findings = of(await verifyNotebook("Nb"), "sidecars");
+  const at = (target: string, text: string) => findings.find((finding) => finding.path === target && finding.message.includes(text))!;
+  assert.equal(at("Nb/p.pdf", "pdf annotations").clear, undefined, "annotations are people's work");
+  assert.deepEqual(at("Nb/p.pdf", "ink file").clear, [{ type: "ink-files", filePath: "Nb/p.pdf", names: [`page-0002.${AAAA}.ink`] }]);
+  assert.match(at("Nb/p.pdf", "ink file").message, /^1 ink file of Nb\/p\.pdf was drawn on another version/);
+  assert.deepEqual(at("Nb/m.m4a", "transcript").clear, [{ type: "side-file", kind: "transcript", filePath: "Nb/m.m4a" }]);
+}));
+
+test("existence is exact: a case-only rename loses stars and links, as it does in the app", () => withLibrary(async () => {
+  await file("Nb/paper.pdf", "%PDF");
+  await file("Nb/docs/a.md", "# A\n");
+  await setStarredFilePath("Nb/Paper.pdf", true);
+  await setFileTagsForPath("Nb/Docs/a.md", ["x"]);
+  await file("Nb/n.md", "[wrong](Paper.pdf) [right](paper.pdf) [folder](Docs/a.md) [ok](docs/a.md)\n");
+  const report = await verifyNotebook("Nb");
+  assert.deepEqual(messages(report, "records").sort(), ["warning: Has tags, but the file is missing.", "warning: Starred, but the file is missing."]);
+  assert.deepEqual(of(report, "records").map((finding) => finding.path).sort(), ["Nb/Docs/a.md", "Nb/Paper.pdf"]);
+  assert.deepEqual(messages(report, "links").sort(), ['warning: The link "Docs/a.md" finds no file.', 'warning: The link "Paper.pdf" finds no file.']);
+}));
+
+test("LaTeX: names that need macros are counted, not missing; dotted names get their extensions; pdfpages and listings are read", () => withLibrary(async () => {
+  await file("Nb/paper/main.tex", [
+    "\\documentclass{article}",
+    "\\newcommand{\\fig}[1]{\\includegraphics{figs/#1}}",
+    "\\begin{document}",
+    "\\includegraphics{\\figdir/a}",
+    "\\input{\\jobname.extra}",
+    "\\includegraphics{figs/plot.v2}",
+    "\\includegraphics{figs/lost.v3}",
+    "\\input{chap.final}",
+    "\\includepdf[pages={1-2}]{scan}",
+    "\\includepdf{lost-scan.pdf}",
+    "\\lstinputlisting[language=C]{code/there.c}",
+    "\\lstinputlisting{code/missing.c}",
+    "\\end{document}",
+    "",
+  ].join("\n"));
+  await file("Nb/paper/figs/plot.v2.pdf", "pdf");
+  await file("Nb/paper/chap.final.tex", "Chapter.\n");
+  await file("Nb/paper/scan.pdf", "%PDF");
+  await file("Nb/paper/code/there.c", "int main;");
+  const report = await verifyNotebook("Nb");
+  assert.deepEqual(messages(report, "latex").sort(), [
+    'error: includes "code/missing.c", which is not found.',
+    'error: includes "lost-scan.pdf", which is not found.',
+    'error: shows "figs/lost.v3", which is not found.',
+  ]);
+  const latex = report.checks.find((check) => check.id === "latex")!;
+  assert.equal(latex.status, "incomplete");
+  assert.match(latex.note ?? "", /3 LaTeX references use a macro/);
+  assert.equal(report.completeness, "partial");
+}));
+
+test("a tether to a drive that is not connected is a warning to keep; a missing file in a present folder can be forgotten", () => withLibrary(async () => {
+  const outside = await mkdtemp(path.join(os.tmpdir(), "libera-bib-"));
+  try {
+    const bib = path.join(outside, "refs.bib");
+    await writeFile(bib, "@article{a, title={A}}\n");
+    await tetherBibFile("Nb", bib, { prefer: "library" });
+    resetBibTethers();
+    await rm(bib);
+    const present = of(await verifyNotebook("Nb"), "references");
+    assert.equal(present.length, 1);
+    assert.deepEqual(present[0].clear, [{ type: "tether", target: bib }]);
+    await rm(outside, { recursive: true, force: true });
+    const offline = of(await verifyNotebook("Nb"), "references");
+    assert.equal(offline.length, 1);
+    assert.match(offline[0].message, /may be on a drive that is not connected/);
+    assert.equal(offline[0].clear, undefined);
+  } finally { await rm(outside, { recursive: true, force: true }); }
+}));
+
+test("a damaged workspace file, and review documents that are not on disk, are reported", () => withLibrary(async () => {
+  await file("Nb/a.md", "A\n");
+  await raw(workspaceMetadataPath(), "{ broken");
+  await raw(path.join(reviewsDirectory(getStateRoot()), "index.json"), JSON.stringify({ schemaVersion: 2, documents: { r1: "Nb/a.md", r2: "Nb/gone.md", r3: "Other/x.md" } }));
+  const report = await verifyNotebook("Nb");
+  const lines = messages(report, "records").sort();
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /^error: The file that keeps stars, tags and notebook groups can't be read/);
+  assert.equal(lines[1], "warning: The review comments of Nb/a.md are not on this computer: they may not have synced yet, or are lost.");
+  assert.equal(lines[2], "warning: The review comments of Nb/gone.md are not on this computer: they may not have synced yet, or are lost.");
+  assert.ok(of(report, "records").every((finding) => !finding.clear), "nothing here is offered for removal");
+  await rm(workspaceMetadataPath());
+  assert.deepEqual(messages(await verifyNotebook("Nb"), "records").filter((line) => line.startsWith("error:")), [], "a missing workspace file is fine");
+}));
+
+test("indexes: LaTeX entries are compared by hash, and a note with invalid UTF-8 matches its raw bytes", () => withLibrary(async () => {
+  await file("Nb/a.tex", "\\documentclass{article}\n");
+  await file("Nb/b.tex", "\\documentclass{book}\n");
+  await raw(citationIndexPath("Nb"), JSON.stringify({ version: 4, files: { "Nb/a.tex": { contentHash: sha256("\\documentclass{article}\n"), keys: [] }, "Nb/b.tex": { contentHash: "0", keys: [] } } }));
+  assert.deepEqual(messages(await verifyNotebook("Nb"), "indexes"), ["info: The citation index is out of date for 1 file; it is brought up to date the next time citations are listed."]);
+
+  const bytes = Buffer.from([0x41, 0xff, 0x42, 0x0a]);
+  await file("Nb/bad.md", bytes);
+  await rm(citationIndexPath("Nb"));
+  await raw(linkIndexPath("Nb"), JSON.stringify({ version: 2, files: { "Nb/bad.md": { contentHash: createHash("sha256").update(bytes).digest("hex"), destinations: [] } } }));
+  assert.deepEqual(messages(await verifyNotebook("Nb"), "indexes"), [], "the index hashes bytes, and so does the check");
+}));
+
+test("a chart's data file is checked as a link is: missing, or present only in another case, is a warning", () => withLibrary(async () => {
+  await file("Nb/sales.csv", "q,v\nQ1,1\n");
+  await file("Nb/docs/sales.csv", "q,v\nQ1,1\n");
+  await file("Nb/docs/c.md", [
+    "```chart", "type: bar", "data: ../sales.csv", "```", "",
+    "```chart", "type: bar", "data: Sales.csv", "```", "",
+    "```chart", "type: bar", "data: gone.csv", "```", "",
+    "```chart", "type: bar", "labels: [a]", "series: [1]", "```", "",
+  ].join("\n"));
+  assert.deepEqual(messages(await verifyNotebook("Nb"), "links").sort(), [
+    'warning: The chart at line 11 reads its data from "gone.csv", which is missing.',
+    'warning: The chart at line 6 reads its data from "Sales.csv", which is missing.',
+  ]);
 }));
