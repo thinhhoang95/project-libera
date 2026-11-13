@@ -106,3 +106,52 @@ test('source highlight updates propagate through fences and keep find matches cu
     assert.equal(layer.querySelectorAll('.markdown-editor-find-match').length,1);
   }finally{await act(async()=>root.unmount());}
 });
+
+test('citation hover coalesces mousemoves to one lookup per frame, mouseleave cancels it and unmount releases the mirror',async()=>{
+  const queue=new Map<number,FrameRequestCallback>();
+  let nextFrame=1;
+  const win=dom.window as unknown as {requestAnimationFrame:unknown;cancelAnimationFrame:unknown};
+  const originalRaf=win.requestAnimationFrame,originalCaf=win.cancelAnimationFrame;
+  win.requestAnimationFrame=(cb:FrameRequestCallback)=>{queue.set(nextFrame,cb);return nextFrame++;};
+  win.cancelAnimationFrame=(id:number)=>{queue.delete(id);};
+  const flush=()=>{const callbacks=[...queue.values()];queue.clear();callbacks.forEach((cb)=>cb(0));};
+  let measurements=0;
+  const proto=dom.window.Range.prototype;
+  const originalSetStart=proto.setStart;
+  proto.setStart=function(this:Range,...args:Parameters<Range['setStart']>){measurements+=1;return originalSetStart.apply(this,args);};
+  const root=createRoot(document.getElementById('root')!);
+  const ref={current:null as HTMLTextAreaElement|null};
+  await act(async()=>root.render(createElement(MarkdownEditor,{value:'See @smith2020 and more text\n',textareaRef:ref,files:[],openTabs:[],recentFiles:[],formatting:false,imageConverting:false,fontFamily:'monospace',fontSizePx:16,lineHeightPx:24,onChange:()=>{},onAiFormatSelection:async()=>{},onAiRewriteSelection:async()=>{},onAiWriteAt:async()=>{},onAiImageToMarkdown:async()=>{},onInsertFileLink:()=>{},onInsertImageFile:async()=>{}})));
+  let unmounted=false;
+  try{
+    const move=(x:number)=>ref.current!.dispatchEvent(new dom.window.MouseEvent('mousemove',{bubbles:true,clientX:x,clientY:5}));
+    queue.clear();
+    measurements=0;
+    await act(async()=>{move(1);});
+    assert.equal(queue.size,1);
+    assert.equal(measurements,0);
+    await act(async()=>flush());
+    const single=measurements;
+    assert.ok(single>0);
+    measurements=0;
+    await act(async()=>{move(1);move(2);move(3);move(4);move(5);});
+    assert.equal(queue.size,1);
+    assert.equal(measurements,0);
+    await act(async()=>flush());
+    assert.equal(measurements,single);
+    measurements=0;
+    await act(async()=>{move(1);ref.current!.dispatchEvent(new dom.window.MouseEvent('mouseout',{bubbles:true,relatedTarget:null}));});
+    assert.equal(queue.size,0);
+    await act(async()=>flush());
+    assert.equal(measurements,0);
+    const mirror=document.querySelector('body > div[aria-hidden="true"][style*="position: fixed"]');
+    assert.ok(mirror&&mirror.textContent!=='');
+    await act(async()=>root.unmount());
+    unmounted=true;
+    assert.equal(mirror.textContent,'');
+  }finally{
+    proto.setStart=originalSetStart;
+    win.requestAnimationFrame=originalRaf;win.cancelAnimationFrame=originalCaf;
+    if(!unmounted)await act(async()=>root.unmount());
+  }
+});

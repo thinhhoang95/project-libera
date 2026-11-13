@@ -46,6 +46,7 @@ import type {
 import {
   getTextareaClientPointForOffset,
   getTextareaOffsetAtPoint,
+  releaseTextareaMeasurements,
 } from "@/lib/textarea-position";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
@@ -90,6 +91,8 @@ type MarkdownEditorProps = Omit<MarkdownSourceEditorProps, "extensions" | "docum
 const EMPTY_EDITOR_LINE = "\u200b";
 const FIND_MATCH_CLASS_NAME = "markdown-editor-find-match";
 const ACTIVE_FIND_MATCH_CLASS_NAME = "markdown-editor-find-match-active";
+// Stable identity for "no find matches", so the refresh guard can compare it.
+const NO_FIND_MATCHES: TextMatch[] = [];
 
 type HighlightChunk = {
   className?: string;
@@ -307,6 +310,9 @@ export function MarkdownEditor({
   const highlightedLinesRef = useRef<HighlightChunk[][]>([]);
   const highlightIndexRef = useRef<ReturnType<typeof createMarkdownEditorLineIndex> | null>(null);
   highlightIndexRef.current ??= createMarkdownEditorLineIndex();
+  const lastHighlightRefreshRef = useRef<{
+    layer: HTMLPreElement; text: string; matches: readonly unknown[]; activeMatchIndex: number; reviewRanges: unknown;
+  } | null>(null);
   const fileLinkPopupFrameRef = useRef<number | null>(null);
   const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
   // The `@` citation popup, refreshed in the file-link popup's frame.
@@ -317,6 +323,10 @@ export function MarkdownEditor({
   const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
   const referenceRender = useReferenceRender();
   const citationHover = useEditorCitationHover();
+  // Hover lookups are coalesced to one per animation frame, using the latest pointer.
+  const citationPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const citationFrameRef = useRef<number | null>(null);
+  const runCitationHoverRef = useRef<() => void>(() => {});
   const composingRef = useRef(false);
   const headingNumbering = useHeadingNumbering(activeFilePath, (maxDepth) => detectMarkdownHeadingNumbering(value, maxDepth));
   const headingNumberingRef = useRef(headingNumbering);
@@ -384,7 +394,17 @@ export function MarkdownEditor({
     const layer = highlightLayerRef.current;
     if (!layer) return;
     const text = editorValueRef.current;
-    const matches = findOpen ? findMatches(text, findQuery, { wildcards: wildcardMatches }) : [];
+    const matches = findOpen ? findMatches(text, findQuery, { wildcards: wildcardMatches }) : NO_FIND_MATCHES;
+    const last = lastHighlightRefreshRef.current;
+    if (last && last.layer === layer && last.text === text && last.matches === matches &&
+      last.activeMatchIndex === activeMatchIndex && last.reviewRanges === reviewRanges) {
+      // Nothing the rebuild depends on changed (e.g. Find open: the commit and
+      // the follow-up state change both refresh). Only the scroll sync below
+      // can still differ, because the textarea may have scrolled since.
+      const textarea = textareaRef.current;
+      if (textarea) { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; }
+      return;
+    }
     const next = renderHighlightedMarkdown(highlightIndexRef.current!.update(text), matches, activeMatchIndex, reviewRanges);
     const previous = highlightedLinesRef.current.slice();
     const equal = (old: HighlightChunk[] | undefined, chunks: HighlightChunk[]) => old === chunks ||
@@ -423,6 +443,7 @@ export function MarkdownEditor({
     if (fragment.childNodes.length) layer.appendChild(fragment);
     while (layer.children.length > next.length) layer.lastElementChild!.remove();
     highlightedLinesRef.current = next;
+    lastHighlightRefreshRef.current = { layer, text, matches, activeMatchIndex, reviewRanges };
     // The gutter width tracks the digit count of the last line number.
     const digits = String(Math.max(next.length, 1)).length;
     if (layer.parentElement && layer.parentElement.dataset.lineDigits !== String(digits)) {
@@ -492,9 +513,16 @@ export function MarkdownEditor({
         window.cancelAnimationFrame(fileLinkPopupFrameRef.current);
       }
 
+      if (citationFrameRef.current !== null) {
+        window.cancelAnimationFrame(citationFrameRef.current);
+        citationFrameRef.current = null;
+      }
+
       if (selectionChangeTimeoutRef.current !== null) {
         window.clearTimeout(selectionChangeTimeoutRef.current);
       }
+
+      releaseTextareaMeasurements();
     };
   }, []);
 
@@ -609,6 +637,8 @@ export function MarkdownEditor({
     });
   }
 
+  useLayoutEffect(() => { runCitationHoverRef.current = runCitationHover; });
+
   /** The citation under the pointer, for the hover card and Ctrl/Cmd+click. */
   function citationAtPointer(textarea: HTMLTextAreaElement, clientX: number, clientY: number) {
     const text = editorValueRef.current;
@@ -618,8 +648,29 @@ export function MarkdownEditor({
       (at) => getTextareaClientPointForOffset(textarea, at), referenceKeyResolver(referenceRender));
   }
 
+  function cancelCitationHoverFrame() {
+    if (citationFrameRef.current !== null) {
+      window.cancelAnimationFrame(citationFrameRef.current);
+      citationFrameRef.current = null;
+    }
+    citationPointerRef.current = null;
+  }
+
   function handleCitationPointer(event: MouseEvent<HTMLTextAreaElement>) {
-    const found = citationAtPointer(event.currentTarget, event.clientX, event.clientY);
+    citationPointerRef.current = { clientX: event.clientX, clientY: event.clientY };
+    if (citationFrameRef.current !== null) return;
+    citationFrameRef.current = window.requestAnimationFrame(() => {
+      citationFrameRef.current = null;
+      runCitationHoverRef.current();
+    });
+  }
+
+  function runCitationHover() {
+    const pointer = citationPointerRef.current;
+    const textarea = textareaRef.current;
+    citationPointerRef.current = null;
+    if (!pointer || !textarea) return;
+    const found = citationAtPointer(textarea, pointer.clientX, pointer.clientY);
     if (!found) {
       citationHover.show(null);
       return;
@@ -1163,7 +1214,7 @@ export function MarkdownEditor({
           if (found && openCitationAttachment(referenceRender, found.citation)) event.preventDefault();
         }}
         onMouseMove={handleCitationPointer}
-        onMouseLeave={() => citationHover.show(null)}
+        onMouseLeave={() => { cancelCitationHoverFrame(); citationHover.show(null); }}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onKeyDown={handleEditorKeyDown}
