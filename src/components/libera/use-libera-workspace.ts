@@ -3789,6 +3789,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    // To another notebook, a file moves as a migration of one file: reviewed, crash-safe, and
+    // followed by everything it has (storage/migration.ts). The dialog saves unsaved tabs itself,
+    // so this comes before the unsaved-draft question. Within its notebook it moves directly.
+    const [destinationNotebook, ...folder] = normalizedDestination.split("/").map((part) => part.trim()).filter(Boolean);
+    if (destinationNotebook && destinationNotebook !== file.notebook) {
+      openMigrationDialog(file.notebook, { paths: [file.path], destination: destinationNotebook, folder: folder.join("/"), flat: true });
+      return;
+    }
+
     if (openTab && tabUnsaved(openTab) && !options?.skipDirtyCheck) {
       setWorkspaceConfirmDialog({
         mode: "move-file-folder",
@@ -4194,16 +4203,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           return;
         }
 
-        // To another notebook, a file moves as a migration of one file: reviewed, crash-safe, and
-        // followed by everything it has (storage/migration.ts). Within its notebook it moves directly.
-        const [destinationNotebook, ...folder] = destinationDirectory.split("/").map((part) => part.trim()).filter(Boolean);
-        if (destinationNotebook && destinationNotebook !== workspaceInputDialog.file.notebook) {
-          const file = workspaceInputDialog.file;
-          setWorkspaceInputDialog(null);
-          openMigrationDialog(file.notebook, { paths: [file.path], destination: destinationNotebook, folder: folder.join("/"), flat: true });
-          return;
-        }
-
+        // A destination in another notebook opens the migration dialog (moveFileToFolder routes it).
         await moveFileToFolder(workspaceInputDialog.file, destinationDirectory);
       }
 

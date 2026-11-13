@@ -290,6 +290,46 @@ export function withMovedReview<T>(from: string, to: string, transform: (text: s
   });
 }
 
+/** Whether a file has a pending review stored, settled or not: a move onto its path would take it over. */
+export async function hasReviewEntry(filePath: string) {
+  return (await readEntry(filePath)) !== null;
+}
+
+/**
+ * A folder moving (rename, archive): the pending reviews of every file under
+ * it follow, by the same rule as withMovedReview. At no point is a review only
+ * at a path whose file is missing.
+ */
+export async function withMovedReviewsUnder<T>(from: string, to: string, move: () => Promise<T>): Promise<T> {
+  const moved = (filePath: string) => to + filePath.slice(from.length);
+  let names: string[] = [];
+  try { names = (await readdir(reviewDirectory())).filter((name) => name.endsWith(".json")); } catch { /* No reviews. */ }
+  const paths: string[] = [];
+  for (const name of names) {
+    try {
+      const entry = JSON.parse(await readFile(path.join(reviewDirectory(), name), "utf8"));
+      if (isEntry(entry) && entry.path.startsWith(`${from}/`)) paths.push(entry.path);
+    } catch { /* Unreadable entries are the check's to report. */ }
+  }
+  return withReviewFiles([...paths, ...paths.map(moved)], async () => {
+    const carried: ReviewEntry[] = [];
+    for (const filePath of paths) {
+      const entry = await readEntry(filePath);
+      if (!entry) continue;
+      carried.push(entry);
+      await writeJsonState(entryPath(moved(filePath)), { ...entry, path: moved(filePath), updatedAt: new Date().toISOString(), revision: randomUUID() });
+    }
+    let result: T;
+    try { result = await move(); }
+    catch (error) {
+      for (const entry of carried) await removeEntry(moved(entry.path));
+      throw error;
+    }
+    for (const entry of carried) await removeEntry(entry.path);
+    return result;
+  });
+}
+
 /** Rewrite the baselines of these files' pending reviews (citation keys a migration changed in the files). */
 export async function transformReviewBaselines(transforms: ReadonlyMap<string, (text: string) => string>) {
   for (const [filePath, transform] of transforms) {

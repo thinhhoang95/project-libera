@@ -45,6 +45,17 @@ Never stale, by the same name rule as Try to fix: an image no note shows whose f
 
 Some of this is what people made. The dialog lists every item with what removing it costs, marks what is deleted for good (annotations, ink, comments, transcripts, code, images, pending agent changes), and when there is any, the remove button waits for **I understand these are deleted for good**. Acknowledge is refused while Try to fix can still give a moved file its records back, so they are never deleted instead of moved. Applying runs the check again and is refused if what it would remove changed (a token: each action names exactly what it removes, an attachment by its library and reference, the tether by its target). Right before each removal, the file whose absence made it stale is checked to be still gone, and nothing is deleted whose folder, once links and junctions are followed, is outside the notebook or its system folder. A review is deleted for its exact path, an attachment from its one reference; a removal that fails is reported, and its finding stays. It then refreshes the tree, whose upkeep moves side files to files found again and brings the link index up to date, before checking again. Not stale, and left listed: broken links, missing images and LaTeX files, unreadable or damaged files, records a reader drops, agent undo history, unfinished migrations and the settings file. Not for shared notebooks. Tests: `scripts/editor/notebook-cleanup.test.ts`.
 
+## Moving files in the app
+
+Moving, renaming or archiving a file (`moveFileToDirectory`, `moveFile`, `archiveFile`, and the folder renames and archives in `src/lib/storage/files.ts`) keeps everything that points at its path pointing at it, so a check afterwards finds nothing at the old one:
+
+- **Pending agent reviews** are written at the new path before the file moves and removed from the old one after (`withMovedReview`, `withMovedReviewsUnder` for a folder), so the review is never only at a path whose file is missing. A note moved to another notebook gets its image rewrites, and its cited-key rewrites once `copyCitedReferences` has run, applied to the review's baseline.
+- **Undo history** follows through `recordMovedRunFiles` (`recordMovedRunFolder` for a folder), with the same rewrites and the file's hash before and after them.
+- **Leftover records at the destination** refuse the move (409, naming what is kept and pointing here): side files other than caches, review comments, pending agent changes, a star or tags, a reference attachment, kept for a file deleted outside the app. They would be destroyed or handed to the moving file. Caches and an empty review (the one opening a note makes, which the moving file's review replaces) don't count. Check Notebook, then Try to fix or Acknowledge, clears them.
+- **Drag and drop to another notebook** opens the migration dialog like the Move menu does (`moveFileToFolder`).
+
+Tests: `scripts/editor/notebook-move-integrity.test.ts`.
+
 ## Bounds, progress and stopping
 
 A check runs under limits (`DEFAULT_INTEGRITY_LIMITS`: 20,000 entries, 64 MB read, 30 s, 10,000 findings); reaching one makes the checks it cut short partial, saying which limit. The report carries what the check cost (`statistics`) and its `completeness`. With `?stream=1` the route sends newline-delimited JSON: one `progress` line as each check starts, then the `report` (or an `error`). The dialog shows the check it is on and a **Stop** button; stopping, closing the dialog or the request going away aborts the check between reads.
