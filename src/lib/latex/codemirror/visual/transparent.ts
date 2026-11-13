@@ -19,6 +19,23 @@ export type TransparentPlan = {
 };
 
 const cache = new Map<string, TransparentPlan | null>();
+
+/* What the plans depend on in the definitions (their fingerprint and what conditionals read: a string listing every
+ * macro) as a short number: equal for equal strings, found once per definitions object. The numbers are dropped with
+ * the plans that carry them. */
+let interned = new Map<string, number>();
+let internedOf = new WeakMap<LatexDefinitions, number>();
+let internedCount = 0;
+function definitionsId(defs: LatexDefinitions) {
+  let id = internedOf.get(defs);
+  if (id !== undefined) return id;
+  if (interned.size >= 1000) { interned = new Map(); internedOf = new WeakMap(); cache.clear(); }
+  const suffix = `${defs.fingerprint}\u0000${conditionalFactsKey(defs)}`;
+  id = interned.get(suffix);
+  if (id === undefined) interned.set(suffix, id = ++internedCount);
+  internedOf.set(defs, id);
+  return id;
+}
 const PLACEHOLDER = (n: number) => `⁣${n}⁣`;
 
 function placeholderNodes(root: Node, count: number) {
@@ -60,7 +77,7 @@ function styleAround(node: Node, root: Node) {
 export function transparentPlan(macro: LatexMacro, defs: LatexDefinitions): TransparentPlan | null {
   if (macro.arity < 1 || macro.arity > 4 || macro.optional !== undefined || macro.spec || macro.mathOnly || macro.unsupported) return null;
   // The plan renders the body, with the macros it uses: it depends on all the definitions, not only this one.
-  const key = `${macro.fingerprint}\u0000${defs.fingerprint}\u0000${conditionalFactsKey(defs)}`;
+  const key = `${macro.fingerprint}\u0000${definitionsId(defs)}`;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
   // A macro that passes its argument on unchanged (`\rev{…}`, a version switch that is on) draws only the argument.

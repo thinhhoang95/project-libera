@@ -2,7 +2,7 @@ import { Facet, StateEffect, StateField, type EditorState, type Text, type Trans
 import { EMPTY_AUX, type LatexAuxData } from "../../aux-file";
 import { bodyStartOf, collectLatexDefinitions, conditionalFactsKey, definitionsFingerprint, emptyLatexDefinitions, mapLatexDefinitions, type DefinitionSource, type LatexDefinitions } from "../../macros/definitions";
 import { EMPTY_NUMBERING, type LatexNumbering, type NumberingStart } from "../../macros/numbering";
-import { disabledRegions, discardingMacros } from "../../macros/structure";
+import { disabledRegions, discardingMacros, macroEnvironmentRegions, type MacroEnvironmentRegion } from "../../macros/structure";
 
 /* State shared by the Visual mode's layers (docs/latex-visual-editor-plan.md).
  * Nothing here changes the document. */
@@ -89,13 +89,19 @@ export const numberingField = StateField.define<LatexNumbering>({
   },
 });
 
+/**
+ * A conditional's command. `\iff` (the arrow) opens nothing and decides nothing (conditionals.ts `opensConditional`, structure.ts
+ * `falseRegions`), so it does not count; a `\iff` cut off by the end of the text might be `\iffalse`, so it does.
+ */
+const CONDITIONAL_HINT = /\\(?:if(?!f[^A-Za-z@])|fi|else|unless|repeat)/;
+
 /** Whether an edit could change what `\iffalse … \fi` leaves out: it is near a conditional's `\if…`, `\else` or `\fi`. */
 function touchesConditionals(tr: Transaction) {
   let touched = false;
   tr.changes.iterChanges((fromA, toA, fromB, toB) => {
     if (touched) return;
     const near = (doc: Text, from: number, to: number) => doc.sliceString(Math.max(0, from - 12), Math.min(doc.length, to + 12));
-    if (/\\(?:if|fi|else|unless|repeat)/.test(near(tr.startState.doc, fromA, toA)) || /\\(?:if|fi|else|unless|repeat)/.test(near(tr.state.doc, fromB, toB))) touched = true;
+    if (CONDITIONAL_HINT.test(near(tr.startState.doc, fromA, toA)) || CONDITIONAL_HINT.test(near(tr.state.doc, fromB, toB))) touched = true;
   });
   return touched;
 }
@@ -120,7 +126,8 @@ export const disabledField = StateField.define<Array<{ from: number; to: number;
   update(value, tr) {
     const discarding = discardingMacros(visualDefinitions(tr.state));
     const recompute = () => disabledRegions(tr.state.doc.toString(), discarding, visualDefinitions(tr.state));
-    if (discardingKey(tr.startState) !== discardingKey(tr.state)) return recompute();
+    // (The keys list every macro: with the same definitions they are the same.)
+    if (visualDefinitions(tr.startState) !== visualDefinitions(tr.state) && discardingKey(tr.startState) !== discardingKey(tr.state)) return recompute();
     if (!tr.docChanged) return value;
     // A braced test's branches (`\iftoggle{t}{…}{…}`, structure.ts) end at their braces, as a discarding macro's arguments do.
     if (touchesConditionals(tr) || ((discarding.size || value.some((region) => region.braced)) && touchesGroups(tr))) return recompute();
@@ -172,6 +179,52 @@ export function noteBodyStart(tr: Transaction) {
 /** Commands that define something, or that change which definitions TeX runs (conditionals, groups, verbatim). */
 const DEFINITION_HINT = /\\(?:new|renew|provide|Declare|declare|def|gdef|edef|xdef|let|mathchardef|setboolean|set(?:bool|toggle)|not(?:toggle|bool)|PassOptions|loop|repeat|unless|ProcessOptions|ExecuteOptions|[A-Za-z@]+(?:true|false)(?![A-Za-z@])|theoremstyle|numberwithin|counterwithin|crefname|Crefname|NewDocument|RenewDocument|ProvideDocument|(?:New|Renew|Provide)Expandable|documentclass|usepackage|input|graphicspath|alg(?:new|renew)command|algdef|algblock|algtext|SetKw|if|fi(?![A-Za-z])|else(?![A-Za-z])|begingroup|endgroup|verb|(?:begin|end)\s*\{(?:verbatim|Verbatim|comment|lstlisting|minted))/;
 
+/**
+ * `DEFINITION_HINT` without the commands the definition reader skips whatever they follow: `\iff` (the arrow: definitions.ts
+ * `TexScanner.advance` never opens a conditional for it), and `\newline`, `\newpage`, `\newblock` (no branch there, and no
+ * entry of its `DEFINITION` list, matches them). Unless the document defines a macro of one of those names: its uses
+ * may then be a definer's (definitions.ts `definitionPattern`).
+ */
+const IGNORED_COMMANDS = ["iff", "newline", "newpage", "newblock"];
+const DEFINITION_HINT_TRIMMED = new RegExp(DEFINITION_HINT.source.replace("\\\\(?:", `\\\\(?!(?:${IGNORED_COMMANDS.join("|")})(?![A-Za-z@]))(?:`));
+const definitionHint = (defs: LatexDefinitions) => (IGNORED_COMMANDS.some((name) => defs.macros.has(name)) ? DEFINITION_HINT : DEFINITION_HINT_TRIMMED);
+
+/** Where the last macro that is local to a group stops applying, per definitions. */
+const scopedEnds = new WeakMap<LatexDefinitions, number>();
+function scopedUntilOf(defs: LatexDefinitions) {
+  let known = scopedEnds.get(defs);
+  if (known === undefined) {
+    known = -1;
+    for (const list of defs.macros.values()) for (const macro of list) if (macro.end !== undefined) known = Math.max(known, macro.end);
+    scopedEnds.set(defs, known);
+  }
+  return known;
+}
+
+/** The largest position `mapLatexDefinitions` moves (-1 when it moves none), per definitions. */
+const positionLimits = new WeakMap<LatexDefinitions, number>();
+function positionLimit(defs: LatexDefinitions) {
+  let known = positionLimits.get(defs);
+  if (known === undefined) {
+    known = -1;
+    for (const list of defs.macros.values()) for (const macro of list) known = Math.max(known, macro.pos, macro.end ?? -1);
+    for (const env of defs.environments.values()) known = Math.max(known, env.pos);
+    for (const list of defs.switches?.values() ?? []) for (const setting of list) known = Math.max(known, setting.pos, setting.end ?? -1);
+    for (const extent of defs.extents) known = Math.max(known, extent.from, extent.to);
+    for (const note of [...defs.problems, ...defs.unsupported]) if (note.file === undefined) known = Math.max(known, note.pos);
+    positionLimits.set(defs, known);
+  }
+  return known;
+}
+
+/** Whether every change starts after every position the definitions hold, so mapping them through it would move none. */
+function changesAfterDefinitions(defs: LatexDefinitions, tr: Transaction) {
+  const limit = positionLimit(defs);
+  let after = true;
+  tr.changes.iterChangedRanges((fromA) => { if (fromA <= limit) after = false; });
+  return after;
+}
+
 function computeDefinitions(state: EditorState, sources: readonly MacroSource[]): LatexDefinitions {
   return collectLatexDefinitions(sources, { text: state.doc.toString(), bodyStart: bodyStartIn(state.doc) });
 }
@@ -185,8 +238,8 @@ function touchesDefinitions(tr: Transaction, defs: LatexDefinitions) {
   if (!tr.docChanged) return false;
   const oldBody = bodyStartIn(tr.startState.doc);
   noteBodyStart(tr);
-  let scopedUntil = -1;
-  for (const list of defs.macros.values()) for (const macro of list) if (macro.end !== undefined) scopedUntil = Math.max(scopedUntil, macro.end);
+  const scopedUntil = scopedUntilOf(defs);
+  const hint = definitionHint(defs);
   let touched = false;
   tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
     if (touched) return;
@@ -195,7 +248,7 @@ function touchesDefinitions(tr: Transaction, defs: LatexDefinitions) {
     if (fromA <= scopedUntil && /[{}\\]/.test(inserted.toString() + tr.startState.doc.sliceString(fromA, toA))) { touched = true; return; }
     const oldLines = tr.startState.doc.sliceString(tr.startState.doc.lineAt(fromA).from, tr.startState.doc.lineAt(toA).to);
     const newLines = tr.state.doc.sliceString(tr.state.doc.lineAt(fromB).from, tr.state.doc.lineAt(toB).to);
-    if (DEFINITION_HINT.test(oldLines) || DEFINITION_HINT.test(newLines)) touched = true;
+    if (hint.test(oldLines) || hint.test(newLines)) touched = true;
   });
   return touched;
 }
@@ -208,22 +261,87 @@ function hasPositions(defs: LatexDefinitions) {
   return false;
 }
 
+/** The environments a document opens and closes through macros, per document version. */
+const macroRegions = new WeakMap<Text, { defs: LatexDefinitions; regions: MacroEnvironmentRegion[] }>();
+export function macroRegionsFor(doc: Text, defs: LatexDefinitions) {
+  const cached = macroRegions.get(doc);
+  if (cached?.defs === defs) return cached.regions;
+  const regions = macroEnvironmentRegions(() => doc.toString(), defs);
+  macroRegions.set(doc, { defs, regions });
+  return regions;
+}
+
+/** The regions held for a document version, or undefined (for tests: whether a transaction carried them over). */
+export function heldMacroRegions(doc: Text, defs: LatexDefinitions) {
+  const cached = macroRegions.get(doc);
+  return cached?.defs === defs ? cached.regions : undefined;
+}
+
+const REACH = 2000;
+const NOT_INERT = /[\\%{}\n\r]/;
+
+/**
+ * Whether replacing `fromA`-`toA` of `doc` by `inserted` leaves every token `macroEnvironmentRegions` reads (comments,
+ * `\begin{…}`, `\end{…}`, control words) as it was: no `\`, `%`, brace or line break goes in or out, the text does not join a
+ * control word or a `\begin`/`\end` before it, and it is not inside the braces of one. Anything unsure is not inert.
+ */
+function inertChange(doc: Text, fromA: number, toA: number, inserted: Text) {
+  if (toA - fromA > REACH || inserted.length > REACH) return false;
+  if (NOT_INERT.test(inserted.toString()) || NOT_INERT.test(doc.sliceString(fromA, toA))) return false;
+  const before = doc.sliceString(Math.max(0, fromA - REACH), fromA);
+  const truncated = fromA > before.length;
+  // A run of letters or spaces that fills the reach hides what it follows.
+  const word = /[A-Za-z@]*$/.exec(before)![0].length;
+  if ((truncated && word === before.length) || before[before.length - word - 1] === "\\") return false;
+  const space = /\s*$/.exec(before)![0].length;
+  if ((truncated && space === before.length) || /\\(?:begin|end)\s*$/.test(before)) return false;
+  const brace = before.lastIndexOf("}");
+  if (brace < 0 && truncated) return false;
+  return !/\\(?:begin|end)\s*\{/.test(before.slice(brace + 1));
+}
+
+/**
+ * Carries the macro environment regions of a transaction's old document over to the new one when the definitions are the
+ * same object (so no macro or extent moved) and the one change cannot alter any token of the text. A region's start follows
+ * an insertion at it (what is typed there comes before its command), its end does not.
+ */
+function noteMacroRegions(tr: Transaction, defs: LatexDefinitions) {
+  if (macroRegions.has(tr.state.doc)) return;
+  const held = macroRegions.get(tr.startState.doc);
+  if (held?.defs !== defs) return;
+  let inert = true;
+  let count = 0;
+  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    if (count++ || !inertChange(tr.startState.doc, fromA, toA, inserted)) inert = false;
+  });
+  if (!inert) return;
+  macroRegions.set(tr.state.doc, { defs, regions: held.regions.map((region) => ({ ...region, from: tr.changes.mapPos(region.from, 1), to: tr.changes.mapPos(region.to, -1) })) });
+}
+
 /** The definitions that apply in the open file: other files' first, then its own preamble and body. */
 export const definitionsField = StateField.define<LatexDefinitions>({
   create: (state) => computeDefinitions(state, state.field(macroSourcesField, false) ?? []),
   update(value, tr) {
-    const sourcesChanged = tr.startState.field(macroSourcesField, false) !== tr.state.field(macroSourcesField, false);
-    const touched = touchesDefinitions(tr, value);
-    // Positions in the body follow the edit, as the decorations do: the fingerprint stays.
-    const mapped = tr.docChanged && hasPositions(value) ? mapLatexDefinitions(value, tr.changes) : value;
-    if (!sourcesChanged && !touched) return mapped;
-    const next = computeDefinitions(tr.state, tr.state.field(macroSourcesField, false) ?? []);
-    const same = next.fingerprint === (mapped === value ? value.fingerprint : definitionsFingerprint(mapped)) && next.problems.length === value.problems.length;
-    if (!same) return next;
-    // The same definitions: keep the fingerprint the decorations were built with, with the extents just read.
-    return mapped === value ? value : { ...next, fingerprint: mapped.fingerprint };
+    const next = updateDefinitions(value, tr);
+    if (next === value && tr.docChanged) noteMacroRegions(tr, value);
+    return next;
   },
 });
+
+function updateDefinitions(value: LatexDefinitions, tr: Transaction): LatexDefinitions {
+  const sourcesChanged = tr.startState.field(macroSourcesField, false) !== tr.state.field(macroSourcesField, false);
+  const touched = touchesDefinitions(tr, value);
+  // Positions in the body follow the edit, as the decorations do: the fingerprint stays.
+  // Edits after every position move none: the definitions stay the same object (what is cached by it stays valid).
+  const rebuilt = tr.docChanged && hasPositions(value);
+  const mapped = rebuilt && !changesAfterDefinitions(value, tr) ? mapLatexDefinitions(value, tr.changes) : value;
+  if (!sourcesChanged && !touched) return mapped;
+  const next = computeDefinitions(tr.state, tr.state.field(macroSourcesField, false) ?? []);
+  const same = next.fingerprint === (rebuilt ? definitionsFingerprint(mapped) : value.fingerprint) && next.problems.length === value.problems.length;
+  if (!same) return next;
+  // The same definitions: keep the fingerprint the decorations were built with, with the extents just read.
+  return rebuilt ? { ...next, fingerprint: mapped.fingerprint } : value;
+}
 
 export function visualDefinitions(state: EditorState) {
   return state.field(definitionsField, false) ?? emptyLatexDefinitions();
