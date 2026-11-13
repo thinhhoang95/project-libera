@@ -126,6 +126,8 @@ export function attachDrawingPreview(view: EditorView, placeholder: HTMLElement,
   // A placeholder redrawn after an edit shows its picture again if it was compiled before (no compile here).
   requestAnimationFrame(() => {
     if (!placeholder.isConnected) return;
+    // Nothing was ever previewed: the lookup cannot hit, so skip slicing and hashing the document.
+    if (results.size === 0) return;
     const current = request();
     if ("hash" in current) {
       const known = results.get(current.hash);

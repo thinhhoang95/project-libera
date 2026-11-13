@@ -96,6 +96,8 @@ function resolveSession(view: EditorView, session: TableSession) {
 export function closeTableSessions(view: EditorView) {
   for (const session of [...cellSessions]) if (session.view === view) session.abandon();
   if (openMenu?.view === view) openMenu.close();
+  // The selection would keep a destroyed view (its state, document and detached DOM) alive until the next cell click anywhere.
+  if (cellSelection?.view === view) cellSelection = null;
 }
 
 /** A redrawn table: an editor open in the old one continues in the same cell, with its draft. */
