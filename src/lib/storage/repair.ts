@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
@@ -103,6 +103,16 @@ export function assertRepairable(name: string) {
  */
 async function moveIntoPlace(source: string, destination: string): Promise<boolean> {
   await mkdir(path.dirname(destination), { recursive: true });
+  // A case-only rename on a case-insensitive disk: the destination is the
+  // source itself, so it is renamed (through a temporary name, which some
+  // disks need to change only the case) instead of being taken.
+  const [from, to] = await Promise.all([source, destination].map((target) => lstat(target, { bigint: true }).catch(() => null)));
+  if (from && to && from.dev === to.dev && from.ino === to.ino) {
+    const temporary = `${source}.${randomUUID()}.moving`;
+    await rename(source, temporary);
+    await rename(temporary, destination);
+    return true;
+  }
   const taken = (error: unknown) => (error as NodeJS.ErrnoException).code === "EEXIST";
   if ((await lstat(source)).isDirectory()) {
     try { await mkdir(destination); } catch (error) { if (taken(error)) return false; throw error; }
