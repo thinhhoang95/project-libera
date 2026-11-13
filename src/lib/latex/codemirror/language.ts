@@ -1,5 +1,5 @@
 import { HighlightStyle, StreamLanguage, foldService, indentUnit, syntaxHighlighting, type StreamParser } from "@codemirror/language";
-import type { EditorState, Extension } from "@codemirror/state";
+import type { EditorState, Extension, Text } from "@codemirror/state";
 import { tags } from "@lezer/highlight";
 
 /* A line-oriented LaTeX tokenizer. It knows enough structure for an editor:
@@ -266,8 +266,23 @@ function stripComment(text: string) {
   return match ? text.slice(0, (match.index ?? 0) + match[0].length - 1) : text;
 }
 
+/** Fold ranges by document and line start: the fold gutter asks for every visible line on each change, scroll and parse step. */
+const foldCache = new WeakMap<Text, Map<number, { lineEnd: number; range: { from: number; to: number } | null }>>();
+
 /** Fold `\begin{x}`…`\end{x}` blocks and sections up to the next peer heading. */
 export function latexFoldRange(state: EditorState, lineStart: number, lineEnd: number) {
+  const doc = state.doc;
+  let cache = foldCache.get(doc);
+  if (!cache) foldCache.set(doc, (cache = new Map()));
+  const hit = cache.get(lineStart);
+  // The range starts at `lineEnd`, so a different one is another entry.
+  if (hit && hit.lineEnd === lineEnd) return hit.range;
+  const range = computeFoldRange(state, lineStart, lineEnd);
+  cache.set(lineStart, { lineEnd, range });
+  return range;
+}
+
+function computeFoldRange(state: EditorState, lineStart: number, lineEnd: number) {
   const doc = state.doc;
   const firstLine = doc.lineAt(lineStart);
   const text = stripComment(firstLine.text);

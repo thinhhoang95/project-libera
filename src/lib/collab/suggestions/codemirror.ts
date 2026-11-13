@@ -17,7 +17,7 @@ import { Facet, StateEffect, StateField, type EditorState, type Extension, type 
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet } from "@codemirror/view";
 import type * as Y from "yjs";
 import type { SuggestionRecord } from "../protocol/schema";
-import { editSuggestionReplacement, groupKey, listSuggestions, resolveSuggestion, suggestionsMap, type ResolvedSuggestion, type StaleReason, type SuggestionsTarget } from "./model";
+import { editSuggestionReplacement, groupKey, listSuggestions, memoizedText, resolveSuggestion, suggestionsMap, type ResolvedSuggestion, type StaleReason, type SuggestionsTarget } from "./model";
 
 export interface SuggestionAuthor {
   name: string;
@@ -92,7 +92,8 @@ function resolveAll(config: SuggestionPreviewOptions, docLength: number): ViewSu
   const records = listSuggestions(config.annotations, { status: ["pending", "stale"] });
   // Ranges past the editor's end mean the editor has not caught up with Yjs
   // yet; they are re-resolved on the next refresh.
-  return sortItems(records.map((record) => toViewSuggestion(resolveSuggestion(config.ytext, record))).filter((item) => item.to <= docLength));
+  const text = memoizedText(config.ytext);
+  return sortItems(records.map((record) => toViewSuggestion(resolveSuggestion(config.ytext, record, text))).filter((item) => item.to <= docLength));
 }
 
 /** Map a cached suggestion through a change set the way its relative positions move. */
@@ -332,9 +333,10 @@ const refresher = ViewPlugin.define((view) => {
       if (destroyed || !pending.size) return;
       const ids = [...pending];
       pending.clear();
+      const text = memoizedText(config.ytext);
       const items = ids.flatMap((id) => {
         const record = map.get(id);
-        return record && (record.status === "pending" || record.status === "stale") ? [toViewSuggestion(resolveSuggestion(config.ytext, record))] : [];
+        return record && (record.status === "pending" || record.status === "stale") ? [toViewSuggestion(resolveSuggestion(config.ytext, record, text))] : [];
       }).filter((item) => item.to <= view.state.doc.length);
       if (items.length) view.dispatch({ effects: patchSuggestionItems.of(items) });
     });

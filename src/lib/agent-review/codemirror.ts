@@ -73,9 +73,12 @@ export function agentReviewCodeMirror(path: string, { outside }: { outside: (tra
       const { state } = this.view;
       const file = agentReviewStore.get(path);
       const current = agentReviewHunks(state);
+      // Nothing to compare and nothing to resolve: no need to read the text.
+      if (!file && !current.length) return;
       const doc = state.doc.toString();
-      if (file && textWithoutHunks(doc, current) === state.toText(file.baseline).toString()) return;
-      const next = file ? agentHunksBetween(state.toText(file.baseline).toString(), doc) : [];
+      const baseline = file ? state.toText(file.baseline).toString() : "";
+      if (file && textWithoutHunks(doc, current) === baseline) return;
+      const next = file ? agentHunksBetween(baseline, doc) : [];
       if (!current.length && !next.length) return;
       this.reported = file?.baseline ?? null;
       this.view.dispatch({
