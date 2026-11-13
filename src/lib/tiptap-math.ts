@@ -52,6 +52,7 @@ export function convertLiteralMath(fragment: Fragment, schema: Schema, pairs: Ma
 
 export function createMathExtensions(settings: MathMarkerSettings = {}) {
   const pairs = mathMarkerPairs(settings);
+  const openers = pairs.map(pair => pair.open);
   return [InlineMath, BlockMath].map((extension, index) => {
     const display = index === 1;
     const name = display ? 'blockMath' : 'inlineMath';
@@ -130,9 +131,21 @@ export function createMathExtensions(settings: MathMarkerSettings = {}) {
         // A display block starts at a line start, before any indentation, so
         // the paragraph above is cut there rather than swallowing the block.
         start(source) {
+          if (display) {
+            // Visit line starts only; a line that cannot begin with any opener (after up to
+            // three spaces of indentation) is skipped without slicing or matching it.
+            for (let i = 0; i < source.length;) {
+              let at = i;
+              while (at < i + 3 && source.charCodeAt(at) === 32) at++;
+              if (openers.some(open => source.startsWith(open, at)) && matchBlockMath(source.slice(i), pairs)) return i;
+              const newline = source.indexOf('\n', i);
+              if (newline < 0) break;
+              i = newline + 1;
+            }
+            return -1;
+          }
           for (let i = 0; i < source.length; i++) {
-            if (display && i > 0 && source[i - 1] !== '\n') continue;
-            if (display ? matchBlockMath(source.slice(i), pairs) : matchMath(source.slice(i), pairs, false)) return i;
+            if (matchMath(source.slice(i), pairs, false)) return i;
           }
           return -1;
         },
