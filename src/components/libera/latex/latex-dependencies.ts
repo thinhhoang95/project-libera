@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { OpenTab } from "@/components/libera/types";
 import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { classTheoremSource, isInLatexComment, loadKey, readLatexInputs } from "@/lib/latex/macros/definitions";
@@ -188,11 +188,19 @@ export async function collectBodyIncludes(options: {
  */
 export function useDependencyVersion(paths: readonly string[], readOpenTabs: () => OpenTab[], updatedAt: ReadonlyMap<string, string | number | undefined>) {
   const key = paths.join("\u0000");
+  // Each open dependency's last text and its hash: an unchanged text is not hashed again at every poll.
+  const hashes = useRef(new Map<string, { text: string; hash: string }>());
   const signature = () => {
     const open = new Map(readOpenTabs().map((tab) => [tab.file.path, tab]));
+    const cache = hashes.current;
+    for (const path of cache.keys()) if (!paths.includes(path)) cache.delete(path);
     return hashString(paths.map((path) => {
       const tab = open.get(path);
-      return tab ? `${path}=${hashString(liveTabText(tab))}` : `${path}@${updatedAt.get(path) ?? ""}`;
+      if (!tab) return `${path}@${updatedAt.get(path) ?? ""}`;
+      const text = liveTabText(tab);
+      let entry = cache.get(path);
+      if (!entry || entry.text !== text) cache.set(path, entry = { text, hash: hashString(text) });
+      return `${path}=${entry.hash}`;
     }).join("\u0000"));
   };
   const [version, setVersion] = useState("");

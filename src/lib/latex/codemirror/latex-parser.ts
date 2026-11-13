@@ -88,8 +88,21 @@ const DEFINITION_HEAD = /^\\[gex]?def(?![A-Za-z@])\s*\\(?:[A-Za-z@]+|[^A-Za-z@])
  * The `{`s still open where the preamble ends (`\newcommand{\bad}[1]{\textbf{#1}` being typed, its `}` not yet
  * written), and where the body starts; null for a preamble whose groups all close, or a file without one.
  */
-export function unclosedPreambleBraces(input: Pick<Input, "length" | "read">): { positions: number[]; edits: Map<number, string>; end: number } | null {
+export function unclosedPreambleBraces(input: Pick<Input, "length" | "read">): PreambleBraces | null {
   const head = input.read(0, Math.min(input.length, PREAMBLE_LIMIT));
+  // Parses start on every edit and the preamble rarely changes: comparing equal heads is far cheaper than scanning them (the result is only read).
+  if (lastHead !== null && head === lastHead) return lastBraces;
+  const braces = scanPreambleBraces(head);
+  lastHead = head;
+  lastBraces = braces;
+  return braces;
+}
+
+type PreambleBraces = { positions: number[]; edits: Map<number, string>; end: number };
+let lastHead: string | null = null;
+let lastBraces: PreambleBraces | null = null;
+
+function scanPreambleBraces(head: string): PreambleBraces | null {
   if (!head.includes("\\begin")) return null;
   const open: number[] = [];
   /**

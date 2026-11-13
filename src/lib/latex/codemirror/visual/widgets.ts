@@ -23,13 +23,41 @@ import { readCodeBlock, renderCodeBlock } from "./text-commands";
  * plugin calls when those change, so no decoration has to be rebuilt. */
 
 /** An element that shows numbers: how it updates them, and where it was when it last did. */
-type Refreshable = HTMLElement & { liberaVisRefresh?: (view: EditorView) => void; liberaVisAt?: number | null };
+type Refreshable = HTMLElement & { liberaVisRefresh?: (view: EditorView) => void; liberaVisAt?: number | null; liberaVisPending?: boolean };
 
 /** Registers how an element updates its numbers; called once now (after mounting) and on every numbering change. */
 export function refreshable(dom: HTMLElement, view: EditorView, refresh: (view: EditorView) => void) {
   (dom as Refreshable).liberaVisRefresh = refresh;
   dom.setAttribute("data-vis-refresh", "");
-  queueMicrotask(() => { if (dom.isConnected) { (dom as Refreshable).liberaVisAt = widgetPos(view, dom); refresh(view); } });
+  // `refreshVisualWidgets` may reach the element before its own queued refresh (a scroll draws it): it clears the mark, so the same state is not drawn twice.
+  (dom as Refreshable).liberaVisPending = true;
+  queueMicrotask(() => {
+    if (!(dom as Refreshable).liberaVisPending) return;
+    (dom as Refreshable).liberaVisPending = false;
+    if (dom.isConnected) { (dom as Refreshable).liberaVisAt = widgetPos(view, dom); refresh(view); }
+  });
+}
+
+/** Leaf writes that skip a value already there: even an equal one is a DOM mutation the editor and browser must process. */
+function setText(node: HTMLElement, text: string) { if (node.textContent !== text) node.textContent = text; }
+function setIfChanged(node: HTMLElement, property: "title", value: string) { if (node[property] !== value) node[property] = value; }
+function setAttributeIfChanged(node: HTMLElement, name: string, value: string) { if (node.getAttribute(name) !== value) node.setAttribute(name, value); }
+
+/** Whether nodes built by a refresh carry what `isEqualNode` cannot see (nested grids bind listeners, refreshables register closures). */
+function carriesState(node: Node) {
+  return node instanceof Element && (node.matches(NESTED_STATE) || node.querySelector(NESTED_STATE) !== null);
+}
+const NESTED_STATE = ".cm-vis-table-nested, [data-vis-refresh]";
+
+/**
+ * `parent.replaceChildren(...next)`, unless the children already are equal to `next`: a refresh that finds nothing
+ * changed leaves the DOM (and the images, KaTeX markup and layout in it) alone.
+ */
+export function replaceChildrenIfChanged(parent: Element, ...next: Array<Node | string>) {
+  const fresh = next.flatMap((node) => (typeof node === "string" ? [document.createTextNode(node)] : node instanceof DocumentFragment ? Array.from(node.childNodes) : [node]));
+  const old = parent.childNodes;
+  if (old.length === fresh.length && fresh.every((node, index) => !carriesState(node) && node.isEqualNode(old[index]))) return;
+  parent.replaceChildren(...fresh);
 }
 
 /**
@@ -42,6 +70,7 @@ export function refreshVisualWidgets(view: EditorView, moved = false) {
     const at = widgetPos(view, element);
     if (moved && at === widget.liberaVisAt) continue;
     widget.liberaVisAt = at;
+    widget.liberaVisPending = false;
     widget.liberaVisRefresh?.(view);
   }
 }
@@ -192,7 +221,11 @@ export function setMathOpener(opener: MathOpener | null) { openMathEditor = open
 const htmlKeys = new Map<string, string>();
 function htmlKey(html: string) {
   let key = htmlKeys.get(html);
-  if (key === undefined) {
+  if (key !== undefined) {
+    // Newest again, so the document's own formulas outlast typing's intermediates.
+    htmlKeys.delete(html);
+    htmlKeys.set(html, key);
+  } else {
     key = hashString(html);
     htmlKeys.set(html, key);
     if (htmlKeys.size > 3000) htmlKeys.delete(htmlKeys.keys().next().value!);
@@ -267,23 +300,23 @@ export class ChipWidget extends VisualWidget {
     }
     const update = (target: EditorView) => {
       const text = this.text(target);
-      dom.textContent = text;
       // A reference to a `\tag{$\mathcal{I}$}` (Econometrica's): its math drawn, not its source.
       // An index entry's math (`\index{$\phi$}`) too; math that cannot be drawn shows without its dollars (the source is the tooltip).
       if ((this.kind === "ref" || this.kind === "index") && /\$[^$]+\$/.test(text)) {
-        dom.replaceChildren(...text.split(/(\$[^$]+\$)/).filter(Boolean).map((part) => {
+        replaceChildrenIfChanged(dom, ...text.split(/(\$[^$]+\$)/).filter(Boolean).map((part) => {
           const html = /^\$[^$]+\$$/.test(part) ? renderKatex(part.slice(1, -1), false) : null;
           if (!html) return document.createTextNode(this.kind === "index" ? part.replace(/\$/g, "") : part);
           const math = el("span", "cm-vis-chip-math");
           math.innerHTML = html;
           return math;
         }));
-      }
+      // (Math drawn before reads as other text than its source: elements left from it go, as a plain write always removed them.)
+      } else if (dom.textContent !== text || dom.firstElementChild) dom.textContent = text;
       if (this.kind === "ref") {
         const missing = this.keys.some((key) => !labelTarget(key, visualNumbering(target.state), visualAux(target.state)));
         dom.classList.toggle("cm-vis-missing", missing);
-        dom.title = `${this.command}{${this.keys.join(",")}}${missing ? " (label not found)" : ""}`;
-        dom.setAttribute("aria-label", `Reference to ${text.replace(/\$/g, "")}`);
+        setIfChanged(dom, "title", `${this.command}{${this.keys.join(",")}}${missing ? " (label not found)" : ""}`);
+        setAttributeIfChanged(dom, "aria-label", `Reference to ${text.replace(/\$/g, "")}`);
       } else if (this.kind === "cite") {
         const bib = bibLookup(target.state);
         const keys = [...this.keys, ...this.more.flatMap((group) => group.keys)];
@@ -292,10 +325,10 @@ export class ChipWidget extends VisualWidget {
         dom.classList.toggle("cm-vis-missing", missing.length > 0);
         // biblatex's `\supercite`: a superscript number.
         dom.classList.toggle("cm-vis-cite-super", /^\\supercites?\*?$/.test(this.command) && /^[\d,\s–-]+$/.test(dom.textContent ?? ""));
-        dom.title = keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : missing.includes(key) ? `${key} (citation not found)` : key; }).join("\n");
-        dom.setAttribute("aria-label", `Citation ${dom.textContent}`);
+        setIfChanged(dom, "title", keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : missing.includes(key) ? `${key} (citation not found)` : key; }).join("\n"));
+        setAttributeIfChanged(dom, "aria-label", `Citation ${dom.textContent}`);
       } else {
-        dom.title = `${this.command}{${this.keys[0]}}`;
+        setIfChanged(dom, "title", `${this.command}{${this.keys[0]}}`);
       }
     };
     update(view);
@@ -345,11 +378,11 @@ export class ItemMarkerWidget extends VisualWidget {
       refreshable(dom, view, (target) => {
         const pos = widgetPos(target, dom);
         const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos + this.numberedAt!, "item");
-        dom.textContent = entry?.number ?? this.label;
+        setText(dom, entry?.number ?? this.label);
       });
     }
     if (this.flags.latex) {
-      const render = (target: EditorView) => dom.replaceChildren(renderLatexFragment(this.label, widgetContext(target, dom)));
+      const render = (target: EditorView) => replaceChildrenIfChanged(dom, renderLatexFragment(this.label, widgetContext(target, dom)));
       render(view);
       refreshable(dom, view, render);
     }
@@ -375,7 +408,7 @@ export class ExampleMarkerWidget extends VisualWidget {
     refreshable(dom, view, (target) => {
       const pos = widgetPos(target, dom);
       const number = (pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "item"))?.number ?? "";
-      dom.textContent = this.part ? `${/[a-z]+$/.exec(number)?.[0] ?? "?"}.` : `(${number || "?"})`;
+      setText(dom, this.part ? `${/[a-z]+$/.exec(number)?.[0] ?? "?"}.` : `(${number || "?"})`);
     });
     return dom;
   }
@@ -389,7 +422,7 @@ export class HeadingNumberWidget extends VisualWidget {
     refreshable(dom, view, (target) => {
       const pos = widgetPos(target, dom);
       const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "section");
-      dom.textContent = entry?.number ? `${entry.number} ` : "";
+      setText(dom, entry?.number ? `${entry.number} ` : "");
     });
     return dom;
   }
@@ -403,7 +436,7 @@ export class FootnoteMarkWidget extends VisualWidget {
     refreshable(dom, view, (target) => {
       const pos = widgetPos(target, dom);
       const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "footnote");
-      dom.textContent = entry?.number ?? "*";
+      setText(dom, entry?.number ?? "*");
     });
     return dom;
   }
@@ -418,7 +451,7 @@ export class MacroWidget extends VisualWidget {
     const dom = el("span", "cm-vis-macro");
     dom.title = `\\${this.name}: Alt-click or Alt+Enter to edit`;
     const render = (target: EditorView) => {
-      dom.replaceChildren(renderLatexFragment(this.expansion, widgetContext(target, dom)));
+      replaceChildrenIfChanged(dom, renderLatexFragment(this.expansion, widgetContext(target, dom)));
     };
     render(view);
     // Chips inside an expansion follow numbering changes too.
@@ -445,8 +478,8 @@ export class MacroHeadingWidget extends VisualWidget {
     const render = (target: EditorView) => {
       const pos = widgetPos(target, dom);
       const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "section");
-      number.textContent = entry?.number ? `${entry.number} ` : "";
-      title.replaceChildren(renderLatexFragment(this.title, widgetContext(target, dom)));
+      setText(number, entry?.number ? `${entry.number} ` : "");
+      replaceChildrenIfChanged(title, renderLatexFragment(this.title, widgetContext(target, dom)));
     };
     render(view);
     refreshable(dom, view, render);
@@ -467,8 +500,8 @@ export class MacroFootnoteWidget extends VisualWidget {
     const render = (target: EditorView) => {
       const pos = widgetPos(target, dom);
       const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos, "footnote");
-      mark.textContent = entry?.number ?? "*";
-      text.replaceChildren(renderLatexFragment(this.text, widgetContext(target, dom)));
+      setText(mark, entry?.number ?? "*");
+      replaceChildrenIfChanged(text, renderLatexFragment(this.text, widgetContext(target, dom)));
     };
     render(view);
     refreshable(dom, view, render);
@@ -502,7 +535,6 @@ export class ExpandedEnvironmentWidget extends VisualWidget {
     const dom = el("div", "cm-vis-macro-env");
     const render = (target: EditorView) => {
       const context = widgetContext(target, dom);
-      dom.replaceChildren();
       const body = el("div", `cm-vis-macro-env-body${spec.className ? ` ${spec.className}` : ""}`);
       if (spec.header) {
         // As EnvironmentHeaderWidget draws it, numbered from this widget's position.
@@ -533,7 +565,7 @@ export class ExpandedEnvironmentWidget extends VisualWidget {
         }
         body.append(list);
       } else body.append(renderLatexFragment(spec.body, context));
-      dom.append(body);
+      replaceChildrenIfChanged(dom, body);
     };
     render(view);
     refreshable(dom, view, render);
@@ -1132,13 +1164,13 @@ export class FigureWidget extends VisualWidget {
       const pos = widgetPos(target, dom);
       for (const { content, label, text } of captions) {
         const entry = pos === null || content.unnumbered ? null : numberingEntryAt(visualNumbering(target.state), pos + content.numberOffset, content.kind);
-        label.textContent = content.unnumbered ? ""
+        setText(label, content.unnumbered ? ""
           : content.sub ? (entry?.number ? `(${entry.number}) ` : "")
-          : `${floatNames(target.state.doc)[content.kind] || FLOAT_LABELS[content.kind]}${entry?.number ? ` ${entry.number}` : ""}${content.kind === "algorithm" ? " " : ": "}`;
+          : `${floatNames(target.state.doc)[content.kind] || FLOAT_LABELS[content.kind]}${entry?.number ? ` ${entry.number}` : ""}${content.kind === "algorithm" ? " " : ": "}`);
         // References and citations in the caption follow numbering and the .aux too.
         if (content.caption !== null && content.caption.includes("\\")) {
           const captionPos = pos === null ? content.captionPos : pos + spec.numberOffset + (content.captionPos - spec.start);
-          text.replaceChildren(renderLatexFragment(content.caption, fragmentContext(target, captionPos)));
+          replaceChildrenIfChanged(text, renderLatexFragment(content.caption, fragmentContext(target, captionPos)));
         }
       }
     });
@@ -1590,7 +1622,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       for (const cell of dynamic) {
         // A cell being edited shows its source; it is redrawn when editing ends.
         if (isEditingCell(cell.td)) continue;
-        cell.td.replaceChildren(renderLatexFragment(cell.text, fragmentContext(target, base === null ? undefined : base + cell.from)));
+        replaceChildrenIfChanged(cell.td, renderLatexFragment(cell.text, fragmentContext(target, base === null ? undefined : base + cell.from)));
       }
     });
   }
@@ -1880,9 +1912,16 @@ export class BibliographyListWidget extends VisualWidget {
   constructor(readonly heading: string, readonly files: string, readonly length: number) { super(`${heading}\u0000${files}\u0000${length}`); }
   toDOM(view: EditorView) {
     const dom = el("div", "cm-vis-references");
+    // The entries array the list was last drawn from: the workspace builds a new one when the data changes, so the same one draws the same list.
+    let drawn = false;
+    let drawnFrom: unknown;
     const render = (target: EditorView) => {
+      const source = target.state.field(latexProjectField, false)?.bibEntries;
+      if (drawn && source === drawnFrom) return;
+      drawn = true;
+      drawnFrom = source;
       dom.replaceChildren(el("div", "cm-vis-references-heading", this.heading));
-      const entries = (target.state.field(latexProjectField, false)?.bibEntries ?? []).filter((entry) => entry.label !== undefined || entry.citeAuthor !== undefined);
+      const entries = (source ?? []).filter((entry) => entry.label !== undefined || entry.citeAuthor !== undefined);
       if (!entries.length) {
         dom.append(el("div", "cm-vis-references-note", `Listed in the PDF${this.files ? ` (from ${this.files})` : ""}`));
         return;
@@ -1927,7 +1966,6 @@ export class EnvironmentHeaderWidget extends VisualWidget {
     // A box's title (its `\begin` over several lines): a click shows the opening as written.
     if (this.length) revealOnClick(view, dom, this.length);
     const render = (target: EditorView) => {
-      dom.replaceChildren();
       const context = widgetContext(target, dom);
       if (this.variant === "user") {
         // A numbered box's title (`Box~\thetcbcounter: …`): the number the numbering pass gave the box.
@@ -1937,9 +1975,10 @@ export class EnvironmentHeaderWidget extends VisualWidget {
           const entry = pos === null ? null : numberingEntryAt(visualNumbering(target.state), pos + this.numberOffset, this.kind);
           title = title.replace(/\\thetcbcounter(?![A-Za-z@])\s*/g, entry?.number ?? "");
         }
-        dom.append(renderLatexFragment(title, context));
+        replaceChildrenIfChanged(dom, renderLatexFragment(title, context));
         return;
       }
+      const next: Node[] = [];
       const head = el("span", "cm-vis-env-title");
       let number = "";
       if (this.kind) {
@@ -1948,13 +1987,14 @@ export class EnvironmentHeaderWidget extends VisualWidget {
         number = entry?.number ? ` ${entry.number}` : "";
       }
       head.append(renderLatexFragment(this.title, context), document.createTextNode(number));
-      dom.append(head);
+      next.push(head);
       if (this.note !== null) {
         const note = el("span", "cm-vis-env-note");
         note.append(document.createTextNode(" ("), renderLatexFragment(this.note, context), document.createTextNode(")"));
-        dom.append(note);
+        next.push(note);
       }
-      if (this.variant !== "abstract") dom.append(document.createTextNode(". "));
+      if (this.variant !== "abstract") next.push(document.createTextNode(". "));
+      replaceChildrenIfChanged(dom, ...next);
     };
     render(view);
     refreshable(dom, view, render);
@@ -1998,7 +2038,7 @@ export class RestatedTheoremWidget extends VisualWidget {
       note.append(document.createTextNode(" ("));
       if (this.note) note.append(renderLatexFragment(this.note, context), document.createTextNode(", "));
       note.append(document.createTextNode("restated)"));
-      dom.replaceChildren(head, note, document.createTextNode(". "));
+      replaceChildrenIfChanged(dom, head, note, document.createTextNode(". "));
     };
     render(view);
     refreshable(dom, view, render);
@@ -2011,7 +2051,7 @@ export class TodoWidget extends VisualWidget {
   constructor(readonly label: string, readonly latex: string, readonly length: number) { super(`${label}\u0000${latex}\u0000${length}`); }
   toDOM(view: EditorView) {
     const dom = el("span", "cm-vis-chip cm-vis-todo");
-    const render = (target: EditorView) => dom.replaceChildren(el("strong", undefined, `${this.label}: `), renderLatexFragment(this.latex, widgetContext(target, dom)));
+    const render = (target: EditorView) => replaceChildrenIfChanged(dom, el("strong", undefined, `${this.label}: `), renderLatexFragment(this.latex, widgetContext(target, dom)));
     render(view);
     refreshable(dom, view, render);
     dom.addEventListener("mousedown", (event) => {
@@ -2032,7 +2072,7 @@ export class EnvironmentFooterWidget extends VisualWidget {
     const dom = el("span", "cm-vis-env-footer");
     if (this.latex === null) { dom.textContent = "∎"; return dom; }
     const latex = this.latex;
-    const render = (target: EditorView) => dom.replaceChildren(renderLatexFragment(latex, widgetContext(target, dom)));
+    const render = (target: EditorView) => replaceChildrenIfChanged(dom, renderLatexFragment(latex, widgetContext(target, dom)));
     render(view);
     refreshable(dom, view, render);
     return dom;

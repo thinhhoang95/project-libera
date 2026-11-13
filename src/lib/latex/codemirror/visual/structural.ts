@@ -7,7 +7,7 @@ import { macroAt } from "../../macros/definitions";
 import { environmentName, FLOAT_KINDS } from "../../macros/numbering";
 import { bodyStartIn, disabledField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
 import { FRAMED_PROSE, GENERIC_LISTS } from "./environments";
-import { boxEnvironments, handTitleBlock, macroRegionsFor, titleRunStart, walkConstructs, type Construct, type RevealPolicy } from "./walk";
+import { boxEnvironments, handTitleBlock, noteBoxEnvironments, macroRegionsFor, titleRunStart, walkConstructs, type Construct, type RevealPolicy } from "./walk";
 import { isPreambleFragment } from "./preamble-fragment";
 import { preambleSummary } from "./widgets";
 
@@ -182,7 +182,7 @@ function toRanges(state: EditorState, construct: Construct, built: Built) {
 function walk(state: EditorState, tree: Tree, from: number, to: number, preambleEnd: number, preambleOpen: boolean): Built {
   const built: Built = { decorations: [], extents: [], signatures: [], maxTo: from };
   const defs = visualDefinitions(state);
-  walkConstructs({ state, tree, defs, preambleEnd, preambleOpen, preambleSummary: preambleSummary(null, defs), layer: "structural" }, from, to, (construct) => toRanges(state, construct, built));
+  walkConstructs({ state, tree, defs, preambleEnd, preambleOpen, preambleSummary: from === 0 ? preambleSummary(null, defs) : "", layer: "structural" }, from, to, (construct) => toRanges(state, construct, built));
   return built;
 }
 
@@ -558,7 +558,7 @@ export const structuralField = StateField.define<StructuralState>({
     const tree = treeOf(state);
     const preambleOpen = state.field(preambleOpenField, false) ?? false;
     const defsFingerprint = visualDefinitions(state).fingerprint;
-    if (tr.docChanged) noteBodyStart(tr);
+    if (tr.docChanged) { noteBodyStart(tr); noteBoxEnvironments(tr); }
     const preambleEnd = tr.docChanged ? preambleEndOf(state) : value.preambleEnd;
     let forced = value.forced;
     let working: Working = { decorations: value.decorations, extents: value.extents, pending: value.pending };

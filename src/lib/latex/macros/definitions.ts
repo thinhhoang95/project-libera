@@ -776,6 +776,8 @@ type ReadOptions = {
   load?: (key: string, at: number) => void;
   /** Code TeX may or may not run (a package option's, when how the package is loaded is not known): read as under a condition. */
   uncertain?: boolean;
+  /** For a caller that sets the fingerprint itself (a nested read, `collectLatexDefinitions`): nothing reads it meanwhile. */
+  skipFingerprint?: boolean;
 };
 
 /** `deferred`: the definition being read is in `\AtBeginDocument{…}` (it runs after the packages' own hooks). */
@@ -1124,7 +1126,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         const text = definer.body.replace(/##|#([1-9])/g, (all, n: string | undefined) => (n ? args[Number(n) - 1] ?? all : "#"));
         // Read where the use is: in the preamble, everywhere; in the body, from there. Its extents are the use's.
         const extents = defs.extents.length;
-        readLatexDefinitions(text, defs, { file: context.file, offset: context.offset + start, bodyStart: start < context.bodyStart ? text.length + 1 : 0, filePos: context.filePos });
+        readLatexDefinitions(text, defs, { file: context.file, offset: context.offset + start, bodyStart: start < context.bodyStart ? text.length + 1 : 0, filePos: context.filePos, skipFingerprint: true });
         defs.extents.length = extents;
       }
     } else if (/^(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef)$/.test(command) && /\\WithSuffix\s*$/.test(source.slice(Math.max(0, start - 24), start))) {
@@ -1604,7 +1606,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       // loaded is not known, and not otherwise; the defaults (`\ExecuteOptions{oneside,final}`) run where they are.
       const run = (option: { text: string; offset: number }, maybe: boolean) => {
         const extents = defs.extents.length;
-        readLatexDefinitions(option.text, defs, { file: context.file, offset: option.offset, bodyStart: option.offset < context.offset + context.bodyStart ? option.text.length + 1 : 0, filePos: context.filePos, uncertain: maybe });
+        readLatexDefinitions(option.text, defs, { file: context.file, offset: option.offset, bodyStart: option.offset < context.offset + context.bodyStart ? option.text.length + 1 : 0, filePos: context.filePos, uncertain: maybe, skipFingerprint: true });
         defs.extents.length = extents;
       };
       if (command === "ProcessOptions") {
@@ -1691,7 +1693,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     }
   }
   scanner.advance(source.length);
-  defs.fingerprint = definitionsFingerprint(defs);
+  if (!options.skipFingerprint) defs.fingerprint = definitionsFingerprint(defs);
   return defs;
 }
 
@@ -1736,14 +1738,14 @@ export function collectLatexDefinitions(sources: readonly DefinitionSource[], op
     read.add(source.path);
     // A file the open file inputs in its body applies from there.
     const filePos = path === "" && open && at >= (open.bodyStart ?? bodyStartOf(open.text)) ? at : -1;
-    readLatexDefinitions(source.text, defs, { file: source.path, filePos, load: loader(source.path, depth + 1) });
+    readLatexDefinitions(source.text, defs, { file: source.path, filePos, load: loader(source.path, depth + 1), skipFingerprint: true });
   };
   for (const source of sources) {
     if (source.loadedBy !== undefined || read.has(source.path)) continue;
     read.add(source.path);
-    readLatexDefinitions(source.text, defs, { file: source.path, load: loader(source.path, 1) });
+    readLatexDefinitions(source.text, defs, { file: source.path, load: loader(source.path, 1), skipFingerprint: true });
   }
-  if (open) readLatexDefinitions(open.text, defs, { bodyStart: open.bodyStart, load: loader("", 1) });
+  if (open) readLatexDefinitions(open.text, defs, { bodyStart: open.bodyStart, load: loader("", 1), skipFingerprint: true });
   // The boxes of every file read (a chapter's boxes are in the main file's preamble or a style file).
   for (const source of sources) if (BOX_DEFINITION.test(source.text)) readBoxDefinitions(source.text, defs);
   if (open && BOX_DEFINITION.test(open.text)) readBoxDefinitions(open.text, defs);

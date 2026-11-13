@@ -101,6 +101,15 @@ function stagedDraft(other: OpenTab): string | null {
   return other.draft === other.saved ? null : other.draft;
 }
 
+/** Whether two macro source lists are equal field by field (a missing optional field equals an undefined one). */
+function sameMacroSources(a: readonly MacroSource[], b: readonly MacroSource[]) {
+  if (a.length !== b.length) return false;
+  return a.every((left, index) => {
+    const right = b[index];
+    return left.path === right.path && left.text === right.text && left.version === right.version && left.loadedBy === right.loadedBy && left.key === right.key;
+  });
+}
+
 export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab, mathMarkers, onUploadFiles }: LatexWorkspaceProps) {
   const filePath = tab.file.path;
   const notebook = tab.file.notebook;
@@ -115,10 +124,13 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   const knownLatexPaths = useMemo(() => new Set(files.filter((file) => file.fileType === "latex").map((file) => file.path)), [files]);
   // The file to typeset: a "% !TEX root" comment, the file itself when it is
   // a complete document, or else the main file that includes this chapter.
-  const magicRoot = isTex && readLatexMagicComments(draftForAnalysis).root ? resolveLatexRootPath(filePath, draftForAnalysis, knownLatexPaths) : null;
-  const standalone = isTex && hasDocumentClass(draftForAnalysis);
+  const magicRoot = useMemo(
+    () => (isTex && readLatexMagicComments(draftForAnalysis).root ? resolveLatexRootPath(filePath, draftForAnalysis, knownLatexPaths) : null),
+    [isTex, draftForAnalysis, filePath, knownLatexPaths],
+  );
+  const standalone = useMemo(() => isTex && hasDocumentClass(draftForAnalysis), [isTex, draftForAnalysis]);
   // A subfiles chapter (`\documentclass[../main.tex]{subfiles}`) compiles on its own too, but is part of the main file it names.
-  const subfilesRoot = isTex ? subfilesRootPath(filePath, draftForAnalysis, knownLatexPaths) : null;
+  const subfilesRoot = useMemo(() => (isTex ? subfilesRootPath(filePath, draftForAnalysis, knownLatexPaths) : null), [isTex, filePath, draftForAnalysis, knownLatexPaths]);
   const needsDiscovery = isTex && !standalone && (!magicRoot || magicRoot === filePath);
   const [discoveredRoot, setDiscoveredRoot] = useState<string | null | undefined>(() => discoveredRoots.get(filePath));
   useEffect(() => {
@@ -276,15 +288,17 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     },
   }), [files, onUploadFiles]);
 
+  // Read once per draft: the whole document is scanned.
+  const bibliographyReferences = useMemo(() => readLatexBibliographyReferences(draftForAnalysis), [draftForAnalysis]);
   const bibPaths = useMemo(() => {
     const rootDirectory = rootPath.split("/").slice(0, -1).join("/");
-    const references = readLatexBibliographyReferences(draftForAnalysis)
+    const references = bibliographyReferences
       .map((reference) => resolveRelativeNotebookPath(rootPath, reference))
       .filter((reference): reference is string => !!reference && knownLatexPaths.has(reference));
     if (references.length) return references;
     // Without an explicit bibliography, offer keys from .bib files beside the document.
     return [...knownLatexPaths].filter((path) => /\.bib$/i.test(path) && path.split("/").slice(0, -1).join("/") === rootDirectory).slice(0, 6);
-  }, [draftForAnalysis, knownLatexPaths, rootPath]);
+  }, [bibliographyReferences, knownLatexPaths, rootPath]);
 
   const fileUpdatedAt = useMemo(() => new Map(files.map((file) => [file.path, file.updatedAt])), [files]);
   const bibKey = bibPaths.map((path) => `${path}@${fileUpdatedAt.get(path) ?? ""}`).join("|");
@@ -361,9 +375,11 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   // preamble (for a chapter), and the macro files and local packages a
   // preamble loads, and theirs. Read live from open tabs (shared ones from
   // their Y.Text), and read again when any of them changes.
-  const ownPreamble = draftForAnalysis.slice(0, bodyStartOf(draftForAnalysis) || 0);
+  const ownPreamble = useMemo(() => draftForAnalysis.slice(0, bodyStartOf(draftForAnalysis) || 0), [draftForAnalysis]);
   // The files this one inputs: a body's `\input` of a `\providecommand` list a script generates (2610.16732) defines for the text after it.
-  const bodyInputs = isTex ? readLatexInputs(draftForAnalysis).map((input) => input.path).join("\u0000") : "";
+  const bodyInputs = useMemo(() => (isTex ? readLatexInputs(draftForAnalysis).map((input) => input.path).join("\u0000") : ""), [isTex, draftForAnalysis]);
+  const preambleHash = useMemo(() => hashString(ownPreamble), [ownPreamble]);
+  const bodyInputsHash = useMemo(() => hashString(bodyInputs), [bodyInputs]);
   const [macroSources, setMacroSources] = useState<MacroSource[]>([]);
   const [macroPaths, setMacroPaths] = useState<string[]>([]);
   const macroVersion = useDependencyVersion(macroPaths, readOpenTabs, fileUpdatedAt);
@@ -373,7 +389,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     return apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then((payload) => payload.content ?? "").catch(() => "");
   }, []);
   const knownFiles = useMemo(() => new Set(files.map((file) => file.path)), [files]);
-  const macroKey = `${rootPath}|${ownPreamble.length}|${hashString(ownPreamble)}|${hashString(bodyInputs)}|${macroVersion}`;
+  const macroKey = `${rootPath}|${ownPreamble.length}|${preambleHash}|${bodyInputsHash}|${macroVersion}`;
   useEffect(() => {
     if (!isTex) return;
     let cancelled = false;
@@ -381,7 +397,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       filePath, rootPath, ownPreamble, ownBody: latest.current.draftForAnalysis.slice(ownPreamble.length), known: knownFiles, readText: readLiveText, version: (path) => String(fileUpdatedAt.get(path) ?? ""),
     }).then(({ sources, paths }) => {
       if (cancelled) return;
-      setMacroSources((current) => (JSON.stringify(current) === JSON.stringify(sources) ? current : sources));
+      setMacroSources((current) => (sameMacroSources(current, sources) ? current : sources));
       setMacroPaths((current) => (current.join("\u0000") === paths.join("\u0000") ? current : paths));
     });
     return () => { cancelled = true; };
@@ -445,7 +461,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   const { library: referenceLibrary } = useReferenceLibrary(isTex ? tab.file.notebook : null);
   const libraryEntries = useMemo(() => latexLibraryEntries(referenceLibrary), [referenceLibrary]);
   // A chapter's bibliography lives in its main file; only a main file gets the add-bibliography hint.
-  const hasBibliography = rootPath !== filePath || readLatexBibliographyReferences(draftForAnalysis).length > 0;
+  const hasBibliography = rootPath !== filePath || bibliographyReferences.length > 0;
   const enableBibMirror = useCallback(() => {
     void apiRequest<{ mirror: BibMirrorResult }>("/api/references/bib-mirror", { method: "POST", body: JSON.stringify({ notebook, enabled: true }) })
       .then(({ mirror }) => setNotice(mirror.status === "protected"
@@ -596,7 +612,11 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     warning: diagnostics.filter((diagnostic) => diagnostic.severity === "warning").length,
     info: diagnostics.filter((diagnostic) => diagnostic.severity === "info").length,
   }), [diagnostics]);
-  const resolvedEngine = resolveLatexEngine(draftForAnalysis, engineSetting);
+  // A stable identity for the PDF pages (they are memoized): it always calls the latest inverseSync.
+  const inverseSyncRef = useRef(inverseSync);
+  useEffect(() => { inverseSyncRef.current = inverseSync; });
+  const onInverseSync = useCallback((location: Parameters<typeof inverseSync>[0]) => { void inverseSyncRef.current(location); }, []);
+  const resolvedEngine = useMemo(() => resolveLatexEngine(draftForAnalysis, engineSetting), [draftForAnalysis, engineSetting]);
   const pdfUrl = build.buildId ? latexPdfUrl(rootPath, build.buildId) : null;
 
   const status = isTex && !canCompile
@@ -854,7 +874,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
               onScrollChange={(scrollTop, scrollLeft, anchor) => onSetViewState({
                 pdfScrollTop: scrollTop, pdfScrollLeft: scrollLeft, pdfScrollPage: anchor?.page, pdfScrollPageOffset: anchor?.offset,
               })}
-              onInverseSync={(location) => void inverseSync(location)}
+              onInverseSync={onInverseSync}
             />
             {logPanel}
           </div>

@@ -138,6 +138,12 @@ export function listSuggestions(target: SuggestionsTarget, filter: ListFilter = 
   return records.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
 
+/** The text of `ytext`, read at most once, for a batch of resolutions that does not span a mutation (`Y.Text.toString` walks every item). */
+export function memoizedText(ytext: Y.Text): () => string {
+  let text: string | undefined;
+  return () => (text ??= ytext.toString());
+}
+
 /**
  * Where a suggestion applies now, and whether it still can.
  *
@@ -148,13 +154,13 @@ export function listSuggestions(target: SuggestionsTarget, filter: ListFilter = 
  *   was typed at the point.
  * - A record stored as stale stays stale with its stored reason.
  */
-export function resolveSuggestion(ytext: Y.Text, record: SuggestionRecord): ResolvedSuggestion {
+export function resolveSuggestion(ytext: Y.Text, record: SuggestionRecord, text?: () => string): ResolvedSuggestion {
   const isInsertion = record.baseQuote === "";
   const range = resolveRelativeRange(ytext, record.start, record.end);
   if (!range) return { record, start: 0, end: 0, currentText: "", isStale: true, staleReason: "target-removed", isInsertion };
   const start = range.start;
   const end = Math.max(range.start, range.end);
-  const currentText = end > start ? ytext.toString().slice(start, end) : "";
+  const currentText = end > start ? (text ? text() : ytext.toString()).slice(start, end) : "";
   let staleReason: StaleReason | undefined;
   if (record.status === "stale") staleReason = record.staleReason ?? "text-changed";
   else if (isInsertion) {
@@ -172,7 +178,8 @@ export function resolveSuggestion(ytext: Y.Text, record: SuggestionRecord): Reso
 
 /** Resolves every suggestion, in document order. */
 export function resolveSuggestions(ytext: Y.Text, records: readonly SuggestionRecord[]): ResolvedSuggestion[] {
-  return records.map((record) => resolveSuggestion(ytext, record)).sort((a, b) => a.start - b.start || a.end - b.end || a.record.createdAt - b.record.createdAt);
+  const text = memoizedText(ytext);
+  return records.map((record) => resolveSuggestion(ytext, record, text)).sort((a, b) => a.start - b.start || a.end - b.end || a.record.createdAt - b.record.createdAt);
 }
 
 export type OwnershipResult =

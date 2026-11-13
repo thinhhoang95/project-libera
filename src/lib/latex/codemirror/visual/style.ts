@@ -3,7 +3,8 @@ import type { Range } from "@codemirror/state";
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode } from "@lezer/common";
 import { environmentName, wrappedTheorem } from "../../macros/numbering";
-import { definitionsField, visualDefinitions } from "./model";
+import { latexProjectField } from "../editing";
+import { auxField, definitionsField, disabledField, macroSourcesField, numberingField, visualConfig, visualDefinitions } from "./model";
 import { structuralField } from "./structural";
 import { boxEnvironments, walkConstructs } from "./walk";
 
@@ -33,14 +34,14 @@ function visibleRanges(view: EditorView) {
   return ranges;
 }
 
-function build(view: EditorView): DecorationSet {
+function build(view: EditorView, padded: Array<{ from: number; to: number }>): DecorationSet {
   const state = view.state;
   const tree = syntaxTree(state);
   const defs = visualDefinitions(state);
   const structural = state.field(structuralField, false);
   const ranges: Array<Range<Decoration>> = [];
   const seenLines = new Set<string>();
-  for (const visible of visibleRanges(view)) {
+  for (const visible of padded) {
     let from = visible.from;
     // Start at the outermost styled construct around the top of the range.
     for (let node: SyntaxNode | null = tree.resolveInner(from, 1); node; node = node.parent) {
@@ -58,7 +59,8 @@ function build(view: EditorView): DecorationSet {
         if (mark.to > mark.from) ranges.push(Decoration.mark({ class: mark.class, attributes: mark.attributes }).range(mark.from, mark.to));
       }
       for (const line of construct.lines ?? []) {
-        for (let pos = state.doc.lineAt(line.from).from; pos <= line.to;) {
+        // Lines that end before the padded range starts are never drawn (the viewport lies inside it).
+        for (let pos = Math.max(state.doc.lineAt(line.from).from, visible.from); pos <= line.to;) {
           const current = state.doc.lineAt(pos);
           if (current.from > visible.to + MARGIN) break;
           const key = `${current.from}:${line.class}`;
@@ -75,14 +77,35 @@ function build(view: EditorView): DecorationSet {
   return Decoration.set(ranges, true);
 }
 
+/** What a walk may read besides the document, its tree and the definitions: a build is as fresh as these were. */
+function walkInputs(view: EditorView): unknown[] {
+  const state = view.state;
+  return [
+    state.field(latexProjectField, false), state.facet(visualConfig), state.field(macroSourcesField, false), state.field(disabledField, false),
+    state.field(auxField, false), state.field(numberingField, false),
+  ];
+}
+
 export const visualStylePlugin = ViewPlugin.fromClass(class {
   decorations: DecorationSet;
-  constructor(view: EditorView) { this.decorations = build(view); }
+  /** The padded ranges the last build walked. */
+  padded: Array<{ from: number; to: number }>;
+  /** `walkInputs` as the last build found them. */
+  inputs: unknown[];
+  constructor(view: EditorView) { this.padded = visibleRanges(view); this.inputs = walkInputs(view); this.decorations = build(view, this.padded); }
   update(update: ViewUpdate) {
-    if (update.docChanged || update.viewportChanged || syntaxTree(update.startState) !== syntaxTree(update.state)
-      || update.startState.field(definitionsField, false) !== update.state.field(definitionsField, false)
-      || update.startState.field(structuralField, false)?.preambleOpen !== update.state.field(structuralField, false)?.preambleOpen) {
-      this.decorations = build(update.view);
+    const unchanged = !update.docChanged && syntaxTree(update.startState) === syntaxTree(update.state)
+      && update.startState.field(definitionsField, false) === update.state.field(definitionsField, false)
+      && update.startState.field(structuralField, false)?.preambleOpen === update.state.field(structuralField, false)?.preambleOpen;
+    // A scroll within what the last build walked: every mark and line class on screen is already there. (Not when
+    // something else a walk reads changed since: a scroll has always drawn with the project and labels as they are now.)
+    if (unchanged && update.viewportChanged
+      && update.view.visibleRanges.every((range) => this.padded.some((walked) => range.from >= walked.from && range.to <= walked.to))
+      && walkInputs(update.view).every((input, index) => input === this.inputs[index])) return;
+    if (!unchanged || update.viewportChanged) {
+      this.padded = visibleRanges(update.view);
+      this.inputs = walkInputs(update.view);
+      this.decorations = build(update.view, this.padded);
     }
   }
 }, { decorations: (plugin) => plugin.decorations });

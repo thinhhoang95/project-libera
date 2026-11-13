@@ -749,7 +749,12 @@ export function onMathExtensionLoaded(listener: () => void) {
 export function renderKatex(latex: string, display: boolean): string | null {
   const key = `${display ? "D" : "I"}${latex}`;
   const cached = cache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    // A hit is the newest again: typing inside a formula adds intermediates, which must not push the document's own formulas out first.
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached;
+  }
   const source = forKatex(latex);
   if (!mhchemReady && MHCHEM.test(source)) {
     // Source until mhchem is in; not cached, so the formula is drawn once it is.

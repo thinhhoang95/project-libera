@@ -393,11 +393,11 @@ function usesChapters(text: string) {
  * Whether the document is numbered by chapters: a known class, or one that defines `\chapter` (a custom class
  * built on amsbook or book), which the document shows by using it, here or in a file it includes.
  */
-function chapterNumbered(tree: Tree, read: Read, defs: LatexDefinitions, options: NumberingOptions) {
+function chapterNumbered(tree: Tree, read: Read, text: () => string, defs: LatexDefinitions, options: NumberingOptions) {
   if (CHAPTER_CLASSES.test(defs.documentClass ?? "")) return true;
   // A file of a book whose main file has numbered chapters before it (the book 2403.14606's nowfnt class).
   if (options.start?.counters.chapter) return true;
-  if (usesChapters(read(0, tree.length))) return true;
+  if (usesChapters(text())) return true;
   if (!options.includes) return false;
   let found = false;
   let looked = 0;
@@ -430,9 +430,20 @@ function plainFormatText(text: string) {
   return text.replace(/\$\s*(?:\^\s*(?:\\prime|\{\s*\\prime\s*\})|')\s*\$/g, "′").replace(/\\ensuremath\s*\{\s*\^\s*\\prime\s*\}/g, "′");
 }
 
+/** The node types the numbering visitor acts on (besides the sectioning ones, `SECTION_LEVELS`). */
+const NUMBERED_NODES = new Set([
+  "FigureEnvironment", "TableEnvironment", "Environment", "VerbatimEnvironment", "Comment", "TikzPictureEnvironment", "Let", "UnknownCommand", "Input", "Include",
+  "Subfile", "Maketitle", "FootnoteCommand", "EndnoteCommand", "EquationEnvironment", "EquationArrayEnvironment", "DollarMath", "BracketMath", "ParenMath",
+  "TabularEnvironment", "Caption", "ListEnvironment", "Item", "Label",
+]);
+
 /** Numbers the document. `read` gives the text of a range of the document `tree` belongs to. */
 export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinitions, options: NumberingOptions = {}): LatexNumbering {
-  const chapters = chapterNumbered(tree, read, defs, options);
+  // The whole document as one string, made once and only when something needs it (a long document is not copied three times).
+  const mainRead = read;
+  let wholeText: string | null = null;
+  const mainText = () => wholeText ??= mainRead(0, tree.length);
+  const chapters = chapterNumbered(tree, read, mainText, defs, options);
   const counters = new Map<string, number>(Object.entries(options.start?.counters ?? {}));
   // `\setcounter{secnumdepth}{n}` in the body is a counter; in the preamble, a definition.
   const secnumdepth = () => (counters.has("secnumdepth") ? counters.get("secnumdepth")! : defs.secnumdepth ?? (chapters ? 2 : 3));
@@ -559,6 +570,15 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   const entries: NumberingEntry[] = [];
   // Labels of the other files of the document (a chapter's references to another), overridden by this file's own.
   const labels = new Map<string, LabelTarget>((options.start?.labels ?? []).map(([key, target]) => [key, { ...target, pos: -1 }]));
+  /**
+   * What an include or a macro expansion wrote to `labels`: each key it touched with the value it had before (undefined: it
+   * was not there), innermost last. Visiting these keys replaces comparing a copy of the whole map with the map itself.
+   */
+  const labelJournals: Array<Map<string, LabelTarget | undefined>> = [];
+  const setLabel = (key: string, target: LabelTarget) => {
+    for (const journal of labelJournals) if (!journal.has(key)) journal.set(key, labels.get(key));
+    labels.set(key, target);
+  };
   // The label target: sections set it globally; environments push a scope.
   let globalTarget: LabelTarget | null = null;
   const scopes: Array<{ node: number; target: LabelTarget | null }> = [];
@@ -661,13 +681,14 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       crefAliases.clear();
       for (const [counter, type] of known.crefAliases) crefAliases.set(counter, type);
       if (known.appendixMoved) appendixAt = Math.min(appendixAt, here);
-      for (const [label, target] of known.labels) labels.set(label, { ...target });
+      for (const [label, target] of known.labels) setLabel(label, { ...target });
       if (known.target) setTarget({ ...known.target });
       if (globalTarget) globalTarget = { ...globalTarget, pos: -1 };
       return;
     }
     const entryCount = entries.length;
-    const savedLabels = new Map(labels);
+    const journal = new Map<string, LabelTarget | undefined>();
+    labelJournals.push(journal);
     const savedRead = read;
     const targetBefore = currentTarget();
     const appendixBefore = appendixAt;
@@ -690,8 +711,18 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       included.delete(name);
       entries.length = entryCount;
       // Its labels keep their numbers (a reference to an included chapter's section resolves), without a position here.
+      labelJournals.pop();
+      // In the map's order: the keys it already had, then the new ones (in the order they were first written).
+      const touched: string[] = [];
+      const fresh: string[] = [];
+      for (const [label, before] of journal) if (labels.get(label) !== before) (before === undefined ? fresh : touched).push(label);
+      if (touched.length > 1) {
+        const rank = new Map<string, number>();
+        for (const label of labels.keys()) if (journal.has(label)) rank.set(label, rank.size);
+        touched.sort((a, b) => rank.get(a)! - rank.get(b)!);
+      }
       const added: Array<[string, LabelTarget]> = [];
-      for (const [label, target] of labels) if (savedLabels.get(label) !== target) { const moved = { ...target, pos: -1 }; labels.set(label, moved); added.push([label, moved]); }
+      for (const label of [...touched, ...fresh]) { const moved = { ...labels.get(label)!, pos: -1 }; setLabel(label, moved); added.push([label, moved]); }
       const changed = currentTarget() !== targetBefore;
       // A label right after the include refers to the last number in it, which is not in this file.
       if (globalTarget) globalTarget = { ...globalTarget, pos: -1 };
@@ -712,8 +743,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   // Macros that write structure (`\mysec{…}` for `\section{…}`, `\beq … \eeq`): their expansion is
   // parsed and numbered where the macro is used. Nothing here runs for a document without them.
   const structureNames = structureMacroNames(defs);
-  const mainRead = read;
-  const regions = structureNames.size ? macroEnvironmentRegions(() => mainRead(0, tree.length), defs) : [];
+  const regions = structureNames.size ? macroEnvironmentRegions(mainText, defs) : [];
   /** The macro use whose expansion is being numbered: its expansion's constructs sit inside the use's ancestors. */
   let macroHost: SyntaxNode | null = null;
   /** Nodes starting before this are already numbered (a macro's arguments, a macro environment, a definition). */
@@ -762,7 +792,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     const number = format("lstlisting");
     entries.push({ pos: node.from, kind: "listing", number });
     const label = options.get("label");
-    if (label) labels.set(label, { number, kind: "listing", pos: node.from, type: crefAliases.get("lstlisting") ?? "listing", anchor: "lstlisting" });
+    if (label) setLabel(label, { number, kind: "listing", pos: node.from, type: crefAliases.get("lstlisting") ?? "listing", anchor: "lstlisting" });
   };
   /** `\footnote[5]`'s number: 5 as `\thefootnote` prints it (a symbol under `\fnsymbol`), the counter left as it is. */
   const footnoteNumber = (text: string) => {
@@ -773,7 +803,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     try { return format("footnote"); } finally { counters.set("footnote", saved); }
   };
   /** What `\iffalse … \fi` and macros that discard their arguments (`\cut{…}`) leave out of the document: not numbered. */
-  const disabled = includeDepth ? [] : disabledRegions(mainRead(0, tree.length), discardingMacros(defs), defs);
+  const disabled = includeDepth ? [] : disabledRegions(mainText(), discardingMacros(defs), defs);
   /** Nodes entered (for what follows the `\fi` inside them) but not counted themselves: by name and start. */
   const passive = new Set<string>();
   /** Where the `\label`s set to an algorithm's line are: their own `\label` node does not set them again. */
@@ -789,13 +819,14 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       spec = readAlgorithmicBody(body, optional ? read(optional.from + 1, optional.to - 1) : null, defs, node.from);
     } else spec = readAlgorithm2eBody(body, defs, node.from)?.algorithm ?? null;
     for (const label of spec ? algorithmLineLabels(spec) : []) {
-      labels.set(label.key, { number: label.number, kind: "item", type: "line", anchor: "line", pos: content.from + label.at });
+      setLabel(label.key, { number: label.number, kind: "item", type: "line", anchor: "line", pos: content.from + label.at });
       lineLabelAt.add(content.from + label.at);
     }
   };
   const numberExpansion =(host: SyntaxNode, text: string) => {
     const entryCount = entries.length;
-    const labelsBefore = new Map(labels);
+    const journal = new Map<string, LabelTarget | undefined>();
+    labelJournals.push(journal);
     const targetBefore = globalTarget;
     const scopeTargets = scopes.map((scope) => scope.target);
     const savedRead = read;
@@ -810,7 +841,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       // What the expansion numbered is at the macro use.
       const moved = <T extends { pos: number }>(value: T) => (fixed.has(value) ? value : { ...value, pos: host.from });
       for (let i = entryCount; i < entries.length; i++) entries[i] = moved(entries[i]);
-      for (const [key, target] of labels) if (labelsBefore.get(key) !== target) labels.set(key, moved(target));
+      labelJournals.pop();
+      for (const [key, before] of journal) { const target = labels.get(key)!; if (before !== target) setLabel(key, moved(target)); }
       if (globalTarget && globalTarget !== targetBefore) globalTarget = moved(globalTarget);
       scopes.forEach((scope, index) => { if (scope.target && scope.target !== scopeTargets[index]) scope.target = moved(scope.target); });
     }
@@ -852,12 +884,14 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           return undefined;
         }
       }
-      const node = ref.node;
       // A definition's body is not run where it is written: `\newcommand{\fn}[1]{\footnote{#1}}` is no footnote.
       if (!macroHost && !includeDepth && ref.from >= 0) {
         const extent = definitionExtentAt(defs, ref.from);
         if (extent && ref.to <= extent.to && DEFINITION_START.test(read(ref.from, ref.from + 40))) { skipUntil = extent.to; return false; }
       }
+      // Most nodes (text, groups, arguments) are none of what follows: no node object made for them.
+      if (!NUMBERED_NODES.has(name) && !(name in SECTION_LEVELS)) return undefined;
+      const node = ref.node;
       const kindOfFloat = name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" ? floatKind(node, read) : null;
       if (kindOfFloat) floats.push({ from: ref.from, kind: kindOfFloat, number: null, count: 0, waiting: [] });
       if (name === "VerbatimEnvironment" && environmentName(node, read) === "lstlisting") {
@@ -952,7 +986,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             step("table");
             const number = format("table");
             entries.push({ pos: node.from, kind: "table", number });
-            if (table.label) labels.set(table.label.trim(), { number, kind: "table", pos: node.from });
+            if (table.label) setLabel(table.label.trim(), { number, kind: "table", pos: node.from });
           }
           if (table) skipUntil = node.from + table.length;
           return false;
@@ -1101,7 +1135,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           if (tag) number = tag.number;
           else if (NUMBERED_EQUATIONS.has(base) && !starred && !/\\(?:nonumber|notag|IEEEnonumber)\b/.test(body)) { step("equation"); number = format("equation"); }
           entries.push({ pos: node.from, kind: "equation", number, rows: [number], tagged: [!!tag?.tagged] });
-          for (const match of body.matchAll(/\\label\s*\{([^}]*)\}/g)) if (number) labels.set(match[1].trim(), { number, kind: "equation", pos: node.from });
+          for (const match of body.matchAll(/\\label\s*\{([^}]*)\}/g)) if (number) setLabel(match[1].trim(), { number, kind: "equation", pos: node.from });
         } else {
           const numbered = NUMBERED_ROWS.has(base) && !starred;
           const tagged: boolean[] = [];
@@ -1115,7 +1149,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
             tagged.push(!!tag?.tagged);
             waiting.push(...[...row.matchAll(/\\label\s*\{([^}]*)\}/g)].map((match) => match[1].trim()));
             if (number) {
-              for (const key of waiting) labels.set(key, { number, kind: "equation", pos: node.from });
+              for (const key of waiting) setLabel(key, { number, kind: "equation", pos: node.from });
               waiting = [];
             }
             return number;
@@ -1223,7 +1257,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           const options = opening?.[1] ? readOptional(read(node.from, Math.min(node.to, node.from + 4000)), opening[0].length - 1, TEX_GROUPS)?.content : null;
           const key = options ? /(?:^|,)\s*label\s*=\s*(?:\{([^{}]*)\}|([^,\]]*))/.exec(stripTexComments(options)) : null;
           const label = key ? (key[1] ?? key[2]).trim() : "";
-          if (number && label) labels.set(label, { number, kind: "counter", pos: node.from, type: env });
+          if (number && label) setLabel(label, { number, kind: "counter", pos: node.from, type: env });
           if (number) setTarget({ number, kind: "counter", pos: node.from, type: env });
           return;
         }
@@ -1270,13 +1304,13 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           // after it, and the optional text is its cleveref type.
           const typed = /^\[([^\]\[{}]*)\]\s*\{([^{}]*)\}/.exec(read(node.to, Math.min(tree.length, node.to + 300)));
           const typedTarget = currentTarget();
-          if (typed && typed[2].trim() && typedTarget && !lineLabelAt.has(node.from)) labels.set(typed[2].trim(), typed[1].trim() ? { ...typedTarget, type: typed[1].trim() } : typedTarget);
+          if (typed && typed[2].trim() && typedTarget && !lineLabelAt.has(node.from)) setLabel(typed[2].trim(), typed[1].trim() ? { ...typedTarget, type: typed[1].trim() } : typedTarget);
           return false;
         }
         if (lineLabelAt.has(node.from)) return false;
         const key = read(argument.from, argument.to).replace(/^\{|\}$/g, "").trim();
         const target = currentTarget();
-        if (key && target) labels.set(key, target);
+        if (key && target) setLabel(key, target);
         return false;
       }
       return;
