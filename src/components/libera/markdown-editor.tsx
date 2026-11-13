@@ -637,7 +637,7 @@ export function MarkdownEditor({
     });
   }
 
-  runCitationHoverRef.current = runCitationHover;
+  useLayoutEffect(() => { runCitationHoverRef.current = runCitationHover; });
 
   /** The citation under the pointer, for the hover card and Ctrl/Cmd+click. */
   function citationAtPointer(textarea: HTMLTextAreaElement, clientX: number, clientY: number) {
