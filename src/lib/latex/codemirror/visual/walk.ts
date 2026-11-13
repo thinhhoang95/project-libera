@@ -1,4 +1,4 @@
-import type { EditorState, Text } from "@codemirror/state";
+import type { EditorState, Text, Transaction } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
@@ -548,17 +548,24 @@ function readItemCounts(list: SyntaxNode, state: EditorState, counter: string | 
 function trailingLabel(state: EditorState, container: SyntaxNode | null, pos: number) {
   if (!container) return null;
   const line = state.doc.lineAt(pos);
-  let found: SyntaxNode | null = null;
-  container.cursor().iterate((ref) => {
-    if (found || ref.from > line.to) return false;
-    if (ref.to <= pos) return false;
-    if (ref.name === "Label") {
-      if (ref.from >= pos && !read(state, pos, ref.from).trim() && ref.to <= line.to) found = ref.node;
-      return false;
+  // Pre-order, as `iterate` visits, but stopping at the first node past the line: nodes start in order.
+  const cursor = container.cursor();
+  let depth = 0;
+  for (;;) {
+    if (cursor.from > line.to) return null;
+    let descend = cursor.to > pos;
+    if (descend && cursor.name === "Label") {
+      if (cursor.from >= pos && !read(state, pos, cursor.from).trim() && cursor.to <= line.to) return cursor.node;
+      descend = false;
     }
-    return undefined;
-  });
-  return found as SyntaxNode | null;
+    if (descend && cursor.firstChild()) { depth++; continue; }
+    for (;;) {
+      if (depth === 0) return null;
+      if (cursor.nextSibling()) break;
+      if (!cursor.parent()) return null;
+      depth--;
+    }
+  }
 }
 
 /** Strips layout commands from a user environment's code, keeping `\item[label]` labels. */
@@ -1780,7 +1787,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const last = doc.lineAt(closing.from).number - 1;
     if (last < first) return;
     const body = { from: doc.line(first).from, to: doc.line(last).to };
-    const marks = codeTokens(read(state, body.from, body.to), header.language).map((token) => ({ from: body.from + token.from, to: body.from + token.to, class: token.class }));
+    // Only the style layer draws the marks; the structural layer drops this construct (no replaces, no hidden lines).
+    const marks = structural ? [] : codeTokens(read(state, body.from, body.to), header.language).map((token) => ({ from: body.from + token.from, to: body.from + token.to, class: token.class }));
     emit({ kind: "code-body", from: node.from, to: node.to, reveal: "never", replaces: [], marks, lines: [{ ...body, class: "cm-vis-code-line" }] });
   }
 
@@ -1972,7 +1980,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // the source on a click (reveal "line"), as the other environment headers do.
     if ((name === "IEEEbiographynophoto" || name === "IEEEbiography") && !defs.environments.has(name)) {
       const nameEnd = formed.begin.getChild("EnvNameGroup")?.to ?? formed.begin.to;
-      const head = /^(\s*\[(?:[^[\]{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\])?\s*\{((?:[^{}\\]|\\[A-Za-z]+\s*)*)\}/.exec(read(state, nameEnd, Math.min(doc.length, nameEnd + 600)));
+      const head = /^(\s*\[(?:[^[\]{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\])?\s*\{((?:[^{}\\]|\\[A-Za-z])*)\}/.exec(read(state, nameEnd, Math.min(doc.length, nameEnd + 600)));
       if (!head || (head[1] && !/\\includegraphics/.test(head[1])) || (name === "IEEEbiographynophoto" && head[1])) return undefined;
       const headerEnd = nameEnd + head[0].length;
       consumed.push([formed.begin.from, headerEnd]);
@@ -3308,13 +3316,14 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const formula = expandLatexMacros(latex, defs, { mode: "math", pos: node.from }).text;
       const html = renderKatex(withReferences(formula), false);
       if (!html) return undefined;
-      emit({ kind: "math", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new MathWidget(html, false, false, read(state, node.from, to), false, 0, to - node.from, referenced(formula)) }] });
+      // The style layer ignores replacements: no widget (and its key strings) there.
+      emit({ kind: "math", from: node.from, to, reveal: "strict", replaces: [structural ? { from: node.from, to, widget: new MathWidget(html, false, false, read(state, node.from, to), false, 0, to - node.from, referenced(formula)) } : { from: node.from, to }] });
       // The parser may attach only some of the arguments to the command: the rest are inside the widget too.
       consumed.push([node.from, to]);
       return false;
     }
     if (needsMathMode(use.text)) return undefined;
-    emit({ kind: "macro", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new MacroWidget(name, use.text, to - node.from, fingerprint) }] });
+    emit({ kind: "macro", from: node.from, to, reveal: "strict", replaces: [structural ? { from: node.from, to, widget: new MacroWidget(name, use.text, to - node.from, fingerprint) } : { from: node.from, to }] });
     consumed.push([node.from, to]);
     return false;
   }
@@ -3412,19 +3421,45 @@ function mathDrawing(node: SyntaxNode, state: EditorState) {
  * file as written, per document version.
  */
 const BASE_BOX: LatexBoxDefinition = { title: null, arity: 0, optional: false, counter: false, within: null };
-const boxCache = new WeakMap<Text, { defs: LatexDefinitions | undefined; boxes: Map<string, LatexBoxDefinition> }>();
-export function boxEnvironments(doc: Text, defs?: LatexDefinitions) {
-  const cached = boxCache.get(doc);
-  if (cached && cached.defs === defs) return cached.boxes;
-  const boxes = new Map<string, LatexBoxDefinition>([["tcolorbox", BASE_BOX], ["mdframed", BASE_BOX], ...(defs?.boxes ?? [])]);
+const BOX_TRIGGER = /\\(?:(?:re)?newtcolorbox|DeclareTColorBox|NewTColorBox|newmdenv)\b/;
+/** The open file's own boxes per document (null: it defines none); they do not depend on the project's definitions. */
+const ownBoxCache = new WeakMap<Text, Array<[string, LatexBoxDefinition]> | null>();
+/** The merged map per document and per project definitions: callers differ in passing them, so both shapes are kept. */
+const boxCache = new WeakMap<Text, Map<LatexDefinitions | undefined, Map<string, LatexBoxDefinition>>>();
+function ownBoxes(doc: Text) {
+  const cached = ownBoxCache.get(doc);
+  if (cached !== undefined) return cached;
+  let own: Array<[string, LatexBoxDefinition]> | null = null;
   const text = doc.toString();
-  if (/\\(?:(?:re)?newtcolorbox|DeclareTColorBox|NewTColorBox|newmdenv)\b/.test(text)) {
-    const own = emptyLatexDefinitions();
-    readBoxDefinitions(text, own);
-    for (const [name, box] of own.boxes ?? []) boxes.set(name, box);
+  if (BOX_TRIGGER.test(text)) {
+    const read = emptyLatexDefinitions();
+    readBoxDefinitions(text, read);
+    own = [...(read.boxes ?? [])];
   }
-  boxCache.set(doc, { defs, boxes });
+  ownBoxCache.set(doc, own);
+  return own;
+}
+export function boxEnvironments(doc: Text, defs?: LatexDefinitions) {
+  let byDefs = boxCache.get(doc);
+  const cached = byDefs?.get(defs);
+  if (cached) return cached;
+  const boxes = new Map<string, LatexBoxDefinition>([["tcolorbox", BASE_BOX], ["mdframed", BASE_BOX], ...(defs?.boxes ?? [])]);
+  for (const [name, box] of ownBoxes(doc) ?? []) boxes.set(name, box);
+  if (!byDefs) boxCache.set(doc, byDefs = new Map());
+  byDefs.set(defs, boxes);
   return boxes;
+}
+
+/** Carries "the file defines no boxes" over to the new document when no line the edit touched can declare one. */
+export function noteBoxEnvironments(tr: Transaction) {
+  if (!tr.docChanged || ownBoxCache.has(tr.state.doc) || ownBoxCache.get(tr.startState.doc) !== null) return;
+  const doc = tr.state.doc;
+  let safe = true;
+  // The trigger is single-line: a new match lies on a line an edit touched, which starts before and ends after it.
+  tr.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+    if (safe && BOX_TRIGGER.test(doc.sliceString(doc.lineAt(fromB).from, doc.lineAt(toB).to))) safe = false;
+  });
+  if (safe) ownBoxCache.set(doc, null);
 }
 
 /** A box environment's options and title as used (`\begin{prompt}[Self-RAG]`, `\begin{tcolorbox}[title=…]`, `\begin{BoxBox}[label=…,\n …]{Title}`), and where its opening ends. */
@@ -3674,9 +3709,14 @@ function bibitemNumber(doc: Text, envFrom: number, at: number) {
     starts = [...body.matchAll(/\\bibitem(?![A-Za-z@])/g)].map((match) => envFrom + match.index);
     byEnvironment.set(envFrom, starts);
   }
-  let count = 0;
-  for (const start of starts) { if (start > at) break; count++; }
-  return count;
+  // The starts at or before `at` (sorted), by binary search.
+  let low = 0;
+  let high = starts.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (starts[mid] > at) high = mid; else low = mid + 1;
+  }
+  return low;
 }
 
 /** etoolbox toggles as the document sets them (`\togglefalse{hq}`), per document version: unset is false. */
