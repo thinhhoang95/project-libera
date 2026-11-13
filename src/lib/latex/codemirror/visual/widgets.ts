@@ -310,7 +310,8 @@ export class ChipWidget extends VisualWidget {
           math.innerHTML = html;
           return math;
         }));
-      } else if (dom.textContent !== text) dom.textContent = text;
+      // (Math drawn before reads as other text than its source: elements left from it go, as a plain write always removed them.)
+      } else if (dom.textContent !== text || dom.firstElementChild) dom.textContent = text;
       if (this.kind === "ref") {
         const missing = this.keys.some((key) => !labelTarget(key, visualNumbering(target.state), visualAux(target.state)));
         dom.classList.toggle("cm-vis-missing", missing);
