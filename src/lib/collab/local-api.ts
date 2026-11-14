@@ -330,12 +330,24 @@ export interface CreateSuggestionsRequest {
    * Without it, offsets refer to the live text.
    */
   snapshot?: string;
+  /**
+   * With `snapshot` and `ai`: these edits are the AI's current version of
+   * the passages they touch. An edit that repeats one of the account's own
+   * pending suggestions from the same feature is not created again; one that
+   * revises such a suggestion withdraws it (supersedeOwnAiSuggestions).
+   */
+  replaceOwn?: boolean;
 }
 
 export interface CreateSuggestionsResponse {
+  /** One per edit: the new suggestion, or with `replaceOwn` the pending one it repeats. */
   suggestionIds: string[];
   /** Edits whose `before` no longer matched; created as stale suggestions. */
   staleIndexes: number[];
+  /** Edits that repeated an already pending suggestion (`replaceOwn`); nothing was created for them. */
+  repeatedIndexes?: number[];
+  /** Earlier suggestions withdrawn because these edits revise them (`replaceOwn`). */
+  withdrawnIds?: string[];
 }
 
 /**

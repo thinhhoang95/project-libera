@@ -971,7 +971,7 @@ async function assertSharedWritable(context: ToolContext, resolved: ResolvedPath
 }
 
 /** What suggesting a change to a shared file produced, for the tool's result text. */
-export type SharedSuggestion = { suggestionIds: string[]; staleCount: number };
+export type SharedSuggestion = { suggestionIds: string[]; staleCount: number; repeatedCount?: number; withdrawnCount?: number };
 
 /**
  * A change to a shared document: overlay suggestions through the host,
@@ -987,7 +987,7 @@ async function suggestSharedAgentFile(context: ToolContext, resolved: ResolvedPa
     ...(context.model ? { model: context.model } : {}),
     runId: context.snapshots.runId,
     title: "AI Agent",
-  }, { doc }).catch(sharedToolError);
+  }, { doc, replaceOwn: true }).catch(sharedToolError);
   if (!context.snapshots.has(resolved.path)) await context.snapshots.recordOriginal(resolved.path, before, undefined, { docId: doc.docId, mode: "suggest" });
   await context.snapshots.recordSuggestions(resolved.path, result.suggestionIds);
   // The text is what it was: the next Edit works on it without a new Read,
@@ -996,14 +996,21 @@ async function suggestSharedAgentFile(context: ToolContext, resolved: ResolvedPa
   else context.fileState.set(resolved.path, { hash: hashContent(result.text), partial: false });
   context.changed.set(resolved.path, { created: false });
   context.emit({ type: "file_changed", path: resolved.path, created: false, shared: true, suggested: true });
-  return { suggestionIds: result.suggestionIds, staleCount: result.staleCount };
+  return {
+    suggestionIds: result.suggestionIds,
+    staleCount: result.staleCount,
+    ...(result.repeatedCount ? { repeatedCount: result.repeatedCount } : {}),
+    ...(result.withdrawnCount ? { withdrawnCount: result.withdrawnCount } : {}),
+  };
 }
 
 /** The tool result's lines about a suggestion on a shared file. */
 function suggestionNote(resolved: ResolvedPath, suggestion: SharedSuggestion): string {
   const ids = suggestion.suggestionIds;
   const stale = suggestion.staleCount ? ` ${plural(suggestion.staleCount, "part")} of it ${suggestion.staleCount === 1 ? "is" : "are"} stale because a collaborator changed that text since you read it; Read the file again before suggesting more there.` : "";
-  return `Suggested a change to ${resolved.path}: suggested, pending review (${plural(ids.length, "suggestion")}: ${ids.join(", ")}).${stale}\n${SHARED_SUGGEST_NOTE}`;
+  const repeated = suggestion.repeatedCount ? ` ${plural(suggestion.repeatedCount, "part")} of it ${suggestion.repeatedCount === 1 ? "was" : "were"} already pending from your earlier suggestion and ${suggestion.repeatedCount === 1 ? "was" : "were"} not suggested again.` : "";
+  const replaced = suggestion.withdrawnCount ? ` It replaces ${plural(suggestion.withdrawnCount, "earlier suggestion")} of yours on the same passage.` : "";
+  return `Suggested a change to ${resolved.path}: suggested, pending review (${plural(ids.length, "suggestion")}${ids.length ? `: ${ids.join(", ")}` : ""}).${repeated}${replaced}${stale}\n${SHARED_SUGGEST_NOTE}`;
 }
 
 export async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, content: string, previous: { content: string | null; fromDraft: boolean; shared?: ResolvedDoc }, verifyUnchanged = false): Promise<SharedSuggestion | null> {

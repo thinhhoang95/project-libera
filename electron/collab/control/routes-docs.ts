@@ -19,7 +19,7 @@ import {
   type WithdrawSuggestionsResponse,
 } from "../../../src/lib/collab/local-api";
 import type { SuggestionRecord } from "../../../src/lib/collab/protocol/schema";
-import { createSuggestion, listSuggestions, suggestionsFromSnapshotEdits, withdrawSuggestion } from "../../../src/lib/collab/suggestions/model";
+import { createSuggestion, listSuggestions, suggestionsFromSnapshotEdits, suggestionsMap, supersedeOwnAiSuggestions, withdrawSuggestion } from "../../../src/lib/collab/suggestions/model";
 import type { DocHub } from "../core/doc-hub";
 import type { Router } from "./router";
 import type { CollabRuntime } from "./runtime";
@@ -209,6 +209,8 @@ export function registerDocRoutes(router: Router, runtime: CollabRuntime, option
     const title = optionalString(body.title, "title", 500);
     const threadIds = stringList(body.threadIds, "threadIds");
     const snapshot = body.snapshot === undefined || body.snapshot === null ? undefined : optionalString(body.snapshot, "snapshot", MAX_SNAPSHOT_CHARS);
+    if (body.replaceOwn !== undefined && typeof body.replaceOwn !== "boolean") throw bad("replaceOwn must be a boolean.");
+    const replaceOwn = body.replaceOwn === true && !!hint && snapshot !== undefined;
     if (snapshot !== undefined) {
       edits.forEach((edit, index) => {
         if (edit.before === undefined) throw bad(`edits[${index}].before is required with a snapshot.`);
@@ -231,24 +233,37 @@ export function registerDocRoutes(router: Router, runtime: CollabRuntime, option
       if (snapshot !== undefined) {
         // Edits made against an older text: mapped through the diff to the
         // live text, or stale where their passage changed meanwhile.
+        const repeatedIndexes: number[] = [];
+        let withdrawnIds: string[] = [];
         hub.applyLocalChange(
           "annotations",
           (doc) => {
             const created = suggestionsFromSnapshotEdits(current, snapshot, edits.map((edit) => ({ start: edit.start, end: edit.end, before: edit.before!, after: edit.text })), {
               ytext,
-              target: doc,
               actor,
               createdBy: account.id,
               ...extra,
             });
+            const replaced = replaceOwn
+              ? supersedeOwnAiSuggestions(doc, ytext, created.suggestions, { createdBy: account.id, feature: hint!.feature })
+              : null;
+            withdrawnIds = replaced?.withdrawn ?? [];
+            const map = suggestionsMap(doc);
             created.suggestions.forEach((record, index) => {
+              const repeats = replaced?.duplicateOf[index];
+              if (repeats) {
+                suggestionIds.push(repeats);
+                repeatedIndexes.push(index);
+                return;
+              }
+              map.set(record.id, record);
               suggestionIds.push(record.id);
               if (record.status === "stale") staleIndexes.push(index);
             });
           },
           provenance,
         );
-        return { status: 201, body: { suggestionIds, staleIndexes } };
+        return { status: 201, body: { suggestionIds, staleIndexes, ...(replaceOwn ? { repeatedIndexes, withdrawnIds } : {}) } };
       }
       // The server only accepts new suggestions as "pending". A suggestion
       // whose `before` no longer matches keeps that `before` as its

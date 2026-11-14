@@ -245,6 +245,10 @@ export interface SharedSuggestResult {
   suggestionIds: string[];
   /** Suggestions created stale: their passage changed after `before` was read. */
   staleCount: number;
+  /** With `replaceOwn`: edits already pending as an earlier suggestion, not suggested again. */
+  repeatedCount?: number;
+  /** With `replaceOwn`: earlier suggestions withdrawn because this change revises them. */
+  withdrawnCount?: number;
   /** The document's text now (unchanged by suggesting). */
   text: string;
 }
@@ -256,13 +260,17 @@ export interface SharedSuggestResult {
  * Edits are made on `before` and mapped onto the live text by the host, so
  * a collaborator's edit elsewhere only shifts them; a passage that changed
  * meanwhile becomes a stale suggestion. Several edits are one group.
+ *
+ * `replaceOwn`: the change is this AI's current version of the passages it
+ * touches, so it replaces the user's own pending suggestions from the same
+ * feature there instead of piling up copies (see CreateSuggestionsRequest).
  */
 export async function suggestSharedText(
   liberaPath: string,
   before: string,
   nextText: string,
   ai: AiActorHint & { title?: string; reason?: string },
-  options: SharedWriteOptions & { doc?: ResolvedDoc } = {},
+  options: SharedWriteOptions & { doc?: ResolvedDoc; replaceOwn?: boolean } = {},
 ): Promise<SharedSuggestResult> {
   const config = hostConfig(liberaPath, options);
   const doc = options.doc ?? (await requireSharedDoc(liberaPath, { config }));
@@ -287,9 +295,19 @@ export async function suggestSharedText(
     ...(edits.length > 1 ? { groupId: `ai-${randomUUID()}` } : {}),
     ...(title ? { title } : {}),
     ...(reason ? { reason } : {}),
+    ...(options.replaceOwn ? { replaceOwn: true } : {}),
   }, config));
   const current = await host(liberaPath, () => getDocText(doc.docId, config));
-  return { doc, suggestionIds: response.suggestionIds, staleCount: response.staleIndexes.length, text: current.text };
+  const repeated = new Set(response.repeatedIndexes ?? []);
+  return {
+    doc,
+    // What this change created; repeats belong to the earlier suggestion (and its run's undo).
+    suggestionIds: response.suggestionIds.filter((_, index) => !repeated.has(index)),
+    staleCount: response.staleIndexes.length,
+    ...(response.repeatedIndexes?.length ? { repeatedCount: response.repeatedIndexes.length } : {}),
+    ...(response.withdrawnIds?.length ? { withdrawnCount: response.withdrawnIds.length } : {}),
+    text: current.text,
+  };
 }
 
 /** Withdraws the user's pending suggestions on a shared document made by one AI run (agent undo). */

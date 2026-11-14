@@ -9,7 +9,7 @@ import * as Y from "yjs";
 import {
   applySuggestionToText, createSuggestion, editSuggestionReplacement, getSuggestion, groupSuggestions, listSuggestions, mapSnapshotEdits,
   previewAcceptedText, refreshSuggestion, resolveSuggestion, resolveSuggestions, suggestionsFromSnapshotEdits, validateDecision,
-  validateGroupDecision, withdrawSuggestion,
+  supersedeOwnAiSuggestions, validateGroupDecision, withdrawSuggestion,
 } from "../../src/lib/collab/suggestions/model";
 import type { Actor } from "../../src/lib/collab/protocol";
 
@@ -226,4 +226,58 @@ test("hard case 7: agentic-review edits on an old snapshot become live or confli
   // An edit that does not match its own snapshot is conflicted.
   assert.equal(mapSnapshotEdits(snapshot, snapshot, [{ start: 0, end: 3, before: "nope", after: "x" }])[0].matched, false);
   assert.throws(() => suggestionsFromSnapshotEdits("other", snapshot, edits, { ytext, actor: aiForAlice }));
+});
+
+test("an agent's repeated or revised suggestions replace its own earlier ones, so Accept all leaves nothing stale", () => {
+  // The agent reads a shared file without its pending suggestions and proposes
+  // the same passages again (main4.tex: three copies of one edit, all pending;
+  // Accept all applied the first and marked the others stale).
+  const { ytext, annotations } = setup("We set adjusted headroom H here. The cat sat. A dog ran. The end came.");
+  const live = ytext.toString();
+  const agent = (runId: string): Actor => ({ kind: "ai", onBehalfOf: "alice", feature: "agent", model: "m", runId });
+  const at = (quote: string) => live.indexOf(quote);
+  const edit = (quote: string, after: string, offset = 0) => ({ start: at(quote) + offset, end: at(quote) + offset + quote.length, before: quote, after });
+  const suggest = (runId: string, groupId: string | undefined, edits: Array<ReturnType<typeof edit>>) =>
+    suggestionsFromSnapshotEdits(live, live, edits, { ytext, actor: agent(runId), createdBy: "alice", ...(groupId ? { groupId } : {}), makeId: id, now: 10 }).suggestions;
+  const store = (records: ReturnType<typeof suggest>, plan?: { duplicateOf: (string | null)[] }) => {
+    const map = annotations.getMap("suggestions");
+    records.forEach((record, index) => { if (!plan?.duplicateOf[index]) map.set(record.id, record); });
+  };
+
+  // Earlier run: a group of three, and one alone.
+  const first = suggest("run-1", "g1", [edit("adjusted ", ""), edit("cat", "fox"), edit("dog", "cow")]);
+  store(first);
+  const lone = suggest("run-1", undefined, [edit("end", "close")]);
+  store(lone);
+  // Someone else's suggestion and the user's own Rewrite on the same passages stay as they are.
+  const bobs = createSuggestion(annotations, { ytext, start: at("cat"), end: at("cat") + 3, replacement: "bat", actor: bob, id: id(), now: 11 });
+  const rewrite = createSuggestion(annotations, { ytext, start: at("dog"), end: at("dog") + 3, replacement: "pig", actor: { ...aiForAlice, feature: "rewrite" }, id: id(), now: 11 });
+
+  // The agent proposes again: the same deletion with shifted diff boundaries
+  // (" adjusted" instead of "adjusted "), a revised "cat" and the same "end".
+  const again = suggest("run-2", "g2", [{ start: at("adjusted ") - 1, end: at("adjusted ") + 8, before: " adjusted", after: "" }, edit("cat", "lynx"), edit("end", "close")]);
+  const plan = supersedeOwnAiSuggestions(annotations, ytext, again, { createdBy: "alice", feature: "agent", now: 20, makeGroupId: () => "g1-rest" });
+  assert.deepEqual(plan.duplicateOf, [first[0].id, null, lone[0].id], "repeats point at the pending suggestion they repeat");
+  assert.deepEqual(plan.withdrawn, [first[1].id], "the revised passage withdraws the earlier version");
+  store(again, plan);
+
+  const byId = (record: { id: string }) => getSuggestion(annotations, record.id)!;
+  assert.equal(byId(first[1]).status, "withdrawn");
+  // The rest of the earlier group stays decidable together, without the withdrawn member.
+  assert.deepEqual([byId(first[0]).groupId, byId(first[2]).groupId, byId(first[0]).status, byId(first[2]).status], ["g1-rest", "g1-rest", "pending", "pending"]);
+  assert.equal(byId(bobs).status, "pending");
+  assert.equal(byId(rewrite).status, "pending");
+  assert.equal(getSuggestion(annotations, again[0].id), null, "a repeat is not stored");
+
+  // Accept all over the agent's suggestions (as the server orders and checks them) applies everything, with nothing stale.
+  const agentOnly = listSuggestions(annotations).filter((record) => record.actor.kind === "ai" && record.actor.feature === "agent");
+  const preview = previewAcceptedText(ytext, agentOnly);
+  assert.deepEqual(preview.skipped, []);
+  assert.equal(preview.text, "We set headroom H here. The lynx sat. A cow ran. The close came.");
+
+  // A later run that only repeats pending suggestions creates and withdraws nothing.
+  const solo = suggest("run-3", "g3", [edit("A dog", "A cow", 0), edit("The end", "The close")]);
+  const soloPlan = supersedeOwnAiSuggestions(annotations, ytext, solo, { createdBy: "alice", feature: "agent", now: 30 });
+  assert.equal(soloPlan.withdrawn.length, 0);
+  assert.deepEqual(soloPlan.duplicateOf.map(Boolean), [true, true]);
 });

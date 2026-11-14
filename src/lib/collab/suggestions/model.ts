@@ -411,6 +411,114 @@ export function mapSnapshotEdits(liveText: string, snapshotText: string, edits: 
   });
 }
 
+/* ---- An AI's revised suggestions replace its own earlier ones ------------------------ */
+
+export interface SupersedeOptions {
+  /** The account the new suggestions act for; only its own suggestions are replaced. */
+  createdBy: string;
+  /** Only suggestions from this AI feature are replaced. */
+  feature: string;
+  now?: number;
+  makeGroupId?: () => string;
+  origin?: unknown;
+}
+
+export interface SupersedeResult {
+  /** Per incoming record: the existing pending suggestion that already proposes exactly it, or null. */
+  duplicateOf: (string | null)[];
+  /** Earlier suggestions withdrawn because an incoming one revises their passage. */
+  withdrawn: string[];
+}
+
+function rangesOverlap(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
+  const aPoint = a.start === a.end;
+  const bPoint = b.start === b.end;
+  if (aPoint && bPoint) return a.start === b.start;
+  if (aPoint) return b.start < a.start && a.start < b.end;
+  if (bPoint) return a.start < b.start && b.start < a.end;
+  return a.start < b.end && b.start < a.end;
+}
+
+/** `text` with every item applied, or null when two of them overlap (no single result). */
+function applyAll(text: string, items: readonly ResolvedSuggestion[]): string | null {
+  const sorted = [...items].sort((a, b) => a.start - b.start || a.end - b.end);
+  for (let index = 1; index < sorted.length; index++) if (rangesOverlap(sorted[index - 1], sorted[index]) || sorted[index].start < sorted[index - 1].end) return null;
+  let result = text;
+  for (const item of sorted.reverse()) result = result.slice(0, item.start) + item.record.replacement + result.slice(item.end);
+  return result;
+}
+
+/**
+ * The agent cannot see its own pending suggestions in a shared document (the
+ * text stays as it was until someone accepts them), so it often proposes the
+ * same passage again, unchanged or revised. Left alone, both copies are
+ * pending, and Accept all applies the first and marks every repeat stale.
+ *
+ * For `incoming` (built on `ytext`, not stored yet), each passage they touch
+ * is compared with the account's own pending suggestions from the same AI
+ * feature that overlap it: when both would leave the same text, the incoming
+ * ones are repeats and are reported in `duplicateOf` (the caller does not
+ * store them); otherwise the earlier ones are withdrawn, so the revision is
+ * the only proposal for that passage. Group-mates of a withdrawn suggestion
+ * that nothing replaced keep a group of their own: a withdrawn member would
+ * otherwise block accepting them.
+ */
+export function supersedeOwnAiSuggestions(target: SuggestionsTarget, ytext: Y.Text, incoming: readonly SuggestionRecord[], options: SupersedeOptions): SupersedeResult {
+  const map = suggestionsMap(target);
+  const duplicateOf: (string | null)[] = incoming.map(() => null);
+  const text = memoizedText(ytext);
+  const all = listSuggestions(map);
+  const own = (record: SuggestionRecord) => record.createdBy === options.createdBy && record.actor.kind === "ai" && record.actor.feature === options.feature;
+  const earlier = all.filter((record) => own(record) && record.status === "pending").map((record) => resolveSuggestion(ytext, record, text)).filter((item) => !item.isStale);
+  const fresh = incoming.map((record, index) => ({ index, item: resolveSuggestion(ytext, record, text) })).filter(({ item }) => item.record.status === "pending" && !item.isStale);
+  if (!earlier.length || !fresh.length) return { duplicateOf, withdrawn: [] };
+
+  // Passages: connected sets of overlapping suggestions, new and earlier.
+  const nodes = [...fresh.map(({ item }) => item), ...earlier];
+  const parent = nodes.map((_, index) => index);
+  const find = (index: number): number => (parent[index] === index ? index : (parent[index] = find(parent[index])));
+  for (let a = 0; a < nodes.length; a++) for (let b = a + 1; b < nodes.length; b++) if (rangesOverlap(nodes[a], nodes[b])) parent[find(a)] = find(b);
+  const passages = new Map<number, { fresh: number[]; earlier: ResolvedSuggestion[] }>();
+  nodes.forEach((node, index) => {
+    const root = find(index);
+    const passage = passages.get(root) ?? { fresh: [], earlier: [] };
+    if (index < fresh.length) passage.fresh.push(index); else passage.earlier.push(node);
+    passages.set(root, passage);
+  });
+
+  const withdrawn: string[] = [];
+  for (const passage of passages.values()) {
+    if (!passage.fresh.length || !passage.earlier.length) continue;
+    const before = applyAll(text(), passage.earlier);
+    const after = applyAll(text(), passage.fresh.map((index) => fresh[index].item));
+    if (before !== null && before === after) {
+      const ids = passage.earlier.map((item) => item.record.id);
+      for (const index of passage.fresh) duplicateOf[fresh[index].index] = ids[0];
+    } else withdrawn.push(...passage.earlier.map((item) => item.record.id));
+  }
+  if (!withdrawn.length) return { duplicateOf, withdrawn };
+
+  const now = options.now ?? Date.now();
+  const gone = new Set(withdrawn);
+  transact(map, () => {
+    for (const id of withdrawn) {
+      const record = getSuggestion(map, id);
+      if (record) map.set(id, { ...record, status: "withdrawn", updatedAt: now });
+    }
+    const brokenGroups = new Set(all.filter((record) => gone.has(record.id) && record.groupId).map((record) => record.groupId!));
+    for (const groupId of brokenGroups) {
+      const rest = all.filter((record) => record.groupId === groupId && !gone.has(record.id) && (record.status === "pending" || record.status === "stale") && record.createdBy === options.createdBy);
+      const next = rest.length > 1 ? (options.makeGroupId?.() ?? newSuggestionId("ai")) : null;
+      for (const record of rest) {
+        const copy: SuggestionRecord = { ...record, updatedAt: now };
+        if (next) copy.groupId = next; else delete copy.groupId;
+        map.set(record.id, copy);
+      }
+    }
+  }, options.origin);
+  return { duplicateOf, withdrawn };
+}
+
 export interface SnapshotSuggestionOptions {
   ytext: Y.Text;
   /** Where to store the records; omit to only build them. */
