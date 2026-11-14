@@ -506,10 +506,20 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const hasContextTray = !!chat && ((!agentMode && !!includedDocument) || !!includedComments || !!viewedPhoto || !!chat.selections.length || !!chat.photos?.length);
   const pendingPhoto = photoAlreadyIncluded ? null : includedPhoto;
 
+  // The clock for timestamp labels: idle while the panel is collapsed or its window is hidden
+  // (each tick re-renders the whole panel), and set again when it is shown.
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
+    if (collapsed) return;
+    const doc = detachedContainer?.ownerDocument ?? globalThis.document;
+    const tick = () => { if (doc.visibilityState !== "hidden") setNow(new Date()); };
+    tick();
+    const timer = window.setInterval(tick, 60_000);
+    doc.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      doc.removeEventListener("visibilitychange", tick);
+    };
+  }, [collapsed, detachedContainer]);
 
   useEffect(() => {
     let disposed = false;

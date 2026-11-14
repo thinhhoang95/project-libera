@@ -54,10 +54,15 @@ test("resolution is cached, including 'not shared', until host events invalidate
     await registry.resolvePath("Shared/note.md");
     await registry.resolvePath("Shared/note.md");
     assert.deepEqual(resolveCalls, ["Other/plain.md", "Shared/note.md"]);
+    const version = registry.getVersion();
     emit({ t: "files-changed", projectId: "p1", paths: ["Shared/note.md"] });
     await registry.resolvePath("Shared/note.md");
+    assert.deepEqual(resolveCalls, ["Other/plain.md", "Shared/note.md"], "a working-copy write keeps a shared path's document");
+    assert.equal(registry.getVersion(), version, "and tells no subscriber, so nothing re-renders");
+    emit({ t: "files-changed", projectId: "p1", paths: ["Other/plain.md"] });
     await registry.resolvePath("Other/plain.md");
-    assert.deepEqual(resolveCalls, ["Other/plain.md", "Shared/note.md", "Shared/note.md"], "only the changed path is looked up again");
+    await registry.resolvePath("Shared/note.md");
+    assert.deepEqual(resolveCalls, ["Other/plain.md", "Shared/note.md", "Other/plain.md"], "a changed path that was not shared is looked up again");
     emit({ t: "project-changed", projectId: "p1" });
     await registry.resolvePath("Other/plain.md");
     assert.equal(resolveCalls.at(-1), "Other/plain.md", "a project change can make an unshared path shared");

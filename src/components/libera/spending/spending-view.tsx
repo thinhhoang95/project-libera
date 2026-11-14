@@ -24,6 +24,8 @@ function useLiveSpending() {
   useEffect(() => {
     void refreshSpending();
     const tick = () => {
+      // A hidden window shows nothing; regaining focus refreshes it.
+      if (document.visibilityState === "hidden") return;
       setNow(Date.now());
       void refreshSpending({ account: false });
     };

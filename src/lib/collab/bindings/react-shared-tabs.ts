@@ -159,10 +159,13 @@ export function useSharedTabs(tabs: readonly TabLike[], options: UseSharedTabsOp
     mirrors.current.clear();
   }, []);
 
-  return useMemo(() => {
-    void version;
-    return new Set(registry.boundTabIds().filter((tabId) => registry.isSharedTab(tabId)));
-  }, [registry, version]);
+  // The same Set while its members stay the same, so registry changes that bind or
+  // release nothing do not re-run everything that depends on the shared tabs.
+  const sharedIds = registry.boundTabIds().filter((tabId) => registry.isSharedTab(tabId));
+  const sharedKey = sharedIds.join("\u0000");
+  // sharedKey stands for sharedIds.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => new Set(sharedIds), [sharedKey]);
 }
 
 export interface SharedTabView {

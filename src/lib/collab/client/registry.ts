@@ -174,21 +174,31 @@ export class SharedDocRegistry {
     return request;
   }
 
-  /** Forgets cached resolutions: all, or those for the given paths / project. */
-  invalidate(filter: { paths?: string[]; projectId?: string } = {}) {
+  /**
+   * Forgets cached resolutions: all, or those for the given paths / project.
+   * `unsharedOnly` keeps paths known to be shared documents (a working-copy
+   * write leaves a path bound to the same document). Subscribers hear of it
+   * only when something was forgotten.
+   */
+  invalidate(filter: { paths?: string[]; projectId?: string; unsharedOnly?: boolean } = {}): boolean {
+    let forgot = false;
     if (!filter.paths && !filter.projectId) {
+      forgot = this.resolutions.size > 0;
       this.resolutions.clear();
     } else {
       const paths = new Set(filter.paths ?? []);
       for (const [path, cached] of this.resolutions) {
         if (cached instanceof Promise) continue;
+        if (filter.unsharedOnly && cached.value !== null) continue;
         // A project change can add files that were "not shared" a moment ago.
         if (paths.has(path) || (filter.projectId && (cached.value === null || cached.value.projectId === filter.projectId))) {
           this.resolutions.delete(path);
+          forgot = true;
         }
       }
     }
-    this.emit();
+    if (forgot) this.emit();
+    return forgot;
   }
 
   private handleHostEvent(event: HostEvent) {
@@ -201,13 +211,21 @@ export class SharedDocRegistry {
       for (const entry of [...this.entries.values()]) this.reconnectEntry(entry);
     } else if (event.t === "tree-changed") {
       const removed = new Set(event.removed);
+      let marked = false;
       for (const binding of this.tabs.values()) {
         if (!removed.has(binding.path)) continue;
         binding.deleted = true;
+        marked = true;
         if (binding.state.kind === "shared") binding.state.session.replica.markDeleted();
       }
-      this.invalidate({ paths: [...event.added, ...event.removed, ...event.moves.flatMap((move) => [move.from, move.to])] });
-    } else if (event.t === "files-changed") this.invalidate({ paths: event.paths, projectId: event.paths.length ? undefined : event.projectId });
+      const forgot = this.invalidate({ paths: [...event.added, ...event.removed, ...event.moves.flatMap((move) => [move.from, move.to])] });
+      if (marked && !forgot) this.emit();
+    } else if (event.t === "files-changed") {
+      // The host writes a shared document's working copy every few seconds while anyone
+      // types: that path stays the same document, so only a file that was not shared a
+      // moment ago (created or turned into a document since) is looked up again.
+      this.invalidate({ paths: event.paths, projectId: event.paths.length ? undefined : event.projectId, unsharedOnly: event.paths.length > 0 });
+    }
     else if (event.t === "project-changed") this.invalidate({ projectId: event.projectId });
   }
 

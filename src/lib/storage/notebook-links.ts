@@ -3,7 +3,7 @@ import path from "node:path";
 import { extractMarkdownLinkOccurrences } from "@/lib/markdown-link-occurrences";
 import { resolveMarkdownFileLink } from "@/lib/markdown-file-links";
 import { filePathFromParts, notebookPath, notebookSystemDirectoryPath } from "@/lib/storage/paths";
-import { assertDirectorySignature, readDirectorySignature, readTextSnapshot } from "@/lib/storage/file-signature";
+import { assertDirectorySignature, readDirectorySignature, readFileSignature, readTextSnapshot } from "@/lib/storage/file-signature";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
@@ -61,25 +61,59 @@ async function notebookDestinations(notebook: LiberaNotebookNode, files: LiberaF
   return task;
 }
 
+/**
+ * Files read for the index in this process, per index: an unchanged signature
+ * (size, mtime, ctime, inode) skips reading and hashing the file again, so a
+ * tree refresh costs one stat per note instead of reading every note. Some
+ * writes keep all of those (see readFileContentHash), so an entry is trusted
+ * only for LINK_RECHECK_MS before the file is read again. Kept in memory only:
+ * the saved index holds nothing but what follows from the bytes.
+ */
+type ReadEntry = LinkEntry & { signature: string; checkedAt: number };
+const LINK_RECHECK_MS = 5 * 60_000;
+const readCache = new Map<string, Map<string, ReadEntry>>();
+
+/** Tests: forget what was read. */
+export function resetNotebookLinkReadCache() {
+  readCache.clear();
+}
+
 async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFileNode[], indexPath: string, root: string) {
   let identity;
   try { identity = await readDirectorySignature(root); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
   const previous = await readLinkIndex(indexPath);
   const next: LinkIndex = { version: 2, files: {} };
+  const known = readCache.get(indexPath);
+  const seen = new Map<string, ReadEntry>();
+  const now = Date.now();
   for (const file of files) {
     if (file.fileType !== "markdown") continue;
-    let snapshot;
-    try { snapshot = await readTextSnapshot(filePathFromParts(notebook.name, file.path.split("/").slice(1))); }
-    catch (error) {
+    const absolute = filePathFromParts(notebook.name, file.path.split("/").slice(1));
+    let entry: ReadEntry;
+    try {
+      const signature = await readFileSignature(absolute);
+      const read = known?.get(file.path);
+      if (read && read.signature === signature && now - read.checkedAt < LINK_RECHECK_MS) {
+        entry = read;
+      } else {
+        const snapshot = await readTextSnapshot(absolute);
+        const cached = previous.files[file.path];
+        const destinations = cached?.contentHash === snapshot.contentHash ? cached.destinations : extractNotebookLinkDestinations(snapshot.content);
+        // The signature from before the read: a change during it differs next time and is read again.
+        entry = { contentHash: snapshot.contentHash, destinations, signature, checkedAt: now };
+      }
+    } catch (error) {
       // A file may disappear, become unreadable, or change during a tree scan.
       if (["ENOENT", "EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") || (error as { status?: number }).status === 409) continue;
       throw error;
     }
+    seen.set(file.path, entry);
     const cached = previous.files[file.path];
-    next.files[file.path] = cached?.contentHash === snapshot.contentHash ? cached
-      : { contentHash: snapshot.contentHash, destinations: extractNotebookLinkDestinations(snapshot.content) };
+    next.files[file.path] = cached?.contentHash === entry.contentHash ? cached
+      : { contentHash: entry.contentHash, destinations: entry.destinations };
   }
+  readCache.set(indexPath, seen);
   const sorted = (files: LinkIndex["files"]) => Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   next.files = sorted(next.files);
   if (JSON.stringify(sorted(previous.files)) !== JSON.stringify(next.files)) {

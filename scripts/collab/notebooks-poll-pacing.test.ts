@@ -70,6 +70,8 @@ function detached(options: DetachedOptions = {}) {
     info: { projectId: "prj_detached", notebook: "Detached", root: "/detached", follower: options.follower ?? false },
     watcher: { close() {} },
     watcherTrusted: true,
+    watchRetrustAt: null,
+    watchMisses: 0,
     watchBaseline: null,
     watchBaselineAt: 0,
     reportedAt: new Map(),
@@ -334,8 +336,12 @@ describe("scan scheduling", () => {
 describe("verification age", () => {
   test("large files: longer, spread, finite; pending reads and battery as specified", () => {
     let battery = false;
-    const { project, dispose } = detached({ timings: { verifyMs: 1000, largeFileVerifyMs: 100_000, batteryScale: 4 }, onBattery: () => battery });
+    const { project, dispose } = detached({ timings: { verifyMs: 1000, trustedVerifyMs: 20_000, largeFileVerifyMs: 100_000, batteryScale: 4 }, onBattery: () => battery });
     try {
+      // A trusted watcher reports preserved-stats edits itself: small files wait longer.
+      assert.equal(project.verificationAge("fil_a", 10, false), 20_000);
+      assert.equal(project.verificationAge("fil_a", 10, true), 1000, "an unhandled change keeps the short age with a trusted watcher");
+      project.watcherTrusted = false;
       assert.equal(project.verificationAge("fil_a", 10, false), 1000);
       const ages = ["fil_a", "fil_b", "fil_c", "fil_d"].map((id) => project.verificationAge(id, LARGE_FILE_BYTES, false));
       for (const age of ages) assert.ok(age >= 75_000 && age < 125_000, String(age));
@@ -404,7 +410,7 @@ describe("against a server and a real folder", () => {
   }
 
   test("a real change fs.watch never reports puts the poll back on its short interval", { timeout: 30_000 }, async () => {
-    const { root, inner } = await share("Missed", { pollMs: 50, watchedPollMs: 300, watchGraceMs: 200 }, { "note.md": "one\n" });
+    const { root, inner } = await share("Missed", { pollMs: 50, watchedPollMs: 300, watchGraceMs: 200, watchRetrustMs: 1000 }, { "note.md": "one\n" });
     assert.ok(inner.watcher, "fs.watch runs on this platform");
     // A watcher that hears nothing (a network share, a stream broken by sleep).
     inner.watcher.close();
@@ -414,10 +420,13 @@ describe("against a server and a real folder", () => {
     writeFileSync(path.join(root, "added.md"), "new\n");
     await until(() => !inner.watcherTrusted, "the poll to notice the unreported file", 10_000);
     assert.equal(inner.pollInterval(), 50);
+    // Not for the rest of the session: after watchRetrustMs it is trusted, and judged, again.
+    await until(() => inner.watcherTrusted, "the watcher to be trusted again", 10_000);
+    assert.equal(inner.pollInterval(), 300);
   });
 
   test("a verification that finds nothing new does not rewrite state.json", { timeout: 30_000 }, async () => {
-    const { root, project, inner } = await share("Quiet", { pollMs: 40, verifyMs: 100 }, { "note.md": "steady\n" });
+    const { root, project, inner } = await share("Quiet", { pollMs: 40, verifyMs: 100, trustedVerifyMs: 100 }, { "note.md": "steady\n" });
     const stateFile = path.join(root, ".libera", "collab", "state.json");
     await sleep(300);
     const before = { mtimeMs: statSync(stateFile).mtimeMs, text: readFileSync(stateFile, "utf8") };

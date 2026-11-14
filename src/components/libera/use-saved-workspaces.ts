@@ -204,7 +204,14 @@ export function useSavedWorkspaces(options: Options) {
     // This journal lives in Electron's userData (Chromium storage on the web),
     // outside the synced notebook directory and stable across desktop ports.
     // Capture live editor readers too, at a bounded cadence instead of per scroll.
-    const interval = window.setInterval(recoverLocally, 30_000);
+    // A hidden window changes nothing a snapshot would capture: journal once as it
+    // is hidden, then skip the ticks (each flushes every viewer and stringifies
+    // every tab's text) until it is shown again.
+    const interval = window.setInterval(() => { if (document.visibilityState !== "hidden") recoverLocally(); }, 30_000);
+    function onVisibility() {
+      if (document.visibilityState === "hidden") recoverLocally();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
     function onLeave() {
       if (!readyRef.current) return;
       const next = locked.current ? pendingSnapshot.current : snapshot();
@@ -220,6 +227,7 @@ export function useSavedWorkspaces(options: Options) {
     const unregister = registerStateFlusher(onLeave, true);
     return () => {
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
       unregister();
       cancelStructureSave();
     };

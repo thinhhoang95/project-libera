@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { HostEvent } from "../../src/lib/collab/local-api";
-import { subscribeSharedTreeChanges } from "../../src/lib/collab/ui/tree-changes";
+import { SHARED_TREE_REFRESH_MS, subscribeSharedTreeChanges } from "../../src/lib/collab/ui/tree-changes";
 import { getTree } from "../../src/lib/storage/tree";
 
 function hostEvents() {
@@ -45,7 +45,7 @@ test("shared text writes refresh outgoing and backlink metadata when links are a
       await writeFile(source, content);
       refresh = undefined;
       events.emit({ t: "files-changed", projectId: "project", paths: ["Alpha/source.md"] });
-      t.mock.timers.tick(300);
+      t.mock.timers.tick(SHARED_TREE_REFRESH_MS);
       const tree = await refreshedTree();
       const alpha = tree.notebooks.find((node) => node.name === "Alpha")!;
       assert.deepEqual(alpha.relatedNotebookNames, expected.length ? ["Beta"] : []);
@@ -72,20 +72,52 @@ test("shared tree refreshes batch writes and moves, meet the first deadline, and
   const move = { from: "Alpha/a.md", to: "Alpha/b.md" };
   events.emit({ t: "project-changed", projectId: "project" });
   events.emit({ ...write, paths: [] });
-  t.mock.timers.tick(300);
+  t.mock.timers.tick(SHARED_TREE_REFRESH_MS);
   assert.deepEqual(batches, []);
   events.emit(write);
-  t.mock.timers.tick(200);
+  t.mock.timers.tick(SHARED_TREE_REFRESH_MS - 100);
   events.emit(write);
   events.emit({ t: "tree-changed", projectId: "project", notebook: "Alpha", added: [], moves: [move], removed: [] });
   t.mock.timers.tick(100);
   assert.deepEqual(batches, [[move]], "continued writes must not postpone the refresh");
   events.emit(write);
-  t.mock.timers.tick(300);
+  t.mock.timers.tick(SHARED_TREE_REFRESH_MS);
   assert.deepEqual(batches, [[move], []], "later batches do not replay moves");
   events.emit(write);
   stop();
   events.emit(write);
-  t.mock.timers.tick(300);
+  t.mock.timers.tick(SHARED_TREE_REFRESH_MS);
   assert.equal(batches.length, 2, "unmount cancels pending work and unsubscribes");
+});
+
+test("a shared tree refresh due while the window is hidden waits for it to be shown, once", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const events = hostEvents();
+  let hidden = true;
+  let show: (() => void) | null = null;
+  const visibility = {
+    hidden: () => hidden,
+    onVisible: (listener: () => void) => { show = listener; return () => { show = null; }; },
+  };
+  const batches: { from: string; to: string }[][] = [];
+  const stop = subscribeSharedTreeChanges(events.subscribe, (moves) => batches.push(moves), visibility);
+  const write: HostEvent = { t: "files-changed", projectId: "project", paths: ["Alpha/a.md"] };
+  const move = { from: "Alpha/a.md", to: "Alpha/b.md" };
+  events.emit(write);
+  t.mock.timers.tick(SHARED_TREE_REFRESH_MS);
+  assert.deepEqual(batches, [], "a hidden window does not refresh");
+  events.emit({ t: "tree-changed", projectId: "project", notebook: "Alpha", added: [], moves: [move], removed: [] });
+  events.emit(write);
+  t.mock.timers.tick(SHARED_TREE_REFRESH_MS * 3);
+  assert.deepEqual(batches, [], "edits while hidden start no further timers");
+  hidden = false;
+  show!();
+  assert.deepEqual(batches, [[move]], "showing the window runs one refresh with the moves gathered while hidden");
+  show!();
+  assert.equal(batches.length, 1, "showing it again with nothing pending does nothing");
+  events.emit(write);
+  t.mock.timers.tick(SHARED_TREE_REFRESH_MS);
+  assert.deepEqual(batches, [[move], []], "visible again, edits refresh on the usual deadline");
+  stop();
+  assert.equal(show, null, "cleanup stops listening for visibility");
 });

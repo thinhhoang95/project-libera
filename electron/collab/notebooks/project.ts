@@ -147,6 +147,20 @@ export interface Timings {
    * the retry bound for a file whose change could not be handled yet.
    */
   verifyMs: number;
+  /**
+   * The same age while fs.watch is trusted here. A preserved-stats edit still
+   * raises a watcher event (and is read then), so the timed verification only
+   * guards against the watcher failing without a sign: re-hashing every small
+   * file each minute for that alone cost more battery than it bought.
+   */
+  trustedVerifyMs: number;
+  /**
+   * How long fs.watch stays distrusted after it was caught missing a change,
+   * before it is trusted (and judged) again; doubled at each further miss,
+   * up to 16 times this. Never for a folder distrusted from the start (a
+   * network share).
+   */
+  watchRetrustMs: number;
   /** The same for files of LARGE_FILE_BYTES or more, spread ±25% per file so they do not all come due together. */
   largeFileVerifyMs: number;
   /** Delay before a shared PDF's sidecar copy is rewritten. */
@@ -167,6 +181,8 @@ export const DEFAULT_TIMINGS: Timings = {
   followerDiskMs: 1000,
   retryMs: 5000,
   verifyMs: 60_000,
+  trustedVerifyMs: 10 * 60_000,
+  watchRetrustMs: 10 * 60_000,
   largeFileVerifyMs: 30 * 60_000,
   pdfWriteMs: 60_000,
   importQuietMs: 3000,
@@ -274,6 +290,10 @@ export class SharedProject {
   private pollArmedAt = 0;
   /** fs.watch has not been caught missing a change here (see noticeMissedEvents). */
   private watcherTrusted = true;
+  /** When a watcher caught missing a change is trusted again (performance.now()); null when it is trusted or never will be. */
+  private watchRetrustAt: number | null = null;
+  /** Times the watcher was caught missing a change this session: each doubles the next wait before trusting it again. */
+  private watchMisses = 0;
   /**
    * The missed-event check's view of the folder, by manifestPathKey: the
    * stats last accounted for, since when events explain a change, and when
@@ -1656,10 +1676,23 @@ export class SharedProject {
     if (this.stopped) return;
     this.pollTimer = setTimeout(() => {
       this.pollTimer = null;
+      this.maybeRetrustWatcher();
       this.scheduleScan(0);
       this.schedulePoll();
     }, delay);
     this.pollTimer.unref?.();
+  }
+
+  /**
+   * A watcher caught missing one change (a stream broken by sleep, say) is
+   * trusted again after its wait. The missed-event check starts afresh with
+   * the next walk, and a further miss distrusts it for twice as long.
+   */
+  private maybeRetrustWatcher(): void {
+    if (this.watchRetrustAt == null || !this.watcher || performance.now() < this.watchRetrustAt) return;
+    this.watchRetrustAt = null;
+    this.watcherTrusted = true;
+    this.forgetWatchHistory();
   }
 
   /** The power source changed. */
@@ -1709,7 +1742,7 @@ export class SharedProject {
    * stream broken by sleep): a file whose stats changed between complete
    * walks, or that appeared, with no event for it or a folder above it for
    * watchGraceMs of this host's own clock. The poll then goes back to
-   * pollMs for the rest of the session.
+   * pollMs until watchRetrustMs has passed (see maybeRetrustWatcher).
    *
    * It cannot see misses that leave every stat equal, deletions (absence
    * has no time to judge an event's lateness by), or folders without files;
@@ -1751,7 +1784,10 @@ export class SharedProject {
     if (missed) {
       this.watcherTrusted = false;
       this.forgetWatchHistory();
-      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${missed} changed without a file-watch event; checking the folder every ${Math.round(this.pollInterval() / 1000)} s`);
+      const wait = this.ctx.timings.watchRetrustMs * 2 ** Math.min(this.watchMisses, 4);
+      this.watchMisses += 1;
+      this.watchRetrustAt = performance.now() + wait;
+      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${missed} changed without a file-watch event; checking the folder every ${Math.round(this.pollInterval() / 1000)} s for the next ${Math.round(wait / 60_000)} min`);
       this.retimePoll();
       return;
     }
@@ -2877,12 +2913,14 @@ export class SharedProject {
 
   /**
    * How long a content verification stands while the stats stay the same:
-   * verifyMs, or largeFileVerifyMs (spread per file) for large files whose
+   * verifyMs (trustedVerifyMs while fs.watch is trusted), or largeFileVerifyMs (spread per file) for large files whose
    * last read was handled; times batteryScale on battery.
    */
   private verificationAge(fileId: string, size: number, pending: boolean): number {
-    const { verifyMs, largeFileVerifyMs } = this.ctx.timings;
-    const base = pending || size < LARGE_FILE_BYTES ? verifyMs : Math.max(verifyMs, largeFileVerifyMs * (0.75 + 0.5 * spreadFraction(fileId)));
+    const { verifyMs, trustedVerifyMs, largeFileVerifyMs } = this.ctx.timings;
+    // A change still waiting to be handled is retried on the short bound, watcher or not.
+    const small = pending ? verifyMs : this.watcher && this.watcherTrusted ? Math.max(verifyMs, trustedVerifyMs) : verifyMs;
+    const base = pending || size < LARGE_FILE_BYTES ? small : Math.max(small, largeFileVerifyMs * (0.75 + 0.5 * spreadFraction(fileId)));
     return base * this.powerScale();
   }
 

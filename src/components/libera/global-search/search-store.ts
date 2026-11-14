@@ -125,12 +125,21 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 function schedulePoll() {
   if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = null;
   if (!pollers) return;
   const busy = state.status?.state === "scanning" || state.status?.state === "embedding" || state.status?.model.state === "loading";
   pollTimer = setTimeout(async () => {
+    pollTimer = null;
+    // A hidden window stops polling (each poll can start a scan); showing it polls again.
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     await refreshSearchStatus(true);
     schedulePoll();
   }, busy ? BUSY_POLL_MS : IDLE_POLL_MS);
+}
+
+function resumeWhenVisible() {
+  if (document.visibilityState === "hidden" || !pollers || pollTimer) return;
+  void refreshSearchStatus(true).then(schedulePoll);
 }
 
 /** Poll the index status while the component is mounted; the first poll also brings the index up to date. */
@@ -138,9 +147,11 @@ export function useSearchStatusPolling(enabled = true) {
   useEffect(() => {
     if (!enabled) return;
     pollers += 1;
+    if (pollers === 1) document.addEventListener("visibilitychange", resumeWhenVisible);
     void refreshSearchStatus(true).then(schedulePoll);
     return () => {
       pollers -= 1;
+      if (!pollers) document.removeEventListener("visibilitychange", resumeWhenVisible);
       if (!pollers && pollTimer) {
         clearTimeout(pollTimer);
         pollTimer = null;

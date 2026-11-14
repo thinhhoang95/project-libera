@@ -207,12 +207,18 @@ export function useDependencyVersion(paths: readonly string[], readOpenTabs: () 
   useEffect(() => {
     if (!paths.length) return;
     const check = () => {
+      // Nothing builds while the window is hidden; showing it checks at once.
+      if (document.visibilityState === "hidden") return;
       const next = signature();
       setVersion((current) => (current === next ? current : next));
     };
     check();
     const timer = setInterval(check, POLL_MS);
-    return () => clearInterval(timer);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", check);
+    };
     // `key` stands for the paths; the signature reads the current tabs and versions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, updatedAt]);

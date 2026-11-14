@@ -3737,7 +3737,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
             // The file moved again or is gone; the tree refresh below shows where it is.
           }
         }
-        await refresh();
+        // Most shared edits change no file's metadata; an identical tree is not applied, so nothing re-renders.
+        await refresh(undefined, { onlyIfChanged: true });
       })().catch((error: Error) => setWorkspaceError(error.message));
     });
   }, [authenticated]);
