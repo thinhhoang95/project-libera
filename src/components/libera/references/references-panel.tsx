@@ -722,25 +722,30 @@ function ReferencesPanelBody({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request, notebook, library, lookup, reveal, onRequestHandled]);
 
-  // Keep the selected row in view.
+  // Bring the selected row into view when the selection or the view the user chose changes.
+  // `listed` and `offset` also change whenever the library, the tree or the active document's
+  // citations refresh; those must not pull the panel back to the selected row while the user
+  // has scrolled away from it, so they only feed the position, never trigger the scroll.
   const windowed = listed.length > REFERENCE_WINDOW_THRESHOLD;
   const offset = listedMissing.length * REFERENCE_ROW_HEIGHT;
-  const addBoxOpen = Boolean(addBox);
+  const viewKey = `${selectedId}\u0000${view.query}\u0000${view.filter}\u0000${view.sort}\u0000${activeTag ?? ""}\u0000${reviewFilter ? "review" : ""}`;
   useEffect(() => {
-    if (!selectedId || openId) return;
+    // An open card replaces the list; closing it remounts the list at the top, so scroll again then.
+    if (openId) { keptInView.current = null; return; }
+    if (!selectedId) return;
+    if (viewKey === keptInView.current) return;
     const container = scrollRef.current;
     const list = listRef.current;
     if (!container || !list) return;
-    // A library update must not pull the panel away from a candidate being read in the add box.
-    if (addBoxOpen && selectedId === keptInView.current) return;
-    keptInView.current = selectedId;
     const index = listed.findIndex((entry) => entry.id === selectedId);
+    // A row not listed yet (a new entry before the library refresh lands) is scrolled to once it appears.
     if (index < 0) return;
+    keptInView.current = viewKey;
     const top = list.offsetTop + offset + index * REFERENCE_ROW_HEIGHT;
     const height = container.clientHeight || 600;
     if (top < container.scrollTop) container.scrollTop = top;
     else if (top + REFERENCE_ROW_HEIGHT > container.scrollTop + height) container.scrollTop = top + REFERENCE_ROW_HEIGHT - height;
-  }, [selectedId, openId, listed, offset, addBoxOpen]);
+  }, [viewKey, selectedId, openId, listed, offset]);
 
   /** Where the panel's view falls on the list, which starts below whatever sits above it. */
   const measureList = useCallback(() => {
