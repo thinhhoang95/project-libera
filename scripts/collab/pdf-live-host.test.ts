@@ -9,7 +9,7 @@ import * as Y from "yjs";
 import { digestOf } from "../../electron/collab/core/divergence";
 import { subdocText, type DocHub } from "../../electron/collab/core/doc-hub";
 import { PdfCommentService, withPendingCommands } from "../../electron/collab/notebooks/pdf-comments";
-import { pdfDocId } from "../../electron/collab/notebooks/pdf-marks";
+import { PdfMarksRuntime, pdfDocId } from "../../electron/collab/notebooks/pdf-marks";
 import { ControlRoutes, type ResolvedPdf } from "../../src/lib/collab/local-api";
 import { applyMarksDiff, marksOf, readAllMarks, visibleMarks } from "../../src/lib/collab/pdf/model";
 import { api, closePeer, invite, makePeer, register, sleep, tempRoot, until, writeTree, type Peer } from "./support/notebooks-harness";
@@ -738,6 +738,37 @@ test("a viewer promoted to commenter gets their private sidecar merged", { timeo
   } finally {
     await setup.cleanup();
   }
+});
+
+test("a PDF added while discovery has backed off is looked for soon, and never later than before", async () => {
+  const runtime = new PdfMarksRuntime({ writeMs: 100, root: "/none", logger: { warn() {}, error() {} } } as never);
+  const inner = runtime as unknown as {
+    discoveryScale: number;
+    discoveryDue: number;
+    discoveryTimer: unknown;
+    armDiscovery(delay: number): void;
+    restartDiscovery(): void;
+    openWithSidecars(): Promise<void>;
+  };
+  let looked = 0;
+  Object.defineProperty(runtime, "enabled", { get: () => true });
+  inner.openWithSidecars = async () => { looked += 1; };
+  try {
+    // Backed off to the maximum: the next look is 1.6 s away.
+    inner.discoveryScale = 16;
+    inner.armDiscovery(1600);
+    const far = inner.discoveryDue;
+    inner.restartDiscovery();
+    assert.equal(inner.discoveryScale, 1);
+    assert.ok(inner.discoveryDue < far - 1000, "the pending look moved closer");
+    const near = inner.discoveryDue;
+    inner.restartDiscovery();
+    assert.ok(inner.discoveryDue <= near + 5, "a second addition does not push it back");
+    await until(() => looked > 0, "the look for the new PDF's sidecar", 1000);
+  } finally {
+    await runtime.stop();
+  }
+  assert.equal(inner.discoveryTimer, null, "stopping leaves no timer");
 });
 
 test("a refused change to a PDF with only comments keeps its anchors in the recovery text", () => {

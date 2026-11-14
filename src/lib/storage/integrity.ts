@@ -19,7 +19,7 @@ import { decodeMarkdownHeadingHash, findMarkdownHeadingAnchorIndex, markdownHead
 import { savedAnnotationIds } from "@/lib/storage/annotations";
 import { parseTranscript } from "@/lib/storage/transcripts";
 import { markdownImageTargets, readMarkdownAssetDocuments, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
-import { extractNotebookLinkDestinations, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
+import { extractNotebookLinkDestinations, forgetNotebookLinkReads, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
 import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, orphanedSidecarsDirectoryPath, transcriptPath } from "@/lib/storage/paths";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectMissingReviewDocuments, inspectReviewKeys } from "@/lib/storage/review-files";
@@ -739,6 +739,9 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // An index not built yet is not out of date: it is built when first needed.
     if (await probe(linkIndexPath(notebook)) === "present") {
       const count = await outdated((await readLinkIndex(linkIndexPath(notebook))).files, hashes);
+      // The next refresh must read the notes again, not reuse what this process read before
+      // (a change that kept a note's size and times is how the index fell behind).
+      if (count) forgetNotebookLinkReads(notebook);
       if (count) add({ severity: "info", path: notebook, message: `The link index is out of date for ${plural(count, "note")}, so links to a file and related notebooks may be off until the notebook is next opened.` });
     }
     if (await probe(citationIndexPath(notebook)) === "present") {

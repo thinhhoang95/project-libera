@@ -391,6 +391,36 @@ test("an unreachable server is probed every 1-2 s and reconnected as soon as it 
   }
 });
 
+test("a server unreachable for minutes is probed at most every 30 s, and at full rate again once it answers", async () => {
+  const clock = new ManualClock();
+  const server = new FakeSyncServer();
+  server.refuseConnections = true;
+  let reachable = false;
+  let probes = 0;
+  const s = setup({ server, clock, random: () => 0.5, probe: async () => { probes += 1; return reachable; } });
+  const run = async (ms: number) => {
+    for (let elapsed = 0; elapsed < ms; elapsed += 500) {
+      clock.advance(500);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  try {
+    await waitFor(() => s.client.connectionState === "backoff");
+    await run(30_000);
+    assert.ok(probes >= 10, `probed at the full rate during the first minute (${probes})`);
+    await run(10 * 60_000);
+    const before = probes;
+    await run(60_000);
+    assert.ok(probes - before >= 1 && probes - before <= 3, `about one probe per 30 s after ten minutes (${probes - before})`);
+    server.refuseConnections = false;
+    reachable = true;
+    await run(31_000);
+    await waitFor(() => s.client.connected, 2000, "connected once the server answers");
+  } finally {
+    s.close();
+  }
+});
+
 test("a socket that opened and then dropped backs off without probing", async () => {
   const clock = new ManualClock();
   const server = new FakeSyncServer();

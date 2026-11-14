@@ -4,6 +4,8 @@ import { after, test } from "node:test";
 import { captureWorkspaceSession } from "../../src/lib/workspaces";
 import { applyTextToShared, minimalEdits, rebasedEdits } from "../../src/lib/collab/client/apply-text";
 import { dirtyDocumentCount, isShareableTab, isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, sourceEditorKind } from "../../src/lib/collab/client/workspace";
+import { SharedDocRegistry } from "../../src/lib/collab/client/registry";
+import type { HostEvent, ResolvedDoc } from "../../src/lib/collab/local-api";
 import type { OpenTab } from "../../src/components/libera/types";
 import { createHarness } from "./support/wire-harness";
 import { settle, waitFor } from "./support/host-helpers";
@@ -57,18 +59,106 @@ test("resolution is cached, including 'not shared', until host events invalidate
     const version = registry.getVersion();
     emit({ t: "files-changed", projectId: "p1", paths: ["Shared/note.md"] });
     await registry.resolvePath("Shared/note.md");
-    assert.deepEqual(resolveCalls, ["Other/plain.md", "Shared/note.md"], "a working-copy write keeps a shared path's document");
+    await settle();
+    assert.deepEqual(resolveCalls, ["Other/plain.md", "Shared/note.md", "Shared/note.md"], "a working-copy write re-checks a shared path once, in the background");
     assert.equal(registry.getVersion(), version, "and tells no subscriber, so nothing re-renders");
     emit({ t: "files-changed", projectId: "p1", paths: ["Other/plain.md"] });
     await registry.resolvePath("Other/plain.md");
     await registry.resolvePath("Shared/note.md");
-    assert.deepEqual(resolveCalls, ["Other/plain.md", "Shared/note.md", "Other/plain.md"], "a changed path that was not shared is looked up again");
+    assert.deepEqual(resolveCalls, ["Other/plain.md", "Shared/note.md", "Shared/note.md", "Other/plain.md"], "a changed path that was not shared is looked up again");
     emit({ t: "project-changed", projectId: "p1" });
     await registry.resolvePath("Other/plain.md");
     assert.equal(resolveCalls.at(-1), "Other/plain.md", "a project change can make an unshared path shared");
   } finally {
     harness.close();
   }
+});
+
+function revalidationRegistry(answer: (path: string, call: number) => ResolvedDoc | null | Promise<ResolvedDoc | null>) {
+  let listener: ((event: HostEvent) => void) | null = null;
+  let calls = 0;
+  const registry = new SharedDocRegistry({
+    resolve: async (path) => answer(path, (calls += 1)),
+    attach: async () => { throw new Error("no attach in this test"); },
+    subscribeEvents: (next) => { listener = next; return () => { listener = null; }; },
+    available: () => true,
+  });
+  return { registry, calls: () => calls, emit: (event: HostEvent) => listener?.(event) };
+}
+
+const docA: ResolvedDoc = { docId: "dA", projectId: "p1", fileId: "f1", path: "Shared/note.md", kind: "markdown", role: "editor", readOnly: false };
+const changed: HostEvent = { t: "files-changed", projectId: "p1", paths: ["Shared/note.md"] };
+
+test("a working-copy write re-checks a shared path quietly and keeps an identical binding", async () => {
+  const { registry, calls, emit } = revalidationRegistry(() => ({ ...docA }));
+  try {
+    await registry.resolvePath("Shared/note.md");
+    const version = registry.getVersion();
+    emit(changed);
+    emit(changed);
+    await settle();
+    assert.equal(calls(), 2, "one lookup for the first resolve, one shared by both events");
+    assert.equal(registry.getVersion(), version);
+    assert.equal(registry.cachedResolution("Shared/note.md")?.docId, "dA");
+  } finally { registry.destroy(); }
+});
+
+test("a path re-bound to another document is evicted and resolves to the new one", async () => {
+  let current: ResolvedDoc | null = docA;
+  const { registry, emit } = revalidationRegistry(() => current && { ...current });
+  try {
+    await registry.resolvePath("Shared/note.md");
+    const version = registry.getVersion();
+    current = { ...docA, docId: "dB" };
+    emit(changed);
+    await settle();
+    assert.equal(registry.getVersion(), version + 1, "subscribers hear of it so tabs re-bind");
+    assert.equal(registry.cachedResolution("Shared/note.md"), undefined);
+    assert.equal((await registry.resolvePath("Shared/note.md"))?.docId, "dB");
+
+    // A permission change counts too, and so does the path becoming unshared.
+    current = { ...current, readOnly: true, revoked: true };
+    emit(changed);
+    await settle();
+    assert.equal(registry.cachedResolution("Shared/note.md"), undefined);
+    await registry.resolvePath("Shared/note.md");
+    current = null;
+    emit(changed);
+    await settle();
+    assert.equal(registry.cachedResolution("Shared/note.md"), undefined);
+  } finally { registry.destroy(); }
+});
+
+test("a failed re-check keeps the cached entry, and a newer invalidation beats a slow one", async () => {
+  let mode: "fail" | "slow" | "ok" = "ok";
+  let release: (doc: ResolvedDoc) => void = () => {};
+  const { registry, emit } = revalidationRegistry(() => {
+    if (mode === "fail") throw new Error("host busy");
+    if (mode === "slow") return new Promise<ResolvedDoc>((resolve) => { release = resolve; });
+    return { ...docA };
+  });
+  try {
+    await registry.resolvePath("Shared/note.md");
+    const version = registry.getVersion();
+    mode = "fail";
+    emit(changed);
+    await settle();
+    assert.equal(registry.cachedResolution("Shared/note.md")?.docId, "dA");
+    assert.equal(registry.getVersion(), version);
+
+    mode = "slow";
+    emit(changed);
+    await settle();
+    // The tree changed while the check was running: the fresh lookup wins.
+    emit({ t: "project-changed", projectId: "p1" });
+    mode = "ok";
+    assert.equal((await registry.resolvePath("Shared/note.md"))?.docId, "dA");
+    const after = registry.getVersion();
+    release({ ...docA, docId: "dOld" });
+    await settle();
+    assert.equal(registry.cachedResolution("Shared/note.md")?.docId, "dA", "the late answer does not overwrite the newer entry");
+    assert.equal(registry.getVersion(), after);
+  } finally { registry.destroy(); }
 });
 
 test("deletion flushes the last editor batch and keeps a read-only recovery tab", async () => {

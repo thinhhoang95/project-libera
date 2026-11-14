@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
+import fsp from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { extractNotebookLinkDestinations } from "../../src/lib/storage/notebook-links";
+import { extractNotebookLinkDestinations, forgetNotebookLinkReads, resetNotebookLinkReadCache, setNotebookLinkClock } from "../../src/lib/storage/notebook-links";
 import { getTree } from "../../src/lib/storage/tree";
 import { updateMarkdownFile } from "../../src/lib/storage/files";
 import { markdownLinkWorkspacePath } from "../../src/lib/markdown-file-links";
@@ -76,6 +78,80 @@ test("persists links, reuses unchanged metadata, and reconciles saves, external 
     assert.deepEqual(await related(), []);
     assert.deepEqual(JSON.parse(await readFile(cache, "utf8")).files, {});
   } finally {
+    if (previous === undefined) delete process.env.LIBERA_DATA_DIR;
+    else process.env.LIBERA_DATA_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the link index skips unchanged notes, rereads after the recheck window, and never overrules the saved index", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-notebook-links-cache-"));
+  const previous = process.env.LIBERA_DATA_DIR;
+  process.env.LIBERA_DATA_DIR = directory;
+  const root = path.join(directory, "users/admin");
+  const source = path.join(root, "Alpha/note.md");
+  const index = path.join(root, "Alpha/.libera/notebook-links.json");
+  const [first, second] = ["[one](../Beta/a.md)", "[two](../Zeta/b.md)"]; // Same length: a rewrite keeps the size.
+  assert.equal(first.length, second.length);
+  async function destinations() {
+    await getTree();
+    return JSON.parse(await readFile(index, "utf8")).files["Alpha/note.md"].destinations as string[];
+  }
+  // Stats frozen at one moment, as a write that preserves size, mtime and ctime looks.
+  let frozen: Awaited<ReturnType<typeof stat>> | null = null;
+  const realStat = fsp.stat;
+  const realReadFile = fsp.readFile;
+  let reads = 0;
+  mock.method(fsp, "stat", (target: string, options?: object) => frozen && target === source ? Promise.resolve(frozen) : realStat(target, options as never));
+  mock.method(fsp, "readFile", (target: unknown, ...rest: unknown[]) => {
+    if (target === source) reads += 1;
+    return (realReadFile as (...args: unknown[]) => Promise<unknown>)(target, ...rest);
+  });
+  // The storage modules import these by name: copy the mocks into the built-in module's exports.
+  syncBuiltinESMExports();
+  let time = 1_000_000;
+  try {
+    resetNotebookLinkReadCache();
+    setNotebookLinkClock(() => time);
+    await mkdir(path.join(root, "Alpha"), { recursive: true });
+    await writeFile(source, first);
+    assert.deepEqual(await destinations(), ["../Beta/a.md"]);
+    assert.equal(reads, 1);
+    await getTree();
+    assert.equal(reads, 1, "an unchanged note is not read again");
+
+    const saved = await stat(source, { bigint: true });
+    frozen = saved as never;
+    await writeFile(source, second);
+    await getTree();
+    assert.equal(reads, 1, "a write that keeps its stats is not seen inside the window");
+    time += 7 * 60_000;
+    assert.deepEqual(await destinations(), ["../Zeta/b.md"]);
+    assert.equal(reads, 2, "it is read again once the window has passed");
+
+    await writeFile(source, first);
+    await getTree();
+    assert.equal(reads, 2);
+    forgetNotebookLinkReads("Alpha", "Alpha/note.md");
+    assert.deepEqual(await destinations(), ["../Beta/a.md"]);
+    assert.equal(reads, 3, "a forgotten note is read on the next refresh");
+
+    // Another computer saved a newer index for this note: the cached read must not overwrite it.
+    await writeFile(source, second);
+    const written = JSON.parse(await readFile(index, "utf8"));
+    written.files["Alpha/note.md"] = { contentHash: "from-another-computer", destinations: ["../Other/c.md"] };
+    await writeFile(index, JSON.stringify(written));
+    await getTree();
+    assert.equal(reads, 4, "a saved hash that differs from the cached one sends the note back to be read");
+    const after = JSON.parse(await readFile(index, "utf8")).files["Alpha/note.md"];
+    assert.notEqual(after.contentHash, "from-another-computer");
+    assert.deepEqual(after.destinations, ["../Zeta/b.md"], "rebuilt from the bytes, not from the stale cache");
+    await getTree();
+    assert.equal(reads, 4, "once saved and cached agree, nothing is read again");
+  } finally {
+    mock.restoreAll();
+    syncBuiltinESMExports();
+    resetNotebookLinkReadCache();
     if (previous === undefined) delete process.env.LIBERA_DATA_DIR;
     else process.env.LIBERA_DATA_DIR = previous;
     await rm(directory, { recursive: true, force: true });

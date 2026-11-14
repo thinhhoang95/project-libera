@@ -66,16 +66,40 @@ async function notebookDestinations(notebook: LiberaNotebookNode, files: LiberaF
  * (size, mtime, ctime, inode) skips reading and hashing the file again, so a
  * tree refresh costs one stat per note instead of reading every note. Some
  * writes keep all of those (see readFileContentHash), so an entry is trusted
- * only for LINK_RECHECK_MS before the file is read again. Kept in memory only:
- * the saved index holds nothing but what follows from the bytes.
+ * only for a while before the file is read again: LINK_RECHECK_MS plus up to as
+ * much again, fixed per path, so notes do not all come due in the same refresh.
+ * Three to six minutes keeps that cost small (a thousand notes is about four
+ * reads a second, spread out, against a thousand per refresh before) and bounds
+ * stale links; a saved index that disagrees is never overruled meanwhile.
+ * Kept in memory only: the saved index holds nothing but what follows from the bytes.
  */
 type ReadEntry = LinkEntry & { signature: string; checkedAt: number };
-const LINK_RECHECK_MS = 5 * 60_000;
+const LINK_RECHECK_MS = 3 * 60_000;
 const readCache = new Map<string, Map<string, ReadEntry>>();
+let clock = () => Date.now();
 
-/** Tests: forget what was read. */
+function recheckAfter(filePath: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < filePath.length; i += 1) hash = Math.imul(hash ^ filePath.charCodeAt(i), 16777619) >>> 0;
+  return LINK_RECHECK_MS * (1 + hash / 2 ** 32);
+}
+
+/** Tests: forget what was read, and use the real clock again. */
 export function resetNotebookLinkReadCache() {
   readCache.clear();
+  clock = () => Date.now();
+}
+
+/** Tests: the time the recheck window is measured against. */
+export function setNotebookLinkClock(now: () => number) {
+  clock = now;
+}
+
+/** For a caller that knows a note was rewritten (even keeping its size and times): read it again on the next refresh. Without a path, the whole notebook. */
+export function forgetNotebookLinkReads(notebook: string, filePath?: string) {
+  const indexPath = linkIndexPath(notebook);
+  if (filePath === undefined) readCache.delete(indexPath);
+  else readCache.get(indexPath)?.delete(filePath);
 }
 
 async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFileNode[], indexPath: string, root: string) {
@@ -86,7 +110,7 @@ async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFi
   const next: LinkIndex = { version: 2, files: {} };
   const known = readCache.get(indexPath);
   const seen = new Map<string, ReadEntry>();
-  const now = Date.now();
+  const now = clock();
   for (const file of files) {
     if (file.fileType !== "markdown") continue;
     const absolute = filePathFromParts(notebook.name, file.path.split("/").slice(1));
@@ -94,7 +118,9 @@ async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFi
     try {
       const signature = await readFileSignature(absolute);
       const read = known?.get(file.path);
-      if (read && read.signature === signature && now - read.checkedAt < LINK_RECHECK_MS) {
+      // The saved index wins: another process or computer that read newer bytes may have written it.
+      const saved = previous.files[file.path];
+      if (read && read.signature === signature && now >= read.checkedAt && now - read.checkedAt < recheckAfter(file.path) && (!saved || saved.contentHash === read.contentHash)) {
         entry = read;
       } else {
         const snapshot = await readTextSnapshot(absolute);

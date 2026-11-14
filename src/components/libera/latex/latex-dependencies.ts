@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type * as Y from "yjs";
 import type { OpenTab } from "@/components/libera/types";
 import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { classTheoremSource, isInLatexComment, loadKey, readLatexInputs } from "@/lib/latex/macros/definitions";
@@ -27,6 +28,26 @@ const POLL_MS = 1500;
 /** An open tab's current text: a shared tab's Y.Text (its React draft is not kept up to date), else its draft. */
 export function liveTabText(tab: OpenTab): string {
   return getSharedDocRegistry().readTabText(tab.id) ?? tab.draft;
+}
+
+/** Edits seen on each shared Y.Text, so a poll can tell it is unchanged without copying its text. */
+const textRevisions = new WeakMap<Y.Text, { count: number }>();
+
+function textRevision(ytext: Y.Text): number {
+  let revision = textRevisions.get(ytext);
+  if (!revision) {
+    const counter = { count: 0 };
+    ytext.observe(() => { counter.count += 1; });
+    textRevisions.set(ytext, counter);
+    revision = counter;
+  }
+  return revision.count;
+}
+
+/** An open shared tab's attached Y.Text, or null (not shared, or not attached yet). */
+function sharedTabText(tab: OpenTab): Y.Text | null {
+  const session = getSharedDocRegistry().sessionForTab(tab.id);
+  return session && session.replica.getSnapshot().attached ? session.replica.ytext : null;
 }
 
 export type ReadText = (path: string) => Promise<string>;
@@ -189,7 +210,8 @@ export async function collectBodyIncludes(options: {
 export function useDependencyVersion(paths: readonly string[], readOpenTabs: () => OpenTab[], updatedAt: ReadonlyMap<string, string | number | undefined>) {
   const key = paths.join("\u0000");
   // Each open dependency's last text and its hash: an unchanged text is not hashed again at every poll.
-  const hashes = useRef(new Map<string, { text: string; hash: string }>());
+  // A shared tab is known unchanged from its Y.Text's edit count, without copying the text out.
+  const hashes = useRef(new Map<string, { text: string; hash: string; ytext?: Y.Text; revision?: number }>());
   const signature = () => {
     const open = new Map(readOpenTabs().map((tab) => [tab.file.path, tab]));
     const cache = hashes.current;
@@ -197,9 +219,18 @@ export function useDependencyVersion(paths: readonly string[], readOpenTabs: () 
     return hashString(paths.map((path) => {
       const tab = open.get(path);
       if (!tab) return `${path}@${updatedAt.get(path) ?? ""}`;
-      const text = liveTabText(tab);
       let entry = cache.get(path);
-      if (!entry || entry.text !== text) cache.set(path, entry = { text, hash: hashString(text) });
+      const ytext = sharedTabText(tab);
+      if (ytext) {
+        const revision = textRevision(ytext);
+        if (entry?.ytext !== ytext || entry.revision !== revision) {
+          const text = ytext.toString();
+          cache.set(path, entry = { text, hash: entry?.text === text ? entry.hash : hashString(text), ytext, revision });
+        }
+        return `${path}=${entry.hash}`;
+      }
+      const text = liveTabText(tab);
+      if (!entry || entry.ytext || entry.text !== text) cache.set(path, entry = { text, hash: hashString(text) });
       return `${path}=${entry.hash}`;
     }).join("\u0000"));
   };

@@ -106,12 +106,29 @@ export function VoiceMemoViewer({
   }, [file.path]);
 
   // Smooth playhead while playing; the media element's own events are too coarse.
+  // Each update re-renders the whole viewer and redraws the waveform, so it runs
+  // only once the playhead would move a pixel across the player (4 to 20 times a
+  // second), or the passage being read changes, not on every frame. Commands read
+  // the element's own time, so the lag never shows in a seek.
+  const segmentsRef = useRef(segments);
+  useEffect(() => { segmentsRef.current = segments; }, [segments]);
   useEffect(() => {
     if (!playing) return;
     let frame = 0;
+    let shown = -1;
+    let shownSegment = -2;
     const tick = () => {
       const audio = audioRef.current;
-      if (audio) setCurrentTime(audio.currentTime);
+      if (audio) {
+        const width = rootRef.current?.clientWidth || 1000;
+        const step = Math.min(0.25, Math.max(0.05, (Number.isFinite(audio.duration) ? audio.duration : 0) / width));
+        const segment = segmentIndexAt(segmentsRef.current, audio.currentTime);
+        if (Math.abs(audio.currentTime - shown) >= step || segment !== shownSegment || audio.ended) {
+          shown = audio.currentTime;
+          shownSegment = segment;
+          setCurrentTime(shown);
+        }
+      }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
@@ -232,11 +249,12 @@ export function VoiceMemoViewer({
   const activeSegment = activeIndex >= 0 && currentTime <= (segments[activeIndex]?.end ?? 0) + 1.5 ? segments[activeIndex] : null;
 
   const stepSegment = useCallback((direction: 1 | -1) => {
-    if (!segments.length) return seek(currentTime + direction * SKIP_SECONDS);
+    const now = audioRef.current?.currentTime ?? currentTime;
+    if (!segments.length) return seek(now + direction * SKIP_SECONDS);
     // Back goes to the start of the current segment first, like a track.
-    const current = segmentIndexAt(segments, currentTime);
+    const current = segmentIndexAt(segments, now);
     const target = direction < 0
-      ? (current >= 0 && currentTime - segments[current].start > 1.5 ? current : current - 1)
+      ? (current >= 0 && now - segments[current].start > 1.5 ? current : current - 1)
       : current + 1;
     const segment = segments[Math.max(0, Math.min(segments.length - 1, target))];
     if (segment) seek(segment.start, !audioRef.current?.paused);
@@ -284,12 +302,12 @@ export function VoiceMemoViewer({
         case "ArrowLeft":
         case "j":
           if (event.shiftKey) stepSegment(-1);
-          else seek(currentTime - (event.key === "j" ? 10 : 5));
+          else seek((audioRef.current?.currentTime ?? currentTime) - (event.key === "j" ? 10 : 5));
           return true;
         case "ArrowRight":
         case "l":
           if (event.shiftKey) stepSegment(1);
-          else seek(currentTime + (event.key === "l" ? 10 : 5));
+          else seek((audioRef.current?.currentTime ?? currentTime) + (event.key === "l" ? 10 : 5));
           return true;
         case "[":
           if (previous) onShowSibling(previous);
@@ -342,6 +360,7 @@ export function VoiceMemoViewer({
     togglePlay,
     stop,
     seek: (time) => seek(time),
+    skip: (seconds) => seek((audioRef.current?.currentTime ?? currentTime) + seconds),
     setRate: chooseRate,
     setVolume: changeVolume,
     toggleMute: () => setMuted((value) => !value),

@@ -46,6 +46,8 @@ export interface PdfRuntimeContext {
   root: string;
   /** Delay before the sidecar copy is rewritten; each write is an upload on a synced folder. */
   writeMs: number;
+  /** How many times slower the periodic sidecar checks run now (on battery); 1 when absent. */
+  powerScale?(): number;
   role(): Role;
   /** This installation writes the folder (it is not a follower). */
   canWriteDisk(): boolean;
@@ -85,9 +87,31 @@ interface PdfDoc {
   imported: boolean;
   importing: boolean;
   observedHash: string | null;
+  /** The sidecar's stats ("missing" when absent) at its last read, and when that was (Date.now()). */
+  sidecarStat?: string;
+  sidecarReadAt?: number;
+  /** Settles when the import under way (importing) ends. */
+  importDone?: Promise<void>;
   writes: Promise<void>;
+  /** The delayed copy has started but not ended: quitting then cancels it, so the last copy is written again. */
+  writing?: boolean;
   /** How many comment anchors were here, to notice one arriving. */
   anchors: number;
+}
+
+/**
+ * The periodic check reads a sidecar whose stats are unchanged only this
+ * often: some writes keep every stat (sync clients restoring times), and
+ * hashing every opened PDF's sidecar each minute costs more than it finds.
+ */
+const SIDECAR_RECHECK_MS = 10 * 60_000;
+/** How long a copy waits for an import already under way before giving up on this write. */
+const IMPORT_WAIT_MS = 2000;
+/** Discovery rounds that find no sidecar double the wait before the next, up to this many times writeMs. */
+const MAX_DISCOVERY_SCALE = 16;
+
+function sidecarStatKey(stats: { size: number; mtimeMs: number; ctimeMs: number } | null): string {
+  return stats ? `${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}` : "missing";
 }
 
 function validAnnotation(value: unknown): value is PdfAnnotation {
@@ -104,10 +128,15 @@ export class PdfMarksRuntime {
   private discovered = false;
   private stopped = false;
 
-  private sidecarTimer: ReturnType<typeof setInterval> | null = null;
+  private sidecarTimer: ReturnType<typeof setTimeout> | null = null;
   /** Looks again for sidecars of PDFs nobody has opened (they can arrive any time). */
-  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Times writeMs until the next discovery round (see scheduleDiscovery). */
+  private discoveryScale = 1;
   private discovering = false;
+  /** When the armed discovery timer fires (Date.now()), and whether a PDF was added during the round under way. */
+  private discoveryDue = 0;
+  private discoveryRestarted = false;
   /** The notebook's marker says live PDFs are on, for when the host cannot be asked. */
   private markerRecorded = false;
 
@@ -156,7 +185,10 @@ export class PdfMarksRuntime {
     this.entries = next;
     if (!this.enabled) return;
     // A PDF copied or moved in brings its sidecar along, moments after the file.
-    if (this.discovered && added.length) void this.openWithSidecars(added);
+    if (this.discovered && added.length) {
+      this.restartDiscovery();
+      void this.openWithSidecars(added);
+    }
     for (const doc of [...this.docs.values()]) {
       const entry = next.get(doc.fileId);
       if (!entry) {
@@ -188,15 +220,69 @@ export class PdfMarksRuntime {
     await this.refreshServerDocuments();
     await this.openWithSidecars([...this.entries.keys()]);
     if (this.stopped || this.discoveryTimer) return;
-    this.discoveryTimer = setInterval(() => {
-      if (this.discovering || !this.enabled) return;
+    this.scheduleDiscovery();
+  }
+
+  /**
+   * The next periodic look for sidecars of unopened PDFs. A round that opens
+   * nothing doubles the wait (up to MAX_DISCOVERY_SCALE times writeMs), one
+   * that opens a PDF, or a PDF added to the notebook, starts over: sidecars
+   * tend to arrive together, then not for a long time. Slower on battery.
+   */
+  private scheduleDiscovery(): void {
+    if (this.stopped) return;
+    this.armDiscovery(this.ctx.writeMs * this.discoveryScale * (this.ctx.powerScale?.() ?? 1));
+  }
+
+  /**
+   * A PDF was added: its sidecar tends to follow within moments, so a backed-off
+   * wait must not stand. Only ever brings the armed deadline closer, so repeated
+   * additions cannot keep pushing discovery back.
+   */
+  private restartDiscovery(): void {
+    this.discoveryScale = 1;
+    // A round under way ends by backing off from what it found; this start-over wins.
+    if (this.discovering) this.discoveryRestarted = true;
+    if (this.stopped || !this.discoveryTimer) return;
+    const due = Date.now() + this.ctx.writeMs * (this.ctx.powerScale?.() ?? 1);
+    if (due >= this.discoveryDue) return;
+    clearTimeout(this.discoveryTimer);
+    this.armDiscovery(due - Date.now());
+  }
+
+  private armDiscovery(delay: number): void {
+    this.discoveryDue = Date.now() + delay;
+    this.discoveryTimer = setTimeout(() => {
+      this.discoveryTimer = null;
+      if (this.discovering || !this.enabled) {
+        this.scheduleDiscovery();
+        return;
+      }
       this.discovering = true;
       const unopened = [...this.entries.keys()].filter((fileId) => !this.docs.has(fileId));
+      const openedBefore = this.docs.size;
       void this.openWithSidecars(unopened, 0)
         .catch((error) => this.ctx.logger.warn(`Shared notebook ${this.ctx.notebook}: could not look for PDF annotations`, error))
-        .finally(() => { this.discovering = false; });
-    }, this.ctx.writeMs);
+        .finally(() => {
+          this.discovering = false;
+          this.discoveryScale = this.discoveryRestarted || this.docs.size > openedBefore ? 1 : Math.min(MAX_DISCOVERY_SCALE, this.discoveryScale * 2);
+          this.discoveryRestarted = false;
+          this.scheduleDiscovery();
+        });
+    }, delay);
     this.discoveryTimer.unref?.();
+  }
+
+  /** The next periodic sidecar check of the opened PDFs; slower on battery. */
+  private scheduleSidecarCheck(): void {
+    if (this.stopped) return;
+    this.sidecarTimer = setTimeout(() => {
+      this.sidecarTimer = null;
+      // A copy about to be written imports the sidecar first itself.
+      for (const opened of this.docs.values()) if (!opened.timer) void this.importSidecar(opened, true);
+      this.scheduleSidecarCheck();
+    }, this.ctx.writeMs * (this.ctx.powerScale?.() ?? 1));
+    this.sidecarTimer.unref?.();
   }
 
   private async openWithSidecars(fileIds: string[], retries = 2): Promise<void> {
@@ -250,12 +336,7 @@ export class PdfMarksRuntime {
     const hub = host.acquire(docId, { kind: "file", projectId });
     const doc: PdfDoc = { fileId, docId, path: entry.path, hub, unsubscribe: [], timer: null, imported: false, importing: false, observedHash: null, writes: Promise.resolve(), anchors: 0 };
     this.docs.set(fileId, doc);
-    if (!this.sidecarTimer) {
-      this.sidecarTimer = setInterval(() => {
-        for (const opened of this.docs.values()) void this.importSidecar(opened);
-      }, this.ctx.writeMs);
-      this.sidecarTimer.unref?.();
-    }
+    if (!this.sidecarTimer) this.scheduleSidecarCheck();
     doc.unsubscribe.push(
       hub.observe("annotations", (change) => {
         if (change.origin === "rebuilt") return;
@@ -285,14 +366,25 @@ export class PdfMarksRuntime {
    * has arrived, so a mark deleted elsewhere is known to exist and is not
    * created again. Followers leave the folder's sidecars to its writer.
    */
-  private async importSidecar(doc: PdfDoc): Promise<void> {
+  private async importSidecar(doc: PdfDoc, periodic = false): Promise<void> {
     if (doc.importing || this.stopped || doc.hub.isClosed) return;
     if (!this.ctx.canWriteDisk() || !this.hasServerState(doc)) return;
+    const target = this.sidecarPath(doc.path);
+    // Marked before the first await: a copy written meanwhile waits for this import.
     doc.importing = true;
+    let settle = () => {};
+    doc.importDone = new Promise<void>((resolve) => { settle = resolve; });
     try {
-      const current = await readIfExists(this.sidecarPath(doc.path));
+      // The periodic check reads a sidecar only when its stats moved, or its last read is old.
+      const statKey = sidecarStatKey(await fs.stat(target).catch(() => null));
+      if (periodic && doc.imported && doc.sidecarStat === statKey && Date.now() - (doc.sidecarReadAt ?? 0) < SIDECAR_RECHECK_MS) return;
+      const current = await readIfExists(target);
       const observed = current ? sha256(current) : null;
-      if (doc.imported && doc.observedHash === observed) return;
+      if (doc.imported && doc.observedHash === observed) {
+        doc.sidecarStat = statKey;
+        doc.sidecarReadAt = Date.now();
+        return;
+      }
       // Only a PDF with no sidecar of its own can have an older one to merge.
       const bytes = current ?? await readIfExists(await this.sidecarToRead(doc.path));
       const sidecar = bytes ? JSON.parse(bytes.toString("utf8")) as Sidecar : null;
@@ -324,12 +416,15 @@ export class PdfMarksRuntime {
       }
       doc.observedHash = observed;
       doc.imported = true;
+      doc.sidecarStat = statKey;
+      doc.sidecarReadAt = Date.now();
       this.scheduleWrite(doc);
     } catch (error) {
       doc.imported = false;
       this.ctx.logger.warn(`Shared notebook ${this.ctx.notebook}: could not merge the annotations of ${doc.path}`, error);
     } finally {
       doc.importing = false;
+      settle();
     }
   }
 
@@ -337,10 +432,11 @@ export class PdfMarksRuntime {
     if (this.stopped || doc.timer || !this.ctx.canWriteDisk()) return;
     doc.timer = setTimeout(() => {
       doc.timer = null;
+      doc.writing = true;
       void this.writeCopy(doc).catch((error) => {
         // Cancelled means the folder moved on under it; the next change writes again.
         if (!(error instanceof WriteCancelledError)) this.ctx.logger.warn(`Shared notebook ${this.ctx.notebook}: could not write the annotations of ${doc.path}`, error);
-      });
+      }).finally(() => { doc.writing = false; });
     }, this.ctx.writeMs);
     doc.timer.unref?.();
   }
@@ -361,6 +457,14 @@ export class PdfMarksRuntime {
     const relative = doc.path;
     const target = this.sidecarPath(relative);
     if (!options.local) await this.importSidecar(doc);
+    // An import already under way (a periodic check, a status change) decides first,
+    // also for the last copy at quit, which nothing would write again. Bounded: an
+    // import waiting on a server that never answers must not hold up the copy or quitting.
+    if (!options.local && doc.importing && doc.importDone) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([doc.importDone, new Promise<void>((resolve) => { timer = setTimeout(resolve, IMPORT_WAIT_MS); })]);
+      clearTimeout(timer);
+    }
     const observed = await readIfExists(target);
     const expected = observed ? sha256(observed) : null;
     const existing = observed ? JSON.parse(observed.toString("utf8")) as Sidecar : null;
@@ -435,12 +539,12 @@ export class PdfMarksRuntime {
    */
   async stop(options: { local?: boolean } = {}): Promise<void> {
     this.stopped = true;
-    if (this.sidecarTimer) clearInterval(this.sidecarTimer);
+    if (this.sidecarTimer) clearTimeout(this.sidecarTimer);
     this.sidecarTimer = null;
-    if (this.discoveryTimer) clearInterval(this.discoveryTimer);
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
     this.discoveryTimer = null;
-    // Only a copy still waiting for its delay has anything new to write.
-    await Promise.all([...this.docs.values()].map((doc) => this.close(doc, doc.timer !== null || options.local === true, { ...options, final: true })));
+    // Only a copy waiting for its delay, or under way (quitting cancels it), has anything new to write.
+    await Promise.all([...this.docs.values()].map((doc) => this.close(doc, doc.timer !== null || doc.writing === true || options.local === true, { ...options, final: true })));
   }
 
   async seed(fileId: string, relative: string, input: PdfImportRequest): Promise<void> {

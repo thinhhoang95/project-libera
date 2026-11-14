@@ -6,6 +6,7 @@ import { captureCanvasViewState } from "./canvas-view-state";
 import { apiRequest, encodeFilePath } from "./api-client";
 import type { OpenTab } from "./types";
 import { refreshGallery } from "./gallery-store";
+import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { isGalleryTab, restoreGalleryTab } from "./gallery-tabs";
 import { createPageTab, isPageKind, isPageTab } from "./page-tabs";
 import type { LiberaFileNode, LiberaFilePayload, LiberaTree, LiberaTreeNode } from "@/lib/types";
@@ -195,19 +196,41 @@ export function useSavedWorkspaces(options: Options) {
 
   useEffect(() => {
     if (!ready || !options.authenticated) return;
+    // Text last journaled per tab (draft, saved). Strings compare by reference first,
+    // so checking an unchanged tab costs nothing: no flush, no stringify.
+    let journaled = new Map<string, { draft: string; saved: string }>();
     function recoverLocally() {
       if (locked.current || !readyRef.current) return;
       const next = snapshot();
       libraryRef.current = next;
       journal(next);
+      journaled = new Map(localTabs().map((tab) => [tab.id, { draft: current.current.readDraft(tab), saved: tab.saved }]));
+    }
+    // A shared tab's text is kept by the collaboration host at every edit: a collaborator
+    // typing must not mean a full journal every tick in a hidden window.
+    function localTabs() {
+      const registry = getSharedDocRegistry();
+      return current.current.session.tabs.filter((tab) => !registry.isSharedTab(tab.id));
+    }
+    function recoverableChanged() {
+      const { readDraft } = current.current;
+      const tabs = localTabs();
+      if (tabs.length !== journaled.size) return true;
+      return tabs.some((tab) => {
+        const last = journaled.get(tab.id);
+        return !last || last.saved !== tab.saved || last.draft !== readDraft(tab);
+      });
     }
     // This journal lives in Electron's userData (Chromium storage on the web),
     // outside the synced notebook directory and stable across desktop ports.
     // Capture live editor readers too, at a bounded cadence instead of per scroll.
-    // A hidden window changes nothing a snapshot would capture: journal once as it
-    // is hidden, then skip the ticks (each flushes every viewer and stringifies
-    // every tab's text) until it is shown again.
-    const interval = window.setInterval(() => { if (document.visibilityState !== "hidden") recoverLocally(); }, 30_000);
+    // A hidden window has no typing, but a draft can still change (AI formatting
+    // finishing, a collaborator's edit). Journal once as it is hidden, then on each
+    // tick only when a tab's text or the set of tabs changed: the full snapshot
+    // flushes every viewer and stringifies every tab's text.
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "hidden" || recoverableChanged()) recoverLocally();
+    }, 30_000);
     function onVisibility() {
       if (document.visibilityState === "hidden") recoverLocally();
     }

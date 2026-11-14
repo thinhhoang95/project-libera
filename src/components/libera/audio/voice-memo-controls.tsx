@@ -29,6 +29,8 @@ export type VoiceMemoPlayer = {
   togglePlay: () => void;
   stop: () => void;
   seek: (time: number) => void;
+  /** Seeks relative to where playback really is (currentTime is updated a few times a second only). */
+  skip: (seconds: number) => void;
   setRate: (rate: number) => void;
   setVolume: (volume: number) => void;
   toggleMute: () => void;
@@ -87,7 +89,7 @@ export function VoiceMemoControls({ player, transcript, menu }: { player: VoiceM
           <button type="button" className={`${transportButton} h-8 w-8`} aria-label="Previous recording" title={previous ? `Previous: ${previous.name} ([)` : "No previous recording"} disabled={!previous} onClick={() => previous && player.showSibling(previous)}>
             <SkipBack aria-hidden className="h-4 w-4" />
           </button>
-          <button type="button" className={`${transportButton} h-9 w-9`} aria-label={`Back ${SKIP_SECONDS} seconds`} title={`Back ${SKIP_SECONDS} s`} onClick={() => player.seek(currentTime - SKIP_SECONDS)}>
+          <button type="button" className={`${transportButton} h-9 w-9`} aria-label={`Back ${SKIP_SECONDS} seconds`} title={`Back ${SKIP_SECONDS} s`} onClick={() => player.skip(-SKIP_SECONDS)}>
             <SkipIcon icon={RotateCcw} />
           </button>
           <button
@@ -100,7 +102,7 @@ export function VoiceMemoControls({ player, transcript, menu }: { player: VoiceM
           >
             {playing ? <Pause aria-hidden className="h-5 w-5" fill="currentColor" /> : <Play aria-hidden className="ml-0.5 h-5 w-5" fill="currentColor" />}
           </button>
-          <button type="button" className={`${transportButton} h-9 w-9`} aria-label={`Forward ${SKIP_SECONDS} seconds`} title={`Forward ${SKIP_SECONDS} s`} onClick={() => player.seek(currentTime + SKIP_SECONDS)}>
+          <button type="button" className={`${transportButton} h-9 w-9`} aria-label={`Forward ${SKIP_SECONDS} seconds`} title={`Forward ${SKIP_SECONDS} s`} onClick={() => player.skip(SKIP_SECONDS)}>
             <SkipIcon icon={RotateCw} />
           </button>
           <button type="button" className={`${transportButton} h-8 w-8`} aria-label="Next recording" title={next ? `Next: ${next.name} (])` : "No next recording"} disabled={!next} onClick={() => next && player.showSibling(next)}>

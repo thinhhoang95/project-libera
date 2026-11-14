@@ -728,7 +728,7 @@ function ReferencesPanelBody({
   // has scrolled away from it, so they only feed the position, never trigger the scroll.
   const windowed = listed.length > REFERENCE_WINDOW_THRESHOLD;
   const offset = listedMissing.length * REFERENCE_ROW_HEIGHT;
-  const viewKey = `${selectedId}\u0000${view.query}\u0000${view.filter}\u0000${view.sort}\u0000${activeTag ?? ""}\u0000${reviewFilter ? "review" : ""}`;
+  const viewKey = `${selectedId}\u0000${view.query}\u0000${view.filter}\u0000${view.sort}\u0000${activeTag ?? ""}\u0000${reviewFilter ? `review:${reviewFilter.jobId}` : ""}`;
   useEffect(() => {
     // An open card replaces the list; closing it remounts the list at the top, so scroll again then.
     if (openId) { keptInView.current = null; return; }

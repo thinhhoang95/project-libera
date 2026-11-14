@@ -81,9 +81,13 @@ let accountRequest: Promise<void> | null = null;
 /** Loads the ledger report and the OpenRouter key's counters; requests already in flight are shared. */
 export function refreshSpending({ account = true } = {}) {
   reportRequest ??= (async () => {
-    publish({ ...state, report: { ...state.report, status: "loading", error: "" } });
+    // A refresh of a report already shown stays quiet: no loading state, and the same
+    // value object when nothing changed, so the charts are not recomputed every minute.
+    const shown = state.report.status === "ready" ? state.report.value : null;
+    if (!shown) publish({ ...state, report: { ...state.report, status: "loading", error: "" } });
     try {
-      const value = await apiRequest<UsageReport>("/api/usage");
+      const fetched = await apiRequest<UsageReport>("/api/usage");
+      const value = shown && JSON.stringify(shown) === JSON.stringify(fetched) ? shown : fetched;
       publish({ ...state, report: { status: "ready", value, error: "", loadedAt: Date.now() } });
     } catch (error) {
       publish({ ...state, report: { ...state.report, status: "error", error: error instanceof Error ? error.message : "Could not load spending." } });

@@ -174,6 +174,13 @@ function toBytes(data: unknown): Uint8Array | null {
   return null;
 }
 
+/** How long an unreachable server is probed at the full rate (covers a restart). */
+const PROBE_FAST_MS = 60_000;
+/** The longest wait between probes once the server has been unreachable longer. */
+const PROBE_MAX_MS = 30_000;
+/** The reconnect ceiling then: above PROBE_MAX_MS, so the probe is what notices the server first. */
+const LONG_OUTAGE_RECONNECT_MAX_MS = 120_000;
+
 export class SyncClient {
   readonly url: string;
   private readonly options: SyncClientOptions;
@@ -206,6 +213,8 @@ export class SyncClient {
   private socketOpened = false;
   /** Reachability probes run so far (diagnostics, tests). */
   probeCount = 0;
+  /** When the current run of unanswered probes began (clock.now()); null while none failed. */
+  private probeFailingSince: number | null = null;
   private transports = new Map<string, HubTransport>();
   /** The delay chosen for the last scheduled reconnect (diagnostics, tests). */
   lastBackoffMs: number | null = null;
@@ -498,7 +507,7 @@ export class SyncClient {
 
   private scheduleReconnect(unreachable = false): void {
     if (this.state === "stopped") return;
-    const ceiling = Math.min(this.backoffMaxMs, this.backoffBaseMs * 2 ** this.attempt);
+    const ceiling = Math.min(this.reconnectCeiling(), this.backoffBaseMs * 2 ** this.attempt);
     const delay = Math.floor(this.random() * ceiling);
     this.attempt += 1;
     this.lastBackoffMs = delay;
@@ -517,7 +526,31 @@ export class SyncClient {
    * random delay of up to one interval (full jitter, so clients that all
    * noticed the restart at once do not reconnect at once). `attempt` is kept,
    * so a socket that still fails keeps backing off.
+   *
+   * A server restart is over within PROBE_FAST_MS; after that (a laptop
+   * offline, an outage) the wait doubles per unanswered probe up to
+   * PROBE_MAX_MS, so an offline machine is not woken every second for hours.
    */
+  /**
+   * The reconnect backoff's ceiling: longer once probes have gone unanswered
+   * past PROBE_FAST_MS (an offline machine), so a refused socket is not opened
+   * every few seconds for hours; the probe, at most PROBE_MAX_MS apart, still
+   * notices the server answering again.
+   */
+  private reconnectCeiling(): number {
+    if (this.probeFailingSince === null || this.clock.now() - this.probeFailingSince < PROBE_FAST_MS) return this.backoffMaxMs;
+    return Math.max(this.backoffMaxMs, LONG_OUTAGE_RECONNECT_MAX_MS);
+  }
+
+  private probeDelay(): number {
+    const base = this.probeMs + Math.floor(this.random() * this.probeMs);
+    if (this.probeFailingSince === null) return base;
+    const failingFor = this.clock.now() - this.probeFailingSince;
+    if (failingFor < PROBE_FAST_MS) return base;
+    const doublings = Math.min(16, Math.floor(Math.log2(Math.max(1, failingFor / PROBE_FAST_MS))) + 1);
+    return Math.min(PROBE_MAX_MS, base * 2 ** doublings);
+  }
+
   private scheduleProbe(): void {
     const probe = this.options.probe;
     if (!probe || this.probeTimer || this.state !== "backoff") return;
@@ -531,9 +564,11 @@ export class SyncClient {
         .then((reachable) => {
           if (this.state !== "backoff" || generation !== this.generation) return;
           if (!reachable) {
+            this.probeFailingSince ??= this.clock.now();
             this.scheduleProbe();
             return;
           }
+          this.probeFailingSince = null;
           const delay = Math.floor(this.random() * this.probeMs);
           this.lastBackoffMs = delay;
           if (this.reconnectTimer) this.clock.clearTimeout(this.reconnectTimer);
@@ -542,7 +577,7 @@ export class SyncClient {
             void this.connect();
           }, delay);
         });
-    }, this.probeMs + Math.floor(this.random() * this.probeMs));
+    }, this.probeDelay());
   }
 
   private schedulePing(): void {
@@ -742,6 +777,7 @@ export class SyncClient {
     this.welcomed = true;
     this.attempt = 0;
     this.authFailures = 0;
+    this.probeFailingSince = null;
     this.lastBackoffMs = null;
     this.userId = userId;
     this.setState("connected");

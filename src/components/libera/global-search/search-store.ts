@@ -101,6 +101,7 @@ export function onSearchRequest(handler: (parts: SearchQueryPart[]) => void) {
 }
 
 export async function refreshSearchStatus(scan = false) {
+  if (scan) lastScanRequest = Date.now();
   try {
     const status = await apiRequest<SearchIndexStatus>(`/api/search/status${scan ? "?scan=1" : ""}`);
     setState({ status, statusError: "" });
@@ -120,6 +121,11 @@ export async function searchIndexAction(action: "build" | "scan" | "background" 
   return status;
 }
 
+// Files changed by another program or sync client reach the index only through a scan.
+const RECONCILE_SCAN_MS = 5 * 60_000;
+const RESUME_SCAN_MS = 30_000;
+let lastScanRequest = 0;
+
 let pollers = 0;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -130,16 +136,21 @@ function schedulePoll() {
   const busy = state.status?.state === "scanning" || state.status?.state === "embedding" || state.status?.model.state === "loading";
   pollTimer = setTimeout(async () => {
     pollTimer = null;
-    // A hidden window stops polling (each poll can start a scan); showing it polls again.
+    // A hidden window stops polling; showing it polls again.
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-    await refreshSearchStatus(true);
+    // Mostly status only; every few minutes also ask for a scan, to pick up changes
+    // nothing announced.
+    await refreshSearchStatus(Date.now() - lastScanRequest >= RECONCILE_SCAN_MS);
     schedulePoll();
   }, busy ? BUSY_POLL_MS : IDLE_POLL_MS);
 }
 
+/** The window was shown or focused: look for changes made meanwhile, and poll again if hidden had stopped it. */
 function resumeWhenVisible() {
-  if (document.visibilityState === "hidden" || !pollers || pollTimer) return;
-  void refreshSearchStatus(true).then(schedulePoll);
+  if (document.visibilityState === "hidden" || !pollers) return;
+  // Alt-tabbing back and forth must not ask for a scan each time.
+  const scan = Date.now() - lastScanRequest >= RESUME_SCAN_MS;
+  void refreshSearchStatus(scan).then(() => { if (!pollTimer) schedulePoll(); });
 }
 
 /** Poll the index status while the component is mounted; the first poll also brings the index up to date. */
@@ -147,11 +158,17 @@ export function useSearchStatusPolling(enabled = true) {
   useEffect(() => {
     if (!enabled) return;
     pollers += 1;
-    if (pollers === 1) document.addEventListener("visibilitychange", resumeWhenVisible);
+    if (pollers === 1) {
+      document.addEventListener("visibilitychange", resumeWhenVisible);
+      window.addEventListener("focus", resumeWhenVisible);
+    }
     void refreshSearchStatus(true).then(schedulePoll);
     return () => {
       pollers -= 1;
-      if (!pollers) document.removeEventListener("visibilitychange", resumeWhenVisible);
+      if (!pollers) {
+        document.removeEventListener("visibilitychange", resumeWhenVisible);
+        window.removeEventListener("focus", resumeWhenVisible);
+      }
       if (!pollers && pollTimer) {
         clearTimeout(pollTimer);
         pollTimer = null;

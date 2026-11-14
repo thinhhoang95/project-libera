@@ -26,6 +26,11 @@ import { removeDataDir, startServerProcess, type ServerProcess } from "./support
 interface Internals {
   watcher: { close(): void } | null;
   watcherTrusted: boolean;
+  watchRetrustAt: number | null;
+  watchMisses: number;
+  resumedAt: number;
+  maybeRetrustWatcher(): void;
+  resumed(): void;
   watchBaseline: Map<string, unknown> | null;
   reportedAt: Map<string, number>;
   verified: Map<string, { ctimeMs: number | undefined; at: number; pending?: boolean }>;
@@ -72,6 +77,7 @@ function detached(options: DetachedOptions = {}) {
     watcherTrusted: true,
     watchRetrustAt: null,
     watchMisses: 0,
+    resumedAt: 0,
     watchBaseline: null,
     watchBaselineAt: 0,
     reportedAt: new Map(),
@@ -353,6 +359,22 @@ describe("verification age", () => {
       dispose();
     }
   });
+
+  test("a watcher that was caught missing a change gets the short age again, even once trusted", () => {
+    const { project, dispose } = detached({ timings: { verifyMs: 1000, trustedVerifyMs: 20_000 } });
+    try {
+      assert.equal(project.verificationAge("fil_a", 10, false), 20_000);
+      // As noticeMissedEvents leaves it, with the wait already over.
+      project.watcherTrusted = false;
+      project.watchMisses = 1;
+      project.watchRetrustAt = performance.now() - 1;
+      project.maybeRetrustWatcher();
+      assert.equal(project.watcherTrusted, true, "the poll relaxes again");
+      assert.equal(project.verificationAge("fil_a", 10, false), 1000, "but small files are still verified on the short age");
+    } finally {
+      dispose();
+    }
+  });
 });
 
 /** An mtime well in the past, on a 2 s step (FAT), so files count as settled. */
@@ -456,6 +478,26 @@ describe("against a server and a real folder", () => {
     assert.ok(inner.verified.get(small)!.at > smallAt, "a small file is verified again after verifyMs");
     assert.equal(inner.verified.get(figure)!.at, figureAt, "a large file is not, yet");
     await until(() => inner.verified.get(figure)!.at > figureAt, "the large file's own verification", 10_000);
+  });
+
+  test("waking up makes small files verify again at once, large files keep their schedule", { timeout: 30_000 }, async () => {
+    const { project, inner } = await share("Woken", { pollMs: 40, verifyMs: 600_000, trustedVerifyMs: 600_000, largeFileVerifyMs: 600_000 }, {
+      "note.md": "small\n",
+      "figure.bin": Buffer.alloc(LARGE_FILE_BYTES + 1024, 7),
+    });
+    inner.watcher?.close();
+    inner.watcher = null;
+    const small = fileId(project, "note.md");
+    const figure = fileId(project, "figure.bin");
+    await until(() => inner.verified.has(small) && inner.verified.has(figure), "a first verification of both files", 10_000);
+    const smallAt = inner.verified.get(small)!.at;
+    const figureAt = inner.verified.get(figure)!.at;
+    await sleep(300);
+    assert.equal(inner.verified.get(small)!.at, smallAt, "nothing is read again before the wake");
+    inner.resumed();
+    await until(() => inner.verified.get(small)!.at > smallAt, "the small file to be read again", 10_000);
+    await sleep(300);
+    assert.equal(inner.verified.get(figure)!.at, figureAt, "the large file was not");
   });
 
   test("a file with an mtime in the future is not re-read at every scan", { timeout: 30_000 }, async () => {

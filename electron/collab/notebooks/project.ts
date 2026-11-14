@@ -148,17 +148,20 @@ export interface Timings {
    */
   verifyMs: number;
   /**
-   * The same age while fs.watch is trusted here. A preserved-stats edit still
-   * raises a watcher event (and is read then), so the timed verification only
-   * guards against the watcher failing without a sign: re-hashing every small
-   * file each minute for that alone cost more battery than it bought.
+   * The same age while fs.watch is trusted here and has not been caught
+   * missing a change this session. A preserved-stats edit still raises a
+   * watcher event (and is read then), so the timed verification only guards
+   * against the watcher failing without a sign: re-hashing every small file
+   * each minute for that alone cost more battery than it bought. A watcher
+   * that did miss one gets verifyMs for good, even once trusted again.
    */
   trustedVerifyMs: number;
   /**
    * How long fs.watch stays distrusted after it was caught missing a change,
    * before it is trusted (and judged) again; doubled at each further miss,
    * up to 16 times this. Never for a folder distrusted from the start (a
-   * network share).
+   * network share). Trusting it again only slows the stat-walk poll: small
+   * files stay on verifyMs, as the watcher is still not known to work.
    */
   watchRetrustMs: number;
   /** The same for files of LARGE_FILE_BYTES or more, spread ±25% per file so they do not all come due together. */
@@ -294,6 +297,8 @@ export class SharedProject {
   private watchRetrustAt: number | null = null;
   /** Times the watcher was caught missing a change this session: each doubles the next wait before trusting it again. */
   private watchMisses = 0;
+  /** When the computer last woke (performance.now()): small files verified before it are verified again. */
+  private resumedAt = 0;
   /**
    * The missed-event check's view of the folder, by manifestPathKey: the
    * stats last accounted for, since when events explain a change, and when
@@ -350,6 +355,7 @@ export class SharedProject {
       notebook: info.notebook,
       root: info.root,
       writeMs: ctx.timings.pdfWriteMs,
+      powerScale: () => this.powerScale(),
       role: () => this.info.role,
       canWriteDisk: () => !this.follower,
       guard: (finalizing) => this.diskGuard(finalizing),
@@ -1685,8 +1691,10 @@ export class SharedProject {
 
   /**
    * A watcher caught missing one change (a stream broken by sleep, say) is
-   * trusted again after its wait. The missed-event check starts afresh with
-   * the next walk, and a further miss distrusts it for twice as long.
+   * trusted again after its wait, with nothing to show it works. That only
+   * relaxes the poll: the missed-event check starts afresh with the next walk
+   * (a further miss distrusts it for twice as long), and small files keep the
+   * short verifyMs, since a miss that leaves every stat equal cannot be seen.
    */
   private maybeRetrustWatcher(): void {
     if (this.watchRetrustAt == null || !this.watcher || performance.now() < this.watchRetrustAt) return;
@@ -1700,8 +1708,13 @@ export class SharedProject {
     this.retimePoll();
   }
 
-  /** The computer woke up: what changed while it slept may have no watcher event. */
+  /**
+   * The computer woke up: what changed while it slept may have no watcher event
+   * (and the watcher may be trusted), so the next scan reads each small file
+   * again whatever its verification age. Large files keep their own schedule.
+   */
   resumed(): void {
+    this.resumedAt = performance.now();
     if (this.pollTimer) this.scheduleScan(0);
   }
 
@@ -1928,7 +1941,9 @@ export class SharedProject {
       const verification = this.verified.get(fileId);
       const touchedByWatch = underAny(dirty, manifestPathKey(record.path));
       const sameStats = record.size === seen.size && record.mtimeMs === seen.mtimeMs && verification !== undefined && verification.ctimeMs === seen.ctimeMs;
-      const verificationCurrent = verification !== undefined && performance.now() - verification.at < this.verificationAge(fileId, seen.size, verification.pending === true);
+      // A small file verified before the last wake is read again: what changed during sleep may have no event.
+      const verificationCurrent = verification !== undefined && performance.now() - verification.at < this.verificationAge(fileId, seen.size, verification.pending === true) &&
+        (seen.size >= LARGE_FILE_BYTES || verification.at >= this.resumedAt);
       if (!record.hash || (!verifyAll && !touchedByWatch && settled && sameStats && verificationCurrent)) continue;
       // An online-only placeholder with this host's size and mtime holds no
       // local bytes that could have changed; reading it to verify would
@@ -2913,13 +2928,15 @@ export class SharedProject {
 
   /**
    * How long a content verification stands while the stats stay the same:
-   * verifyMs (trustedVerifyMs while fs.watch is trusted), or largeFileVerifyMs (spread per file) for large files whose
-   * last read was handled; times batteryScale on battery.
+   * verifyMs, or trustedVerifyMs while fs.watch is trusted and has never been
+   * caught missing a change this session (a watcher that did is not believed
+   * again for this, whatever re-trusts it), or largeFileVerifyMs (spread per
+   * file) for large files whose last read was handled; times batteryScale on battery.
    */
   private verificationAge(fileId: string, size: number, pending: boolean): number {
     const { verifyMs, trustedVerifyMs, largeFileVerifyMs } = this.ctx.timings;
     // A change still waiting to be handled is retried on the short bound, watcher or not.
-    const small = pending ? verifyMs : this.watcher && this.watcherTrusted ? Math.max(verifyMs, trustedVerifyMs) : verifyMs;
+    const small = pending ? verifyMs : this.watcher && this.watcherTrusted && this.watchMisses === 0 ? Math.max(verifyMs, trustedVerifyMs) : verifyMs;
     const base = pending || size < LARGE_FILE_BYTES ? small : Math.max(small, largeFileVerifyMs * (0.75 + 0.5 * spreadFraction(fileId)));
     return base * this.powerScale();
   }

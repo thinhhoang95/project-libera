@@ -97,6 +97,17 @@ function createUndoManager(replica: CollabReplica, origin: SharedEditOrigin) {
   return new Y.UndoManager(replica.ytext, { trackedOrigins: new Set([origin]) });
 }
 
+/** ResolvedDoc is plain data: equal when every field (binding, role, read-only, revoked) matches. */
+function sameResolution(a: ResolvedDoc, b: ResolvedDoc): boolean {
+  const left = a as unknown as Record<string, unknown>;
+  const right = b as unknown as Record<string, unknown>;
+  for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) {
+    // An absent flag and false mean the same.
+    if ((left[key] ?? false) !== (right[key] ?? false)) return false;
+  }
+  return true;
+}
+
 export class SharedDocRegistry {
   private readonly resolveImpl: (path: string) => Promise<ResolvedDoc | null>;
   private readonly attachImpl: (docId: string) => Promise<ReplicaMessagePort>;
@@ -104,6 +115,8 @@ export class SharedDocRegistry {
   private readonly availableImpl: () => boolean;
   private readonly reconnectDelayMs: number;
   private readonly resolutions = new Map<string, { value: ResolvedDoc | null } | Promise<ResolvedDoc | null>>();
+  /** Paths with a background re-check running (one at a time per path). */
+  private readonly revalidating = new Set<string>();
   private readonly entries = new Map<string, DocEntry>();
   private readonly tabs = new Map<string, TabBinding>();
   private readonly listeners = new Set<() => void>();
@@ -201,6 +214,29 @@ export class SharedDocRegistry {
     return forgot;
   }
 
+  /**
+   * Looks a cached shared path up again without telling anyone. A repaired or
+   * restored manifest can bind the same path to another document without any
+   * tree event, so the answer is compared: only a different one forgets the
+   * entry (and wakes subscribers, so tabs re-bind). Errors keep the cached entry.
+   */
+  private revalidate(path: string) {
+    const cached = this.resolutions.get(path);
+    if (!cached || cached instanceof Promise || cached.value === null || this.revalidating.has(path)) return;
+    this.revalidating.add(path);
+    this.resolveImpl(path).then(
+      (value) => {
+        this.revalidating.delete(path);
+        // A newer invalidation or lookup replaced the entry meanwhile: that answer wins.
+        if (this.resolutions.get(path) !== cached) return;
+        if (cached.value && value && sameResolution(cached.value, value)) return;
+        this.resolutions.delete(path);
+        this.emit();
+      },
+      () => { this.revalidating.delete(path); },
+    );
+  }
+
   private handleHostEvent(event: HostEvent) {
     if (event.t === "host-down") {
       // The ports of the dead process carry nothing any more: keep the edits
@@ -222,9 +258,11 @@ export class SharedDocRegistry {
       if (marked && !forgot) this.emit();
     } else if (event.t === "files-changed") {
       // The host writes a shared document's working copy every few seconds while anyone
-      // types: that path stays the same document, so only a file that was not shared a
-      // moment ago (created or turned into a document since) is looked up again.
+      // types: that path almost always stays the same document, so it is kept and
+      // checked quietly. Only a file that was not shared a moment ago (created or turned
+      // into a document since) is dropped and looked up again right away.
       this.invalidate({ paths: event.paths, projectId: event.paths.length ? undefined : event.projectId, unsharedOnly: event.paths.length > 0 });
+      for (const path of event.paths) this.revalidate(path);
     }
     else if (event.t === "project-changed") this.invalidate({ projectId: event.projectId });
   }

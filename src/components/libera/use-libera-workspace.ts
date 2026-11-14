@@ -583,13 +583,22 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setTree(nextTree);
   }
 
-  /** `onlyIfChanged` drops a result that matches the shown tree or lost a race with a newer one. */
+  /**
+   * `onlyIfChanged` drops a result that matches the shown tree. If another tree
+   * was applied meanwhile it may be older than this one, so fetch again (twice
+   * at most) rather than keep it.
+   */
   async function refreshTree(expandNotebook?: string, options?: { onlyIfChanged?: boolean }) {
-    const treeAtStart = appliedTreeRef.current;
-    const nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
-    if (options?.onlyIfChanged && (appliedTreeRef.current !== treeAtStart ||
-        JSON.stringify(nextTree) === JSON.stringify(treeAtStart))) {
-      return appliedTreeRef.current ?? nextTree;
+    let treeAtStart = appliedTreeRef.current;
+    let nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+    if (options?.onlyIfChanged) {
+      for (let retries = 0; appliedTreeRef.current !== treeAtStart && retries < 2; retries++) {
+        treeAtStart = appliedTreeRef.current;
+        nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+      }
+      if (appliedTreeRef.current !== treeAtStart || JSON.stringify(nextTree) === JSON.stringify(treeAtStart)) {
+        return appliedTreeRef.current ?? nextTree;
+      }
     }
     await applyCompleteTree(nextTree);
     setSelectedNotebookName((current) => {
@@ -3726,21 +3735,37 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   });
   useEffect(() => {
     if (!authenticated) return;
-    return subscribeSharedTreeChanges(subscribeHostEvents, (moves) => {
-      void (async () => {
-        const { refreshTree: refresh, retargetOpenTab: retarget } = latestTreeChange.current;
-        for (const move of moves) {
-          try {
-            const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`);
-            retarget(move.from, payload);
-          } catch {
-            // The file moved again or is gone; the tree refresh below shows where it is.
-          }
-        }
+    let active = true;
+    // Moves run strictly in the order they happened, each after the previous fetch settled.
+    let movesDone: Promise<void> = Promise.resolve();
+    const stop = subscribeSharedTreeChanges(
+      subscribeHostEvents,
+      async () => {
+        // Tabs follow their files first, but a move lookup that hangs must not freeze the file list.
+        await Promise.race([movesDone, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+        if (!active) return;
         // Most shared edits change no file's metadata; an identical tree is not applied, so nothing re-renders.
-        await refresh(undefined, { onlyIfChanged: true });
-      })().catch((error: Error) => setWorkspaceError(error.message));
-    });
+        try { await latestTreeChange.current.refreshTree(undefined, { onlyIfChanged: true }); }
+        catch (error) { setWorkspaceError(error instanceof Error ? error.message : "Could not refresh the tree."); }
+      },
+      (moves) => {
+        movesDone = movesDone.then(async () => {
+          for (const move of moves) {
+            if (!active) return;
+            try {
+              const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`);
+              if (active) latestTreeChange.current.retargetOpenTab(move.from, payload);
+            } catch {
+              // The file is gone; one failed move must not stop the others.
+            }
+          }
+        });
+      },
+    );
+    return () => {
+      active = false;
+      stop();
+    };
   }, [authenticated]);
 
   async function moveFileNode(
