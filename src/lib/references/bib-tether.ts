@@ -1,4 +1,4 @@
-import { assertNotSharedAbsolutePath } from "@/lib/collab/shared-notebook";
+import { assertNotSharedAbsolutePath, isSharedDocumentError, sharedLiberaPathFor } from "@/lib/collab/shared-notebook";
 import { createHash, randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import { chmod, link, lstat, open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
@@ -50,9 +50,10 @@ import { publishReferenceEvent, subscribeReferenceEvents } from "./library-event
 // drive) pauses the tether without touching the library; an unreadable file
 // (not UTF-8, too large, invalid keys or blocks that do not parse) pauses
 // without changing either side; a refused write is retried a few times with backoff and
-// then on the next change. Collaboration needs nothing special: a shared
-// notebook's .bib is rewritten on disk by the collaboration host as others
-// edit it, and that is one more change to the file.
+// then on the next change. A .bib in a shared notebook is read and written
+// through the collaboration host, never on disk (see "A file in a shared
+// notebook" below); collaborators' edits reach the working copy on disk,
+// and that is one more change to the file.
 
 export const BIB_TETHER_FILE = "bib-tether.json";
 /** Library commits within this window become one write of the file. */
@@ -221,8 +222,18 @@ function fileErrorMessage(error: unknown, name: string) {
   return `${name} could not be opened (${code ?? (error instanceof Error ? error.message : "unknown error")}).`;
 }
 
-/** The file, or null when it does not exist. A file still being written is read again once it settles. */
+/**
+ * The file, or null when it does not exist. In a shared notebook it is the
+ * host's current text, which can be newer than the working copy on disk.
+ */
 async function readTetherFile(absolute: string): Promise<FileSnapshot | null> {
+  await realBibPath(absolute);
+  const shared = sharedLiberaPathFor(absolute);
+  return shared ? readSharedTetherFile(absolute, shared) : readDiskTetherFile(absolute);
+}
+
+/** The working copy on disk, or null when it does not exist. A file still being written is read again once it settles. */
+async function readDiskTetherFile(absolute: string): Promise<FileSnapshot | null> {
   await realBibPath(absolute);
   const name = path.basename(absolute);
   for (let attempt = 0; ; attempt += 1) {
@@ -268,8 +279,87 @@ async function currentHash(absolute: string) {
   return (await readTetherFile(absolute))?.hash ?? null;
 }
 
-/** Replace the file atomically, through a symlink, keeping its permissions. */
-async function writeTetherFile(absolute: string, text: string, mode: number | null, expectedHash: string | null) {
+// ---------------------------------------------------------------------------
+// A file in a shared notebook
+// ---------------------------------------------------------------------------
+//
+// Its working copy is written by the collaboration host, so the tether reads
+// and writes it through the host (never the disk): the library's changes
+// reach collaborators as minimal attributed edits, and a collaborator's edit
+// that lands between the merge's read and its write is a conflict, after
+// which the merge runs again on the new text. The disk copy follows when the
+// host materializes it, and the watcher's sync then finds nothing to do.
+
+/** Libera's library-to-file syncing is not typing, an AI or an external edit of the working copy. */
+const SHARED_PROVENANCE = { source: "system" } as const;
+
+/** The shared-write helpers, loaded on first use (they pull in most of storage). */
+const sharedWrites = () => import("@/lib/collab/shared-writes");
+
+/** A host refusal as a TetherError: an unavailable host retries; a role or membership refusal waits. */
+async function sharedTetherError(error: unknown, name: string): Promise<unknown> {
+  const { SharedWriteError } = await sharedWrites();
+  if (!(error instanceof SharedWriteError)) return error;
+  const transient = error.status >= 500 || error.code === "conflict";
+  return new TetherError(error.status === 404 ? `${name}: ${error.message}` : error.message, error.status === 404 ? 409 : error.status, transient);
+}
+
+async function readSharedTetherFile(absolute: string, liberaPath: string): Promise<FileSnapshot | null> {
+  const { readSharedText, SharedWriteError } = await sharedWrites();
+  const name = path.basename(absolute);
+  let text: string;
+  try {
+    ({ text } = await readSharedText(liberaPath));
+  } catch (error) {
+    // Not one of the notebook's documents: missing, still arriving, or shared
+    // as bytes (too large, or not text, when it was added). The working copy is all there is.
+    if (error instanceof SharedWriteError && error.code === "not-shared-document") return readDiskTetherFile(absolute);
+    // Collaboration not running: a merge that only changes the library still runs from
+    // the working copy; one that must write the file fails (and is retried) in writeSharedTetherFile.
+    if (error instanceof SharedWriteError && error.status >= 500) return readDiskTetherFile(absolute);
+    throw await sharedTetherError(error, name);
+  }
+  const size = Buffer.byteLength(text, "utf8");
+  if (size > BIB_TETHER_MAX_BYTES) throw new TetherError(`${name} is larger than ${BIB_TETHER_MAX_BYTES / 1024 / 1024} MB, which is more than Libera syncs.`, 413);
+  if (text.includes("\u0000")) throw new TetherError(`${name} is not a text file.`, 415);
+  const stats = await stat(absolute).catch(() => null);
+  return { text, hash: sha256(text), size, mtimeMs: stats?.mtimeMs ?? Date.now(), mode: stats?.mode ?? 0o644 };
+}
+
+async function writeSharedTetherFile(absolute: string, liberaPath: string, text: string, mode: number | null, expectedText: string | null) {
+  const { createSharedFile, requireSharedDoc, saveSharedFileText, writeSharedText, SharedWriteError } = await sharedWrites();
+  const name = path.basename(absolute);
+  const size = Buffer.byteLength(text, "utf8");
+  if (size > BIB_TETHER_MAX_BYTES) throw new TetherError("The merged .bib file exceeds the 16 MB sync limit.", 413);
+  try {
+    if (expectedText === null) {
+      await createSharedFile(liberaPath, text);
+    } else {
+      const doc = await requireSharedDoc(liberaPath).catch((error: unknown) => {
+        if (error instanceof SharedWriteError && error.code === "not-shared-document") return null;
+        throw error;
+      });
+      if (doc) {
+        const result = await writeSharedText(liberaPath, text, SHARED_PROVENANCE, { expectedBefore: expectedText, doc });
+        if (result.conflict) throw new TetherError(`${name} changed before it could be saved.`, 409, true);
+      } else {
+        // Shared as bytes: the host replaces them whole (last save wins), so check the copy the merge read first.
+        if ((await readDiskTetherFile(absolute))?.text !== expectedText) throw new TetherError(`${name} changed before it could be saved.`, 409, true);
+        await saveSharedFileText(liberaPath, text);
+      }
+    }
+  } catch (error) {
+    if (error instanceof TetherError) throw error;
+    throw await sharedTetherError(error, name);
+  }
+  return { size, mtimeMs: Date.now(), mode: mode ?? 0o644 };
+}
+
+/** Replace the file atomically, through a symlink, keeping its permissions; through the host in a shared notebook. */
+async function writeTetherFile(absolute: string, text: string, mode: number | null, expectedHash: string | null, expectedText: string | null = null) {
+  const shared = sharedLiberaPathFor(absolute);
+  if (shared) return writeSharedTetherFile(absolute, shared, text, mode, expectedHash === null ? null : expectedText);
+  // Never on disk in a shared notebook: the host's next materialization would undo it.
   assertNotSharedAbsolutePath(absolute);
   const target = await realBibPath(absolute);
   assertNotSharedAbsolutePath(target);
@@ -677,7 +767,9 @@ async function syncOnce(notebook: string, options: TetherSyncOptions): Promise<T
     resetRetry(runtime);
   } catch (error) {
     const transient = error instanceof TetherError ? error.transient : error instanceof ReferenceRevisionConflict || !(error instanceof StorageError);
-    const message = error instanceof StorageError ? error.message : `${name} could not be synced.`;
+    const message = isSharedDocumentError(error)
+      ? `${name} is in a shared notebook and could not be saved through collaboration. Neither side was changed.`
+      : error instanceof StorageError ? error.message : `${name} could not be synced.`;
     if (!(error instanceof StorageError)) console.error(`[references] Syncing ${name} failed:`, error);
     setState(config, (error as StorageError).status === 404 ? "missing" : "error", message);
     // A refused write or an unavailable disk may clear up by itself; a malformed file waits for its next change.
@@ -751,7 +843,7 @@ async function mergeOnce(notebook: string, config: TetherConfig, absolute: strin
       revision = (await updateReferenceLibrary(notebook, library.revision, plan.ops, async () => {
         if (plan.fileText !== null || mustCreate) {
           const text = plan.fileText ?? "";
-          const stats = await writeTetherFile(absolute, text, mustCreate ? null : file.mode, mustCreate ? null : file.hash);
+          const stats = await writeTetherFile(absolute, text, mustCreate ? null : file.mode, mustCreate ? null : file.hash, mustCreate ? null : file.text);
           written = { text, hash: sha256(text), size: stats.size, mtimeMs: stats.mtimeMs, mode: stats.mode };
         } else if (await currentHash(absolute) !== file.hash) {
           throw new TetherError(`${name} changed while it was being synced.`, 409, true);

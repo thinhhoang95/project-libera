@@ -143,9 +143,12 @@ export function assertNotSharedPath(liberaPath: string): void {
   if (isSharedNotebookPath(liberaPath)) throw new SharedDocumentError(liberaPath);
 }
 
-/** The guard for storage functions that work with a notebook name and path segments. */
-/** Guard an absolute writer target, including an existing symlink's destination. */
-export function assertNotSharedAbsolutePath(absolute: string): void {
+/**
+ * The Libera path ("Notebook/refs.bib") of an absolute file in a shared
+ * notebook, following an existing symlink (or a new file's real parent);
+ * null when no form of the path is in one.
+ */
+export function sharedLiberaPathFor(absolute: string): string | null {
   const candidates = new Set([path.resolve(absolute)]);
   try { candidates.add(realpathSync(absolute)); } catch { /* A new file uses its real parent. */ }
   try { candidates.add(path.join(realpathSync(path.dirname(absolute)), path.basename(absolute))); } catch { /* The writer will report the missing parent. */ }
@@ -154,11 +157,20 @@ export function assertNotSharedAbsolutePath(absolute: string): void {
   for (const candidate of candidates) for (const root of roots) {
     const relative = path.relative(root, candidate);
     if (relative && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) {
-      assertNotSharedPath(relative.split(path.sep).join("/"));
+      const liberaPath = relative.split(path.sep).join("/");
+      if (isSharedNotebookPath(liberaPath)) return liberaPath;
     }
   }
+  return null;
 }
 
+/** Guard an absolute writer target, including an existing symlink's destination. */
+export function assertNotSharedAbsolutePath(absolute: string): void {
+  const liberaPath = sharedLiberaPathFor(absolute);
+  if (liberaPath) throw new SharedDocumentError(liberaPath);
+}
+
+/** The guard for storage functions that work with a notebook name and path segments. */
 export function assertNotSharedItem(notebook: string, pathParts: readonly string[] = []): void {
   assertNotSharedPath([notebook, ...pathParts].join("/"));
 }

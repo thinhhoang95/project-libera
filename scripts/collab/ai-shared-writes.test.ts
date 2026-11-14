@@ -1215,3 +1215,48 @@ test("a follower's delete leaves the tree once the writer has removed the file",
     assert.doesNotMatch(await response.text(), /viewed\.md/);
   });
 });
+
+test("a .bib tethered in a shared notebook syncs through the host, never the working copy", async () => {
+  const { requestTetherSync, resetBibTethers, tetherBibFile } = await import("../../src/lib/references/bib-tether");
+  const { readReferenceLibrary, updateReferenceLibrary } = await import("../../src/lib/storage/references");
+  await withFixture(async ({ host, disk, root }) => {
+    try {
+      // The working copy lags the shared document: the tether must read the host.
+      writeFileSync(path.join(root, "Shared", "refs.bib"), "% disk copy\n");
+      const doc = host.addDoc("Shared/refs.bib", "@book{host2026,\n  title = {Host entry}\n}\n");
+      await updateReferenceLibrary("Local", null, [{ op: "add", entry: { key: "local2026", csl: { type: "book", title: "Local entry" } } }]);
+
+      const status = await tetherBibFile("Local", "Shared/refs.bib", { prefer: "library" });
+      assert.equal(status?.state, "synced", status?.message);
+      assert.deepEqual(Object.values((await readReferenceLibrary("Local")).entries).map((entry) => entry.key).sort(), ["host2026", "local2026"]);
+      assert.match(doc.text, /@book\{host2026,/);
+      assert.match(doc.text, /local2026/);
+      assert.equal(disk("Shared/refs.bib"), "% disk copy\n", "the working copy is the host's to write");
+      assert.deepEqual(doc.log.map((entry) => entry.provenance), [{ source: "system" }]);
+
+      // A collaborator's edit lands between the merge's read of the host and its write:
+      // the write is refused (expectedBefore) and the merge runs again on the new text.
+      let textReads = 0;
+      let raced = false;
+      const forward = globalThis.fetch;
+      globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        if (!raced && String(input instanceof Request ? input.url : input).endsWith(`/docs/${doc.docId}/text`) && ++textReads === 2) {
+          raced = true;
+          doc.text = `@book{collab2026,\n  title = {Collaborator entry}\n}\n\n${doc.text}`;
+        }
+        return forward(input, init);
+      }) as typeof fetch;
+      await updateReferenceLibrary("Local", null, [{ op: "add", entry: { key: "later2026", csl: { type: "book", title: "Later entry" } } }]);
+      const again = await requestTetherSync("Local");
+      globalThis.fetch = forward;
+      assert.equal(again?.state, "synced", again?.message);
+      assert.ok(raced);
+      assert.match(doc.text, /collab2026/);
+      assert.match(doc.text, /later2026/);
+      assert.deepEqual(Object.values((await readReferenceLibrary("Local")).entries).map((entry) => entry.key).sort(), ["collab2026", "host2026", "later2026", "local2026"]);
+      assert.equal(disk("Shared/refs.bib"), "% disk copy\n");
+    } finally {
+      resetBibTethers();
+    }
+  });
+});
