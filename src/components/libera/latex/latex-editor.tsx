@@ -600,7 +600,8 @@ export function LatexEditor({
           },
           scroll: (_event, target) => {
             if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
-            viewStateTimerRef.current = setTimeout(() => reportViewState(target), VIEW_STATE_DELAY_MS);
+            // While a restore holds the saved place, the place being settled is not saved over it.
+            viewStateTimerRef.current = setTimeout(() => { if (!cancelRestoreRef.current) reportViewState(target); }, VIEW_STATE_DELAY_MS);
             return false;
           },
         }),

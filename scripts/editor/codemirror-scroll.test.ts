@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { EditorView } from "@codemirror/view";
 
-import { readCodeMirrorScroll, restoreCodeMirrorScroll } from "../../src/lib/codemirror-scroll";
+import { readCodeMirrorScroll, restoreCodeMirrorScroll, RESTORE_HOLD_LIMIT_MS, RESTORE_SETTLE_MS } from "../../src/lib/codemirror-scroll";
 
 type ScrollEffect = { value: { range: { head: number }; y: string; yMargin: number } };
 
@@ -124,6 +124,147 @@ test("nothing saved leaves the view to its other fallbacks", (context) => {
   assert.equal(restoreCodeMirrorScroll(view, { }, () => {}), null);
   assert.equal(effects.length, 0);
   assert.equal(frames.pending(), 0);
+});
+
+type MeasureRequest = { read: () => { delta: number; drawn: boolean }; write: (value: { delta: number; drawn: boolean }) => void };
+
+/* A view in a window with ResizeObserver, so the restore holds the text while
+ * heights settle. `textTop` is where the saved text is drawn, in viewport pixels. */
+function settlingView(context: test.TestContext) {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const frames = manualFrames(context);
+  const observers: { callback: () => void; disconnected: boolean }[] = [];
+  const listeners = new Map<string, () => void>();
+  const requests: MeasureRequest[] = [];
+  const layout = { textTop: 90 as number | null, contentHeight: 50000, width: 600 };
+  const ownerWindow = {
+    ResizeObserver: class {
+      entry: { callback: () => void; disconnected: boolean };
+      constructor(callback: () => void) { this.entry = { callback, disconnected: false }; observers.push(this.entry); }
+      observe() {}
+      disconnect() { this.entry.disconnected = true; }
+    },
+    requestAnimationFrame: (callback: () => void) => requestAnimationFrame(callback),
+    cancelAnimationFrame: (id: number) => cancelAnimationFrame(id),
+  };
+  const scrollDOM = {
+    clientHeight: 400, scrollTop: 0, scrollLeft: 0,
+    get clientWidth() { return layout.width; },
+    ownerDocument: { defaultView: ownerWindow },
+    getBoundingClientRect: () => ({ top: 100, left: 20, height: 400 }),
+    addEventListener: (type: string, listener: () => void) => { listeners.set(type, listener); },
+    removeEventListener: (type: string) => { listeners.delete(type); },
+  };
+  const view = {
+    scrollDOM,
+    contentDOM: { get offsetHeight() { return layout.contentHeight; }, getBoundingClientRect: () => ({ left: 60 }) },
+    state: { doc: { length: 1000 } },
+    documentTop: 100,
+    dispatch: () => {},
+    requestMeasure: (request?: MeasureRequest) => { if (request) requests.push(request); },
+    coordsAtPos: () => (layout.textTop === null ? null : { top: layout.textTop }),
+    lineBlockAt: () => ({ top: 3000 }),
+  };
+  /** Runs the measure requests the way CodeMirror's measure cycle does. */
+  const measure = () => {
+    const pending = requests.splice(0);
+    for (const request of pending) request.write(request.read());
+  };
+  const resize = (change: Partial<typeof layout>) => {
+    Object.assign(layout, change);
+    for (const observer of observers) if (!observer.disconnected) observer.callback();
+  };
+  return { view: view as unknown as EditorView, scrollDOM, frames, layout, listeners, observers, measure, resize, tick: (ms: number) => context.mock.timers.tick(ms) };
+}
+
+test("the restored text stays at its offset while the heights around it settle", (context) => {
+  const { view, scrollDOM, frames, measure, resize, tick, observers } = settlingView(context);
+  let done = 0;
+  restoreCodeMirrorScroll(view, { editorScrollOffset: -10, editorScrollPos: 640 }, () => { done++; });
+  frames.run();
+  measure();
+  assert.equal(scrollDOM.scrollTop, 0, "In place after the first measure: nothing to correct");
+  assert.equal(done, 0, "Still holding: the heights are estimates");
+
+  // Lines above get their real heights and the text moves 400px down.
+  tick(600);
+  resize({ textTop: 490, contentHeight: 42000 });
+  measure();
+  assert.equal(scrollDOM.scrollTop, 400);
+
+  // Within the settle window of that change, so still holding.
+  tick(600);
+  assert.equal(done, 0);
+  tick(400);
+  assert.equal(done, 1, "Done once the height has not changed for a while");
+  assert.ok(observers.every((observer) => observer.disconnected));
+});
+
+test("text not drawn yet is brought in by its estimate, then placed exactly", (context) => {
+  const { view, scrollDOM, frames, layout, measure, resize } = settlingView(context);
+  restoreCodeMirrorScroll(view, { editorScrollOffset: -10, editorScrollPos: 640 }, () => {});
+  frames.run();
+  measure();
+  resize({ textTop: null, contentHeight: 30000 });
+  measure();
+  // documentTop 100 + line top 3000, minus the scroller's top 100, less the offset.
+  assert.equal(scrollDOM.scrollTop, 3010);
+  layout.textTop = 130;
+  frames.run();
+  measure();
+  assert.equal(scrollDOM.scrollTop, 3050, "Checked again in the next frame, once it is drawn");
+});
+
+for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+  test(`the reader's ${type} ends the hold`, (context) => {
+    const { view, scrollDOM, frames, listeners, measure, resize } = settlingView(context);
+    let done = 0;
+    restoreCodeMirrorScroll(view, { editorScrollOffset: -10, editorScrollPos: 640 }, () => { done++; });
+    frames.run();
+    measure();
+    listeners.get(type)!();
+    assert.equal(done, 1);
+    resize({ textTop: 500, contentHeight: 1 });
+    measure();
+    assert.equal(scrollDOM.scrollTop, 0, "The reader's scroll is left alone");
+  });
+}
+
+test("a hidden editor stops holding", (context) => {
+  const { view, frames, measure, resize } = settlingView(context);
+  let done = 0;
+  restoreCodeMirrorScroll(view, { editorScrollOffset: 0, editorScrollPos: 640 }, () => { done++; });
+  frames.run();
+  measure();
+  resize({ width: 0 });
+  assert.equal(done, 1);
+});
+
+test("heights that never settle are held for a limited time", (context) => {
+  const { view, frames, measure, resize, tick } = settlingView(context);
+  let done = 0;
+  restoreCodeMirrorScroll(view, { editorScrollOffset: 0, editorScrollPos: 640 }, () => { done++; });
+  frames.run();
+  measure();
+  for (let elapsed = 0; elapsed < RESTORE_HOLD_LIMIT_MS; elapsed += RESTORE_SETTLE_MS / 2) {
+    assert.equal(done, 0);
+    resize({ contentHeight: 50000 + elapsed });
+    tick(RESTORE_SETTLE_MS / 2);
+  }
+  assert.equal(done, 1);
+});
+
+test("closing the tab while holding cancels without reporting done", (context) => {
+  const { view, frames, measure, observers, listeners } = settlingView(context);
+  let done = 0;
+  const cancel = restoreCodeMirrorScroll(view, { editorScrollOffset: 0, editorScrollPos: 640 }, () => { done++; });
+  frames.run();
+  measure();
+  cancel!();
+  context.mock.timers.tick(RESTORE_HOLD_LIMIT_MS);
+  assert.equal(done, 0);
+  assert.ok(observers.every((observer) => observer.disconnected));
+  assert.equal(listeners.size, 0);
 });
 
 test("switching away before the restore finishes cancels it", (context) => {
