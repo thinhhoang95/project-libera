@@ -4,6 +4,7 @@ import { isLocalModel } from "./local-llm";
 import { createOpenRouterCompletion, getOpenRouterApiKey } from "./openrouter";
 import { applyReviewEdits, commentsKey, parseReviewJson, reviewBlocks, validatePlan, validateSuggestions, type ReviewDocument, type ReviewSession, type ReviewThread } from "./markdown-review";
 import type { ChatContext } from "./document-chat";
+import { getFileType } from "./storage/file-types";
 
 export const REVIEW_PLAN_PROMPT = `You are Libera's Markdown review assistant. The application stage is PLAN.
 Produce or revise a plan for the selected review comments. Do not return edits or replacement Markdown.
@@ -68,7 +69,11 @@ export async function generateReview(doc: ReviewDocument, prompt: string, ids: s
     return { ...previous!, confirmedVersion: previous!.plan.version, phase: previous!.suggestions.some((s) => s.status === "pending") ? "reviewing_changes" : "completed", messages: [...previous!.messages, { role: "user" as const, text: prompt || "Confirm plan and generate changes." }, { role: "assistant" as const, text: "The plan needs no edits, so there are no changes to propose." }].slice(-100) };
   }
   const options = getAiFunctionOptions("review");
-  const context = { target: { name: doc.key, markdown: doc.snapshot, blocks: reviewBlocks(doc.snapshot) }, comments: commentsForModel(selected), references, previousPlan: previous?.plan, history: previous?.messages, decisions: previous?.suggestions, reviseOnly: targetSuggestion, userRequest: prompt };
+  // Plain text and code are reviewed by blank-line paragraphs, not Markdown blocks.
+  // Draft and standalone keys have no extension: those documents are Markdown.
+  const plain = getFileType(doc.key) === "text";
+  const blocks = reviewBlocks(doc.snapshot, { plain });
+  const context = { target: { name: doc.key, ...(plain ? { format: "plain text or source code; blocks are its blank-line separated paragraphs" } : {}), markdown: doc.snapshot, blocks }, comments: commentsForModel(selected), references, previousPlan: previous?.plan, history: previous?.messages, decisions: previous?.suggestions, reviseOnly: targetSuggestion, userRequest: prompt };
   const messages: { role: "system" | "user"; content: string }[] = [{ role: "system", content: withAiCustomInstruction(stage === "plan" ? REVIEW_PLAN_PROMPT : REVIEW_CHANGES_PROMPT, "review") }, { role: "user", content: JSON.stringify(context) }];
   const outputBudget = await preflight(messages, options.model, signal);
   let diagnostic = "";
@@ -79,10 +84,10 @@ export async function generateReview(doc: ReviewDocument, prompt: string, ids: s
     try {
       const value = parseReviewJson(result.content);
       if (stage === "plan") {
-        const plan = validatePlan(value, (previous?.plan.version ?? 0) + 1, ids, reviewBlocks(doc.snapshot));
+        const plan = validatePlan(value, (previous?.plan.version ?? 0) + 1, ids, blocks);
         return { id: previous?.id ?? randomUUID(), phase: "awaiting_confirmation", snapshot: doc.snapshot, commentsKey: commentsKey(doc.threads, ids), references, selectedIds: ids, plan, suggestions: previous?.suggestions.map((s) => s.status === "pending" || s.status === "conflicted" ? { ...s, status: "superseded" as const } : s) ?? [], messages: [...(previous?.messages ?? []), { role: "user" as const, text: prompt || "Plan how to address the selected comments." }, { role: "assistant" as const, text: plan.summary + "\n\n" + plan.revisionSummary }].slice(-100) };
       }
-      const proposals = validateSuggestions(value, doc.snapshot, stage === "revise" ? targetSuggestion!.commentIds : planned, randomUUID);
+      const proposals = validateSuggestions(value, doc.snapshot, stage === "revise" ? targetSuggestion!.commentIds : planned, randomUUID, blocks);
       if (stage === "revise" && targetSuggestion!.commentIds.some((id) => !proposals.some((p) => p.commentIds.includes(id)))) throw new Error("The revision must preserve comment coverage.");
       const suggestions = stage === "revise" ? [...previous!.suggestions.map((s) => s.id === suggestionId ? { ...s, status: "superseded" as const } : s), ...proposals.map((p) => ({ ...p, version: targetSuggestion!.version + 1 }))] : [...(previous?.suggestions ?? []), ...proposals];
       // The combined pending set must remain independently applicable.
