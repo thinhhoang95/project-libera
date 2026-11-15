@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorAt, applyReviewEdits, commentRange, commentsKey, decideSuggestions, dueReviewReplies, mapAnchor, newReview, paragraphRange, plainParagraphRange, reviewBlocks, reviewIntent, startReviewRound, syncReview, undoReview, validatePlan, validateSuggestions, type ReviewDocument } from "../../src/lib/markdown-review";
+import { anchorAt, applyReviewEdits, commentRange, commentsKey, decideSuggestions, dueReviewReplies, mapAnchor, newReview, paragraphRange, plainParagraphRange, reviewBlocks, reviewIntent, reviewQuestion, startReviewRound, syncReview, undoReview, validatePlan, validateSuggestions, type ReviewDocument } from "../../src/lib/markdown-review";
 
 const source = "# Title\r\n\r\nFirst **paragraph**.\r\n\r\nSecond paragraph.\r\n\r\nThird paragraph.";
 function fixture(): ReviewDocument {
@@ -248,4 +248,18 @@ test("plain text and code review in blank-line paragraphs, so Markdown-looking l
   // An edit spanning the comment and the code it describes fits its one plain block.
   const [proposal] = validateSuggestions({ proposals: [{ title: "Rename", reason: "Clarity", commentIds: ["c1"], edits: [{ targetBlockId: "b1", before: "comment\r\ndef f", after: "comment\r\ndef g" }] }] }, code, ["c1"], () => "s1", blocks);
   assert.equal(applyReviewEdits(code, proposal.edits), code.replace("def f", "def g"));
+});
+
+test("blocking questions are multiple choice; the panel owns Other", () => {
+  const ids = ["c1", "c2", "c3"];
+  const plan = validatePlan({ summary: "Ask first", steps: [], dispositions: ids.map((commentId) => ({ commentId, reason: "Pending" })), blockingQuestions: [
+    { question: "Which figure is right?", options: [" 35k ", "25k", "35K", "Other (please specify)", "Neither", "Both", "Something else"] },
+    "Keep the British spelling?",
+  ], revisionSummary: "" }, 1, ids, reviewBlocks(source));
+  assert.deepEqual(plan.blockingQuestions, [
+    { question: "Which figure is right?", options: ["35k", "25k", "Neither", "Both"] },
+    { question: "Keep the British spelling?", options: [] },
+  ]);
+  assert.deepEqual(validatePlan({ summary: "", steps: [], dispositions: ids.map((commentId) => ({ commentId, reason: "" })), revisionSummary: "" }, 1, ids, reviewBlocks(source)).blockingQuestions, []);
+  assert.throws(() => reviewQuestion({ options: ["A"] }));
 });

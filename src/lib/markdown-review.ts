@@ -13,7 +13,13 @@ export type ReviewAnchor = ReviewRange & { quote: string; prefix: string; suffix
  */
 export type ReviewMessage = { id: string; text: string; createdAt: string; author?: "agent"; by?: string };
 export type ReviewThread = { id: string; anchor: ReviewAnchor; messages: ReviewMessage[]; status: "open" | "addressed" | "resolved" };
-export type ReviewPlan = { version: number; summary: string; steps: { commentIds: string[]; targetBlockIds: string[]; proposedChange: string; rationale: string }[]; dispositions: { commentId: string; reason: string; reply?: string }[]; blockingQuestions: string[]; revisionSummary: string };
+export type ReviewPlan = { version: number; summary: string; steps: { commentIds: string[]; targetBlockIds: string[]; proposedChange: string; rationale: string }[]; dispositions: { commentId: string; reason: string; reply?: string }[]; blockingQuestions: ReviewQuestion[]; revisionSummary: string };
+/**
+ * A question the plan cannot go on without, with the answers the model
+ * offers. The panel always adds "Other" for an answer of the user's own, so
+ * `options` never holds it.
+ */
+export type ReviewQuestion = { question: string; options: string[] };
 export type ReviewEdit = ReviewRange & { before: string; after: string };
 export type ReviewSuggestion = { id: string; version: number; title: string; reason: string; commentIds: string[]; edits: ReviewEdit[]; status: "pending" | "accepted" | "rejected" | "superseded" | "conflicted" };
 export type ReviewSession = { id: string; phase: "awaiting_confirmation" | "reviewing_changes" | "completed" | "stale"; snapshot: string; commentsKey: string; references: ChatContext[]; selectedIds: string[]; plan: ReviewPlan; suggestions: ReviewSuggestion[]; messages: { role: "user" | "assistant"; text: string }[]; confirmedVersion?: number; replies?: ReviewReply[] };
@@ -563,7 +569,24 @@ export function validatePlan(value: unknown, version: number, ids: string[], blo
     return { commentId: validIds([d.commentId], ids)[0], reason: reviewString(d.reason, "disposition"), ...(reply ? { reply } : {}) };
   });
   if (ids.some((id) => !steps.some((s) => s.commentIds.includes(id)) && !dispositions.some((d) => d.commentId === id))) throw new Error("The plan must address every selected comment.");
-  return { version, summary: reviewString(p.summary, "summary"), steps, dispositions, blockingQuestions: strings(p.blockingQuestions), revisionSummary: reviewString(p.revisionSummary, "revision summary") };
+  const blockingQuestions = list(p.blockingQuestions ?? [], 20).map((raw) => reviewQuestion(raw));
+  return { version, summary: reviewString(p.summary, "summary"), steps, dispositions, blockingQuestions, revisionSummary: reviewString(p.revisionSummary, "revision summary") };
+}
+/** "Other", "Other (please specify)", "Something else": the panel adds its own. */
+const OTHER_OPTION = /^\s*(other|something else|none of (the|these) above)\b/i;
+/**
+ * A blocking question as the model returned it, or as a plan saved before
+ * questions had choices kept it (a bare string). Choices are trimmed, deduped,
+ * capped at four, and never "Other".
+ */
+export function reviewQuestion(raw: unknown): ReviewQuestion {
+  if (typeof raw === "string") return { question: reviewString(raw, "question", 4_000), options: [] };
+  const q = object(raw);
+  const seen = new Set<string>();
+  const options = list(q.options ?? [], 20).map((o) => reviewString(o, "answer choice", 1_000).trim())
+    .filter((o) => o && !OTHER_OPTION.test(o) && !seen.has(o.toLowerCase()) && seen.add(o.toLowerCase()))
+    .slice(0, 4);
+  return { question: reviewString(q.question, "question", 4_000), options };
 }
 export function validateSuggestions(value: unknown, text: string, ids: string[], makeId: () => string, blocks: ReviewBlock[] = reviewBlocks(text)): ReviewSuggestion[] {
   const root = object(value);

@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save, Search, CloudUpload, Clock, AlertTriangle, Circle, CircleCheck } from "lucide-react";
-import type { AgentSuggestion, ReviewSuggestion } from "@/lib/markdown-review";
+import { useId, useMemo, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save, Search, CloudUpload, Clock, AlertTriangle, Circle, CircleCheck, CircleHelp } from "lucide-react";
+import type { AgentSuggestion, ReviewQuestion, ReviewSuggestion } from "@/lib/markdown-review";
 import { isSharedThread, type PendingInfo, type SharedReviewMessage, type SharedReviewThread } from "@/lib/collab/review-store/types";
 import { commentAuthorLabel, initials } from "@/lib/collab/review-store/authors";
 import { localCommentsSummary, migrateLocalComments } from "@/lib/collab/review-store/api";
@@ -12,7 +12,7 @@ import { describeError } from "@/lib/collab/ui/client";
 import { timeAgo } from "@/lib/collab/ui/wording";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MentionTextarea } from "./collab/mentions/mention-textarea";
-import { reviewIntent } from "@/lib/markdown-review";
+import { reviewIntent, reviewQuestion } from "@/lib/markdown-review";
 import { useMarkdownReview, type SharedReviewState } from "./markdown-review-context";
 import { apiRequest } from "./api-client";
 import { ChatFileComposer } from "./chat-file-composer";
@@ -218,7 +218,7 @@ export function ReviewSuggestionCard({ suggestion, number }: { suggestion: Revie
   const pending = suggestion.status === "pending", conflicted = suggestion.status === "conflicted";
   return <article className="review-suggestion" aria-label={`Change ${number}: ${suggestion.title}`}>
     <div className="flex items-start gap-2"><button className="min-w-0 flex-1 text-left font-semibold" onClick={() => r.focus(suggestion.edits[0])}>Change {number}: {suggestion.title}</button><span className="text-xs capitalize">{suggestion.status}</span></div>
-    <p className="mt-1 text-xs text-muted-foreground">{suggestion.reason}</p>
+    <div className="mt-1 text-muted-foreground"><ReviewMarkdown text={suggestion.reason} small /></div>
     {r.shared && <p className="mt-1 text-xs text-muted-foreground">Shared as a suggestion: collaborators see it, and an editor accepts or rejects it.</p>}
     {suggestion.edits.length > 1 && <p className="mt-1 text-xs font-semibold">Linked changes · accepted together</p>}
     {suggestion.edits.map((edit, index) => <div key={index} className="review-diff"><div aria-label="Original text"><span className="review-diff-label">Original</span><pre>{edit.before}</pre></div><div aria-label="Proposed text"><span className="review-diff-label">Proposed</span><pre>{edit.after || "(delete passage)"}</pre></div></div>)}
@@ -361,14 +361,21 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
           <summary className="cursor-pointer">Round {round.number} · {round.session.plan.summary}</summary>
           <p className="mt-2 text-muted-foreground">Archived. These proposals cannot be applied in the current round.</p>
           <ol className="my-2 list-decimal space-y-1 pl-4">{round.session.plan.steps.map((step, i) => <li key={i}>{step.proposedChange}</li>)}</ol>
-          {round.session.messages.map((m, i) => <p key={i} className="my-2 whitespace-pre-wrap"><strong>{m.role === "user" ? "You" : "Assistant"}: </strong>{m.text}</p>)}
+          {round.session.messages.map((m, i) => <div key={i} className="my-2"><strong>{m.role === "user" ? "You" : "Assistant"}</strong><ReviewMarkdown text={m.text} small /></div>)}
           {round.session.suggestions.filter((s) => s.status !== "superseded").map((s) => <div key={s.id} className="mt-2"><strong>{s.title}</strong><span className="ml-1 text-muted-foreground">· {s.status === "pending" || s.status === "conflicted" ? "not applied" : s.status}</span>{s.edits.map((edit, i) => <div key={i} className="review-diff"><div><span className="review-diff-label">Original</span><pre>{edit.before}</pre></div><div><span className="review-diff-label">Proposed</span><pre>{edit.after || "(delete passage)"}</pre></div></div>)}</div>)}
         </details>)}
       </details>}
       {session && <>
-        <details><summary className="cursor-pointer text-sm">Review conversation</summary>{session.messages.map((m, i) => <div key={i} className="my-2 whitespace-pre-wrap text-sm"><strong>{m.role === "user" ? "You" : "Assistant"}</strong><p>{m.text}</p></div>)}</details>
-        <section className="rounded-lg border border-border p-3 text-sm"><strong>Plan {session.plan.version}</strong><p className="mt-2 whitespace-pre-wrap">{session.plan.summary}</p><ol className="my-2 list-decimal space-y-2 pl-5">{session.plan.steps.map((step, i) => <li key={i}><p>{step.proposedChange}</p><p className="text-xs text-muted-foreground">{step.rationale}</p></li>)}</ol>{!!session.plan.dispositions.length && <><p className="mt-2 text-xs font-medium">No edit needed</p><ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{session.plan.dispositions.map((d) => <li key={d.commentId}>{d.reason}{d.reply && <p className="mt-1 whitespace-pre-wrap text-muted-foreground"><span className="font-medium">{session.replies?.some((reply) => reply.commentId === d.commentId) ? "Replied" : "Reply"}:</span> {d.reply}</p>}</li>)}</ul></>}{session.plan.blockingQuestions.map((q, i) => <p key={i} className="mt-2 font-medium">Question: {q}</p>)}{session.plan.revisionSummary && <p className="mt-2 text-xs">{session.plan.revisionSummary}</p>}</section>
-        {session.messages.at(-1)?.role === "assistant" && session.confirmedVersion && <p className="whitespace-pre-wrap text-sm">{session.messages.at(-1)!.text}</p>}
+        <details><summary className="cursor-pointer text-sm">Review conversation</summary>{session.messages.map((m, i) => <div key={i} className="my-2 text-sm"><strong>{m.role === "user" ? "You" : "Assistant"}</strong><ReviewMarkdown text={m.text} /></div>)}</details>
+        <section className="rounded-lg border border-border p-3 text-sm">
+          <strong>Plan {session.plan.version}</strong>
+          <div className="mt-2"><ReviewMarkdown text={session.plan.summary} /></div>
+          <ol className="my-2 list-decimal space-y-2 pl-5">{session.plan.steps.map((step, i) => <li key={i}><ReviewMarkdown text={step.proposedChange} /><div className="mt-0.5 text-muted-foreground"><ReviewMarkdown text={step.rationale} small /></div></li>)}</ol>
+          {!!session.plan.dispositions.length && <><p className="mt-2 text-xs font-medium">No edit needed</p><ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{session.plan.dispositions.map((d) => <li key={d.commentId}><ReviewMarkdown text={d.reason} small />{d.reply && <div className="mt-1 text-muted-foreground"><span className="font-medium">{session.replies?.some((reply) => reply.commentId === d.commentId) ? "Replied" : "Reply"}:</span><ReviewMarkdown text={d.reply} small /></div>}</li>)}</ul></>}
+          {session.plan.revisionSummary && <div className="mt-2"><ReviewMarkdown text={session.plan.revisionSummary} small /></div>}
+        </section>
+        {!!session.plan.blockingQuestions.length && <ReviewQuestions key={`${session.id}-${session.plan.version}`} questions={session.plan.blockingQuestions.map(reviewQuestion)} disabled={!!r.busy || attachmentBusy || r.recovery} onAnswer={(text) => r.generate("plan", text, selectedIds, references)} />}
+        {session.messages.at(-1)?.role === "assistant" && session.confirmedVersion && <ReviewMarkdown text={session.messages.at(-1)!.text} />}
         {session.phase === "stale" && <p role="status" className="text-sm text-destructive">The document or comments changed. Send a request to refresh the plan.</p>}
         {session.phase === "awaiting_confirmation" && contextChanged && <p className="text-sm">Comments or references changed. Send a request to refresh the plan.</p>}
         {session.phase === "awaiting_confirmation" && plannedReplies > 0 && <p className="text-xs text-muted-foreground">Confirming posts {plannedReplies === 1 ? "the reply" : `${plannedReplies} replies`} above in {plannedReplies === 1 ? "its comment thread" : "their comment threads"}{r.shared ? ", as AI acting for you" : ""}.</p>}
@@ -412,6 +419,55 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
       <p className="libera-chat-key-hint">Enter to send · Shift + Enter for a new line</p>
     </form>
   </aside>;
+}
+
+/**
+ * The review model's own text (plan, reasons, conversation) as Markdown, like
+ * AI chat. A shared document's review drew on collaborators' words, so it
+ * gets the shared trust policy.
+ */
+function ReviewMarkdown({ text, small = false }: { text: string; small?: boolean }) {
+  const shared = !!useMarkdownReview()?.shared;
+  return <MarkdownRenderer content={text} baseFontSize={small ? 12 : 13.5} baseLineHeight={1.5} renderImages={false} contentTrust={shared ? "shared" : "local"} className="libera-chat-markdown review-comment-body min-w-0 wrap-anywhere" />;
+}
+
+/** The plan's blocking questions, answered by choice or in the user's own words, then sent as one follow-up. */
+function ReviewQuestions({ questions, disabled, onAnswer }: { questions: ReviewQuestion[]; disabled: boolean; onAnswer: (text: string) => Promise<boolean> }) {
+  const groupId = useId();
+  // A question without choices (from a plan saved before they existed) opens on "Other".
+  const [choices, setChoices] = useState<(number | "other" | null)[]>(() => questions.map((q) => q.options.length ? null : "other"));
+  const [other, setOther] = useState<string[]>(() => questions.map(() => ""));
+  const answers = questions.map((q, i) => { const c = choices[i]; return c === "other" ? other[i].trim() : c === null ? "" : q.options[c] ?? ""; });
+  const ready = answers.every(Boolean);
+  const choose = (i: number, choice: number | "other") => setChoices((current) => current.map((c, j) => j === i ? choice : c));
+  async function submit() {
+    if (!ready || disabled) return;
+    const text = "Answers to the plan's questions:\n\n" + questions.map((q, i) => `${i + 1}. ${q.question}\n\n   **Answer:** ${answers[i]}`).join("\n\n");
+    await onAnswer(text);
+  }
+  return <section className="review-questions" aria-label={questions.length === 1 ? "A question about the plan" : "Questions about the plan"}>
+    <p className="review-questions-heading"><CircleHelp aria-hidden size={15} />{questions.length === 1 ? "One question before this plan can go ahead" : `${questions.length} questions before this plan can go ahead`}</p>
+    {questions.map((q, i) => <div key={i} className="review-question">
+      <div id={`${groupId}-${i}`} className="review-question-text">{questions.length > 1 && <span className="review-question-number" aria-hidden>{i + 1}</span>}<ReviewMarkdown text={q.question} /></div>
+      <div role="radiogroup" aria-labelledby={`${groupId}-${i}`} className="review-question-options">
+        {q.options.map((option, j) => <label key={j} className="review-question-option" data-selected={choices[i] === j || undefined}>
+          <input type="radio" name={`${groupId}-${i}`} checked={choices[i] === j} disabled={disabled} onChange={() => choose(i, j)} />
+          <ReviewMarkdown text={option} />
+        </label>)}
+        <label className="review-question-option" data-selected={choices[i] === "other" || undefined}>
+          <input type="radio" name={`${groupId}-${i}`} checked={choices[i] === "other"} disabled={disabled} onChange={() => choose(i, "other")} />
+          <span>Other</span>
+        </label>
+        {choices[i] === "other" && <textarea aria-label={`Your answer to question ${i + 1}`} className="review-textarea review-question-other" rows={2} placeholder="Write your answer" value={other[i]} disabled={disabled} autoFocus={q.options.length > 0}
+          onChange={(e) => { const value = e.target.value; setOther((current) => current.map((v, j) => j === i ? value : v)); }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); } }} />}
+      </div>
+    </div>)}
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs text-muted-foreground">{ready ? "The plan is revised with your answers." : questions.length === 1 ? "Pick an answer." : `${answers.filter(Boolean).length} of ${questions.length} answered`}</span>
+      <button type="button" className={button} disabled={!ready || disabled} onClick={() => void submit()}><Send aria-hidden size={14} /> {questions.length === 1 ? "Send answer" : "Send answers"}</button>
+    </div>
+  </section>;
 }
 
 // ---- Shared documents (plan M2.1–M2.3, M2.6): authors, pending chips,
