@@ -1826,7 +1826,7 @@ function TreeNodeRow({
     return (
       <div>
         <SidebarNameTooltipButton
-          className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
+          className={`libera-tree-row flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
             isDragTarget || isUploadTarget ? "bg-accent/10 ring-1 ring-accent" : ""
           }`}
           fullName={node.name}
@@ -1945,7 +1945,7 @@ function TreeNodeRow({
 
   return (
     <SidebarNameTooltipButton
-      className={`block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
+      className={`libera-tree-row block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
         activeTabId === node.path ? "bg-muted" : ""
       }`}
       data-backlink={isBacklink || undefined}
