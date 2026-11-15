@@ -1,7 +1,7 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { latexParser as parser } from "../codemirror/latex-parser";
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
-import { definitionExtentAt, macroAt, readLatexInputs, type LatexDefinitions, type LatexMacro } from "./definitions";
+import { definitionExtentAt, equationAlias, isPartLabelMacro, macroAt, readLatexInputs, type LatexDefinitions, type LatexMacro } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse, FOOTNOTE_SYMBOLS } from "./expand";
 import { readCtable } from "../codemirror/visual/table-model";
 import { algorithmLineLabels, readAlgorithm2eBody, readAlgorithmicBody, type AlgorithmSpec } from "../codemirror/visual/algorithm";
@@ -430,9 +430,40 @@ function plainFormatText(text: string) {
   return text.replace(/\$\s*(?:\^\s*(?:\\prime|\{\s*\\prime\s*\})|')\s*\$/g, "′").replace(/\\ensuremath\s*\{\s*\^\s*\\prime\s*\}/g, "′");
 }
 
+/** A heading wrapped in a colour (math-ph 2611.15304's `\textcolor{blue!55!black}{\section{Introduction}}`): the grammar reads the
+ * heading in the argument as an error, so it is read here from the text. The parts are absolute positions; null when the argument is not just a heading. */
+export function coloredHeading(node: SyntaxNode, read: Read) {
+  if (node.name !== "TextColorCommand") return null;
+  const argument = node.getChild("TextArgument");
+  if (!argument || argument.to !== node.to) return null;
+  const text = read(argument.from, argument.to);
+  const head = /^\{\s*\\(chapter|section|subsection|subsubsection|paragraph|subparagraph|part)(\*?)\s*(?:\[[^\]]*\]\s*)?\{/.exec(text);
+  if (!head) return null;
+  const open = head[0].length - 1;
+  const title = readGroup(text, open, TEX_GROUPS);
+  if (!title || !/^\s*\}$/.test(text.slice(title.end))) return null;
+  const names = ["part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph"];
+  const index = names.indexOf(head[1]);
+  return {
+    command: head[1], name: ["Part", "Chapter", "Section", "SubSection", "SubSubSection", "Paragraph", "SubParagraph"][index], starred: head[2] === "*", level: index - 1,
+    ctrlFrom: argument.from + 1 + (/^\{\s*/.exec(text)![0].length - 1), titleFrom: argument.from + open + 1, titleTo: argument.from + title.end - 1,
+  };
+}
+
+/**
+ * The `\textcolor{c}{` before a heading the grammar read whole (after a blank line it is a real heading, the colour's braces around it
+ * stray): where the wrapper starts and ends, and its colour. Null when the heading is not alone in a colour's braces.
+ */
+export function colorWrapper(read: Read, from: number, titleEnd: number) {
+  const base = Math.max(0, from - 120);
+  const before = /\\textcolor\s*\{([^{}]*)\}\s*\{\s*$/.exec(read(base, from));
+  const close = before ? /^\s*\}/.exec(read(titleEnd, titleEnd + 40)) : null;
+  return before && close ? { start: base + before.index, color: before[1], end: titleEnd + close[0].length } : null;
+}
+
 /** The node types the numbering visitor acts on (besides the sectioning ones, `SECTION_LEVELS`). */
 const NUMBERED_NODES = new Set([
-  "FigureEnvironment", "TableEnvironment", "Environment", "VerbatimEnvironment", "Comment", "TikzPictureEnvironment", "Let", "UnknownCommand", "Input", "Include",
+  "TextColorCommand", "FigureEnvironment", "TableEnvironment", "Environment", "VerbatimEnvironment", "Comment", "TikzPictureEnvironment", "Let", "UnknownCommand", "Input", "Include",
   "Subfile", "Maketitle", "FootnoteCommand", "EndnoteCommand", "EquationEnvironment", "EquationArrayEnvironment", "DollarMath", "BracketMath", "ParenMath",
   "TabularEnvironment", "Caption", "ListEnvironment", "Item", "Label",
 ]);
@@ -910,23 +941,27 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         if (alias) aliasCounter(alias[1], alias[2]);
       }
       if (name === "Input" || name === "Include" || name === "Subfile") { numberIncluded(node); return false; }
-      if (name in SECTION_LEVELS) {
-        const command = node.getChild("SectioningCommand");
+      // A heading wrapped in `\textcolor` is numbered as the heading it is, at the wrapper's start.
+      const wrapped = name === "TextColorCommand" ? coloredHeading(node, read) : null;
+      if (name === "TextColorCommand" && !wrapped) return undefined;
+      if (name in SECTION_LEVELS || wrapped) {
+        const command = wrapped ? node : node.getChild("SectioningCommand");
         if (!command) return;
-        const level = SECTION_LEVELS[name];
+        const level = wrapped ? wrapped.level : SECTION_LEVELS[name];
         const ctrl = command.firstChild;
-        const starred = !!ctrl && (read(ctrl.from, ctrl.to).endsWith("*") || read(ctrl.to, ctrl.to + 1) === "*");
+        const starred = wrapped ? wrapped.starred : !!ctrl && (read(ctrl.from, ctrl.to).endsWith("*") || read(ctrl.to, ctrl.to + 1) === "*");
         const counter = level === -1 ? "part" : level === -2 ? null : SECTION_COUNTERS[level];
-        const titleNode = command.getChild("SectioningArgument");
-        const title = titleNode ? stripTitle(read(titleNode.from + 1, titleNode.to - 1)) : "";
+        const titleNode = wrapped ? null : command.getChild("SectioningArgument");
+        const title = wrapped ? stripTitle(read(wrapped.titleFrom, wrapped.titleTo)) : titleNode ? stripTitle(read(titleNode.from + 1, titleNode.to - 1)) : "";
         let number: string | null = null;
         if (counter && !starred && level <= secnumdepth() && (mainmatter || (level !== 0 && !memoir))) {
           step(counter);
           number = format(counter);
         }
-        entries.push({ pos: command.from, kind: "section", number, level });
-        if (number) setTarget({ number, kind: "section", pos: command.from, title, ...headingNames(counter!) });
-        return;
+        const at = wrapped ? command.from : titleNode ? colorWrapper(read, command.from, titleNode.to)?.start ?? command.from : command.from;
+        entries.push({ pos: at, kind: "section", number, level });
+        if (number) setTarget({ number, kind: "section", pos: at, title, ...headingNames(counter!) });
+        return wrapped ? false : undefined;
       }
       // KOMA-Script's `\captionabove{…}` and `\captionbelow{…}` are a float's `\caption`, only set differently (the
       // KOMA minimum-wage paper's figures and tables).
@@ -935,6 +970,13 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const ctrl = node.firstChild;
         if (!ctrl || ctrl.name !== "CtrlSeq") return;
         const command = read(ctrl.from, ctrl.to);
+        // `\partlabel{key}` (math.ST 2611.11874): a `\label` for the item it is in.
+        if (isPartLabelMacro(macroAt(defs, command.slice(1), node.from))) {
+          const key = (argumentText(node) ?? "").trim();
+          const target = currentTarget();
+          if (key && target) setLabel(key, target);
+          return false;
+        }
         if (structureNames.size && numberMacroUse(node, command)) return false;
         // linguex's examples: `\ex.` steps ExNo ("1"), its parts `\a.` and `\b.` are lettered ("1a"); a label refers to them.
         if (/^\\(?:ex|exg|exi|a|b)$/.test(command) && read(ctrl.to, ctrl.to + 1) === "." && defs.packages.includes("linguex") && !macroAt(defs, command.slice(1), node.from)) {
@@ -1085,6 +1127,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         // Inner environments (aligned, cases, matrices) are part of an outer formula.
         for (let parent = node.parent; parent; parent = parent.parent) if (MATH_CONTAINERS.has(parent.name)) return false;
         let env = environmentName(node, read) ?? "";
+        // An alias of `equation` (mhequ's or the document's `equ`) numbers as one.
+        if (equationAlias(defs, env)) env = "equation";
         // empheq numbers as the environment it names (`\begin{empheq}[left=…]{align}`).
         if (env === "empheq") {
           const begin = node.getChild("BeginEnv");

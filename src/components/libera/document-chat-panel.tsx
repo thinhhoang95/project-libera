@@ -841,11 +841,11 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     });
   };
 
-  // @Comments: the document in view and the other open Markdown, LaTeX and PDF files.
+  // @Comments: the document in view and the other open text and PDF files.
   const commentTargets = useMemo<ChatCommentTarget[]>(() => {
     const targets: ChatCommentTarget[] = document && (viewedPdfPath || reviewDoc) ? [{ path: document.path, name: document.name, current: true }] : [];
     for (const tab of tabs) {
-      if (tab.untitled || tab.gallery || tab.recording || (tab.file.fileType !== "markdown" && tab.file.fileType !== "latex" && tab.file.fileType !== "pdf")) continue;
+      if (tab.untitled || tab.gallery || tab.recording || (!isTextFileType(tab.file.fileType) && tab.file.fileType !== "pdf")) continue;
       if (!targets.some((target) => target.path === tab.file.path)) targets.push({ path: tab.file.path, name: tab.file.name, current: false });
     }
     return targets;

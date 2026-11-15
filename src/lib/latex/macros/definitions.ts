@@ -140,8 +140,12 @@ export type LatexDefinitions = {
   columnTypes: Map<string, LatexColumnType>;
   /** xcolor's `\definecolor{name}{model}{value}`, and `\colorlet{name}{color}` (model "", value the colour it names). */
   colors: Map<string, { model: string; value: string }>;
+  /** siunitx's `\DeclareSIUnit` units (name to the symbol as written) and `\sisetup` options of the document. */
+  siunitx?: { units: Map<string, string>; options: Map<string, string> };
   /** enumitem's `\newlist{exercises}{enumerate}{6}`: lists of the document's own, by name, with the kind they are. */
   lists?: Map<string, "enumerate" | "itemize" | "description">;
+  /** The names in `lists` that are user environments opening an enumerate (not enumitem's `\newlist`). */
+  userLists?: Set<string>;
   /** enumitem's `\setlist[exercises,1]{label=…}`: the options of a list's level, by `name:level`. */
   listOptions?: Map<string, string>;
   /**
@@ -184,7 +188,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef|chardef|DeclareSymbolFontAlphabet)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -1340,6 +1344,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           if (uncertain) { note(defs.unsupported, name, `${name} is defined under a condition`); defs.environments.delete(name); }
           else if (supported) {
             defs.environments.set(name, { name, arity, optional, spec, begin: begin.content, end: endCode.content, pos });
+            registerUserList(defs, name, arity, !!optional || !!spec, begin.content, endCode.content);
             // `\newenvironment{myparagraph}[1]{…}{}` also defines `\myparagraph`: with nothing to end, `\myparagraph{Title}` is used as a command (cs.PL 2610.26599).
             if (!command.endsWith("DocumentEnvironment") && arity > 0 && !endCode.content.trim() && /^[A-Za-z]+$/.test(name) && !defs.macros.get(name)?.length) {
               addMacro(context, { name, arity, optional, body: begin.content, pos, file: context.file }, "new");
@@ -1532,6 +1537,28 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           ...(paragraph ? { paragraph } : {}), ...(math ? { math } : {}),
         });
       }
+    } else if (command === "DeclareSIUnit" || command === "sisetup") {
+      // siunitx: `\DeclareSIUnit\angstrom{\text{\AA}}` (a unit of the document's own) and `\sisetup{per-mode=symbol}`; read by the unit renderer.
+      const siunitx = (defs.siunitx ??= { units: new Map(), options: new Map() });
+      if (command === "sisetup") {
+        const group = readGroupAt(source, index);
+        if (group) {
+          end = group.end;
+          if (!uncertain) for (const [key, value] of keyValues(group.content.replace(/%[^\n]*/g, ""))) siunitx.options.set(key, value);
+        }
+      } else {
+        const optional = readOptionalAt(source, index);
+        let at = optional?.end ?? index;
+        while (/\s/.test(source[at] ?? "")) at++;
+        const named = source[at] === "{" ? readGroupAt(source, at) : null;
+        const bare = named ? null : /^\\([A-Za-z]+)/.exec(source.slice(at, at + 64));
+        const name = named ? /^\s*\\([A-Za-z]+)\s*$/.exec(named.content)?.[1] : bare?.[1];
+        const body = name ? readGroupAt(source, named ? named.end : at + bare![0].length) : null;
+        if (name && body) {
+          end = body.end;
+          if (!uncertain) siunitx.units.set(name, body.content.trim());
+        }
+      }
     } else if (command === "definecolor" || command === "colorlet") {
       // `\definecolor{myred}{RGB}{89,10,10}`, `\colorlet{accent}{red!60}`: names `\textcolor` and `\color` draw.
       const name = readGroupAt(source, index);
@@ -1646,6 +1673,31 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       const body = mathAlphabetBody(font[0], font[1], font[2], font[3]);
       if (uncertain || !body) shadow(name.name, uncertain ? `\\${name.name} is defined under a condition` : `\\${name.name} is a math alphabet the Visual mode does not have`);
       else added = addMacro(context, { name: name.name, arity: 1, body, mathOnly: true, pos, file: context.file }, "new");
+    } else if (command === "DeclareSymbolFontAlphabet") {
+      // `\DeclareSymbolFontAlphabet{\mathbbl}{bbold}` (mathbbol/bbold's blackboard bold, 2611.14011): the alphabet of a symbol
+      // font. The font's own letters are not in KaTeX; `bbold` is drawn with `\mathbb` (same idea, different glyphs),
+      // `operators` with `\mathrm`, `letters` with `\mathit`.
+      const name = readCommandName(source, index);
+      const group = name ? readGroupAt(source, name.end) : null;
+      if (!name || !group) continue;
+      end = group.end;
+      const font = group.content.trim();
+      // The standard pairs (`\DeclareSymbolFontAlphabet{\mathbb}{AMSb}`, amssymb's own) change nothing: KaTeX's alphabet is that one.
+      if ((name.name === "mathbb" && font === "AMSb") || (name.name === "mathrm" && font === "operators") || (name.name === "mathit" && font === "letters") || (name.name === "mathcal" && font === "symbols")) continue;
+      const body = font === "operators" ? "\\mathrm{#1}" : font === "letters" ? "\\mathit{#1}" : font === "AMSb" ? "\\mathbb{#1}" : mathAlphabetBody("", font, "m", "n");
+      // A body naming the alphabet it defines would call itself.
+      if (body?.includes(`\\${name.name}{`)) continue;
+      if (uncertain || !body) shadow(name.name, uncertain ? `\\${name.name} is defined under a condition` : `\\${name.name} is a math alphabet the Visual mode does not have`);
+      else added = addMacro(context, { name: name.name, arity: 1, body, mathOnly: true, pos, file: context.file }, "new");
+    } else if (command === "chardef") {
+      // `\chardef\showllabel=0` (a plain TeX switch): a number the document's `\ifnum\showllabel=1` can read. Only a decimal
+      // value is a constant; the macro stands for the number the way the register would print it.
+      const name = readCommandName(source, index);
+      const value = name ? /^\s*=\s*(\d{1,5})(?!\d)\s*/.exec(source.slice(name.end, name.end + 40)) : null;
+      if (!name || !value) continue;
+      end = name.end + value[0].length;
+      if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
+      else added = addMacro(context, { name: name.name, arity: 0, body: value[1], pos, file: context.file }, "renew");
     } else if (command === "DeclareMathSymbol" || command === "mathchardef") {
       // `\DeclareMathSymbol{\R}{\mathalpha}{AMSb}{"52}` and `\mathchardef\mhyphen="2D`: a symbol of a font, by position.
       const name = readCommandName(source, index);
@@ -1710,6 +1762,8 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [name, list] of defs.packageOptions) parts.push(`pkg:${name}:${list.join(",")}`);
   for (const [name, color] of defs.colors) parts.push(`color:${name}:${color.model}:${color.value}`);
   for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}:${type.paragraph ? "p" : ""}${type.math ? "m" : ""}`);
+  for (const [name, symbol] of defs.siunitx?.units ?? []) parts.push(`siunit:${name}:${symbol}`);
+  for (const [key, value] of defs.siunitx?.options ?? []) parts.push(`sisetup:${key}:${value}`);
   for (const [name, kind] of defs.lists ?? []) parts.push(`list:${name}:${kind}`);
   for (const [level, options] of defs.listOptions ?? []) parts.push(`listopt:${level}:${options}`);
   for (const [key, entry] of defs.acronyms ?? []) parts.push(`acr:${key}:${JSON.stringify(entry)}`);
@@ -1846,6 +1900,17 @@ export function bodyStartOf(source: string) {
 }
 
 /** The definition of `name` that applies at `pos` in the open file (a local one only inside its group). */
+/**
+ * Whether the environment `name` is `equation` under another name: `\newenvironment{equ}{\begin{equation}}{\end{equation}}`
+ * in the document (math.PR 2611.15228's `equ`), or mhequ's `equ` when the package is loaded and the document does not
+ * define its own. The parser reads such names as equations too (latex-parser.ts).
+ */
+export function equationAlias(defs: LatexDefinitions, name: string) {
+  const own = defs.environments.get(name);
+  if (own) return !own.arity && !own.spec && own.optional === undefined && /^\s*\\begin\s*\{equation\}\s*$/.test(own.begin) && /^\s*\\end\s*\{equation\}\s*$/.test(own.end);
+  return name === "equ" && defs.packages.includes("mhequ");
+}
+
 export function macroAt(defs: LatexDefinitions, name: string, pos: number): LatexMacro | null {
   const list = defs.macros.get(name);
   if (!list) return null;
@@ -1949,6 +2014,55 @@ export function mapLatexDefinitions(defs: LatexDefinitions, changes: PositionMap
     extents: defs.extents.map((extent) => ({ from: map(extent.from), to: map(extent.to), ...(extent.broken ? { broken: true } : {}) })),
     problems: defs.problems.map(note), unsupported: defs.unsupported.map(note),
   };
+}
+
+/**
+ * A user environment that only opens an `enumerate` with its own labels (math.ST 2611.11874's `parts`: `\renewcommand\theenumi{(\roman{enumi})}`
+ * and `\labelenumi{\theenumi}` around `\begin{enumerate}`, the outer item's number kept for `\ref` through `\p@enumi`): a list of the
+ * document's own, drawn as an enumerate whose items are labelled that way. Anything else in its code leaves it an ordinary environment.
+ */
+function registerUserList(defs: LatexDefinitions, name: string, arity: number, hasOptions: boolean, begin: string, end: string) {
+  const label = arity || hasOptions ? null : userListLabel(defs, begin, end);
+  if (label === null) {
+    if (defs.userLists?.delete(name)) defs.lists?.delete(name);
+    return;
+  }
+  (defs.lists ??= new Map()).set(name, "enumerate");
+  (defs.userLists ??= new Set()).add(name);
+  for (let level = 1; level <= 4; level++) (defs.listOptions ??= new Map()).set(`${name}:${level}`, label ? `label=${label}` : "");
+}
+
+/** The enumitem label template (`(\roman*)`) of an environment that is an enumerate with its labels set; "" for the stock labels; null when it is not one. */
+function userListLabel(defs: LatexDefinitions, begin: string, end: string) {
+  if (!/^\s*(?:\\endenumerate|\\end\s*\{enumerate\})\s*$/.test(end)) return null;
+  let code = begin;
+  // The outer item's label, kept for references to the parts (`\p@enumi`), and the check for being inside an item.
+  const outer = /\\protected@edef\s*\\([A-Za-z@]+)\s*\{\s*\\@currentlabel\s*\}/.exec(code);
+  if (outer) {
+    code = code.replace(outer[0], "");
+    code = code.replace(new RegExp(String.raw`\\renewcommand\s*\\p@enumi\s*\{\s*\\${outer[1].replace(/@/g, "@")}\s*\}`), "");
+  }
+  code = code.replace(/\\if@inlabel\s*\\leavevmode\s*\\par\s*\\fi/, "");
+  let label = "";
+  const format = /\\renewcommand\s*\\theenumi\s*\{((?:[^{}]|\{[^{}]*\})*)\}/.exec(code);
+  if (format) {
+    code = code.replace(format[0], "");
+    const template = format[1].replace(/\\(roman|Roman|arabic|alph|Alph)\s*\{\s*enumi\s*\}/g, "\\$1*");
+    if (/\\(?![A-Za-z]+\*)|[{}]/.test(template.replace(/\\(?:roman|Roman|arabic|alph|Alph)\*/g, ""))) return null;
+    const labelled = /\\renewcommand\s*\\labelenumi\s*\{\s*\\theenumi\s*\}/.exec(code);
+    if (!labelled) return null;
+    code = code.replace(labelled[0], "");
+    label = template;
+  }
+  // `\@ifundefined{enummax}{\enumerate}{\enumerate[(iii)]}`: a width for the labels when `enummax` is defined, else the plain list.
+  code = code.replace(/\\@ifundefined\s*\{([A-Za-z@]+)\}\s*\{\s*\\enumerate\s*\}\s*\{\s*\\enumerate\s*\[[^\]]*\]\s*\}/, (whole, macro: string) => (defs.macros.has(macro) ? whole : "\\enumerate"));
+  return /^\s*(?:\\enumerate|\\begin\s*\{enumerate\})\s*$/.test(code) ? label : null;
+}
+
+/** A macro that is `\label` for an item's parts (`\newcommand\partlabel[1]{\label{#1}{\protected@edef\@currentlabel{\theenumi}\label{#1*}}}`): the key is its argument. */
+export function isPartLabelMacro(macro: LatexMacro | null | undefined) {
+  return !!macro && !macro.unsupported && !macro.alias && macro.arity === 1 && macro.optional === undefined && !macro.spec
+    && /^\s*\\label\s*\{#1\}\s*\{\s*\\protected@edef\s*\\@currentlabel\s*\{\s*\\theenumi\s*\}\s*\\label\s*\{#1\*\}\s*\}\s*$/.test(macro.body);
 }
 
 /** How many macros and environments a summary counts (the latest definition of each name). */

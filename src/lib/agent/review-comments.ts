@@ -197,7 +197,7 @@ function describeLines(text: string, block: ReviewRange) {
  * sit between blocks, or between the items of a list or quote, but never
  * inside a paragraph, heading, table, code or math block.
  */
-export function placeComments(original: string, comments: DraftComment[], fileType: "markdown" | "latex"): CommentPlacement[] {
+export function placeComments(original: string, comments: DraftComment[], fileType: "markdown" | "latex" | "text"): CommentPlacement[] {
   const blocks = fileType === "markdown" ? markdownBlocks(original) : plainBlocks(original);
   const ordered = comments.map((comment, index) => ({ comment, index })).sort((left, right) => left.comment.offset - right.comment.offset || left.index - right.index);
   return ordered.map(({ comment }, index): CommentPlacement => {

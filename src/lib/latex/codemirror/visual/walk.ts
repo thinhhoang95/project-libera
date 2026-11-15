@@ -2,15 +2,15 @@ import type { EditorState, Text, Transaction } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
-import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, isInLatexComment, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
+import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, equationAlias, isInLatexComment, isPartLabelMacro, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
-import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
+import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroPassThrough, structureMacroNames } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
-import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
+import { MHCHEM_TEXT, readMhchem, readSiunitx, siunitxConfig, SIUNITX_TEXT } from "./siunitx";
 import { latexProjectField } from "../editing";
 import { disabledField, macroRegionsFor, macroSourcesField, visualConfig } from "./model";
 import { citationNoteText, citationNotes, prettyrefText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
@@ -22,7 +22,7 @@ import { gameTabular } from "./game";
 import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
   ChipWidget, ColumnsWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  BiographyHeaderWidget, ExampleMarkerWidget, ItemMarkerWidget, QedMarkWidget, LineBreakWidget, LiteralTextWidget, PrintedTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  BiographyHeaderWidget, ExampleMarkerWidget, GroupMarkWidget, ItemMarkerWidget, QedMarkWidget, LineBreakWidget, LiteralTextWidget, PrintedTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget, type TableExtras,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
@@ -170,7 +170,7 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   par: 0, noindent: 0, indent: 0, smallskip: 0, medskip: 0, bigskip: 0, vfill: 0, newpage: 0, clearpage: 0, cleardoublepage: 0, pagebreak: 0, nopagebreak: 0,
   newline: 0, linebreak: 0, onehalfspacing: 0, doublespacing: 0, singlespacing: 0, justifying: 0, raggedright: 0, raggedleft: 0, centering: 0,
   frontmatter: 0, mainmatter: 0, backmatter: 0, tableofcontents: 0, listoffigures: 0, listoftables: 0, listoftodos: 0, FloatBarrier: 0, restoregeometry: 0,
-  balance: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
+  balance: 0, hrule: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
   tightlist: 0, startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0, let: 0,
   // AASTeX's `\restartappendixnumbering` and `\startlongtable` print nothing.
   restartappendixnumbering: 0, startlongtable: 0,
@@ -192,6 +192,10 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   // IEEEtran's publication-id and running-head switches, `\nobalance`, `\suppressfloats[t]` and `\appendixpage` (an "Appendices" heading, not drawn): print nothing here.
   IEEEpubidadjcol: 0, IEEEpeerreviewmaketitle: 0, nobalance: 0, suppressfloats: 0, appendixpage: 0,
   begingroup: 0, endgroup: 0,
+  // eso-pic's page decoration (`\AddToShipoutPictureFG*{\AtPageLowerLeft{…}}`, stat.AP 2611.10325): drawn on the printed page, not in the text.
+  AddToShipoutPicture: 1, AddToShipoutPictureFG: 1, AddToShipoutPictureBG: 1,
+  // IEEEtran's BibTeX style control (`\bstctlcite{BSTcontrol}`, stat.ML 2611.13765): a citation that prints nothing.
+  bstctlcite: 1,
   // `\eject`, needspace's `\Needspace{16\baselineskip}`, revtex's `\onecolumngrid`/`\twocolumngrid`, `\addtocontents{toc}{…}` and
   // `\AtEndDocument{…}` (run at the end, not here): page-layout lines that print nothing where they stand.
   eject: 0, Needspace: 1, needspace: 1, onecolumngrid: 0, twocolumngrid: 0, addtocontents: 2, AtEndDocument: 1,
@@ -210,8 +214,13 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   itemsep: 0, parsep: 0, topsep: 0, partopsep: 0, labelsep: 0, labelwidth: 0, leftmargin: 0, rightmargin: 0, itemindent: 0, listparindent: 0, columnsep: 0, abovedisplayskip: 0, belowdisplayskip: 0,
   abovedisplayshortskip: 0, belowdisplayshortskip: 0, predisplaypenalty: 0, postdisplaypenalty: 0, interlinepenalty: 0, brokenpenalty: 0, displaywidowpenalty: 0, floatingpenalty: 0,
 };
+/** What may share a line with `\bibliography{…}` and print nothing: a group and size or spacing settings before it, the group's end after it. */
+const BIB_LINE_BEFORE = /^[ \t]*(?:\\begingroup|\{)?(?:[ \t]*\\(?:renewcommand\s*\{\s*\\baselinestretch\s*\}\s*\{[^{}]*\}|small|footnotesize|scriptsize|normalsize))*[ \t]*$/;
+const BIB_LINE_AFTER = /^[ \t]*(?:\\endgroup|\})?[ \t]*$/;
+const BIB_LINE = /^([^\n]*?)\\bibliography\s*\{[^{}]*\}([^\n]*)$/gm;
+
 /** Setup commands of LAYOUT_LINE_ARGS that print nothing wherever they stand, so they hide even among other things on a line. */
-const INLINE_SETUP = /^\\(?:pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|usepgfplotslibrary|tcbuselibrary|tcbset|pgfkeys|floatname)$/;
+const INLINE_SETUP = /^\\(?:setlength|addtolength|sloppy|fussy|hrule|pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|usepgfplotslibrary|tcbuselibrary|tcbset|pgfkeys|floatname|AddToShipoutPicture|AddToShipoutPictureFG|AddToShipoutPictureBG|bstctlcite)$/;
 /** The TeX assignments of LAYOUT_LINE_ARGS that take an `= value` (a glue, a dimension or an integer) rather than a group. */
 const TEX_ASSIGNMENT = /^(?:itemsep|parsep|topsep|partopsep|labelsep|labelwidth|leftmargin|rightmargin|itemindent|listparindent|columnsep|abovedisplayskip|belowdisplayskip|abovedisplayshortskip|belowdisplayshortskip|predisplaypenalty|postdisplaypenalty|interlinepenalty|brokenpenalty|displaywidowpenalty|floatingpenalty|predisplaysize|medmuskip|thinmuskip|thickmuskip|relpenalty|binoppenalty|hangindent|hangafter|parindent|parskip|baselineskip|lineskip|leftskip|rightskip|parfillskip|tolerance|emergencystretch|hbadness|vbadness|widowpenalty|clubpenalty|hyphenpenalty|exhyphenpenalty|tabcolsep|arraycolsep)$/;
 /** What follows such an assignment's name: an optional `=`, a number with a unit (or none: a penalty), then any `plus`/`minus` glue. */
@@ -396,7 +405,7 @@ const TEXT_BLOCKS: Record<string, string> = {
   // setspace's line spacing and pdflscape's rotated pages: layout, whose lines fold away (applied economics papers).
   singlespace: "cm-vis-sized", onehalfspace: "cm-vis-sized", doublespace: "cm-vis-sized", spacing: "cm-vis-sized", landscape: "cm-vis-sized",
   // Keywords under an abstract (JMLR, SIAM, IEEE).
-  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords", AMS: "cm-vis-keywords",
+  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords", AMS: "cm-vis-keywords", MSCcodes: "cm-vis-keywords",
   // amsmath's `subequations` (numbering 3a, 3b): its equations are drawn on their own, and its lines fold away.
   subequations: "cm-vis-sized",
   // revtex's `widetext` (text set across both columns): layout, whose lines fold away.
@@ -414,7 +423,7 @@ const HANDLED = new Set([
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
-const LAYOUT_NOISE = /\\(?:par|noindent|indent|medskip|smallskip|bigskip|hfill|vfill|null|ignorespaces|unskip|relax|nopagebreak|newline|centering|raggedright|raggedleft|normalfont|itshape|upshape|bfseries|mdseries|rmfamily|sffamily|ttfamily)(?![A-Za-z])|\\[vh]space\*?\s*\{[^}]*\}|\\(?:begin|end)\s*\{[^}]*\}(?:\[[^\]]*\])?|\\item(?:\[([^\]]*)\])?/g;
+const LAYOUT_NOISE = /\\(?:begingroup|endgroup|par|noindent|indent|medskip|smallskip|bigskip|hfill|vfill|null|ignorespaces|unskip|relax|nopagebreak|newline|centering|raggedright|raggedleft|normalfont|itshape|upshape|bfseries|mdseries|rmfamily|sffamily|ttfamily)(?![A-Za-z])|\\[vh]space\*?\s*\{[^}]*\}|\\color\s*\{\s*black\s*\}|\\(?:begin|end)\s*\{[^}]*\}(?:\[[^\]]*\])?|\\item(?:\[([^\]]*)\])?/g;
 
 /** What a reference list is headed: the book classes' "Bibliography", else "References". */
 function bibliographyHeading(defs: LatexDefinitions) {
@@ -631,7 +640,10 @@ const DRAWABLE_SYMBOLS = new Set(["\\", ",", " ", "%", "&", "#", "_", "{", "}", 
  * a header would show half-read. Then the `\begin` stays as source, and the body is drawn.
  */
 function drawableEnvironmentCode(code: string): string | null {
-  const text = environmentCode(code);
+  // A grouped margin and a small gap around the label (jmlr2e's `keywords`, stat.ML 2611.14586: `\bgroup\leftskip 20pt\rightskip 20pt
+  // \small\noindent{\bf Keywords:}` … `\par\egroup\vskip 0.25ex`): spacing only, which the header does not draw. Glue with a
+  // `plus`/`minus` is still left in the code and refused below.
+  const text = environmentCode(code.replace(/\\(?:bgroup|egroup)(?![A-Za-z@])|\\(?:leftskip|rightskip|parindent)\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp)(?![A-Za-z])|\\[vh]skip\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp)(?![A-Za-z])(?!\s*(?:plus|minus)\s)/g, ""));
   // Formulas are drawn by KaTeX; around them, text and the commands above.
   const outside = text.replace(/\$[^$]*\$/g, "");
   for (const match of outside.matchAll(/\\([A-Za-z@]+|[^A-Za-z@])/g)) {
@@ -1045,6 +1057,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return true;
   };
 
+  // `\begingroup\renewcommand{\baselinestretch}{0.94}\bibliography{references}\endgroup` on one line (eess.SY 2611.15162) is drawn as the
+  // list (BibliographyCommand below): what shares its line belongs to that one construct, not to constructs of its own inside it.
+  if (structural && from < to) {
+    const slice = read(state, from, Math.min(to, doc.length));
+    if (slice.includes("\\bibliography")) {
+      for (const match of slice.matchAll(BIB_LINE)) {
+        if (!(match[1].trim() || match[2].trim()) || !BIB_LINE_BEFORE.test(match[1]) || !BIB_LINE_AFTER.test(match[2])) continue;
+        const start = from + (match.index ?? 0);
+        const end = start + match[0].length;
+        consumed.push([start, start + match[1].length], [end - match[2].length, end]);
+      }
+    }
+  }
+
   tree.iterate({
     from,
     to,
@@ -1126,7 +1152,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return override.node === node ? result : undefined;
         }
       }
-      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
+      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "") && !equationAlias(defs, environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
 
       if (name in SECTION_CLASSES) {
         const command = node.getChild("SectioningCommand");
@@ -1134,6 +1160,27 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const argument = command.getChild("SectioningArgument");
         const inner = argument && argumentInner(argument);
         if (!argument || !inner || hasDirectError(command)) return;
+        // A heading alone in `\textcolor{…}{…}` (math-ph 2611.15304; after a blank line the grammar reads it whole, the wrapper stray): drawn
+        // with the wrapper, as coloredHeadingUse draws the other reading.
+        const wrapper = name !== "Paragraph" && name !== "SubParagraph" ? colorWrapper(readNode, command.from, argument.to) : null;
+        if (wrapper) {
+          const wrapLabel = trailingLabel(state, tree.topNode, wrapper.end);
+          const wrapEnd = wrapLabel ? wrapLabel.to : wrapper.end;
+          const color = cssColor(null, wrapper.color, defs.colors);
+          const className = SECTION_CLASSES[name];
+          if (wrapLabel) consumed.push([wrapLabel.from, wrapLabel.to]);
+          consumed.push([wrapper.start, wrapper.end]);
+          emit({
+            kind: "heading", from: wrapper.start, to: wrapEnd, reveal: "line", wholeLine: true,
+            replaces: structural ? [
+              { from: wrapper.start, to: inner.from, widget: new HeadingNumberWidget(className, read(state, wrapper.start, inner.from)) },
+              { from: inner.to, to: wrapEnd },
+            ] : [],
+            marks: color ? [{ from: inner.from, to: inner.to, class: "cm-vis-color", attributes: { style: `color: ${color}` } }] : undefined,
+            hiddenLines: [{ from: wrapper.start, to: inner.to, class: `cm-vis-heading ${className}` }],
+          });
+          return;
+        }
         const label = trailingLabel(state, node.getChild("Content"), argument.to);
         const end = label ? label.to : argument.to;
         // `\section*{}` (a class's abstract placeholder, 2611.13868): no title and no number, so nothing is drawn; its line folds away.
@@ -1181,9 +1228,15 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // A wrapper that only folds away (`samepage`, `multicols`) begun in an earlier piece: its `\end` is folded by the piece it is in.
         else if (structural && name === "Environment") {
           const wrapperName = environmentName(node, readNode) ?? "";
-          if (Object.hasOwn(WRAPPER_ENVIRONMENTS, wrapperName) && !defs.environments.has(wrapperName)) {
+          // (A `minipage` too: math.RT 2611.12492's, a heading and a list in one, split by a piece boundary, left its `\end{minipage}\par`.)
+          if ((Object.hasOwn(WRAPPER_ENVIRONMENTS, wrapperName) || wrapperName === "minipage") && !defs.environments.has(wrapperName)) {
             const formed = wellFormedEnvironment(node, state);
             if (formed && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "env-end");
+          }
+          // A `frontmatter` drawn as the title block whose `\end` is in a later piece than its `\begin` (cs.LG 2611.16789).
+          if (wrapperName === "frontmatter" && !defs.environments.has("frontmatter")) {
+            const formed = wellFormedEnvironment(node, state);
+            if (formed && formed.end.from >= from && formed.end.from < to && frontMatterDrawn(formed)) collapseLine(formed.end, "env-end");
           }
         }
         return;
@@ -1254,6 +1307,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
 
       switch (name) {
         case "TextColorCommand": case "ColorBoxCommand": {
+          if (name === "TextColorCommand" && node.from >= from && node.from < to && !isConsumed(node)) {
+            if (coloredContents(node)) return false;
+            if (coloredHeadingUse(node)) return false;
+          }
           const args = commandArguments(node);
           const model = args.find((arg) => arg.optional);
           const mandatory = args.filter((arg) => !arg.optional);
@@ -1363,7 +1420,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const nameGroup = begin?.getChild("EnvNameGroup");
           const args = begin && nameGroup ? read(state, nameGroup.to, begin.to) : "";
           const body = (args.trim() ? args.trim() : "") + read(state, formed.content.from, formed.content.to);
-          const source = katexForEnvironment(formed.name, body);
+          if (equationAlias(defs, formed.name) && /^\s*\[/.test(body)) return false;
+          const source = katexForEnvironment(equationAlias(defs, formed.name) ? "equation" : formed.name, body);
           const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: node.from });
           // Rows numbered by hand (`\addtocounter{equation}{1}\tag{\theequation}`) are numbered rows.
           const counted = expanded.ok ? countedRows(expanded.text) : null;
@@ -1523,7 +1581,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           };
           // A comment after `\maketitle` on its line (cs.LO 2610.41832's `\maketitle%[E]`) is part of its line.
           const commentLine = doc.lineAt(node.to);
-          const end = /^[ \t]*%/.test(read(state, node.to, commentLine.to)) ? commentLine.to : node.to;
+          // `\maketitle\thispagestyle{empty}` (stat.AP 2611.10515) is one line: the page-style switch prints nothing, the block covers it.
+          const pageStyle = /^(?:[ \t]*\\(?:thispagestyle|pagestyle)\s*\{[^{}]*\})+/.exec(read(state, node.to, commentLine.to));
+          const lineEnd = node.to + (pageStyle?.[0].length ?? 0);
+          if (pageStyle) consumed.push([node.to, lineEnd]);
+          const end = /^[ \t]*%/.test(read(state, lineEnd, commentLine.to)) ? commentLine.to : lineEnd;
           const blockEnd = gaps.length ? trimmed(declarations!, gaps[0].from).end : end;
           const folded = declarations !== null ? aloneOnLines(doc, declarations, blockEnd) : null;
           const span = folded ?? aloneOnLines(doc, node.from, end);
@@ -1549,8 +1611,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const inner = argument && argumentInner(argument);
           // AASTeX's `\bibliography{refs}{}` takes an empty group after it, which prints nothing.
           const empty = /^[ \t]*\{\s*\}/.exec(read(state, node.to, Math.min(doc.length, node.to + 20)));
-          const span = aloneOnLines(doc, node.from, node.to + (empty?.[0].length ?? 0));
+          const bibEnd = node.to + (empty?.[0].length ?? 0);
+          let span = aloneOnLines(doc, node.from, bibEnd);
+          // `\begingroup\renewcommand{\baselinestretch}{0.94}\bibliography{references}\endgroup` (eess.SY 2611.15162) is one line: the
+          // group and the spacing around the command print nothing, and go with the list (their source shows at the caret).
+          if (!span && structural && inner && !hasDirectError(node)) {
+            const line = doc.lineAt(node.from);
+            const around = doc.lineAt(bibEnd);
+            const before = read(state, line.from, node.from);
+            const after = read(state, bibEnd, around.to);
+            if (line.number === around.number && BIB_LINE_BEFORE.test(before) && BIB_LINE_AFTER.test(after)) span = { from: line.from, to: line.to };
+          }
           if (!structural || !inner || !span || hasDirectError(node)) return false;
+          if (span.from < node.from) consumed.push([span.from, node.from]);
+          if (span.to > bibEnd) consumed.push([bibEnd, span.to]);
           if (empty) consumed.push([node.to, node.to + empty[0].length]);
           emit({ kind: "bibliography", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new BibliographyListWidget(bibliographyHeading(defs), read(state, inner.from, inner.to).trim(), span.to - span.from) }] });
           return false;
@@ -1607,6 +1681,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
           // `{\centering text\par}` in a line of text: the switch prints nothing there.
           else if (structural && name === "Centering" && /^\\centering$/.test(read(state, node.from, node.to))) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
+          // `\begin{enumerate}\setlength{\itemsep}{0pt}` (stat.ME 2611.14598): among other things on a line it prints nothing, so it is hidden, back at the caret.
+          else if (structural && name === "SetLengthCommand" && node.from >= from && node.from < to && !isConsumed(node) && !hasDirectError(node) && !/[{,]\s*$/.test(read(state, doc.lineAt(node.from).from, node.from)) && /^\\setlength\s*\{[^{}]*\}\s*\{[^{}]*\}$/.test(read(state, node.from, node.to))) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
           return false;
         }
         case "HorizontalLine":
@@ -1636,9 +1712,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const gap = /^\s*/.exec(after.slice(widest.end))![0].length;
       widest = after[widest.end + gap] === "{" ? readGroup(after, widest.end + gap) : null;
     }
-    const headerEnd = Math.max(begin.to, widest ? nameEnd + widest.end : begin.to);
+    let headerEnd = Math.max(begin.to, widest ? nameEnd + widest.end : begin.to);
+    // Size and spacing settings after the opening on its line (`\begin{thebibliography}{99}\small\setlength{\itemsep}{0pt}`,
+    // cond-mat.stat-mech 2611.14576): they print nothing and go with the heading (its source shows at the caret).
+    const settings = /^(?:[ \t]*(?:\\(?:tiny|scriptsize|footnotesize|small|normalsize|raggedright|sloppy)(?![A-Za-z@])|\\(?:setlength|addtolength)\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)\s*\{[^{}]*\}|\\renewcommand\s*\{\s*\\(?:baselinestretch|arraystretch)\s*\}\s*\{[^{}]*\}))+/.exec(read(state, headerEnd, doc.lineAt(headerEnd).to));
+    if (settings) headerEnd += settings[0].length;
     consumed.push([begin.from, headerEnd]);
-    const book = /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
+    const book =/^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
     const span = aloneOnLines(doc, begin.from, headerEnd);
     const from = span?.from ?? begin.from;
     // As for a heading: the widget, and the line style while it is drawn.
@@ -1732,7 +1812,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if ((/^inpara/.test(formed.name) || formed.name.endsWith("*")) && !defs.lists?.has(formed.name)) list.inline = true;
     lists.push(list);
     if (structural) {
-      collapseLine(formed.begin, "list-begin");
+      // Layout set right after the `\begin` on its line (`\begin{enumerate}\setlength{\itemsep}{0pt}`, stat.ME 2611.14598) folds with it.
+      const lineTail = read(state, formed.begin.to, doc.lineAt(formed.begin.to).to);
+      const layout = layoutRun(lineTail, true);
+      const folded = layout > 0 && !lineTail.slice(layout).trim() ? layout : 0;
+      if (folded) consumed.push([formed.begin.to, formed.begin.to + folded]);
+      collapseLine(folded ? { from: formed.begin.from, to: formed.begin.to + folded } : formed.begin, "list-begin");
       // Past the walked range, the piece with the `\end` line draws it (see above): a list of hundreds of items is not walked whole.
       if (formed.end.from < to) collapseLine(formed.end, "list-end");
     }
@@ -1909,6 +1994,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    */
   function frontMatter(formed: NonNullable<ReturnType<typeof wellFormedEnvironment>>): false | undefined {
     if (!formed.content) return undefined;
+    // (`frontMatterDrawn` below answers the same for a piece that holds only the `\end`.)
     const inside = read(state, formed.begin.to, formed.end.from);
     // The abstract or keywords (the grammar may nest them in text nodes): found in the text, outside comments.
     let stop = formed.end.from;
@@ -1942,6 +2028,26 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       collapseLine(formed.end, "env-end");
     }
     return undefined;
+  }
+
+  /** Whether `frontMatter` draws this `frontmatter` as the title block (the same tests), for the piece that holds its `\end`. */
+  function frontMatterDrawn(formed: NonNullable<ReturnType<typeof wellFormedEnvironment>>) {
+    if (!formed.content) return false;
+    const inside = read(state, formed.begin.to, formed.end.from);
+    let stop = formed.end.from;
+    for (const match of inside.matchAll(/\\begin\s*\{(?:abstract|keywords?)\}/g)) {
+      if (isInLatexComment(inside, match.index ?? 0)) continue;
+      stop = formed.begin.to + (match.index ?? 0);
+      break;
+    }
+    const parts = frontMatterParts(read(state, formed.begin.to, stop));
+    if (!parts) return false;
+    let end = stop;
+    while (end > formed.begin.to && /\s/.test(read(state, end - 1, end))) end--;
+    const first = parts.unknown[0];
+    let firstEnd = end;
+    if (first) { firstEnd = formed.begin.to + first.from; while (firstEnd > formed.begin.to && /\s/.test(read(state, firstEnd - 1, firstEnd))) firstEnd--; }
+    return !!aloneOnLines(doc, formed.begin.from, firstEnd);
   }
 
   function environment(node: SyntaxNode): false | undefined {
@@ -2120,7 +2226,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const qedMacro = macroAt(defs, "qedsymbol", qedAt);
           const qedLocal = qedMacro && qedMacro.pos >= 0 ? expandLatexMacros("\\qedsymbol", defs, { mode: "text", pos: qedAt }) : null;
           const qed = qedMacro ? (qedLocal?.ok ? qedLocal.text : "\\qedsymbol") : null;
-          emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(qed) }] });
+          emit({ kind: "env-footer", from: endSpan?.from ?? formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(qed) }] });
         } else collapseLine(formed.end, "env-end");
       }
       const styleClass = shown ? THEOREM_STYLE_CLASSES[shown.style] : name === "abstract" ? "cm-vis-abstract" : acknowledgments ? "cm-vis-acknowledgments" : "cm-vis-proof";
@@ -2144,10 +2250,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const endCode = drawableEnvironmentCode(user.end);
       if (structural) {
         const span = aloneOnLines(doc, begin.from, headerEnd);
-        if (beginCode) emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: new EnvironmentHeaderWidget("user", beginCode, null, null, 0) }] });
+        if (beginCode) emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: new EnvironmentHeaderWidget("user", beginCode, null, null, 0, headerEnd - (span?.from ?? begin.from)) }] });
         else if (beginCode === "") collapseLine(begin, "env-begin", span ? undefined : { from: begin.from, to: headerEnd });
         const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
-        if (endCode) emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(endCode) }] });
+        if (endCode) emit({ kind: "env-footer", from: endSpan?.from ?? formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(endCode) }] });
         else if (endCode === "") collapseLine(formed.end, "env-end");
       }
       return undefined;
@@ -2683,10 +2789,21 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const stockDoi = name === "doi" && !!macro && macro.end !== undefined && macro.end <= doc.length &&/^\\providecommand\s*\{\\doi\}[^]*doi:/.test(read(state, macro.pos, macro.end));
     // The arxiv template's own `\def\keywords#1{… \def\and{ $\cdot$ } …}` (arxiv.sty, in the project) is llncs's keywords line: drawn below.
     const stockKeywords = name === "keywords" && !!macro && defs.packages.includes("arxiv");
+    // `\partlabel{key}` (math.ST 2611.11874's `\newcommand\partlabel[1]{\label{#1}{…\label{#1*}}}`): a label of the item it is in, drawn as `\label` is.
+    if (isPartLabelMacro(macro) && structural && !hasDirectError(node)) {
+      const keyArgument = args.find((arg) => !arg.optional);
+      const keyRange = keyArgument && argumentInner(keyArgument.node);
+      const key = keyRange ? read(state, keyRange.from, keyRange.to).trim() : "";
+      if (keyArgument && key && args.length === 1 && keyArgument.node.from === ctrl.to && !/[\\{}]/.test(key)) {
+        emit({ kind: "label", from: node.from, to: keyArgument.node.to, reveal: "strict", replaces: [{ from: node.from, to: keyArgument.node.to, widget: new ChipWidget("label", `\\${name}`, [key], {}, keyArgument.node.to - node.from) }] });
+        consumed.push([node.from, keyArgument.node.to]);
+        return false;
+      }
+    }
     if (macro && !stockDoi && !stockKeywords) return macroUse(node, name);
     const drawn = packageCommand(node, ctrl, text, args);
     if (drawn !== null) return drawn;
-    if (SIUNITX_TEXT.test(text)) {
+    if (SIUNITX_TEXT.test(text) || (MHCHEM_TEXT.test(text) && defs.packages.includes("mhchem"))) {
       const unit = siunitxInText(node);
       if (unit !== null) return unit;
     }
@@ -2776,7 +2893,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   /** siunitx's `\SI{12.5}{\kilo\meter}` (and `\num`, `\si`, …) in text: drawn as KaTeX draws it in a formula; null when not read (source). */
   function siunitxInText(node: SyntaxNode): false | null {
     if (!structural || hasDirectError(node)) return null;
-    const unit = readSiunitx(read(state, node.from, Math.min(doc.length, node.from + 2000)), 0);
+    const written = read(state, node.from, Math.min(doc.length, node.from + 2000));
+    // mhchem's `\ce{H2O}` is drawn as the formula `$\ce{H2O}$` (KaTeX's mhchem), siunitx's commands as theirs.
+    const unit = /^\\(?:ce|pu)(?![A-Za-z@])/.test(written) ?readMhchem(written, 0) : readSiunitx(written, 0, siunitxConfig(defs));
     const html = unit ? renderKatex(unit.latex, false) : null;
     if (!unit || !html) return null;
     const to = node.from + unit.end;
@@ -2793,6 +2912,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function packageCommand(node: SyntaxNode, ctrl: SyntaxNode, text: string, args: ReturnType<typeof commandArguments>): false | undefined | null {
     const mandatory = args.filter((arg) => !arg.optional);
     const first = mandatory[0] && argumentInner(mandatory[0].node);
+    // natbib's `\citetext{\citealp{a}; \citealp[Section~2.4]{b}}` (math.ST 2611.11874): its text in parentheses, the citations in it as chips.
+    // The text stays editable where it is; the command and its braces are the parentheses (a click shows the source).
+    if (text === "\\citetext" && structural && args.length === 1 && first && mandatory[0].node.from === ctrl.to && !hasDirectError(node) && !macroAt(defs, "citetext", node.from) && defs.packages.includes("natbib")) {
+      const argument = mandatory[0].node;
+      if (node.from >= from && node.from < to) {
+        const total = argument.to - node.from;
+        emit({
+          kind: "macro-args", from: node.from, to: argument.to, reveal: "touch",
+          replaces: [
+            { from: node.from, to: first.from, widget: new GroupMarkWidget("(", "citetext", 0, total) },
+            { from: first.to, to: argument.to, widget: new GroupMarkWidget(")", "citetext", total - 1, total) },
+          ],
+        });
+      }
+      // The text inside is walked as any text: the chips for its citations.
+      return undefined;
+    }
     // `\ensuremath{…}` in text (lhs2TeX's `\ensuremath{\Conid{C}}`, 2610.41832): its argument, as an inline formula.
     if (text === "\\ensuremath" && first && args[0] === mandatory[0] && !read(state, ctrl.to, first.from - 1).trim() && !hasDirectError(node)) {
       const expanded = expandLatexMacros(read(state, first.from, first.to), defs, { mode: "math", pos: node.from });
@@ -2894,6 +3030,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     if (INLINE_LAYOUT.test(text)) {
+      // `\protect\textcolor{…}{\tableofcontents}` alone on its line: the contents list covers the whole line (coloredContents).
+      if (text === "\\protect" && !read(state, doc.lineAt(node.from).from, node.from).trim() && /^[ \t]*\\textcolor\s*\{[^{}]*\}\s*\{\s*\\(?:tableofcontents|listoffigures|listoftables)\s*\}[ \t]*$/.test(read(state, ctrl.to, doc.lineAt(ctrl.to).to))) return undefined;
       let textFrom = ctrl.to;
       while (textFrom < doc.length && / |\t/.test(read(state, textFrom, textFrom + 1))) textFrom++;
       // A group the parser hung on it (`\onehalfspacing{…}`) is text: its braces are hidden too.
@@ -3205,7 +3343,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const span = aloneOnLines(doc, from, to);
     const range = span ?? { from, to };
     if (env.name === "EquationEnvironment" || env.name === "EquationArrayEnvironment") {
-      const source = katexForEnvironment(envName, body);
+      if (equationAlias(defs, envName) && /^\s*\[/.test(body)) return false;
+      const source = katexForEnvironment(equationAlias(defs, envName) ? "equation" : envName, body);
       const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: from });
       const counted = expanded.ok ? countedRows(expanded.text) : null;
       const latex = counted?.latex ?? expanded.text;
@@ -3238,6 +3377,46 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       spec = { header, body: rest.trim(), items: null, className, length: range.to - range.from };
     }
     emit({ kind: "macro-env", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new ExpandedEnvironmentWidget(spec) }] });
+    return true;
+  }
+
+  /**
+   * A heading in a colour (math-ph 2611.15304's `\textcolor{blue!55!black}{\section{Introduction}}\label{sec1}`): drawn as the
+   * heading, numbered as one (numbering.ts reads it), its title in the colour. Its line shows the source at the caret, as a heading's does.
+   */
+  function coloredHeadingUse(node: SyntaxNode): boolean {
+    const heading = coloredHeading(node, readNode);
+    if (!heading || heading.name === "Paragraph" || heading.name === "SubParagraph" || heading.titleTo <= heading.titleFrom || hasDirectError(node) || macroAt(defs, heading.command, node.from)) return false;
+    const label = trailingLabel(state, node.parent, node.to);
+    const end = label ? label.to : node.to;
+    const colorArgument = commandArguments(node).find((arg) => !arg.optional);
+    const colorRange = colorArgument && argumentInner(colorArgument.node);
+    const color = colorRange ? cssColor(null, read(state, colorRange.from, colorRange.to), defs.colors) : null;
+    const className = SECTION_CLASSES[heading.name];
+    if (label) consumed.push([label.from, label.to]);
+    consumed.push([node.from, node.to]);
+    emit({
+      kind: "heading", from: node.from, to: end, reveal: "line", wholeLine: true,
+      replaces: structural ? [
+        { from: node.from, to: heading.titleFrom, widget: new HeadingNumberWidget(className, read(state, node.from, heading.titleFrom)) },
+        { from: heading.titleTo, to: end },
+      ] : [],
+      marks: color ? [{ from: heading.titleFrom, to: heading.titleTo, class: "cm-vis-color", attributes: { style: `color: ${color}` } }] : undefined,
+      hiddenLines: [{ from: node.from, to: heading.titleTo, class: `cm-vis-heading ${className}` }],
+    });
+    return true;
+  }
+
+  /** `\protect\textcolor{blue!50!black}{\tableofcontents}` on its own line (2611.15304): the list of contents, as `\tableofcontents` alone is. */
+  function coloredContents(node: SyntaxNode): boolean {
+    const argument = node.getChild("TextArgument");
+    if (!structural || !argument || argument.to !== node.to || hasDirectError(node)) return false;
+    const listing = CONTENTS_LISTS[read(state, argument.from + 1, argument.to - 1).trim()];
+    const first = doc.lineAt(node.from);
+    const last = doc.lineAt(node.to);
+    if (!listing || !/^\s*(?:\\protect\s*)?$/.test(doc.sliceString(first.from, node.from)) || doc.sliceString(node.to, last.to).trim()) return false;
+    consumed.push([first.from, last.to]);
+    emit({ kind: "contents", from: first.from, to: last.to, reveal: "strict", replaces: [{ from: first.from, to: last.to, block: true, widget: new ContentsWidget(listing, last.to - first.from) }] });
     return true;
   }
 

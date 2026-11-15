@@ -120,3 +120,35 @@ Skipped: cs.SE 2611.11216 (PDF only), econ.GN 2610.39844 (too small).
 Notable: math.DG 2611.09697 (`\def` with `&` and `\\` parameters swallowed the file), cs.IT 2611.09366 (Pandoc/Quarto output),
 cs.PL 2610.26599 (etoolbox text macros, 54 files), math.AP 2611.11553 (`\m@th`), math.NA 2611.09593 (SIAM shared preamble),
 stat.ML 2611.11386 (macro debris in captions). Skipped: math.ST 2611.04612 (PDF only).
+
+## 2026-11-15, round 7 (51 papers, docs/audits/2026-11-15-latex-visual-paper-review-7.md)
+
+- cond-mat.mes-hall: 2611.13157 2611.13235
+- cond-mat.mtrl-sci: 2611.14782 2611.14809
+- cond-mat.stat-mech: 2611.13526 2611.14576
+- cs.LG: 2611.16789 2611.16792 2611.16803
+- eess.SY: 2611.15142 2611.15162
+- hep-ph: 2611.15628 2611.15647
+- hep-th: 2611.15749
+- math-ph: 2611.15209 2611.15304
+- math.AP: 2611.14951 2611.14954
+- math.CA: 2611.08401 2611.08653
+- math.DS: 2611.13265 2611.13277
+- math.GT: 2611.08002 2611.08165
+- math.NA: 2611.13952 2611.14041
+- math.OC: 2611.14966 2611.15035 2611.15055
+- math.PR: 2611.15177 2611.15228
+- math.RT: 2611.12492 2611.13050
+- math.ST: 2611.11872 2611.11874
+- physics.flu-dyn: 2611.12045 2611.12193
+- physics.optics: 2611.13800 2611.13936
+- quant-ph: 2611.16456 2611.16474 2611.16479
+- stat.AP: 2611.10325 2611.10515
+- stat.CO: 2611.01271 2611.01752
+- stat.ME: 2611.14011 2611.14598
+- stat.ML: 2611.13647 2611.13765 2611.14586
+
+Notable: math.AP 2611.14954 (`\chardef` switch and `\hbox{#1}` macros with `$` hid every display), math.PR 2611.15228
+(`\MoveEqLeft`, `equ`, `\burlalt`), siunitx abbreviations and `\DeclareSIUnit` (cond-mat.mes-hall 2611.13235,
+physics.flu-dyn 2611.12193), math.ST 2611.11874 (a user `parts` list). Fetched but lost before the audit, not audited:
+gr-qc 2611.15331 2611.15321, nucl-th 2611.10816 2611.10465.

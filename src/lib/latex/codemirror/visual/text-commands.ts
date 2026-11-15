@@ -197,8 +197,11 @@ export class CounterWidget extends TextWidget {
       dom.classList.toggle("cm-vis-raw", !entry);
     });
     dom.textContent = this.source;
+    // A click shows the command (`	healgorithm`), the caret just inside it.
+    revealOnClick(dom, view, this.source.length);
     return dom;
   }
+  ignoreEvent() { return true; }
 }
 
 /** A drawing in the text written as LaTeX (`\rule{2cm}{0.4pt}`, `\hrulefill`): drawn by the fragment renderer; a click shows its source. */
@@ -313,8 +316,10 @@ function contentsEntries(numbering: LatexNumbering, kind: "section" | "figure" |
   const out: Array<{ number: string | null; level: number; title: string }> = [];
   for (const entry of numbering.entries) {
     if (entry.kind !== kind || entry.pos < 0) continue;
-    const text = read(entry.pos, Math.min(length, entry.pos + 4000));
+    let text = read(entry.pos, Math.min(length, entry.pos + 4000));
     if (kind === "section") {
+      // A heading in a colour (`\textcolor{blue}{\section{Introduction}}`): the heading inside it.
+      text = text.replace(/^\\textcolor\s*\{[^{}]*\}\s*\{\s*(?=\\(?:part|chapter|section|subsection|subsubsection)\b)/, "");
       // `\section[short]{Long}`: the short title is what the contents list shows; a starred heading is not listed.
       const head = /^\\[A-Za-z]+(\*)?\s*/.exec(text);
       if (!head || head[1]) continue;
