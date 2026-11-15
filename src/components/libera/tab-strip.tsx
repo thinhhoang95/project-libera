@@ -1,9 +1,10 @@
 "use client";
 
 import { ReviewToggle } from "./markdown-review-ui";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { MouseEvent } from "react";
-import { MoreHorizontal, Plus, Sparkles, X } from "lucide-react";
+import { Code, Download, Eye, FolderInput, MoreHorizontal, Plus, Sparkles, TextCursorInput, X } from "lucide-react";
+import { usePaletteCommands } from "./command-palette/commands";
 import type { LatexTabViewState, MarkdownEditorMode, OpenTab } from "@/components/libera/types";
 
 import { TAB_DRAG_MIME } from "@/lib/canvas-layout";
@@ -19,6 +20,9 @@ import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHis
 import { RequestReviewButton } from "./collab/reviews";
 import { pendingSaves, usePendingSavesVersion } from "./pending-saves";
 import { useAppMenuFileActions, useAppMenuItems, withMenuActions } from "./app-menu";
+
+/** Switches the active file between the Visual and Source editors. */
+const EDITOR_MODE_SHORTCUT = "Ctrl/⌘+Shift+Y";
 
 type LatexEditorMode = NonNullable<LatexTabViewState["editorMode"]>;
 
@@ -474,6 +478,67 @@ function ActiveFileActions({
   useAppMenuFileActions(async () => fileTab
     ? withMenuActions(await actionMenuItems(fileTab), (id) => void runAction(fileTab, id))
     : withMenuActions(canvasPanelCount < 2 ? [] : canvasItems, (id) => runCanvasMenuAction(id, canvasActions)));
+
+  // The active file's editor mode, as shown in the menu, and the id that switches it.
+  const editorMode = supportsEditorMode ? markdownEditorMode : supportsLatexEditorMode ? latexEditorMode : null;
+  const editorModeAction = (mode: "visual" | "source") => `${supportsEditorMode ? "editor" : "latex-editor"}-${mode}`;
+  const canRenameOrMove = Boolean(fileTab) && !isGalleryPhoto;
+
+  // The same actions in the command palette (⌘/Ctrl+Shift+P), for the active file.
+  usePaletteCommands(null, () => {
+    if (!fileTab) return [];
+    const group = "File";
+    const run = (id: string) => () => void runAction(fileTab, id);
+    const downloads: Array<[id: string, title: string]> = isMarkdown
+      ? [["download-markdown", "Download as Markdown file"], ["download-pdf", "Download as PDF file"]]
+      : isLatex || isText
+        ? [["download-markdown", "Download"]]
+        : isPdf
+          ? [["download-pdf-annotated", "Download PDF with annotations"], ["download-original", "Download original PDF"]]
+          : isImage ? [] : [["download-original", "Download"]];
+    return [
+      ...(editorMode
+        ? (["visual", "source"] as const).map((mode) => ({
+            id: `file:editor-${mode}`,
+            title: `Switch to ${mode === "visual" ? "Visual" : "Source"} editor`,
+            group,
+            icon: mode === "visual" ? Eye : Code,
+            shortcut: EDITOR_MODE_SHORTCUT,
+            keywords: "editor mode toggle wysiwyg markdown latex raw",
+            checked: editorMode === mode,
+            run: run(editorModeAction(mode)),
+          }))
+        : []),
+      ...downloads.map(([id, title]) => ({ id: `file:${id}`, title, group, icon: Download, keywords: "export save copy", run: run(id) })),
+      ...(canRenameOrMove
+        ? [
+            { id: "file:rename", title: "Rename file…", group, icon: TextCursorInput, shortcut: "F2", run: run("rename") },
+            { id: "file:move", title: "Move file…", group, icon: FolderInput, keywords: "notebook folder relocate", run: run("move") },
+          ]
+        : []),
+    ];
+  });
+
+  // ⌘/Ctrl+Shift+Y toggles Visual and Source (⌘/Ctrl+Shift+M is the LaTeX
+  // editor's problems panel); F2 renames the active file. Listened for before
+  // the editors see it: CodeMirror would otherwise take Shift+Mod-y as Redo.
+  useEffect(() => {
+    if (!fileTab) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.repeat || event.isComposing || event.defaultPrevented || !fileTab) return;
+      const modifier = event.metaKey || event.ctrlKey;
+      if (editorMode && modifier && event.shiftKey && !event.altKey && event.code === "KeyY") {
+        event.preventDefault();
+        event.stopPropagation();
+        void runAction(fileTab, editorModeAction(editorMode === "visual" ? "source" : "visual"));
+      } else if (canRenameOrMove && event.key === "F2" && !modifier && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        void runAction(fileTab, "rename");
+      }
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  });
 
   if (!fileTab) {
     // An empty split panel, a recording in progress or an app page has no file, but its layout can still be changed.

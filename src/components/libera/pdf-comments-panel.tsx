@@ -78,9 +78,10 @@ export function PdfReviewComments({ path }: { path: string }) {
 
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
     <header className="shrink-0 space-y-3 px-3 pb-3 pt-4">
-      <div className="libera-notebook-heading flex items-center gap-1">
-        <h2 className="min-w-0 flex-1 text-sm font-semibold">Comments</h2>
-        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{openCount} open</span>
+      {/* The open count drops out first when the panel is too narrow for it. */}
+      <div className="libera-notebook-heading @container flex items-center gap-1">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Comments</h2>
+        <span className="mr-1 hidden whitespace-nowrap @[17rem]:inline text-xs tabular-nums text-muted-foreground">{openCount} open</span>
         {state.loaded && <CommentStatusFilterButton value={status} onChange={setStatus} open={openCount} resolved={threads.length - openCount} all={threads.length} />}
       </div>
       {threads.length > 0 && <div className="review-comment-search relative">

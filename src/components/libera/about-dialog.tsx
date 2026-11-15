@@ -89,8 +89,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
     updateState.status,
   );
   const aboutRows = [
-    ["Author", appMetadata.author],
-    ["Customized for", appMetadata.customizedFor],
+    ["Authors", appMetadata.authors],
     ["Release date", appMetadata.releaseDate],
   ] as const;
 

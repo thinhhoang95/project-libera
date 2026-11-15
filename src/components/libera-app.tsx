@@ -739,6 +739,7 @@ export function LiberaApp({
           onCreateMarkdown={workspace.createMarkdownFromPrompt}
           onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
           onCreateLatex={workspace.createLatexFromPrompt}
+          onCreateTextFile={workspace.createTextFileFromPrompt}
           onCreateNotebook={workspace.openCreateNotebookDialog}
           onOpenMigration={() => workspace.openMigrationDialog()}
           onCreateNotebookGroup={workspace.openCreateNotebookGroupDialog}

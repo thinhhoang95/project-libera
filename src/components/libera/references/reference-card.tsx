@@ -18,6 +18,7 @@ import {
 import { FormattedReference } from "@/components/libera/references/reference-candidates";
 import { RetractionBadge } from "@/components/libera/references/retraction-badge";
 import { userProvenance } from "@/components/libera/references/reference-edit-form";
+import { useHorizontalWheelScroll } from "@/components/libera/use-horizontal-wheel-scroll";
 import { citeActions, CITE_UNAVAILABLE, StatusBadge, type CiteSyntax, type LatexCiteCommand } from "@/components/libera/references/reference-row";
 import { isValidCitationKey } from "@/lib/references/keys";
 import { citationSnippets, citationSyntaxForPath, SNIPPET_CONTEXT, type CitationSnippet } from "@/lib/references/occurrences";
@@ -152,6 +153,10 @@ export const CONFIRM_NEXT_SHORTCUT = "⌘/Ctrl+Shift+Enter";
 
 export function ReferenceCard({ notebook, entry, library, citing, canCite, citeSyntax = "markdown", apply, onBack, onCite, onCopy, onCopyFormatted, onReresolve, onOpenPath, onEditAll, onDelete, onUpdateCitations, position, onPrevious, onNext, reviewLeft = 0, onConfirmNext, attachableFiles, knownTags, onTag, loadDocument, onOpenCitation }: CardProps) {
   const [error, setError] = useState("");
+  // A narrow panel cannot fit every action, so the row scrolls sideways
+  // (scrollbar hidden) and a plain mouse wheel moves it.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useHorizontalWheelScroll(toolbarRef);
   const reviewing = entry.status !== "confirmed";
 
   async function run(ops: ReferenceLibraryOp[], label: string) {
@@ -174,13 +179,13 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, citeS
 
   return (
     <div className="libera-reference-card outline-none" aria-label={`Reference ${entry.key}`} role="region" tabIndex={-1}>
-      <div className="flex items-center gap-1 px-2 pb-1 pt-1">
+      <div ref={toolbarRef} className="libera-horizontal-toolbar flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap px-2 pb-1 pt-1">
         <button type="button" className="libera-sidebar-icon-button inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs" aria-label="Back to references" title="Back to references (Esc)" onClick={onBack}>
           {/* With the previous/next buttons there is room for the arrow only. */}
           <ArrowLeft aria-hidden className="h-3.5 w-3.5" />{position && position.total > 1 ? null : " References"}
         </button>
         {position && position.total > 1 ? (
-          <div className="flex items-center" role="group" aria-label="Move through the list">
+          <div className="flex shrink-0 items-center" role="group" aria-label="Move through the list">
             <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-6 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Previous reference" title="Previous reference (↑)" disabled={!onPrevious || position.index <= 0} onClick={onPrevious}>
               <ChevronLeft aria-hidden className="h-4 w-4" />
             </button>
