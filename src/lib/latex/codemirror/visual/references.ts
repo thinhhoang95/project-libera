@@ -7,6 +7,7 @@ import { latexProjectField } from "../editing";
 import { visualAux, visualDefinitions, visualNumbering } from "./model";
 import { readGroup, readOptional } from "../../../macros/core";
 import { colorsForKatex } from "./math-render";
+import { siunitxConfig, siunitxForKatex } from "./siunitx";
 import { CONTROL_SYMBOLS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES } from "./symbols";
 
 /* What citation and reference chips say (docs/latex-visual-editor-plan.md §3). */
@@ -540,6 +541,8 @@ export function withReferenceNumbers(latex: string, state: EditorState) {
 export function referencesInMath(latex: string, numbering: LatexNumbering, aux: LatexAuxData, defs: LatexDefinitions) {
   // The document's `\definecolor` names in the formula, as colours KaTeX takes.
   if (defs.colors.size) latex = colorsForKatex(latex, defs.colors);
+  // siunitx commands in the formula, with the document's own units and siunitx settings.
+  if (latex.includes("\\")) latex = siunitxForKatex(latex, siunitxConfig(defs));
   if (!REFERENCE_IN_MATH.test(latex)) return latex;
   return latex.replace(/\\(eq|auto|Auto|c|C)?ref\*?\s*\{([^{}]*)\}/g, (_, kind: string | undefined, keys: string) => {
     const text = referenceChipText(`\\${kind ?? ""}ref`, keys.split(",").map((key) => key.trim()).filter(Boolean), numbering, aux, defs);

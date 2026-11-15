@@ -140,6 +140,8 @@ export type LatexDefinitions = {
   columnTypes: Map<string, LatexColumnType>;
   /** xcolor's `\definecolor{name}{model}{value}`, and `\colorlet{name}{color}` (model "", value the colour it names). */
   colors: Map<string, { model: string; value: string }>;
+  /** siunitx's `\DeclareSIUnit` units (name to the symbol as written) and `\sisetup` options of the document. */
+  siunitx?: { units: Map<string, string>; options: Map<string, string> };
   /** enumitem's `\newlist{exercises}{enumerate}{6}`: lists of the document's own, by name, with the kind they are. */
   lists?: Map<string, "enumerate" | "itemize" | "description">;
   /** enumitem's `\setlist[exercises,1]{label=…}`: the options of a list's level, by `name:level`. */
@@ -184,7 +186,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -1532,6 +1534,28 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           ...(paragraph ? { paragraph } : {}), ...(math ? { math } : {}),
         });
       }
+    } else if (command === "DeclareSIUnit" || command === "sisetup") {
+      // siunitx: `\DeclareSIUnit\angstrom{\text{\AA}}` (a unit of the document's own) and `\sisetup{per-mode=symbol}`; read by the unit renderer.
+      const siunitx = (defs.siunitx ??= { units: new Map(), options: new Map() });
+      if (command === "sisetup") {
+        const group = readGroupAt(source, index);
+        if (group) {
+          end = group.end;
+          if (!uncertain) for (const [key, value] of keyValues(group.content.replace(/%[^\n]*/g, ""))) siunitx.options.set(key, value);
+        }
+      } else {
+        const optional = readOptionalAt(source, index);
+        let at = optional?.end ?? index;
+        while (/\s/.test(source[at] ?? "")) at++;
+        const named = source[at] === "{" ? readGroupAt(source, at) : null;
+        const bare = named ? null : /^\\([A-Za-z]+)/.exec(source.slice(at, at + 64));
+        const name = named ? /^\s*\\([A-Za-z]+)\s*$/.exec(named.content)?.[1] : bare?.[1];
+        const body = name ? readGroupAt(source, named ? named.end : at + bare![0].length) : null;
+        if (name && body) {
+          end = body.end;
+          if (!uncertain) siunitx.units.set(name, body.content.trim());
+        }
+      }
     } else if (command === "definecolor" || command === "colorlet") {
       // `\definecolor{myred}{RGB}{89,10,10}`, `\colorlet{accent}{red!60}`: names `\textcolor` and `\color` draw.
       const name = readGroupAt(source, index);
@@ -1710,6 +1734,8 @@ export function definitionsFingerprint(defs: LatexDefinitions) {
   for (const [name, list] of defs.packageOptions) parts.push(`pkg:${name}:${list.join(",")}`);
   for (const [name, color] of defs.colors) parts.push(`color:${name}:${color.model}:${color.value}`);
   for (const [letter, type] of defs.columnTypes) parts.push(`col:${letter}:${type.arity}:${type.align}:${type.paragraph ? "p" : ""}${type.math ? "m" : ""}`);
+  for (const [name, symbol] of defs.siunitx?.units ?? []) parts.push(`siunit:${name}:${symbol}`);
+  for (const [key, value] of defs.siunitx?.options ?? []) parts.push(`sisetup:${key}:${value}`);
   for (const [name, kind] of defs.lists ?? []) parts.push(`list:${name}:${kind}`);
   for (const [level, options] of defs.listOptions ?? []) parts.push(`listopt:${level}:${options}`);
   for (const [key, entry] of defs.acronyms ?? []) parts.push(`acr:${key}:${JSON.stringify(entry)}`);
