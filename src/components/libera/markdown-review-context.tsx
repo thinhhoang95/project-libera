@@ -91,7 +91,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const leaving = useRef(new Set<Promise<unknown>>());
   useSessionEndRevisions();
   const lastTab = useRef<{ id: string; key: string; doc: ReviewDocument | null } | null>(null);
-  const key = activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "latex" ? (activeTab.standaloneSaveId ? `standalone:${activeTab.standaloneSaveId}` : activeTab.untitled ? `draft:${activeTab.id}` : activeTab.file.path) : null;
+  const key = activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text" ? (activeTab.standaloneSaveId ? `standalone:${activeTab.standaloneSaveId}` : activeTab.untitled ? `draft:${activeTab.id}` : activeTab.file.path) : null;
   const tabId = activeTab?.id;
   const tabState = useMemo(() => ({ key, tabId, tracker: new ReviewDraftTracker() }), [key, tabId]);
   const tracker = tabState.tracker;
@@ -471,7 +471,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const select = useCallback((range: ReviewRange, x: number, y: number) => {
     try {
       // A selection is commented on exactly; a bare caret takes its paragraph.
-      const expanded = commentRange(snapshot(), range, current.current.activeTab?.file.fileType === "latex" ? plainParagraphRange : paragraphRange);
+      const expanded = commentRange(snapshot(), range, current.current.activeTab?.file.fileType !== "markdown" ? plainParagraphRange : paragraphRange);
       if (!expanded) return;
       const replica = sharedStore.current ? sharedReplica : null;
       setSelection({ range: expanded, x, y, ...(replica && expanded.end <= replica.ytext.length ? { anchor: relativeRange(replica.ytext, expanded.start, expanded.end) } : {}) });

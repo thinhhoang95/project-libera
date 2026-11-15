@@ -22,6 +22,7 @@ import { registerEditorSelectionReader } from "@/components/libera/editor-select
 import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
 import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
 import { reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
+import { useCodeMirrorReview } from "@/components/libera/use-editor-review";
 import { LatexChangeBar } from "@/components/libera/latex/latex-change-bar";
 import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "@/components/libera/codemirror-text-width";
 
@@ -262,6 +263,19 @@ export function CodeEditor({
     lastPublishedRef.current = value;
     current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: value }, annotations: Transaction.remote.of(true) });
   }, [value, shared]);
+
+  // Review comments: accepted/undone review results replace the whole text.
+  // The tab draft is already updated, so this mirrors it without republishing
+  // (`remote` keeps it out of the draft timer and marks it an outside change).
+  const applyReviewText = useCallback((text: string) => {
+    const current = viewRef.current;
+    // Shared tabs: the workspace applied the result to the Y.Text and the
+    // binding already brought it here.
+    if (!current || shared || text === current.state.doc.toString()) return;
+    lastPublishedRef.current = text;
+    current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: text }, annotations: Transaction.remote.of(true) });
+  }, [shared]);
+  useCodeMirrorReview(view, applyReviewText);
 
   useEffect(() => () => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
