@@ -666,7 +666,7 @@ function ActiveFileActions({
 
   return (
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
-      {isMarkdown || isLatex ? <><ReviewToggle /><RequestReviewButton tabId={fileTab.id} /></> : null}
+      {isMarkdown || isLatex || isText ? <><ReviewToggle /><RequestReviewButton tabId={fileTab.id} /></> : null}
       <FileActionsMenuButton open={actionMenuOpen} onClick={openActionMenu} bare />
       <DocumentHistoryHost />
     </div>
