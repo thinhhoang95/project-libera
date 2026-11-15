@@ -6,6 +6,7 @@ import { toStorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { findReview } from "@/lib/storage/markdown-reviews";
 import { readPdfComments } from "@/lib/storage/pdf-comments";
+import { isTextFileType } from "@/lib/types";
 import { lineOfOffset, missingFileError, ok, optionalString, plural, preview, readCurrentText, requireString, resolve, sharedDocFor, ToolError, type AgentTool } from "./tools";
 
 // ReadComments: the review comments on a document and every reply, as the
@@ -128,7 +129,7 @@ function describeThread(thread: CommentThread, text: string) {
 export const readCommentsTool: AgentTool = {
   name: "ReadComments",
   kind: "read",
-  description: `Reads the review comments on a Markdown, LaTeX or PDF file, with every reply, as the Comments panel shows them.
+  description: `Reads the review comments on a text file (Markdown, LaTeX, plain text, code) or a PDF, with every reply, as the Comments panel shows them.
 
 Usage:
 - Each thread comes back with its id, status (open, addressed, resolved; detached on shared files when its passage was deleted), the lines and words it is attached to, and its messages in order: who wrote each one (the user, a collaborator, or AI acting for someone), whether it is the comment or a reply, and the date.
@@ -140,7 +141,7 @@ Usage:
   parameters: {
     type: "object",
     properties: {
-      file_path: { type: "string", description: "Library path of the Markdown, LaTeX or PDF file." },
+      file_path: { type: "string", description: "Library path of the text or PDF file." },
       status: { type: "string", enum: ["open", "all"], description: "\"open\" (default) lists unresolved threads; \"all\" includes resolved ones." },
     },
     required: ["file_path"],
@@ -151,8 +152,8 @@ Usage:
     const resolved = await resolve(context, requireString(args, "file_path"));
     const status = optionalString(args, "status") ?? "open";
     if (status !== "open" && status !== "all") throw new ToolError(`status must be "open" or "all", not "${status}".`);
-    const fileType = getFileType(resolved.path);
-    if (fileType !== "markdown" && fileType !== "latex" && fileType !== "pdf") throw new ToolError(`${resolved.path} is not a Markdown, LaTeX or PDF file; only .md, .tex and .pdf files have review comments.`);
+    const fileType = getFileType(resolved.path) ?? undefined;
+    if (!isTextFileType(fileType) && fileType !== "pdf") throw new ToolError(`${resolved.path} is not a text or PDF file; only text files (Markdown, LaTeX, plain text, code) and PDFs have review comments.`);
 
     let text: string;
     let threads: CommentThread[];

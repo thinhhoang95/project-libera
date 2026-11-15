@@ -4,6 +4,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { addReviewReply } from "@/lib/storage/markdown-reviews";
 import { addPdfCommentReply } from "@/lib/storage/pdf-comments";
+import { isTextFileType } from "@/lib/types";
 import { localThreads, pdfThreads, sharedThreads, shortQuote, threadLocation, type CommentThread } from "./read-comments";
 import { missingFileError, ok, readCurrentText, requireString, resolve, sharedDocFor, ToolError, type AgentTool, type ToolContext } from "./tools";
 
@@ -43,7 +44,7 @@ function unknownThread(path: string, threadId: string, threads: CommentThread[],
 export const replyToCommentTool: AgentTool = {
   name: "ReplyToComment",
   kind: "comment",
-  description: `Replies in an existing review comment thread on a Markdown, LaTeX or PDF file, the way a person answers in the Comments panel.
+  description: `Replies in an existing review comment thread on a text file (Markdown, LaTeX, plain text, code) or a PDF, the way a person answers in the Comments panel.
 
 Usage:
 - Call ReadComments first; thread_id is a thread's id exactly as ReadComments shows it.
@@ -56,7 +57,7 @@ Usage:
   parameters: {
     type: "object",
     properties: {
-      file_path: { type: "string", description: "Library path of the Markdown, LaTeX or PDF file." },
+      file_path: { type: "string", description: "Library path of the text or PDF file." },
       thread_id: { type: "string", description: "The thread's id, as ReadComments showed it." },
       text: { type: "string", description: "The reply, in Markdown." },
     },
@@ -68,8 +69,8 @@ Usage:
     const resolved = await resolve(context, requireString(args, "file_path"));
     const threadId = requireString(args, "thread_id").trim();
     const text = requireString(args, "text").trim();
-    const fileType = getFileType(resolved.path);
-    if (fileType !== "markdown" && fileType !== "latex" && fileType !== "pdf") throw new ToolError(`${resolved.path} is not a Markdown, LaTeX or PDF file; only .md, .tex and .pdf files have review comments.`);
+    const fileType = getFileType(resolved.path) ?? undefined;
+    if (!isTextFileType(fileType) && fileType !== "pdf") throw new ToolError(`${resolved.path} is not a text or PDF file; only text files (Markdown, LaTeX, plain text, code) and PDFs have review comments.`);
     const pdf = fileType === "pdf";
     if (text.length > MAX_REPLY_CHARS) throw new ToolError(`The reply is too long (${text.length.toLocaleString("en")} characters). Keep replies under ${MAX_REPLY_CHARS.toLocaleString("en")} characters.`);
     if (/^[ \t]*:::[ \t]*(comment\b.*)?$/im.test(text)) throw new ToolError(`Write only the reply's text in text, without ":::comment" or ":::" lines. Nothing was posted.`);
