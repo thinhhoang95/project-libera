@@ -114,7 +114,8 @@ function readXyArrow(text: string, from: number): { arrow: Arrow; end: number } 
   for (;;) {
     const next = skipSpaces(text, at);
     if (text[next] !== "^" && text[next] !== "_") break;
-    const token = readToken(text, skipSpaces(text, next + 1));
+    // `^-{f}` (2611.08002): the same side; the `-` only says the label sits tight against the arrow.
+    const token = readToken(text, skipSpaces(text, text[next + 1] === "-" ? next + 2 : next + 1));
     if (!token) return null;
     if (text[next] === "^") { if (left !== null) return null; left = token.content; } else { if (right !== null) return null; right = token.content; }
     at = token.end;

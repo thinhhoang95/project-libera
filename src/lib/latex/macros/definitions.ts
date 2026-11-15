@@ -186,7 +186,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef|chardef|DeclareSymbolFontAlphabet)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -1670,6 +1670,31 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       const body = mathAlphabetBody(font[0], font[1], font[2], font[3]);
       if (uncertain || !body) shadow(name.name, uncertain ? `\\${name.name} is defined under a condition` : `\\${name.name} is a math alphabet the Visual mode does not have`);
       else added = addMacro(context, { name: name.name, arity: 1, body, mathOnly: true, pos, file: context.file }, "new");
+    } else if (command === "DeclareSymbolFontAlphabet") {
+      // `\DeclareSymbolFontAlphabet{\mathbbl}{bbold}` (mathbbol/bbold's blackboard bold, 2611.14011): the alphabet of a symbol
+      // font. The font's own letters are not in KaTeX; `bbold` is drawn with `\mathbb` (same idea, different glyphs),
+      // `operators` with `\mathrm`, `letters` with `\mathit`.
+      const name = readCommandName(source, index);
+      const group = name ? readGroupAt(source, name.end) : null;
+      if (!name || !group) continue;
+      end = group.end;
+      const font = group.content.trim();
+      // The standard pairs (`\DeclareSymbolFontAlphabet{\mathbb}{AMSb}`, amssymb's own) change nothing: KaTeX's alphabet is that one.
+      if ((name.name === "mathbb" && font === "AMSb") || (name.name === "mathrm" && font === "operators") || (name.name === "mathit" && font === "letters") || (name.name === "mathcal" && font === "symbols")) continue;
+      const body = font === "operators" ? "\\mathrm{#1}" : font === "letters" ? "\\mathit{#1}" : font === "AMSb" ? "\\mathbb{#1}" : mathAlphabetBody("", font, "m", "n");
+      // A body naming the alphabet it defines would call itself.
+      if (body?.includes(`\\${name.name}{`)) continue;
+      if (uncertain || !body) shadow(name.name, uncertain ? `\\${name.name} is defined under a condition` : `\\${name.name} is a math alphabet the Visual mode does not have`);
+      else added = addMacro(context, { name: name.name, arity: 1, body, mathOnly: true, pos, file: context.file }, "new");
+    } else if (command === "chardef") {
+      // `\chardef\showllabel=0` (a plain TeX switch): a number the document's `\ifnum\showllabel=1` can read. Only a decimal
+      // value is a constant; the macro stands for the number the way the register would print it.
+      const name = readCommandName(source, index);
+      const value = name ? /^\s*=\s*(\d{1,5})(?!\d)\s*/.exec(source.slice(name.end, name.end + 40)) : null;
+      if (!name || !value) continue;
+      end = name.end + value[0].length;
+      if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
+      else added = addMacro(context, { name: name.name, arity: 0, body: value[1], pos, file: context.file }, "renew");
     } else if (command === "DeclareMathSymbol" || command === "mathchardef") {
       // `\DeclareMathSymbol{\R}{\mathalpha}{AMSb}{"52}` and `\mathchardef\mhyphen="2D`: a symbol of a font, by position.
       const name = readCommandName(source, index);
@@ -1872,6 +1897,17 @@ export function bodyStartOf(source: string) {
 }
 
 /** The definition of `name` that applies at `pos` in the open file (a local one only inside its group). */
+/**
+ * Whether the environment `name` is `equation` under another name: `\newenvironment{equ}{\begin{equation}}{\end{equation}}`
+ * in the document (math.PR 2611.15228's `equ`), or mhequ's `equ` when the package is loaded and the document does not
+ * define its own. The parser reads such names as equations too (latex-parser.ts).
+ */
+export function equationAlias(defs: LatexDefinitions, name: string) {
+  const own = defs.environments.get(name);
+  if (own) return !own.arity && !own.spec && own.optional === undefined && /^\s*\\begin\s*\{equation\}\s*$/.test(own.begin) && /^\s*\\end\s*\{equation\}\s*$/.test(own.end);
+  return name === "equ" && defs.packages.includes("mhequ");
+}
+
 export function macroAt(defs: LatexDefinitions, name: string, pos: number): LatexMacro | null {
   const list = defs.macros.get(name);
   if (!list) return null;

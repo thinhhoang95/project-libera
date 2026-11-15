@@ -27,6 +27,11 @@ export const KATEX_MACROS: Record<string, string> = {
   // LaTeX's text box and old slanted switch in formulas (`$\left[ \mbox{UNK} \right]$`, `$\text{\sl N}$`).
   "\\mbox": "\\text{#1}",
   "\\sl": "\\it",
+  // LaTeX 2e's font switches in a text box (`\text{\normalfont (EGCC)}`, `\text{\itshape for all}`, 2611.14951), as the old
+  // two-letter switches KaTeX has. `\mdseries` and `\scshape` have none: those formulas stay source.
+  "\\normalfont": "\\rm", "\\upshape": "\\rm", "\\rmfamily": "\\rm",
+  "\\itshape": "\\it", "\\slshape": "\\it", "\\bfseries": "\\bf",
+  "\\sffamily": "\\sf", "\\ttfamily": "\\tt",
   // The old emphasis switch in a text box (`$\mbox{\em ``ab''}$`, 2610.37006): italic.
   "\\em": "\\it",
   // A footnote's mark in a display (`\text{arbitrary, otherwise.}\footnotemark` in a `cases`, 2611.11859): a superscript star,
@@ -588,6 +593,20 @@ const MIRRORED_ARROWS: Record<string, string> = {
   Longrightarrow: "\\Longleftarrow", hookrightarrow: "\\hookleftarrow", rightharpoonup: "\\leftharpoonup", rightharpoondown: "\\leftharpoondown",
   twoheadrightarrow: "\\twoheadleftarrow", implies: "\\impliedby",
 };
+/**
+ * mathtools' `\MoveEqLeft[n]` opens the first row of an `align` (`\MoveEqLeft a \\ &= b`): an alignment point, with the row
+ * moved `n`em (2 by default) to the left. KaTeX has no such command; the row is drawn at its alignment point, without the
+ * shift (the rows below it are as TeX sets them). Only where it begins a row; elsewhere it stays, and the formula is source.
+ */
+function moveEqLeftForKatex(latex: string) {
+  return latex.replace(/\\MoveEqLeft(?![A-Za-z@])\s*(?:\[[^\]]*\])?\s*/g, (whole, at: number) => {
+    const lastBreak = latex.lastIndexOf("\\\\", at - 1);
+    const rowStart = lastBreak < 0 ? 0 : lastBreak + 2;
+    const row = latex.slice(rowStart, at).replace(/\\(?:label|tag)\*?\s*\{[^{}]*\}|\\(?:nonumber|notag)(?![A-Za-z@])|\\begin\s*\{[^{}]*\}(?:\s*\{[^{}]*\})?/g, "");
+    return row.trim() === "" ? "&" : whole;
+  });
+}
+
 function reflectboxForKatex(latex: string) {
   return latex.replace(/\\reflectbox\s*\{\s*(?:\\ensuremath\s*\{\s*\\([A-Za-z]+)\s*\}|\$\s*\\([A-Za-z]+)\s*\$|\\([A-Za-z]+))\s*\}/g, (whole, a?: string, b?: string, c?: string) => {
     const mirrored = MIRRORED_ARROWS[(a ?? b ?? c)!];
@@ -658,6 +677,10 @@ export function forKatex(latex: string) {
   if (/\\footnote(?![A-Za-z@])/.test(out)) out = replaceGroups(out, /\\footnote(?![A-Za-z@])\s*(?:\[[^\]]*\]\s*)?/g, () => "{}^{\\ast}");
   // hyperref's anchor before a `\label` (Quarto's `\begin{equation}\phantomsection\label{eq-x}…`, 2611.09366) draws nothing.
   if (out.includes("\\phantomsection")) out = out.replace(/\\phantomsection(?![A-Za-z@])\s*/g, "");
+  if (out.includes("\\MoveEqLeft")) out = moveEqLeftForKatex(out);
+  // TeX's math-spacing glue assigned in a formula (`\mbox{$\medmuskip=0.5mu\displaystyle…$}`, 2611.15228's `\squeeze`): only
+  // the spacing between operators changes, which KaTeX sets its own way; the assignment is dropped.
+  if (/\\(?:thin|med|thick)muskip/.test(out)) out = out.replace(/\\(?:thin|med|thick)muskip\s*=\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*mu(?:\s+plus\s+-?[\d.]+\s*mu)?(?:\s+minus\s+-?[\d.]+\s*mu)?\s*/g, "");
   if (out.includes("\\reflectbox")) out = reflectboxForKatex(out);
   if (out.includes("\\romannumeral") || out.includes("\\MakeUppercase") || out.includes("\\MakeLowercase")) out = romanCaseForKatex(out);
   if (out.includes("\\textsc")) out = textscForKatex(out);
