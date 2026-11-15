@@ -2120,7 +2120,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const qedMacro = macroAt(defs, "qedsymbol", qedAt);
           const qedLocal = qedMacro && qedMacro.pos >= 0 ? expandLatexMacros("\\qedsymbol", defs, { mode: "text", pos: qedAt }) : null;
           const qed = qedMacro ? (qedLocal?.ok ? qedLocal.text : "\\qedsymbol") : null;
-          emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(qed) }] });
+          emit({ kind: "env-footer", from: endSpan?.from ?? formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(qed) }] });
         } else collapseLine(formed.end, "env-end");
       }
       const styleClass = shown ? THEOREM_STYLE_CLASSES[shown.style] : name === "abstract" ? "cm-vis-abstract" : acknowledgments ? "cm-vis-acknowledgments" : "cm-vis-proof";
@@ -2147,7 +2147,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         if (beginCode) emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: new EnvironmentHeaderWidget("user", beginCode, null, null, 0) }] });
         else if (beginCode === "") collapseLine(begin, "env-begin", span ? undefined : { from: begin.from, to: headerEnd });
         const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
-        if (endCode) emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(endCode) }] });
+        if (endCode) emit({ kind: "env-footer", from: endSpan?.from ?? formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(endCode) }] });
         else if (endCode === "") collapseLine(formed.end, "env-end");
       }
       return undefined;

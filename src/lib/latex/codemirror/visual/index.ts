@@ -9,6 +9,7 @@ import { closeFloatSessions, installFloatEditor } from "./float-edit";
 import { closeAlgorithmSessions, installAlgorithmEditor } from "./algorithm-edit";
 import { visualConfig, visualStateFields, type VisualConfig } from "./model";
 import { linkClicks, numberingPlugin, pendingFiller, remoteOutlines } from "./plugins";
+import { widgetClickFallback } from "./widget-clicks";
 import { rebuildVisualEffect, structuralField } from "./structural";
 import { onMathExtensionLoaded } from "./math-render";
 import { visualStylePlugin } from "./style";
@@ -57,6 +58,7 @@ export function latexVisualMode(config: Partial<VisualConfig>): Extension {
     numberingPlugin,
     pendingFiller,
     linkClicks,
+    widgetClickFallback,
     remoteOutlines,
     visualKeys(),
     mathSessionTracker,

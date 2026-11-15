@@ -204,8 +204,16 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   // Drawn wrong: a widget whose text still has LaTeX in it, or "undefined"/"NaN" (each widget drawn on its own, since
   // jsdom's view only draws the first screen). Code and verbatim widgets show backslashes on purpose.
   const junk: string[] = [];
+  // Not editable: a drawn widget with no construct under it, which nothing (a click, Alt+Enter) can open as source.
+  const noEdit: string[] = [];
+  const extents = view.state.field(structuralField).extents;
   shown.between(0, doc.length, (from, to, decoration) => {
     const widget = decoration.spec.widget as { toDOM?: (view: EditorView) => HTMLElement } | undefined;
+    if (widget?.toDOM && noEdit.length < 60) {
+      let over = false;
+      extents.between(from, to, () => { over = true; return false; });
+      if (!over) noEdit.push(`${lineOf(doc, from)}: ${widget.constructor.name} over ${JSON.stringify(doc.slice(from, Math.min(to, from + 80)))}`);
+    }
     if (!widget?.toDOM || junk.length >= 60) return;
     let shownText = "";
     try {
@@ -303,7 +311,7 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   });
   view.destroy();
   parent.remove();
-  return { doc, text, commands, math, why, junk, numbered: numbering.entries.length };
+  return { doc, text, commands, math, why, junk, noEdit, numbered: numbering.entries.length };
 }
 
 async function audit(args: string[]) {
@@ -347,10 +355,11 @@ async function audit(args: string[]) {
         report.push(`\n## ${file}  (${result.doc.length} chars, ${ms.toFixed(0)} ms, ${result.numbered} numbered, ${left} commands left, ${result.math.length} math left)`);
         for (const [name, entry] of [...result.commands].sort((a, b) => b[1].count - a[1].count).slice(0, 60)) report.push(`  ${String(entry.count).padStart(4)} \\${name}    e.g. ${entry.sample}`);
         if (result.junk.length) report.push(`  drawn with LaTeX or junk in it:\n    ${result.junk.join("\n    ")}`);
+        if (result.noEdit.length) report.push(`  drawn but not editable (no construct a click opens):\n    ${result.noEdit.join("\n    ")}`);
         if (result.why.size) report.push(`  why formulas stay source:\n${[...result.why].sort((a, b) => b[1].count - a[1].count).map(([reason, entry]) => `    ${String(entry.count).padStart(4)} ${reason}\n         e.g. ${entry.sample}`).join("\n")}`);
         if (result.math.length) report.push(`  math left as source:\n    ${result.math.slice(0, 15).join("\n    ")}`);
         writeFileSync(path.join(outDir, `${paper}__${file.replace(/[\\/]/g, "_")}.txt`), result.text);
-        summary.push(`${paper.padEnd(30)} ${file.slice(-38).padEnd(38)} ${String(result.doc.length).padStart(7)}ch ${ms.toFixed(0).padStart(6)}ms numbered=${String(result.numbered).padStart(4)} left=${String(left).padStart(5)} math=${String(result.math.length).padStart(4)} junk=${String(result.junk.length).padStart(3)}`);
+        summary.push(`${paper.padEnd(30)} ${file.slice(-38).padEnd(38)} ${String(result.doc.length).padStart(7)}ch ${ms.toFixed(0).padStart(6)}ms numbered=${String(result.numbered).padStart(4)} left=${String(left).padStart(5)} math=${String(result.math.length).padStart(4)} junk=${String(result.junk.length).padStart(3)} noedit=${String(result.noEdit.length).padStart(3)}`);
       } catch (error) {
         const stack = (error as Error).stack?.split("\n").slice(0, 8).join("\n    ") ?? String(error);
         report.push(`\n## ${file}\nERROR: ${stack}`);
