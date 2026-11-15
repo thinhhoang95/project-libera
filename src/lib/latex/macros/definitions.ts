@@ -142,6 +142,8 @@ export type LatexDefinitions = {
   colors: Map<string, { model: string; value: string }>;
   /** enumitem's `\newlist{exercises}{enumerate}{6}`: lists of the document's own, by name, with the kind they are. */
   lists?: Map<string, "enumerate" | "itemize" | "description">;
+  /** The names in `lists` that are user environments opening an enumerate (not enumitem's `\newlist`). */
+  userLists?: Set<string>;
   /** enumitem's `\setlist[exercises,1]{label=…}`: the options of a list's level, by `name:level`. */
   listOptions?: Map<string, string>;
   /**
@@ -1340,6 +1342,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           if (uncertain) { note(defs.unsupported, name, `${name} is defined under a condition`); defs.environments.delete(name); }
           else if (supported) {
             defs.environments.set(name, { name, arity, optional, spec, begin: begin.content, end: endCode.content, pos });
+            registerUserList(defs, name, arity, !!optional || !!spec, begin.content, endCode.content);
             // `\newenvironment{myparagraph}[1]{…}{}` also defines `\myparagraph`: with nothing to end, `\myparagraph{Title}` is used as a command (cs.PL 2610.26599).
             if (!command.endsWith("DocumentEnvironment") && arity > 0 && !endCode.content.trim() && /^[A-Za-z]+$/.test(name) && !defs.macros.get(name)?.length) {
               addMacro(context, { name, arity, optional, body: begin.content, pos, file: context.file }, "new");
@@ -1949,6 +1952,55 @@ export function mapLatexDefinitions(defs: LatexDefinitions, changes: PositionMap
     extents: defs.extents.map((extent) => ({ from: map(extent.from), to: map(extent.to), ...(extent.broken ? { broken: true } : {}) })),
     problems: defs.problems.map(note), unsupported: defs.unsupported.map(note),
   };
+}
+
+/**
+ * A user environment that only opens an `enumerate` with its own labels (math.ST 2611.11874's `parts`: `\renewcommand\theenumi{(\roman{enumi})}`
+ * and `\labelenumi{\theenumi}` around `\begin{enumerate}`, the outer item's number kept for `\ref` through `\p@enumi`): a list of the
+ * document's own, drawn as an enumerate whose items are labelled that way. Anything else in its code leaves it an ordinary environment.
+ */
+function registerUserList(defs: LatexDefinitions, name: string, arity: number, hasOptions: boolean, begin: string, end: string) {
+  const label = arity || hasOptions ? null : userListLabel(defs, begin, end);
+  if (label === null) {
+    if (defs.userLists?.delete(name)) defs.lists?.delete(name);
+    return;
+  }
+  (defs.lists ??= new Map()).set(name, "enumerate");
+  (defs.userLists ??= new Set()).add(name);
+  for (let level = 1; level <= 4; level++) (defs.listOptions ??= new Map()).set(`${name}:${level}`, label ? `label=${label}` : "");
+}
+
+/** The enumitem label template (`(\roman*)`) of an environment that is an enumerate with its labels set; "" for the stock labels; null when it is not one. */
+function userListLabel(defs: LatexDefinitions, begin: string, end: string) {
+  if (!/^\s*(?:\\endenumerate|\\end\s*\{enumerate\})\s*$/.test(end)) return null;
+  let code = begin;
+  // The outer item's label, kept for references to the parts (`\p@enumi`), and the check for being inside an item.
+  const outer = /\\protected@edef\s*\\([A-Za-z@]+)\s*\{\s*\\@currentlabel\s*\}/.exec(code);
+  if (outer) {
+    code = code.replace(outer[0], "");
+    code = code.replace(new RegExp(String.raw`\\renewcommand\s*\\p@enumi\s*\{\s*\\${outer[1].replace(/@/g, "@")}\s*\}`), "");
+  }
+  code = code.replace(/\\if@inlabel\s*\\leavevmode\s*\\par\s*\\fi/, "");
+  let label = "";
+  const format = /\\renewcommand\s*\\theenumi\s*\{((?:[^{}]|\{[^{}]*\})*)\}/.exec(code);
+  if (format) {
+    code = code.replace(format[0], "");
+    const template = format[1].replace(/\\(roman|Roman|arabic|alph|Alph)\s*\{\s*enumi\s*\}/g, "\\$1*");
+    if (/\\(?![A-Za-z]+\*)|[{}]/.test(template.replace(/\\(?:roman|Roman|arabic|alph|Alph)\*/g, ""))) return null;
+    const labelled = /\\renewcommand\s*\\labelenumi\s*\{\s*\\theenumi\s*\}/.exec(code);
+    if (!labelled) return null;
+    code = code.replace(labelled[0], "");
+    label = template;
+  }
+  // `\@ifundefined{enummax}{\enumerate}{\enumerate[(iii)]}`: a width for the labels when `enummax` is defined, else the plain list.
+  code = code.replace(/\\@ifundefined\s*\{([A-Za-z@]+)\}\s*\{\s*\\enumerate\s*\}\s*\{\s*\\enumerate\s*\[[^\]]*\]\s*\}/, (whole, macro: string) => (defs.macros.has(macro) ? whole : "\\enumerate"));
+  return /^\s*(?:\\enumerate|\\begin\s*\{enumerate\})\s*$/.test(code) ? label : null;
+}
+
+/** A macro that is `\label` for an item's parts (`\newcommand\partlabel[1]{\label{#1}{\protected@edef\@currentlabel{\theenumi}\label{#1*}}}`): the key is its argument. */
+export function isPartLabelMacro(macro: LatexMacro | null | undefined) {
+  return !!macro && !macro.unsupported && !macro.alias && macro.arity === 1 && macro.optional === undefined && !macro.spec
+    && /^\s*\\label\s*\{#1\}\s*\{\s*\\protected@edef\s*\\@currentlabel\s*\{\s*\\theenumi\s*\}\s*\\label\s*\{#1\*\}\s*\}\s*$/.test(macro.body);
 }
 
 /** How many macros and environments a summary counts (the latest definition of each name). */

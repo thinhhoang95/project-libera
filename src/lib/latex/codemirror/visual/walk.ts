@@ -2,10 +2,10 @@ import type { EditorState, Text, Transaction } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
-import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, isInLatexComment, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
+import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, isInLatexComment, isPartLabelMacro, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
-import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
+import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroPassThrough, structureMacroNames } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
@@ -22,7 +22,7 @@ import { gameTabular } from "./game";
 import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
   ChipWidget, ColumnsWidget, EnvironmentFooterWidget, EnvironmentHeaderWidget, ExpandedEnvironmentWidget, type ExpandedEnvironmentSpec, type FigureContent, FigureWidget, FootnoteMarkWidget, graphicsBase, HeadingNumberWidget, ImageWidget,
-  BiographyHeaderWidget, ExampleMarkerWidget, ItemMarkerWidget, QedMarkWidget, LineBreakWidget, LiteralTextWidget, PrintedTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
+  BiographyHeaderWidget, ExampleMarkerWidget, GroupMarkWidget, ItemMarkerWidget, QedMarkWidget, LineBreakWidget, LiteralTextWidget, PrintedTextWidget, MacroFootnoteWidget, MacroHeadingWidget, MacroPieceWidget, MacroWidget, MathWidget, PreambleWidget, SymbolWidget, TableWidget, TitleWidget, BibliographyListWidget, type FigureSpec,
   RestatedTheoremWidget, restatablesIn, TodoWidget, type TableExtras,
 } from "./widgets";
 import { beginDocumentIndex } from "../../document-begin";
@@ -170,7 +170,7 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   par: 0, noindent: 0, indent: 0, smallskip: 0, medskip: 0, bigskip: 0, vfill: 0, newpage: 0, clearpage: 0, cleardoublepage: 0, pagebreak: 0, nopagebreak: 0,
   newline: 0, linebreak: 0, onehalfspacing: 0, doublespacing: 0, singlespacing: 0, justifying: 0, raggedright: 0, raggedleft: 0, centering: 0,
   frontmatter: 0, mainmatter: 0, backmatter: 0, tableofcontents: 0, listoffigures: 0, listoftables: 0, listoftodos: 0, FloatBarrier: 0, restoregeometry: 0,
-  balance: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
+  balance: 0, hrule: 0, sloppy: 0, fussy: 0, flushbottom: 0, raggedbottom: 0, nolinenumbers: 0, linenumbers: 0, phantomsection: 0, allowdisplaybreaks: 0,
   tightlist: 0, startcontents: 0, makeatletter: 0, makeatother: 0, protect: 0, relax: 0, vskip: 0, let: 0,
   // AASTeX's `\restartappendixnumbering` and `\startlongtable` print nothing.
   restartappendixnumbering: 0, startlongtable: 0,
@@ -211,7 +211,7 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   abovedisplayshortskip: 0, belowdisplayshortskip: 0, predisplaypenalty: 0, postdisplaypenalty: 0, interlinepenalty: 0, brokenpenalty: 0, displaywidowpenalty: 0, floatingpenalty: 0,
 };
 /** Setup commands of LAYOUT_LINE_ARGS that print nothing wherever they stand, so they hide even among other things on a line. */
-const INLINE_SETUP = /^\\(?:pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|usepgfplotslibrary|tcbuselibrary|tcbset|pgfkeys|floatname)$/;
+const INLINE_SETUP = /^\\(?:setlength|addtolength|sloppy|fussy|hrule|pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|usepgfplotslibrary|tcbuselibrary|tcbset|pgfkeys|floatname)$/;
 /** The TeX assignments of LAYOUT_LINE_ARGS that take an `= value` (a glue, a dimension or an integer) rather than a group. */
 const TEX_ASSIGNMENT = /^(?:itemsep|parsep|topsep|partopsep|labelsep|labelwidth|leftmargin|rightmargin|itemindent|listparindent|columnsep|abovedisplayskip|belowdisplayskip|abovedisplayshortskip|belowdisplayshortskip|predisplaypenalty|postdisplaypenalty|interlinepenalty|brokenpenalty|displaywidowpenalty|floatingpenalty|predisplaysize|medmuskip|thinmuskip|thickmuskip|relpenalty|binoppenalty|hangindent|hangafter|parindent|parskip|baselineskip|lineskip|leftskip|rightskip|parfillskip|tolerance|emergencystretch|hbadness|vbadness|widowpenalty|clubpenalty|hyphenpenalty|exhyphenpenalty|tabcolsep|arraycolsep)$/;
 /** What follows such an assignment's name: an optional `=`, a number with a unit (or none: a penalty), then any `plus`/`minus` glue. */
@@ -414,7 +414,7 @@ const HANDLED = new Set([
 ]);
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
-const LAYOUT_NOISE = /\\(?:par|noindent|indent|medskip|smallskip|bigskip|hfill|vfill|null|ignorespaces|unskip|relax|nopagebreak|newline|centering|raggedright|raggedleft|normalfont|itshape|upshape|bfseries|mdseries|rmfamily|sffamily|ttfamily)(?![A-Za-z])|\\[vh]space\*?\s*\{[^}]*\}|\\(?:begin|end)\s*\{[^}]*\}(?:\[[^\]]*\])?|\\item(?:\[([^\]]*)\])?/g;
+const LAYOUT_NOISE = /\\(?:begingroup|endgroup|par|noindent|indent|medskip|smallskip|bigskip|hfill|vfill|null|ignorespaces|unskip|relax|nopagebreak|newline|centering|raggedright|raggedleft|normalfont|itshape|upshape|bfseries|mdseries|rmfamily|sffamily|ttfamily)(?![A-Za-z])|\\[vh]space\*?\s*\{[^}]*\}|\\color\s*\{\s*black\s*\}|\\(?:begin|end)\s*\{[^}]*\}(?:\[[^\]]*\])?|\\item(?:\[([^\]]*)\])?/g;
 
 /** What a reference list is headed: the book classes' "Bibliography", else "References". */
 function bibliographyHeading(defs: LatexDefinitions) {
@@ -1134,6 +1134,27 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const argument = command.getChild("SectioningArgument");
         const inner = argument && argumentInner(argument);
         if (!argument || !inner || hasDirectError(command)) return;
+        // A heading alone in `\textcolor{…}{…}` (math-ph 2611.15304; after a blank line the grammar reads it whole, the wrapper stray): drawn
+        // with the wrapper, as coloredHeadingUse draws the other reading.
+        const wrapper = name !== "Paragraph" && name !== "SubParagraph" ? colorWrapper(readNode, command.from, argument.to) : null;
+        if (wrapper) {
+          const wrapLabel = trailingLabel(state, tree.topNode, wrapper.end);
+          const wrapEnd = wrapLabel ? wrapLabel.to : wrapper.end;
+          const color = cssColor(null, wrapper.color, defs.colors);
+          const className = SECTION_CLASSES[name];
+          if (wrapLabel) consumed.push([wrapLabel.from, wrapLabel.to]);
+          consumed.push([wrapper.start, wrapper.end]);
+          emit({
+            kind: "heading", from: wrapper.start, to: wrapEnd, reveal: "line", wholeLine: true,
+            replaces: structural ? [
+              { from: wrapper.start, to: inner.from, widget: new HeadingNumberWidget(className, read(state, wrapper.start, inner.from)) },
+              { from: inner.to, to: wrapEnd },
+            ] : [],
+            marks: color ? [{ from: inner.from, to: inner.to, class: "cm-vis-color", attributes: { style: `color: ${color}` } }] : undefined,
+            hiddenLines: [{ from: wrapper.start, to: inner.to, class: `cm-vis-heading ${className}` }],
+          });
+          return;
+        }
         const label = trailingLabel(state, node.getChild("Content"), argument.to);
         const end = label ? label.to : argument.to;
         // `\section*{}` (a class's abstract placeholder, 2611.13868): no title and no number, so nothing is drawn; its line folds away.
@@ -1181,7 +1202,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         // A wrapper that only folds away (`samepage`, `multicols`) begun in an earlier piece: its `\end` is folded by the piece it is in.
         else if (structural && name === "Environment") {
           const wrapperName = environmentName(node, readNode) ?? "";
-          if (Object.hasOwn(WRAPPER_ENVIRONMENTS, wrapperName) && !defs.environments.has(wrapperName)) {
+          // (A `minipage` too: math.RT 2611.12492's, a heading and a list in one, split by a piece boundary, left its `\end{minipage}\par`.)
+          if ((Object.hasOwn(WRAPPER_ENVIRONMENTS, wrapperName) || wrapperName === "minipage") && !defs.environments.has(wrapperName)) {
             const formed = wellFormedEnvironment(node, state);
             if (formed && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "env-end");
           }
@@ -1254,6 +1276,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
 
       switch (name) {
         case "TextColorCommand": case "ColorBoxCommand": {
+          if (name === "TextColorCommand" && node.from >= from && node.from < to && !isConsumed(node)) {
+            if (coloredContents(node)) return false;
+            if (coloredHeadingUse(node)) return false;
+          }
           const args = commandArguments(node);
           const model = args.find((arg) => arg.optional);
           const mandatory = args.filter((arg) => !arg.optional);
@@ -1607,6 +1633,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (line) { collapseLine(line, "layout"); consumed.push([line.from, line.to]); }
           // `{\centering text\par}` in a line of text: the switch prints nothing there.
           else if (structural && name === "Centering" && /^\\centering$/.test(read(state, node.from, node.to))) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
+          // `\begin{enumerate}\setlength{\itemsep}{0pt}` (stat.ME 2611.14598): among other things on a line it prints nothing, so it is hidden, back at the caret.
+          else if (structural && name === "SetLengthCommand" && node.from >= from && node.from < to && !isConsumed(node) && !hasDirectError(node) && !/[{,]\s*$/.test(read(state, doc.lineAt(node.from).from, node.from)) && /^\\setlength\s*\{[^{}]*\}\s*\{[^{}]*\}$/.test(read(state, node.from, node.to))) emit({ kind: "symbol", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: node.to }] });
           return false;
         }
         case "HorizontalLine":
@@ -1732,7 +1760,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if ((/^inpara/.test(formed.name) || formed.name.endsWith("*")) && !defs.lists?.has(formed.name)) list.inline = true;
     lists.push(list);
     if (structural) {
-      collapseLine(formed.begin, "list-begin");
+      // Layout set right after the `\begin` on its line (`\begin{enumerate}\setlength{\itemsep}{0pt}`, stat.ME 2611.14598) folds with it.
+      const lineTail = read(state, formed.begin.to, doc.lineAt(formed.begin.to).to);
+      const layout = layoutRun(lineTail, true);
+      const folded = layout > 0 && !lineTail.slice(layout).trim() ? layout : 0;
+      if (folded) consumed.push([formed.begin.to, formed.begin.to + folded]);
+      collapseLine(folded ? { from: formed.begin.from, to: formed.begin.to + folded } : formed.begin, "list-begin");
       // Past the walked range, the piece with the `\end` line draws it (see above): a list of hundreds of items is not walked whole.
       if (formed.end.from < to) collapseLine(formed.end, "list-end");
     }
@@ -2683,6 +2716,17 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const stockDoi = name === "doi" && !!macro && macro.end !== undefined && macro.end <= doc.length &&/^\\providecommand\s*\{\\doi\}[^]*doi:/.test(read(state, macro.pos, macro.end));
     // The arxiv template's own `\def\keywords#1{… \def\and{ $\cdot$ } …}` (arxiv.sty, in the project) is llncs's keywords line: drawn below.
     const stockKeywords = name === "keywords" && !!macro && defs.packages.includes("arxiv");
+    // `\partlabel{key}` (math.ST 2611.11874's `\newcommand\partlabel[1]{\label{#1}{…\label{#1*}}}`): a label of the item it is in, drawn as `\label` is.
+    if (isPartLabelMacro(macro) && structural && !hasDirectError(node)) {
+      const keyArgument = args.find((arg) => !arg.optional);
+      const keyRange = keyArgument && argumentInner(keyArgument.node);
+      const key = keyRange ? read(state, keyRange.from, keyRange.to).trim() : "";
+      if (keyArgument && key && args.length === 1 && keyArgument.node.from === ctrl.to && !/[\\{}]/.test(key)) {
+        emit({ kind: "label", from: node.from, to: keyArgument.node.to, reveal: "strict", replaces: [{ from: node.from, to: keyArgument.node.to, widget: new ChipWidget("label", `\\${name}`, [key], {}, keyArgument.node.to - node.from) }] });
+        consumed.push([node.from, keyArgument.node.to]);
+        return false;
+      }
+    }
     if (macro && !stockDoi && !stockKeywords) return macroUse(node, name);
     const drawn = packageCommand(node, ctrl, text, args);
     if (drawn !== null) return drawn;
@@ -2793,6 +2837,23 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function packageCommand(node: SyntaxNode, ctrl: SyntaxNode, text: string, args: ReturnType<typeof commandArguments>): false | undefined | null {
     const mandatory = args.filter((arg) => !arg.optional);
     const first = mandatory[0] && argumentInner(mandatory[0].node);
+    // natbib's `\citetext{\citealp{a}; \citealp[Section~2.4]{b}}` (math.ST 2611.11874): its text in parentheses, the citations in it as chips.
+    // The text stays editable where it is; the command and its braces are the parentheses (a click shows the source).
+    if (text === "\\citetext" && structural && args.length === 1 && first && mandatory[0].node.from === ctrl.to && !hasDirectError(node) && !macroAt(defs, "citetext", node.from) && defs.packages.includes("natbib")) {
+      const argument = mandatory[0].node;
+      if (node.from >= from && node.from < to) {
+        const total = argument.to - node.from;
+        emit({
+          kind: "macro-args", from: node.from, to: argument.to, reveal: "touch",
+          replaces: [
+            { from: node.from, to: first.from, widget: new GroupMarkWidget("(", "citetext", 0, total) },
+            { from: first.to, to: argument.to, widget: new GroupMarkWidget(")", "citetext", total - 1, total) },
+          ],
+        });
+      }
+      // The text inside is walked as any text: the chips for its citations.
+      return undefined;
+    }
     // `\ensuremath{…}` in text (lhs2TeX's `\ensuremath{\Conid{C}}`, 2610.41832): its argument, as an inline formula.
     if (text === "\\ensuremath" && first && args[0] === mandatory[0] && !read(state, ctrl.to, first.from - 1).trim() && !hasDirectError(node)) {
       const expanded = expandLatexMacros(read(state, first.from, first.to), defs, { mode: "math", pos: node.from });
@@ -2894,6 +2955,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     if (INLINE_LAYOUT.test(text)) {
+      // `\protect\textcolor{…}{\tableofcontents}` alone on its line: the contents list covers the whole line (coloredContents).
+      if (text === "\\protect" && !read(state, doc.lineAt(node.from).from, node.from).trim() && /^[ \t]*\\textcolor\s*\{[^{}]*\}\s*\{\s*\\(?:tableofcontents|listoffigures|listoftables)\s*\}[ \t]*$/.test(read(state, ctrl.to, doc.lineAt(ctrl.to).to))) return undefined;
       let textFrom = ctrl.to;
       while (textFrom < doc.length && / |\t/.test(read(state, textFrom, textFrom + 1))) textFrom++;
       // A group the parser hung on it (`\onehalfspacing{…}`) is text: its braces are hidden too.
@@ -3238,6 +3301,46 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       spec = { header, body: rest.trim(), items: null, className, length: range.to - range.from };
     }
     emit({ kind: "macro-env", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: new ExpandedEnvironmentWidget(spec) }] });
+    return true;
+  }
+
+  /**
+   * A heading in a colour (math-ph 2611.15304's `\textcolor{blue!55!black}{\section{Introduction}}\label{sec1}`): drawn as the
+   * heading, numbered as one (numbering.ts reads it), its title in the colour. Its line shows the source at the caret, as a heading's does.
+   */
+  function coloredHeadingUse(node: SyntaxNode): boolean {
+    const heading = coloredHeading(node, readNode);
+    if (!heading || heading.name === "Paragraph" || heading.name === "SubParagraph" || heading.titleTo <= heading.titleFrom || hasDirectError(node) || macroAt(defs, heading.command, node.from)) return false;
+    const label = trailingLabel(state, node.parent, node.to);
+    const end = label ? label.to : node.to;
+    const colorArgument = commandArguments(node).find((arg) => !arg.optional);
+    const colorRange = colorArgument && argumentInner(colorArgument.node);
+    const color = colorRange ? cssColor(null, read(state, colorRange.from, colorRange.to), defs.colors) : null;
+    const className = SECTION_CLASSES[heading.name];
+    if (label) consumed.push([label.from, label.to]);
+    consumed.push([node.from, node.to]);
+    emit({
+      kind: "heading", from: node.from, to: end, reveal: "line", wholeLine: true,
+      replaces: structural ? [
+        { from: node.from, to: heading.titleFrom, widget: new HeadingNumberWidget(className, read(state, node.from, heading.titleFrom)) },
+        { from: heading.titleTo, to: end },
+      ] : [],
+      marks: color ? [{ from: heading.titleFrom, to: heading.titleTo, class: "cm-vis-color", attributes: { style: `color: ${color}` } }] : undefined,
+      hiddenLines: [{ from: node.from, to: heading.titleTo, class: `cm-vis-heading ${className}` }],
+    });
+    return true;
+  }
+
+  /** `\protect\textcolor{blue!50!black}{\tableofcontents}` on its own line (2611.15304): the list of contents, as `\tableofcontents` alone is. */
+  function coloredContents(node: SyntaxNode): boolean {
+    const argument = node.getChild("TextArgument");
+    if (!structural || !argument || argument.to !== node.to || hasDirectError(node)) return false;
+    const listing = CONTENTS_LISTS[read(state, argument.from + 1, argument.to - 1).trim()];
+    const first = doc.lineAt(node.from);
+    const last = doc.lineAt(node.to);
+    if (!listing || !/^\s*(?:\\protect\s*)?$/.test(doc.sliceString(first.from, node.from)) || doc.sliceString(node.to, last.to).trim()) return false;
+    consumed.push([first.from, last.to]);
+    emit({ kind: "contents", from: first.from, to: last.to, reveal: "strict", replaces: [{ from: first.from, to: last.to, block: true, widget: new ContentsWidget(listing, last.to - first.from) }] });
     return true;
   }
 

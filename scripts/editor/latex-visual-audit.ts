@@ -207,6 +207,8 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   shown.between(0, doc.length, (from, to, decoration) => {
     const widget = decoration.spec.widget as { toDOM?: (view: EditorView) => HTMLElement } | undefined;
     if (!widget?.toDOM || junk.length >= 60) return;
+    // A counter printed in the text shows its source until its place is known; drawn here without one, it is not junk when the numbering has its value.
+    if (widget.constructor.name === "CounterWidget" && numbering.entries.some((entry) => entry.kind === "counter" && entry.pos === from)) return;
     let shownText = "";
     try {
       const element = widget.toDOM(view);

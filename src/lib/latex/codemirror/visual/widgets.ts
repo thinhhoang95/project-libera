@@ -597,6 +597,26 @@ export class MacroPieceWidget extends VisualWidget {
   }
 }
 
+/**
+ * The opening or closing mark a command prints around an argument that stays editable text (the parentheses of natbib's
+ * `\citetext{…}`): a click shows the whole command's source. `back`: how far this part is from the command's start; `length`: the command's.
+ */
+export class GroupMarkWidget extends VisualWidget {
+  constructor(readonly text: string, readonly name: string, readonly back: number, readonly length: number) { super(`${text}\u0000${name}\u0000${back}\u0000${length}`); }
+  toDOM(view: EditorView) {
+    const dom = el("span", "cm-vis-macro-piece", this.text);
+    dom.title = `\\${this.name}`;
+    dom.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const from = widgetPos(view, dom);
+      if (from !== null) revealSourceAt(view, from - this.back, from - this.back + this.length);
+    });
+    return dom;
+  }
+  ignoreEvent() { return true; }
+}
+
 /** `\ensuremath`-style macros and `\(…\)` with macros inside: covered by MathWidget. Images outside figures: */
 export class ImageWidget extends VisualWidget {
   constructor(readonly path: string, readonly length: number, readonly base = "") { super(`${path}\u0000${length}\u0000${base}`); }
