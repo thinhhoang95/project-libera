@@ -99,7 +99,7 @@ function copyDefinitions(defs: LatexDefinitions): LatexDefinitions {
     counterWithin: new Map(defs.counterWithin), counterPrefix: new Map(defs.counterPrefix), crefNames: new Map(defs.crefNames), packages: [...defs.packages],
     packageOptions: new Map(defs.packageOptions), graphicsPaths: [...defs.graphicsPaths], columnTypes: new Map(defs.columnTypes), colors: new Map(defs.colors),
     siunitx: defs.siunitx && { units: new Map(defs.siunitx.units), options: new Map(defs.siunitx.options) },
-    lists: defs.lists && new Map(defs.lists), listOptions: defs.listOptions && new Map(defs.listOptions), extents: [], problems: [...defs.problems], unsupported: [...defs.unsupported],
+    lists: defs.lists && new Map(defs.lists), userLists: defs.userLists && new Set(defs.userLists), listOptions: defs.listOptions && new Map(defs.listOptions), extents: [], problems: [...defs.problems], unsupported: [...defs.unsupported],
   };
 }
 

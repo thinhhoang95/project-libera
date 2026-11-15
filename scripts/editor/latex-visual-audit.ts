@@ -215,6 +215,8 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
       if (!over) noEdit.push(`${lineOf(doc, from)}: ${widget.constructor.name} over ${JSON.stringify(doc.slice(from, Math.min(to, from + 80)))}`);
     }
     if (!widget?.toDOM || junk.length >= 60) return;
+    // A counter printed in the text shows its source until its place is known; drawn here without one, it is not junk when the numbering has its value.
+    if (widget.constructor.name === "CounterWidget" && numbering.entries.some((entry) => entry.kind === "counter" && entry.pos === from)) return;
     let shownText = "";
     try {
       const element = widget.toDOM(view);
