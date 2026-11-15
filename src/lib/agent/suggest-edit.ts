@@ -3,6 +3,7 @@ import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { canSuggestShared, commentOnSharedText, SharedWriteError, suggestSharedText } from "@/lib/collab/shared-writes";
 import { getFileType } from "@/lib/storage/file-types";
 import { addAgentSuggestions } from "@/lib/storage/markdown-reviews";
+import { isTextFileType } from "@/lib/types";
 import { agentSuggestionTitle, anchorAt, mapAnchor, reviewBlocks, type ReviewAnchor, type ReviewRange } from "@/lib/markdown-review";
 import {
   closestLines, findEditTarget, lineOfOffset, missingFileError, ok, optionalString, plural, quoted, readCurrentText, requireString, resolve, sharedDocFor, ToolError,
@@ -46,8 +47,8 @@ function rebase(file: PendingFile, text: string) {
   return { kept, lost };
 }
 
-/** Blocks a passage may lie in: Markdown blocks, or blank-line separated paragraphs for LaTeX. */
-function blockRanges(text: string, fileType: "markdown" | "latex"): ReviewRange[] {
+/** Blocks a passage may lie in: Markdown blocks, or blank-line separated paragraphs for LaTeX and plain text. */
+function blockRanges(text: string, fileType: "markdown" | "latex" | "text"): ReviewRange[] {
   if (fileType === "markdown") return reviewBlocks(text).filter((block) => block.type !== "definition");
   const blocks: ReviewRange[] = [];
   let cursor = 0;
@@ -66,7 +67,7 @@ function blockRanges(text: string, fileType: "markdown" | "latex"): ReviewRange[
  * A passage the review can anchor and both editors can preview: inside one
  * block, or a run of whole blocks. Returns why not, or null.
  */
-export function passageProblem(text: string, range: ReviewRange, fileType: "markdown" | "latex") {
+export function passageProblem(text: string, range: ReviewRange, fileType: "markdown" | "latex" | "text") {
   const blocks = blockRanges(text, fileType).filter((block) => block.start < range.end && block.end > range.start);
   if (!blocks.length) return "before is only blank lines or space between paragraphs. Include text from the paragraph you want to change.";
   if (blocks.length === 1) return null;
@@ -77,7 +78,7 @@ export function passageProblem(text: string, range: ReviewRange, fileType: "mark
 export const suggestEditTool: AgentTool = {
   name: "SuggestEdit",
   kind: "comment",
-  description: `Proposes a concrete rewrite of a passage in a Markdown or LaTeX file, as a suggested edit the user accepts or rejects. The file itself never changes, so this works in every permission mode.
+  description: `Proposes a concrete rewrite of a passage in a text file (Markdown, LaTeX, plain text, code), as a suggested edit the user accepts or rejects. The file itself never changes, so this works in every permission mode.
 
 Usage:
 - Read the file first. before is exact text from the file, without line numbers, and must occur exactly once; include more words to make it unique. after is the replacement ("" deletes the passage).
@@ -87,7 +88,7 @@ Usage:
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string", description: "Library path of the Markdown or LaTeX file." },
+      path: { type: "string", description: "Library path of the text file." },
       before: { type: "string", description: "The exact passage to replace." },
       after: { type: "string", description: "The proposed replacement." },
       reason: { type: "string", description: "Why the change is needed, shown with the suggestion." },
@@ -105,8 +106,8 @@ Usage:
         ? `${resolved.path} is read-only: access to its shared notebook was revoked. Describe the change in your reply instead.`
         : `Your role in this shared notebook (${shared.role}) cannot suggest changes to ${resolved.path}. Describe the change in your reply instead.`);
     }
-    const fileType = getFileType(resolved.path);
-    if (fileType !== "markdown" && fileType !== "latex") throw new ToolError(`${resolved.path} is not a Markdown or LaTeX file. Suggested edits work only on .md and .tex files; describe other changes in your reply.`);
+    const fileType = getFileType(resolved.path) ?? undefined;
+    if (!isTextFileType(fileType)) throw new ToolError(`${resolved.path} is not a text file. Suggested edits work only on text files (Markdown, LaTeX, plain text, code); describe other changes in your reply.`);
     const before = requireString(args, "before");
     const after = requireString(args, "after", { allowEmpty: true });
     const reason = requireString(args, "reason").trim().slice(0, 2_000);

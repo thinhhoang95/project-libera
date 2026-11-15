@@ -27,6 +27,8 @@ async function withLibrary(run: (root: string) => Promise<void>) {
     await mkdir(path.join(root, "Research"), { recursive: true });
     await writeFile(path.join(root, "Research", "plan.md"), PLAN);
     await writeFile(path.join(root, "Research", "notes.txt"), "Plain notes.\n");
+    await writeFile(path.join(root, "Research", "snippet.txt"), "# not a heading\n- a\n- b\n\nSecond paragraph.\n");
+    await writeFile(path.join(root, "Research", "shot.png"), Buffer.from([137, 80, 78, 71]));
     await writeFile(path.join(root, "Research", "marked.md"), "Intro.\n\n:::comment\nAlready here.\n:::\n");
     await run(root);
   } finally {
@@ -103,7 +105,7 @@ test("comments attach to the block above them, and misplaced ones are explained"
 
 test("skills are listed by name and loaded on demand, and their tools appear once loaded", async () => {
   const system = buildAgentSystemPrompt({ permission: "read-only", mathInstruction: "Use $.", skills: AGENT_SKILLS });
-  assert.match(system, /# Skills\n[\s\S]*\n- leave-review-comments: Review a Markdown or LaTeX document/);
+  assert.match(system, /# Skills\n[\s\S]*\n- leave-review-comments: Review a Markdown, LaTeX or plain-text\/code document/);
   assert.ok(!system.includes(":::comment"), "instructions stay out of the system prompt");
 
   await withLibrary(async () => {
@@ -123,9 +125,8 @@ test("LeaveComment edits only a review copy, reports placement at once, and comp
     await call(context, "Skill", { name: "leave-review-comments" });
     assert.match((await call(context, "LeaveComment", { file_path: "Research/plan.md", old_string: "40k.", new_string: `40k.\n${block("Check this figure.")}` })).text, /Read Research\/plan\.md before commenting on it/);
     await call(context, "Read", { file_path: "Research/plan.md" });
-    await call(context, "Read", { file_path: "Research/notes.txt" });
     await call(context, "Read", { file_path: "Research/marked.md" });
-    assert.match((await call(context, "LeaveComment", { file_path: "Research/notes.txt", old_string: "Plain", new_string: "x" })).text, /not a Markdown or LaTeX file/);
+    assert.match((await call(context, "LeaveComment", { file_path: "Research/shot.png", old_string: "Plain", new_string: "x" })).text, /not a text file/);
     assert.match((await call(context, "LeaveComment", { file_path: "Research/marked.md", old_string: "Intro.", new_string: `Intro.\n${block("x")}` })).text, /itself contains ":::comment" lines/);
 
     const misplaced = await call(context, "LeaveComment", { file_path: "Research/plan.md", old_string: "The Q3 budget is 40k.", new_string: `The Q3 budget is 40k.\n\n${block("Check this figure.")}` });
@@ -174,6 +175,38 @@ function reply({ text = "", calls = [] }: { text?: string; calls?: { id: string;
 type SentBody = { tools: { function: { name: string } }[]; messages: { role: string; content: string }[] };
 const profile = { contextLength: 200_000, supportsTools: true, known: true };
 const misplace = { file_path: "Research/plan.md", old_string: "The Q3 budget is 40k.", new_string: `The Q3 budget is 40k.\n\n${block("Check this figure.")}` };
+
+test("text files take comments, replies and suggested edits on the plain paragraph path; other files are refused", async () => {
+  await withLibrary(async (root) => {
+    const { context, events } = makeContext();
+    await call(context, "Skill", { name: "leave-review-comments" });
+    await call(context, "Read", { file_path: "Research/snippet.txt" });
+    // Markdown parsing would make "- b" a list item; a text file's block is the whole paragraph.
+    const placed = await call(context, "LeaveComment", { file_path: "Research/snippet.txt", old_string: "- b", new_string: `- b\n\n${block("Why a and b?")}` });
+    assert.equal(placed.result, "1 comment placed");
+    assert.match(placed.text, /attaches to lines 1-3: “# not a heading/);
+    const suggested = await call(context, "SuggestEdit", { path: "Research/snippet.txt", before: "- a", after: "- c", reason: "Rename." });
+    assert.equal(suggested.isError, false);
+    assert.equal((await call(context, "SuggestEdit", { path: "Research/snippet.txt", before: "- b\n\nSecond", after: "x", reason: "Spans two paragraphs." })).isError, true);
+    assert.equal(await AGENT_SKILLS[0].finishPass!(context, { final: true }), null);
+    assert.ok(events.some((event) => event.type === "comments_added" && event.path === "Research/snippet.txt" && event.count === 1));
+    assert.ok(events.some((event) => event.type === "suggestions_added" && event.path === "Research/snippet.txt" && event.count === 1));
+
+    const [review] = await reviews(root);
+    assert.equal(review.key, "Research/snippet.txt");
+    const thread = review.threads[0];
+    assert.equal(thread.anchor.quote, "# not a heading\n- a\n- b");
+    const read = await call(context, "ReadComments", { file_path: "Research/snippet.txt" });
+    assert.match(read.text, /Why a and b\?/);
+    const replied = await call(context, "ReplyToComment", { file_path: "Research/snippet.txt", thread_id: thread.id, text: "Both are placeholders." });
+    assert.equal(replied.result, "Replied");
+
+    for (const name of ["ReadComments", "ReplyToComment"]) {
+      assert.match((await call(context, name, { file_path: "Research/shot.png", thread_id: "t1", text: "x" })).text, /not a text or PDF file/);
+    }
+    assert.match((await call(context, "SuggestEdit", { path: "Research/shot.png", before: "a", after: "b", reason: "x" })).text, /not a text file/);
+  });
+});
 
 test("the loop compiles comments when the model finishes and sends misplaced ones back to fix", async () => {
   await withLibrary(async (root) => {

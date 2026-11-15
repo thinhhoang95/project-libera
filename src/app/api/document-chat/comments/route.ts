@@ -10,12 +10,13 @@ import { resolveLibraryPath, statLibraryPath } from "@/lib/agent/library";
 import { commentsContext, type ChatCommentThread } from "@/lib/chat-comments";
 import { getFileType } from "@/lib/storage/file-types";
 import { toStorageError } from "@/lib/storage/errors";
+import { isTextFileType } from "@/lib/types";
 
 export const runtime = "nodejs";
 
 // A file's review comments as chat context, for an @Comments mention of a file
 // other than the one in view (the panel reads that one's live comments). `text`
-// is the editor's draft of an open Markdown or LaTeX file, which local anchors
+// is the editor's draft of an open text file, which local anchors
 // are mapped onto; without it the saved file is read.
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
@@ -25,8 +26,8 @@ export async function POST(request: NextRequest) {
   if (typeof body?.path !== "string" || !body.path || (body.text !== undefined && typeof body.text !== "string")) return jsonError("Invalid comments request.", 400);
   try {
     const resolved = await resolveLibraryPath(body.path);
-    const fileType = getFileType(resolved.path);
-    if (fileType !== "markdown" && fileType !== "latex" && fileType !== "pdf") return jsonError("Only Markdown, LaTeX and PDF files have review comments.", 400);
+    const fileType = getFileType(resolved.path) ?? undefined;
+    if (!isTextFileType(fileType) && fileType !== "pdf") return jsonError("Only text and PDF files have review comments.", 400);
     const name = resolved.pathParts.at(-1) ?? resolved.path;
     let text = "";
     let threads: CommentThread[];

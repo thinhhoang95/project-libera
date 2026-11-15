@@ -3,6 +3,7 @@ import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { canSuggestShared, commentOnSharedText, SharedWriteError } from "@/lib/collab/shared-writes";
 import { getFileType } from "@/lib/storage/file-types";
 import { addReviewThreads } from "@/lib/storage/markdown-reviews";
+import { isTextFileType } from "@/lib/types";
 import {
   CommentSyntaxError, describePlacement, locateComments, parseReviewCopy, placeComments, rebaseComments, renderReviewCopy,
   type CommentPlacement, type DraftComment,
@@ -40,7 +41,7 @@ async function assertSharedCommentable(context: ToolContext, resolved: Awaited<R
   }
 }
 
-type ReviewCopy = { path: string; fileType: "markdown" | "latex"; original: string; comments: DraftComment[] };
+type ReviewCopy = { path: string; fileType: "markdown" | "latex" | "text"; original: string; comments: DraftComment[] };
 
 function reviewCopies(context: ToolContext) {
   let copies = context.skillState.get(NAME) as Map<string, ReviewCopy> | undefined;
@@ -66,7 +67,7 @@ function region(text: string, start: number, end: number) {
 export const leaveCommentTool: AgentTool = {
   name: "LeaveComment",
   kind: "comment",
-  description: `Adds, changes or removes review comments in a Markdown or LaTeX file. Follow the ${NAME} skill's instructions.
+  description: `Adds, changes or removes review comments in a text file (Markdown, LaTeX, plain text, code). Follow the ${NAME} skill's instructions.
 
 Usage:
 - Works like Edit, but on your review copy of the file; the file itself never changes. old_string is exact text from the file, or from your review copy including earlier comment blocks as LeaveComment showed them. new_string is the same text with ":::comment" blocks added, changed, moved or removed. Everything other than comment blocks must stay the same.
@@ -76,7 +77,7 @@ Usage:
   parameters: {
     type: "object",
     properties: {
-      file_path: { type: "string", description: "Library path of the Markdown or LaTeX file." },
+      file_path: { type: "string", description: "Library path of the text file." },
       old_string: { type: "string", description: "Exact text to find in your review copy, e.g. the last line of the paragraph you comment on." },
       new_string: { type: "string", description: "The same text with comment blocks added, changed or removed." },
     },
@@ -89,9 +90,9 @@ Usage:
     if (isSharedNotebookPath(resolved.path)) await assertSharedCommentable(context, resolved);
     const oldString = requireString(args, "old_string", { allowEmpty: true });
     const newString = requireString(args, "new_string", { allowEmpty: true });
-    const fileType = getFileType(resolved.path);
+    const fileType = getFileType(resolved.path) ?? undefined;
     if (fileType === "pdf") throw new ToolError(`You cannot leave new comments on a PDF (${resolved.path}). You can reply in the threads already on it with ReplyToComment (see ReadComments); give other feedback in your reply.`);
-    if (fileType !== "markdown" && fileType !== "latex") throw new ToolError(`${resolved.path} is not a Markdown or LaTeX file. Review comments work only on .md and .tex files; give feedback on other files in your reply.`);
+    if (!isTextFileType(fileType)) throw new ToolError(`${resolved.path} is not a text file. Review comments work only on text files (Markdown, LaTeX, plain text, code); give feedback on other files in your reply.`);
     const current = await readCurrentText(context, resolved);
     if (!current) return missingFileError(context, resolved);
     if (!context.fileState.has(resolved.path)) throw new ToolError(`Read ${resolved.path} before commenting on it.`);
@@ -163,8 +164,8 @@ Usage:
 export function addReviewComment(context: ToolContext, filePath: string, original: string, offset: number, text: string) {
   // A shared document's copy becomes shared threads in finishComments, which
   // reports any the user's role cannot add.
-  const fileType = getFileType(filePath);
-  if (fileType !== "markdown" && fileType !== "latex") throw new ToolError(`${filePath} is not a Markdown or LaTeX file.`);
+  const fileType = getFileType(filePath) ?? undefined;
+  if (!isTextFileType(fileType)) throw new ToolError(`${filePath} is not a text file.`);
   const copies = reviewCopies(context);
   let copy = copies.get(filePath);
   if (!copy) {
@@ -296,6 +297,7 @@ The next paragraph…
 
 - A comment attaches to the block directly above it: a paragraph, heading, list item, table, code or math block. To comment on a list item, put the comment right after that item. To comment on a whole list, put the comment after the paragraph that introduces it.
 - Never put a comment inside a paragraph, table, code block or math block; put it after the block's last line.
+- In LaTeX and plain-text or code files a block is a paragraph: the lines between blank lines. A comment attaches to the paragraph directly above it.
 - One point per comment. For several points about one paragraph, put several comment blocks beneath it.
 - Comments are Markdown, but must not contain a line that is only \`:::\`.
 
@@ -349,7 +351,7 @@ After commenting, reply briefly: how many comments, replies and suggested edits 
 
 export const leaveReviewCommentsSkill: AgentSkill = {
   name: NAME,
-  description: "Review a Markdown or LaTeX document by leaving comments on its paragraphs and replying in its existing comment threads (and, where the fix is clear, suggesting edits), which the user works through in the Comments panel; on a PDF, reply in the threads the user started. Use when the user asks you to review a document, give feedback on it, leave or add comments, or reply to, answer or follow up on its comments; not to answer questions about a document or to edit it.",
+  description: "Review a Markdown, LaTeX or plain-text/code document by leaving comments on its paragraphs and replying in its existing comment threads (and, where the fix is clear, suggesting edits), which the user works through in the Comments panel; on a PDF, reply in the threads the user started. Use when the user asks you to review a document, give feedback on it, leave or add comments, or reply to, answer or follow up on its comments; not to answer questions about a document or to edit it.",
   instructions,
   tools: [leaveCommentTool, replyToCommentTool, suggestEditTool],
   finishPass,
