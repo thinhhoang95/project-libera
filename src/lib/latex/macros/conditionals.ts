@@ -136,6 +136,9 @@ const NOT_CHARACTERS = /^(?:begin|end|par|relax|noindent|indent|item|label|secti
 /** Names that stand for no command at all, which `\ifx\x\undefined` compares with. */
 const UNDEFINED = /^(?:undefined|@undefined|relax)$/;
 
+/** Commands LaTeX packages define and bibliography styles guard with `\ifx\csname …\endcsname\relax`: the guard's fallback is not the document's. */
+const PACKAGE_COMMANDS = /^(?:href|url|urlprefix|doi|nolinkurl|path|natexlab|bibinfo|bibfield|bibnamefont|bibfnamefont|citenamefont|texorpdfstring|textsc|texttt|emph|textit|textbf|ProvideTextCommandDefault|bibitem|newblock|providecommand|MakeUppercase|MakeLowercase|textcolor|color)$/;
+
 /** `\if` and `\ifx`: two characters, or two of the document's constant macros (`\ifx\mode\draftmode`). */
 function decideTokens(text: string, at: number, name: "if" | "ifx", facts: ConditionalFacts): { value: boolean; end: number } | null {
   const first = testToken(text, skipAfterWord(text, at));
@@ -143,6 +146,17 @@ function decideTokens(text: string, at: number, name: "if" | "ifx", facts: Condi
   if (first.command !== undefined) {
     // `\if\a…` expands `\a`, whose characters are not read here.
     if (name === "if") return null;
+    // `\expandafter\ifx\csname burlalt\endcsname\relax \def\burlalt#1#2{…}\fi` (a .bbl's fallbacks, math.PR 2611.15228): the
+    // definition runs unless the name is defined. A name a package defines (`\href`, `\url`) is taken as
+    // defined: the fallback is skipped and the editor keeps its own.
+    if (first.command === "csname") {
+      const named = /^([A-Za-z@]+)\\endcsname\s*\\relax(?![A-Za-z@])/.exec(text.slice(first.end, first.end + 120));
+      if (!named) return null;
+      const end = skipAfterWord(text, first.end + named[0].length);
+      const state = facts.defined?.(named[1]);
+      if (state !== undefined) return { value: !state, end };
+      return { value: !PACKAGE_COMMANDS.test(named[1]), end };
+    }
     const second = testToken(text, skipAfterWord(text, first.end));
     if (!second || second.command === undefined) return null;
     const [a, b] = [first.command, second.command];

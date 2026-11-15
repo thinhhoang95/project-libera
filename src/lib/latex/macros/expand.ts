@@ -550,6 +550,8 @@ const MATH_ONLY = /\\(?:math[a-z]+|frac|dfrac|tfrac|sqrt|sum|prod|int|oint|lim|i
 /** Whether text-mode LaTeX uses math syntax outside `$…$`, `\(…\)` and `\ensuremath{…}`. */
 export function needsMathMode(text: string) {
   const stripped = text
+    // A label's, citation's or link's name may hold `_` and `^` (`\pref{eq:effective_gravitational_couplings}`, hep-ph 2611.15647).
+    .replace(/\\(?:ref|eqref|cref|Cref|autoref|pageref|nameref|label|cite[A-Za-z]*|url|href|nolinkurl)\*?\s*(?:\[[^\]]*\]\s*)*\{[^{}]*\}/g, "")
     .replace(/\\ensuremath\s*\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g, "")
     .replace(/\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\\])*\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/g, "");
   return /(^|[^\\])[_^]/.test(stripped) || MATH_ONLY.test(stripped);

@@ -192,6 +192,10 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   // IEEEtran's publication-id and running-head switches, `\nobalance`, `\suppressfloats[t]` and `\appendixpage` (an "Appendices" heading, not drawn): print nothing here.
   IEEEpubidadjcol: 0, IEEEpeerreviewmaketitle: 0, nobalance: 0, suppressfloats: 0, appendixpage: 0,
   begingroup: 0, endgroup: 0,
+  // eso-pic's page decoration (`\AddToShipoutPictureFG*{\AtPageLowerLeft{…}}`, stat.AP 2611.10325): drawn on the printed page, not in the text.
+  AddToShipoutPicture: 1, AddToShipoutPictureFG: 1, AddToShipoutPictureBG: 1,
+  // IEEEtran's BibTeX style control (`\bstctlcite{BSTcontrol}`, stat.ML 2611.13765): a citation that prints nothing.
+  bstctlcite: 1,
   // `\eject`, needspace's `\Needspace{16\baselineskip}`, revtex's `\onecolumngrid`/`\twocolumngrid`, `\addtocontents{toc}{…}` and
   // `\AtEndDocument{…}` (run at the end, not here): page-layout lines that print nothing where they stand.
   eject: 0, Needspace: 1, needspace: 1, onecolumngrid: 0, twocolumngrid: 0, addtocontents: 2, AtEndDocument: 1,
@@ -210,8 +214,13 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   itemsep: 0, parsep: 0, topsep: 0, partopsep: 0, labelsep: 0, labelwidth: 0, leftmargin: 0, rightmargin: 0, itemindent: 0, listparindent: 0, columnsep: 0, abovedisplayskip: 0, belowdisplayskip: 0,
   abovedisplayshortskip: 0, belowdisplayshortskip: 0, predisplaypenalty: 0, postdisplaypenalty: 0, interlinepenalty: 0, brokenpenalty: 0, displaywidowpenalty: 0, floatingpenalty: 0,
 };
+/** What may share a line with `\bibliography{…}` and print nothing: a group and size or spacing settings before it, the group's end after it. */
+const BIB_LINE_BEFORE = /^[ \t]*(?:\\begingroup|\{)?(?:[ \t]*\\(?:renewcommand\s*\{\s*\\baselinestretch\s*\}\s*\{[^{}]*\}|small|footnotesize|scriptsize|normalsize))*[ \t]*$/;
+const BIB_LINE_AFTER = /^[ \t]*(?:\\endgroup|\})?[ \t]*$/;
+const BIB_LINE = /^([^\n]*?)\\bibliography\s*\{[^{}]*\}([^\n]*)$/gm;
+
 /** Setup commands of LAYOUT_LINE_ARGS that print nothing wherever they stand, so they hide even among other things on a line. */
-const INLINE_SETUP = /^\\(?:pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|usepgfplotslibrary|tcbuselibrary|tcbset|pgfkeys|floatname)$/;
+const INLINE_SETUP = /^\\(?:pagenumbering|pagestyle|thispagestyle|fontsize|selectfont|hypersetup|captionsetup|sisetup|lstset|tikzset|pgfplotsset|usetikzlibrary|usepgfplotslibrary|tcbuselibrary|tcbset|pgfkeys|floatname|AddToShipoutPicture|AddToShipoutPictureFG|AddToShipoutPictureBG|bstctlcite)$/;
 /** The TeX assignments of LAYOUT_LINE_ARGS that take an `= value` (a glue, a dimension or an integer) rather than a group. */
 const TEX_ASSIGNMENT = /^(?:itemsep|parsep|topsep|partopsep|labelsep|labelwidth|leftmargin|rightmargin|itemindent|listparindent|columnsep|abovedisplayskip|belowdisplayskip|abovedisplayshortskip|belowdisplayshortskip|predisplaypenalty|postdisplaypenalty|interlinepenalty|brokenpenalty|displaywidowpenalty|floatingpenalty|predisplaysize|medmuskip|thinmuskip|thickmuskip|relpenalty|binoppenalty|hangindent|hangafter|parindent|parskip|baselineskip|lineskip|leftskip|rightskip|parfillskip|tolerance|emergencystretch|hbadness|vbadness|widowpenalty|clubpenalty|hyphenpenalty|exhyphenpenalty|tabcolsep|arraycolsep)$/;
 /** What follows such an assignment's name: an optional `=`, a number with a unit (or none: a penalty), then any `plus`/`minus` glue. */
@@ -396,7 +405,7 @@ const TEXT_BLOCKS: Record<string, string> = {
   // setspace's line spacing and pdflscape's rotated pages: layout, whose lines fold away (applied economics papers).
   singlespace: "cm-vis-sized", onehalfspace: "cm-vis-sized", doublespace: "cm-vis-sized", spacing: "cm-vis-sized", landscape: "cm-vis-sized",
   // Keywords under an abstract (JMLR, SIAM, IEEE).
-  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords", AMS: "cm-vis-keywords",
+  keywords: "cm-vis-keywords", IEEEkeywords: "cm-vis-keywords", keyword: "cm-vis-keywords", AMS: "cm-vis-keywords", MSCcodes: "cm-vis-keywords",
   // amsmath's `subequations` (numbering 3a, 3b): its equations are drawn on their own, and its lines fold away.
   subequations: "cm-vis-sized",
   // revtex's `widetext` (text set across both columns): layout, whose lines fold away.
@@ -631,7 +640,10 @@ const DRAWABLE_SYMBOLS = new Set(["\\", ",", " ", "%", "&", "#", "_", "{", "}", 
  * a header would show half-read. Then the `\begin` stays as source, and the body is drawn.
  */
 function drawableEnvironmentCode(code: string): string | null {
-  const text = environmentCode(code);
+  // A grouped margin and a small gap around the label (jmlr2e's `keywords`, stat.ML 2611.14586: `\bgroup\leftskip 20pt\rightskip 20pt
+  // \small\noindent{\bf Keywords:}` … `\par\egroup\vskip 0.25ex`): spacing only, which the header does not draw. Glue with a
+  // `plus`/`minus` is still left in the code and refused below.
+  const text = environmentCode(code.replace(/\\(?:bgroup|egroup)(?![A-Za-z@])|\\(?:leftskip|rightskip|parindent)\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp)(?![A-Za-z])|\\[vh]skip\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|in|cm|mm|bp)(?![A-Za-z])(?!\s*(?:plus|minus)\s)/g, ""));
   // Formulas are drawn by KaTeX; around them, text and the commands above.
   const outside = text.replace(/\$[^$]*\$/g, "");
   for (const match of outside.matchAll(/\\([A-Za-z@]+|[^A-Za-z@])/g)) {
@@ -1045,6 +1057,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return true;
   };
 
+  // `\begingroup\renewcommand{\baselinestretch}{0.94}\bibliography{references}\endgroup` on one line (eess.SY 2611.15162) is drawn as the
+  // list (BibliographyCommand below): what shares its line belongs to that one construct, not to constructs of its own inside it.
+  if (structural && from < to) {
+    const slice = read(state, from, Math.min(to, doc.length));
+    if (slice.includes("\\bibliography")) {
+      for (const match of slice.matchAll(BIB_LINE)) {
+        if (!(match[1].trim() || match[2].trim()) || !BIB_LINE_BEFORE.test(match[1]) || !BIB_LINE_AFTER.test(match[2])) continue;
+        const start = from + (match.index ?? 0);
+        const end = start + match[0].length;
+        consumed.push([start, start + match[1].length], [end - match[2].length, end]);
+      }
+    }
+  }
+
   tree.iterate({
     from,
     to,
@@ -1184,6 +1210,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (Object.hasOwn(WRAPPER_ENVIRONMENTS, wrapperName) && !defs.environments.has(wrapperName)) {
             const formed = wellFormedEnvironment(node, state);
             if (formed && formed.end.from >= from && formed.end.from < to) collapseLine(formed.end, "env-end");
+          }
+          // A `frontmatter` drawn as the title block whose `\end` is in a later piece than its `\begin` (cs.LG 2611.16789).
+          if (wrapperName === "frontmatter" && !defs.environments.has("frontmatter")) {
+            const formed = wellFormedEnvironment(node, state);
+            if (formed && formed.end.from >= from && formed.end.from < to && frontMatterDrawn(formed)) collapseLine(formed.end, "env-end");
           }
         }
         return;
@@ -1523,7 +1554,11 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           };
           // A comment after `\maketitle` on its line (cs.LO 2610.41832's `\maketitle%[E]`) is part of its line.
           const commentLine = doc.lineAt(node.to);
-          const end = /^[ \t]*%/.test(read(state, node.to, commentLine.to)) ? commentLine.to : node.to;
+          // `\maketitle\thispagestyle{empty}` (stat.AP 2611.10515) is one line: the page-style switch prints nothing, the block covers it.
+          const pageStyle = /^(?:[ \t]*\\(?:thispagestyle|pagestyle)\s*\{[^{}]*\})+/.exec(read(state, node.to, commentLine.to));
+          const lineEnd = node.to + (pageStyle?.[0].length ?? 0);
+          if (pageStyle) consumed.push([node.to, lineEnd]);
+          const end = /^[ \t]*%/.test(read(state, lineEnd, commentLine.to)) ? commentLine.to : lineEnd;
           const blockEnd = gaps.length ? trimmed(declarations!, gaps[0].from).end : end;
           const folded = declarations !== null ? aloneOnLines(doc, declarations, blockEnd) : null;
           const span = folded ?? aloneOnLines(doc, node.from, end);
@@ -1549,8 +1584,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const inner = argument && argumentInner(argument);
           // AASTeX's `\bibliography{refs}{}` takes an empty group after it, which prints nothing.
           const empty = /^[ \t]*\{\s*\}/.exec(read(state, node.to, Math.min(doc.length, node.to + 20)));
-          const span = aloneOnLines(doc, node.from, node.to + (empty?.[0].length ?? 0));
+          const bibEnd = node.to + (empty?.[0].length ?? 0);
+          let span = aloneOnLines(doc, node.from, bibEnd);
+          // `\begingroup\renewcommand{\baselinestretch}{0.94}\bibliography{references}\endgroup` (eess.SY 2611.15162) is one line: the
+          // group and the spacing around the command print nothing, and go with the list (their source shows at the caret).
+          if (!span && structural && inner && !hasDirectError(node)) {
+            const line = doc.lineAt(node.from);
+            const around = doc.lineAt(bibEnd);
+            const before = read(state, line.from, node.from);
+            const after = read(state, bibEnd, around.to);
+            if (line.number === around.number && BIB_LINE_BEFORE.test(before) && BIB_LINE_AFTER.test(after)) span = { from: line.from, to: line.to };
+          }
           if (!structural || !inner || !span || hasDirectError(node)) return false;
+          if (span.from < node.from) consumed.push([span.from, node.from]);
+          if (span.to > bibEnd) consumed.push([bibEnd, span.to]);
           if (empty) consumed.push([node.to, node.to + empty[0].length]);
           emit({ kind: "bibliography", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new BibliographyListWidget(bibliographyHeading(defs), read(state, inner.from, inner.to).trim(), span.to - span.from) }] });
           return false;
@@ -1636,9 +1683,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const gap = /^\s*/.exec(after.slice(widest.end))![0].length;
       widest = after[widest.end + gap] === "{" ? readGroup(after, widest.end + gap) : null;
     }
-    const headerEnd = Math.max(begin.to, widest ? nameEnd + widest.end : begin.to);
+    let headerEnd = Math.max(begin.to, widest ? nameEnd + widest.end : begin.to);
+    // Size and spacing settings after the opening on its line (`\begin{thebibliography}{99}\small\setlength{\itemsep}{0pt}`,
+    // cond-mat.stat-mech 2611.14576): they print nothing and go with the heading (its source shows at the caret).
+    const settings = /^(?:[ \t]*(?:\\(?:tiny|scriptsize|footnotesize|small|normalsize|raggedright|sloppy)(?![A-Za-z@])|\\(?:setlength|addtolength)\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)\s*\{[^{}]*\}|\\renewcommand\s*\{\s*\\(?:baselinestretch|arraystretch)\s*\}\s*\{[^{}]*\}))+/.exec(read(state, headerEnd, doc.lineAt(headerEnd).to));
+    if (settings) headerEnd += settings[0].length;
     consumed.push([begin.from, headerEnd]);
-    const book = /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
+    const book =/^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
     const span = aloneOnLines(doc, begin.from, headerEnd);
     const from = span?.from ?? begin.from;
     // As for a heading: the widget, and the line style while it is drawn.
@@ -1909,6 +1960,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    */
   function frontMatter(formed: NonNullable<ReturnType<typeof wellFormedEnvironment>>): false | undefined {
     if (!formed.content) return undefined;
+    // (`frontMatterDrawn` below answers the same for a piece that holds only the `\end`.)
     const inside = read(state, formed.begin.to, formed.end.from);
     // The abstract or keywords (the grammar may nest them in text nodes): found in the text, outside comments.
     let stop = formed.end.from;
@@ -1942,6 +1994,26 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       collapseLine(formed.end, "env-end");
     }
     return undefined;
+  }
+
+  /** Whether `frontMatter` draws this `frontmatter` as the title block (the same tests), for the piece that holds its `\end`. */
+  function frontMatterDrawn(formed: NonNullable<ReturnType<typeof wellFormedEnvironment>>) {
+    if (!formed.content) return false;
+    const inside = read(state, formed.begin.to, formed.end.from);
+    let stop = formed.end.from;
+    for (const match of inside.matchAll(/\\begin\s*\{(?:abstract|keywords?)\}/g)) {
+      if (isInLatexComment(inside, match.index ?? 0)) continue;
+      stop = formed.begin.to + (match.index ?? 0);
+      break;
+    }
+    const parts = frontMatterParts(read(state, formed.begin.to, stop));
+    if (!parts) return false;
+    let end = stop;
+    while (end > formed.begin.to && /\s/.test(read(state, end - 1, end))) end--;
+    const first = parts.unknown[0];
+    let firstEnd = end;
+    if (first) { firstEnd = formed.begin.to + first.from; while (firstEnd > formed.begin.to && /\s/.test(read(state, firstEnd - 1, firstEnd))) firstEnd--; }
+    return !!aloneOnLines(doc, formed.begin.from, firstEnd);
   }
 
   function environment(node: SyntaxNode): false | undefined {
@@ -2144,7 +2216,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const endCode = drawableEnvironmentCode(user.end);
       if (structural) {
         const span = aloneOnLines(doc, begin.from, headerEnd);
-        if (beginCode) emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: new EnvironmentHeaderWidget("user", beginCode, null, null, 0) }] });
+        if (beginCode) emit({ kind: "env-header", from: span?.from ?? begin.from, to: headerEnd, reveal: "line", wholeLine: true, replaces: [{ from: span?.from ?? begin.from, to: headerEnd, widget: new EnvironmentHeaderWidget("user", beginCode, null, null, 0, headerEnd - (span?.from ?? begin.from)) }] });
         else if (beginCode === "") collapseLine(begin, "env-begin", span ? undefined : { from: begin.from, to: headerEnd });
         const endSpan = aloneOnLines(doc, formed.end.from, formed.end.to);
         if (endCode) emit({ kind: "env-footer", from: formed.end.from, to: formed.end.to, reveal: "line", wholeLine: true, replaces: [{ from: endSpan?.from ?? formed.end.from, to: formed.end.to, widget: new EnvironmentFooterWidget(endCode) }] });

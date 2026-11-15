@@ -240,7 +240,13 @@ export function classMacros(cls: string): PackageMacro[] {
   }
   // elsarticle's marks: `\tnoteref{t1}` points to a title note (☆), `\corref{cor1}` to the corresponding author (∗).
   // Springer Nature's sn-jnl writes names and affiliations in parts (`\fnm{Alice} \sur{One}`, `\orgname{…}`): their text.
-  if (cls === "sn-jnl") return ["fnm", "sur", "spfx", "pfx", "sfx", "tanm", "dgr", "orgdiv", "orgname", "orgaddress", "street", "city", "postcode", "state", "country"].map((name) => ({ name, arity: 1, body: "#1" }));
+  // Its `\bmhead{Title}` is the run-in unnumbered heading (2611.13157), as `\paragraph*{Title}`.
+  if (cls === "sn-jnl") {
+    return [
+      ...["fnm", "sur", "spfx", "pfx", "sfx", "tanm", "dgr", "orgdiv", "orgname", "orgaddress", "street", "city", "postcode", "state", "country"].map((name) => ({ name, arity: 1, body: "#1" })),
+      { name: "bmhead", arity: 1, body: "\\paragraph*{#1}" },
+    ];
+  }
   if (cls === "elsarticle") return [{ name: "tnoteref", arity: 1, body: "\\textsuperscript{☆}" }, { name: "corref", arity: 1, body: "\\textsuperscript{∗}" }];
   if (!/^(?:aastex\d*|emulateapj)$/.test(cls)) return [];
   return [
