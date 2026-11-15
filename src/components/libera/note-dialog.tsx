@@ -23,12 +23,14 @@ export function NoteDialog({
   return (
     <ModalDialog
       open
-      title={dialog.mode === "slides" ? "New slides" : dialog.mode === "latex" ? "New LaTeX document" : "New note"}
+      title={dialog.mode === "slides" ? "New slides" : dialog.mode === "latex" ? "New LaTeX document" : dialog.mode === "text" ? "New text file" : "New note"}
       description={
         dialog.mode === "slides"
           ? `Create a Markdown slide deck in ${dialog.parentPath ?? dialog.notebook}.`
           : dialog.mode === "latex"
             ? `Create a LaTeX document in ${dialog.parentPath ?? dialog.notebook}. Use .bib for a bibliography.`
+            : dialog.mode === "text"
+              ? `Create a plain-text or code file in ${dialog.parentPath ?? dialog.notebook}. Give it any extension, such as .txt, .py, .json or .csv.`
             : `Create a Markdown note in ${dialog.parentPath ?? dialog.notebook}.`
       }
       onClose={onClose}
@@ -53,6 +55,8 @@ export function NoteDialog({
                 ? "Create slides"
                 : dialog.mode === "latex"
                   ? "Create document"
+                  : dialog.mode === "text"
+                    ? "Create file"
                   : "Create note"}
           </button>
         </>
@@ -62,7 +66,7 @@ export function NoteDialog({
         key={`${dialog.notebook}:${dialog.parentPath ?? ""}:${dialog.mode}`}
         error={dialog.error}
         initialValues={{
-          name: dialog.mode === "slides" ? "Untitled.slides.md" : dialog.mode === "latex" ? "Untitled.tex" : "Untitled.md",
+          name: dialog.mode === "slides" ? "Untitled.slides.md" : dialog.mode === "latex" ? "Untitled.tex" : dialog.mode === "text" ? "Untitled.txt" : "Untitled.md",
         }}
         onSubmit={onSubmit}
       />

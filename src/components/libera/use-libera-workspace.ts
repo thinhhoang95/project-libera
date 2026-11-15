@@ -4,6 +4,7 @@ import { shiftMarkdownListItems, type ListIndentDirection } from "@/lib/markdown
 
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isTextFileType } from "@/lib/types";
+import { TEXT_FILE_NAMES } from "@/lib/storage/constants";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { isLatexCitingPath, latexCitation, type LatexCiteCommand } from "@/lib/references/latex-cite-syntax";
 import { getLatexEditor } from "@/components/libera/latex/latex-editor-registry";
@@ -3566,6 +3567,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setNoteDialog({ mode: "latex", notebook, parentPath });
   }
 
+  async function createTextFileFromPrompt(notebook: string, parentPath?: string) {
+    setWorkspaceError("");
+    setSelectedNotebookName(notebook);
+    setNoteDialog({ mode: "text", notebook, parentPath });
+  }
+
   async function submitNoteDialog(values: NoteFormValues) {
     if (!noteDialog) {
       return;
@@ -3583,7 +3590,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         ? ensureMarkdownSlidesName(requestedName)
         : noteDialog.mode === "latex" && !/\.(tex|bib|sty|cls)$/i.test(requestedName)
           ? `${requestedName.replace(/\.$/, "")}.tex`
-          : requestedName;
+          // A text file keeps the extension it was given; a bare name (other than Makefile, LICENSE…) becomes .txt.
+          : noteDialog.mode === "text" && !/\.[^.]+$/.test(requestedName) && !TEXT_FILE_NAMES.has(requestedName.toLowerCase())
+            ? `${requestedName.replace(/\.$/, "")}.txt`
+            : requestedName;
 
     setNoteDialogSubmitting(true);
 
@@ -3600,7 +3610,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
               ? createMarkdownSlidesContent(name)
               : noteDialog.mode === "latex"
                 ? /\.tex$/i.test(name) ? latexDocumentTemplate(name.replace(/\.tex$/i, "")) : ""
-                : createMarkdownNoteContent(name),
+                : noteDialog.mode === "text"
+                  ? ""
+                  : createMarkdownNoteContent(name),
         }),
       }, (payload) => ({ paths: [payload.file.path] }));
       await refreshTree(noteDialog.notebook);
@@ -4740,6 +4752,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       createMarkdownFromPrompt,
       createMarkdownSlidesFromPrompt,
       createLatexFromPrompt,
+      createTextFileFromPrompt,
       deleteFileFromPrompt,
       deleteFolderFromPrompt,
       deleteNotebookGroup,

@@ -21,7 +21,7 @@ import { usePaletteCommands } from "./command-palette/commands";
 import { useAppMenuItems } from "./app-menu";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
-import type { LiberaFileNode } from "@/lib/types";
+import { isTextFileType, type LiberaFileNode } from "@/lib/types";
 
 const button = "review-button";
 export function ReviewToggle() {
@@ -141,9 +141,10 @@ export function ReviewComments() {
   const openThreads = threads.filter((t) => t.status === "open").length;
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
     <header className="shrink-0 space-y-3 px-3 pb-3 pt-4">
-      <div className="libera-notebook-heading flex items-center gap-1">
-        <h2 className="min-w-0 flex-1 text-sm font-semibold">Comments</h2>
-        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{openThreads} open{openSuggestions.length > 0 && <span className="review-agent-suggestion-count" title="Suggested edits from the agent, waiting for your decision"> · {openSuggestions.length} suggested</span>}</span>
+      {/* The open count drops out first when the panel is too narrow for it. */}
+      <div className="libera-notebook-heading @container flex items-center gap-1">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Comments</h2>
+        <span className="mr-1 hidden whitespace-nowrap @[17rem]:inline text-xs tabular-nums text-muted-foreground">{openThreads} open{openSuggestions.length > 0 && <span className="review-agent-suggestion-count" title="Suggested edits from the agent, waiting for your decision"> · {openSuggestions.length} suggested</span>}</span>
         {r.doc && <CommentStatusFilterButton value={status} onChange={setStatus} open={openThreads + openSuggestions.length} resolved={threads.length - openThreads} all={threads.length + openSuggestions.length} />}
         <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Undo acceptance" title="Undo acceptance" disabled={!!r.busy || !r.doc?.undo.length} onClick={() => void r.action("undo")}><Undo2 aria-hidden size={14} /></button>
         <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Redo acceptance" title="Redo acceptance" disabled={!!r.busy || !r.doc?.redo?.length} onClick={() => void r.action("redo")}><Redo2 aria-hidden size={14} /></button>
@@ -162,7 +163,7 @@ export function ReviewComments() {
     <div ref={list} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
     {r.error && <p role="alert" className="mt-2 text-sm text-destructive">{r.error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
     {r.recovery && <div className="libera-panel-card space-y-2 p-3 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
-      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select text in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">{query.trim() ? `No ${status === "all" ? "" : `${status} `}comments match “${query.trim()}”.` : `No ${status} comments.`}</p>}
+      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select text in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">{query.trim() ? `No ${status === "all" ? "" : `${status} `}comments match “${query.trim()}”.` : `No ${status} comments.`}</p>}
       {pageSuggestions.length > 0 && <section className="space-y-2" aria-label="Suggested edits">
         {pendingSuggestions.length > 1 && <div className="flex flex-wrap items-center gap-1">
           <span className="min-w-0 flex-1 text-xs font-semibold">Suggested edits</span>
@@ -284,11 +285,11 @@ export function ReviewPopover() {
     {threads.map((t) => <button key={t.id} className="my-1 block w-full rounded bg-muted p-2 text-left text-sm" onClick={() => { r.selectThread(t.id); r.clearSelection(); }}>{t.messages[0]?.text} <span className="text-xs text-muted-foreground">· {t.messages.length} message(s)</span></button>)}
     {visible.map((s) => <ReviewSuggestionCard key={s.id} suggestion={s} number={suggestions.indexOf(s) + 1} />)}
     {agentVisible.map((s) => <AgentSuggestionCard key={s.id} suggestion={s} number={agentSuggestions.indexOf(s) + 1} />)}
-    {composing ? <form className="flex flex-col items-start gap-2" onSubmit={async (e) => { e.preventDefault(); if (await r.action("comment", { range, text, ...(r.shared ? { mentions } : {}) })) { setText(""); setMentions([]); setComposing(false); r.clearSelection(); } }}>{r.shared ? <MentionTextarea autoFocus aria-label="New review comment" className="review-textarea" projectId={r.shared.projectId} selfId={r.shared.projection.me?.id} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Comment… Type @ to mention someone" /> : <textarea autoFocus aria-label="New review comment" className="review-textarea" value={text} onChange={(e) => setText(e.target.value)} />}<button className={button} disabled={!text.trim() || !!r.busy} onMouseDown={keepFocus}><MessageSquarePlus size={14} /> Add comment</button></form> : <button className={button} disabled={!!r.busy} onMouseDown={keepFocus} onClick={() => setComposing(true)}><MessageSquarePlus size={14} /> Add comment</button>}
+    {composing ? <form className="flex flex-col gap-2" onSubmit={async (e) => { e.preventDefault(); if (await r.action("comment", { range, text, ...(r.shared ? { mentions } : {}) })) { setText(""); setMentions([]); setComposing(false); r.clearSelection(); } }}>{r.shared ? <MentionTextarea autoFocus aria-label="New review comment" className="review-textarea" projectId={r.shared.projectId} selfId={r.shared.projection.me?.id} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Comment… Type @ to mention someone" /> : <textarea autoFocus aria-label="New review comment" className="review-textarea" value={text} onChange={(e) => setText(e.target.value)} />}<button className={`${button} self-start`} disabled={!text.trim() || !!r.busy} onMouseDown={keepFocus}><MessageSquarePlus size={14} /> Add comment</button></form> : <button className={button} disabled={!!r.busy} onMouseDown={keepFocus} onClick={() => setComposing(true)}><MessageSquarePlus size={14} /> Add comment</button>}
   </div>;
 }
 export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs: OpenTab[] }) {
-  const markdownFiles = useMemo(() => files.filter((file) => file.fileType === "markdown"), [files]);
+  const referenceFiles = useMemo(() => files.filter((file) => isTextFileType(file.fileType)), [files]);
   const r = useMarkdownReview()!;
   const [prompt, setPrompt] = useState("");
   const [references, setReferences] = useState<ChatContext[]>(r.doc?.session?.references ?? []);
@@ -339,7 +340,7 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
       {!session && <div className="libera-chat-welcome libera-review-welcome">
         <span className="libera-ai-orb" aria-hidden><PencilLine size={30} strokeWidth={1.5} /></span>
         <h2>A fresh perspective.<br />A stronger draft.</h2>
-        <p>{doc ? "Turn your ideas and feedback into thoughtful improvements." : "Open a Markdown document to start your next review."}</p>
+        <p>{doc ? "Turn your ideas and feedback into thoughtful improvements." : "Open a document to start your next review."}</p>
         {doc ? <div className="libera-chat-starters">
           {[
             { icon: PencilLine, label: "Make the writing clearer", prompt: "Review this draft for clarity. Suggest ways to make the writing easier to follow while preserving its meaning." },
@@ -384,7 +385,7 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
       {doc && <div className="libera-chat-context flex items-center gap-2"><BookOpen aria-hidden size={13} className="shrink-0" /><p className="min-w-0 truncate" title={doc.key}>{doc.key.split("/").at(-1)} · Round {doc.round ?? 1}</p></div>}
       {references.map((ref) => <div key={ref.path} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate" title={ref.path}>@{ref.name}</span><button type="button" className={button} aria-label={`Remove reference ${ref.name}`} onClick={() => setReferences(references.filter((r) => r.path !== ref.path))}>×</button></div>)}
       <div className="libera-chat-composer">
-      <ChatFileComposer placeholder={doc ? session ? "Ask a follow-up… Type @ to add files" : "What would you like to improve?" : "Open a Markdown document to begin"} chatId={`review-${doc?.id}-${doc?.round ?? 1}`} value={prompt} disabled={!doc || !!r.busy} files={markdownFiles} composerRef={input} onChange={setPrompt} onSend={() => void send()} onAttachFile={async (file) => {
+      <ChatFileComposer placeholder={doc ? session ? "Ask a follow-up… Type @ to add files" : "What would you like to improve?" : "Open a document to begin"} chatId={`review-${doc?.id}-${doc?.round ?? 1}`} value={prompt} disabled={!doc || !!r.busy} files={referenceFiles} composerRef={input} onChange={setPrompt} onSend={() => void send()} onAttachFile={async (file) => {
         setAttachmentBusy(true);
         setError("");
         try {
@@ -438,13 +439,15 @@ function AuthorAvatar({ user, ai }: { user: UserSummary; ai?: boolean }) {
   return <span aria-hidden className="review-comment-avatar inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white" style={{ background: user.color || "#64748b" }}>{ai ? <Sparkles size={10} /> : initials(user.displayName)}</span>;
 }
 
-function AuthorLine({ message, now }: { message: SharedReviewMessage; now: number }) {
+/** `compact` (the card header, inside an `@container`) drops the name and
+ * keeps just the avatar once the header is too narrow to fit it on one line. */
+function AuthorLine({ message, now, compact }: { message: SharedReviewMessage; now: number; compact?: boolean }) {
   const { author, actor, editedAt } = message.shared;
   const label = commentAuthorLabel(actor, author);
   const created = Date.parse(message.createdAt);
-  return <span className="review-comment-author flex min-w-0 items-center gap-1.5 text-[11px]" data-author-id={author.id}>
+  return <span className="review-comment-author flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[11px]" data-author-id={author.id} title={compact ? label : undefined}>
     <AuthorAvatar user={author} ai={actor?.kind === "ai"} />
-    <span className="min-w-0 truncate font-semibold" style={{ color: author.color || undefined }} title={label}>{label}</span>
+    <span className={`min-w-0 truncate font-semibold${compact ? " hidden @[15rem]:inline" : ""}`} style={{ color: author.color || undefined }} title={label}>{label}</span>
     {Number.isFinite(created) && <span className="shrink-0 text-muted-foreground" title={new Date(created).toLocaleString()}>{timeAgo(Math.max(0, now - created))}</span>}
     {editedAt && !message.shared.deleted && <span className="shrink-0 text-muted-foreground">· edited</span>}
   </span>;
@@ -495,7 +498,7 @@ function SharedThreadCard({ thread, index, shared, selected, cardRef, reply, set
   const status = info.status === "resolved" ? "resolved" : info.detached ? "detached" : "open";
   return <article ref={cardRef} data-anchor-end={thread.anchor.state === "attached" ? thread.anchor.end : undefined} data-selected={selected} data-detached={info.detached} data-thread-id={thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
     <button className="w-full text-left" aria-expanded={selected} onClick={() => { r.selectThread(selected ? null : thread.id); setReply(""); setMentions([]); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
-      <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex min-w-0 items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{first && <AuthorLine message={first} now={now} />}</span><CommentStatusLabel open={status !== "resolved"}>{status}</CommentStatusLabel></span>
+      <span className="@container flex flex-wrap items-center justify-between gap-1"><span className="flex min-w-0 items-center gap-1.5"><strong className="shrink-0 whitespace-nowrap text-xs font-semibold">Comment {index + 1}</strong>{first && <AuthorLine message={first} now={now} compact />}</span><CommentStatusLabel open={status !== "resolved"}>{status}</CommentStatusLabel></span>
       <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
       {!selected && (first?.shared.deleted ? <span className="block text-xs italic text-muted-foreground">This comment was deleted.</span> : first && <CommentBody text={first.text} preview shared />)}
       {!selected && thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}

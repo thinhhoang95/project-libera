@@ -91,6 +91,11 @@ export function assertMarkdownFileName(name: string) {
 export function ensureMarkdownName(name: string) {
   const safeName = assertSafeSegment(name, "File name");
 
+  // Makefile, LICENSE and the like are text files without an extension.
+  if (TEXT_FILE_NAMES.has(safeName.toLowerCase())) {
+    return safeName;
+  }
+
   if (path.extname(safeName)) {
     const fileType = assertSupportedFileName(safeName);
 

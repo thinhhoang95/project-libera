@@ -108,6 +108,8 @@ export type NotebookPanelProps = {
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
   onCreateLatex?: (notebook: string, parentPath?: string) => Promise<void>;
+  /** Any plain-text or code file (.txt, .py, .json…), opened in the code editor. */
+  onCreateTextFile?: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCreateNotebookGroup: () => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
@@ -600,6 +602,7 @@ export function NotebookPanel({
   onCreateMarkdown,
   onCreateSlides,
   onCreateLatex,
+  onCreateTextFile,
   onCreateNotebook,
   onCreateNotebookGroup,
   onDeleteFile,
@@ -804,6 +807,7 @@ export function NotebookPanel({
         : [
             { id: "add-note", label: "Add Note" },
             { id: "add-latex", label: "Add LaTeX Document", enabled: Boolean(onCreateLatex) },
+            { id: "add-text-file", label: "Add Text File", enabled: Boolean(onCreateTextFile) },
             { id: "add-recording", label: "Add Audio Recording", enabled: Boolean(recorder && !recorder.busy) },
             { id: "new-folder", label: "New folder" },
             { type: "separator" },
@@ -860,6 +864,8 @@ export function NotebookPanel({
       await onCreateMarkdown(target.folder.notebook, target.folder.path);
     } else if (selectedItemId === "add-latex") {
       await onCreateLatex?.(target.folder.notebook, target.folder.path);
+    } else if (selectedItemId === "add-text-file") {
+      await onCreateTextFile?.(target.folder.notebook, target.folder.path);
     } else if (selectedItemId === "add-recording") {
       recorder?.startRecording(target.folder.notebook, target.folder.path);
     } else if (selectedItemId === "new-folder") {
@@ -1038,6 +1044,7 @@ export function NotebookPanel({
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
               onCreateLatex={onCreateLatex}
+              onCreateTextFile={onCreateTextFile}
               onContextMenu={openContextMenu}
               onDeleteNotebook={onDeleteNotebook}
               onDropFile={dropFileOnPath}
@@ -1074,6 +1081,7 @@ export function NotebookPanel({
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
               onCreateLatex={onCreateLatex}
+              onCreateTextFile={onCreateTextFile}
               onContextMenu={openContextMenu}
               onDeleteGroup={onDeleteNotebookGroup}
               onDeleteNotebook={onDeleteNotebook}
@@ -1264,6 +1272,7 @@ function NotebookSection({
   onCreateMarkdown,
   onCreateSlides,
   onCreateLatex,
+  onCreateTextFile,
   onContextMenu,
   onDeleteNotebook,
   onDropFile,
@@ -1298,6 +1307,8 @@ function NotebookSection({
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
   onCreateLatex?: (notebook: string, parentPath?: string) => Promise<void>;
+  /** Any plain-text or code file (.txt, .py, .json…), opened in the code editor. */
+  onCreateTextFile?: (notebook: string, parentPath?: string) => Promise<void>;
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDropFile: (destinationPath: string) => Promise<void>;
@@ -1336,6 +1347,7 @@ function NotebookSection({
         { id: "new-note", label: "New note", enabled: available },
         { id: "new-slides", label: "New slides", enabled: available },
         { id: "new-latex", label: "New LaTeX document", enabled: available && Boolean(onCreateLatex) },
+        { id: "new-text-file", label: "New text file", enabled: available && Boolean(onCreateTextFile) },
         { id: "new-recording", label: "New audio recording", enabled: available && Boolean(recorder && !recorder.busy) },
         { id: "new-folder", label: "New folder", enabled: available },
         { id: "upload", label: "Upload", enabled: available },
@@ -1386,6 +1398,8 @@ function NotebookSection({
       await onCreateSlides(notebook.name);
     } else if (selectedItemId === "new-latex") {
       await onCreateLatex?.(notebook.name);
+    } else if (selectedItemId === "new-text-file") {
+      await onCreateTextFile?.(notebook.name);
     } else if (selectedItemId === "new-recording") {
       recorder?.startRecording(notebook.name);
     } else if (selectedItemId === "new-folder") {
@@ -1611,6 +1625,7 @@ function NotebookGroupSection({
   onCreateMarkdown,
   onCreateSlides,
   onCreateLatex,
+  onCreateTextFile,
   onContextMenu,
   onDeleteGroup,
   onDeleteNotebook,
@@ -1645,6 +1660,8 @@ function NotebookGroupSection({
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
   onCreateLatex?: (notebook: string, parentPath?: string) => Promise<void>;
+  /** Any plain-text or code file (.txt, .py, .json…), opened in the code editor. */
+  onCreateTextFile?: (notebook: string, parentPath?: string) => Promise<void>;
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDeleteGroup: (group: LiberaNotebookGroup) => Promise<void>;
   onDeleteNotebook: (notebook: string) => Promise<void>;
@@ -1723,6 +1740,7 @@ function NotebookGroupSection({
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
               onCreateLatex={onCreateLatex}
+              onCreateTextFile={onCreateTextFile}
               onContextMenu={onContextMenu}
               onDeleteNotebook={onDeleteNotebook}
               onDownloadNotebook={onDownloadNotebook}

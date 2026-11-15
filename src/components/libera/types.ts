@@ -216,7 +216,7 @@ export type NoteFormValues = {
 };
 
 export type NoteDialogState = {
-  mode: "markdown" | "slides" | "latex";
+  mode: "markdown" | "slides" | "latex" | "text";
   notebook: string;
   parentPath?: string;
   error?: string;
