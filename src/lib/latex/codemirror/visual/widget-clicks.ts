@@ -65,7 +65,8 @@ export const widgetClickFallback = ViewPlugin.fromClass(class {
   }
 
   onMouseDown(event: MouseEvent) {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey) return;
+    // A click it cannot take (not cancelable: a widget's own handler could not mark it taken either) is left alone.
+    if (!event.cancelable || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey) return;
     const root = widgetRoot(this.view.contentDOM, event.target);
     if (!root) return;
     const own = (event.target as Element).closest(OWN_CLICK);
