@@ -1,7 +1,7 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { latexParser as parser } from "../codemirror/latex-parser";
 import { hashString, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
-import { definitionExtentAt, macroAt, readLatexInputs, type LatexDefinitions, type LatexMacro } from "./definitions";
+import { definitionExtentAt, equationAlias, macroAt, readLatexInputs, type LatexDefinitions, type LatexMacro } from "./definitions";
 import { expandLatexMacros, expandLatexMacroUse, FOOTNOTE_SYMBOLS } from "./expand";
 import { readCtable } from "../codemirror/visual/table-model";
 import { algorithmLineLabels, readAlgorithm2eBody, readAlgorithmicBody, type AlgorithmSpec } from "../codemirror/visual/algorithm";
@@ -1085,6 +1085,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         // Inner environments (aligned, cases, matrices) are part of an outer formula.
         for (let parent = node.parent; parent; parent = parent.parent) if (MATH_CONTAINERS.has(parent.name)) return false;
         let env = environmentName(node, read) ?? "";
+        // An alias of `equation` (mhequ's or the document's `equ`) numbers as one.
+        if (equationAlias(defs, env)) env = "equation";
         // empheq numbers as the environment it names (`\begin{empheq}[left=…]{align}`).
         if (env === "empheq") {
           const begin = node.getChild("BeginEnv");

@@ -27,7 +27,7 @@ import { disabledField, setMacroSources, setNumbering, setNumberingIncludes, set
 import { refreshVisualWidgets } from "../../src/lib/latex/codemirror/visual/widgets";
 import { computeLatexNumbering, type NumberingStart } from "../../src/lib/latex/macros/numbering";
 import { chapterNumberingStart } from "../../src/lib/latex/macros/project-numbering";
-import { collectLatexDefinitions, isInLatexComment } from "../../src/lib/latex/macros/definitions";
+import { collectLatexDefinitions, equationAlias, isInLatexComment } from "../../src/lib/latex/macros/definitions";
 import { collectBodyIncludes, collectMacroSources } from "../../src/components/libera/latex/latex-dependencies";
 import katex from "katex";
 import { forKatex, KATEX_MACROS, katexForEnvironment, loadMhchem } from "../../src/lib/latex/codemirror/visual/math-render";
@@ -277,7 +277,7 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
       let display = node.name === "BracketMath" || !!node.node.getChild("DisplayMath");
       if (node.name.endsWith("Environment")) {
         const env = /^\\begin\s*\{([^}]*)\}/.exec(whole)?.[1] ?? "";
-        const source = katexForEnvironment(env, whole.replace(/^\\begin\s*\{[^}]*\}/, "").replace(/\\end\s*\{[^}]*\}\s*$/, ""));
+        const source = katexForEnvironment(equationAlias(defs, env) ? "equation" : env, whole.replace(/^\\begin\s*\{[^}]*\}/, "").replace(/\\end\s*\{[^}]*\}\s*$/, ""));
         latex = source.latex;
         display = !source.inline;
       }

@@ -2,7 +2,7 @@ import type { EditorState, Text, Transaction } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
-import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, isInLatexComment, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
+import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, equationAlias, isInLatexComment, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
 import { CAPTION_OF, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
@@ -1126,7 +1126,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return override.node === node ? result : undefined;
         }
       }
-      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
+      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "") && !equationAlias(defs, environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
 
       if (name in SECTION_CLASSES) {
         const command = node.getChild("SectioningCommand");
@@ -1363,7 +1363,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           const nameGroup = begin?.getChild("EnvNameGroup");
           const args = begin && nameGroup ? read(state, nameGroup.to, begin.to) : "";
           const body = (args.trim() ? args.trim() : "") + read(state, formed.content.from, formed.content.to);
-          const source = katexForEnvironment(formed.name, body);
+          if (equationAlias(defs, formed.name) && /^\s*\[/.test(body)) return false;
+          const source = katexForEnvironment(equationAlias(defs, formed.name) ? "equation" : formed.name, body);
           const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: node.from });
           // Rows numbered by hand (`\addtocounter{equation}{1}\tag{\theequation}`) are numbered rows.
           const counted = expanded.ok ? countedRows(expanded.text) : null;
@@ -3205,7 +3206,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const span = aloneOnLines(doc, from, to);
     const range = span ?? { from, to };
     if (env.name === "EquationEnvironment" || env.name === "EquationArrayEnvironment") {
-      const source = katexForEnvironment(envName, body);
+      if (equationAlias(defs, envName) && /^\s*\[/.test(body)) return false;
+      const source = katexForEnvironment(equationAlias(defs, envName) ? "equation" : envName, body);
       const expanded = expandLatexMacros(source.latex, defs, { mode: "math", pos: from });
       const counted = expanded.ok ? countedRows(expanded.text) : null;
       const latex = counted?.latex ?? expanded.text;
