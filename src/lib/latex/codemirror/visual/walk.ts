@@ -10,7 +10,7 @@ import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroPassThrough, structureMacroNames } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
 import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "./math-render";
-import { readSiunitx, SIUNITX_TEXT } from "./siunitx";
+import { MHCHEM_TEXT, readMhchem, readSiunitx, siunitxConfig, SIUNITX_TEXT } from "./siunitx";
 import { latexProjectField } from "../editing";
 import { disabledField, macroRegionsFor, macroSourcesField, visualConfig } from "./model";
 import { citationNoteText, citationNotes, prettyrefText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
@@ -2686,7 +2686,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (macro && !stockDoi && !stockKeywords) return macroUse(node, name);
     const drawn = packageCommand(node, ctrl, text, args);
     if (drawn !== null) return drawn;
-    if (SIUNITX_TEXT.test(text)) {
+    if (SIUNITX_TEXT.test(text) || (MHCHEM_TEXT.test(text) && defs.packages.includes("mhchem"))) {
       const unit = siunitxInText(node);
       if (unit !== null) return unit;
     }
@@ -2776,7 +2776,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   /** siunitx's `\SI{12.5}{\kilo\meter}` (and `\num`, `\si`, …) in text: drawn as KaTeX draws it in a formula; null when not read (source). */
   function siunitxInText(node: SyntaxNode): false | null {
     if (!structural || hasDirectError(node)) return null;
-    const unit = readSiunitx(read(state, node.from, Math.min(doc.length, node.from + 2000)), 0);
+    const written = read(state, node.from, Math.min(doc.length, node.from + 2000));
+    // mhchem's `\ce{H2O}` is drawn as the formula `$\ce{H2O}$` (KaTeX's mhchem), siunitx's commands as theirs.
+    const unit = /^\\(?:ce|pu)(?![A-Za-z@])/.test(written) ?readMhchem(written, 0) : readSiunitx(written, 0, siunitxConfig(defs));
     const html = unit ? renderKatex(unit.latex, false) : null;
     if (!unit || !html) return null;
     const to = node.from + unit.end;

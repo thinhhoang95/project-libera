@@ -98,6 +98,7 @@ function copyDefinitions(defs: LatexDefinitions): LatexDefinitions {
     macros: new Map([...defs.macros].map(([name, list]) => [name, [...list]])), environments: new Map(defs.environments), theorems: new Map(defs.theorems),
     counterWithin: new Map(defs.counterWithin), counterPrefix: new Map(defs.counterPrefix), crefNames: new Map(defs.crefNames), packages: [...defs.packages],
     packageOptions: new Map(defs.packageOptions), graphicsPaths: [...defs.graphicsPaths], columnTypes: new Map(defs.columnTypes), colors: new Map(defs.colors),
+    siunitx: defs.siunitx && { units: new Map(defs.siunitx.units), options: new Map(defs.siunitx.options) },
     lists: defs.lists && new Map(defs.lists), listOptions: defs.listOptions && new Map(defs.listOptions), extents: [], problems: [...defs.problems], unsupported: [...defs.unsupported],
   };
 }
