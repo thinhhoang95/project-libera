@@ -53,6 +53,7 @@ import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/t
 
 import styles from "./notebook-home.module.css";
 import { notebookCoverUrl } from "@/lib/notebook-illustrations";
+import { detectCoverScrim, type CoverScrim } from "@/components/libera/notebook-cover-scrim";
 import { NotebookIllustrationDialog } from "@/components/libera/notebook-illustration-dialog";
 import { useNotebookIllustrationLibrary } from "@/components/libera/use-notebook-illustrations";
 import {
@@ -147,6 +148,18 @@ export function NotebookHome({
   const illustrationLibrary = useNotebookIllustrationLibrary();
   const coverUrl = notebookCoverUrl(notebook, illustrationLibrary);
   const [changingIllustration, setChangingIllustration] = useState(false);
+  // The wash behind the title is sized and tinted from the artwork under it;
+  // until that is read (or if it cannot be), the stylesheet's defaults apply.
+  const coverRef = useRef<HTMLElement>(null);
+  const [scrim, setScrim] = useState<CoverScrim>();
+  useEffect(() => {
+    const controller = new AbortController();
+    const box = coverRef.current?.getBoundingClientRect();
+    detectCoverScrim(coverUrl, box?.height ? box.width / box.height : 3.5, controller.signal)
+      .catch(() => undefined)
+      .then((value) => { if (!controller.signal.aborted) setScrim(value); });
+    return () => controller.abort();
+  }, [coverUrl]);
   const { files, notes, images, folders } = useMemo(
     () => collectNotebookFiles(notebook.children),
     [notebook.children],
@@ -215,7 +228,14 @@ export function NotebookHome({
       <section
         className={styles.cover}
         aria-label={notebook.name}
-        style={{ "--notebook-illustration": `url("${coverUrl}")` } as CSSProperties}
+        ref={coverRef}
+        style={{
+          "--notebook-illustration": `url("${coverUrl}")`,
+          "--cover-scrim-light": scrim?.light,
+          "--cover-scrim-dark": scrim?.dark,
+          "--cover-hue": scrim?.hue,
+          "--cover-sat": scrim?.saturation === undefined ? undefined : `${scrim.saturation}%`,
+        } as CSSProperties}
       >
         <div className={styles.coverInner}>
           <header className={styles.header}>

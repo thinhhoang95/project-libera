@@ -24,11 +24,34 @@
   background: #eaf0fe var(--notebook-illustration, url('/images/notebook-landscape.png')) center 35% / cover;
   padding: clamp(22px, 2.6vw, 34px) var(--home-gutter) clamp(30px, 3.4vw, 46px);
 }
-/* Lightens the left edge so the title always clears the artwork, then melts the
-   bottom of the photo into the page so the cover has no visible seam. */
+/* The scrim behind the title follows the artwork (see notebook-cover-scrim.ts):
+   --cover-scrim-light/-dark say how strong the wash must be for the text to hold
+   4.5:1 on this picture, --cover-hue/--cover-sat tint the wash and the ink with
+   the picture's own color. The defaults are the navy used on grey artwork. */
+@property --cover-scrim { syntax: "<number>"; inherits: true; initial-value: 0.7; }
+.cover {
+  --cover-hue: 224;
+  --cover-sat: 42%;
+  --cover-scrim: var(--cover-scrim-light, 0.7);
+  --cover-wash: hsl(var(--cover-hue) var(--cover-sat) 97%);
+  --cover-ink: hsl(var(--cover-hue) var(--cover-sat) 16%);
+  --cover-muted: hsl(var(--cover-hue) calc(var(--cover-sat) * 0.7) 30%);
+  transition: --cover-scrim 400ms ease;
+}
 .cover::before, .cover::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: -1; }
-.cover::before { background: linear-gradient(104deg, #ffffff99, #ffffff38 48%, #ffffff00 76%); }
-.cover::after { background: linear-gradient(to bottom, #ffffff00 52%, color-mix(in srgb, var(--home-page) 72%, transparent) 82%, var(--home-page)); }
+/* Blurs and washes out the artwork under the title, feathered away to the right
+   and downward so it has no edge. The blur takes out the detail a wash cannot. */
+.cover::before {
+  background: color-mix(in srgb, var(--cover-wash) calc(var(--cover-scrim) * 100%), transparent);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-mask-image: linear-gradient(104deg, #000 34%, #0000 78%), linear-gradient(to bottom, #000 36%, #0000 68%);
+  mask-image: linear-gradient(104deg, #000 34%, #0000 78%), linear-gradient(to bottom, #000 36%, #0000 68%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+/* A faint wash down the left edge for the search bar, then the bottom of the
+   photo melts into the page so the cover has no visible seam. */
+.cover::after { background: linear-gradient(to bottom, #ffffff00 52%, color-mix(in srgb, var(--home-page) 72%, transparent) 82%, var(--home-page)), linear-gradient(104deg, #ffffff59, #ffffff21 48%, #ffffff00 76%); }
 /* Matches .content, whose 1200px includes its gutters, so both edges line up. */
 .coverInner { position: relative; display: flex; flex-direction: column; flex: 1; width: 100%; max-width: calc(1200px - 2 * var(--home-gutter)); margin: 0 auto; }
 
@@ -36,9 +59,10 @@
 .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
 .identity { display: flex; gap: 18px; align-items: center; min-width: 0; flex: 1 1 320px; }
 .notebookIcon { width: 66px; height: 70px; flex-shrink: 0; display: grid; place-items: center; border-radius: 20px; font-size: 30px; background-image: linear-gradient(150deg, #ffffff70, transparent 55%, #00000012); border: 1px solid #ffffff80; box-shadow: inset 0 2px 2px #ffffff80, 0 6px 16px #263c5920; }
-.title { font-size: clamp(23px, 2.5cqi, 31px); font-weight: 700; letter-spacing: -1px; overflow-wrap: anywhere; line-height: 1.2; }
+/* The halo carries a long title past the end of the scrim. */
+.title { font-size: clamp(23px, 2.5cqi, 31px); font-weight: 700; letter-spacing: -1px; overflow-wrap: anywhere; line-height: 1.2; color: var(--cover-ink); text-shadow: 0 0 18px color-mix(in srgb, var(--cover-wash) 80%, transparent), 0 0 4px color-mix(in srgb, var(--cover-wash) 55%, transparent); }
 .description { margin-top: 5px; font-size: 14px; color: var(--home-muted); }
-.metadata { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; color: #5a678a; font-size: 12px; margin-top: 10px; }
+.metadata { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; color: var(--cover-muted); font-size: 12px; margin-top: 10px; }
 .actions { display: flex; gap: 10px; padding-top: 3px; }
 .primaryButton { display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 11px 17px; font-size: 13px; font-weight: 600; border-radius: 12px; white-space: nowrap; transition: background 150ms, box-shadow 150ms; }
 .primaryButton { color: white; background: linear-gradient(#30323b, #191b23); border: 1px solid #20222b; box-shadow: inset 0 1px 0 #ffffff30, 0 4px 12px #20213925; }
@@ -46,7 +70,7 @@
 .newMenu { position: relative; }
 .newMenuChevron { margin-left: -3px; opacity: .75; transition: transform 150ms; }
 .newMenuChevron[data-open=true] { transform: rotate(180deg); }
-.newMenuList { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; min-width: 200px; padding: 5px; border-radius: 13px; border: 1px solid #ffffffa6; background: #ffffffe6; backdrop-filter: blur(26px) saturate(180%); -webkit-backdrop-filter: blur(26px) saturate(180%); box-shadow: 0 18px 40px #17203926; }
+.newMenuList { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; min-width: 200px; padding: 5px; border-radius: 13px; border: 1px solid #ffffffa6; background: #ffffffe6; backdrop-filter: blur(26px) saturate(180%); box-shadow: 0 18px 40px #17203926; }
 .newMenuList button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border-radius: 9px; font-size: 13px; font-weight: 550; color: #23304f; text-align: left; white-space: nowrap; }
 .newMenuList button:hover, .newMenuList button:focus-visible { background: #7d9bff1f; }
 .home .newMenuList button:focus-visible { outline: none; }
@@ -67,7 +91,6 @@
   border-radius: 16px;
   background: #ffffff4d;
   backdrop-filter: blur(22px) saturate(180%);
-  -webkit-backdrop-filter: blur(22px) saturate(180%);
   color: #172039;
   box-shadow: inset 0 1px 0 #ffffffb3, 0 10px 30px #2b3f6e1f;
   outline: none;
@@ -80,7 +103,7 @@
 .searchIcon { position: absolute; z-index: 1; top: 18px; left: 17px; color: #566484; pointer-events: none; }
 .clearSearch { position: absolute; z-index: 1; top: 14px; right: 13px; padding: 6px; color: #566484; border-radius: 8px; }
 .clearSearch:hover { background: #ffffff73; }
-.searchResults { position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 30; border-radius: 14px; border: 1px solid #ffffffa6; background: #ffffffe0; backdrop-filter: blur(26px) saturate(180%); -webkit-backdrop-filter: blur(26px) saturate(180%); box-shadow: 0 18px 40px #17203926; overflow: hidden; max-height: 360px; overflow-y: auto; }
+.searchResults { position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 30; border-radius: 14px; border: 1px solid #ffffffa6; background: #ffffffe0; backdrop-filter: blur(26px) saturate(180%); box-shadow: 0 18px 40px #17203926; overflow: hidden; max-height: 360px; overflow-y: auto; }
 .searchResults button { display: flex; align-items: center; gap: 12px; padding: 12px 16px; width: 100%; text-align: left; }
 .searchResults button:hover { background: #7d9bff1f; }
 .noResults { padding: 18px; color: var(--home-muted); font-size: 13px; }
@@ -175,10 +198,13 @@
 .home button:focus-visible, .home select:focus-visible { outline: 2px solid #789af8; outline-offset: 3px; }
 
 :global(.dark) .home { --home-ink: #e9edfb; --home-muted: #a2acc5; --home-line: #2c3243; --home-surface: #1c202b; --home-page: #1a1d29; background: linear-gradient(140deg, #171a24, #1b1d2a); }
-:global(.dark) .cover::before { background: linear-gradient(104deg, #161a2ce0, #1b2137a6 48%, #1b213747 80%), linear-gradient(#1b213730, #1b213730); }
-:global(.dark) .cover::after { background: linear-gradient(to bottom, #00000000 50%, color-mix(in srgb, var(--home-page) 70%, transparent) 80%, var(--home-page)); }
-:global(.dark) .title { color: #f4f5ff; }
-:global(.dark) .metadata { color: #c6d2f4; }
+:global(.dark) .cover {
+  --cover-scrim: var(--cover-scrim-dark, 0.8);
+  --cover-wash: hsl(var(--cover-hue) calc(var(--cover-sat) * 0.8) 12%);
+  --cover-ink: hsl(var(--cover-hue) var(--cover-sat) 96%);
+  --cover-muted: hsl(var(--cover-hue) var(--cover-sat) 86%);
+}
+:global(.dark) .cover::after { background: linear-gradient(to bottom, #00000000 50%, color-mix(in srgb, var(--home-page) 70%, transparent) 80%, var(--home-page)), linear-gradient(104deg, #161a2c99, #1b213773 48%, #1b213747 80%), linear-gradient(#1b213730, #1b213730); }
 :global(.dark) .newMenuList { background: #1c2030ed; border-color: #ffffff1f; box-shadow: 0 18px 40px #00000066; }
 :global(.dark) .newMenuList button { color: #eef1ff; }
 :global(.dark) .newMenuList button:hover, :global(.dark) .newMenuList button:focus-visible { background: #ffffff14; }
