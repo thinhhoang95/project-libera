@@ -6,12 +6,13 @@ Every notebook's homepage opens with a wide illustration across the top. The ill
 
 Open Preferences → **General** → **Homepage illustrations**. Each set shows as a tile with its first illustration and small thumbnails of the rest; click one to use it, and save Preferences. Covers change straight away, without a restart.
 
-Two sets are built in:
+Three sets are built in:
 
 | Set | Contents |
 | --- | --- |
 | **Kỷ nguyên vươn mình** (default) | Six Vietnamese monuments: Turtle Tower, One Pillar Pagoda, the Meridian Gate of Huế, Hội An's Covered Bridge, the Po Nagar towers and the Independence Palace |
 | **AI Seasons** | The original nine landscapes |
+| **Christmas** | Six paper-cut winter scenes: a snowy village, woodland gathering, gift workshop, Christmas express, fireside evening and winter market |
 
 With **AI Seasons**, each notebook keeps the illustration it was given when it was created. With any other set, a notebook's creation time picks its illustration, so a notebook keeps the same picture for as long as the set does.
 

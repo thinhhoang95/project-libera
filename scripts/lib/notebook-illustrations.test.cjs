@@ -57,8 +57,8 @@ test("resolving lists the built-in sets first and leaves out images whose file i
     exists: (setId, imageId) => setId === "custom-a" && imageId === "aaaaaaaa1",
   });
   assert.equal(library.selected, "custom-a");
-  assert.deepEqual(library.sets.map((set) => set.id), ["vietnamese-monuments", "ai-seasons", "custom-a"]);
-  assert.deepEqual(library.sets[2].images, [{ id: "aaaaaaaa1", url: "/api/notebook-illustrations/custom-a/aaaaaaaa1" }]);
+  assert.deepEqual(library.sets.map((set) => set.id), ["vietnamese-monuments", "ai-seasons", "christmas", "custom-a"]);
+  assert.deepEqual(library.sets[3].images, [{ id: "aaaaaaaa1", url: "/api/notebook-illustrations/custom-a/aaaaaaaa1" }]);
 });
 
 test("only JPEG data URLs are accepted and only cover file names are notebook covers", () => {

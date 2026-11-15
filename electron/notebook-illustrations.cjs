@@ -2,7 +2,7 @@
 // (Electron), the Next server and the app; it requires nothing, as client
 // code imports it (file paths are in notebook-illustration-store.cjs). The
 // built-in sets ship in public/images: "Kỷ nguyên vươn mình" (Vietnamese
-// monuments, the default) and "AI Seasons", the original covers, which keep
+// monuments, the default), "Christmas", and "AI Seasons", the original covers, which keep
 // each notebook's stored illustration. The user's own sets are stored with
 // the preferences, and
 // their images live in the library at
@@ -52,10 +52,23 @@ const VIETNAMESE_MONUMENTS_IMAGES = Object.freeze([
 }));
 
 const AI_SEASONS_SET = Object.freeze({ id: AI_SEASONS_SET_ID, name: "AI Seasons", builtIn: true, images: AI_SEASONS_IMAGES });
+
+const CHRISTMAS_IMAGES = Object.freeze([
+  "snowy-village",
+  "woodland-gathering",
+  "gift-workshop",
+  "christmas-express",
+  "fireside-evening",
+  "winter-market",
+].map((id) => {
+  const file = `christmas/notebook-${id}.png`;
+  return Object.freeze({ id, file, url: `/images/${file}` });
+}));
 /** The default set first. Each image's `file` is relative to public/images. */
 const BUILT_IN_ILLUSTRATION_SETS = Object.freeze([
   Object.freeze({ id: VIETNAMESE_MONUMENTS_SET_ID, name: "Kỷ nguyên vươn mình", builtIn: true, images: VIETNAMESE_MONUMENTS_IMAGES }),
   AI_SEASONS_SET,
+  Object.freeze({ id: "christmas", name: "Christmas", builtIn: true, images: CHRISTMAS_IMAGES }),
 ]);
 const BUILT_IN_ILLUSTRATIONS = Object.freeze(BUILT_IN_ILLUSTRATION_SETS.flatMap((set) => set.images));
 
