@@ -84,7 +84,13 @@ export function markdownHeadingOffsets(text: string) {
   return offsets;
 }
 
-export function reviewBlocks(text: string): ReviewBlock[] {
+/**
+ * The blocks a review plans and edits by. Markdown's come from its syntax tree;
+ * `plain` (plain text and code) splits at blank lines instead, since Markdown
+ * parsing would read a `# comment` as a heading or indented code as a code block.
+ */
+export function reviewBlocks(text: string, { plain = false }: { plain?: boolean } = {}): ReviewBlock[] {
+  if (plain) return plainBlocks(text).map((block, index) => ({ ...block, id: `b${index + 1}`, type: "paragraph", text: text.slice(block.start, block.end) }));
   return parser.parse(text).children.flatMap((node, index) => {
     const start = node.position?.start.offset, end = node.position?.end.offset;
     return start === undefined || end === undefined ? [] : [{ id: `b${index + 1}`, start, end, type: node.type, text: text.slice(start, end) }];
@@ -98,9 +104,10 @@ export function paragraphRange(text: string, selection: ReviewRange): ReviewRang
 }
 // Non-Markdown sources (LaTeX) have no Markdown block structure: expand the
 // selection to the blank-line separated paragraphs it touches instead.
-export function plainParagraphRange(text: string, selection: ReviewRange): ReviewRange | null {
+function plainBlocks(text: string): ReviewRange[] {
   const blocks: ReviewRange[] = [];
-  const separator = /\n[ \t]*\n/g;
+  // `\r?`: a CRLF file's blank line is "\n\r\n", which `[ \t]*` alone never matched.
+  const separator = /\n[ \t]*\r?\n/g;
   let cursor = 0;
   for (const match of [...text.matchAll(separator), null]) {
     const end = match ? match.index : text.length;
@@ -109,6 +116,10 @@ export function plainParagraphRange(text: string, selection: ReviewRange): Revie
     if (trimmed) blocks.push({ start: cursor + lead, end: cursor + lead + trimmed.length });
     if (match) cursor = match.index + match[0].length;
   }
+  return blocks;
+}
+export function plainParagraphRange(text: string, selection: ReviewRange): ReviewRange | null {
+  const blocks = plainBlocks(text);
   const hit = blocks.filter((b) => selection.start === selection.end ? b.start <= selection.start && b.end >= selection.start : b.start < selection.end && b.end > selection.start);
   return hit.length ? { start: hit[0].start, end: hit.at(-1)!.end } : null;
 }
@@ -554,8 +565,7 @@ export function validatePlan(value: unknown, version: number, ids: string[], blo
   if (ids.some((id) => !steps.some((s) => s.commentIds.includes(id)) && !dispositions.some((d) => d.commentId === id))) throw new Error("The plan must address every selected comment.");
   return { version, summary: reviewString(p.summary, "summary"), steps, dispositions, blockingQuestions: strings(p.blockingQuestions), revisionSummary: reviewString(p.revisionSummary, "revision summary") };
 }
-export function validateSuggestions(value: unknown, text: string, ids: string[], makeId: () => string): ReviewSuggestion[] {
-  const blocks = reviewBlocks(text);
+export function validateSuggestions(value: unknown, text: string, ids: string[], makeId: () => string, blocks: ReviewBlock[] = reviewBlocks(text)): ReviewSuggestion[] {
   const root = object(value);
   const proposals = list(root.proposals).map((raw): ReviewSuggestion => {
     const p = object(raw);

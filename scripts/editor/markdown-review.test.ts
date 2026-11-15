@@ -239,3 +239,13 @@ test("a comment on one of two repeated passages keeps its own copy through separ
   assert.equal(mapped.state, "attached");
   assert.equal(mapped.start, after.lastIndexOf("Repeated passage."));
 });
+
+test("plain text and code review in blank-line paragraphs, so Markdown-looking lines stay in their block", () => {
+  const code = "# a Python comment\r\ndef f():\r\n    return 1\r\n\r\n\r\nprint(f())\n";
+  const blocks = reviewBlocks(code, { plain: true });
+  assert.deepEqual(blocks.map((b) => [b.id, b.type, b.text]), [["b1", "paragraph", "# a Python comment\r\ndef f():\r\n    return 1"], ["b2", "paragraph", "print(f())"]]);
+  assert.notDeepEqual(reviewBlocks(code).map((b) => b.text), blocks.map((b) => b.text), "Markdown parsing splits the comment off as a heading");
+  // An edit spanning the comment and the code it describes fits its one plain block.
+  const [proposal] = validateSuggestions({ proposals: [{ title: "Rename", reason: "Clarity", commentIds: ["c1"], edits: [{ targetBlockId: "b1", before: "comment\r\ndef f", after: "comment\r\ndef g" }] }] }, code, ["c1"], () => "s1", blocks);
+  assert.equal(applyReviewEdits(code, proposal.edits), code.replace("def f", "def g"));
+});
