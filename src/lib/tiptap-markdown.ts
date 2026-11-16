@@ -8,7 +8,8 @@ import Highlight from "@tiptap/extension-highlight";
 import Underline from "@tiptap/extension-underline";
 import Image from "@tiptap/extension-image";
 import { TextStyle, FontSize, LineHeight, Color } from "@tiptap/extension-text-style";
-import { TableKit } from "@tiptap/extension-table";
+import { TableKit, Table, renderTableToMarkdown } from "@tiptap/extension-table";
+import { DOMSerializer, type Schema } from "@tiptap/pm/model";
 import { ListItem, OrderedList, TaskList, TaskItem } from "@tiptap/extension-list";
 import Link from "@tiptap/extension-link";
 import { MARKDOWN_HIGHLIGHT_COLORS } from "./markdown-colors";
@@ -16,6 +17,9 @@ import { markdownTextStyleAttributes } from "./markdown-text-styles";
 import { LiberaBlockquote } from "./tiptap-boxes";
 import { CitationNode, CITATION_NODE_NAME } from "./tiptap-citation";
 import { FrontMatterNode } from "./tiptap-front-matter";
+import { FootnoteDefinition, FootnoteReference } from "./tiptap-footnotes";
+import { Superscript, Subscript } from "./tiptap-scripts";
+import { mathMarkerPairs, matchMath, type MathMarkerPair } from "./math-markers";
 
 /** The `y>>>` … `<<<` delimiters of a highlight in the given color. */
 export function highlightMarkdownOpening(color: unknown) {
@@ -69,25 +73,70 @@ const LiberaHighlight = Highlight.extend({
   },
 }).configure({ multicolor: true });
 
+// Tiptap writes a literal `[` as `\[`, which with `\]` is Libera's display-math
+// marker (a configured marker may start the same way): a paragraph `[TODO]`
+// came back as math. Text brackets are written as this stand-in first; once the
+// document is written, each one that would open math there becomes `&#91;`.
+const BRACKET = "";
+// What may precede a block's first character on its line: quote and list markers.
+const LINE_START = /^[ \t]*(?:(?:>|[-*+]|\d{1,9}[.)])[ \t]+|>)*(?:\[[ xX]\][ \t]+)?$/;
+
+export function guardLiteralBrackets(markdown: string, pairs: MathMarkerPair[]) {
+  if (!markdown.includes(BRACKET)) return markdown;
+  const full = markdown.replaceAll(BRACKET, "\\[");
+  let out = "";
+  let from = 0;
+  let shift = 0;
+  for (let at = markdown.indexOf(BRACKET); at >= 0; at = markdown.indexOf(BRACKET, at + 1)) {
+    const index = at + shift++;
+    const rest = full.slice(index);
+    const lineStart = full.lastIndexOf("\n", index - 1) + 1;
+    const opens = matchMath(rest, pairs, false) ?? (LINE_START.test(full.slice(lineStart, index)) ? matchMath(rest, pairs, true) : undefined);
+    out += markdown.slice(from, at) + (opens ? "&#91;" : "\\[");
+    from = at + 1;
+  }
+  return out + markdown.slice(from);
+}
+
 const LiberaMarkdown = Markdown.extend({
   onBeforeCreate(event) {
     this.parent?.(event);
     const manager = this.storage.manager;
     const serialize = manager.serialize.bind(manager);
-    manager.serialize = (content) => mergeHighlightSeams(serialize(content));
+    // The math extensions publish the configured markers (tiptap-math.ts).
+    const pairs = () => ((this.editor?.storage as unknown as Record<string, { markerPairs?: MathMarkerPair[] } | undefined> | undefined)?.inlineMath?.markerPairs) ?? mathMarkerPairs();
+    manager.serialize = (content) => {
+      serializingSchema = this.editor?.schema ?? null;
+      try {
+        return guardLiteralBrackets(mergeHighlightSeams(serialize(content)), pairs());
+      } finally {
+        serializingSchema = null;
+      }
+    };
     // A backslash only escapes punctuation, so `\fset` or `\theorem{…}` (Markdown
     // macros, markdown-macros.ts) is written as typed instead of as `\\fset`.
     const escaping = manager as unknown as { escapeMarkdownSyntax(text: string): string };
     const escape = escaping.escapeMarkdownSyntax.bind(manager);
-    escaping.escapeMarkdownSyntax = (text) => escape(text).replace(/\\\\(?=[A-Za-z])/g, "\\");
+    escaping.escapeMarkdownSyntax = (text) => escape(text.replaceAll("[", BRACKET)).replace(/\\\\(?=[A-Za-z])/g, "\\");
   },
 });
+
+/** The `#hex` a `[color=…]` tag can hold: `rgb()`/`rgba()` (pasted HTML) is converted, any other color (names, hsl) has no tag and is dropped. */
+export function markdownColor(value: unknown) {
+  const color = String(value ?? "").trim();
+  if (/^#(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(color)) return color;
+  const rgb = /^rgba?\(\s*([\d.]+%?)[\s,]+([\d.]+%?)[\s,]+([\d.]+%?)\s*(?:[,/]\s*[\d.]+%?\s*)?\)$/i.exec(color);
+  if (!rgb) return null;
+  const channel = (part: string) => Math.min(255, Math.round(part.endsWith("%") ? Number.parseFloat(part) * 2.55 : Number.parseFloat(part)));
+  return `#${rgb.slice(1, 4).map((part) => channel(part).toString(16).padStart(2, "0")).join("")}`;
+}
 
 const LiberaTextStyle = TextStyle.extend({
   renderMarkdown(node, h) {
     let content = h.renderChildren(node);
     const attrs = node.attrs ?? {};
-    if (attrs.color) content = `[color=${attrs.color}]${content}[/color]`;
+    const color = markdownColor(attrs.color);
+    if (color) content = `[color=${color}]${content}[/color]`;
     const size = Number.parseFloat(attrs.fontSize);
     const line = Number.parseFloat(attrs.lineHeight);
     const htmlAttrs = [
@@ -122,6 +171,76 @@ const LiberaTextStyle = TextStyle.extend({
       if (!match) return;
       return { type: "textStyle", raw: match[0], color: match[1], tokens: h.inlineTokens(match[2]) };
     },
+  },
+});
+
+type TableJson = JSONContent;
+const isCell = (node: JSONContent) => node.type === "tableCell" || node.type === "tableHeader";
+
+/** A cell's `\|` is a plain `|` in GFM (the cell writer escapes every `|`), so a
+ * norm bar is written `\Vert` (spaced before a letter) and the remaining `\|` always means `|`. */
+function withoutNormBars(node: TableJson): TableJson {
+  if (node.type === "inlineMath" && typeof node.attrs?.latex === "string") {
+    return { ...node, attrs: { ...node.attrs, latex: node.attrs.latex.replace(/\\\\|\\\|(?=([A-Za-z])?)/g, (bars, letter) => bars === "\\\\" ? bars : letter ? "\\Vert " : "\\Vert") } };
+  }
+  return node.content ? { ...node, content: node.content.map(withoutNormBars) } : node;
+}
+
+const hasMergedCells = (table: TableJson) => table.content?.some((row) => row.content?.some((cell) =>
+  isCell(cell) && (Number(cell.attrs?.colspan) > 1 || Number(cell.attrs?.rowspan) > 1))) ?? false;
+
+/** A pipe table has one cell per column, so a merged cell is followed by empty
+ * cells for the slots it covers (the fallback when no schema can write HTML). */
+function padMergedCells(table: TableJson): TableJson {
+  const covered: number[] = [];
+  const empty = (cell?: JSONContent): JSONContent => ({ type: cell?.type ?? "tableCell", content: [{ type: "paragraph" }] });
+  const rows = (table.content ?? []).map((row) => {
+    const cells: JSONContent[] = [];
+    const place = (cell: JSONContent) => { cells.push(cell); };
+    for (const cell of row.content ?? []) {
+      while (covered[cells.length] > 0) { covered[cells.length]--; place(empty()); }
+      const span = Math.max(1, Number(cell.attrs?.colspan) || 1);
+      const down = Math.max(1, Number(cell.attrs?.rowspan) || 1);
+      const start = cells.length;
+      place({ ...cell, attrs: { ...cell.attrs, colspan: 1, rowspan: 1 } });
+      for (let i = 1; i < span; i++) place(empty(cell));
+      if (down > 1) for (let i = 0; i < span; i++) covered[start + i] = down - 1;
+    }
+    while (covered[cells.length] > 0) { covered[cells.length]--; place(empty()); }
+    return { ...row, content: cells };
+  });
+  return { ...table, content: rows };
+}
+
+/** The table as one line of HTML: merged cells have no pipe-table form, and the
+ * preview's sanitizer and a LaTeX paste both read `<table>`. Cells are written
+ * from the schema (so marks, links and citations read back as they were); math,
+ * which has no HTML the preview knows, shows its `$…$` source as the span's text. */
+function tableHtml(table: TableJson, schema: Schema) {
+  try {
+    const node = schema.nodeFromJSON(table);
+    node.check();
+    const dom = DOMSerializer.fromSchema(schema).serializeNode(node) as HTMLElement;
+    dom.querySelector("colgroup")?.remove();
+    dom.removeAttribute("style");
+    dom.querySelectorAll("span[data-type='inline-math']").forEach((span) => { span.textContent = `$${span.getAttribute("data-latex") ?? ""}$`; });
+    return dom.outerHTML.replace(/\n/g, "&#10;");
+  } catch {
+    return null;
+  }
+}
+
+// The schema of the editor being serialized: renderMarkdown has no editor in its
+// context. A bare MarkdownManager (the clipboard's, markdown-clipboard.ts) sets
+// none, and a merged table is then padded instead of written as HTML.
+let serializingSchema: Schema | null = null;
+
+const LiberaTable = Table.extend({
+  renderMarkdown(node, h) {
+    const merged = hasMergedCells(node);
+    const html = merged && serializingSchema ? tableHtml(node, serializingSchema) : null;
+    if (html) return `\n${html}\n`;
+    return renderTableToMarkdown(withoutNormBars(merged ? padMergedCells(node) : node), h);
   },
 });
 
@@ -275,6 +394,8 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
     // The language attribute keeps the whole info string (`html live`), so it round-trips.
     LiberaCodeBlock.extend(options.codeBlockNodeView ? { addNodeView: () => options.codeBlockNodeView! } : {}),
     LiberaLink.configure({ openOnClick: false }),
+    // Before the citation node so `[^1]` is a footnote, not a bracket run.
+    FootnoteReference, FootnoteDefinition, Superscript, Subscript,
     CitationNode.configure({ nodeView: options.citationNodeView ?? null }),
     FrontMatterNode.configure({ documentPath }),
     LiberaBlockquote,
@@ -309,7 +430,7 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
     // TipTap registers its tokenizers on the marked instance, so each editor gets its own;
     // the global one would grow by every tokenizer of every editor and slow every parse.
     LiberaMarkdown.configure({ marked: new Marked() as unknown as typeof marked }), LiberaHighlight, LiberaTextStyle, LiberaFontSize, LiberaLineHeight, Color,
-    TableKit, LiberaTaskList, TaskItem.configure({ nested: true }),
+    TableKit.configure({ table: false }), LiberaTable, LiberaTaskList, TaskItem.configure({ nested: true }),
     Image.extend({
       addNodeView() {
         if (options.imageNodeView) return options.imageNodeView;

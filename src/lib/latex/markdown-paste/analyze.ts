@@ -153,7 +153,11 @@ export function collectStructure({ tree, source }: ParsedMarkdown): MarkdownStru
   if (linkReferences.some((id) => structure.definitions.get(id)?.url.startsWith("#"))) structure.internalLinks = true;
   const sectioning = structure.headings.filter((heading) => !heading.nested);
   structure.depths = [...new Set(sectioning.map((heading) => heading.depth))].sort((a, b) => a - b);
-  structure.numberedHeadings = sectioning.length > 0 && sectioning.every((heading) => HEADING_NUMBER.test(heading.text))
+  // Libera's "skip title" numbering leaves one unnumbered title: the first heading, alone at the shallowest depth.
+  const unnumbered = sectioning.filter((heading) => !HEADING_NUMBER.test(heading.text));
+  const titleOnly = sectioning.length > 1 && unnumbered.length === 1 && unnumbered[0] === sectioning[0] && unnumbered[0].depth === structure.depths[0]
+    && sectioning.filter((heading) => heading.depth === structure.depths[0]).length === 1;
+  structure.numberedHeadings = sectioning.length > 0 && (unnumbered.length === 0 || titleOnly)
     // Letters and Roman numerals count only alongside a digit, so "A. Smith" alone is a name.
     && sectioning.some((heading) => /^\d/.test(heading.text));
   return structure;

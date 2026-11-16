@@ -1,4 +1,5 @@
-export type EditorThemeScope = "visual" | "source" | "latex";
+/** The editors, plus "pdf": PDF pages, which take only the theme's page color. */
+export type EditorThemeScope = "visual" | "source" | "latex" | "pdf";
 export type EditorThemeColorKey = "background" | "text" | "h1" | "h2" | "h3" | "h4" | "h5" | "lists";
 export type EditorThemeAppearance = Record<EditorThemeColorKey, string>;
 /** A theme's colors and typefaces; a font of "" is the system font. */
@@ -10,6 +11,7 @@ export type ResolvedEditorThemes = Record<EditorThemeScope, ResolvedEditorTheme 
 /** The settings saved before editor themes held them: the heading accent and the fonts. */
 export type LegacyHeadingAccent = { headingColor?: unknown; headingPalette?: unknown; textFont?: unknown; codeFont?: unknown };
 export const EDITOR_THEME_SCOPES: readonly EditorThemeScope[];
+export const EDITOR_SCOPES: readonly Exclude<EditorThemeScope, "pdf">[];
 export const EDITOR_THEME_COLOR_KEYS: readonly EditorThemeColorKey[];
 export const DEFAULT_EDITOR_THEME_ID: "default";
 export const MAX_EDITOR_THEMES: number;

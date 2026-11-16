@@ -6,6 +6,7 @@ import { ySyncFacet } from "y-codemirror.next";
 import { insertLargeText, utf8Length } from "../../collab/bindings/codemirror";
 import { stopCapturing } from "../../collab/undo-boundary";
 import { indentLines } from "../latex-text";
+import { LIBERA_MARKDOWN_MIME } from "../../markdown-clipboard-mime";
 import { isRichClipboardHtml, looksLikeMarkdown, scoreMarkdown } from "../markdown-paste/detect";
 import { createPasteContext, readPreambleInfo, sectionBefore, type LatexPasteContext, type PasteEngine } from "../markdown-paste/context";
 import { resolveLatexEngine, stripLatexComments } from "../project";
@@ -492,9 +493,11 @@ export function isCodeOnlyHtml(html: string) {
  * when its text carries no LaTeX and it is not just code, so LaTeX copied
  * from a web page still pastes as written.
  */
-export function classifyPaste(state: EditorState, { text, html = "" }: { text: string; html?: string }, config: MarkdownPasteConfig): "markdown" | "html" | null {
+export function classifyPaste(state: EditorState, { text, html = "", libera = false }: { text: string; html?: string; libera?: boolean }, config: MarkdownPasteConfig): "markdown" | "html" | null {
   const visual = config.visual(state);
   const detect = config.detect();
+  // Copied from Libera's own Markdown: trusted without the score, so a short copy converts too.
+  if (libera && detect && text.trim()) return "markdown";
   const mathMarkers = config.mathMarkers?.();
   const rich = !!html && isRichClipboardHtml(html)
     && (visual || (detect && scoreMarkdown(text, mathMarkers).latex === 0 && !isCodeOnlyHtml(html)));
@@ -531,9 +534,10 @@ export function latexMarkdownPaste(config: () => MarkdownPasteConfig | null): Ex
         if (plain || view.state.selection.ranges.length > 1 || pasteStaysLiteral(view.state, from)) { plainPasteEvents.add(event); return false; }
         const current = config();
         if (!current || view.state.readOnly) return false;
-        const text = event.clipboardData?.getData("text/plain") ?? "";
+        const libera = event.clipboardData?.getData(LIBERA_MARKDOWN_MIME) ?? "";
+        const text = libera || (event.clipboardData?.getData("text/plain") ?? "");
         const html = event.clipboardData?.getData("text/html") ?? "";
-        const kind = classifyPaste(view.state, { text, html }, current);
+        const kind = classifyPaste(view.state, { text, html, libera: !!libera.trim() }, current);
         if (!kind) return false;
         event.preventDefault();
         current.onRequest({ text, html: kind === "html" ? html : undefined, range: trackRange(view, from, to), origin: "paste", expected: view.state.sliceDoc(from, to) });

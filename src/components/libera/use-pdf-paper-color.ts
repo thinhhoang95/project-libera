@@ -12,9 +12,13 @@ function subscribe(listener: () => void) {
 
 const isDark = () => document.documentElement.classList.contains("dark");
 
-/** The PDF paper color for the visual editor's theme and the appearance (pdf-paper-color.ts). */
+/**
+ * The paper color of PDF pages, in the PDF viewer and the LaTeX PDF preview
+ * alike: the page color of the theme Preferences sets for PDF pages, for the
+ * appearance (pdf-paper-color.ts).
+ */
 export function usePdfPaperColor() {
-  const theme = useResolvedEditorThemes().visual;
+  const theme = useResolvedEditorThemes().pdf;
   const dark = useSyncExternalStore(subscribe, isDark, () => false);
   return pdfPaperColor(theme, dark);
 }

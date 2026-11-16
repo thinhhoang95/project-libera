@@ -1856,7 +1856,7 @@ button.border[class*="border-white"]:hover {
 
 .pdf-space-box {
   /* PDFs are paper; a space without a sampled fill is white, also in dark
-     mode, or the editor theme's paper (pdf-paper-color.ts). */
+     mode, or the PDF pages theme's paper (pdf-paper-color.ts). */
   background: var(--libera-pdf-paper, #fff);
   position: absolute;
 }
@@ -3584,3 +3584,8 @@ html.dark .libera-left-panel { --libera-contextual: #b4a2f5; }
 .review-comment-icon.review-comment-pen, html.dark .review-comment-icon.review-comment-pen { color: var(--muted-foreground); }
 .review-comment-icon.review-comment-pen svg { width: 13px; height: 13px; }
 .review-comment-icon.review-comment-pen:hover:not(:disabled) { color: var(--foreground); opacity: 1; }
+
+/* Footnotes (tiptap-footnotes.ts): a small raised marker, and the note as small print led by its id. */
+.libera-tiptap .libera-footnote-ref { font-size: .75em; font-weight: 600; color: var(--primary); padding: 0 .1em; }
+.libera-tiptap .libera-footnote-definition { font-size: .85em; color: var(--muted-foreground); margin: 0 0 .4em; }
+.libera-tiptap .libera-footnote-definition::before { content: attr(data-footnote-id) ". "; font-weight: 600; }

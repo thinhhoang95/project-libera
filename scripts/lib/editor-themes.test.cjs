@@ -24,6 +24,9 @@ test("editor themes keep valid user themes and choices, dropping the rest", () =
   assert.equal(preferences.visual, "custom-a1");
   assert.equal(preferences.source, "sepia");
   assert.equal(preferences.latex, "default");
+  // Preferences saved before PDF pages had a theme keep white pages.
+  assert.equal(preferences.pdf, "default");
+  assert.equal(normalizeEditorThemes({ pdf: "sepia" }).pdf, "sepia");
   assert.deepEqual(preferences.themes.map((theme) => theme.id), ["custom-a1"]);
 });
 
@@ -63,6 +66,8 @@ test("the former fonts move into a copy of each editor's theme", () => {
   // Source and LaTeX both used the app colors, so they share one copy.
   assert.equal(migrated.source, "custom-fonts-default");
   assert.equal(migrated.latex, "custom-fonts-default");
+  // PDF pages have no text of their own, so they keep white pages.
+  assert.equal(migrated.pdf, "default");
   assert.deepEqual(migrated.themes.map((theme) => [theme.name, theme.textFont, theme.codeFont]), [
     ["Teal with my fonts", "Georgia", "Menlo"],
     ["App colors with my fonts", "Georgia", "Menlo"],
@@ -82,6 +87,9 @@ test("resolved themes carry only the colors each editor uses", () => {
   assert.deepEqual(resolved.visual, { light: custom.light, dark: custom.dark, textFont: "Georgia", codeFont: "" });
   assert.equal(resolved.source.light.background, BUILT_IN_EDITOR_THEMES.find((theme) => theme.id === "paper").light.background);
   assert.equal(resolved.latex, null);
+  // PDF pages follow their own theme, not the visual editor's.
+  assert.equal(resolved.pdf, null);
+  assert.equal(resolveEditorThemes({ visual: "default", pdf: "sepia" }).pdf.light.background, BUILT_IN_EDITOR_THEMES.find((theme) => theme.id === "sepia").light.background);
 });
 
 test("theme files round-trip without ids and reject other files", () => {
@@ -143,6 +151,18 @@ test("Preferences picks, duplicates, imports and saves editor themes", async () 
     tile("sepia").click();
     assert.equal(tile("sepia").getAttribute("aria-checked"), "true");
 
+    // PDF pages pick their own theme; the app colors read as white paper.
+    const pdfTab = document.querySelector('.editor-theme-scopes [data-scope="pdf"]');
+    assert.equal(pdfTab.querySelector("small").textContent, "White");
+    assert.equal(document.querySelector("#editor-theme-pdf-help").hidden, true);
+    pdfTab.click();
+    assert.equal(document.querySelector("#editor-theme-pdf-help").hidden, false);
+    assert.equal(tile("default").querySelector(".editor-theme-name").textContent, "White");
+    tile("paper").click();
+    assert.equal(pdfTab.querySelector("small").textContent, "Paper");
+    assert.equal(document.querySelector('.editor-theme-scopes [data-scope="visual"] small').textContent, "Night");
+    document.querySelector('.editor-theme-scopes [data-scope="source"]').click();
+
     // Right-click Night and duplicate it.
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
     const menuLabels = () => menuItems.map((item) => item.label);
@@ -192,6 +212,7 @@ test("Preferences picks, duplicates, imports and saves editor themes", async () 
     const themes = saved.markdownEditorThemes;
     assert.equal(themes.visual, "default");
     assert.equal(themes.latex, "default");
+    assert.equal(themes.pdf, "paper");
     assert.deepEqual(themes.themes.map((theme) => theme.name), ["Night copy", "Night 2", "Reading"]);
     assert.equal(themes.source, themes.themes[2].id);
     assert.deepEqual(themes.themes[2].light, BUILT_IN_EDITOR_THEMES.find((theme) => theme.id === "sepia").light);

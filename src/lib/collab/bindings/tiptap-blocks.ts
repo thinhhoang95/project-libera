@@ -213,6 +213,7 @@ export function nodeMatchesBlock(node: ProseMirrorNode, type: string, text: stri
     case "horizontalRule": return type === "thematicBreak";
     case "table": return type === "table";
     case "blockMath": return type === "math" || type === "paragraph";
+    case "footnoteDefinition": return type === "footnoteDefinition";
     case "image": return type === "paragraph";
     default: return true;
   }

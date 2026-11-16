@@ -8,13 +8,18 @@
 // the code editor for other text files) and the LaTeX editor (Source and
 // Visual modes) each pick a theme, or "default" to keep the app colors, plain
 // headings and system fonts; rendered previews take the visual editor's
-// heading colors and text font, and LaTeX Visual mode the LaTeX theme's. The editors derive their borders,
+// heading colors and text font, and LaTeX Visual mode the LaTeX theme's. PDF
+// pages (the PDF viewer and the LaTeX PDF preview) pick a theme of their own
+// and take only its page color (src/lib/pdf-paper-color.ts); "default" keeps
+// them white. The editors derive their borders,
 // gutters and muted fills from the page colors (globals.css,
 // [data-editor-theme-*]). Built-in themes are fixed; the user's own are
 // stored with the preferences.
 const { normalizeMarkdownHeadingColor, normalizeMarkdownHeadingPalette } = require("./markdown-accents.cjs");
 
-const EDITOR_THEME_SCOPES = Object.freeze(["visual", "source", "latex"]);
+const EDITOR_THEME_SCOPES = Object.freeze(["visual", "source", "latex", "pdf"]);
+// The scopes that draw text with a theme's fonts and heading colors.
+const EDITOR_SCOPES = Object.freeze(["visual", "source", "latex"]);
 const EDITOR_THEME_COLOR_KEYS = Object.freeze(["background", "text", "h1", "h2", "h3", "h4", "h5", "lists"]);
 const HEADING_KEYS = ["h1", "h2", "h3", "h4", "h5", "lists"];
 const DEFAULT_EDITOR_THEME_ID = "default";
@@ -134,7 +139,7 @@ function lighten(color) {
 // visual editor and previews; it becomes the visual editor's theme.
 function legacyEditorThemes(legacy = {}) {
   const headingColor = normalizeMarkdownHeadingColor(legacy.headingColor);
-  const preferences = { visual: DEFAULT_EDITOR_THEME_ID, source: DEFAULT_EDITOR_THEME_ID, latex: DEFAULT_EDITOR_THEME_ID, themes: [] };
+  const preferences = { visual: DEFAULT_EDITOR_THEME_ID, source: DEFAULT_EDITOR_THEME_ID, latex: DEFAULT_EDITOR_THEME_ID, pdf: DEFAULT_EDITOR_THEME_ID, themes: [] };
   if (headingColor === "none") preferences.visual = "plain";
   else if (headingColor !== "custom") preferences.visual = headingColor;
   else {
@@ -155,7 +160,7 @@ function foldLegacyFonts(preferences, legacy = {}) {
   const codeFont = normalizeThemeFont(legacy.codeFont);
   if (!textFont && !codeFont) return preferences;
   const copies = new Map();
-  for (const scope of EDITOR_THEME_SCOPES) {
+  for (const scope of EDITOR_SCOPES) {
     const id = preferences[scope];
     let theme = preferences.themes.find((candidate) => candidate.id === id);
     if (!theme) {
@@ -248,6 +253,7 @@ function parseEditorThemesFile(value) {
 
 module.exports = {
   EDITOR_THEME_SCOPES,
+  EDITOR_SCOPES,
   EDITOR_THEME_COLOR_KEYS,
   DEFAULT_EDITOR_THEME_ID,
   MAX_EDITOR_THEMES,

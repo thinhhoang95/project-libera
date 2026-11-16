@@ -212,6 +212,34 @@ test("rich text converts in Source mode too, unless it is LaTeX, code, or conver
   assert.equal(classifyPaste(view.state, { text: "## Results\n\n**Bold** words", html: "<h2>Results</h2><p><b>Bold</b> words</p>" }, config(() => undefined)), "markdown");
 });
 
+/* ---- Libera's own clipboard type ---------------------------------------------------------- */
+
+test("a copy from Libera's Markdown converts without the score, except where a paste stays literal", () => {
+  const MIME = "application/x-libera-markdown";
+  const requests: MarkdownPasteRequest[] = [];
+  const view = mount(DOC, (request) => requests.push(request));
+  view.dispatch({ selection: { anchor: DOC.indexOf("Text") } });
+  const short = "**Key** point.";
+  assert.equal(classifyPaste(view.state, { text: short }, config(() => undefined)), null);
+  paste(view, { "text/plain": short });
+  assert.equal(requests.length, 0);
+  paste(view, { "text/plain": short, [MIME]: short });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].text, short);
+  requests[0].range.release();
+  // The custom type's text is the source; "never convert" still wins.
+  paste(view, { "text/plain": "ignored", [MIME]: "b> A box." });
+  assert.equal(requests.at(-1)?.text, "b> A box.");
+  requests.at(-1)?.range.release();
+  assert.equal(classifyPaste(view.state, { text: short, libera: true }, config(() => undefined, { detect: false })), null);
+  // Several cursors and literal places are plain pastes.
+  const count = requests.length;
+  const math = DOC.indexOf("booktabs");
+  view.dispatch({ selection: { anchor: math } });
+  paste(view, { "text/plain": short, [MIME]: short });
+  assert.equal(requests.length, count);
+});
+
 /* ---- What each request must still find --------------------------------------------------- */
 
 test("requests carry the text they replace, so a collaborator's edit inside it is never overwritten", () => {

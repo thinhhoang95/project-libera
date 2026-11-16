@@ -5,6 +5,10 @@ import { act, createElement, createRef, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Editor } from "@tiptap/core";
 import { Mathematics } from "@tiptap/extension-mathematics";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
+import { DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } from "../../electron/math-markers.cjs";
+import { markdownRemarkPlugins } from "../../src/lib/markdown-rendering";
 import { createMarkdownExtensions, mergeHighlightSeams } from "../../src/lib/tiptap-markdown";
 import { createMathExtensions } from "../../src/lib/tiptap-math";
 import { HighlightTool, highlightToolKey } from "../../src/lib/tiptap-highlight-tool";
@@ -1048,7 +1052,8 @@ test("visual editor native copy writes Markdown without editing the document", a
     Object.defineProperty(event, "clipboardData", { value: { clearData: () => data.clear(), setData: (type: string, value: string) => data.set(type, value) } });
     surface.dispatchEvent(event);
     assert.equal(event.defaultPrevented, true);
-    assert.deepEqual([...data], [["text/plain", "# **Heading**"]]);
+    // The second type marks the copy as Libera's own Markdown (markdown-clipboard-mime.ts).
+    assert.deepEqual([...data], [["text/plain", "# **Heading**"], ["application/x-libera-markdown", "# **Heading**"]]);
     assert.deepEqual(changes, []);
   } finally {
     await act(async () => root.unmount());
@@ -1160,4 +1165,185 @@ test('find navigation retains matches and block caches map offsets through edits
     updateTiptapFind(editor, { query: 'Later' });
     assert.equal(tiptapFindPluginKey.getState(editor.state)!.matches.length, 1);
   } finally { editor.destroy(); }
+});
+
+// --- Serialization gaps: brackets, norm bars, merged cells, scripts, footnotes, colors ---
+
+function liberaEditor(settings: Parameters<typeof createMathExtensions>[0] = {}) {
+  return new Editor({ extensions: [...createMarkdownExtensions("Notebook/Notes/test.md"), ...createMathExtensions(settings)] });
+}
+type Json = Record<string, unknown>;
+const para = (...content: Json[]) => ({ type: "doc", content: [{ type: "paragraph", content }] });
+const text = (value: string, marks?: Json[]) => ({ type: "text", text: value, ...(marks ? { marks } : {}) });
+const hardBreak = { type: "hardBreak" };
+function writeThenRead(editor: Editor, json: Json) {
+  editor.commands.setContent(json);
+  const markdown = editor.getMarkdown();
+  editor.commands.setContent(markdown, { contentType: "markdown" });
+  return { markdown, json: editor.getJSON() as { content?: Array<Record<string, unknown>> } };
+}
+const typesOf = (json: { content?: Array<Record<string, unknown>> }) => JSON.stringify(json).match(/"type":"(\w+)"/g)!.map((item) => item.slice(8, -1));
+// What the read-only preview's remark parser makes of the Markdown.
+function previewTypes(markdown: string) {
+  const processor = unified().use(remarkParse).use(markdownRemarkPlugins({ inlineMathMarkers: DEFAULT_INLINE_MATH_MARKERS, blockMathMarkers: DEFAULT_BLOCK_MATH_MARKERS }));
+  const types: string[] = [];
+  const walk = (node: { type: string; children?: unknown[] }) => { types.push(node.type); node.children?.forEach((child) => walk(child as typeof node)); };
+  walk(processor.parse(markdown) as never);
+  return types;
+}
+
+test("literal bracket text is never written as a math marker", () => {
+  const editor = liberaEditor();
+  try {
+    const cases: Array<[string, Json]> = [
+      ["[TODO]", para(text("[TODO]"))],
+      ["[x] after a hard break", para(text("Line"), hardBreak, text("[x]"))],
+      ["[a ... b] across a hard break", para(text("[a"), hardBreak, text("b]"))],
+      ["in a list item", { type: "doc", content: [{ type: "bulletList", content: [{ type: "listItem", content: [{ type: "paragraph", content: [text("[x]")] }] }] }] }],
+      ["in a quote", { type: "doc", content: [{ type: "blockquote", content: [{ type: "paragraph", content: [text("[x]")] }] }] }],
+    ];
+    for (const [name, json] of cases) {
+      const { markdown, json: back } = writeThenRead(editor, json);
+      assert.doesNotMatch(markdown, /(^|\n)[\s>*+-]*\\\[[^\n]*\\\]/, `${name}: ${markdown}`);
+      assert.ok(!typesOf(back).includes("blockMath"), `${name} came back as math: ${JSON.stringify(markdown)}`);
+      assert.ok(!previewTypes(markdown).some((type) => /math/i.test(type)), `${name}: the preview reads math in ${JSON.stringify(markdown)}`);
+    }
+    assert.equal(writeThenRead(editor, para(text("[TODO]"))).markdown, "&#91;TODO\\]");
+    // Brackets that cannot open math keep their ordinary escape.
+    assert.equal(writeThenRead(editor, para(text("see [x] now"))).markdown, "see \\[x\\] now");
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("literal brackets also avoid configured inline math markers", () => {
+  const editor = liberaEditor({ inlineMathMarkers: "$ $\n\\[ \\]", blockMathMarkers: "[[ ]]" });
+  try {
+    const { markdown, json } = writeThenRead(editor, para(text("see [x] now")));
+    assert.ok(!typesOf(json).includes("inlineMath"), markdown);
+    assert.equal(editor.getText(), "see [x] now");
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("links, citations and task items are still written as themselves", () => {
+  const editor = liberaEditor();
+  try {
+    const source = "[a](https://example.com) and [@key] and \\[ref\\]\n\n- [ ] open\n- [x] done";
+    editor.commands.setContent(source, { contentType: "markdown" });
+    assert.equal(editor.getMarkdown(), source);
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("math in a table cell writes a norm bar as \\Vert so \\| always means a pipe", () => {
+  const editor = liberaEditor();
+  try {
+    const cell = (latex: string) => ({ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "inlineMath", attrs: { latex } }] }] });
+    const head = (value: string) => ({ type: "tableHeader", content: [{ type: "paragraph", content: [text(value)] }] });
+    const table = { type: "doc", content: [{ type: "table", content: [
+      { type: "tableRow", content: [head("a"), head("b")] },
+      { type: "tableRow", content: [cell("P(A|B)"), cell("\\|x\\|")] },
+    ] }] };
+    const { markdown, json } = writeThenRead(editor, table);
+    assert.match(markdown, /\| \$P\(A\\\|B\)\$ \| \$\\Vert x\\Vert\$ \|/);
+    const latex = [...JSON.stringify(json).matchAll(/"latex":"((?:[^"\\]|\\.)*)"/g)].map((item) => JSON.parse(`"${item[1]}"`));
+    assert.deepEqual(latex, ["P(A|B)", "\\Vert x\\Vert"]);
+    // Outside a cell nothing changes.
+    assert.equal(writeThenRead(editor, para({ type: "inlineMath", attrs: { latex: "\\|x\\|" } })).markdown, "$\\|x\\|$");
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("a table with merged cells is written as HTML and reads back unchanged", () => {
+  const editor = liberaEditor();
+  try {
+    const cell = (type: string, attrs: Json, ...content: Json[]) => ({ type, attrs: { colspan: 1, rowspan: 1, colwidth: null, align: null, ...attrs }, content: [{ type: "paragraph", content }] });
+    const table = { type: "doc", content: [{ type: "table", content: [
+      { type: "tableRow", content: [cell("tableHeader", { colspan: 2 }, text("Head", [{ type: "bold" }])), cell("tableHeader", {}, text("C"))] },
+      { type: "tableRow", content: [cell("tableCell", { rowspan: 2 }, text("a")), cell("tableCell", {}, { type: "inlineMath", attrs: { latex: "x^2" } }, text(" and "), text("lnk", [{ type: "link", attrs: { href: "https://a.b" } }])), cell("tableCell", {}, text("c"))] },
+      { type: "tableRow", content: [cell("tableCell", {}, text("d")), cell("tableCell", {}, text("e"))] },
+    ] }] };
+    editor.commands.setContent(table);
+    const before = editor.getJSON();
+    const markdown = editor.getMarkdown();
+    assert.match(markdown, /^\n?<table>[\s\S]*<\/table>\n?$/);
+    assert.ok(!markdown.includes("\n\n"), "a blank line would end the HTML block");
+    editor.commands.setContent(markdown, { contentType: "markdown" });
+    assert.deepEqual(editor.getJSON(), before);
+    assert.equal(editor.getMarkdown(), markdown);
+    assert.ok(previewTypes(markdown).includes("html"));
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("superscript and subscript read and write <sup> and <sub>", () => {
+  const editor = liberaEditor();
+  try {
+    const source = "x<sup>2</sup> and H<sub>2</sub>O and <sup>**b**</sup>";
+    editor.commands.setContent(source, { contentType: "markdown" });
+    assert.ok(typesOf(editor.getJSON() as never).includes("superscript"));
+    assert.ok(typesOf(editor.getJSON() as never).includes("subscript"));
+    assert.equal(editor.getText(), "x2 and H2O and b");
+    assert.equal(editor.getMarkdown(), "x<sup>2</sup> and H<sub>2</sub>O and **<sup>b</sup>**");
+    assert.match(editor.getHTML(), /x<sup>2<\/sup> and H<sub>2<\/sub>O/);
+    // The two exclude each other.
+    editor.commands.setContent("ab", { contentType: "markdown" });
+    editor.chain().selectAll().toggleSuperscript().toggleSubscript().run();
+    assert.equal(editor.getMarkdown(), "<sub>ab</sub>");
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("footnote references and definitions round-trip byte for byte", () => {
+  const editor = liberaEditor();
+  try {
+    for (const source of [
+      "Text[^1] here.\n\n[^1]: A note.",
+      "A[^a] and B[^2].\n\n[^a]: A *note* with $x$.\n\n    A second paragraph.\n\n[^2]: Two.",
+    ]) {
+      editor.commands.setContent(source, { contentType: "markdown" });
+      assert.equal(editor.getMarkdown(), source);
+      assert.match(editor.getHTML(), /<sup class="libera-footnote-ref"/);
+      const types = typesOf(editor.getJSON() as never);
+      assert.ok(types.includes("footnoteReference") && types.includes("footnoteDefinition"), source);
+      assert.ok(previewTypes(source).includes("footnoteDefinition") && previewTypes(source).includes("footnoteReference"), source);
+    }
+    // Literal text that only looks like a reference stays text.
+    assert.equal(writeThenRead(editor, para(text("Text[^1]"))).markdown, "Text\\[^1\\]");
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("Insert footnote adds the next free reference and an empty definition at the end", () => {
+  const editor = liberaEditor();
+  try {
+    editor.commands.setContent("One[^1] two.\n\n[^1]: First.\n\nTail.", { contentType: "markdown" });
+    editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+    assert.ok(editor.commands.insertFootnote());
+    assert.equal(editor.getMarkdown(), "One[^1] two.\n\n[^1]: First.\n\nTail.[^2]\n\n[^2]:");
+    editor.chain().insertContent("Second.").run();
+    assert.equal(editor.getMarkdown(), "One[^1] two.\n\n[^1]: First.\n\nTail.[^2]\n\n[^2]: Second.");
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("text colors are written as hex or not at all", () => {
+  const editor = liberaEditor();
+  try {
+    const styled = (color: string) => para(text("hi", [{ type: "textStyle", attrs: { color } }]));
+    assert.equal(writeThenRead(editor, styled("rgb(220, 38, 38)")).markdown, "[color=#dc2626]hi[/color]");
+    assert.equal(writeThenRead(editor, styled("rgba(0, 128, 255, 0.5)")).markdown, "[color=#0080ff]hi[/color]");
+    assert.equal(writeThenRead(editor, styled("#ABC")).markdown, "[color=#ABC]hi[/color]");
+    for (const color of ["red", "hsl(0, 50%, 50%)", "var(--x)"]) assert.equal(writeThenRead(editor, styled(color)).markdown, "hi", color);
+  } finally {
+    editor.destroy();
+  }
 });

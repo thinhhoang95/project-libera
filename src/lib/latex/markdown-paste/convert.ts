@@ -1,6 +1,9 @@
 import { biblatexCitation, biblatexPostnote, biblatexPrenote } from "@/lib/references/biblatex-export";
 import type { Citation, CitationItem, ReferenceEntry } from "@/lib/references/types";
 import { isMacroBlockLanguage } from "@/lib/markdown-macros";
+import { yamlFrontMatterEnd } from "@/lib/remark-front-matter";
+import { MARKDOWN_HIGHLIGHT_COLORS } from "@/lib/markdown-colors";
+import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { LATEX_COMMANDS } from "../codemirror/latex-data";
 import {
   escapeLatexText, headingSlug, indentLines, isSafeMathTex, isSafeRawLatex, isValidLabel, labelSlug, latexUrl, mathSymbolsToCommands, uniqueLabel,
@@ -198,7 +201,8 @@ export function localImagePath(src: string, baseDir: string): { path: string } |
     let path = value.split(/[?#]/)[0];
     try { path = decodeURIComponent(path); } catch { /* kept as written */ }
     if (path.startsWith("/") || /^[A-Za-z]:/.test(path)) return null;
-    target = normalizeNotebookPath([...base, ...path.split("/")]);
+    // Libera note images (`_assets/...`) are relative to the notebook root, not to the document.
+    target = normalizeNotebookPath(path.split("/")[0] === MARKDOWN_ASSETS_DIR ? path.split("/") : [...base, ...path.split("/")]);
   }
   if (!target?.length) return null;
   let common = 0;
@@ -223,6 +227,7 @@ export class MarkdownLatexConverter {
   /** Footnotes being written now: a reference to one of them inside its own text is a cycle. */
   private readonly expandingFootnotes = new Set<string>();
   private pendingFootnoteTexts: string[] | null = null;
+  private readonly diagramLanguages = new Set<string>();
   private readonly textOptions: LatexTextOptions;
 
   constructor(
@@ -274,6 +279,8 @@ export class MarkdownLatexConverter {
 
   convert(): ConvertResult {
     const root = this.parsed.tree as unknown as MdNode;
+    // The parser already drops YAML front matter from the tree, so it is read from the source.
+    if (this.parsed.source && yamlFrontMatterEnd(this.parsed.source)) this.warn("front-matter", 1, () => "The note's front matter was left out.");
     let latex: string;
     let block = false;
     if (this.context.inlineOnly) latex = this.flatten(nodeChildren(root)).replace(/\s*\n\s*/g, " ").trim();
@@ -362,7 +369,10 @@ export class MarkdownLatexConverter {
       case "math": return this.displayMath(node.value ?? "", state);
       case "table": return this.table(node, state);
       case "html": return this.htmlBlock(node, state);
-      case "thematicBreak": case "definition": case "footnoteDefinition": case "liberaBibliography": case "yaml": case "toml":
+      case "yaml": case "toml":
+        this.warn("front-matter", 1, () => "The note's front matter was left out.");
+        return null;
+      case "thematicBreak": case "definition": case "footnoteDefinition": case "liberaBibliography":
         return null;
       default:
         if (node.children) return this.blocks(node.children, state).join("\n\n");
@@ -461,6 +471,7 @@ export class MarkdownLatexConverter {
     // quote and quotation are lists to LaTeX: they count toward its six levels of nesting.
     const parts = this.blocks(nodeChildren(node), { ...state, nested: true, other: state.other + 1, container: boxed ? "box" : state.container });
     if (alert && firstText) this.overrides.delete(firstText);
+    if (box && !boxed && !state.footnote) this.warn("box-color", 1, () => "A colored box was written as a plain quote: its color was dropped. Load tcolorbox in the preamble to keep it.");
     const color = typeof box === "string" ? BOX_COLORS[box.toLowerCase()] ?? "gray" : alert ? alertColor(alert[1]) : null;
     const escapedTitle = title ? this.escape(title) : null;
     if (boxed) {
@@ -482,7 +493,11 @@ export class MarkdownLatexConverter {
     if (isMacroBlockLanguage(node.lang)) return null;
     if (language === "math" || language === "latex-math" || language === "katex") return this.displayMath(node.value ?? "", state);
     const value = (node.value ?? "").replace(/\t/g, "    ");
-    if (DIAGRAM_LANGUAGES.has(language)) this.warn("diagram", 1, (n) => `${n} diagram${n === 1 ? "" : "s"} (${language}) pasted as code: LaTeX cannot draw ${n === 1 ? "it" : "them"}.`);
+    if (DIAGRAM_LANGUAGES.has(language)) {
+      this.diagramLanguages.add(language);
+      this.warn("diagram", 1, (n) => `${n} diagram${n === 1 ? "" : "s"} (${[...this.diagramLanguages].join(", ")}) pasted as code: LaTeX cannot draw ${n === 1 ? "it" : "them"}.`);
+    }
+    if (language === "html" && /(?:^|\s)live(?:\s|$)/i.test(node.meta ?? "")) this.warn("html-live", 1, () => "An interactive HTML block was pasted as code: LaTeX cannot run it.");
     if (state.footnote) return this.codeLines(value);
     const comment = DIAGRAM_LANGUAGES.has(language) ? `% Diagram (${language})\n` : "";
     if (this.choices.codeBlocks === "lstlisting" && !/\\end\s*\{lstlisting\}/.test(value)) {
@@ -615,7 +630,9 @@ export class MarkdownLatexConverter {
       this.warn("remote-image", 1, (n) => `${n} image${n === 1 ? " is a web address" : "s are web addresses"}: download ${n === 1 ? "it" : "them"} into the project to include ${n === 1 ? "it" : "them"}.`);
       return null;
     }
-    if (/\.(?:svg|webp|gif|bmp|tiff?|heic)$/i.test(resolved.path)) {
+    if (/(?:^|\/)ink-[^/]*\.svg$/i.test(resolved.path)) {
+      this.warn("ink-image", 1, (n) => `${n} ink drawing${n === 1 ? " is" : "s are"} SVG: export ${n === 1 ? "it" : "them"} to PDF or PNG for LaTeX.`);
+    } else if (/\.(?:svg|webp|gif|bmp|tiff?|heic)$/i.test(resolved.path)) {
       this.warn("image-format", 1, (n) => `${n} image${n === 1 ? " is" : "s are"} in a format pdfLaTeX cannot include (convert to PDF, PNG or JPEG).`);
     }
     if (this.context.files && !this.context.files.has(resolved.path)) {
@@ -628,7 +645,11 @@ export class MarkdownLatexConverter {
     const image = this.imageSource(node);
     if (!image?.src) return null;
     const path = this.resolveImage(image.src);
-    const caption = (image.title || image.alt).trim();
+    // The editor sets the alt to the file name (or "Ink"): that is no caption.
+    const file = (() => { try { return decodeURIComponent(image.src.split(/[?#]/)[0].split("/").pop() ?? ""); } catch { return ""; } })();
+    const alt = image.alt.trim();
+    const generic = !image.title.trim() && !!alt && (alt === file || alt === file.replace(/\.[^.]*$/, "") || (alt === "Ink" && /^ink-.*\.svg$/i.test(file)));
+    const caption = generic ? "" : (image.title || image.alt).trim();
     if (path === null) {
       // Embedded images (data: URIs from Word) are not written out.
       const shown = /^data:/i.test(image.src) ? "an embedded image" : image.src.replace(/[\r\n]+/g, " ");
@@ -716,7 +737,8 @@ export class MarkdownLatexConverter {
     // A merged cell's \multicolumn uses l, c or r, which cannot take \newline: its breaks become spaces.
     const cellText = (cell: MdNode | undefined, column: number, span: number, bold: boolean) => {
       if (!cell) return "";
-      const text = this.inline(nodeChildren(cell), { cell: span === 1 && wrapped.has(column) ? "wrap" : "nowrap" }).replace(/\s*\n\s*/g, " ").trim();
+      const state: InlineState = { cell: span === 1 && wrapped.has(column) ? "wrap" : "nowrap" };
+      const text = (this.cellList(nodeChildren(cell), state) ?? this.inline(nodeChildren(cell), state)).replace(/\s*\n\s*/g, " ").trim();
       return bold && text ? `\\textbf{${text}}` : text;
     };
     // longtable can stand neither in a footnote nor in a float or box.
@@ -816,6 +838,26 @@ export class MarkdownLatexConverter {
     return footnotes ? `${lines.join("\n")}\n${footnotes}` : lines.join("\n");
   }
 
+  /** A list the editor wrote in a cell (`- x<br>- y`) as bullets or numbers, or null when the cell is not one. */
+  private cellList(nodes: MdNode[], state: InlineState): string | null {
+    const segments: MdNode[][] = [[]];
+    for (const node of nodes) {
+      if (node.type === "break" || (node.type === "html" && /^<br\s*\/?>$/i.test((node.value ?? "").trim()))) segments.push([]);
+      else segments[segments.length - 1].push(node);
+    }
+    const marker = /^(?:([-*+])|(\d+)[.)])[ \t]+/;
+    const found = segments.map((segment) => segment[0]?.type === "text" ? marker.exec(segment[0].value ?? "") : null);
+    // One segment is a list only when it is a bullet ("1. Smith" alone is text).
+    if (!found.every(Boolean) || (segments.length < 2 && !found[0]![1])) return null;
+    const items = segments.map((segment, at) => {
+      const first = segment[0];
+      const match = found[at]!;
+      this.overrides.set(first, (first.value ?? "").slice(match[0].length));
+      try { return `${match[1] ? "\\textbullet{}" : `${match[2]}.`} ${this.inline(segment, state)}`; } finally { this.overrides.delete(first); }
+    });
+    return items.join(state.cell === "wrap" ? "\\newline " : " ");
+  }
+
   /** A caption typed (or found) as Markdown, as LaTeX. */
   private captionLatex(caption: string) {
     const parsed = parseMarkdown(caption, this.parsed.mathMarkers);
@@ -884,9 +926,11 @@ export class MarkdownLatexConverter {
    * footnotes, citations, math, code) keeps its text unmarked, with a warning.
    */
   private soul(command: "hl" | "st", content: string) {
-    const commands = [...content.matchAll(/\\([A-Za-z@]+)/g)].map((match) => match[1]);
-    if (/\$|\\\(/.test(content) || commands.some((name) => !SOUL_SAFE.has(name))) {
-      this.warn("soul", 1, () => command === "hl" ? "Highlights around links, footnotes, citations, code or math were dropped: \\hl cannot hold them." : "Strikethrough around links, footnotes, citations, code or math was dropped: \\st cannot hold them.");
+    // `$...$` is fine inside soul (checked by compiling); only what is outside the formulas is looked at.
+    const outside = content.replace(/\\\$/g, "").replace(/\$[^$]*\$/g, "");
+    const commands = [...outside.matchAll(/\\([A-Za-z@]+)/g)].map((match) => match[1]);
+    if (/\$|\\\(/.test(outside) || commands.some((name) => !SOUL_SAFE.has(name))) {
+      this.warn("soul", 1, () => command === "hl" ? "Highlights around links, footnotes, citations, code or \\(…\\) math were dropped: \\hl cannot hold them." : "Strikethrough around links, footnotes, citations, code or \\(…\\) math was dropped: \\st cannot hold them.");
       return content;
     }
     this.need("soul", command === "hl" ? "highlights" : "strikethrough");
@@ -904,9 +948,9 @@ export class MarkdownLatexConverter {
         this.need("ulem", "strikethrough");
         return wrap("sout", content);
       }
-      case "inlineCode": return this.inlineCode(node.value ?? "", state);
-      case "inlineMath": return this.inlineMath(node.value ?? "");
-      case "math": return this.inlineMath(node.value ?? "");
+      // In a table cell `\|` is a plain bar (GFM), not part of the formula.
+      case "inlineCode": return this.inlineCode(state.cell ? (node.value ?? "").replace(/\\\|/g, "|") : node.value ?? "", state);
+      case "inlineMath": case "math": return this.inlineMath(state.cell ? (node.value ?? "").replace(/\\\|/g, "|") : node.value ?? "");
       case "break": return BREAK;
       case "link": return this.link(node.url ?? "", node, state);
       case "linkReference": {
@@ -919,8 +963,21 @@ export class MarkdownLatexConverter {
       case "liberaHighlight": {
         const content = this.argument(node, state);
         if (this.choices.highlight === "drop" || !content.trim()) return content;
-        if (this.choices.highlight === "colorbox") { this.need("xcolor", "highlights"); return `\\colorbox{yellow}{${content}}`; }
-        return this.soul("hl", content);
+        const hex = String(node.data?.hProperties?.["data-markdown-highlight-color"] ?? "").toLowerCase();
+        const letter = MARKDOWN_HIGHLIGHT_COLORS.find((color) => color.value.toLowerCase() === hex)?.shortcut;
+        const color = letter && letter !== "y" ? BOX_COLORS[letter] : null;
+        if (this.choices.highlight === "colorbox") { this.need("xcolor", "highlights"); return `\\colorbox{${color ? `${color}!30` : "yellow"}}{${content}}`; }
+        const marked = this.soul("hl", content);
+        // Yellow is soul's own; other colors set the highlight color in a group around it.
+        if (!color || marked === content) return marked;
+        this.need("xcolor", "colored highlights");
+        return `{\\sethlcolor{${color}!30}${marked}}`;
+      }
+      case "liberaTextStyle": {
+        const content = this.argument(node, state);
+        if (node.data?.hProperties?.["data-line-height"]) this.warn("line-height", 1, () => "Line spacing set in the text was left out.");
+        const size = fontSizeSwitch(Number(node.data?.hProperties?.["data-font-size"]));
+        return size && !state.moving && content.trim() ? `{\\${size} ${content}}` : content;
       }
       case "liberaTextColor": {
         const content = this.argument(node, state);
@@ -1203,6 +1260,20 @@ const HTML_BLOCK_TAGS = new Set(["div", "p", "span", "br", "details", "summary",
   "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col", "dl", "dt", "dd", "math", "font", "small", "picture", "source"]);
 
 const SECTION_TARGETS = new Set<HeadingTarget>(["part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph"]);
+
+/** The size switch for a font size in px (16 is the body size), or null. */
+function fontSizeSwitch(px: number) {
+  if (!Number.isFinite(px) || px <= 0) return null;
+  if (px <= 10) return "scriptsize";
+  if (px <= 12) return "footnotesize";
+  if (px <= 14) return "small";
+  if (px <= 16) return null;
+  if (px <= 18) return "large";
+  if (px <= 20) return "Large";
+  if (px <= 26) return "LARGE";
+  if (px <= 36) return "huge";
+  return "Huge";
+}
 
 function alertColor(kind: string) {
   switch (kind.toLowerCase()) {

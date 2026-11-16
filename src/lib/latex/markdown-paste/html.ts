@@ -47,12 +47,14 @@ function inline(node: Node, context: Context): MdNode[] {
   // MathML and SVG elements keep lower-case tag names.
   const tag = element.tagName.toUpperCase();
   if (SKIP.has(tag)) return [];
-  if (tag === "MATH" || element.classList.contains("katex") || element.classList.contains("katex-display") || element.classList.contains("MathJax")) {
+  // Libera's own math elements (a merged table the Visual editor wrote as HTML) carry their TeX in `data-latex`.
+  const liberaMath = element.getAttribute("data-type") === "inline-math" || element.getAttribute("data-type") === "block-math";
+  if (tag === "MATH" || liberaMath || element.classList.contains("katex") || element.classList.contains("katex-display") || element.classList.contains("MathJax")) {
     // The TeX the formula was written in, or else its MathML read as TeX (Word, Wikipedia without annotations).
     const mathml = tag === "MATH" ? element : element.querySelector("math");
     const tex = texAnnotation(element) ?? (mathml ? mathmlToTex(mathml) : null);
     if (tex) {
-      const display = element.getAttribute("display") === "block" || element.classList.contains("katex-display");
+      const display = element.getAttribute("display") === "block" || element.classList.contains("katex-display") || element.getAttribute("data-type") === "block-math";
       return [{ type: display ? "math" : "inlineMath", value: tex }];
     }
   }

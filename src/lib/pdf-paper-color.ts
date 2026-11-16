@@ -12,7 +12,7 @@ function luminance(hex: string) {
 }
 
 /**
- * The paper color PDF pages are drawn on, from the visual editor's theme, or
+ * The paper color PDF pages are drawn on, from the PDF pages theme, or
  * "" for pdf.js's white. Only the page fill changes (pdf.js `background`):
  * PDF ink is nearly always dark, so a page too dark for black text is skipped
  * for the theme's light page, and failing that, white. Recoloring the ink as

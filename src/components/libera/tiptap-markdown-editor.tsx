@@ -16,7 +16,7 @@ import { createMathExtensions } from "@/lib/tiptap-math";
 import { TiptapMarkdownMacros } from "@/lib/tiptap-macros";
 import { ExpandMacrosButton } from "./expand-macros-button";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Braces, Bold, Italic, Underline, Strikethrough, List, ListOrdered, ListIndentDecrease, ListIndentIncrease, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText, PenLine } from "lucide-react";
+import { Braces, Bold, Italic, Underline, Strikethrough, Superscript, Subscript, Asterisk, List, ListOrdered, ListIndentDecrease, ListIndentIncrease, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText, PenLine } from "lucide-react";
 import katex from "katex";
 import { Selection, type Transaction } from "@tiptap/pm/state";
 import { captureVisualScrollAnchor, startVisualScrollRestore, type VisualScrollAnchor, type VisualScrollRestore } from "@/lib/tiptap-scroll-anchor";
@@ -434,6 +434,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     const current = observedEditor ?? editor;
     return current ? {
     bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"), strike: current.isActive("strike"),
+    superscript: current.isActive("superscript"), subscript: current.isActive("subscript"),
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
     canSinkListItem: current.can().sinkListItem("listItem") || current.can().sinkListItem("taskItem"),
     canLiftListItem: current.can().liftListItem("listItem") || current.can().liftListItem("taskItem"),
@@ -758,6 +759,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         { id: "italic", label: "Italic", type: "checkbox", checked: state.italic, onSelect: () => editor.chain().focus().toggleItalic().run() },
         { id: "underline", label: "Underline", type: "checkbox", checked: state.underline, onSelect: () => editor.chain().focus().toggleUnderline().run() },
         { id: "strikethrough", label: "Strikethrough", type: "checkbox", checked: state.strike, onSelect: () => editor.chain().focus().toggleStrike().run() },
+        { id: "superscript", label: "Superscript", type: "checkbox", checked: state.superscript, onSelect: () => editor.chain().focus().toggleSuperscript().run() },
+        { id: "subscript", label: "Subscript", type: "checkbox", checked: state.subscript, onSelect: () => editor.chain().focus().toggleSubscript().run() },
         { type: "separator" },
         { id: "highlight", label: "Highlight", type: "checkbox", checked: state.highlightTool.active || state.highlight, onSelect: () => editor.chain().focus().toggleHighlightTool().run() },
         {
@@ -834,6 +837,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         },
         tableSizeMenu((rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()),
         { id: "equation", label: "Equation…", onSelect: openMath },
+        { id: "footnote", label: "Footnote", onSelect: () => editor.chain().focus().insertFootnote().run() },
         { id: "ink", label: "Ink Block", enabled: !untitled, onSelect: () => editor.chain().focus().insertContent([{ type: "image", attrs: { src: inkBlockSource(documentPath, createInkId()), alt: "Ink" } }, { type: "paragraph" }]).run() },
         { type: "separator" },
         { id: "chart", label: "Chart", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
@@ -1034,6 +1038,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
           { title: "Underline", icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
           { title: "Strikethrough", icon: Strikethrough, active: state.strike, run: () => editor.chain().focus().toggleStrike().run() },
+          { title: "Superscript", icon: Superscript, active: state.superscript, run: () => editor.chain().focus().toggleSuperscript().run() },
+          { title: "Subscript", icon: Subscript, active: state.subscript, run: () => editor.chain().focus().toggleSubscript().run() },
           { title: "Highlight", icon: Highlighter, active: state.highlightTool.active || state.highlight, run: () => editor.chain().focus().toggleHighlightTool().run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
@@ -1080,6 +1086,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         <TableInsertButton className={buttonClass} disabled={state.table} title={state.table ? "Tables cannot be placed inside a table" : "Insert table"}
           onPick={(rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()} />
         <button type="button" aria-label="Insert or edit equation" title="Insert or edit equation" className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>
+        <button type="button" aria-label="Insert footnote" title="Insert footnote" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={() => editor.chain().focus().insertFootnote().run()}><Asterisk className="h-4 w-4" /></button>
         <button type="button" aria-label="Clear formatting" title="Clear formatting" className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
         <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>

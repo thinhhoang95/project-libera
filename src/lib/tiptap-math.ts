@@ -58,6 +58,10 @@ export function createMathExtensions(settings: MathMarkerSettings = {}) {
     const name = display ? 'blockMath' : 'inlineMath';
     const preferred = preferredMathMarkerPair(settings, display);
     return extension.extend({
+      // The Markdown writer checks literal brackets against these (tiptap-markdown.ts).
+      addStorage() {
+        return { ...this.parent?.(), markerPairs: pairs };
+      },
       addAttributes() {
         return { ...this.parent?.(), mathOpen: { default: null }, mathClose: { default: null } };
       },

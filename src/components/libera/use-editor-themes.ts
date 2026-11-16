@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
-import { EDITOR_THEME_COLOR_KEYS, EDITOR_THEME_SCOPES, type ResolvedEditorThemes } from "../../../electron/editor-themes.cjs";
+import { EDITOR_SCOPES, EDITOR_THEME_COLOR_KEYS, type ResolvedEditorThemes } from "../../../electron/editor-themes.cjs";
 import {
   getMarkdownEditorFontStack,
   getRenderedMarkdownFontStack,
@@ -10,7 +10,7 @@ import {
   DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY,
 } from "@/lib/markdown-preferences";
 
-export const NO_EDITOR_THEMES: ResolvedEditorThemes = { visual: null, source: null, latex: null };
+export const NO_EDITOR_THEMES: ResolvedEditorThemes = { visual: null, source: null, latex: null, pdf: null };
 
 /** The editor themes in effect, for what draws with them (fonts, PDF pages). */
 export const EditorThemesContext = createContext<ResolvedEditorThemes>(NO_EDITOR_THEMES);
@@ -50,7 +50,7 @@ export function useEditorThemes(initialThemes: ResolvedEditorThemes) {
     const root = document.documentElement;
     const properties: string[] = [];
     const attributes: string[] = [];
-    for (const scope of EDITOR_THEME_SCOPES) {
+    for (const scope of EDITOR_SCOPES) {
       const theme = themes[scope];
       if (!theme) continue;
       attributes.push(`data-editor-theme-${scope}`);

@@ -512,7 +512,7 @@
       .user-actions { display: flex; flex: 0 0 auto; gap: 6px; }
       .user-actions button { padding: 6px 10px; }
       .users-add { margin-top: 12px; }
-      .editor-theme-scopes { background: var(--muted, #f4f4f5); border-radius: 10px; display: grid; gap: 3px; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 3px; }
+      .editor-theme-scopes { background: var(--muted, #f4f4f5); border-radius: 10px; display: grid; gap: 3px; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 3px; }
       .editor-theme-scopes button { align-items: center; background: transparent; border: 0; border-radius: 8px; color: var(--muted-foreground, #71717a); cursor: pointer; display: flex; flex-direction: column; font: inherit; font-size: 12.5px; font-weight: 600; gap: 1px; min-width: 0; padding: 6px 8px; }
       .editor-theme-scopes button small { font-size: 11px; font-weight: 400; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .editor-theme-scopes button[aria-selected="true"] { background: var(--dialog-surface, #fff); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); color: var(--foreground, #18181b); }
@@ -1534,13 +1534,15 @@
                 <article class="ai-card editor-themes-card">
                   <header class="ai-card-header">
                     <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/></svg></span>
-                    <div class="ai-card-title"><h4>Themes</h4><p>Colors and typefaces for each editor. Every theme has a light and a dark version, shown side by side, that follow the app theme, plus a text font and a code font. Right-click a theme to edit, duplicate, export or delete it. Rendered previews take the visual editor’s heading colors and text font; PDF export takes only its text font.</p></div>
+                    <div class="ai-card-title"><h4>Themes</h4><p>Colors and typefaces for each editor. Every theme has a light and a dark version, shown side by side, that follow the app theme, plus a text font and a code font. Right-click a theme to edit, duplicate, export or delete it. Rendered previews take the visual editor’s heading colors and text font; PDF export takes only its text font. PDF pages, in the PDF viewer and the LaTeX PDF preview, take only the page color of their own theme.</p></div>
                   </header>
                   <div class="editor-theme-scopes" role="tablist" aria-label="Editor">
                     <button type="button" role="tab" data-scope="visual" aria-selected="true"><span>Visual editor</span><small data-scope-choice></small></button>
                     <button type="button" role="tab" data-scope="source" aria-selected="false"><span>Source &amp; code</span><small data-scope-choice></small></button>
                     <button type="button" role="tab" data-scope="latex" aria-selected="false"><span>LaTeX</span><small data-scope-choice></small></button>
+                    <button type="button" role="tab" data-scope="pdf" aria-selected="false"><span>PDF pages</span><small data-scope-choice></small></button>
                   </div>
+                  <p id="editor-theme-pdf-help" class="field-help" hidden>The PDF viewer and the LaTeX PDF preview draw pages on the theme’s page color. PDF text is nearly always black, so a page too dark for it uses the theme’s light page instead, or white.</p>
                   <div id="editor-theme-band" class="editor-theme-band" role="radiogroup"></div>
                   <div id="editor-theme-editor" class="editor-theme-editor hidden" aria-label="Edit theme" role="group"></div>
                   <div class="card-actions">
@@ -1807,8 +1809,8 @@
 
       // Editor themes (electron/editor-themes.cjs). The built-in themes come
       // with the state; the user's own are edited here and kept on Save.
-      const editorThemeScopes = ["visual", "source", "latex"];
-      const editorThemeScopeNames = { visual: "the visual editor", source: "the Markdown source and code editors", latex: "the LaTeX editor" };
+      const editorThemeScopes = ["visual", "source", "latex", "pdf"];
+      const editorThemeScopeNames = { visual: "the visual editor", source: "the Markdown source and code editors", latex: "the LaTeX editor", pdf: "PDF pages" };
       const editorThemeColorFields = [
         ["background", "Page"], ["text", "Text"], ["h1", "Heading 1"], ["h2", "Heading 2"],
         ["h3", "Heading 3"], ["h4", "Heading 4"], ["h5", "Heading 5+"], ["lists", "Bullets, lead-ins"],
@@ -1823,9 +1825,10 @@
       const editorThemeEditor = document.querySelector("#editor-theme-editor");
       const editorThemeStatus = document.querySelector("#editor-theme-status");
       const editorThemeScopeTabs = Array.from(document.querySelectorAll(".editor-theme-scopes [data-scope]"));
+      const editorThemePdfHelp = document.querySelector("#editor-theme-pdf-help");
       let editorThemeBuiltIns = [];
       let editorThemes = [];
-      let editorThemeChoice = { visual: "default", source: "default", latex: "default" };
+      let editorThemeChoice = { visual: "default", source: "default", latex: "default", pdf: "default" };
       let editorThemeScope = "visual";
       let editingThemeId = null;
 
@@ -1943,14 +1946,18 @@
         return swatch;
       }
 
+      // For PDF pages, "App colors" means plain white paper.
+      const editorThemeName = (scope, theme) => (scope === "pdf" && theme.fixed ? "White" : theme.name);
+
       function renderEditorThemeScopes() {
         for (const tab of editorThemeScopeTabs) {
           const scope = tab.dataset.scope;
           tab.setAttribute("aria-selected", String(scope === editorThemeScope));
           tab.tabIndex = scope === editorThemeScope ? 0 : -1;
-          tab.querySelector("[data-scope-choice]").textContent = findEditorTheme(editorThemeChoice[scope])?.name ?? "App colors";
+          tab.querySelector("[data-scope-choice]").textContent = editorThemeName(scope, findEditorTheme(editorThemeChoice[scope]) ?? appColorsTheme);
         }
         editorThemeBand.setAttribute("aria-label", `Theme for ${editorThemeScopeNames[editorThemeScope]}`);
+        editorThemePdfHelp.hidden = editorThemeScope !== "pdf";
       }
 
       // Color pickers fire on every drag step; rebuild the tiles once a frame.
@@ -1974,7 +1981,7 @@
           tile.setAttribute("role", "radio");
           tile.setAttribute("aria-checked", String(theme.id === selected));
           tile.tabIndex = theme.id === selected ? 0 : -1;
-          tile.title = theme.fixed ? "The app’s own colors, with plain headings"
+          tile.title = theme.fixed ? (editorThemeScope === "pdf" ? "White pages, as the PDF has them" : "The app’s own colors, with plain headings")
             : theme.builtIn ? `${theme.name} (built-in). Right-click for more.` : `${theme.name}. Double-click to edit; right-click for more.`;
           const check = document.createElement("span");
           check.className = "editor-theme-check";
@@ -1982,7 +1989,7 @@
           check.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
           const name = document.createElement("span");
           name.className = "editor-theme-name";
-          name.textContent = theme.name;
+          name.textContent = editorThemeName(editorThemeScope, theme);
           tile.append(editorThemeSwatch(theme), name, check);
           const fonts = editorThemeFontSummary(theme);
           if (fonts) {

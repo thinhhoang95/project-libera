@@ -934,7 +934,8 @@ test("pipes inside formulas and code do not split table cells", () => {
   assert.match(out, /\\begin\{tabular\}\{ll\}/);
   assert.match(out, /\$P\(A\|B\)\$ & \\texttt\{a\|b\} \\\\/);
   assert.match(out, /\\\$5 & \\\$10 \\\\/);
-  assert.match(out, /\$\|x\|\$ & \$\\\|v\\\|\$ \\\\/);
+  // In a cell `\|` is a plain bar (GFM), so the norm bars read as bars too.
+  assert.match(out, /\$\|x\|\$ & \$\|v\|\$ \\\\/);
   // Outside tables, nothing changes.
   assert.equal(latex("Odds $P(A|B)$ here."), "Odds $P(A|B)$ here.");
 });
@@ -1007,4 +1008,86 @@ test("context: a paste inside a float, a box or a footnote's text is known as su
   assert.equal(at("NOTE").inlineOnly, true);
   assert.deepEqual([at("PLAIN").container, at("PLAIN").inFootnote], [null, false]);
   view.destroy();
+});
+
+/* ---- Markdown copied from Libera's Visual editor ------------------------------------------ */
+
+test("visual editor: a pipe escaped in a table cell is a plain bar", () => {
+  const out = latex("| A |\n|---|\n| $P(A\\|B)$ and `a\\|b` |");
+  assert.match(out, /\$P\(A\|B\)\$/);
+  assert.match(out, /\\texttt\{a\|b\}/);
+});
+
+test("visual editor: heading numbers go even when the title is unnumbered", () => {
+  const out = latex("# My Title\n\n## 1. Intro\n\n### 1.1 Background\n\n## 2. Methods");
+  assert.match(out, /\\subsection\{Intro\}/);
+  assert.match(out, /\\subsubsection\{Background\}/);
+  assert.match(out, /\{My Title\}/);
+  // Two unnumbered headings: nothing is stripped.
+  assert.match(latex("# A\n\n## 1. B\n\n## C"), /1\. B/);
+});
+
+test("visual editor: diagram warnings name every language", () => {
+  const result = markdownToLatex("```chart\n{}\n```\n\n```mermaid\ngraph TD\n```");
+  const warning = result.warnings.find((item) => item.code === "diagram");
+  assert.match(warning?.message ?? "", /^2 diagrams \(chart, mermaid\)/);
+});
+
+test("visual editor: highlight colors", () => {
+  assert.equal(latex("y>>>a<<<"), "\\hl{a}");
+  assert.equal(latex("g>>>a<<<"), "{\\sethlcolor{green!30}\\hl{a}}");
+  assert.equal(latex("g>>>a<<<", { highlight: "colorbox" }), "\\colorbox{green!30}{a}");
+  const result = markdownToLatex("r>>>a<<<");
+  assert.deepEqual(result.missing.map((pkg) => pkg.name), ["soul", "xcolor"]);
+});
+
+test("visual editor: a colored box without tcolorbox keeps the quote and says so", () => {
+  const result = markdownToLatex("g> text");
+  assert.match(result.latex, /^\\begin\{quote\}/);
+  assert.ok(result.warnings.some((item) => item.code === "box-color"));
+  assert.ok(!result.packages.some((pkg) => pkg.name === "tcolorbox"));
+});
+
+test("visual editor: font size becomes a size switch, line spacing a warning", () => {
+  assert.equal(latex("<span data-font-size=\"24\">big</span> x"), "{\\LARGE big} x");
+  assert.equal(latex("# T <span data-font-size=\"24\">big</span>"), "\\section{T big}");
+  const spaced = markdownToLatex("<span data-line-height=\"2\">x</span>");
+  assert.equal(spaced.latex, "x");
+  assert.ok(spaced.warnings.some((item) => item.code === "line-height"));
+});
+
+test("visual editor: an interactive HTML block and front matter each warn", () => {
+  assert.ok(markdownToLatex("```html live\n<b>x</b>\n```").warnings.some((item) => item.code === "html-live"));
+  assert.ok(!markdownToLatex("```html\n<b>x</b>\n```").warnings.some((item) => item.code === "html-live"));
+  assert.ok(markdownToLatex("---\ntitle: T\n---\n\nText").warnings.some((item) => item.code === "front-matter"));
+});
+
+test("visual editor: lists in table cells become bullets and numbers", () => {
+  const out = latex("| A |\n|---|\n| - x<br>- y |\n| 1. p<br>2. q |", { tableWrap: true });
+  assert.match(out, /\\textbullet\{\} x\\newline \\textbullet\{\} y/);
+  assert.match(out, /1\. p\\newline 2\. q/);
+  assert.match(latex("| A |\n|---|\n| -5 and a-b |"), /-5 and a-b/);
+});
+
+test("visual editor: note images resolve from the notebook root and carry no file-name caption", () => {
+  assert.deepEqual(localImagePath("_assets/a/n.assets/IMG_1.png", "paper"), { path: "../_assets/a/n.assets/IMG_1.png" });
+  assert.deepEqual(localImagePath("_assets/a/n.assets/IMG_1.png", ""), { path: "_assets/a/n.assets/IMG_1.png" });
+  assert.deepEqual(localImagePath("figs/a.png", "paper"), { path: "figs/a.png" });
+  const plain = latex("![IMG_2034](_assets/n.assets/IMG_2034.png)");
+  assert.ok(!/\\caption|\\label/.test(plain), plain);
+  assert.ok(!/\\caption/.test(latex("![IMG_2034.png](x/IMG_2034.png)")));
+  assert.match(latex("![A cat](x/IMG_2034.png)"), /\\caption\{A cat\}/);
+  assert.match(latex("![IMG_2034](x/IMG_2034.png \"Title\")"), /\\caption\{Title\}/);
+  const ink = markdownToLatex("![Ink](_assets/n.assets/ink-abc.svg)");
+  assert.ok(!/\\caption/.test(ink.latex));
+  assert.deepEqual(ink.warnings.map((item) => item.code), ["ink-image"]);
+});
+
+test("visual editor: a highlight may hold inline math", () => {
+  assert.equal(latex("y>>>a $x$ b<<<"), "\\hl{a $x$ b}");
+});
+
+test("a merged table the Visual editor wrote as HTML keeps its spans and its math", () => {
+  const out = latex('<table><tbody><tr><th><p>a</p></th><th><p>b</p></th><th><p>c</p></th></tr><tr><td colspan="2"><p>merged</p></td><td><p>last <span data-latex="x^2" data-type="inline-math">$x^2$</span></p></td></tr></tbody></table>');
+  assert.match(out, /\multicolumn\{2\}\{l\}\{merged\} & last \$x\^2\$ \\/);
 });

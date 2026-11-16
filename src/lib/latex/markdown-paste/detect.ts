@@ -91,8 +91,13 @@ export function scoreMarkdown(input: string, mathMarkers?: MathMarkerSettings): 
   // Weak signals.
   if (/(?:^|[\s(])\*(?=[^\s*])[^*\n]{1,300}(?<=[^\s*])\*(?=$|[\s).,;:!?])/m.test(prose)) markdown += 1;
   if (/`[^`\n]+`/.test(text)) markdown += 1;
-  if (/>>>[^\n]{1,2000}?<<<|\[color=#[0-9a-f]{3,8}\]/i.test(text)) markdown += 1;
-  if (/\[@[^\]\s]{1,100}[^\]\n]{0,300}\]/.test(prose)) markdown += 1;
+  // Libera's own syntax, never valid LaTeX: each is enough alone (the LaTeX veto still applies).
+  if (/\[color=#[0-9a-f]{3,8}\][^\n]{0,2000}?\[\/color\]/i.test(prose)) markdown += 3;
+  else if (/\[color=#[0-9a-f]{3,8}\]/i.test(text)) markdown += 1;
+  if (/(?:^|[^>\w])[yroagtbvps]?>>>(?=\S)[^\n]{1,2000}?(?<=\S)<<</m.test(prose)) markdown += 3;
+  else if (/>>>[^\n]{1,2000}?<<</.test(text)) markdown += 1;
+  if (/^[yroagtbvps]>[ \t]+\S/m.test(prose)) markdown += 3;
+  if (/\[-?@[^\]\s]{1,100}[^\]\n]{0,300}\]/.test(prose)) markdown += 3;
   if (/~~(?=\S)[^~\n]{1,300}(?<=\S)~~/.test(prose)) markdown += 1;
 
   let latex = 3 * Math.min(3, literal);

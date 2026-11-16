@@ -8,6 +8,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { PdfTextContentCache, pdfCanvasSize, retainPdfPage } from "@/components/libera/pdf-rendering";
 import { useCanvasViewStateCapture } from "../canvas-view-state";
 import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
+import { usePdfPaperColor } from "@/components/libera/use-pdf-paper-color";
 import type { SynctexPdfLocation } from "@/lib/latex/synctex";
 import { textHintAt, type SynctexTextHint } from "@/lib/latex/synctex-text";
 
@@ -68,6 +69,7 @@ export function LatexPdfPreview({ url, hidden = false, zoom, initialScrollTop, i
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set([1, 2]));
   const [currentPage, setCurrentPage] = useState(1);
   const [flash, setFlash] = useState<{ page: number; rects: SynctexPdfLocation[]; nonce: number } | null>(null);
+  const paperColor = usePdfPaperColor();
   const restoredScrollRef = useRef(false);
   // Kept as the reader scrolls, so a change of scale knows what they were reading.
   const scrollAnchorRef = useRef<PdfPageAnchor | null>(null);
@@ -307,6 +309,7 @@ export function LatexPdfPreview({ url, hidden = false, zoom, initialScrollTop, i
                 top={offsets[index]}
                 active={visiblePages.has(index + 1)}
                 textCache={loaded!.textCache}
+                paperColor={paperColor}
                 flash={flash?.page === index + 1 ? flash : null}
                 registerPage={registerPage}
                 onInverseSync={onInverseSync}
@@ -319,7 +322,7 @@ export function LatexPdfPreview({ url, hidden = false, zoom, initialScrollTop, i
   );
 }
 
-const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width, height, top, active, textCache, flash, registerPage, onInverseSync }: {
+const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width, height, top, active, textCache, paperColor, flash, registerPage, onInverseSync }: {
   pdf: PDFDocumentProxy;
   pageNumber: number;
   scale: number;
@@ -328,6 +331,8 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
   top: number;
   active: boolean;
   textCache: PdfTextContentCache;
+  /** The PDF pages theme's paper, or "" for white (pdf-paper-color.ts). */
+  paperColor: string;
   flash: { rects: SynctexPdfLocation[]; nonce: number } | null;
   registerPage: (pageNumber: number, element: HTMLDivElement | null) => void;
   onInverseSync: (location: { page: number; x: number; y: number; hint?: SynctexTextHint }) => void;
@@ -371,7 +376,12 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
         canvas.style.height = `${viewport.height}px`;
         const context = canvas.getContext("2d");
         if (!context) return;
-        renderTask = page.render({ canvasContext: context, viewport, transform: [size.width / viewport.width, 0, 0, size.height / viewport.height, 0, 0] });
+        renderTask = page.render({
+          canvasContext: context,
+          viewport,
+          transform: [size.width / viewport.width, 0, 0, size.height / viewport.height, 0, 0],
+          background: paperColor || undefined,
+        });
         await renderTask.promise;
         if (cancelled) return;
         host.replaceChildren(canvas);
@@ -399,16 +409,16 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
       renderTask?.cancel();
       textLayer?.cancel();
     };
-  }, [active, pageNumber, pdf, scale, textCache]);
+  }, [active, pageNumber, paperColor, pdf, scale, textCache]);
 
-  usePdfDetailCanvas({ hostRef: detailHostRef, pdfDocument: pdf, pageNumber, scale, active });
+  usePdfDetailCanvas({ hostRef: detailHostRef, pdfDocument: pdf, pageNumber, scale, active, background: paperColor });
 
   return (
     <div
       ref={pageRef}
       data-page-number={pageNumber}
       className="libera-latex-pdf-page absolute left-1/2 -translate-x-1/2 bg-white"
-      style={{ top, width, height }}
+      style={{ top, width, height, background: paperColor || undefined }}
       onDoubleClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         const hint = textLayerRef.current ? textHintAtPoint(textLayerRef.current, event.clientX, event.clientY) : null;

@@ -3,6 +3,7 @@ import { MarkdownManager } from "@tiptap/markdown";
 import type { MathMarkerSettings } from "./math-markers";
 import { createMathExtensions } from "./tiptap-math";
 import { createMarkdownExtensions } from "./tiptap-markdown";
+import { LIBERA_MARKDOWN_MIME } from "./markdown-clipboard-mime";
 
 const serializers = new Map<string, MarkdownManager>();
 const extensions = (mathMarkers: MathMarkerSettings = {}) => [
@@ -128,10 +129,13 @@ export function getRenderedSelectionMarkdown(
 
 type CopyEvent = Pick<ClipboardEvent, "clipboardData" | "preventDefault">;
 
+export { LIBERA_MARKDOWN_MIME };
+
 export function writeMarkdownClipboard(event: CopyEvent, markdown: string): boolean {
   if (!event.clipboardData || !markdown) return false;
   event.clipboardData.clearData();
   event.clipboardData.setData("text/plain", markdown);
+  event.clipboardData.setData(LIBERA_MARKDOWN_MIME, markdown);
   event.preventDefault();
   return true;
 }
