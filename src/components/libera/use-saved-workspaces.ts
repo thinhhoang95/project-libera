@@ -13,7 +13,7 @@ import type { LiberaFileNode, LiberaFilePayload, LiberaTree, LiberaTreeNode } fr
 import {
   applyWorkspaceView, createWorkspaceView, captureWorkspaceSession, emptyWorkspaceLibrary, emptyWorkspaceSession,
   filterWorkspaceTree, parseWorkspaceLibrary, remapWorkspacePaths, saveWorkspaceSession, trackWorkspaceFileChange,
-  workspaceStructureToken,
+  createWorkspaceStructureTokenizer,
   type SavedWorkspace, type WorkspaceLibrary, type WorkspaceSession, type WorkspaceFileChange, type WorkspaceView,
 } from "@/lib/workspaces";
 
@@ -50,6 +50,9 @@ export function useSavedWorkspaces(options: Options) {
   const lastSaved = useRef("");
   const lastJournal = useRef("");
   const lastStructure = useRef<string | null>(null);
+  // One tokenizer for the render-time token and the one taken in persist(), which are compared.
+  const structureTokenizer = useRef<ReturnType<typeof createWorkspaceStructureTokenizer> | null>(null);
+  structureTokenizer.current ??= createWorkspaceStructureTokenizer();
   const structureSaveTimer = useRef<number | undefined>(undefined);
   const pendingSnapshot = useRef<WorkspaceLibrary | null>(null);
   const epoch = useRef(0);
@@ -98,7 +101,7 @@ export function useSavedWorkspaces(options: Options) {
   function persist(next: WorkspaceLibrary) {
     // Every save carries the whole session, including any change still waiting.
     cancelStructureSave();
-    const structure = workspaceStructureToken(current.current.session);
+    const structure = structureTokenizer.current!(current.current.session);
     pendingSnapshot.current = next;
     journal(next);
     const body = JSON.stringify(next);
@@ -199,8 +202,16 @@ export function useSavedWorkspaces(options: Options) {
     // Text last journaled per tab (draft, saved). Strings compare by reference first,
     // so checking an unchanged tab costs nothing: no flush, no stringify.
     let journaled = new Map<string, { draft: string; saved: string }>();
+    // Whether the user pressed a key, clicked or scrolled since the last journal. Scroll
+    // position and selection are not part of recoverableChanged(), so an idle visible
+    // window has nothing new to capture and skips the snapshot.
+    let input = false;
+    const markInput = () => { input = true; };
+    const inputEvents = ["keydown", "pointerdown", "wheel"] as const;
+    for (const type of inputEvents) window.addEventListener(type, markInput, { capture: true, passive: true });
     function recoverLocally() {
       if (locked.current || !readyRef.current) return;
+      input = false;
       const next = snapshot();
       libraryRef.current = next;
       journal(next);
@@ -229,7 +240,7 @@ export function useSavedWorkspaces(options: Options) {
     // tick only when a tab's text or the set of tabs changed: the full snapshot
     // flushes every viewer and stringifies every tab's text.
     const interval = window.setInterval(() => {
-      if (document.visibilityState !== "hidden" || recoverableChanged()) recoverLocally();
+      if (input || recoverableChanged()) recoverLocally();
     }, 30_000);
     function onVisibility() {
       if (document.visibilityState === "hidden") recoverLocally();
@@ -250,6 +261,7 @@ export function useSavedWorkspaces(options: Options) {
     const unregister = registerStateFlusher(onLeave, true);
     return () => {
       window.clearInterval(interval);
+      for (const type of inputEvents) window.removeEventListener(type, markInput, true);
       document.removeEventListener("visibilitychange", onVisibility);
       unregister();
       cancelStructureSave();
@@ -257,7 +269,7 @@ export function useSavedWorkspaces(options: Options) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, options.authenticated, journalKey]);
 
-  const structure = workspaceStructureToken(options.session);
+  const structure = useMemo(() => structureTokenizer.current!(options.session), [options.session]);
   useEffect(() => {
     if (!ready || !options.authenticated) return;
     if (lastStructure.current === null) { lastStructure.current = structure; return; }

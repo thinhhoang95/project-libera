@@ -10,7 +10,7 @@ import { createRoot } from "react-dom/client";
 import { useLiberaWorkspace } from "../../src/components/libera/use-libera-workspace";
 import { emptyTree } from "../../src/components/libera/api-client";
 import { toggleWorkspacePath } from "../../src/components/libera/workspaces-panel";
-import { CLOSED_VIEW_STATE_LIMIT, createWorkspaceView, saveWorkspaceGroup, emptyWorkspaceLibrary, emptyWorkspaceSession, filterWorkspaceTree, parseWorkspaceLibrary, readClosedViewStates, rememberClosedViewStates, remapWorkspacePaths, trackWorkspaceFileChange, workspaceIncludesPath, type WorkspaceLibrary } from "../../src/lib/workspaces";
+import { CLOSED_VIEW_STATE_LIMIT, createWorkspaceStructureTokenizer, createWorkspaceView, saveWorkspaceGroup, emptyWorkspaceLibrary, emptyWorkspaceSession, filterWorkspaceTree, parseWorkspaceLibrary, readClosedViewStates, rememberClosedViewStates, remapWorkspacePaths, trackWorkspaceFileChange, workspaceIncludesPath, type WorkspaceLibrary } from "../../src/lib/workspaces";
 import type { OpenTab } from "../../src/components/libera/types";
 import { readWorkspaces, writeWorkspaces } from "../../src/lib/storage/workspaces";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTree } from "../../src/lib/types";
@@ -715,5 +715,43 @@ test("archived folders report their actual destination so workspace paths surviv
   } finally {
     if (previous === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previous;
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the structure token stands in revisions for saved text, and changes exactly when the structure does", () => {
+  const huge = "x".repeat(5_000_000);
+  const tab = (id: string, saved: string, extra: Partial<OpenTab> = {}) => ({ id, file: { name: `${id}.md`, path: `Notes/${id}.md`, notebook: "Notes", fileType: "markdown" }, draft: saved, saved, status: "clean", ...extra }) as OpenTab;
+  const session = (tabs: OpenTab[], root?: unknown) => ({ ...emptyWorkspaceSession(), tabs, canvasLayout: root ? { root, focusedPaneId: "p" } : undefined }) as ReturnType<typeof emptyWorkspaceSession>;
+  const token = createWorkspaceStructureTokenizer();
+  const stringified: string[] = [];
+  const realStringify = JSON.stringify;
+  JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => { const out = realStringify(...args); stringified.push(out); return out; }) as typeof JSON.stringify;
+  try {
+    const base = token(session([tab("a", huge), tab("b", "b")]));
+    assert.ok(base.length < 1000, "the token never carries a tab's text");
+    assert.ok(stringified.every((out) => out.length < 1000), "no tab's saved text is stringified");
+    // A copy of the tab object (a draft or view state change) with the same saved text is not a change.
+    assert.equal(token(session([tab("a", huge, { draft: "typing", viewState: { markdown: { editorScrollTop: 9 } } }), tab("b", "b")])), base);
+    // An equal string that is a different value (rebuilt, not the same reference) is not a change either.
+    assert.equal(token(session([tab("a", "x".repeat(huge.length)), tab("b", "b")])), base);
+    // Each of these changes the token, and each differs from the others.
+    const changed = new Set([
+      token(session([tab("a", huge + "y"), tab("b", "b")])),
+      token(session([tab("b", "b"), tab("a", huge + "y")])),
+      token(session([tab("a", huge + "y"), tab("b", "b", { file: { name: "b.md", path: "Other/b.md", notebook: "Other", fileType: "markdown" } })])),
+      token(session([tab("a", huge + "y"), tab("b", "b", { untitled: true })])),
+      token(session([tab("a", huge + "y"), tab("b", "b", { standaloneSaveId: "s1" })])),
+      token(session([tab("a", huge + "y"), tab("b", "b")], { type: "pane", id: "p", tabId: "a" })),
+      token(session([tab("a", huge + "y"), tab("b", "b")], { type: "pane", id: "p", tabId: "b" })),
+      token(session([tab("a", huge + "y")])),
+    ]);
+    assert.equal(changed.size, 8);
+    assert.ok(!changed.has(base));
+    // A closed and reopened tab never repeats an earlier revision, even with its old text.
+    const before = token(session([tab("c", "one")]));
+    token(session([]));
+    assert.notEqual(token(session([tab("c", "one")])), before);
+  } finally {
+    JSON.stringify = realStringify;
   }
 });

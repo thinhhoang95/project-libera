@@ -172,3 +172,58 @@ test("desktop recovery restores unsaved drafts and reading positions on a fresh 
     dom.window.close();
   }
 });
+
+test("a visible window journals on the 30 second tick only after input or a text change", async (context) => {
+  const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
+  for (const key of ["window", "document", "navigator", "HTMLElement"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const originalFetch = globalThis.fetch;
+  window.liberaWorkspaces = { checkpoint: () => ({ saved: true }) };
+  window.liberaPersistence = { onFlush: () => () => {} };
+  globalThis.fetch = async () => Response.json(emptyWorkspaceLibrary());
+  let setSession!: React.Dispatch<React.SetStateAction<WorkspaceSession>>;
+  // Each journal flushes every viewer's state first, so captures count journals.
+  let captures = 0;
+  let liveDraft = "draft";
+  function Harness() {
+    const [session, update] = useState(emptyWorkspaceSession);
+    setSession = update;
+    useCanvasViewStateCapture(() => { captures++; });
+    useSavedWorkspaces({ authenticated: true, tree: { ...emptyTree(), root: "/test-library" }, refreshTree: async () => emptyTree(), session,
+      readDraft: () => liveDraft, applySession: update, onError: (error) => { throw new Error(error); } });
+    return null;
+  }
+  const root = createRoot(document.getElementById("root")!);
+  try {
+    context.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    await act(async () => root.render(createElement(Harness)));
+    const tab = { id: "tab", file: { name: "a.md", path: "Notes/a.md", notebook: "Notes", fileType: "markdown" }, draft: "draft", saved: "saved", status: "dirty" } as OpenTab;
+    await act(async () => setSession({ ...emptyWorkspaceSession(), tabs: [tab], activeTabId: tab.id }));
+    // The journal at 30 s and the structure save at 60 s each take one snapshot.
+    await act(async () => context.mock.timers.tick(60_000));
+    assert.equal(captures, 2, "a new tab is journaled on the next tick");
+    await act(async () => context.mock.timers.tick(30_000 * 5));
+    assert.equal(captures, 2, "an idle visible window takes no snapshot");
+
+    window.dispatchEvent(new dom.window.Event("wheel"));
+    await act(async () => context.mock.timers.tick(30_000));
+    assert.equal(captures, 3, "scrolling is journaled on the next tick");
+    await act(async () => context.mock.timers.tick(30_000 * 3));
+    assert.equal(captures, 3, "and only once");
+
+    window.dispatchEvent(new dom.window.Event("keydown"));
+    await act(async () => context.mock.timers.tick(30_000));
+    assert.equal(captures, 4, "typing is journaled on the next tick");
+
+    liveDraft = "changed without input";
+    await act(async () => context.mock.timers.tick(30_000));
+    assert.equal(captures, 5, "a text change without input (AI finishing) is still journaled");
+    await act(async () => context.mock.timers.tick(30_000));
+    assert.equal(captures, 5);
+  } finally {
+    context.mock.timers.reset();
+    await act(async () => root.unmount());
+    globalThis.fetch = originalFetch;
+    dom.window.close();
+  }
+});
