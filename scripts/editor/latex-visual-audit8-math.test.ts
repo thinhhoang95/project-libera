@@ -185,3 +185,26 @@ A &\lhook\joinrel\longrightarrow B
   opensToSource(view, 0, source.indexOf("\\begin{align}"), source.indexOf("\\end{align}") + 11);
   done();
 });
+
+/** The inline formulas of the parsed tree, as their source text. */
+function inlineFormulas(state: EditorState) {
+  ensureSyntaxTree(state, state.doc.length, 5000);
+  const found: string[] = [];
+  syntaxTree(state).iterate({ enter: (node) => { if (node.name === "InlineMath") found.push(state.doc.sliceString(node.from, node.to)); } });
+  return found;
+}
+
+test("typing above a formula with `\\colorbox{…}{$0$}` keeps it one piece in the incrementally parsed tree (cs.LO 2611.10842)", () => {
+  const formula = String.raw`$(\colorbox{red!40}{$0$},\colorbox{blue!40}{$1$})$`;
+  const inner = formula.slice(1, -1); // the InlineMath node holds what is between the `$`
+  let state = EditorState.create({ doc: `Intro.\n\nWe have ${formula} here.`, extensions: [latexLanguageSupport("main.tex", "tree")] });
+  assert.deepEqual(inlineFormulas(state), [inner]);
+  for (const typed of ["a", "b", "c"]) {
+    state = state.update({ changes: { from: 0, insert: typed } }).state;
+    assert.deepEqual(inlineFormulas(state), [inner], `after typing ${typed}`);
+  }
+  // Removing the `$` that opens the formula, far from the boxes, changes how their `$` read: no stale piece is kept.
+  const open = state.doc.toString().indexOf("$(");
+  state = state.update({ changes: { from: open, to: open + 1 } }).state;
+  assert.ok(!inlineFormulas(state).includes(inner), inlineFormulas(state).join(" | "));
+});

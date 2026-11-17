@@ -203,14 +203,15 @@ function textBoxMacros(input: Pick<Input, "length" | "read">) {
   return lastBoxes;
 }
 
-/** Trees parsed with `$` read as spaces inside text boxes in math (`mathBoxDollars`), by the positions. */
-const dollarTrees = new WeakMap<Tree, string>();
 
 const MATH_ENVIRONMENT_NAMES = /^(?:equation|align|alignat|flalign|gather|multline|eqnarray|displaymath|math|dmath|dseries|empheq|split|aligned|alignedat|gathered|IEEEeqnarray|xalignat|xxalignat)\*?$/;
 const RAW_ENVIRONMENT_NAMES = /^(?:verbatim\*?|lstlisting|minted|Verbatim|tikzpicture|pgfpicture|circuitikz|comment)$/;
 const COLOR_BOX = /^\\(f?)colorbox\s*(?:\[[^\]]*\]\s*)?/;
 let lastDollarText: string | null = null;
-let lastDollars: number[] = [];
+let lastDollarScan: DollarScan = { dollars: [], candidates: [] };
+
+/** `dollars`: the `$` read as spaces; `candidates`: every `$` inside a colour box's content, read as spaces or not. */
+type DollarScan = { dollars: number[]; candidates: number[] };
 
 /** The `}` closing the `{` at `from` (backslash escapes and nested groups counted), or -1. */
 function groupEnd(text: string, from: number) {
@@ -231,9 +232,14 @@ function groupEnd(text: string, from: number) {
  * the formula's source, which holds them): the formula is one piece. A box in text is left to the grammar, which reads it right.
  */
 export function mathBoxDollars(text: string): number[] {
-  if (!/\\f?colorbox/.test(text) || !text.includes("$")) return [];
-  if (text === lastDollarText) return lastDollars;
+  return scanMathBoxDollars(text).dollars;
+}
+
+function scanMathBoxDollars(text: string): DollarScan {
+  if (!/\\f?colorbox/.test(text) || !text.includes("$")) return { dollars: [], candidates: [] };
+  if (text === lastDollarText) return lastDollarScan;
   const found: number[] = [];
+  const candidates: number[] = [];
   let mode: "" | "$" | "$$" | "paren" | "bracket" | "env" = "";
   let envs = 0;
   for (let i = 0; i < text.length; i++) {
@@ -284,6 +290,7 @@ export function mathBoxDollars(text: string): number[] {
         const box = colours.every(Boolean) ? argument() : null;
         if (box) {
           const inner = text.slice(box[0], box[1]);
+          for (let k = box[0]; k < box[1]; k++) if (text[k] === "$") candidates.push(k);
           if (mode !== "" && inner.includes("$") && !inner.includes("\\$") && !inner.includes("%")) {
             for (let k = box[0]; k < box[1]; k++) if (text[k] === "$") found.push(k);
           }
@@ -295,8 +302,8 @@ export function mathBoxDollars(text: string): number[] {
     i += Math.max(0, name.length - 1);
   }
   lastDollarText = text;
-  lastDollars = found;
-  return found;
+  lastDollarScan = { dollars: found, candidates };
+  return lastDollarScan;
 }
 
 /** Trees parsed with a patched preamble, by where the body started. */
@@ -324,10 +331,11 @@ export class PreambleSafeParser extends Parser {
       const end = Math.min(input.length, Math.max(patch.end, before ?? 0) + 256);
       fragments = TreeFragment.applyChanges(fragments, [{ fromA: 0, toA: end, fromB: 0, toB: end }]);
     }
-    // `$` in a colour box inside a formula, read as spaces (mathBoxDollars); the tree differs when they do.
-    const dollars = input.length > 0 ? mathBoxDollars(input.read(0, input.length)) : [];
-    const dollarKey = dollars.join(",");
-    if (fragments.length && (dollarTrees.get(fragments[0].tree) ?? "") !== dollarKey) fragments = [];
+    // `$` in a colour box inside a formula, read as spaces (mathBoxDollars). Whether one is read so depends on text far
+    // from it (the `$` opening the formula), so what was parsed around every `$` in a colour box is parsed again and the
+    // rest of the tree is kept, as for any edit (keying the whole tree on the positions reparsed it on every keystroke).
+    const { dollars, candidates } = input.length > 0 ? scanMathBoxDollars(input.read(0, input.length)) : { dollars: [], candidates: [] };
+    if (fragments.length && candidates.length) fragments = TreeFragment.applyChanges(fragments, candidates.map((at) => ({ fromA: at, toA: at + 1, fromB: at, toB: at + 1 })));
     let parser = this.inner;
     if (boxKey) {
       let configured = this.textBoxParsers.get(boxKey);
@@ -350,14 +358,13 @@ export class PreambleSafeParser extends Parser {
       source = new PatchedInput(input, patch?.positions ?? [], edits);
     }
     const parse = parser.createParse(source, fragments, ranges);
-    if (!patch && !boxKey && !dollars.length) return parse;
+    if (!patch && !boxKey) return parse;
     return {
       advance() {
         const tree = parse.advance();
         if (tree) {
           if (patch) patchedTrees.set(tree, patch.end);
           if (boxKey) textBoxTrees.set(tree, boxKey);
-          if (dollars.length) dollarTrees.set(tree, dollarKey);
         }
         return tree;
       },
