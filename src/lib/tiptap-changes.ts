@@ -230,20 +230,31 @@ function trackChanges(before: ProseMirrorNode, after: ProseMirrorNode, source: C
 
 // Keep changes anchored through unrelated edits. Editing inside a change (or
 // replacing the document) settles it: the user has taken ownership of the text.
+//
+// A change the edit did not move stays the same object, and one that moved
+// remembers the change it came from: the decorations built for it are reused,
+// shifted, instead of being rebuilt (see `changeDecorations`).
+const movedFrom = new WeakMap<TrackedChange, TrackedChange>();
 function mapChanges(changes: TrackedChange[], tr: Transaction) {
   if (!changes.length) return changes;
-  return changes.flatMap((change) => {
+  let unchanged = true;
+  const mapped = changes.flatMap((change) => {
     let { from, to } = change;
     for (const map of tr.mapping.maps) {
       let touched = false;
       map.forEach((start, end) => { if (from === to ? start < from && end > from : start < to && end > from) touched = true; });
-      if (touched) return [];
+      if (touched) { unchanged = false; return []; }
       const empty = from === to;
       from = map.map(from, 1);
       to = empty ? from : Math.max(from, map.map(to, -1));
     }
-    return [{ ...change, from, to }];
+    if (from === change.from && to === change.to) return [change];
+    unchanged = false;
+    const moved = { ...change, from, to };
+    movedFrom.set(moved, movedFrom.get(change) ?? change);
+    return [moved];
   });
+  return unchanged ? changes : mapped;
 }
 
 /** Decision units: applied hunks individually, previews per suggestion. */
@@ -306,8 +317,11 @@ function enhance(root: HTMLElement, documentPath: string) {
   return root;
 }
 
-function contentWidget(pos: number, side: number, key: string, className: string, build: (serializer: DOMSerializer) => Node, documentPath: string) {
-  return Decoration.widget(pos, (view) => {
+type WidgetParts = { toDOM: (view: EditorView) => Node; spec: { side: number; key: string; marks: never[]; ignoreSelection: boolean; stopEvent: () => boolean } };
+const widgetAt = (pos: number, parts: WidgetParts) => Decoration.widget(pos, parts.toDOM, parts.spec);
+
+function contentWidgetParts(side: number, key: string, className: string, build: (serializer: DOMSerializer) => Node, documentPath: string): WidgetParts {
+  return { toDOM: (view) => {
     const serializer = DOMSerializer.fromSchema(view.state.schema);
     let root = build(serializer);
     if (!(root instanceof HTMLElement)) {
@@ -320,7 +334,10 @@ function contentWidget(pos: number, side: number, key: string, className: string
     element.contentEditable = "false";
     element.setAttribute("aria-label", className.includes("deleted") ? "Original text" : "Proposed text");
     return enhance(element, documentPath);
-  }, { side, key, marks: [], ignoreSelection: true, stopEvent: () => true });
+  }, spec: { side, key, marks: [], ignoreSelection: true, stopEvent: () => true } };
+}
+function contentWidget(pos: number, side: number, key: string, className: string, build: (serializer: DOMSerializer) => Node, documentPath: string) {
+  return widgetAt(pos, contentWidgetParts(side, key, className, build, documentPath));
 }
 
 // Author colours come from collaborators, so only plain colour values reach a style attribute.
@@ -330,8 +347,8 @@ export function changeAuthorLabel(author: ChangeAuthor) {
   return author.kind === "ai" ? `AI · on behalf of ${author.name}` : author.name;
 }
 
-function actionsWidget(change: TrackedChange, ids: string[]) {
-  return Decoration.widget(change.to, (view) => {
+function actionsWidgetParts(change: TrackedChange, ids: string[]): WidgetParts {
+  return { toDOM: (view) => {
     const root = document.createElement(change.block ? "div" : "span");
     root.className = `libera-change-actions${change.block ? " libera-change-actions-block" : ""}`;
     root.contentEditable = "false";
@@ -371,10 +388,12 @@ function actionsWidget(change: TrackedChange, ids: string[]) {
       root.append(button);
     }
     return root;
-  }, { side: 1000, key: `${change.id}:actions:${change.label ?? ""}:${ids.length}:${change.decidable === false ? "view" : "decide"}:${change.author ? `${change.author.kind ?? ""}:${change.author.name}:${change.author.color ?? ""}` : ""}`, marks: [], ignoreSelection: true, stopEvent: () => true });
+  }, spec: { side: 1000, key: `${change.id}:actions:${change.label ?? ""}:${ids.length}:${change.decidable === false ? "view" : "decide"}:${change.author ? `${change.author.kind ?? ""}:${change.author.name}:${change.author.color ?? ""}` : ""}`, marks: [], ignoreSelection: true, stopEvent: () => true } };
 }
+const actionsWidget = (change: TrackedChange, ids: string[]) => widgetAt(change.to, actionsWidgetParts(change, ids));
 
-function changeDecorations(doc: ProseMirrorNode, changes: TrackedChange[], documentPath: string) {
+/** The full rebuild of every decoration; `changeDecorations` must always agree with it. */
+export function changeDecorationsFull(doc: ProseMirrorNode, changes: TrackedChange[], documentPath: string) {
   const groups = new Map(tiptapChangeUnits(changes).map((unit) => [unit.channel ? `${unit.channel} ${unit.group}` : unit.group, unit.ids]));
   const decorations: Decoration[] = [];
   for (const change of changes) {
@@ -407,11 +426,106 @@ function changeDecorations(doc: ProseMirrorNode, changes: TrackedChange[], docum
   return DecorationSet.create(doc, decorations);
 }
 
+/** Work counter for tests: change entries built from scratch, and entries moved to new positions. */
+export const changeDecorationWork = { built: 0, shifted: 0 };
+
+// What one change contributes to the decoration set, at positions relative to
+// the change, so the same entry serves wherever an edit elsewhere moves it.
+type DecorationPart = { start: number; end: number; make: (from: number, to: number) => Decoration };
+type ChangeEntry = {
+  from: number; to: number; ids: string[];
+  // Sizes of the nodes a block change decorates one by one (null: not a block change).
+  nodeSizes: number[] | null;
+  parts: DecorationPart[]; decorations: Decoration[];
+};
+export type ChangeEntries = WeakMap<TrackedChange, ChangeEntry>;
+
+function buildEntry(doc: ProseMirrorNode, change: TrackedChange, ids: string[], documentPath: string): ChangeEntry {
+  changeDecorationWork.built++;
+  const inDocument = change.mode === "applied" ? "inserted" : "deleted";
+  const shown = change.mode === "applied" ? "deleted" : "inserted";
+  const color = authorColor(change.author);
+  const authored = color ? { style: `--libera-change-author: ${color}` } : {};
+  const parts: DecorationPart[] = [];
+  const widget = (pos: number, widgetParts: WidgetParts) => parts.push({ start: pos - change.from, end: pos - change.from, make: (at) => widgetAt(at, widgetParts) });
+  let nodeSizes: number[] | null = null;
+  if (change.from < change.to) {
+    if (change.block) {
+      nodeSizes = [];
+      const attrs = { class: `libera-change libera-change-${inDocument}-block`, ...authored };
+      for (let pos = change.from; pos < change.to;) {
+        const node = doc.nodeAt(pos);
+        if (!node) break;
+        nodeSizes.push(node.nodeSize);
+        parts.push({ start: pos - change.from, end: pos + node.nodeSize - change.from, make: (from, to) => Decoration.node(from, to, attrs) });
+        pos += node.nodeSize;
+      }
+    } else {
+      const attrs = { class: `libera-change libera-change-${inDocument}`, ...authored };
+      parts.push({ start: 0, end: change.to - change.from, make: (from, to) => Decoration.inline(from, to, attrs) });
+    }
+  }
+  if (change.other.size) {
+    const pos = change.mode === "applied" ? change.from : change.to;
+    const side = (index: number) => change.mode === "applied" ? -1000 + index : 1 + index;
+    if (change.block) {
+      childNodes(change.other).forEach((node, index) => widget(pos, contentWidgetParts(side(index), `${change.id}:${shown}:${index}`, `libera-change-${shown}-block`, (serializer) => serializer.serializeNode(node), documentPath)));
+    } else widget(pos, contentWidgetParts(side(0), `${change.id}:${shown}`, `libera-change-${shown}`, (serializer) => serializer.serializeFragment(change.other), documentPath));
+  }
+  if (change.showActions) widget(change.to, actionsWidgetParts(change, ids));
+  return { from: change.from, to: change.to, ids, nodeSizes, parts, decorations: parts.map((part) => part.make(change.from + part.start, change.from + part.end)) };
+}
+
+// A block change decorates the nodes it covers; the entry still fits only if
+// the document has nodes of the same sizes there.
+function sameNodes(doc: ProseMirrorNode, change: TrackedChange, sizes: number[] | null) {
+  if (!sizes) return true;
+  let index = 0;
+  for (let pos = change.from; pos < change.to;) {
+    const node = doc.nodeAt(pos);
+    if (!node) break;
+    if (sizes[index++] !== node.nodeSize) return false;
+    pos += node.nodeSize;
+  }
+  return index === sizes.length;
+}
+
+/**
+ * The decoration set for `changes`, reusing what was built for a change that
+ * only moved: its decorations are the same relative to the change, so they are
+ * shifted instead of rebuilt. The set itself is created afresh from the same
+ * ordered list `changeDecorationsFull` would produce, so both always agree.
+ */
+export function changeDecorations(doc: ProseMirrorNode, changes: TrackedChange[], documentPath: string, entries: ChangeEntries) {
+  const groups = new Map(tiptapChangeUnits(changes).map((unit) => [unit.channel ? `${unit.channel} ${unit.group}` : unit.group, unit.ids]));
+  const decorations: Decoration[] = [];
+  for (const change of changes) {
+    const ids = groups.get(change.channel ? `${change.channel} ${change.group}` : change.group) ?? [change.id];
+    const root = movedFrom.get(change) ?? change;
+    let entry = entries.get(root);
+    const fits = entry && entry.to - entry.from === change.to - change.from && entry.ids.length === ids.length
+      && entry.ids.every((id, index) => id === ids[index]) && sameNodes(doc, change, entry.nodeSizes);
+    if (!entry || !fits) {
+      entry = buildEntry(doc, change, ids, documentPath);
+      entries.set(root, entry);
+    } else if (entry.from !== change.from) {
+      changeDecorationWork.shifted++;
+      const base = change.from;
+      entry.decorations = entry.parts.map((part) => part.make(base + part.start, base + part.end));
+      entry.from = change.from;
+      entry.to = change.to;
+    }
+    for (const decoration of entry.decorations) decorations.push(decoration);
+  }
+  return DecorationSet.create(doc, decorations);
+}
+
 export const TiptapChanges = Extension.create<{ documentPath: string }>({
   name: "liberaChanges",
   addOptions: () => ({ documentPath: "" }),
   addProseMirrorPlugins() {
     const { documentPath } = this.options;
+    const entries: ChangeEntries = new WeakMap();
     return [new Plugin<TiptapChangesState>({
       key: tiptapChangesKey,
       state: {
@@ -434,9 +548,10 @@ export const TiptapChanges = Extension.create<{ documentPath: string }>({
             if (channel === undefined) decide = meta.decide;
             else deciders = { ...deciders, [channel]: meta.decide ?? (() => {}) };
           }
-          if (changes === value.changes && decide === value.decide && deciders === value.deciders) return value;
+          // Unmoved changes may keep their array, but the set is built per document: its tree follows the node boundaries.
+          if (changes === value.changes && decide === value.decide && deciders === value.deciders && !(tr.docChanged && changes.length)) return value;
           if (changes !== value.changes) changes = [...changes].sort((a, b) => a.from - b.from || a.to - b.to);
-          return { changes, decide, ...(deciders ? { deciders } : {}), decorations: changes.length ? changeDecorations(newState.doc, changes, documentPath) : DecorationSet.empty };
+          return { changes, decide, ...(deciders ? { deciders } : {}), decorations: changes.length ? changeDecorations(newState.doc, changes, documentPath, entries) : DecorationSet.empty };
         },
       },
       props: {
