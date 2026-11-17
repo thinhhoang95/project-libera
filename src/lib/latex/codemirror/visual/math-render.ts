@@ -627,16 +627,50 @@ function reflectboxForKatex(latex: string) {
 /** `\romannumeral2` as its letters and `\MakeUppercase{ii}` as capitals (the `\II` of 2611.09689: `\textup{\MakeUppercase{\romannumeral2}}`). */
 function romanCaseForKatex(latex: string) {
   const numerals: Array<[number, string]> = [[1000, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"], [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"]];
-  return latex
+  const romans = latex
     .replace(/\\romannumeral\s*(\d{1,4})(?![\d])\s*/g, (whole, digits: string) => {
       let rest = Number(digits);
       if (rest < 1 || rest > 3999) return whole;
       let out = "";
       for (const [value, letters] of numerals) for (; rest >= value; rest -= value) out += letters;
       return out;
-    })
-    .replace(/\\MakeUppercase\s*\{([^{}\\]*)\}/g, (_, text: string) => text.toUpperCase())
-    .replace(/\\MakeLowercase\s*\{([^{}\\]*)\}/g, (_, text: string) => text.toLowerCase());
+    });
+  return changeCaseForKatex(changeCaseForKatex(romans, "Upper"), "Lower");
+}
+
+/**
+ * `\MakeUppercase{…}`/`\MakeLowercase{…}`, with commands inside too (2611.21216's `\randomvec` is `\MakeUppercase{\bm{Y}}`):
+ * the letters outside command names change case, as TeX's `\uppercase` does. A group with a label, reference, citation
+ * or environment inside is left alone.
+ */
+function changeCaseForKatex(latex: string, direction: "Upper" | "Lower") {
+  let out = "";
+  let at = 0;
+  for (const match of latex.matchAll(new RegExp(String.raw`\\Make${direction}case\s*(?=\{)`, "g"))) {
+    if (match.index < at) continue;
+    const group = readGroup(latex, match.index + match[0].length, TEX_GROUPS);
+    if (!group || /\\(?:begin|end|label|ref|cite|eqref)(?![A-Za-z@])/.test(group.content)) continue;
+    const changed = group.content.replace(/\\(?:[A-Za-z@]+|.)|[^\\]+/g, (token) => token[0] === "\\" ? token : direction === "Upper" ? token.toUpperCase() : token.toLowerCase());
+    out += `${latex.slice(at, match.index)}{${changed}}`;
+    at = group.end;
+  }
+  return at ? out + latex.slice(at) : latex;
+}
+
+/** A raised box whose text is `\ensuremath{…}` (2611.08668's `\restr`: `\raisebox{-0.5ex}{\ensuremath{|_{#1}}}`) is the formula in dollars, which KaTeX's text-mode box reads. */
+function raiseboxEnsuremathForKatex(latex: string) {
+  let out = "";
+  let at = 0;
+  for (const match of latex.matchAll(/\\raisebox\s*\{[^{}]*\}\s*(?=\{\s*\\ensuremath\s*\{)/g)) {
+    if (match.index < at) continue;
+    const box = readGroup(latex, match.index + match[0].length, TEX_GROUPS);
+    const inner = box && /^\s*\\ensuremath\s*(?=\{)/.exec(box.content);
+    const formula = inner ? readGroup(box.content, inner[0].length, TEX_GROUPS) : null;
+    if (!box || !inner || !formula || box.content.slice(formula.end).trim() || formula.content.includes("$")) continue;
+    out += `${latex.slice(at, match.index)}${match[0]}{$${formula.content}$}`;
+    at = box.end;
+  }
+  return at ? out + latex.slice(at) : latex;
 }
 
 /** The lengths that shape an array: `\arraystretch` becomes KaTeX's own macro (its arrays read it), the others (column gaps, rule widths) are dropped. */
@@ -758,6 +792,7 @@ export function forKatex(latex: string) {
   if (/\\(?:thin|med|thick)muskip/.test(out)) out = out.replace(/\\(?:thin|med|thick)muskip\s*=\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*mu(?:\s+plus\s+-?[\d.]+\s*mu)?(?:\s+minus\s+-?[\d.]+\s*mu)?\s*/g, "");
   if (out.includes("\\reflectbox")) out = reflectboxForKatex(out);
   if (out.includes("\\romannumeral") || out.includes("\\MakeUppercase") || out.includes("\\MakeLowercase")) out = romanCaseForKatex(out);
+  if (out.includes("\\raisebox") && out.includes("\\ensuremath")) out = raiseboxEnsuremathForKatex(out);
   if (out.includes("\\textsc")) out = textscForKatex(out);
   if (out.includes("\\mathpalette")) out = mathpaletteForKatex(out);
   if (out.includes("\\ooalign")) out = ooalignForKatex(out);

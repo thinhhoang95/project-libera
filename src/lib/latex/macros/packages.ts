@@ -256,10 +256,20 @@ export function classMacros(cls: string): PackageMacro[] {
   ];
 }
 
+/**
+ * unicode-math's `\symbf`, `\symbfit`, `\symit`… (2611.08668's `\ifdefined\symbfit \let\bookboldvector\symbfit`): the math
+ * alphabets by style, as the nearest alphabet commands (bold italic is `\boldsymbol`).
+ */
+function unicodeMathMacros(): PackageMacro[] {
+  const alphabets: Record<string, string> = { symbf: "\\mathbf", symbfit: "\\boldsymbol", symit: "\\mathit", symrm: "\\mathrm", symsf: "\\mathsf", symtt: "\\mathtt", symbb: "\\mathbb", symcal: "\\mathcal", symscr: "\\mathscr", symfrak: "\\mathfrak" };
+  return Object.entries(alphabets).map(([name, command]) => ({ name, arity: 1, body: `${command}{#1}`, mathOnly: true }));
+}
+
 /** The macros package `name` defines (with the options it was loaded with), or none. */
 export function packageMacros(name: string, options: readonly string[]): PackageMacro[] {
   if (name === "complexity") return complexityMacros(options);
   if (name === "physics") return physicsMacros(options);
   if (name === "amsthm") return amsthmMacros();
+  if (name === "unicode-math") return unicodeMathMacros();
   return [];
 }
