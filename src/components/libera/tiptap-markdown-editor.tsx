@@ -22,7 +22,7 @@ import { Selection, type Transaction } from "@tiptap/pm/state";
 import { captureVisualScrollAnchor, startVisualScrollRestore, type VisualScrollAnchor, type VisualScrollRestore } from "@/lib/tiptap-scroll-anchor";
 import { keepScrollOnReflow, proseMirrorReflowAdapter } from "@/lib/reflow-scroll-anchor";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
-import { closeHistory } from "@tiptap/pm/history";
+import { closeHistory, redoDepth, undoDepth } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
 import { TiptapCitationLayer, useTiptapCitations } from "@/components/libera/references/tiptap-citation-view";
 import { useReferenceRender } from "@/components/libera/references/reference-render-context";
@@ -36,7 +36,7 @@ import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-
 import { apiRequest } from "@/components/libera/api-client";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
 import { FactCheckButton } from "@/components/libera/markdown-toolbar";
-import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
+import { TiptapSelectionStatusBar } from "@/components/libera/tiptap-selection-status-bar";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { MarkdownTextWidth } from "./markdown-text-width";
@@ -172,6 +172,51 @@ function getVisualViewportViewState(
   };
 }
 
+export type ToolbarListHistoryState = { canSinkListItem: boolean; canLiftListItem: boolean; undo: boolean; redo: boolean };
+
+/** The original computation: four dry-runs of list commands and two of history, on every transaction. */
+export function legacyListHistoryState(current: Editor): ToolbarListHistoryState {
+  return {
+    canSinkListItem: current.can().sinkListItem("listItem") || current.can().sinkListItem("taskItem"),
+    canLiftListItem: current.can().liftListItem("listItem") || current.can().liftListItem("taskItem"),
+    undo: current.can().undo(), redo: current.can().redo(),
+  };
+}
+
+/**
+ * Same answers as {@link legacyListHistoryState} without the dry-runs where the
+ * answer is known. Sinking and lifting both start from the block range of the
+ * selection's list items and return false when there is none, which is what
+ * typing in an ordinary paragraph sees. Local history is the history plugin's
+ * stack depth; a shared tab undoes through a Y.UndoManager, so it asks the command.
+ */
+export function listHistoryState(current: Editor, shared: boolean): ToolbarListHistoryState {
+  const { $from, $to } = current.state.selection;
+  const inListItems = !!$from.blockRange($to, (node) => node.childCount > 0 && (node.firstChild!.type.name === "listItem" || node.firstChild!.type.name === "taskItem"));
+  const history = shared
+    ? { undo: current.can().undo(), redo: current.can().redo() }
+    : { undo: undoDepth(current.state) > 0, redo: redoDepth(current.state) > 0 };
+  if (!inListItems) return { canSinkListItem: false, canLiftListItem: false, ...history };
+  return {
+    canSinkListItem: current.can().sinkListItem("listItem") || current.can().sinkListItem("taskItem"),
+    canLiftListItem: current.can().liftListItem("listItem") || current.can().liftListItem("taskItem"),
+    ...history,
+  };
+}
+
+// Transactions that leave the editor state untouched (a selector re-run by
+// the subscription itself) read the previous answer.
+const listHistoryCache = new WeakMap<Editor, { state: Editor["state"]; value: ToolbarListHistoryState }>();
+function cachedListHistoryState(current: Editor, shared: boolean): ToolbarListHistoryState {
+  // A shared tab's undo stack lives outside the editor state: always ask.
+  if (shared) return listHistoryState(current, shared);
+  const cached = listHistoryCache.get(current);
+  if (cached && cached.state === current.state) return cached.value;
+  const value = listHistoryState(current, shared);
+  listHistoryCache.set(current, { state: current.state, value });
+  return value;
+}
+
 export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab, sharedStatus, onExpandMacros }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number; markdown: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
@@ -268,7 +313,6 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     }),
   ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView, imageNodeView]);
 
-  const [selectedText, setSelectedText] = useState("");
   const editor = useEditor({
     extensions,
     // A shared note starts empty: the bridge builds the document block by
@@ -380,8 +424,6 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     },
     onSelectionUpdate({ editor: current }) {
       scheduleVisualPosition(current);
-      const { from, to, empty } = current.state.selection;
-      setSelectedText(empty ? "" : current.state.doc.textBetween(from, to, "\n"));
     },
     onTransaction({ transaction }) {
       for (const upload of uploads.current) upload.pos = transaction.mapping.map(upload.pos);
@@ -436,8 +478,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"), strike: current.isActive("strike"),
     superscript: current.isActive("superscript"), subscript: current.isActive("subscript"),
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
-    canSinkListItem: current.can().sinkListItem("listItem") || current.can().sinkListItem("taskItem"),
-    canLiftListItem: current.can().liftListItem("listItem") || current.can().liftListItem("taskItem"),
+    ...cachedListHistoryState(current, shared),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     table: current.isActive("table"),
     boxColor: current.isActive("blockquote") ? current.getAttributes("blockquote").color ?? "default" : "",
@@ -452,7 +493,6 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     fontSize: current.getAttributes("textStyle").fontSize ?? "",
     lineHeight: current.getAttributes("textStyle").lineHeight ?? "",
     color: current.getAttributes("textStyle").color ?? "",
-    undo: current.can().undo(), redo: current.can().redo(),
     } : null;
   } });
 
@@ -1161,7 +1201,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         ) : null}
         <TiptapChangeBar editor={editor} />
       </div>
-      <MarkdownStatusBar content={value} selectedText={selectedText} uploading={uploadCount > 0} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />} collab={sharedStatus} />
+      <TiptapSelectionStatusBar editor={editor} content={value} uploading={uploadCount > 0} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />} collab={sharedStatus} />
       <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding equation markers." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
         <button type="button" className={selectClass} onClick={() => setMathDraft(null)}>Cancel</button>
         <button type="button" disabled={!!mathPreview.error} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-40" onClick={() => {
