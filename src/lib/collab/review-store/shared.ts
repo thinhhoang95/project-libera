@@ -137,8 +137,6 @@ export class SharedReviewStore implements ReviewStore {
   private readonly listeners = new Set<(doc: ReviewDocument) => void>();
   private readonly projectionListeners = new Set<(projection: SharedReviewProjection) => void>();
   private projection: SharedReviewProjection;
-  /** What the listeners last heard; a rebuild that yields the same threads is not announced again. */
-  private published: SharedReviewProjection | null = null;
   /** Bumped on every change of the source text, so a projection's lazily read `text` knows when to read again. */
   private textEpoch = 0;
   private loaded = false;
@@ -642,13 +640,11 @@ export class SharedReviewStore implements ReviewStore {
       this.projection = this.build();
       this.syncDetachedStatus(this.projection.threads);
       const projection = this.projection;
-      const previous = this.published;
-      this.published = projection;
-      // Typing far from every comment rebuilds the same threads: those that
-      // render comments have nothing new to show, so they are not woken.
-      if (!previous || !sameShell(previous, projection)) {
-        for (const listener of [...this.projectionListeners]) listener(projection);
-      }
+      // Every text change is announced, even one that moves no thread: the
+      // review context resolves the pending selection and the local review
+      // against the projection, so it must hear each one. Unchanged threads
+      // keep their objects, which is what spares the comment list.
+      for (const listener of [...this.projectionListeners]) listener(projection);
       if (this.listeners.size) {
         const doc = this.document();
         for (const listener of [...this.listeners]) listener(doc);
@@ -892,12 +888,6 @@ function sameValue(a: unknown, b: unknown): boolean {
   const right = b as Record<string, unknown>;
   const keys = Object.keys(left);
   return keys.length === Object.keys(right).length && keys.every((key) => key in right && sameValue(left[key], right[key]));
-}
-
-/** Everything a projection carries except its revision and live text, with threads compared by identity. */
-function sameShell(a: SharedReviewProjection, b: SharedReviewProjection): boolean {
-  return a.loaded === b.loaded && a.error === b.error && a.role === b.role && sameValue(a.me, b.me) &&
-    a.threads.length === b.threads.length && a.threads.every((thread, index) => thread === b.threads[index]);
 }
 
 function isThread(value: unknown): value is Thread {

@@ -121,7 +121,7 @@ function newStore(shared: SharedReplicaLike, api: ThreadApi) {
   });
 }
 
-test("typing in a document without comments does not materialize the text or wake comment listeners", async () => {
+test("typing in a document without comments does not materialize the text, and every edit is still announced", async () => {
   const shared = replica();
   const store = newStore(shared, fakeApi({}));
   await store.load();
@@ -140,7 +140,7 @@ test("typing in a document without comments does not materialize the text or wak
       await turn();
     }
     assert.equal(counter.calls, 0, "no toString per keystroke");
-    assert.equal(published.length, woken, "no comment listener was woken");
+    assert.equal(published.length, woken + 30, "each edit is announced: the pending selection follows the text");
     assert.equal(store.getProjection().text, shared.ytext.toString(), "the text is still correct on demand");
     assert.equal(counter.calls >= 1, true);
   } finally {
@@ -148,7 +148,7 @@ test("typing in a document without comments does not materialize the text or wak
   }
 });
 
-test("unchanged threads keep their identity and edits that move no thread wake nobody", async () => {
+test("unchanged threads keep their identity through edits that move no thread", async () => {
   const shared = replica();
   // Far enough after the comment that its 80-character context does not reach it.
   shared.ytext.insert(shared.ytext.length, "\n" + "Filler sentence. ".repeat(20));
@@ -183,7 +183,8 @@ test("unchanged threads keep their identity and edits that move no thread wake n
     const after = store.getProjection();
     assert.notEqual(after, before, "the projection itself is rebuilt");
     assert.equal(after.threads[0], before.threads[0], "the unchanged thread is the same object");
-    assert.equal(published.length, 0, "comment listeners were not woken");
+    assert.equal(published.length, 1, "the edit is announced");
+    assert.equal(published[0].threads[0], before.threads[0], "with the same thread object");
     assert.equal(after.text, shared.ytext.toString(), "text reflects the edit");
 
     // An edit before the comment moves its anchor: a new object, announced.
@@ -192,7 +193,7 @@ test("unchanged threads keep their identity and edits that move no thread wake n
     const moved = store.getProjection();
     assert.notEqual(moved.threads[0], before.threads[0]);
     assert.equal(moved.threads[0].anchor.start, before.threads[0].anchor.start + "Intro. ".length);
-    assert.equal(published.length, 1, "a moved thread wakes the listeners");
+    assert.equal(published.length, 2, "and so is the edit that moved the thread");
   } finally {
     store.destroy();
   }
