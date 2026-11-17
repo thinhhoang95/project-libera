@@ -21,9 +21,11 @@ type MacroState = {
   invocations: MacroInvocation[];
   /** Expanded LaTeX of math nodes that use macros or counters, by position. */
   math: Map<number, string>;
+  /** The texts of the document's macro blocks, which `definitions` are read from. */
+  blocks: string[];
 };
 
-const EMPTY: MacroState = { definitions: emptyMacroDefinitions(), invocations: [], math: new Map() };
+const EMPTY: MacroState = { definitions: emptyMacroDefinitions(), invocations: [], math: new Map(), blocks: [] };
 export const tiptapMacrosKey = new PluginKey<MacroState>("liberaMarkdownMacros");
 const OBJECT = "￼";
 
@@ -157,17 +159,45 @@ class BlocksSource {
   }
 }
 
-function hasCounters(doc: ProseMirrorNode) {
-  return doc.textBetween(0, doc.content.size, "\n", (leaf) => String(leaf.attrs.latex ?? "")).includes("\\counter-");
+const counterLeafText = (leaf: ProseMirrorNode) => String(leaf.attrs.latex ?? "");
+
+type BlockScan = { macroBlocks: string[]; hasCounter: boolean };
+// A top-level block keeps its identity while it is not edited, so what a scan
+// found in it is found once, and an edit elsewhere costs a lookup per block.
+// A counter cannot span two blocks (their texts are separated by a newline),
+// so the blocks can be searched one by one.
+const blockScans = new WeakMap<ProseMirrorNode, BlockScan>();
+
+function scanBlock(block: ProseMirrorNode): BlockScan {
+  let scan = blockScans.get(block);
+  if (!scan) {
+    const macroBlocks: string[] = [];
+    const visit = (node: ProseMirrorNode) => {
+      if (node.type.spec.code && isMacroBlockLanguage(node.attrs.language)) macroBlocks.push(node.textContent);
+      return !node.isTextblock;
+    };
+    if (visit(block)) block.descendants(visit);
+    scan = { macroBlocks, hasCounter: (block.isLeaf ? counterLeafText(block) : block.textBetween(0, block.content.size, "\n", counterLeafText)).includes("\\counter-") };
+    blockScans.set(block, scan);
+  }
+  return scan;
 }
 
-export function computeMacroState(doc: ProseMirrorNode, mathMarkers?: MathMarkerSettings): MacroState {
+const sameStrings = (a: string[], b: string[]) => a.length === b.length && a.every((value, index) => value === b[index]);
+const sameInvocations = (a: MacroInvocation[], b: MacroInvocation[]) =>
+  a.length === b.length && a.every((value, index) => value.from === b[index].from && value.to === b[index].to && value.markdown === b[index].markdown);
+const sameMath = (a: Map<number, string>, b: Map<number, string>) => a.size === b.size && [...a].every(([pos, latex]) => b.get(pos) === latex);
+
+/** With `previous`, the same object when nothing the macros show or expand has changed, so subscribers see no change. */
+export function computeMacroState(doc: ProseMirrorNode, mathMarkers?: MathMarkerSettings, previous?: MacroState): MacroState {
   const blocks: string[] = [];
-  doc.descendants((node) => {
-    if (node.type.spec.code && isMacroBlockLanguage(node.attrs.language)) blocks.push(node.textContent);
-    return !node.isTextblock;
+  let anyCounter = false;
+  doc.forEach((child) => {
+    const scan = scanBlock(child);
+    blocks.push(...scan.macroBlocks);
+    anyCounter ||= scan.hasCounter;
   });
-  if (!blocks.length && !hasCounters(doc)) return EMPTY;
+  if (!blocks.length && !anyCounter) return EMPTY;
   const definitions = emptyMacroDefinitions();
   for (const block of blocks) parseMacroDefinitions(block, definitions);
   const counters = new Map<string, number>();
@@ -212,7 +242,8 @@ export function computeMacroState(doc: ProseMirrorNode, mathMarkers?: MathMarker
     } else if (!node.isLeaf && !node.isInline) walk(node, pos + 1);
   };
   walk(doc, 0);
-  return { definitions, invocations, math };
+  if (previous && sameStrings(previous.blocks, blocks) && sameInvocations(previous.invocations, invocations) && sameMath(previous.math, math)) return previous;
+  return { definitions, invocations, math, blocks };
 }
 
 /** The LaTeX a math node at `pos` renders: its own, with macros and counters expanded. */
@@ -257,7 +288,7 @@ function renderExpansion(editor: Editor, markdown: string) {
   return { fragment: cached.fragment.cloneNode(true) as DocumentFragment, inline: cached.inline };
 }
 
-function invocationDecorations(editor: Editor, state: EditorState) {
+function buildInvocationDecorations(editor: Editor, state: EditorState) {
   const macros = tiptapMacrosKey.getState(state);
   if (!macros?.invocations.length) return DecorationSet.empty;
   const { from, to } = state.selection;
@@ -302,6 +333,25 @@ function invocationDecorations(editor: Editor, state: EditorState) {
   return DecorationSet.create(state.doc, decorations);
 }
 
+/**
+ * `props.decorations` runs on every view update. What it builds depends on the
+ * document, the macros and which invocations hold the selection, so the last
+ * set is kept while those stay the same (a caret moving between other places).
+ */
+function cachedInvocationDecorations(editor: Editor) {
+  let last: { doc: ProseMirrorNode; macros: MacroState; open: string; set: DecorationSet } | undefined;
+  return (state: EditorState) => {
+    const macros = tiptapMacrosKey.getState(state);
+    if (!macros?.invocations.length) return DecorationSet.empty;
+    const { from, to } = state.selection;
+    const open = macros.invocations.map((invocation) => from <= invocation.to && to >= invocation.from ? "1" : "0").join("");
+    if (last && last.doc === state.doc && last.macros === macros && last.open === open) return last.set;
+    const set = buildInvocationDecorations(editor, state);
+    last = { doc: state.doc, macros, open, set };
+    return set;
+  };
+}
+
 export const TiptapMarkdownMacros = Extension.create<{ mathMarkers?: MathMarkerSettings }>({
   name: "liberaMarkdownMacros",
   addOptions: () => ({ mathMarkers: undefined }),
@@ -312,9 +362,9 @@ export const TiptapMarkdownMacros = Extension.create<{ mathMarkers?: MathMarkerS
       key: tiptapMacrosKey,
       state: {
         init: (_, state) => computeMacroState(state.doc, mathMarkers),
-        apply: (tr, value, _old, state) => tr.docChanged ? computeMacroState(state.doc, mathMarkers) : value,
+        apply: (tr, value, _old, state) => tr.docChanged ? computeMacroState(state.doc, mathMarkers, value) : value,
       },
-      props: { decorations: (state) => invocationDecorations(editor, state) },
+      props: { decorations: cachedInvocationDecorations(editor) },
       view: () => ({
         update(view, previous) {
           const current = tiptapMacrosKey.getState(view.state);
