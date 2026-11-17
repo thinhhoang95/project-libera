@@ -172,10 +172,11 @@ export class LiteralTextWidget extends VisualWidget {
 
 /** A command's printed text (Pandoc's `\CSLLeftMargin{{[}1{]} }`, pifont's circled digit): a click shows the command. */
 export class PrintedTextWidget extends VisualWidget {
-  constructor(readonly printed: string, readonly source: string) { super(`printed\u0000${printed}\u0000${source}`); }
+  constructor(readonly printed: string, readonly source: string, readonly color?: string) { super(`printed\u0000${printed}\u0000${source}\u0000${color ?? ""}`); }
   toDOM(view: EditorView) {
     const span = el("span", "cm-vis-symbol", this.printed);
     span.title = this.source;
+    if (this.color) span.style.color = this.color;
     revealOnClick(view, span, this.source.length);
     return span;
   }
@@ -302,10 +303,16 @@ export class ChipWidget extends VisualWidget {
       const text = this.text(target);
       // A reference to a `\tag{$\mathcal{I}$}` (Econometrica's): its math drawn, not its source.
       // An index entry's math (`\index{$\phi$}`) too; math that cannot be drawn shows without its dollars (the source is the tooltip).
-      if ((this.kind === "ref" || this.kind === "index") && /\$[^$]+\$/.test(text)) {
+      // An index entry written with commands (`\index{involution (Def.~\ref{def:I})}`, math.OA 2611.08668): the text renderer draws it,
+      // and what it cannot draw is left out; the chip never shows a raw command.
+      if (this.kind === "index" && /\\/.test(text.replace(/\$[^$]*\$/g, ""))) {
+        const rendered = renderLatexFragment(text, widgetContext(target, dom));
+        const plain = (rendered.textContent ?? "").includes("\\") ? document.createTextNode(text.replace(/\\[A-Za-z]+\*?\s*(?:\{([^{}]*)\})?/g, "$1").replace(/[{}~]/g, " ").replace(/\s+/g, " ").trim()) : null;
+        replaceChildrenIfChanged(dom, plain ?? rendered);
+      } else if ((this.kind === "ref" || this.kind === "index") && /\$[^$]+\$/.test(text)) {
         replaceChildrenIfChanged(dom, ...text.split(/(\$[^$]+\$)/).filter(Boolean).map((part) => {
           const html = /^\$[^$]+\$$/.test(part) ? renderKatex(part.slice(1, -1), false) : null;
-          if (!html) return document.createTextNode(this.kind === "index" ? part.replace(/\$/g, "") : part);
+          if (!html) return document.createTextNode(this.kind === "index" ? part.replace(/\$/g, "").replace(/\\([A-Za-z]+)/g, "$1") : part);
           const math = el("span", "cm-vis-chip-math");
           math.innerHTML = html;
           return math;

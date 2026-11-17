@@ -32,7 +32,8 @@ import { collectBodyIncludes, collectMacroSources } from "../../src/components/l
 import katex from "katex";
 import { forKatex, KATEX_MACROS, katexForEnvironment, loadMhchem } from "../../src/lib/latex/codemirror/visual/math-render";
 import { expandLatexMacros } from "../../src/lib/latex/macros/expand";
-import { subfilesRootPath } from "../../src/lib/latex/project";
+import { resolveRelativeNotebookPath, subfilesRootPath } from "../../src/lib/latex/project";
+import { readLatexIncludes } from "../../src/lib/latex/root";
 
 const DEFAULT_CATEGORIES = ["quant-ph", "hep-th", "astro-ph.GA", "math.AG", "math.CO", "stat.ME", "cs.LO", "cond-mat.str-el", "math.PR", "cs.CL", "cs.DS", "q-bio.NC"];
 const MIN_TEX_BYTES = 25_000;
@@ -316,6 +317,30 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
   return { doc, text, commands, math, why, junk, noEdit, numbered: numbering.entries.length };
 }
 
+/**
+ * The main file that includes `filePath`, directly or through other files, nearest folder first: as the app's findLatexRoot
+ * finds it (a project with a stray standalone `.tex` of its own, 2611.21216's mxqtip/, must not take the chapters).
+ */
+function includingRoot(filePath: string, mains: string[], read: (path: string) => string, known: ReadonlySet<string>) {
+  const dirOf = (file: string) => file.split("/").slice(0, -1).join("/");
+  const fileDir = dirOf(filePath);
+  const score = (main: string) => (fileDir.startsWith(dirOf(main)) ? fileDir.length - dirOf(main).length : 1000);
+  for (const root of mains.filter((main) => main !== filePath).sort((a, b) => score(a) - score(b) || a.localeCompare(b))) {
+    const visited = new Set([root]);
+    const queue = [root];
+    while (queue.length) {
+      const current = queue.shift()!;
+      for (const reference of readLatexIncludes(read(current))) {
+        const resolved = resolveRelativeNotebookPath(reference.relativeToFile ? `${dirOf(current)}/x` : `${dirOf(root)}/x`, reference.path);
+        if (!resolved) continue;
+        if (resolved === filePath) return root;
+        if (known.has(resolved) && !visited.has(resolved)) { visited.add(resolved); queue.push(resolved); }
+      }
+    }
+  }
+  return null;
+}
+
 async function audit(args: string[]) {
   const [papersDir, outDir, filter] = args;
   if (!papersDir || !outDir) throw new Error("audit <papersDir> <outDir> [filter]");
@@ -347,7 +372,7 @@ async function audit(args: string[]) {
       const filePath = `nb/${file}`;
       if (!read(filePath).trim() || isMacroFile(read(filePath)) || inRootPreamble(file, read(rootPath))) continue;
       // A subfiles chapter has a \documentclass and a body of its own but is typeset as part of the main file it names (as the app resolves it).
-      const fileRoot = subfilesRootPath(filePath, read(filePath), known) ?? (isMain(file) ? filePath : rootPath);
+      const fileRoot = subfilesRootPath(filePath, read(filePath), known) ?? (isMain(file) ? filePath : includingRoot(filePath, mains.map((main) => `nb/${main}`), read, known) ?? rootPath);
       const started = performance.now();
       try {
         const result = await auditFile(filePath, fileRoot, known, read);

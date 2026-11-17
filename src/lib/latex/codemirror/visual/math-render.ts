@@ -125,6 +125,16 @@ export const KATEX_MACROS: Record<string, string> = {
   "\\guillemotright": "\\text{»}",
   "\\slash": "\\text{/}",
   "\\textvisiblespace": "\\text{␣}",
+  // The eth letters of the T1 encoding (`\newcommand{\eth}{\text{\dh}}`, the spin-weight operator ð of 2611.18827).
+  "\\dh": "\\text{ð}",
+  "\\DH": "\\text{Ð}",
+  // The reduced wavelength ƛ (nuclear physics' `\lambdabar`, 2611.13953).
+  "\\lambdabar": "\\mathord{\\text{ƛ}}",
+  // euscript's Euler Script letters (`\EuScript{F}`, 2611.08668): KaTeX's `\mathscr` is rsfs's slanted script, much further
+  // from Euler Script than `\mathcal`, the upright calligraphic capitals; `\mathcal` it is.
+  "\\EuScript": "\\mathcal",
+  // amsthm's end-of-proof mark, a hollow square (`\eqno\hbox{\qedsymbol}`, 2611.14085).
+  "\\qedsymbol": "\\text{$\\square$}",
   "\\l": "\\text{ł}",
   "\\L": "\\text{Ł}",
   "\\k": "\\text{#1̨}",
@@ -617,16 +627,51 @@ function reflectboxForKatex(latex: string) {
 /** `\romannumeral2` as its letters and `\MakeUppercase{ii}` as capitals (the `\II` of 2611.09689: `\textup{\MakeUppercase{\romannumeral2}}`). */
 function romanCaseForKatex(latex: string) {
   const numerals: Array<[number, string]> = [[1000, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"], [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"]];
-  return latex
+  const romans = latex
     .replace(/\\romannumeral\s*(\d{1,4})(?![\d])\s*/g, (whole, digits: string) => {
       let rest = Number(digits);
       if (rest < 1 || rest > 3999) return whole;
       let out = "";
       for (const [value, letters] of numerals) for (; rest >= value; rest -= value) out += letters;
       return out;
-    })
-    .replace(/\\MakeUppercase\s*\{([^{}\\]*)\}/g, (_, text: string) => text.toUpperCase())
-    .replace(/\\MakeLowercase\s*\{([^{}\\]*)\}/g, (_, text: string) => text.toLowerCase());
+    });
+  return changeCaseForKatex(changeCaseForKatex(romans, "Upper"), "Lower");
+}
+
+/**
+ * `\MakeUppercase{…}`/`\MakeLowercase{…}`, with commands inside too (2611.21216's `\randomvec` is `\MakeUppercase{\bm{Y}}`):
+ * the letters outside command names change case, as TeX's `\uppercase` does. A group with a label, reference, citation
+ * or environment inside is left alone.
+ */
+function changeCaseForKatex(latex: string, direction: "Upper" | "Lower") {
+  let out = "";
+  let at = 0;
+  for (const match of latex.matchAll(new RegExp(String.raw`\\Make${direction}case\s*(?=\{)`, "g"))) {
+    if (match.index < at) continue;
+    const group = readGroup(latex, match.index + match[0].length, TEX_GROUPS);
+    if (!group || /\\(?:begin|end|label|ref|cite|eqref)(?![A-Za-z@])/.test(group.content)) continue;
+    const changed = group.content.replace(/\\(?:[A-Za-z@]+|.)|[^\\]+/g, (token) => token[0] === "\\" ? token : direction === "Upper" ? token.toUpperCase() : token.toLowerCase());
+    // The braces only delimit the argument, as for TeX's `\uppercase`: no group is left (`\textup{\MakeUppercase{iv}}` is `\textup{IV}`).
+    out += `${latex.slice(at, match.index)}${changed}`;
+    at = group.end;
+  }
+  return at ? out + latex.slice(at) : latex;
+}
+
+/** A raised box whose text is `\ensuremath{…}` (2611.08668's `\restr`: `\raisebox{-0.5ex}{\ensuremath{|_{#1}}}`) is the formula in dollars, which KaTeX's text-mode box reads. */
+function raiseboxEnsuremathForKatex(latex: string) {
+  let out = "";
+  let at = 0;
+  for (const match of latex.matchAll(/\\raisebox\s*\{[^{}]*\}\s*(?=\{\s*\\ensuremath\s*\{)/g)) {
+    if (match.index < at) continue;
+    const box = readGroup(latex, match.index + match[0].length, TEX_GROUPS);
+    const inner = box && /^\s*\\ensuremath\s*(?=\{)/.exec(box.content);
+    const formula = inner ? readGroup(box.content, inner[0].length, TEX_GROUPS) : null;
+    if (!box || !inner || !formula || box.content.slice(formula.end).trim() || formula.content.includes("$")) continue;
+    out += `${latex.slice(at, match.index)}${match[0]}{$${formula.content}$}`;
+    at = box.end;
+  }
+  return at ? out + latex.slice(at) : latex;
 }
 
 /** The lengths that shape an array: `\arraystretch` becomes KaTeX's own macro (its arrays read it), the others (column gaps, rule widths) are dropped. */
@@ -641,7 +686,7 @@ function arrayLengthsForKatex(latex: string) {
 
 /** `\ensuremath{x}` in a formula's text (`\text{the value \ensuremath{x}}`): math again, as `$x$`. */
 function ensuremathInText(latex: string) {
-  return replaceGroups(latex, /\\(?:text|textrm|textit|textbf|textnormal|textup|textsf|texttt|mbox)(?![A-Za-z@])\s*/g, (content) => content, (match, content) => {
+  return replaceGroups(latex, /\\(?:text|textrm|textit|textbf|textnormal|textup|textsf|texttt|mbox|hbox)(?![A-Za-z@])\s*/g, (content) => content, (match, content) => {
     if (!content.includes("\\ensuremath") || content.includes("$")) return `${match[0]}{${content}}`;
     return `${match[0]}{${replaceGroups(content, /\\ensuremath\s*/g, (inner) => `$${inner}$`)}}`;
   });
@@ -653,12 +698,77 @@ function buildrelForKatex(latex: string) {
 }
 
 /** Commands that draw nothing in a formula: page breaking (`\displaybreak[2]`, `\allowdisplaybreaks`), labels in their forms (cleveref's `\label[type]{key}`, `\zlabel`, `\ltxlabel`). */
-const DRAWS_NOTHING = /\\(?:displaybreak|allowdisplaybreaks)(?![A-Za-z@])\s*(?:\[\s*\d?\s*\])?|\\zcsetup\s*\{[^{}]*\}|\\(?:label|zlabel|ltxlabel|sublabel)\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}|\\smashoperator(?![A-Za-z@])\s*(?:\[[^\]]*\])?/g;
+const DRAWS_NOTHING = /\\(?:displaybreak|allowdisplaybreaks)(?![A-Za-z@])\s*(?:\[\s*\d?\s*\])?|\\zcsetup\s*\{[^{}]*\}|\\(?:label|zlabel|ltxlabel|sublabel|glsadd|index)\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}|\\smashoperator(?![A-Za-z@])\s*(?:\[[^\]]*\])?/g;
 
 const SIZE_ENVIRONMENT =/\\(?:begin|end)\s*\{(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)\}/g;
 
 /** An accent or font whose argument is a command with its own group (`\widehat\mathrm{x}`): TeX reads it, KaTeX does not. */
-const UNBRACED_ARGUMENT = /\\(hat|widehat|tilde|widetilde|bar|overline|underline|vec|dot|ddot|check|breve|acute|grave|mathring|overrightarrow|overleftarrow|boldsymbol|bm|sqrt)\s*(\\(?:math[a-z]+|text[a-z]*|operatorname|boldsymbol|bm)\s*\{(?:[^{}]|\{[^{}]*\})*\})/g;
+const UNBRACED_ARGUMENT = /\\(hat|widehat|tilde|widetilde|bar|overline|underline|vec|dot|ddot|check|breve|acute|grave|mathring|overrightarrow|overleftarrow|boldsymbol|bm|sqrt)\s*(\\(?:math[a-z]+|text[a-z]*|operatorname|boldsymbol|bm)\s*\{(?:[^{}]|\{[^{}]*\})*\}|\\(?:math[a-z]+|boldsymbol|bm)\s*(?:[A-Za-z0-9]|\\[A-Za-z]+))/g;
+
+/**
+ * A hooked long arrow written as plain TeX does (`\lhook\joinrel\longrightarrow`, 2611.18357): the arrow with a hook and a long
+ * shaft, which KaTeX draws as `\xhookrightarrow`; the same before `\xrightarrow{f}` (its label kept).
+ */
+function hookArrowsForKatex(latex: string) {
+  return latex
+    .replace(/\\lhook\s*\\joinrel\s*\\xrightarrow(?![A-Za-z@])/g, "\\xhookrightarrow")
+    .replace(/\\lhook\s*\\joinrel\s*\\(?:longrightarrow|rightarrow|to)(?![A-Za-z@])/g, "\\mathrel{\\xhookrightarrow{\\hphantom{xxx}}}");
+}
+
+/** The text of one table cell as an array cell's math: its `$…$` as math, the text between as `\text{…}`. */
+function tabularCell(cell: string) {
+  let out = "";
+  let at = 0;
+  const text = (piece: string) => (piece.trim() ? `\\text{${piece.trim()}}` : "");
+  for (const match of cell.matchAll(/(?<!\\)\$([^$]*)\$/g)) {
+    out += text(cell.slice(at, match.index)) + match[1];
+    at = match.index + match[0].length;
+  }
+  return out + text(cell.slice(at));
+}
+
+/**
+ * A simple `tabular` inside a formula (`\begin{tabular}{c|ccc} \text{x} & $\omega_1$ \\ \hline …` in an `align*`, 2611.05701)
+ * as KaTeX's `array`: the same columns and rules, each cell's text as `\text{…}` and its `$…$` as math. A tabular KaTeX
+ * cannot be given that way (another environment inside, a column it does not know) is left, and the formula stays source.
+ */
+function tabularForKatex(latex: string) {
+  const pattern = /\\begin\s*\{tabular\}\s*(?:\[\s*[tbc]?\s*\]\s*)?/g;
+  let out = "";
+  let at = 0;
+  for (let match: RegExpExecArray | null; (match = pattern.exec(latex));) {
+    if (match.index < at) continue;
+    const spec = latex[pattern.lastIndex] === "{" ? readGroup(latex, pattern.lastIndex, TEX_GROUPS) : null;
+    const end = spec ? environmentEnd(latex, spec.end) : -1;
+    const columns = spec ? arrayColumnsForKatex(spec.content) : null;
+    if (!spec || end < 0 || !columns) continue;
+    const body = latex.slice(spec.end, end);
+    const close = /^\\end\s*\{tabular\}/.exec(latex.slice(end));
+    if (!close || /\\begin\s*\{/.test(body)) continue;
+    const rows = rowsWithBreaks(body).map(({ text, separator }) => {
+      const rules = /^(\s*(?:\\hline\s*)*)([\s\S]*)$/.exec(text)!;
+      const cells = splitTopLevelAmpersands(rules[2]).map((cell) => (cell.includes("\\multicolumn") ? cell : tabularCell(cell)));
+      return rules[1] + cells.join("&") + separator;
+    });
+    out += `${latex.slice(at, match.index)}\\begin{array}{${columns}}${rows.join("")}\\end{array}`;
+    at = pattern.lastIndex = end + close[0].length;
+  }
+  return out + latex.slice(at);
+}
+
+/**
+ * Plain TeX's `\eqno` (`\eqno\hbox{\qedsymbol}` closing an `equation*`, 2611.14085): what follows is the formula's number, set at
+ * the right without parentheses, in math: KaTeX's `\tag*` (whose text is text mode, so the math is in `$…$`). Only a number that
+ * runs to the end of the formula and has balanced braces is read; any other use is left, and the formula stays source.
+ */
+function eqnoForKatex(latex: string) {
+  return latex.replace(/\\eqno(?![A-Za-z@])\s*([\s\S]*?)(\s*\\end\s*\{[^{}]*\}\s*)?$/, (whole, number: string, tail?: string) => {
+    let depth = 0;
+    for (const char of number.replace(/\\./g, "")) depth += char === "{" ? 1 : char === "}" ? -1 : 0;
+    if (depth !== 0 || !number.trim() || /\\\\|&|\\eqno/.test(number) || number.includes("$")) return whole;
+    return `\\tag*{$${number.trim()}$}${tail ?? ""}`;
+  });
+}
 
 /**
  * LaTeX KaTeX lacks, written as what it can draw: `\textsc{Base}` as `\text{B{\small ASE}}` (small capitals),
@@ -683,6 +793,7 @@ export function forKatex(latex: string) {
   if (/\\(?:thin|med|thick)muskip/.test(out)) out = out.replace(/\\(?:thin|med|thick)muskip\s*=\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*mu(?:\s+plus\s+-?[\d.]+\s*mu)?(?:\s+minus\s+-?[\d.]+\s*mu)?\s*/g, "");
   if (out.includes("\\reflectbox")) out = reflectboxForKatex(out);
   if (out.includes("\\romannumeral") || out.includes("\\MakeUppercase") || out.includes("\\MakeLowercase")) out = romanCaseForKatex(out);
+  if (out.includes("\\raisebox") && out.includes("\\ensuremath")) out = raiseboxEnsuremathForKatex(out);
   if (out.includes("\\textsc")) out = textscForKatex(out);
   if (out.includes("\\mathpalette")) out = mathpaletteForKatex(out);
   if (out.includes("\\ooalign")) out = ooalignForKatex(out);
@@ -690,6 +801,11 @@ export function forKatex(latex: string) {
   // `\addlinespace` is space between rows; `\cmidrule` (a partial rule, which KaTeX cannot draw) stays: source.
   if (/\\(?:toprule|midrule|bottomrule|addlinespace)(?![A-Za-z@])/.test(out)) out = out.replace(/\\(?:toprule|midrule|bottomrule)(?![A-Za-z@])(?:\s*\[[^\]]*\])?/g, "\\hline ").replace(/\\addlinespace(?![A-Za-z@])(?:\s*\[[^\]]*\])?/g, "");
   if (/\\[a-z]+\s*\\(?:math|text|operatorname|boldsymbol|bm)/.test(out)) out = out.replace(UNBRACED_ARGUMENT, "\\$1{$2}");
+  // The padding of a text box (`{\scriptsize\fboxsep2pt $\colorbox{…}{$0$}$}`): `\fboxsep` is a length, which draws nothing.
+  if (out.includes("\\fboxsep") || out.includes("\\fboxrule")) out = out.replace(/\\fbox(?:sep|rule)\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|mm|cm|in|bp)\s*/g, "");
+  if (out.includes("\\lhook")) out = hookArrowsForKatex(out);
+  if (out.includes("\\eqno")) out = eqnoForKatex(out);
+  if (out.includes("{tabular}")) out = tabularForKatex(out);
   if (out.includes("\\inferrule")) out = inferrulesForKatex(out);
   // tikzmark's `\tikzmarknode[draw=red]{name}{content}` (Self-RAG's framed Retrieve tokens): its content.
   if (out.includes("\\tikzmark")) out = out.replace(/\\tikzmarknode\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}/g, "").replace(/\\tikzmark\s*\{[^{}]*\}/g, "");
@@ -718,7 +834,7 @@ export function forKatex(latex: string) {
   // `\nulldelimiterspace=0pt` sets the width (KATEX_MACROS has its value for `\kern-\nulldelimiterspace`): not drawn.
   if (out.includes("\\nulldelimiterspace")) out = out.replace(/\\nulldelimiterspace\s*=?\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|em|ex|mu|bp|mm|cm|in)|\\setlength\s*\{?\s*\\nulldelimiterspace\s*\}?\s*\{[^{}]*\}/g, "");
   // Page breaks and labels in their forms draw nothing (`\displaybreak[2]` in an align, cleveref's `\label[lemma]{x}`).
-  if (/\\(?:displaybreak|allowdisplaybreaks|label|zlabel|ltxlabel|sublabel|smashoperator|zcsetup)(?![A-Za-z@])/.test(out)) out = out.replace(DRAWS_NOTHING, "");
+  if (/\\(?:displaybreak|allowdisplaybreaks|label|zlabel|ltxlabel|sublabel|glsadd|index|smashoperator|zcsetup)(?![A-Za-z@])/.test(out)) out = out.replace(DRAWS_NOTHING, "");
   // Commutative diagrams: xy's `\xymatrix{…}` and tikz-cd (math-diagram.ts), as arrays of objects and arrows.
   if (out.includes("\\xymatrix") || out.includes("{tikzcd}")) out = diagramsForKatex(out);
   // `\renewcommand{\arraystretch}{1.6}` and `\setlength{\arraycolsep}{7pt}` inside a display: KaTeX reads the stretch as `\def\arraystretch`; the column gaps are fixed.
@@ -918,6 +1034,8 @@ function partialKatex(latex: string, display: boolean): string | null {
   const state: PartialState = { sources: [], kept: 0 };
   const marked = markFailingParts(latex, state, 0);
   if (!state.sources.length || !state.kept) return null;
+  // A table KaTeX could not be given is never drawn as its raw text (`\begin{tabular}…` among drawn rows): the formula stays source.
+  if (state.sources.some((part) => /\\begin\s*\{(?:tabular|tabularx|longtable)/.test(part))) return null;
   const html = katexHtml(marked, display);
   return html && html.replace(PLACEHOLDER, (_, index: string) => escapeHtml(state.sources[Number(index)] ?? ""));
 }

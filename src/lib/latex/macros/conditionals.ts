@@ -163,6 +163,9 @@ function decideTokens(text: string, at: number, name: "if" | "ifx", facts: Condi
     if (a === b) return { value: true, end: second.end };
     // One of the document's macros is neither undefined nor `\relax` (`\ifx\llncs\undefined`).
     if ((UNDEFINED.test(b) && facts.defined?.(a)) || (UNDEFINED.test(a) && facts.defined?.(b))) return { value: false, end: second.end };
+    // A fallback guard (`\ifx \bauthor \undefined \def \bauthor#1{#1}\fi`, Springer Nature's .bbl, cs.NI 2611.13943): the name of a
+    // macro nothing here defines, and the branch defines it: it runs.
+    if (UNDEFINED.test(b) && facts.defined?.(a) === undefined && !PACKAGE_COMMANDS.test(a) && new RegExp(String.raw`^\s*\\(?:def|gdef|edef)\s*\\${a}(?![A-Za-z@])`).test(text.slice(second.end, second.end + 200))) return { value: true, end: second.end };
     // One known to be undefined (its only definition commented out: `% \def\conference`) is `\undefined`.
     if ((UNDEFINED.test(b) && facts.defined?.(a) === false) || (UNDEFINED.test(a) && facts.defined?.(b) === false)) return { value: true, end: second.end };
     // Two constants that differ (the same text may still differ in TeX: `\long` or not).

@@ -203,6 +203,109 @@ function textBoxMacros(input: Pick<Input, "length" | "read">) {
   return lastBoxes;
 }
 
+
+const MATH_ENVIRONMENT_NAMES = /^(?:equation|align|alignat|flalign|gather|multline|eqnarray|displaymath|math|dmath|dseries|empheq|split|aligned|alignedat|gathered|IEEEeqnarray|xalignat|xxalignat)\*?$/;
+const RAW_ENVIRONMENT_NAMES = /^(?:verbatim\*?|lstlisting|minted|Verbatim|tikzpicture|pgfpicture|circuitikz|comment)$/;
+const COLOR_BOX = /^\\(f?)colorbox\s*(?:\[[^\]]*\]\s*)?/;
+let lastDollarText: string | null = null;
+let lastDollarScan: DollarScan = { dollars: [], candidates: [] };
+
+/** `dollars`: the `$` read as spaces; `candidates`: every `$` inside a colour box's content, read as spaces or not. */
+type DollarScan = { dollars: number[]; candidates: number[] };
+
+/** The `}` closing the `{` at `from` (backslash escapes and nested groups counted), or -1. */
+function groupEnd(text: string, from: number) {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\") i++;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * The `$` inside `\colorbox{c}{$0$}` and `\fcolorbox{f}{c}{$0$}` where the box is inside a formula (`$(\colorbox{red!40}{$0$},\ldots)$`,
+ * an `align*`, 2611.10842): the box is a text box, so its `$` opens math again in TeX, but the grammar reads its content as
+ * math and ends the formula at that `$`, splitting it. Those `$` are read as spaces (the text stays as written, and so does
+ * the formula's source, which holds them): the formula is one piece. A box in text is left to the grammar, which reads it right.
+ */
+export function mathBoxDollars(text: string): number[] {
+  return scanMathBoxDollars(text).dollars;
+}
+
+function scanMathBoxDollars(text: string): DollarScan {
+  if (!/\\f?colorbox/.test(text) || !text.includes("$")) return { dollars: [], candidates: [] };
+  if (text === lastDollarText) return lastDollarScan;
+  const found: number[] = [];
+  const candidates: number[] = [];
+  let mode: "" | "$" | "$$" | "paren" | "bracket" | "env" = "";
+  let envs = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === "%") { const end = text.indexOf("\n", i); if (end < 0) break; i = end; continue; }
+    if (char === "$") {
+      if (mode === "env" || mode === "paren" || mode === "bracket") continue;
+      if (text[i + 1] === "$") { mode = mode === "$$" ? "" : mode === "" ? "$$" : mode; i++; } else mode = mode === "$" ? "" : mode === "" ? "$" : mode;
+      continue;
+    }
+    if (char !== "\\") continue;
+    const rest = text.slice(i, i + 60);
+    const name = /^\\(?:[A-Za-z@]+\*?|.)/.exec(rest)?.[0] ?? "\\";
+    if (name === "\\(" && mode === "") mode = "paren";
+    else if (name === "\\)" && mode === "paren") mode = "";
+    else if (name === "\\[" && mode === "") mode = "bracket";
+    else if (name === "\\]" && mode === "bracket") mode = "";
+    else if (name === "\\begin" || name === "\\end") {
+      const env = /^\\(?:begin|end)\s*\{([^{}]*)\}/.exec(rest);
+      if (env && name === "\\begin" && RAW_ENVIRONMENT_NAMES.test(env[1])) {
+        const close = text.indexOf(`\\end{${env[1]}}`, i);
+        if (close < 0) break;
+        i = close + env[1].length + 4;
+        continue;
+      }
+      if (env && MATH_ENVIRONMENT_NAMES.test(env[1])) {
+        if (name === "\\begin") { if (mode === "" || mode === "env") { mode = "env"; envs++; } } else if (mode === "env" && --envs <= 0) { mode = ""; envs = 0; }
+      }
+    } else if (name === "\\verb") {
+      const delimiter = text[i + 5] === "*" ? text[i + 6] : text[i + 5];
+      const close = delimiter ? text.indexOf(delimiter, i + 7) : -1;
+      if (close > 0) i = close;
+      continue;
+    } else if (name === "\\colorbox" || name === "\\fcolorbox") {
+      const head = COLOR_BOX.exec(text.slice(i, i + 200));
+      if (head) {
+        let at = i + head[0].length;
+        const argument = () => {
+          while (/\s/.test(text[at] ?? "")) at++;
+          if (text[at] !== "{") return null;
+          const end = groupEnd(text, at);
+          if (end < 0) return null;
+          const group: [number, number] = [at, end];
+          at = end + 1;
+          return group;
+        };
+        const colours = name === "\\fcolorbox" ? [argument(), argument()] : [argument()];
+        const box = colours.every(Boolean) ? argument() : null;
+        if (box) {
+          const inner = text.slice(box[0], box[1]);
+          for (let k = box[0]; k < box[1]; k++) if (text[k] === "$") candidates.push(k);
+          if (mode !== "" && inner.includes("$") && !inner.includes("\\$") && !inner.includes("%")) {
+            for (let k = box[0]; k < box[1]; k++) if (text[k] === "$") found.push(k);
+          }
+          i = box[1];
+          continue;
+        }
+      }
+    }
+    i += Math.max(0, name.length - 1);
+  }
+  lastDollarText = text;
+  lastDollarScan = { dollars: found, candidates };
+  return lastDollarScan;
+}
+
 /** Trees parsed with a patched preamble, by where the body started. */
 const patchedTrees = new WeakMap<Tree, number>();
 
@@ -228,6 +331,11 @@ export class PreambleSafeParser extends Parser {
       const end = Math.min(input.length, Math.max(patch.end, before ?? 0) + 256);
       fragments = TreeFragment.applyChanges(fragments, [{ fromA: 0, toA: end, fromB: 0, toB: end }]);
     }
+    // `$` in a colour box inside a formula, read as spaces (mathBoxDollars). Whether one is read so depends on text far
+    // from it (the `$` opening the formula), so what was parsed around every `$` in a colour box is parsed again and the
+    // rest of the tree is kept, as for any edit (keying the whole tree on the positions reparsed it on every keystroke).
+    const { dollars, candidates } = input.length > 0 ? scanMathBoxDollars(input.read(0, input.length)) : { dollars: [], candidates: [] };
+    if (fragments.length && candidates.length) fragments = TreeFragment.applyChanges(fragments, candidates.map((at) => ({ fromA: at, toA: at + 1, fromB: at, toB: at + 1 })));
     let parser = this.inner;
     if (boxKey) {
       let configured = this.textBoxParsers.get(boxKey);
@@ -243,7 +351,13 @@ export class PreambleSafeParser extends Parser {
       }
       parser = configured;
     }
-    const parse = parser.createParse(patch ? new PatchedInput(input, patch.positions, patch.edits) : input, fragments, ranges);
+    let source: Input = input;
+    if (patch || dollars.length) {
+      const edits = new Map(patch?.edits);
+      for (const at of dollars) edits.set(at, " ");
+      source = new PatchedInput(input, patch?.positions ?? [], edits);
+    }
+    const parse = parser.createParse(source, fragments, ranges);
     if (!patch && !boxKey) return parse;
     return {
       advance() {

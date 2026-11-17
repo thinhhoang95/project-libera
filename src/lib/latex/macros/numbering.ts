@@ -99,7 +99,7 @@ export const FLOAT_KINDS: Record<string, "figure" | "table" | "algorithm"> = {
   table: "table", "table*": "table", wraptable: "table", sidewaystable: "table", "sidewaystable*": "table", SCtable: "table",
   // AASTeX's tables, captioned by `\tablecaption` (numbered at the environment).
   deluxetable: "table", "deluxetable*": "table",
-  algorithm: "algorithm", "algorithm*": "algorithm",
+  algorithm: "algorithm", "algorithm*": "algorithm", algorithm2e: "algorithm",
 };
 
 /** KOMA-Script's `\captionabove` and `\captionbelow`: a float's `\caption`. */
@@ -202,6 +202,38 @@ function fillEnumitemCounter(label: string, count: number, depth: number) {
     .replace(/\\(arabic|alph|Alph|roman|Roman)\s*\{\s*(enum(?:i|ii|iii|iv))\s*\}/g, (whole, style: string, counter: string) => (counter === ENUM_COUNTERS[depth - 1] ? value(style) : whole));
 }
 
+const LABEL_FONT_SWITCHES = /\\(?:normalfont|upshape|itshape|slshape|scshape|bfseries|mdseries|rmfamily|sffamily|ttfamily|normalsize|bf|it|rm|sf|tt|sl|sc|em)(?![A-Za-z@])\s*/g;
+const LABEL_FONT_WRAPPERS = /\\(?:textup|textnormal|textrm|textmd|textit|textbf|textsl|textsc|textsf|texttt|emph)\s*\{([^{}]*)\}/g;
+/** The switches that restore the default upright text a marker has anyway: dropping them changes nothing drawn. */
+const NEUTRAL_FONT_SWITCHES = /\\(?:normalfont|upshape|rmfamily|mdseries|normalsize)(?![A-Za-z@])\s*/g;
+const NEUTRAL_FONT_WRAPPERS = /\\(?:textup|textnormal|textrm|textmd)\s*\{([^{}]*)\}/g;
+
+/**
+ * A list label's font switches outside formulas: dropped. `all` (a `\ref` chip, which is plain text): every switch and
+ * wrapper. Otherwise (an item's marker, which the walk draws as LaTeX): only the neutral ones (`\normalfont(\roman*)`,
+ * `\textup{(\alph*)}`, math.GR 2611.14085), so `\textbf{\alph*)}` stays bold.
+ */
+export function dropLabelFonts(label: string, all = true) {
+  if (!label.includes("\\")) return label;
+  const switches = all ? LABEL_FONT_SWITCHES : NEUTRAL_FONT_SWITCHES;
+  const wrappers = all ? LABEL_FONT_WRAPPERS : NEUTRAL_FONT_WRAPPERS;
+  return label.split(/(\$[^$]*\$)/).map((part, index) => {
+    if (index % 2) return part;
+    let text = part.replace(switches, "");
+    for (let guard = 0; guard < 4; guard++) {
+      const next = text.replace(wrappers, "$1");
+      if (next === text) break;
+      text = next;
+    }
+    return text;
+  }).join("");
+}
+
+/** Whether a label has a command outside formulas: a marker or `\ref` chip cannot show it. */
+function hasRawCommand(label: string) {
+  return label.split(/(\$[^$]*\$)/).some((part, index) => !(index % 2) && /\\[A-Za-z]/.test(part));
+}
+
 /** A label's grouping braces (`{(\roman*)}`) only group: gone, unless it has commands or math, which need them (`$L_{10}$`). */
 function withoutLabelBraces(label: string) {
   return /[\\$]/.test(label) ? label : label.replace(/[{}]/g, "");
@@ -228,6 +260,16 @@ export function plainTagText(tag: string) {
 
 /** The label an `enumerate` item shows: `1.`, `(a)`, or a custom `[(i)]` / `label=(\alph*)` template. */
 export function enumerateItemLabel(count: number, depth: number, template: string | null) {
+  if (template && template.includes("\\")) {
+    // Neutral font switches change nothing drawn: dropped. The walk draws the rest as LaTeX or leaves it as written.
+    const keyed = /(?:^|,)\s*label\s*=/.test(template);
+    const cleaned = keyed ? template.replace(/((?:^|,)\s*label\s*=\s*)(\{(?:[^{}]|\{[^{}]*\})*\}|[^,]*)/, (_, key: string, value: string) => key + dropLabelFonts(value, false)) : dropLabelFonts(template, false);
+    return enumerateItemLabelFor(count, depth, cleaned);
+  }
+  return enumerateItemLabelFor(count, depth, template);
+}
+
+function enumerateItemLabelFor(count: number, depth: number, template: string | null) {
   if (template) {
     // enumerate's `[(i)]` and enumitem's `label=(\alph*)`.
     const keyed = /(?:^|,)\s*label\s*=/.test(template);
@@ -260,8 +302,9 @@ export function enumerateItemReference(counts: number[], templates: Array<string
   const template = templates[depth - 1];
   if (template) {
     const ref = /(?:^|,)\s*ref\s*=\s*([^,]+)/.exec(template)?.[1]?.trim();
-    if (ref) return withoutLabelBraces(fillEnumitemCounter(ref, counts[depth - 1], depth));
-    return enumerateItemLabel(counts[depth - 1], depth, template).replace(/\.$/, "");
+    const shown = ref ? withoutLabelBraces(fillEnumitemCounter(dropLabelFonts(ref), counts[depth - 1], depth)) : dropLabelFonts(enumerateItemLabel(counts[depth - 1], depth, template)).replace(/\.$/, "");
+    // A `\ref` chip is plain text: a command it cannot show (outside a formula) falls back to LaTeX's own item reference.
+    if (!hasRawCommand(shown)) return shown;
   }
   const [first, second, third, fourth] = counts;
   if (depth === 1) return formatCounterValue(first, "arabic");
@@ -1248,7 +1291,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const env = environmentName(node, read) ?? "";
         scopes.push({ node: node.from, target: env === "subtable" ? null : currentTarget() });
         // A `\label` on an algorithm's line (`\State … \label{l:x}`, algorithm2e's `\nllabel{l:x}`) is that line's number.
-        if (env === "algorithmic" || env === "algorithm" || env === "algorithm*") algorithmLabels(node, env);
+        if (env === "algorithmic" || env === "algorithm" || env === "algorithm2e" || env === "algorithm*") algorithmLabels(node, env);
         // enumitem's lists of the document's own (`\newlist{exercises}{enumerate}{6}`): numbered as their kind.
         const custom = defs.lists?.get(env);
         if (custom) {
@@ -1492,7 +1535,8 @@ export function referenceText(command: string, targets: Array<LabelTarget | null
   const first = targets[0];
   if (name === "eqref") return numbers.map((number) => `(${number})`).join(", ");
   if (name === "pageref" || name === "vpageref") return targets.map((target) => (target?.kind === "page" ? target.number : "?")).join(", ");
-  if (name === "nameref") return first?.title ?? numbers[0];
+  // (A heading written with `\boldmath`: the font switches print nothing, math.OA 2611.08668.)
+  if (name === "nameref") return first?.title?.replace(/\\(?:boldmath|unboldmath|normalfont|protect)(?![A-Za-z@])\s*/g, "") ?? numbers[0];
   // jmlr's `\tableref{a,b}`, `\sectionref{x}`, `\appendixref{y}` (jmlrutils.sty's `\objectref`): "Tables 1 and 2", "Appendix A".
   const word = /ref$/.test(name) && Object.hasOwn(JMLR_REF_WORDS, name.replace(/ref$/, "")) ? JMLR_REF_WORDS[name.replace(/ref$/, "")] : null;
   if (word) {

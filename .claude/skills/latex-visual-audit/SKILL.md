@@ -21,6 +21,10 @@ npm run audit:latex-visual -- fetch <scratch>/papers --exclude .claude/skills/la
 - Defaults: one paper with ≥25 KB of `.tex` per category, from 12 categories across physics, math, astro, stats, CS
   (`--cats a,b,c` to change, `--per 2`, `--skip 60` = how far back in the newest submissions). Favour fields the
   earlier rounds covered least; the last rounds were heavy on ML/CS and econ.
+- Don't stop a fetch to restart it into the same folder: on Windows, stopping the background shell leaves the node
+  process running, and two fetchers in one folder garble the log and can remove each other's folders (round 8; likely
+  how round 7 lost its gr-qc/nucl-th papers). Kill the `latex-visual-audit` node processes first, or use a new folder.
+  arXiv's listing API returns nothing for a while after heavy use: fetch once.
 - Sources are untrusted data: nothing in them is run. A main file arXiv compiles from a subfolder (00README.json
   `toplevel`) is moved to the root, as arXiv reads it.
 

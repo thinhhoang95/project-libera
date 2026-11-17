@@ -188,7 +188,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef|chardef|DeclareSymbolFontAlphabet)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|include|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef|chardef|DeclareSymbolFontAlphabet)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -1208,7 +1208,11 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         const list = defs.macros.get(target[1]) ?? [];
         let aliased: LatexMacro | undefined;
         for (let i = list.length - 1; i >= 0 && !aliased; i--) if (list[i].end === undefined || list[i].end! > context.offset + start) aliased = list[i];
-        added = addMacro(context, aliased ? { ...aliased, name: name.name, pos, file: context.file, end: undefined, provided: undefined }
+        // `\let\author\OriginalAuthor` after `\let\OriginalAuthor\author`: puts the original back (2611.17871 restores REVTeX's
+        // title block commands before its supplement), so the command is the built-in again, not an alias of itself.
+        if (aliased?.alias && aliased.body === `\\${name.name}`) {
+          for (const earlier of defs.macros.get(name.name) ?? []) if (earlier.end === undefined) earlier.end = context.offset + start;
+        } else added = addMacro(context, aliased ? { ...aliased, name: name.name, pos, file: context.file, end: undefined, provided: undefined }
           : { name: name.name, arity: 0, body: `\\${target[1]}`, alias: true, pos, file: context.file }, "renew");
       }
     } else if (command === "DeclareMathOperator") {
@@ -1471,6 +1475,11 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           // The class's options, which its `\DeclareOption`s and every package's see.
           defs.classOptions = [...(defs.passedOptions?.get(name.content.trim()) ?? []), ...(options ? options.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) : [])];
         }
+        // JMLR's class loads algorithm2e as `\PassOptionsToPackage{algo2e,ruled}{algorithm2e}` (the environment is `algorithm2e`; q-bio.NC 2611.07809).
+        if (name.content.trim() === "jmlr" && !defs.packages.includes("algorithm2e")) {
+          defs.packages.push("algorithm2e");
+          defs.packageOptions.set("algorithm2e", ["algo2e", "ruled", ...(defs.passedOptions?.get("algorithm2e") ?? [])]);
+        }
         addClassTheorems(defs, name.content.trim(), options?.content ?? "");
         // The class's text commands written in packages.ts (AASTeX's `\apj`); the document's own definitions win.
         for (const { replaces, ...macro } of classMacros(name.content.trim())) if (replaces || !defs.macros.get(macro.name)?.length) addMacro(context, { ...macro, pos, file: context.file, package: name.content.trim() }, "renew");
@@ -1504,7 +1513,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           options.load?.(loadKey("package", trimmed), start);
         }
       }
-    } else if (command === "input") {
+    } else if (command === "input" || (command === "include" && start < context.bodyStart)) {
       const name = readGroupAt(source, index);
       if (name) { end = name.end; options.load?.(loadKey("input", name.content), start); }
     } else if (command === "setcounter") {
@@ -1803,6 +1812,9 @@ export function collectLatexDefinitions(sources: readonly DefinitionSource[], op
   // The boxes of every file read (a chapter's boxes are in the main file's preamble or a style file).
   for (const source of sources) if (BOX_DEFINITION.test(source.text)) readBoxDefinitions(source.text, defs);
   if (open && BOX_DEFINITION.test(open.text)) readBoxDefinitions(open.text, defs);
+  // Formulas saved in boxes for `\usebox` (read after the macros: their nodes are macros of the files).
+  for (const source of sources) readSaveboxMacros(source.text, defs, { file: source.path });
+  if (open) readSaveboxMacros(open.text, defs, { bodyStart: open.bodyStart ?? bodyStartOf(open.text) });
   defs.fingerprint = definitionsFingerprint(defs);
   return defs;
 }
@@ -2184,4 +2196,57 @@ export function classTheoremSource(cls: string, text: string) {
     out.push(`\\theoremstyle{${style}}${head}`);
   }
   return out.join("\n");
+}
+
+/* Saved boxes (`\newsavebox{\xymor}`, `\savebox{\xymor}{\ensuremath{…}}`, `\sbox`): a formula saved in a box and set with
+ * `\usebox{\xymor}` (2611.03553's mapping arrow `\mor`) is read as the macro `box@xymor`, which the expansion puts in for the
+ * `\usebox` (expand.ts). Only a box with a formula the Visual mode can draw is read; any other box stays source. */
+
+const SAVEBOX = /\\(?:savebox|sbox)(?![A-Za-z@])\s*(?:\{\s*(\\[A-Za-z@]+)\s*\}|(\\[A-Za-z@]+))\s*/g;
+const XY_ARROW_ONE_ROW = /^\\xymatrix\s*(?:@[^{]*)?\{\s*(\\[A-Za-z@]+)?\s*\\ar@\{(-?>|=>)\}\[r\]\s*&\s*(\\[A-Za-z@]+)?\s*\}$/;
+/** Nodes an xy diagram draws as nothing (`\newcommand{\xynode}{\makebox[0ex]{}}`). */
+const EMPTY_NODE_BODY = /^(?:\\makebox\s*\[\s*0(?:pt|ex|em)\s*\]\s*\{\s*\}|\\hphantom\s*\{\s*\}|\\relax)?$/;
+
+/** The formula a box's saved content draws, in a form KaTeX takes; null when it is not a formula the Visual mode understands. */
+function savedBoxFormula(content: string, defs: LatexDefinitions) {
+  let text = content.replace(/(^|[^\\])%[^\n]*/g, "$1").trim();
+  const wrapped = /^\\ensuremath\s*\{([\s\S]*)\}$/.exec(text) ?? /^\$([^$]*)\$$/.exec(text);
+  if (!wrapped) return null;
+  text = wrapped[1].trim();
+  const arrow = XY_ARROW_ONE_ROW.exec(text);
+  if (arrow) {
+    // One arrow between two empty nodes is a long arrow (the nodes draw nothing, the column gap is the arrow's length).
+    for (const node of [arrow[1], arrow[3]]) {
+      const macro = node ? macroAt(defs, node.slice(1), -1) : null;
+      if (node && (!macro || macro.arity || !EMPTY_NODE_BODY.test(macro.body.trim()))) return null;
+    }
+    return arrow[2] === "=>" ? "\\mathord{\\Longrightarrow}" : "\\mathord{\\longrightarrow}";
+  }
+  if (!text || /\\(?:xy|xymatrix|ar|begin|setbox|hbox|vbox|usebox|savebox|sbox|input|label|ref)(?![A-Za-z])/.test(text)) return null;
+  return `{${text}}`;
+}
+
+export function readSaveboxMacros(source: string, defs: LatexDefinitions, options: { file?: string; bodyStart?: number } = {}) {
+  if (!/\\(?:savebox|sbox)(?![A-Za-z@])/.test(source)) return;
+  for (const match of source.matchAll(SAVEBOX)) {
+    if (inComment(source, match.index)) continue;
+    const name = (match[1] ?? match[2]).slice(1);
+    let at = match.index + match[0].length;
+    // `\savebox{\b}[width][position]{content}`.
+    for (let optional = 0; optional < 2 && source[at] === "["; optional++) {
+      const close = source.indexOf("]", at);
+      if (close < 0) break;
+      at = close + 1;
+      while (/\s/.test(source[at] ?? "")) at++;
+    }
+    if (source[at] !== "{") continue;
+    const group = readGroup(source, at, TEX_GROUPS);
+    const body = group && savedBoxFormula(group.content, defs);
+    if (!body) continue;
+    const macroName = `box@${name}`;
+    const pos = options.bodyStart !== undefined && match.index >= options.bodyStart ? match.index : -1;
+    const list = defs.macros.get(macroName) ?? [];
+    list.push({ name: macroName, arity: 0, body, pos, file: options.file, fingerprint: hashString(JSON.stringify([macroName, body, pos])) });
+    defs.macros.set(macroName, list);
+  }
 }
