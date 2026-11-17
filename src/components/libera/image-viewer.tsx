@@ -45,6 +45,7 @@ import {
 import { TextAnnotationStyleControls } from "@/components/libera/annotation-style-controls";
 import type { ImageTabViewState } from "@/components/libera/types";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
+import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state";
 import { useAnnotationWriter, type AnnotationWriter } from "./use-annotation-writer";
 import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import { panCenteringRect, rememberFileAnnotations } from "@/lib/annotation-links";
@@ -66,6 +67,8 @@ const MAX_ZOOM = 8;
 const ZOOM_FACTOR = 1.5;
 const DOUBLE_CLICK_ZOOM = 2.5;
 const SLIDESHOW_MS = 4000;
+// How long pan/zoom must pause before the tab's stored view follows it.
+const TRANSFORM_VIEW_STATE_DELAY_MS = 200;
 const INFO_STORAGE_KEY = "libera.imageViewer.infoOpen";
 const iconButton = "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -195,6 +198,28 @@ export function ImageViewer({
     onViewStateChange?.(patch);
   }, [onViewStateChange]);
 
+  // Pan and zoom follow the gesture locally; the root workspace hears about the
+  // final transform once the gesture settles, and on unmount or capture.
+  const transformViewStateTimerRef = useRef<number | null>(null);
+  const transformViewStatePendingRef = useRef(false);
+  const flushTransformViewState = useCallback(() => {
+    if (transformViewStateTimerRef.current !== null) {
+      window.clearTimeout(transformViewStateTimerRef.current);
+      transformViewStateTimerRef.current = null;
+    }
+    if (!transformViewStatePendingRef.current) return;
+    transformViewStatePendingRef.current = false;
+    const { zoom: latestZoom, pan: latestPan } = transformRef.current;
+    updateViewState({ panX: latestPan.x, panY: latestPan.y, zoom: latestZoom });
+  }, [updateViewState]);
+  const scheduleTransformViewState = useCallback(() => {
+    transformViewStatePendingRef.current = true;
+    if (transformViewStateTimerRef.current !== null) window.clearTimeout(transformViewStateTimerRef.current);
+    transformViewStateTimerRef.current = window.setTimeout(flushTransformViewState, TRANSFORM_VIEW_STATE_DELAY_MS);
+  }, [flushTransformViewState]);
+  useCanvasViewStateCapture(flushTransformViewState);
+  useLayoutEffect(() => flushTransformViewState, [flushTransformViewState]);
+
   useEffect(() => {
     if (!annotatable) {
       return;
@@ -308,7 +333,8 @@ export function ImageViewer({
     setZoom(1);
     setPan({ x: 0, y: 0 });
     lastPointerRef.current = null;
-    updateViewState({ panX: 0, panY: 0, zoom: 1 });
+    transformViewStatePendingRef.current = true;
+    flushTransformViewState();
   }
 
   /** Zooms keeping the point under the cursor (or the middle of the view) still. */
@@ -326,8 +352,8 @@ export function ImageViewer({
     transformRef.current = { zoom: nextZoom, pan: nextPan };
     setZoom(nextZoom);
     setPan(nextPan);
-    updateViewState({ panX: nextPan.x, panY: nextPan.y, zoom: nextZoom });
-  }, [updateViewState]);
+    scheduleTransformViewState();
+  }, [scheduleTransformViewState]);
 
   function zoomBy(factor: number) {
     zoomTo(transformRef.current.zoom * factor);
@@ -403,7 +429,7 @@ export function ImageViewer({
     const nextPan = { x: transformRef.current.pan.x + dx, y: transformRef.current.pan.y + dy };
     transformRef.current.pan = nextPan;
     setPan(nextPan);
-    updateViewState({ panX: nextPan.x, panY: nextPan.y });
+    scheduleTransformViewState();
   }
 
   function handleDoubleClick(event: MouseEvent<HTMLDivElement>) {
@@ -461,7 +487,7 @@ export function ImageViewer({
     };
     transformRef.current.pan = nextPan;
     setPan(nextPan);
-    updateViewState({ panX: nextPan.x, panY: nextPan.y });
+    scheduleTransformViewState();
   }
 
   function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
@@ -471,6 +497,7 @@ export function ImageViewer({
 
     lastPointerRef.current = null;
     setIsPanning(false);
+    flushTransformViewState();
   }
 
   function selectAnnotation(annotation: PdfTextAnnotation) {
