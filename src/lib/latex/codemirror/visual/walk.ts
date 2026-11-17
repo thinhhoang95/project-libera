@@ -13,7 +13,7 @@ import { countedRows, katexForEnvironment, mathparForKatex, renderKatex } from "
 import { MHCHEM_TEXT, readMhchem, readSiunitx, siunitxConfig, SIUNITX_TEXT } from "./siunitx";
 import { latexProjectField } from "../editing";
 import { disabledField, macroRegionsFor, macroSourcesField, visualConfig } from "./model";
-import { citationNoteText, citationNotes, prettyrefText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
+import { citationNoteText, citationNotes, citationStyle, prettyrefText, REFERENCE_IN_MATH, withReferenceNumbers } from "./references";
 import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectError } from "./render-fragment";
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
@@ -1845,7 +1845,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const bodyEnd = headEnd + body.trimEnd().length;
     consumed.push([node.from, bodyEnd]);
     if (structural && node.from >= from && node.from < to) {
-      const label = head.label === null ? `[${bibitemNumber(doc, env.from, node.from)}]` : "";
+      // apsrev's `.bbl` gives every entry an author–year label, but an APS journal (REVTeX without `rmp`) or natbib's `numbers`
+      // prints [n] (cond-mat.str-el 2611.17927): only a Reviews of Modern Physics or author–year document prints no marker.
+      const numeric = head.label === null || (/^revtex4/.test(defs.documentClass ?? "") && !defs.classOptions?.includes("rmp")) || !!citationStyle(defs).numeric;
+      const label = numeric ? `[${bibitemNumber(doc, env.from, node.from)}]` : "";
       emit({ kind: "item", from: node.from, to: headEnd, reveal: "strict", replaces: [{ from: node.from, to: headEnd, widget: new ItemMarkerWidget(label, "number", 1, {}, null, headEnd - node.from) }] });
       // The entry is one piece: a click on it opens the source of the whole entry (the widget's own handler).
       emit({ kind: "style", from: headEnd, to: bodyEnd, reveal: "strict", replaces: [{ from: headEnd, to: bodyEnd, widget: new TextDrawingWidget(latex, bodyEnd - headEnd) }] });

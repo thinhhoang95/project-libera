@@ -352,3 +352,33 @@ test("2611.21215: a macro that is the whole key list is expanded; an unknown one
   assert.ok(shows(view, "\\citep{\\releasedCites}"), "a click on the chip shows the source");
   view.destroy();
 });
+
+// Checked in the app: REVTeX's entries hung from an empty marker, their first letters under the gutter (cond-mat.str-el 2611.17927).
+// apsrev gives author–year labels, but an APS journal prints [n]; and a bibliography longer than the screen keeps its indent
+// below its first screen (the style layer starts at its `\begin`, as for a theorem).
+test("2611.17927: REVTeX entries of an APS paper hang from [n] markers, all down a long bibliography", async () => {
+  const entry = (n: number) => String.raw`\bibitem [{\citenamefont {Lee}(19${n})}]{Lee${n}}%
+  \BibitemOpen
+  \bibfield  {author} {\bibinfo {author} {\bibfnamefont {P.~A.}\ \bibnamefont
+  {Lee${n}}},\ }\href@noop {} {\bibfield  {journal} {\bibinfo  {journal} {Rev. Mod. Phys.}\ }\textbf {\bibinfo {volume} {${n}}},\ \bibinfo {pages} {287} (\bibinfo {year} {1985})}\BibitemShut {NoStop}%
+`;
+  const entries = Array.from({ length: 80 }, (_, i) => entry(i + 10)).join("");
+  const doc = REVTEX.replace(String.raw`\documentclass{article}`, String.raw`\documentclass[aps,prb,reprint]{revtex4-2}`).replace(String.raw`\end{thebibliography}`, `${entries}\\end{thebibliography}`);
+  const view = mount(doc);
+  const markers = () => [...view.contentDOM.querySelectorAll(".cm-vis-bibliography .cm-vis-item")].map((marker) => marker.textContent);
+  assert.equal(doc.split(String.raw`\bibitem`).length, 83);
+  assert.deepEqual(markers().slice(0, 2), ["[1]", "[2]"]);
+  view.dispatch({ effects: EditorView.scrollIntoView(doc.indexOf("{Lee89}}"), { y: "start" }) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const last = [...view.contentDOM.querySelectorAll(".cm-line")].find((line) => line.textContent?.includes("Lee89"));
+  assert.ok(last, "the last entry is on screen");
+  assert.ok(last!.classList.contains("cm-vis-bibliography"), `line classes: ${last!.className}`);
+  assert.equal(last!.querySelector(".cm-vis-item")?.textContent, "[82]");
+  view.destroy();
+});
+
+test("2611.17927: in an author–year document (article with natbib's labels) a REVTeX entry still prints no marker", () => {
+  const view = mount(REVTEX);
+  assert.deepEqual([...view.contentDOM.querySelectorAll(".cm-vis-bibliography .cm-vis-item")].map((marker) => marker.textContent), ["", ""]);
+  view.destroy();
+});

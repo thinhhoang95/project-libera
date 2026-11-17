@@ -127,6 +127,21 @@ come from files that no `\input` reaches, whose macros are unknown, as in the ap
   were.
 - **Static checks:** `tsc --noEmit` and eslint on every changed `.ts` file are clean.
 
+## Checked in the running app (after the merge)
+
+Four papers in a test notebook, Visual mode, browser dev server. The menu that switches modes is Electron's, so it was
+answered from the page for this check.
+
+- **math.LO 2611.11828:** the quiver squares draw; a click on one shows its `tikzcd` source. The cogap diagrams (far
+  diagonals) and the squiggly 2-cells stay source, as listed under Open.
+- **cs.LO 2611.10842:** the `\colorbox{…}{$0$}` cells draw coloured, inline and inside the matrices.
+- **cond-mat.str-el 2611.17927, two bugs, fixed:** the REVTeX entries hung from an empty marker, their first letters under
+  the gutter. apsrev gives author–year labels, but an APS journal prints [n]: REVTeX without `rmp` (or natbib's `numbers`)
+  now gets `[n]` markers. Past the first screen of a long bibliography the lines also lost their indent: the style layer
+  now starts at a `thebibliography`'s `\begin`, as at a theorem's. Test: `latex-visual-audit8-bib.test.ts`.
+- **math.OA 2611.08668, fixed:** `\ref` chips in index lines inherited the lines' negative `text-indent` and drew their
+  numbers over the text before them (CSS: descendants of index lines reset it). Not covered by a test: jsdom does no layout.
+
 ## Open
 
 - tikz-cd diagrams KaTeX's CD cannot draw: 2-cells, curves, far diagonals and vertical squiggly arrows (math.LO 2611.11828,
@@ -135,7 +150,6 @@ come from files that no `\input` reaches, whose macros are unknown, as in the ap
   heads, `\printnoidxglossary`.
 - The idle-filler test is timing-dependent and fails on `main`. The three ref/units tests are also load-sensitive in a
   parallel run. They should wait on the numbering, not on a clock.
-- Not checked in the running app. The dev server started, but the browser pane was hidden and could not load the page.
 - q-bio.QM: the listing came back empty several times after a restarted fetch. A first fetch (with astro-ph, before the
   focus was set) was stopped; its node process kept running on Windows and wrote into the same folder. Its astro-ph
   extractions failed, and it garbled the log. It was killed, and the 48 papers it shared the folder with were checked to

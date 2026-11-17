@@ -3254,6 +3254,8 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 .libera-latex-visual .cm-line.cm-vis-index-subitem { padding-left: 3em; text-indent: -1.5em; }
 .libera-latex-visual .cm-line.cm-vis-index-subsubitem { padding-left: 4.5em; text-indent: -1.5em; }
 .libera-latex-visual .cm-line.cm-vis-index-space { min-height: 1em; }
+/* The hanging indent is the line's own: chips and formulas (inline blocks) would inherit it and draw their text over the line's. */
+.libera-latex-visual .cm-line:is(.cm-vis-index-item, .cm-vis-index-subitem, .cm-vis-index-subsubitem) * { text-indent: 0; }
 .cm-vis-env-header { font-weight: 700; }
 .cm-vis-env-header-proof .cm-vis-env-title { font-style: italic; font-weight: 400; }
 .cm-vis-env-header-abstract { display: inline-block; width: 100%; text-align: center; font-size: .92em; }
