@@ -92,8 +92,8 @@ test("a diagram with an arrow or cell that is not understood stays source", () =
   }
   for (const diagram of [
     "\\begin{tikzcd} A \\arrow[r, bend left] & B \\end{tikzcd}",
-    "\\begin{tikzcd} A \\arrow[r, \"f\"{description}] & B \\end{tikzcd}",
-    "\\begin{tikzcd} A \\arrow[from=1-1, to=1-2] & B \\end{tikzcd}",
+    "\\begin{tikzcd} A \\arrow[r, \"f\"{pos=0.3}] & B \\end{tikzcd}",
+    "\\begin{tikzcd} A \\arrow[from=0, to=1] & B \\end{tikzcd}",
     "\\begin{tikzcd}[execute at end picture={\\draw (0,0);}] A \\arrow[r] & B \\end{tikzcd}",
   ]) assert.equal(diagramsForKatex(diagram), diagram, diagram);
 });
