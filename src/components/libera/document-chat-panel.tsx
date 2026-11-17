@@ -4,7 +4,7 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type SetStateAction } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ComponentProps, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type SetStateAction } from "react";
 import { Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, CheckCheck, AudioLines, ImagePlus, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2, FileDiff } from "lucide-react";
 import { speakMarkdown, toggleSpeech } from "@/lib/tts/player";
 import { useSpeech } from "./read-aloud";
@@ -19,6 +19,7 @@ import { markdownLinkWorkspacePath } from "@/lib/markdown-file-links";
 import { ChatFileComposer, type ChatCommentTarget } from "./chat-file-composer";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
+import { useDraftRevision, useLiveValue, type ChromeTab } from "./tab-chrome";
 import { readAgentEvents, readChatResponse } from "./chat-stream-client";
 import { AgentRunView } from "./agent-activity";
 import { AgentReviewStrip } from "./agent-review-strip";
@@ -199,6 +200,25 @@ function DocumentContextChip({ context, icon, tooltip, tab, messages, pages, quo
     pageBudget={canAdjust ? { pages: budget, total, onChange: onPagesChange } : undefined} />;
 }
 
+/**
+ * A DocumentContextChip that follows the open tab's draft and view state itself, so the panel
+ * around it does not render for every draft publication. `liveText` makes the chip's text and
+ * PDF page count those of the tab (the document in view); otherwise `context` is already complete.
+ */
+function LiveDocumentChip({ readOpenTabs, tabId, liveText = false, context, ...rest }: Omit<ComponentProps<typeof DocumentContextChip>, "tab"> & {
+  readOpenTabs: () => readonly OpenTab[];
+  tabId: string | undefined;
+  liveText?: boolean;
+}) {
+  useDraftRevision();
+  const tab = tabId === undefined ? undefined : readOpenTabs().find((item) => item.id === tabId);
+  const pageCount = tab?.viewState?.pdf?.pageCount;
+  const shown = useMemo<ChatContext>(() => liveText && tab
+    ? { ...context, text: tab.file.fileType === "pdf" || tab.file.fileType === "audio" ? "" : tab.draft, ...(pageCount ? { pageCount } : {}) }
+    : context, [context, liveText, tab, pageCount]);
+  return <DocumentContextChip {...rest} context={shown} tab={tab} />;
+}
+
 /** A photo on screen outside the chat, such as in the gallery viewer. `source` names its version. */
 export type ChatViewedPhoto = { source: string; name: string; url: string };
 
@@ -351,7 +371,7 @@ export type AgentWorkspaceBridge = {
   openFile: (path: string) => void;
 };
 
-export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft, agentWorkspace, detachedContainer = null, onDetachedChange }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; attachmentRequest?: { id: string; tab: OpenTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void; viewedPhoto?: ChatViewedPhoto | null; agentWorkspace?: AgentWorkspaceBridge; /** Set while the panel is shown in its own window: the panel renders into it. */ detachedContainer?: HTMLElement | null; /** Moves the panel to its own window (true) or back into the main window (false). */ onDetachedChange?: (detached: boolean) => void }) {
+export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], readOpenTabs, attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft, agentWorkspace, detachedContainer = null, onDetachedChange }: { files?: LiberaFileNode[]; tabs?: readonly ChromeTab[]; /** The open tabs with their text and view state as of now, for what the user does: attach, send, comment. Never called while rendering. */ readOpenTabs: () => readonly OpenTab[]; attachmentRequest?: { id: string; tab: ChromeTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: ChromeTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void; viewedPhoto?: ChatViewedPhoto | null; agentWorkspace?: AgentWorkspaceBridge; /** Set while the panel is shown in its own window: the panel renders into it. */ detachedContainer?: HTMLElement | null; /** Moves the panel to its own window (true) or back into the main window (false). */ onDetachedChange?: (detached: boolean) => void }) {
   const review = useMarkdownReview();
   // Agent runs finish after awaits; reach the review of whatever document is open then.
   const reviewRef = useRef(review);
@@ -472,19 +492,39 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const openTextFileCount = tabs.filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType)).length;
   // A photo being viewed covers the editors, so it replaces the document as context.
   // PDFs and recordings go as their text and transcript, read when the message is sent.
-  const document = useMemo<ChatContext | null>(() => !viewedPhoto && !activeTab?.recording && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf" || activeTab?.file.fileType === "audio") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" || activeTab.file.fileType === "audio" ? "" : activeTab.draft, ...(activeTab.viewState?.pdf?.pageCount ? { pageCount: activeTab.viewState.pdf.pageCount } : {}) } : null, [activeTab, viewedPhoto]);
+  // The text and the PDF page count are not in it: they follow drafts, which would rebuild this for every publication.
+  // The chip reads them live (LiveDocumentChip) and sending and quoting call liveDocument.
+  const document = useMemo<ChatContext | null>(() => !viewedPhoto && !activeTab?.recording && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf" || activeTab?.file.fileType === "audio") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: "" } : null, [activeTab, viewedPhoto]);
+  const activeTabId = activeTab?.id;
+  /** `context` (the document in view) with the text and PDF page count of the tab now. */
+  const liveDocument = useCallback((context: ChatContext): ChatContext => {
+    const tab = readOpenTabs().find((item) => item.id === activeTabId);
+    if (!tab) return context;
+    const pageCount = tab.viewState?.pdf?.pageCount;
+    return { ...context, text: tab.file.fileType === "pdf" || tab.file.fileType === "audio" ? "" : tab.draft, ...(pageCount ? { pageCount } : {}) };
+  }, [readOpenTabs, activeTabId]);
   const viewingRecording = activeTab?.file.fileType === "audio" && !activeTab.recording;
   const viewedPath = document?.path;
   // Replies use the Markdown macros of the documents in the conversation and of
   // the note in view (markdown-macros.ts); the scope only changes with them.
   const chatMessages = chat?.messages;
-  const latestMacroScope = useMemo(() => combinedMacroScope([
-    ...(chatMessages ?? []).flatMap((message) => (message.contexts ?? []).filter((context) => context.kind === "document").map((context) => context.text)),
-    document?.text ?? "",
-  ]), [chatMessages, document?.text]);
-  const macroKey = macroScopeKey(latestMacroScope);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the definitions, not on each keystroke's scope object.
-  const macroScope = useMemo(() => latestMacroScope ?? undefined, [macroKey]);
+  // The note in view contributes its draft, so the scope is read from the tab through the draft revision
+  // and the panel renders only when the definitions change, not on each keystroke's publication.
+  const macroCache = useRef<{ messages: ChatMessage[] | undefined; text: string; key: string; scope: MarkdownMacroScope | undefined } | null>(null);
+  const macroScope = useLiveValue(() => {
+    const text = document ? liveDocument(document).text : "";
+    const cached = macroCache.current;
+    if (cached && cached.messages === chatMessages && cached.text === text) return cached.scope;
+    const latest = combinedMacroScope([
+      ...(chatMessages ?? []).flatMap((message) => (message.contexts ?? []).filter((context) => context.kind === "document").map((context) => context.text)),
+      text,
+    ]);
+    const key = macroScopeKey(latest);
+    // Keyed on the definitions, not on each keystroke's scope object.
+    const scope = cached && cached.key === key ? cached.scope : latest ?? undefined;
+    macroCache.current = { messages: chatMessages, text, key, scope };
+    return scope;
+  });
 
   const includedDocument = document && !chat?.excludedDocumentPaths?.includes(document.path) ? document : null;
   // The review comments on the document in view, live from the Comments panel's state.
@@ -676,11 +716,11 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       event.stopPropagation();
       if (!text.trim()) return;
       if (chat.selections.length >= 20) { setError("Send or remove some selections before adding more."); onCollapsedChange(false); return; }
-      const context: ChatContext = { ...document, kind: "selection", text };
+      const context: ChatContext = { ...liveDocument(document), kind: "selection", text };
       updateChat(chat.id, (current) => {
         const selections = current.selections.some((item) => item.kind === "selection" && item.path === context.path && item.text === text) ? current.selections : [...current.selections, context];
         // Retain the source PDF even if the user switches tabs before sending.
-        const source = activeTab?.file.fileType === "pdf" && !current.excludedDocumentPaths?.includes(document.path) ? newChatContexts(current.messages, [...selections, document]) : selections;
+        const source = activeTab?.file.fileType === "pdf" && !current.excludedDocumentPaths?.includes(document.path) ? newChatContexts(current.messages, [...selections, liveDocument(document)]) : selections;
         return { ...current, selections: source };
       });
       onCollapsedChange(false);
@@ -688,7 +728,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     }
     window.addEventListener("keydown", addSelection, true);
     return () => window.removeEventListener("keydown", addSelection, true);
-  }, [chat, document, activeTab?.file.fileType, onCollapsedChange, updateChat]);
+  }, [chat, document, liveDocument, activeTab?.file.fileType, onCollapsedChange, updateChat]);
 
   // Quotes from elsewhere in the app (a recording's transcript): the lines
   // become a selection, and the transcript joins as context once.
@@ -767,7 +807,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     if (!await popupReferenceMenu(items, { x: bounds.left, y: bounds.top })) photoInputRef.current?.click();
   }
 
-  const attachFile = useCallback(async (file: LiberaFileNode, requestedTab?: OpenTab): Promise<boolean> => {
+  const attachFile = useCallback(async (file: LiberaFileNode, requestedTab?: ChromeTab): Promise<boolean> => {
     if (!chat || loadingFiles) return false;
     const chatId = chat.id;
     setLoadingFiles(true);
@@ -794,6 +834,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         updateChat(chatId, (current) => ({ ...current, photos: [...(current.photos ?? []), { id: crypto.randomUUID(), name: file.name, dataUrl }] }));
       } else {
         const path = tab?.untitled ? tab.id : file.path;
+        const liveTab = tab && readOpenTabs().find((item) => item.id === tab.id);
         const existing = [...chat.selections, ...chat.messages.flatMap((message) => message.contexts ?? [])]
           .find((context) => context.kind === "document" && context.path === path && !context.excerpt);
         let text: string;
@@ -809,8 +850,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           const { transcript } = await apiRequest<TranscriptPayload>(`/api/transcripts?path=${encodeURIComponent(file.path)}`);
           if (!transcript) throw new Error(`${file.name} has no transcript yet. Transcribe it first.`);
           text = transcriptContextText(transcript, file.name, file.path);
-        } else if (tab) {
-          text = tab.draft;
+        } else if (liveTab) {
+          text = liveTab.draft;
         } else {
           const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(file.path)}`);
           if (!isTextFileType(payload.file.fileType) || typeof payload.content !== "string") throw new Error(`Could not read ${file.name}.`);
@@ -830,7 +871,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     } finally {
       setLoadingFiles(false);
     }
-  }, [chat, loadingFiles, tabs, updateChat]);
+  }, [chat, loadingFiles, tabs, readOpenTabs, updateChat]);
 
   const setDocumentPages = (path: string, pages: number | undefined) => {
     if (!chat) return;
@@ -865,7 +906,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         if (state.error) throw new Error(state.error);
         context = commentsContext(target.path, target.name, pdfCommentChatThreads(state.threads));
       } else {
-        const tab = tabs.find((item) => !item.untitled && item.file.path === target.path);
+        const tab = readOpenTabs().find((item) => !item.untitled && item.file.path === target.path);
         ({ context } = await apiRequest<{ context: ChatContext | null }>("/api/document-chat/comments", { method: "POST", body: JSON.stringify({ path: target.path, ...(tab ? { text: tab.draft } : {}) }) }));
       }
       if (!context) throw new Error(`${target.name} has no review comments.`);
@@ -881,7 +922,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     } finally {
       setLoadingFiles(false);
     }
-  }, [chat, loadingFiles, tabs, updateChat, viewedComments]);
+  }, [chat, loadingFiles, readOpenTabs, updateChat, viewedComments]);
 
   useEffect(() => {
     if (!attachmentRequest || !chat || loadingFiles || handledAttachmentRequest.current === attachmentRequest.id) return;
@@ -1020,7 +1061,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     const selections = chat.selections;
     const photos = chat.photos ?? [];
     // In Agent mode the open file is passed by path; the agent reads what it needs.
-    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), createdAt: new Date().toISOString(), photos, contexts: newChatContexts(chat.messages, [...selections, ...(includedDocument && !agent ? [includedDocument] : []), ...(includedComments ? [includedComments] : [])]).sort((a, b) => CONTEXT_ORDER[a.kind] - CONTEXT_ORDER[b.kind]) };
+    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), createdAt: new Date().toISOString(), photos, contexts: newChatContexts(chat.messages, [...selections, ...(includedDocument && !agent ? [liveDocument(includedDocument)] : []), ...(includedComments ? [includedComments] : [])]).sort((a, b) => CONTEXT_ORDER[a.kind] - CONTEXT_ORDER[b.kind]) };
     const messages = edit ? [...chat.messages.slice(0, editIndex), { ...chat.messages[editIndex], text: edit.text.trim(), createdAt: new Date().toISOString() }]
       : retryMessageId ? chat.messages.slice(0, retryIndex) : [...chat.messages, message];
     const controller = new AbortController();
@@ -1080,7 +1121,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             const pages = chat.documentPages?.[context.path];
             const sent = sentDocumentExcerpts(chat.messages, context.path);
             if (AUDIO_FILE.test(context.path) || (!pages && !sent.length)) return { ...context, text, ...(pageCount ? { pageCount } : {}) };
-            const tab = tabs.find((item) => (item.untitled ? item.id : item.file.path) === context.path);
+            const tab = readOpenTabs().find((item) => (item.untitled ? item.id : item.file.path) === context.path);
             const part = documentExcerpt({ text, pages, pdf, sent, quotes: quotesOf(context.path), reader: readerPosition(tab) });
             return part && { ...context, ...part, pageCount: pageCount ?? documentPageCount(part.excerpt.wordCount) };
           }));
@@ -1107,7 +1148,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         const bridge = agentWorkspaceRef.current;
         // The agent sees what the user sees: unsaved drafts of open files go with
         // the request, and each tab follows the agent's edits unless the user types.
-        const openTabs = tabs.filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType));
+        const openTabs = readOpenTabs().filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType));
         const baselines = new Map<string, string>();
         const drafts: Record<string, string> = {};
         for (const tab of openTabs) {
@@ -1433,7 +1474,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   }
 
   // The macOS AI menu's chat group. The panel stays mounted while collapsed, so these always work.
-  const factCheckPath = activeTab?.file.fileType === "markdown" && !activeTab.untitled && mayHaveCitations(activeTab.draft) ? activeTab.file.path : null;
+  // Read from the tab through the draft revision, so only a change of the answer renders the panel.
+  const factCheckPath = useLiveValue(() => {
+    if (activeTab?.file.fileType !== "markdown" || activeTab.untitled) return null;
+    const draft = readOpenTabs().find((item) => item.id === activeTab.id)?.draft;
+    return draft !== undefined && mayHaveCitations(draft) ? activeTab.file.path : null;
+  });
   useAppMenuItems("ai", 0, () => [
     { id: "chat", label: "AI Chat", type: "checkbox", checked: !collapsed, onSelect: () => onCollapsedChange(!collapsed) },
     {
@@ -1471,7 +1517,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const place = (panel: ReactNode) => detachedContainer
     ? createPortal(<PortalDocumentContext.Provider value={detachedContainer.ownerDocument}>{panel}</PortalDocumentContext.Provider>, detachedContainer)
     : panel;
-  if (review?.chatReview) return place(<ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />);
+  if (review?.chatReview) return place(<ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} readOpenTabs={readOpenTabs} />);
 
   return place(<aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card" data-ai-active={pending}>
     <AiPanelGlow active={pending} />
@@ -1631,7 +1677,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           {fontSizeError && <p role="alert" className="text-xs text-destructive">{fontSizeError}</p>}
           {storageError && <p role="alert" className="text-xs text-destructive">{storageError}</p>}{shownError && <p role="alert" className="text-xs text-destructive">{shownError}</p>}
           {shownNotice && <p role="status" className="text-xs text-muted-foreground">{shownNotice}</p>}
-          {agentWorkspace && <AgentReviewStrip readTabDraft={agentWorkspace.readTabDraft} revision={tabs} onOpenFile={agentWorkspace.openFile}
+          {agentWorkspace && <AgentReviewStrip readTabDraft={agentWorkspace.readTabDraft} onOpenFile={agentWorkspace.openFile}
             onReverted={applyReviewReverts} onError={(message) => setError(message)} />}
           {agentMode && <div className="libera-chat-context flex items-center gap-1"><Bot aria-hidden size={13} className="shrink-0" />
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={viewedFile?.path}>{`${viewedFile ? `Viewing ${viewedFile.name} · ` : ""}${permission === "read-only" ? "Read only"
@@ -1645,7 +1691,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           {hasContextTray && <div className="libera-context-tray" role="group" aria-label="Context for the next message">
             {!agentMode && includedDocument && chat && (() => {
               const what = activeTab?.file.fileType === "pdf" ? "PDF text" : viewingRecording ? "Transcript" : "Current draft";
-              return <DocumentContextChip context={includedDocument} icon={viewingRecording ? AudioLines : Eye} tooltip={`${what} of ${includedDocument.path}`} tab={activeTab ?? undefined} messages={chat.messages}
+              return <LiveDocumentChip readOpenTabs={readOpenTabs} tabId={activeTabId} liveText context={includedDocument} icon={viewingRecording ? AudioLines : Eye} tooltip={`${what} of ${includedDocument.path}`} messages={chat.messages}
                 pages={chat.documentPages?.[includedDocument.path]} quoted={chat.selections.some((item) => item.kind === "selection" && item.path === includedDocument.path)} adjustable trackSent
                 onPagesChange={(pages) => setDocumentPages(includedDocument.path, pages)}
                 removeLabel="Remove document context" onRemove={() => updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))} />;
@@ -1659,8 +1705,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedPhotoSources: current.excludedPhotoSources?.filter((source) => source !== viewedPhoto.source) }))}>
               <span aria-hidden className="libera-context-chip-icon"><ImagePlus size={12} /></span><span aria-hidden className="libera-context-chip-title">Include</span>
             </button>}
-            {chat?.selections.map((context, index) => context.kind === "document" ? <DocumentContextChip key={index} context={context} icon={FileText} tooltip={context.path} messages={chat.messages}
-              tab={tabs.find((item) => (item.untitled ? item.id : item.file.path) === context.path)} pages={chat.documentPages?.[context.path]}
+            {chat?.selections.map((context, index) => context.kind === "document" ? <LiveDocumentChip key={index} readOpenTabs={readOpenTabs} tabId={tabs.find((item) => (item.untitled ? item.id : item.file.path) === context.path)?.id} context={context} icon={FileText} tooltip={context.path} messages={chat.messages}
+              pages={chat.documentPages?.[context.path]}
               quoted={chat.selections.some((item) => item.kind === "selection" && item.path === context.path)} adjustable={!agentMode}
               onPagesChange={(pages) => setDocumentPages(context.path, pages)} removeLabel={`Remove file: ${context.name}`}
               onRemove={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))} /> : <ContextChip key={index} kind={context.kind}
@@ -1707,4 +1753,4 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       onDelete={deleteChats}
     />}
   </aside>);
-}
+});

@@ -54,7 +54,9 @@ import { SaveImageToNewAlbumDialog } from "@/components/libera/save-image-to-new
 import { SaveImageToNotebookDialog } from "@/components/libera/save-image-to-notebook-dialog";
 import { useAiActivity } from "@/lib/ai-activity";
 import { TabStrip } from "@/components/libera/tab-strip";
-import type { OpenTab } from "@/components/libera/types";
+import type { LatexTabViewState, MarkdownEditorMode, OpenTab } from "@/components/libera/types";
+import { draftRevision, useChromeTabs, type ChromeTab } from "@/components/libera/tab-chrome";
+import { useStableHandlers } from "@/components/libera/use-stable-handlers";
 import type { GalleryTabPlacement } from "@/components/libera/gallery-tabs";
 import { galleryRawUrl, type GalleryPhoto } from "@/lib/image-generation";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
@@ -159,12 +161,13 @@ export function LiberaApp({
     setNotebooksCollapsed(false);
   }, [changeLeftPanel]);
   const markdownEditorMode = workspace.activeTab?.viewState?.markdown?.editorMode ?? "visual";
+  const latexEditorMode = workspace.activeTab?.viewState?.latex?.editorMode ?? "source";
   const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const [chatWidth, setChatWidth] = useState(360);
   const [chatCollapsed, setChatCollapsed] = useState(false);
-  const [chatAttachmentRequest, setChatAttachmentRequest] = useState<{ id: string; tab: OpenTab } | null>(null);
+  const [chatAttachmentRequest, setChatAttachmentRequest] = useState<{ id: string; tab: ChromeTab } | null>(null);
   const [chatResizing, setChatResizing] = useState(false);
   const mainLayoutRef = useRef<HTMLDivElement>(null);
 
@@ -302,16 +305,33 @@ export function LiberaApp({
     void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
       .then((payload) => openFile(payload.file)).catch(() => undefined);
   }, [workspaceFiles, openFile]);
-  // Agent mode reads open drafts and puts its file changes back into the editor.
-  const agentWorkspace: AgentWorkspaceBridge = {
-    notebook: workspace.selectedNotebookName || undefined,
+  // The tab strip and the chat panel take the tabs without their text, so typing,
+  // caret reports and stored scroll positions do not render them.
+  const chromeTabs = useChromeTabs(workspace.tabs);
+  const activeChromeTab = useMemo(() => chromeTabs.find((tab) => tab.id === workspace.activeTabId), [chromeTabs, workspace.activeTabId]);
+  // What they show that is computed from a draft re-checks after each publication (tab-chrome.ts).
+  useEffect(() => { draftRevision.bump(); }, [workspace.tabs]);
+  // Read when the user acts, from the tabs of the latest commit. Never call these while rendering.
+  const tabReaders = useStableHandlers({
+    readOpenTabs: () => workspace.tabs,
+    readTabDraft: (tabId: string) => workspace.tabs.find((tab) => tab.id === tabId)?.draft,
+  });
+  // The agent bridge: all of it is called from events, effects and async runs, except
+  // readTabDraft, which the review strip also calls while rendering; it renders again after
+  // every draft publication (draftRevision), when this reads the committed tabs.
+  const agentBridge = useStableHandlers({
     readTabDraft: workspace.readOpenTabDraft,
     syncTabFromDisk: workspace.syncTabFromDisk,
     restoreTabAfterUndo: workspace.restoreTabAfterUndo,
     replaceTabFromDisk: workspace.replaceTabFromDisk,
     refreshAfterChanges: workspace.refreshAfterAgentChanges,
+  });
+  // Agent mode reads open drafts and puts its file changes back into the editor.
+  const agentWorkspace = useMemo<AgentWorkspaceBridge>(() => ({
+    notebook: workspace.selectedNotebookName || undefined,
+    ...agentBridge,
     openFile: openFileByPath,
-  };
+  }), [workspace.selectedNotebookName, agentBridge, openFileByPath]);
 
   // The References panel: reveal/add requests from anywhere switch the rail
   // to it and select their notebook; it cites into the active Markdown editor.
@@ -603,7 +623,39 @@ export function LiberaApp({
     [workspace.tree.notebooks],
   );
 
-  const visibleCanvasTabIds = visibleCanvasTabIdsOf(canvas.layout);
+  const visibleCanvasTabIds = useMemo(() => visibleCanvasTabIdsOf(canvas.layout), [canvas.layout]);
+  // The tab strip's callbacks, with an identity that never changes so a draft does not wake it.
+  // The workspace functions below read a tab's file and flags, and for the PDF export its text,
+  // so they get the live tab of the strip's tab.
+  const tabStripActions = useStableHandlers({
+    onToggleChat: () => changeChatCollapsed(!chatCollapsed),
+    onCreateUntitled: () => workspace.createUntitledFile(),
+    onMarkdownEditorModeChange: (mode: MarkdownEditorMode) => {
+      workspace.setActiveTabViewState({ markdown: { editorMode: mode } });
+      setActivePreviewTabId(null);
+    },
+    onLatexEditorModeChange: (mode: NonNullable<LatexTabViewState["editorMode"]>) => workspace.setActiveTabViewState({ latex: { editorMode: mode } }),
+    onAddToAiChat: (tab: ChromeTab) => {
+      setChatAttachmentRequest({ id: crypto.randomUUID(), tab });
+      changeChatCollapsed(false);
+    },
+    onDeleteFile: (tab: ChromeTab) => withLiveTab(tab, workspace.deleteFileFromPrompt),
+    onDownloadAnnotatedPdf: (tab: ChromeTab) => withLiveTab(tab, (live) => workspace.downloadAnnotatedPdf(live, markdownPreferences)),
+    onDownloadMarkdownPdf: (tab: ChromeTab) => withLiveTab(tab, workspace.downloadMarkdownPdf),
+    onMoveFile: (tab: ChromeTab) => withLiveTab(tab, workspace.moveFileFromPrompt),
+    onRenameFile: (tab: ChromeTab) => withLiveTab(tab, workspace.renameFileFromPrompt),
+    onSplitCanvas: (zone: Parameters<typeof canvas.splitPane>[1]) => canvas.splitPane(canvas.layout.focusedPaneId, zone),
+    onOpenTabInSplit: (tabId: string, zone: Parameters<typeof canvas.splitPane>[1]) => canvas.splitPane(canvas.layout.focusedPaneId, zone, tabId),
+    onCloseCanvasPanel: () => canvas.closePane(canvas.layout.focusedPaneId),
+    onCloseOtherCanvasPanels: () => canvas.closeOtherPanes(canvas.layout.focusedPaneId),
+  });
+  const handleAttachment = useCallback((id: string) => setChatAttachmentRequest((current) => current?.id === id ? null : current), []);
+  const { createUntitledFile } = workspace;
+  const createChatDraft = useCallback((snapshot: Parameters<typeof createUntitledFile>[2]) => createUntitledFile("", undefined, snapshot), [createUntitledFile]);
+  function withLiveTab(tab: ChromeTab, run: (live: OpenTab) => Promise<void>) {
+    const live = workspace.tabs.find((item) => item.id === tab.id);
+    return live ? run(live) : Promise.resolve();
+  }
 
   // App-wide commands in the command palette (⌘/Ctrl+Shift+P), beside the focused editor's tools.
   usePaletteCommands(null, () => {
@@ -886,41 +938,36 @@ export function LiberaApp({
           <div className="contents" inert={galleryOpen}>
           <TabStrip
             chatOpen={!chatCollapsed}
-            onToggleChat={() => changeChatCollapsed(!chatCollapsed)}
-            onCreateUntitled={() => workspace.createUntitledFile()}
+            onToggleChat={tabStripActions.onToggleChat}
+            onCreateUntitled={tabStripActions.onCreateUntitled}
             markdownEditorMode={markdownEditorMode}
-            onMarkdownEditorModeChange={(mode) => {
-              workspace.setActiveTabViewState({ markdown: { editorMode: mode } });
-              setActivePreviewTabId(null);
-            }}
-            latexEditorMode={workspace.activeTab?.viewState?.latex?.editorMode ?? "source"}
-            onLatexEditorModeChange={(mode) => workspace.setActiveTabViewState({ latex: { editorMode: mode } })}
-            activeTab={workspace.activeTab}
+            onMarkdownEditorModeChange={tabStripActions.onMarkdownEditorModeChange}
+            latexEditorMode={latexEditorMode}
+            onLatexEditorModeChange={tabStripActions.onLatexEditorModeChange}
+            activeTab={activeChromeTab}
             activeTabId={workspace.activeTabId}
             notebookColors={notebookColors}
-            tabs={workspace.tabs}
+            tabs={chromeTabs}
             onActivateTab={workspace.setActiveTabId}
-            onAddToAiChat={(tab) => {
-              setChatAttachmentRequest({ id: crypto.randomUUID(), tab });
-              changeChatCollapsed(false);
-            }}
+            onAddToAiChat={tabStripActions.onAddToAiChat}
             onCloseOtherTabs={workspace.closeOtherTabs}
             onCloseTab={workspace.closeTab}
-            onDeleteFile={workspace.deleteFileFromPrompt}
-            onDownloadAnnotatedPdf={(tab) => workspace.downloadAnnotatedPdf(tab, markdownPreferences)}
+            onDeleteFile={tabStripActions.onDeleteFile}
+            onDownloadAnnotatedPdf={tabStripActions.onDownloadAnnotatedPdf}
             onDownloadFile={workspace.downloadFile}
+            readTabDraft={tabReaders.readTabDraft}
             onDuplicateMarkdown={workspace.duplicateMarkdown}
-            onDownloadMarkdownPdf={workspace.downloadMarkdownPdf}
-            onMoveFile={workspace.moveFileFromPrompt}
-            onRenameFile={workspace.renameFileFromPrompt}
+            onDownloadMarkdownPdf={tabStripActions.onDownloadMarkdownPdf}
+            onMoveFile={tabStripActions.onMoveFile}
+            onRenameFile={tabStripActions.onRenameFile}
             onSave={workspace.saveActiveTab}
             onSwapTabs={workspace.swapTabs}
             visibleTabIds={visibleCanvasTabIds}
             canvasPanelCount={canvas.paneCount}
-            onSplitCanvas={(zone) => canvas.splitPane(canvas.layout.focusedPaneId, zone)}
-            onOpenTabInSplit={(tabId, zone) => canvas.splitPane(canvas.layout.focusedPaneId, zone, tabId)}
-            onCloseCanvasPanel={() => canvas.closePane(canvas.layout.focusedPaneId)}
-            onCloseOtherCanvasPanels={() => canvas.closeOtherPanes(canvas.layout.focusedPaneId)}
+            onSplitCanvas={tabStripActions.onSplitCanvas}
+            onOpenTabInSplit={tabStripActions.onOpenTabInSplit}
+            onCloseCanvasPanel={tabStripActions.onCloseCanvasPanel}
+            onCloseOtherCanvasPanels={tabStripActions.onCloseOtherCanvasPanels}
           />
 
           {workspace.workspaceError ? (
@@ -943,7 +990,7 @@ export function LiberaApp({
           </div>
         </section>
 
-        <DocumentChatPanel agentWorkspace={agentWorkspace} viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} detachedContainer={detachedChat.container} onDetachedChange={changeChatDetached} />
+        <DocumentChatPanel agentWorkspace={agentWorkspace} viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={chromeTabs} readOpenTabs={tabReaders.readOpenTabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={handleAttachment} quickPrompts={quickPrompts} onCreateDraft={createChatDraft} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={activeChromeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} detachedContainer={detachedChat.container} onDetachedChange={changeChatDetached} />
         {chatDocked && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}

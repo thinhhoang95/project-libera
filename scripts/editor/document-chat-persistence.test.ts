@@ -38,7 +38,7 @@ for (const mode of ["chat", "agent"] as const) {
       };
       const host = document.getElementById("root")!;
       let root = createRoot(host);
-      const props = { activeTab: null, collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined };
+      const props = { activeTab: null, readOpenTabs: () => [], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined };
       async function advance(ms: number) { await act(async () => { context.mock.timers.tick(ms); }); }
       async function click(label: string) {
         await act(async () => {

@@ -43,7 +43,7 @@ test("PDF selections retain their source and files attach once across turns, tab
   let root = createRoot(host);
   let opened = false;
   async function render(tab: OpenTab, collapsed = false, attachmentRequest?: { id: string; tab: OpenTab }) {
-    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [pdf.file, markdown.file, image], tabs: [pdf, markdown], attachmentRequest, collapsed, mathMarkers: {}, onCollapsedChange: () => { opened = true; }, onCreateDraft: () => undefined })));
+    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [pdf.file, markdown.file, image], tabs: [pdf, markdown], readOpenTabs: () => [pdf, markdown], attachmentRequest, collapsed, mathMarkers: {}, onCollapsedChange: () => { opened = true; }, onCreateDraft: () => undefined })));
     await act(flushPendingState);
   }
   async function click(label: string) { await act(async () => { const button = host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); await act(flushPendingState); }

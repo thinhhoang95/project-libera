@@ -76,7 +76,7 @@ test("Agent mode sends open drafts and scope, shows activity, syncs tabs, and un
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); await act(flushPendingState); }
   async function mount() {
-    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: plan, tabs: [plan, other, pdf], files: [plan.file, other.file], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined, agentWorkspace: bridge })));
+    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: plan, tabs: [plan, other, pdf], readOpenTabs: () => [plan, other, pdf], files: [plan.file, other.file], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined, agentWorkspace: bridge })));
     await settle();
   }
   function modeButton(label: string) {

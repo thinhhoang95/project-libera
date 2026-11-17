@@ -87,7 +87,7 @@ test("chats respond in parallel: a new chat runs while another streams, and file
   const chatTitles = () => [...host.querySelectorAll<HTMLOptionElement>("#document-chat-history option")].map((option) => option.textContent);
   const alertText = () => [...host.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent).join(" ");
   try {
-    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: plan, tabs: [plan], files: [plan.file], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined, agentWorkspace: bridge })));
+    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: plan, tabs: [plan], readOpenTabs: () => [plan], files: [plan.file], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined, agentWorkspace: bridge })));
     await settle();
     await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('[aria-label="Assistant mode"] button')].find((button) => button.textContent === "Agent")!.click(); });
     await choosePermission("notebook");

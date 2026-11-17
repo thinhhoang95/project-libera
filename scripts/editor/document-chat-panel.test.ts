@@ -61,7 +61,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const mathMarkers = { inlineMathMarkers: "@@ @@", blockMathMarkers: "%% %%" };
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); await act(flushPendingState); }
-  async function mount(collapsed = false) { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], quickPrompts: [{ identifier: "summarize", prompt: "Summarize $1 in bullets." }, { identifier: "review", prompt: "Review this text." }], collapsed, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
+  async function mount(collapsed = false) { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], readOpenTabs: () => [tab], quickPrompts: [{ identifier: "summarize", prompt: "Summarize $1 in bullets." }, { identifier: "review", prompt: "Review this text." }], collapsed, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
   async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); await act(flushPendingState); }
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
