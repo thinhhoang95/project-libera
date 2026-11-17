@@ -55,6 +55,14 @@ export type MarkdownMacroReplacement = {
 };
 
 const MAX_DEPTH = MAX_MACRO_DEPTH;
+/**
+ * The most text one use of a macro may expand through, all levels counted. The
+ * depth limit alone does not bound it: a body using two macros doubles the
+ * text at each level, and a body repeating its argument grows it as fast.
+ */
+const MAX_USE_LENGTH = 100_000;
+/** The same for one whole expansion (a document, or a run of blocks of the Visual editor). */
+const MAX_TOTAL_LENGTH = 5_000_000;
 const COUNTER = /^\\counter-([A-Za-z][A-Za-z0-9_]*)/;
 const REMARK_MATH_PAIRS: MathMarkerPair[] = [{ open: "$$", close: "$$", display: true }, { open: "$", close: "$", display: false }];
 const FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})([^\n]*)$/;
@@ -214,6 +222,15 @@ type ExpandContext = {
   pairs: MathMarkerPair[];
   inline: { open: string; close: string };
   display: { open: string; close: string };
+  /** The uses being expanded, outermost first. */
+  active: Array<{ macro: MarkdownMacro; args: string[] }>;
+  /** Text the outermost use may still expand through, and all uses together. */
+  budget: number;
+  total: number;
+  /** The outermost use ran out of budget: it stays as written. */
+  exhausted: boolean;
+  /** Macros without arguments that ran out, which they would again. */
+  oversized: Set<MarkdownMacro>;
 };
 
 function readArguments(source: string, index: number, arity: number) {
@@ -248,9 +265,23 @@ function substitute(body: string, args: string[], text: boolean) {
   });
 }
 
-/** The invocation (or counter) at `index`, which holds a backslash. */
+/** The length `substitute` gives a body (before it continues any lines), known without building it. */
+function substitutedLength(body: string, args: string[]) {
+  let length = body.length;
+  if (args.length) for (const match of body.matchAll(PARAMETER)) if (match[1]) length += (args[Number(match[1]) - 1]?.length ?? 0) - match[0].length;
+  return length;
+}
+
+/**
+ * The invocation (or counter) at `index`, which holds a backslash. Null leaves
+ * it as written: what is not a use of a macro, and a use that cannot be
+ * expanded. That is one inside its own expansion (a macro using itself,
+ * directly or through others, would never end), one past the depth limit, and
+ * one whose expansion outgrows the budget, which stays unexpanded as a whole.
+ */
 function invoke(source: string, index: number, context: ExpandContext, depth: number, math: boolean, prefix = "") {
-  if (depth > MAX_DEPTH || escapedAt(source, index)) return null;
+  const top = !context.active.length;
+  if (depth > MAX_DEPTH || context.exhausted || escapedAt(source, index)) return null;
   const counter = COUNTER.exec(source.slice(index));
   if (counter) {
     const value = (context.counters.get(counter[1]) ?? 0) + 1;
@@ -264,9 +295,38 @@ function invoke(source: string, index: number, context: ExpandContext, depth: nu
   if (!read) return null;
   // An argument running over lines of a quote or list loses their prefix; the expansion gets it back.
   const args = read.args.map((arg) => removeLinePrefix(arg, prefix));
-  const body = substitute(macro.body, args, !macro.math);
-  const text = macro.math ? expandMath(body, context, depth + 1) : expandText(body, context, depth + 1);
-  return { end: read.end, text, kind: "macro" as const, macro };
+  // The same macro with other arguments is not a cycle: `\norm{\norm{x}}` ends.
+  if (context.active.some((use) => use.macro === macro && use.args.every((arg, n) => arg === args[n]))) return null;
+  if (top) {
+    if (context.oversized.has(macro)) return null;
+    context.budget = Math.min(MAX_USE_LENGTH, context.total);
+  }
+  const allowed = context.budget;
+  const counters = top ? [...context.counters] : null;
+  const length = substitutedLength(macro.body, args);
+  let text = "";
+  // Every use costs at least 1, so a chain of empty macros is bounded too.
+  if ((context.budget -= length + 1) < 0) context.exhausted = true;
+  else {
+    const body = substitute(macro.body, args, !macro.math);
+    // Lines an argument continues in a quote or list were given a prefix each.
+    if ((context.budget -= Math.max(0, body.length - length)) < 0) context.exhausted = true;
+    else {
+      context.active.push({ macro, args });
+      text = macro.math ? expandMath(body, context, depth + 1) : expandText(body, context, depth + 1);
+      context.active.pop();
+    }
+  }
+  if (top) context.total -= allowed - Math.max(0, context.budget);
+  if (!context.exhausted) return { end: read.end, text, kind: "macro" as const, macro };
+  if (top) {
+    context.exhausted = false;
+    if (!macro.arity) context.oversized.add(macro);
+    // What it numbered is not shown: the counters go back.
+    context.counters.clear();
+    for (const [name, value] of counters!) context.counters.set(name, value);
+  }
+  return null;
 }
 
 /** Expands macros and counters inside LaTeX; text macros do not apply there. */
@@ -440,6 +500,11 @@ function expandContext(definitions: MarkdownMacroDefinitions, mathMarkers?: Math
     pairs: mathMarkers ? mathMarkerPairs(mathMarkers) : REMARK_MATH_PAIRS,
     inline: (mathMarkers && preferredMathMarkerPair(mathMarkers, false)) || { open: "$", close: "$" },
     display: (mathMarkers && preferredMathMarkerPair(mathMarkers, true)) || { open: "$$", close: "$$" },
+    active: [],
+    budget: 0,
+    total: MAX_TOTAL_LENGTH,
+    exhausted: false,
+    oversized: new Set(),
   };
 }
 

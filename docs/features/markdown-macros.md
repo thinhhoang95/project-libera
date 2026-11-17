@@ -65,7 +65,7 @@ The first pair of each kind under Preferences → Markdown → **Equation marker
 
 Any other body makes a **text macro**: Markdown, with its arguments filled in. It may contain formatting, math, links, other macros and counters, and it may span several paragraphs (a whole theorem environment, say). A use inside a list item or a quote keeps the expansion in that item or quote. Text macros are not expanded inside math.
 
-Macros may use other macros. Expansion stops after 16 levels, so a macro that uses itself does not hang the note.
+Macros may use other macros, up to 16 levels deep. A macro that uses itself, directly or through other macros, expands once: its use inside its own expansion stays as written (`\loop = \loop!` shows `\loop!`), so it cannot hang the note. The same macro with other arguments is not such a cycle, so `\norm{\norm{x}}` works. One use of a macro may expand through at most 100,000 characters, and a note's uses together through 5,000,000; a use that would go past that (definitions that multiply, such as eight uses of a macro that has eight uses of another, level after level) is left as written.
 
 ## Counters
 

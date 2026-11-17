@@ -96,7 +96,7 @@ test("macros defined in terms of macros expand, and recursion stops", () => {
   const source = `${FENCE}libera-macro\n\\F = $\\mathcal{F}$\n\\FF = $\\F \\times \\F$\n\\loop = \\loop!\n${FENCE}\n\n$\\FF$ and \\loop\n`;
   const expanded = expandMarkdownMacros(source)!.markdown;
   assert.ok(expanded.includes(String.raw`$\mathcal{F} \times \mathcal{F}$ and `));
-  assert.ok(expanded.trimEnd().endsWith("\\loop" + "!".repeat(17)));
+  assert.ok(expanded.trimEnd().endsWith("and \\loop!"));
 });
 
 test("hex colors stay as written and ## is a literal #, so neither counts as a parameter", () => {
