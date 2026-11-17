@@ -100,13 +100,50 @@ export function sourcePopupPosition(point: { x: number; y: number }) {
   };
 }
 
-export function sourceFileLinkContext(text: string, start: number, end: number, previous: FileLinkPopupContext | null, point: () => { x: number; y: number }): FileLinkPopupContext | null {
+/**
+ * The document as a popup refresh reads it. A string is the whole text; an
+ * editor passes `slice` for the few characters around the caret and `read` for
+ * the whole text, which is only called once a popup actually needs it.
+ */
+export type SourceTextAccess = string | { slice(from: number, to: number): string; read(): string };
+
+function sliceSource(source: SourceTextAccess, from: number, to: number) {
+  return source.slice(from, to);
+}
+
+/** A CodeMirror document as a lazy text source: windows come from the rope, the whole text is joined only on `read`. */
+export function lazyDocText(doc: { sliceString(from: number, to: number): string; toString(): string }): SourceTextAccess {
+  return { slice: (from, to) => doc.sliceString(from, to), read: () => doc.toString() };
+}
+
+function readSource(source: SourceTextAccess) {
+  return typeof source === "string" ? source : source.read();
+}
+
+/** `fileLinkDestinationAt` for a lazily read document: it only needs the text from the start of the caret's line to the caret, so read a window that grows back until it holds a line break. */
+function fileLinkDestinationIn(source: SourceTextAccess, cursor: number) {
+  if (typeof source === "string") return fileLinkDestinationAt(source, cursor);
+  let width = 256;
+  for (;;) {
+    const windowStart = Math.max(0, cursor - width);
+    const before = source.slice(windowStart, cursor);
+    // A ")" after the last "](" (or with none) rules a destination out however far back the line starts.
+    if (before.lastIndexOf(")") > before.lastIndexOf("](")) return null;
+    if (windowStart === 0 || before.includes("\n")) {
+      const found = fileLinkDestinationAt(before, before.length);
+      return found && { destinationStart: found.destinationStart + windowStart, destinationEnd: found.destinationEnd + windowStart, query: found.query };
+    }
+    width *= 4;
+  }
+}
+
+export function sourceFileLinkContext(text: SourceTextAccess, start: number, end: number, previous: FileLinkPopupContext | null, point: () => { x: number; y: number }): FileLinkPopupContext | null {
   if (start !== end) return null;
-  const destination = fileLinkDestinationAt(text, start);
+  const destination = fileLinkDestinationIn(text, start);
   if (!destination) return null;
   const headings = destination.query.startsWith("#")
     ? previous?.destinationStart === destination.destinationStart && previous.headings
-      ? previous.headings : markdownHeadingAnchors(text)
+      ? previous.headings : markdownHeadingAnchors(readSource(text))
     : undefined;
   return { ...destination, headings, ...sourcePopupPosition(point()) };
 }
@@ -126,24 +163,25 @@ export function sourceHeadingLinkEdit(text: string, popup: FileLinkPopupContext,
 }
 
 /** Trigger, dismissal and cited-key reuse are independent of editor DOM. */
-export function sourceCitationContext(text: string, start: number, end: number, options: {
+export function sourceCitationContext(text: SourceTextAccess, start: number, end: number, options: {
   fileLinkOpen: boolean; previous: CitationPopupContext | null; inserted: { from: number; query: string } | null;
   mathMarkers?: MathMarkerSettings; resolves?: ((key: string) => boolean) | null; point: (offset: number) => { x: number; y: number };
 }) {
   const { previous, inserted, mathMarkers, resolves } = options;
   let popup: CitationPopupContext | null = null;
   let dismissed = inserted;
-  if (start === end && !options.fileLinkOpen && mayTriggerCitation(text.slice(Math.max(0, start - 260), start))) {
-    const trigger = citationTriggerAt(text, start, { mathMarkers });
+  if (start === end && !options.fileLinkOpen && mayTriggerCitation(sliceSource(text, Math.max(0, start - 260), start))) {
+    const whole = readSource(text);
+    const trigger = citationTriggerAt(whole, start, { mathMarkers });
     if (!(trigger && inserted && inserted.from === trigger.from && inserted.query === trigger.query)) {
       dismissed = null;
       if (trigger) {
         const same = previous?.from === trigger.from;
         popup = {
           from: trigger.from, to: start, query: trigger.query, insideCitation: trigger.insideCitation,
-          citedKeys: same ? previous.citedKeys : citedKeys(text, { mathMarkers, resolves }),
+          citedKeys: same ? previous.citedKeys : citedKeys(whole, { mathMarkers, resolves }),
           ...(same ? { x: previous.x, y: previous.y } : sourcePopupPosition(options.point(trigger.from))),
-          before: trigger.from > 0 ? text[trigger.from - 1] : "",
+          before: trigger.from > 0 ? whole[trigger.from - 1] : "",
         };
       }
     }

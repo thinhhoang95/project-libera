@@ -26,7 +26,7 @@ import { registerEditorSelectionReader } from "../editor-selection-registry";
 import {
   changeSelectedHeadingLevels, getChangedTextRange, sourceClipboardContents, sourceDragKind, getDroppedImageFiles,
   SELECTION_CHANGE_DEBOUNCE_MS, handleSourceKey, fileLinkPopupKey, refreshSourcePopupOnKeyUp,
-  sourceFileLinkContext, sameFileLinkPopup, sourceHeadingLinkEdit, sourceCitationContext, sameCitationPopup,
+  lazyDocText, sourceFileLinkContext, sameFileLinkPopup, sourceHeadingLinkEdit, sourceCitationContext, sameCitationPopup,
   sourcePasteEdit, sourcePasteMode, sourceFormatEdit, sourceSelectionAfterChange, type FileLinkPopupContext, type CitationPopupContext, type SourceKey, type HeadingLevelChangeDirection,
 } from "@/lib/markdown-source";
 import { MarkdownFileLinkPopup, MarkdownHeadingLinkPopup, buildMarkdownFileLinkSections, flattenMarkdownFileLinkSections } from "../markdown-file-link-popup";
@@ -214,9 +214,8 @@ export function MarkdownCodeMirrorEditor({
   const refreshCitationPopup = useCallback(() => {
     const current = viewRef.current;
     const previous = citationPopupRef.current;
-    const text = current?.state.doc.toString() ?? "";
     const selection = current?.state.selection.main;
-    const result = sourceCitationContext(text, selection?.from ?? 0, selection?.to ?? 0, {
+    const result = sourceCitationContext(current ? lazyDocText(current.state.doc) : "", selection?.from ?? 0, selection?.to ?? 0, {
       fileLinkOpen: !!fileLinkPopupRef.current, previous, inserted: citationInsertedRef.current,
       mathMarkers: latest.current.mathMarkers, resolves: citationResolverRef.current,
       point: (offset) => adapter.clientPointForOffset(offset),
@@ -230,7 +229,7 @@ export function MarkdownCodeMirrorEditor({
   const refreshFileLinkPopup = useCallback(() => {
     const current = viewRef.current;
     const selection = current?.state.selection.main;
-    const next = current && selection ? sourceFileLinkContext(current.state.doc.toString(), selection.from, selection.to,
+    const next = current && selection ? sourceFileLinkContext(lazyDocText(current.state.doc), selection.from, selection.to,
       fileLinkPopupRef.current, () => adapter.clientPointForOffset(selection.head)) : null;
     const previous = fileLinkPopupRef.current;
     if (next?.query !== previous?.query) setActiveFileLinkIndex(0);
