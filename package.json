@@ -28,6 +28,7 @@
     "test:editor": "node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/*.test.ts",
     "lint": "eslint",
     "bench:ink": "node --import tsx scripts/editor/ink-bench.ts",
+    "bench:energy": "node scripts/bench/energy/run.mjs",
     "bench:latex-visual": "node --require ./scripts/editor/setup.cjs --import tsx scripts/editor/latex-visual-bench.ts",
     "audit:latex-visual": "node --require ./scripts/editor/setup.cjs --import tsx scripts/editor/latex-visual-audit.ts",
     "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs",

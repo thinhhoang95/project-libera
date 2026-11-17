@@ -1,0 +1,797 @@
+{
+  "meta": {
+    "before": "08e9c0b feat(latex-paste): close the Markdown→LaTeX gaps found in the Visual edi",
+    "after": "2605871 test(editor): bring eleven stale test files up to the current behaviour",
+    "startedAt": "2026-11-17T08:23:42.291Z",
+    "host": "Apple M2 · 8 GB",
+    "node": "v22.23.2"
+  },
+  "options": {
+    "reps": 1,
+    "scenarios": [
+      "source-typing",
+      "pdf-annotate",
+      "latex-typing"
+    ],
+    "power": "ac",
+    "out": "/private/tmp/claude-501/-Users-thinhhoang-Documents-project-libera/58067634-09e8-4009-bab1-7558bdd8246f/scratchpad/full-ac-2",
+    "before": "/Users/thinhhoang/Documents/project-libera/.claude/worktrees/bench-before",
+    "after": "/Users/thinhhoang/Documents/project-libera/.claude/worktrees/bench-after"
+  },
+  "runs": [
+    {
+      "rep": 0,
+      "version": "before",
+      "scenario": "source-typing",
+      "power": "ac",
+      "durationS": 62.631,
+      "electronCpuS": {
+        "Browser": 1.0023279999999999,
+        "GPU": 2.146866,
+        "Utility": 0.019631999999999983,
+        "Tab": 10.691962
+      },
+      "idleWakeupsPerS": 185.0327868852459,
+      "renderer": {
+        "taskMs": 6299.058000000001,
+        "scriptMs": 1602.6399999999999,
+        "layoutMs": 1091.149,
+        "styleMs": 59.048,
+        "layouts": 995,
+        "styleRecalcs": 612,
+        "heapMb": 32.9124755859375
+      },
+      "appMenuUpdates": 2,
+      "requests": {
+        "GET /api/auth/session": 1,
+        "POST /api/search/index": 1,
+        "PUT /api/preferences/last-notebook": 1,
+        "PUT /api/workspaces": 1
+      },
+      "electronTree": {
+        "cpuS": 13.599999999999998,
+        "energyImpact": 20.58381418804247
+      },
+      "serverTree": {
+        "cpuS": 3.6399999999999997,
+        "energyImpact": 5.329001600155165
+      },
+      "totalCpuS": 17.24,
+      "energyImpact": 25.912815788197637,
+      "topSamples": 59
+    },
+    {
+      "rep": 0,
+      "version": "after",
+      "scenario": "source-typing",
+      "power": "ac",
+      "durationS": 62.656,
+      "electronCpuS": {
+        "Browser": 0.9992449999999999,
+        "GPU": 2.072567,
+        "Utility": 0.01758599999999999,
+        "Tab": 10.439966
+      },
+      "idleWakeupsPerS": 182.59016393442624,
+      "renderer": {
+        "taskMs": 6279.404,
+        "scriptMs": 1531.8310000000001,
+        "layoutMs": 1078.964,
+        "styleMs": 55.698,
+        "layouts": 995,
+        "styleRecalcs": 612,
+        "heapMb": 41.32197952270508
+      },
+      "appMenuUpdates": 2,
+      "requests": {
+        "GET /api/auth/session": 1,
+        "POST /api/search/index": 1,
+        "PUT /api/preferences/last-notebook": 1,
+        "PUT /api/workspaces": 1
+      },
+      "electronTree": {
+        "cpuS": 13.18,
+        "energyImpact": 20.26931487479653
+      },
+      "serverTree": {
+        "cpuS": 3.5500000000000003,
+        "energyImpact": 5.396162509659494
+      },
+      "totalCpuS": 16.73,
+      "energyImpact": 25.665477384456025,
+      "topSamples": 58
+    },
+    {
+      "rep": 0,
+      "version": "before",
+      "scenario": "pdf-annotate",
+      "power": "ac",
+      "durationS": 60.268,
+      "electronCpuS": {
+        "Browser": 0.5330649999999999,
+        "GPU": 3.613986,
+        "Utility": 0.02177700000000002,
+        "Tab": 4.489749000000001
+      },
+      "idleWakeupsPerS": 146.33898305084745,
+      "renderer": {
+        "taskMs": 2346.191,
+        "scriptMs": 781.552,
+        "layoutMs": 44.985,
+        "styleMs": 111.64399999999999,
+        "layouts": 150,
+        "styleRecalcs": 358,
+        "heapMb": 21.855987548828125
+      },
+      "appMenuUpdates": 1,
+      "requests": {
+        "GET /api/auth/session": 1,
+        "POST /api/search/index": 1,
+        "PUT /api/preferences/last-notebook": 1,
+        "PUT /api/workspaces": 1
+      },
+      "electronTree": {
+        "cpuS": 8.399999999999999,
+        "energyImpact": 13.356706434977953
+      },
+      "serverTree": {
+        "cpuS": 4.35,
+        "energyImpact": 6.8553534047007165
+      },
+      "totalCpuS": 12.749999999999998,
+      "energyImpact": 20.21205983967867,
+      "topSamples": 56
+    },
+    {
+      "rep": 0,
+      "version": "after",
+      "scenario": "pdf-annotate",
+      "power": "ac",
+      "durationS": 60.238,
+      "electronCpuS": {
+        "Browser": 0.39886599999999994,
+        "GPU": 1.0687790000000001,
+        "Utility": 0.026109999999999994,
+        "Tab": 1.7726729999999997
+      },
+      "idleWakeupsPerS": 60.54237288135593,
+      "renderer": {
+        "taskMs": 2872.086,
+        "scriptMs": 393.91900000000004,
+        "layoutMs": 12.921999999999999,
+        "styleMs": 91.5,
+        "layouts": 29,
+        "styleRecalcs": 93,
+        "heapMb": 20.032913208007812
+      },
+      "appMenuUpdates": 1,
+      "requests": {
+        "GET /api/auth/session": 1,
+        "POST /api/search/index": 1,
+        "PUT /api/preferences/last-notebook": 1,
+        "PUT /api/workspaces": 1
+      },
+      "electronTree": {
+        "cpuS": 3.43,
+        "energyImpact": 5.3455769198248015
+      },
+      "serverTree": {
+        "cpuS": 4.0200000000000005,
+        "energyImpact": 6.3128878967750675
+      },
+      "totalCpuS": 7.450000000000001,
+      "energyImpact": 11.658464816599869,
+      "topSamples": 56
+    },
+    {
+      "rep": 0,
+      "version": "before",
+      "scenario": "latex-typing",
+      "power": "ac",
+      "durationS": 60.866,
+      "electronCpuS": {
+        "Browser": 0.510032,
+        "GPU": 1.511493,
+        "Utility": 0.045371999999999996,
+        "Tab": 6.602839000000001
+      },
+      "idleWakeupsPerS": 142.57627118644066,
+      "renderer": {
+        "taskMs": 3501.566,
+        "scriptMs": 1134.905,
+        "layoutMs": 175.845,
+        "styleMs": 607.8330000000001,
+        "layouts": 459,
+        "styleRecalcs": 1764,
+        "heapMb": 24.185226440429688
+      },
+      "appMenuUpdates": 1,
+      "requests": {
+        "GET /api/auth/session": 1,
+        "GET /api/latex/pdf": 5,
+        "POST /api/latex/compile": 5,
+        "POST /api/search/index": 1,
+        "PUT /api/preferences/last-notebook": 1,
+        "PUT /api/workspaces": 1
+      },
+      "electronTree": {
+        "cpuS": 8.729999999999999,
+        "energyImpact": 13.416827659716215
+      },
+      "serverTree": {
+        "cpuS": 3.6,
+        "energyImpact": 4.476717074145626
+      },
+      "totalCpuS": 12.329999999999998,
+      "energyImpact": 17.89354473386184,
+      "topSamples": 57
+    },
+    {
+      "rep": 0,
+      "version": "after",
+      "scenario": "latex-typing",
+      "power": "ac",
+      "durationS": 60.89,
+      "electronCpuS": {
+        "Browser": 0.5782589999999999,
+        "GPU": 1.593273,
+        "Utility": 0.06366899999999998,
+        "Tab": 6.527103
+      },
+      "idleWakeupsPerS": 142.45762711864407,
+      "renderer": {
+        "taskMs": 3742.223,
+        "scriptMs": 1204.672,
+        "layoutMs": 191.691,
+        "styleMs": 637.273,
+        "layouts": 459,
+        "styleRecalcs": 1745,
+        "heapMb": 24.815677642822266
+      },
+      "appMenuUpdates": 0,
+      "requests": {
+        "GET /api/auth/session": 1,
+        "GET /api/latex/pdf": 5,
+        "POST /api/latex/compile": 5,
+        "POST /api/search/index": 1,
+        "PUT /api/preferences/last-notebook": 1,
+        "PUT /api/workspaces": 1
+      },
+      "electronTree": {
+        "cpuS": 8.469999999999999,
+        "energyImpact": 13.219331351658264
+      },
+      "serverTree": {
+        "cpuS": 2.5900000000000003,
+        "energyImpact": 3.01092147890852
+      },
+      "totalCpuS": 11.059999999999999,
+      "energyImpact": 16.230252830566783,
+      "topSamples": 57
+    }
+  ],
+  "summary": [
+    {
+      "scenario": "source-typing",
+      "runs": 2,
+      "rows": [
+        {
+          "key": "energyImpact",
+          "label": "Energy Impact (avg)",
+          "digits": 1,
+          "before": 25.912815788197637,
+          "after": 25.665477384456025,
+          "beforeRuns": [
+            25.912815788197637
+          ],
+          "afterRuns": [
+            25.665477384456025
+          ],
+          "change": -0.009545022268643826
+        },
+        {
+          "key": "totalCpuS",
+          "label": "CPU s, all processes",
+          "digits": 2,
+          "before": 17.24,
+          "after": 16.73,
+          "beforeRuns": [
+            17.24
+          ],
+          "afterRuns": [
+            16.73
+          ],
+          "change": -0.029582366589327034
+        },
+        {
+          "key": "electronCpuS.Tab",
+          "label": "CPU s, renderer",
+          "digits": 2,
+          "before": 10.691962,
+          "after": 10.439966,
+          "beforeRuns": [
+            10.691962
+          ],
+          "afterRuns": [
+            10.439966
+          ],
+          "change": -0.023568733222209367
+        },
+        {
+          "key": "electronCpuS.GPU",
+          "label": "CPU s, GPU",
+          "digits": 2,
+          "before": 2.146866,
+          "after": 2.072567,
+          "beforeRuns": [
+            2.146866
+          ],
+          "afterRuns": [
+            2.072567
+          ],
+          "change": -0.03460812179241757
+        },
+        {
+          "key": "electronCpuS.Browser",
+          "label": "CPU s, browser",
+          "digits": 2,
+          "before": 1.0023279999999999,
+          "after": 0.9992449999999999,
+          "beforeRuns": [
+            1.0023279999999999
+          ],
+          "afterRuns": [
+            0.9992449999999999
+          ],
+          "change": -0.003075839445770194
+        },
+        {
+          "key": "serverTree.cpuS",
+          "label": "CPU s, server",
+          "digits": 2,
+          "before": 3.6399999999999997,
+          "after": 3.5500000000000003,
+          "beforeRuns": [
+            3.6399999999999997
+          ],
+          "afterRuns": [
+            3.5500000000000003
+          ],
+          "change": -0.024725274725274568
+        },
+        {
+          "key": "idleWakeupsPerS",
+          "label": "Idle wakeups / s",
+          "digits": 0,
+          "before": 185.0327868852459,
+          "after": 182.59016393442624,
+          "beforeRuns": [
+            185.0327868852459
+          ],
+          "afterRuns": [
+            182.59016393442624
+          ],
+          "change": -0.013201027731017964
+        },
+        {
+          "key": "renderer.taskMs",
+          "label": "Renderer task ms",
+          "digits": 0,
+          "before": 6299.058000000001,
+          "after": 6279.404,
+          "beforeRuns": [
+            6299.058000000001
+          ],
+          "afterRuns": [
+            6279.404
+          ],
+          "change": -0.0031201490762587753
+        },
+        {
+          "key": "renderer.scriptMs",
+          "label": "Renderer script ms",
+          "digits": 0,
+          "before": 1602.6399999999999,
+          "after": 1531.8310000000001,
+          "beforeRuns": [
+            1602.6399999999999
+          ],
+          "afterRuns": [
+            1531.8310000000001
+          ],
+          "change": -0.04418272350621459
+        },
+        {
+          "key": "renderer.layoutMs",
+          "label": "Renderer layout ms",
+          "digits": 0,
+          "before": 1091.149,
+          "after": 1078.964,
+          "beforeRuns": [
+            1091.149
+          ],
+          "afterRuns": [
+            1078.964
+          ],
+          "change": -0.01116712749587815
+        },
+        {
+          "key": "renderer.styleMs",
+          "label": "Renderer style ms",
+          "digits": 0,
+          "before": 59.048,
+          "after": 55.698,
+          "beforeRuns": [
+            59.048
+          ],
+          "afterRuns": [
+            55.698
+          ],
+          "change": -0.05673350494512941
+        },
+        {
+          "key": "appMenuUpdates",
+          "label": "Menu-bar syncs",
+          "digits": 0,
+          "before": 2,
+          "after": 2,
+          "beforeRuns": [
+            2
+          ],
+          "afterRuns": [
+            2
+          ],
+          "change": 0
+        }
+      ]
+    },
+    {
+      "scenario": "pdf-annotate",
+      "runs": 2,
+      "rows": [
+        {
+          "key": "energyImpact",
+          "label": "Energy Impact (avg)",
+          "digits": 1,
+          "before": 20.21205983967867,
+          "after": 11.658464816599869,
+          "beforeRuns": [
+            20.21205983967867
+          ],
+          "afterRuns": [
+            11.658464816599869
+          ],
+          "change": -0.4231926429530492
+        },
+        {
+          "key": "totalCpuS",
+          "label": "CPU s, all processes",
+          "digits": 2,
+          "before": 12.749999999999998,
+          "after": 7.450000000000001,
+          "beforeRuns": [
+            12.749999999999998
+          ],
+          "afterRuns": [
+            7.450000000000001
+          ],
+          "change": -0.4156862745098038
+        },
+        {
+          "key": "electronCpuS.Tab",
+          "label": "CPU s, renderer",
+          "digits": 2,
+          "before": 4.489749000000001,
+          "after": 1.7726729999999997,
+          "beforeRuns": [
+            4.489749000000001
+          ],
+          "afterRuns": [
+            1.7726729999999997
+          ],
+          "change": -0.6051732513332039
+        },
+        {
+          "key": "electronCpuS.GPU",
+          "label": "CPU s, GPU",
+          "digits": 2,
+          "before": 3.613986,
+          "after": 1.0687790000000001,
+          "beforeRuns": [
+            3.613986
+          ],
+          "afterRuns": [
+            1.0687790000000001
+          ],
+          "change": -0.7042658715335366
+        },
+        {
+          "key": "electronCpuS.Browser",
+          "label": "CPU s, browser",
+          "digits": 2,
+          "before": 0.5330649999999999,
+          "after": 0.39886599999999994,
+          "beforeRuns": [
+            0.5330649999999999
+          ],
+          "afterRuns": [
+            0.39886599999999994
+          ],
+          "change": -0.2517497866113888
+        },
+        {
+          "key": "serverTree.cpuS",
+          "label": "CPU s, server",
+          "digits": 2,
+          "before": 4.35,
+          "after": 4.0200000000000005,
+          "beforeRuns": [
+            4.35
+          ],
+          "afterRuns": [
+            4.0200000000000005
+          ],
+          "change": -0.07586206896551706
+        },
+        {
+          "key": "idleWakeupsPerS",
+          "label": "Idle wakeups / s",
+          "digits": 0,
+          "before": 146.33898305084745,
+          "after": 60.54237288135593,
+          "beforeRuns": [
+            146.33898305084745
+          ],
+          "afterRuns": [
+            60.54237288135593
+          ],
+          "change": -0.586286773222145
+        },
+        {
+          "key": "renderer.taskMs",
+          "label": "Renderer task ms",
+          "digits": 0,
+          "before": 2346.191,
+          "after": 2872.086,
+          "beforeRuns": [
+            2346.191
+          ],
+          "afterRuns": [
+            2872.086
+          ],
+          "change": 0.22414841758407564
+        },
+        {
+          "key": "renderer.scriptMs",
+          "label": "Renderer script ms",
+          "digits": 0,
+          "before": 781.552,
+          "after": 393.91900000000004,
+          "beforeRuns": [
+            781.552
+          ],
+          "afterRuns": [
+            393.91900000000004
+          ],
+          "change": -0.4959785145454173
+        },
+        {
+          "key": "renderer.layoutMs",
+          "label": "Renderer layout ms",
+          "digits": 0,
+          "before": 44.985,
+          "after": 12.921999999999999,
+          "beforeRuns": [
+            44.985
+          ],
+          "afterRuns": [
+            12.921999999999999
+          ],
+          "change": -0.7127486940091142
+        },
+        {
+          "key": "renderer.styleMs",
+          "label": "Renderer style ms",
+          "digits": 0,
+          "before": 111.64399999999999,
+          "after": 91.5,
+          "beforeRuns": [
+            111.64399999999999
+          ],
+          "afterRuns": [
+            91.5
+          ],
+          "change": -0.18043065458063123
+        },
+        {
+          "key": "appMenuUpdates",
+          "label": "Menu-bar syncs",
+          "digits": 0,
+          "before": 1,
+          "after": 1,
+          "beforeRuns": [
+            1
+          ],
+          "afterRuns": [
+            1
+          ],
+          "change": 0
+        }
+      ]
+    },
+    {
+      "scenario": "latex-typing",
+      "runs": 2,
+      "rows": [
+        {
+          "key": "energyImpact",
+          "label": "Energy Impact (avg)",
+          "digits": 1,
+          "before": 17.89354473386184,
+          "after": 16.230252830566783,
+          "beforeRuns": [
+            17.89354473386184
+          ],
+          "afterRuns": [
+            16.230252830566783
+          ],
+          "change": -0.0929548576335149
+        },
+        {
+          "key": "totalCpuS",
+          "label": "CPU s, all processes",
+          "digits": 2,
+          "before": 12.329999999999998,
+          "after": 11.059999999999999,
+          "beforeRuns": [
+            12.329999999999998
+          ],
+          "afterRuns": [
+            11.059999999999999
+          ],
+          "change": -0.10300081103000809
+        },
+        {
+          "key": "electronCpuS.Tab",
+          "label": "CPU s, renderer",
+          "digits": 2,
+          "before": 6.602839000000001,
+          "after": 6.527103,
+          "beforeRuns": [
+            6.602839000000001
+          ],
+          "afterRuns": [
+            6.527103
+          ],
+          "change": -0.011470217583678914
+        },
+        {
+          "key": "electronCpuS.GPU",
+          "label": "CPU s, GPU",
+          "digits": 2,
+          "before": 1.511493,
+          "after": 1.593273,
+          "beforeRuns": [
+            1.511493
+          ],
+          "afterRuns": [
+            1.593273
+          ],
+          "change": 0.0541054440874023
+        },
+        {
+          "key": "electronCpuS.Browser",
+          "label": "CPU s, browser",
+          "digits": 2,
+          "before": 0.510032,
+          "after": 0.5782589999999999,
+          "beforeRuns": [
+            0.510032
+          ],
+          "afterRuns": [
+            0.5782589999999999
+          ],
+          "change": 0.13377003795840223
+        },
+        {
+          "key": "serverTree.cpuS",
+          "label": "CPU s, server",
+          "digits": 2,
+          "before": 3.6,
+          "after": 2.5900000000000003,
+          "beforeRuns": [
+            3.6
+          ],
+          "afterRuns": [
+            2.5900000000000003
+          ],
+          "change": -0.2805555555555555
+        },
+        {
+          "key": "idleWakeupsPerS",
+          "label": "Idle wakeups / s",
+          "digits": 0,
+          "before": 142.57627118644066,
+          "after": 142.45762711864407,
+          "beforeRuns": [
+            142.57627118644066
+          ],
+          "afterRuns": [
+            142.45762711864407
+          ],
+          "change": -0.0008321445553969438
+        },
+        {
+          "key": "renderer.taskMs",
+          "label": "Renderer task ms",
+          "digits": 0,
+          "before": 3501.566,
+          "after": 3742.223,
+          "beforeRuns": [
+            3501.566
+          ],
+          "afterRuns": [
+            3742.223
+          ],
+          "change": 0.06872839181097834
+        },
+        {
+          "key": "renderer.scriptMs",
+          "label": "Renderer script ms",
+          "digits": 0,
+          "before": 1134.905,
+          "after": 1204.672,
+          "beforeRuns": [
+            1134.905
+          ],
+          "afterRuns": [
+            1204.672
+          ],
+          "change": 0.06147386785678101
+        },
+        {
+          "key": "renderer.layoutMs",
+          "label": "Renderer layout ms",
+          "digits": 0,
+          "before": 175.845,
+          "after": 191.691,
+          "beforeRuns": [
+            175.845
+          ],
+          "afterRuns": [
+            191.691
+          ],
+          "change": 0.09011345218800651
+        },
+        {
+          "key": "renderer.styleMs",
+          "label": "Renderer style ms",
+          "digits": 0,
+          "before": 607.8330000000001,
+          "after": 637.273,
+          "beforeRuns": [
+            607.8330000000001
+          ],
+          "afterRuns": [
+            637.273
+          ],
+          "change": 0.04843435614716532
+        },
+        {
+          "key": "appMenuUpdates",
+          "label": "Menu-bar syncs",
+          "digits": 0,
+          "before": 1,
+          "after": 0,
+          "beforeRuns": [
+            1
+          ],
+          "afterRuns": [
+            0
+          ],
+          "change": -1
+        }
+      ]
+    }
+  ]
+}
