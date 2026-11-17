@@ -109,11 +109,27 @@ export const emptyWorkspaceLibrary = (): WorkspaceLibrary => ({ version: 1, upda
 
 // Reading position, selection and unsaved typing are captured at close and in
 // the local recovery journal. They must not trigger synced workspace writes.
-export function workspaceStructureToken(session: WorkspaceSession) {
-  return JSON.stringify({
-    tabs: session.tabs.map((tab) => [tab.id, tab.file.path, tab.saved, tab.untitled, tab.standaloneSaveId]),
-    canvas: session.canvasLayout?.root,
-  });
+//
+// A tab's saved text can be megabytes, and the token is read on every render of
+// the root. The tokenizer therefore stands in a revision number for each saved
+// text, bumped only when the string differs from the one seen last (strings
+// compare by reference first, so an unchanged tab costs nothing). Revisions
+// come from one counter, so a tab that closes and reopens never repeats one.
+export function createWorkspaceStructureTokenizer() {
+  const seen = new Map<string, { saved: string; rev: number }>();
+  let counter = 0;
+  return function workspaceStructureToken(session: WorkspaceSession) {
+    const ids = new Set<string>();
+    const tabs = session.tabs.map((tab) => {
+      ids.add(tab.id);
+      let entry = seen.get(tab.id);
+      if (!entry) { entry = { saved: tab.saved, rev: ++counter }; seen.set(tab.id, entry); }
+      else if (entry.saved !== tab.saved) { entry.saved = tab.saved; entry.rev = ++counter; }
+      return [tab.id, tab.file.path, entry.rev, tab.untitled, tab.standaloneSaveId];
+    });
+    if (seen.size > ids.size) for (const id of seen.keys()) if (!ids.has(id)) seen.delete(id);
+    return JSON.stringify({ tabs, canvas: session.canvasLayout?.root });
+  };
 }
 /** How many closed files keep their place; the least recently closed are forgotten first. */
 export const CLOSED_VIEW_STATE_LIMIT = 100;

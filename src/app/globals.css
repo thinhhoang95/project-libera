@@ -3059,6 +3059,11 @@ html.dark .libera-chat-glow-bottom[data-active="true"] { opacity: 0.55; }
   .libera-ai-activity-card { animation: libera-ai-card-flow 6s linear infinite; }
 }
 @keyframes libera-ai-card-flow { from { background-position: 0 0, 0% 0; } to { background-position: 0 0, 300% 0; } }
+/* The animated gradients are large blurred layers that repaint every frame. In a
+   window nobody is looking at, or on battery, they hold still: the static gradient
+   stays as the indicator that an AI job is running. */
+html[data-window-inactive="true"] :is(.libera-chat-glow[data-active="true"], .libera-ai-activity-card, .libera-workspace-region[data-ai-active="true"] .libera-ai-glow, .libera-chat-thinking),
+html[data-on-battery="true"] :is(.libera-chat-glow[data-active="true"], .libera-ai-activity-card, .libera-workspace-region[data-ai-active="true"] .libera-ai-glow, .libera-chat-thinking) { animation-play-state: paused; }
 .libera-read-aloud-bar ~ .libera-ai-activity-card { bottom: 6rem; }
 
 /* While an AI action runs, the same Gemini-style wash spans the tab strip and

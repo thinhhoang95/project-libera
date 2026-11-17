@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { installWindowActivityAttributes } from "./window-activity";
 
 // Tracks in-flight AI operations (format, rewrite, write...) across editors so
 // the workspace chrome can show a single Gemini-style glow while any runs, and
@@ -38,6 +39,8 @@ export function beginAiActivity(options?: { label: string; cancel: () => void })
 }
 
 function subscribe(listener: () => void) {
+  // The glow animations pause by these attributes while the window is inactive or on battery.
+  installWindowActivityAttributes();
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }

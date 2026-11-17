@@ -2658,7 +2658,8 @@ async function createMainWindow(url) {
     // strip: (36 - 12) / 2 = 12.
     trafficLightPosition: isMacGlass ? { x: 16, y: 12 } : undefined,
     vibrancy: isMacGlass ? "under-window" : undefined,
-    visualEffectState: isMacGlass ? "active" : undefined,
+    // An unfocused window stops compositing the live blur behind it.
+    visualEffectState: isMacGlass ? "followWindow" : undefined,
     backgroundMaterial: isWindowsGlass ? "acrylic" : undefined,
     webPreferences: {
       session: getProfileSession(),

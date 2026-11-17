@@ -38,6 +38,13 @@ let actions = new Map<string, () => void>();
 let lastSent = "";
 let generation = 0;
 let timer: ReturnType<typeof setTimeout> | null = null;
+// Renders only mark the menus possibly changed: when the first unsynced render
+// happened, and the debounce waiting to act on it.
+let dirtySince = 0;
+let renderTimer: ReturnType<typeof setTimeout> | null = null;
+let idleHandle: number | null = null;
+const RENDER_DEBOUNCE_MS = 300;
+const RENDER_MAX_WAIT_MS = 2000;
 let listening = false;
 
 /** Gives every leaf item without its own callback `run(id)`, for menus written as ids plus a dispatcher. */
@@ -81,6 +88,9 @@ function activeEditorProvider() {
 
 async function sync() {
   timer = null;
+  dirtySince = 0;
+  if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+  if (idleHandle !== null) { window.cancelIdleCallback?.(idleHandle); idleHandle = null; }
   const bridge = window.liberaAppMenu;
   if (!bridge) return;
   const current = ++generation;
@@ -140,6 +150,31 @@ function scheduleSync() {
   timer = setTimeout(() => void sync(), 120);
 }
 
+/**
+ * A render of a component providing items may have changed them. Rebuilding and
+ * stringifying every menu per render is wasteful, so wait for the renders to
+ * settle (trailing debounce, bounded by a maximum wait), then rebuild when the
+ * browser is idle. A window that is hidden or unfocused rebuilds when it regains
+ * focus instead, so nothing is lost.
+ */
+function markMenusDirty() {
+  if (!window.liberaAppMenu) return;
+  const now = Date.now();
+  if (!dirtySince) dirtySince = now;
+  // A prompt sync is already pending and will read these items too.
+  if (timer) return;
+  if (renderTimer) clearTimeout(renderTimer);
+  renderTimer = setTimeout(syncWhenIdle, Math.max(0, Math.min(RENDER_DEBOUNCE_MS, dirtySince + RENDER_MAX_WAIT_MS - now)));
+}
+
+function syncWhenIdle() {
+  renderTimer = null;
+  if (document.hidden || !document.hasFocus()) return;
+  const run = () => { idleHandle = null; void sync(); };
+  if (typeof window.requestIdleCallback === "function") idleHandle = window.requestIdleCallback(run, { timeout: 1000 });
+  else run();
+}
+
 function listen() {
   const bridge = window.liberaAppMenu;
   if (listening || !bridge) return;
@@ -151,7 +186,7 @@ function listen() {
 
 function useProvider<T extends object>(set: Set<T>, create: () => T, deps: unknown[]) {
   // Every render may change the items (an editor's state, the active tab).
-  useLayoutEffect(() => scheduleSync());
+  useLayoutEffect(() => markMenusDirty());
   useEffect(() => {
     if (!window.liberaAppMenu) return;
     listen();
