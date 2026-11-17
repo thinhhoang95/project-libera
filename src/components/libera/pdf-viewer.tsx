@@ -180,7 +180,10 @@ const ZOOM_STEP = 0.25;
 const PDF_PAGE_RENDER_ROOT_MARGIN = "1200px 0px";
 const PDF_PAGE_RENDER_FALLBACK_COUNT = 2;
 const PDF_PAGE_RENDER_CONCURRENCY = 2;
+// The stored position waits for scrolling to pause this long; the page
+// indicator, which is local, refreshes on its own cadence while scrolling.
 const PDF_SCROLL_STATE_INTERVAL_MS = 150;
+const PDF_PAGE_INDICATOR_INTERVAL_MS = 150;
 const EMPTY_ANNOTATIONS: PdfAnnotation[] = [];
 const EMPTY_SEARCH_MATCHES: PdfSearchMatch[] = [];
 const EMPTY_PAGE_GEOMETRIES = new Map<number, PdfPageGeometry>();
@@ -728,6 +731,8 @@ export function PdfViewer({
   const pageElementRefs = useRef<Map<number, HTMLElement>>(new Map());
   const pendingScrollViewStateRef = useRef<PdfScrollPosition | null>(null);
   const scrollViewStateTimeoutRef = useRef<number | null>(null);
+  const pageIndicatorTimeoutRef = useRef<number | null>(null);
+  const publishViewFrameRef = useRef<number | null>(null);
   const onViewStateChangeRef = useRef(onViewStateChange);
   const screenshotCallbacksRef = useRef({ onCancelScreenshotSnip, onCompleteScreenshotSnip });
   const screenshotSnipModeRef = useRef(screenshotSnipMode);
@@ -1021,12 +1026,19 @@ export function PdfViewer({
       scrollViewStateTimeoutRef.current = null;
     }
 
+    // A page refresh still waiting is made now so the flushed state and the
+    // indicator agree.
+    if (pageIndicatorTimeoutRef.current !== null) {
+      window.clearTimeout(pageIndicatorTimeoutRef.current);
+      pageIndicatorTimeoutRef.current = null;
+      const scroller = scrollContainerRef.current;
+      if (scroller) updateCurrentPage(scroller);
+    }
+
     if (!pendingScrollViewStateRef.current) {
       return;
     }
 
-    const scroller = scrollContainerRef.current;
-    if (scroller) updateCurrentPage(scroller);
     updateViewState(pendingScrollViewStateRef.current);
     pendingScrollViewStateRef.current = null;
   }, [updateCurrentPage, updateViewState]);
@@ -1146,22 +1158,37 @@ export function PdfViewer({
       // Loading temporarily collapses the scroll area. Do not save that zero
       // over the position we are about to restore.
       if (pendingScrollRestoreRef.current) return;
-      publishView();
+      // Presence reads page geometry; once per frame is enough.
+      if (publishViewFrameRef.current === null) {
+        publishViewFrameRef.current = window.requestAnimationFrame(() => {
+          publishViewFrameRef.current = null;
+          publishView();
+        });
+      }
+      const scroller = event.currentTarget;
       pendingScrollViewStateRef.current = {
-        scrollLeft: event.currentTarget.scrollLeft,
-        scrollTop: event.currentTarget.scrollTop,
+        scrollLeft: scroller.scrollLeft,
+        scrollTop: scroller.scrollTop,
       };
 
-      if (scrollViewStateTimeoutRef.current !== null) {
-        return;
+      // The page indicator is local state and stays live while scrolling.
+      if (pageIndicatorTimeoutRef.current === null) {
+        pageIndicatorTimeoutRef.current = window.setTimeout(() => {
+          pageIndicatorTimeoutRef.current = null;
+          updateCurrentPage(scroller);
+        }, PDF_PAGE_INDICATOR_INTERVAL_MS);
       }
 
+      // The root workspace only hears about the position once scrolling pauses.
+      if (scrollViewStateTimeoutRef.current !== null) {
+        window.clearTimeout(scrollViewStateTimeoutRef.current);
+      }
       scrollViewStateTimeoutRef.current = window.setTimeout(
         flushPendingScrollViewState,
         PDF_SCROLL_STATE_INTERVAL_MS,
       );
     },
-    [flushPendingScrollViewState, publishView],
+    [flushPendingScrollViewState, publishView, updateCurrentPage],
   );
 
   useEffect(() => {
@@ -1429,8 +1456,9 @@ export function PdfViewer({
   useCanvasViewStateCapture(() => {
     const element = scrollContainerRef.current;
     if (element && !pendingScrollRestoreRef.current) {
-      updateViewState({ scrollLeft: element.scrollLeft, scrollTop: element.scrollTop });
+      pendingScrollViewStateRef.current = { scrollLeft: element.scrollLeft, scrollTop: element.scrollTop };
     }
+    flushPendingScrollViewState();
   });
 
   useLayoutEffect(() => () => {
@@ -1439,6 +1467,10 @@ export function PdfViewer({
       pendingScrollViewStateRef.current = { scrollLeft: element.scrollLeft, scrollTop: element.scrollTop };
     }
     flushPendingScrollViewState();
+    if (publishViewFrameRef.current !== null) {
+      window.cancelAnimationFrame(publishViewFrameRef.current);
+      publishViewFrameRef.current = null;
+    }
   }, [flushPendingScrollViewState]);
 
   // Changes to spaces on pages above the one being read would slide it; the

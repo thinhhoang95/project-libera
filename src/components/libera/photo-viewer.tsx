@@ -46,10 +46,13 @@ import { commandMenuItems, disabledMenu, menuCommands, type NativeMenuEntry } fr
 import { PhotoEditor } from "@/components/libera/photo-editor";
 import { PhotoInkLayer } from "@/components/libera/ink/photo-ink-layer";
 import { pendingSaves } from "@/components/libera/pending-saves";
+import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state";
 import type { PhotoRegion } from "@/lib/collab/album-comments";
 import { archiveRawUrl, canChangeSharedPhotos, galleryRawUrl, sizedGalleryUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
 const MAX_ZOOM = 8;
+// How long pan/zoom must pause before the tab's stored view follows it.
+const VIEW_STATE_DELAY_MS = 200;
 const SLIDESHOW_MS = 4000;
 const toolButton = "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white/85 hover:bg-white/10 hover:text-white disabled:opacity-40";
 
@@ -358,9 +361,37 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
     infoScrollRef.current = infoPositionsRef.current.get(photo.id) ?? initialInfoScrollTop ?? 0;
     if (infoRef.current) infoRef.current.scrollTop = infoScrollRef.current;
   }, [photo.id, infoOpen, initialInfoScrollTop]);
+  // Pan and zoom change on every pointer move or wheel tick; the stored view
+  // follows once they pause, and on unmount or capture.
+  const onViewStateChangeRef = useRef(onViewStateChange);
+  const latestViewRef = useRef({ transform, infoOpen });
+  const viewStateTimerRef = useRef<number | null>(null);
+  const viewStatePendingRef = useRef(false);
+  const reportedInfoOpenRef = useRef<boolean | null>(null);
+  const reportViewState = useCallback(() => {
+    if (viewStateTimerRef.current !== null) {
+      window.clearTimeout(viewStateTimerRef.current);
+      viewStateTimerRef.current = null;
+    }
+    if (!viewStatePendingRef.current) return;
+    viewStatePendingRef.current = false;
+    const latest = latestViewRef.current;
+    onViewStateChangeRef.current?.({ transform: latest.transform, infoOpen: latest.infoOpen, infoScrollTop: infoScrollRef.current });
+  }, []);
+  useLayoutEffect(() => { onViewStateChangeRef.current = onViewStateChange; });
   useLayoutEffect(() => {
-    onViewStateChange?.({ transform, infoOpen, infoScrollTop: infoScrollRef.current });
-  }, [transform, infoOpen, onViewStateChange]);
+    latestViewRef.current = { transform, infoOpen };
+    viewStatePendingRef.current = true;
+    if (reportedInfoOpenRef.current !== infoOpen) {
+      reportedInfoOpenRef.current = infoOpen;
+      reportViewState();
+      return;
+    }
+    if (viewStateTimerRef.current !== null) window.clearTimeout(viewStateTimerRef.current);
+    viewStateTimerRef.current = window.setTimeout(reportViewState, VIEW_STATE_DELAY_MS);
+  }, [transform, infoOpen, reportViewState]);
+  useCanvasViewStateCapture(reportViewState);
+  useLayoutEffect(() => reportViewState, [reportViewState]);
   const hasPrevious = index > 0;
   const hasNext = index < photos.length - 1;
 
@@ -644,7 +675,8 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
           infoScrollRef.current = event.currentTarget.scrollTop;
           infoPositionsRef.current.set(photo.id, infoScrollRef.current);
           if (infoPositionsRef.current.size > 64) infoPositionsRef.current.delete(infoPositionsRef.current.keys().next().value!);
-          onViewStateChange?.({ transform, infoOpen, infoScrollTop: infoScrollRef.current });
+          viewStatePendingRef.current = true;
+          reportViewState();
         }} className="flex w-80 shrink-0 flex-col gap-4 overflow-auto border-l border-white/10 p-5 max-md:hidden">
           <h2 className="text-sm font-semibold">Info</h2>
           <dl className="space-y-3 text-sm">

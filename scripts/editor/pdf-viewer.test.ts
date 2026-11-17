@@ -293,6 +293,38 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       await unmount();
       assert.deepEqual(changes.at(-1), { scrollTop: 123, scrollLeft: 0 });
     });
+    await t.test("a long scroll writes the position once it pauses, not while it continues", async () => {
+      normalLoad();
+      await mount();
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      changes.length = 0;
+      const scroller = host.querySelector(".overflow-auto")!;
+      // Events 60 ms apart for about 0.7 s: a throttle would write several times.
+      for (let i = 1; i <= 12; i++) {
+        await act(async () => {
+          scroller.scrollTop = i * 10;
+          scroller.dispatchEvent(new dom.window.Event("scroll"));
+          await new Promise((resolve) => setTimeout(resolve, 60));
+        });
+      }
+      assert.equal(changes.filter((change) => change.scrollTop !== undefined).length, 0);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
+      assert.deepEqual(changes.filter((change) => change.scrollTop !== undefined), [{ scrollTop: 120, scrollLeft: 0 }]);
+      // Unmounting mid-gesture stores the final position.
+      changes.length = 0;
+      await act(async () => { scroller.scrollTop = 77; scroller.dispatchEvent(new dom.window.Event("scroll")); });
+      assert.equal(changes.length, 0);
+      await unmount();
+      assert.deepEqual(changes.at(-1), { scrollTop: 77, scrollLeft: 0 });
+      // So does a view-state capture (tab switch, layout change, quit).
+      await mount();
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      changes.length = 0;
+      const again = host.querySelector(".overflow-auto")!;
+      await act(async () => { again.scrollTop = 55; again.dispatchEvent(new dom.window.Event("scroll")); captureCanvasViewState(); });
+      assert.deepEqual(changes.filter((change) => change.scrollTop !== undefined), [{ scrollTop: 55, scrollLeft: 0 }]);
+      await unmount();
+    });
     await t.test("PDF tabs restore both scroll axes and zoom after a rapid switch", async () => {
       normalLoad();
       const proto = dom.window.HTMLElement.prototype;
@@ -499,7 +531,10 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
         onViewStateChange: (patch: import("../../src/components/libera/types").ImageTabViewState) => states.push(patch) };
       await act(async () => root.render(createElement(ImageViewer, props)));
       assert.match(host.querySelector<HTMLElement>(".libera-photo-frame")!.style.transform, /translate\(42.5px, -90.25px\) scale\(2.5\)/);
+      const before = states.length;
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
+      assert.equal(states.length, before, "The stored zoom waits for the gesture to settle");
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
       const zoom = states.at(-1)!.zoom!;
       assert.ok(zoom > 2.5);
       await unmount();
