@@ -429,6 +429,21 @@ function expandText(source: string, context: Context, depth: number): string | n
       continue;
     }
     const math = closer !== null || outer === "math";
+    // `\usebox{\xymor}` of a formula saved with `\savebox` (definitions.ts `readSaveboxMacros`): that formula, as one group.
+    const usebox = math && next === "u" ? /^\\usebox\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))/.exec(source.slice(i, i + 80)) : null;
+    const saved = usebox ? macroAt(context.defs, `box@${usebox[1] ?? usebox[2]}`, context.pos) : null;
+    if (usebox && saved) {
+      if (depth >= MAX_MACRO_DEPTH || --context.budget < 0) return null;
+      context.used.add(saved.fingerprint);
+      context.mode = "math";
+      const inner = expandText(saved.body, context, depth + 1);
+      context.mode = outer;
+      if (inner === null) return null;
+      output = joinTokens(output + source.slice(copied, i), inner);
+      copied = i + usebox[0].length;
+      i = copied - 1;
+      continue;
+    }
     context.mode = math ? "math" : outer;
     const result = expandUse(source, i, context, depth);
     context.mode = outer;
