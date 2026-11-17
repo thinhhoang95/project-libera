@@ -30,6 +30,9 @@ after(() => dom.window.close());
 function visualState(text: string) {
   let state = EditorState.create({ doc: text, selection: { anchor: text.length }, extensions: [latexLanguageSupport("main.tex", "tree"), latexVisualState(), latexVisualMode({ documentPath: "nb/main.tex" })] });
   ensureSyntaxTree(state, text.length, 5000);
+  // The finished tree is only in the parse context until a transaction goes through: `syntaxTree(state)` (what numbering and the builds read) is the
+  // short one the first 20 ms of parsing made, on a busy machine. Run an empty one so the state carries the whole tree.
+  state = state.update({}).state;
   for (let guard = 0; state.field(structuralField).pending.length && guard < 500; guard++) {
     const next = state.field(structuralField).pending[0];
     state = state.update({ effects: buildPendingEffect.of({ from: next.from, to: Math.min(next.to, next.from + CHUNK) }) }).state;
@@ -41,6 +44,7 @@ function mount(text: string) {
   const parent = document.createElement("div");
   document.body.append(parent);
   const view = new EditorView({ state: visualState(text), parent });
+  assert.equal(syntaxTree(view.state).length, text.length, "the view starts from the whole parse tree");
   const numbering = computeLatexNumbering(syntaxTree(view.state), (from, to) => view.state.doc.sliceString(from, to), visualDefinitions(view.state));
   view.dispatch({ effects: setNumbering.of(numbering) });
   refreshVisualWidgets(view);
@@ -110,9 +114,15 @@ async function plainClickEditor(source: string, index: number, from: number, to:
   console.error = () => {};
   const { view, done } = mount(source);
   [...view.contentDOM.querySelectorAll<HTMLElement>(".cm-vis-math")][index].dispatchEvent(new dom.window.MouseEvent("mousedown", { button: 0, bubbles: true, cancelable: true }));
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // The editor opens after MathLive's module has loaded (a dynamic import, slow on a busy machine), and under jsdom it ends as the
+  // source area: wait for that, or for the caret to be put inside the source instead, not for a fixed time. Bounded: a click that
+  // does neither fails after the guard.
+  const editorArea = () => document.querySelector<HTMLTextAreaElement>(".cm-vis-math-editor .cm-vis-math-source");
+  const revealed = () => view.state.selection.main.head >= from && view.state.selection.main.head <= to;
+  const deadline = Date.now() + 20_000;
+  while (!editorArea() && !revealed() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
   console.error = quiet;
-  const area = document.querySelector<HTMLTextAreaElement>(".cm-vis-math-editor .cm-vis-math-source");
+  const area = editorArea();
   const value = area ? area.value : null;
   const head = view.state.selection.main.head;
   done();

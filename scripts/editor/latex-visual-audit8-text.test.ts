@@ -23,6 +23,9 @@ after(() => dom.window.close());
 function visualState(doc: string, anchor: number, sources: MacroSource[]) {
   let state = EditorState.create({ doc, selection: { anchor }, extensions: [latexLanguageSupport("main.tex", "tree"), latexVisualState(), latexVisualMode({ documentPath: "nb/main.tex" })] });
   ensureSyntaxTree(state, doc.length, 5000);
+  // The finished tree is only in the parse context until a transaction goes through: `syntaxTree(state)` (what numbering and the builds read) is the
+  // short one the first 20 ms of parsing made, on a busy machine. Run an empty one so the state carries the whole tree.
+  state = state.update({}).state;
   if (sources.length) state = state.update({ effects: setMacroSources.of(sources) }).state;
   for (let guard = 0; state.field(structuralField).pending.length && guard < 200; guard++) {
     const next = state.field(structuralField).pending[0];
@@ -36,6 +39,7 @@ function mount(doc: string, anchor = 0, sources: MacroSource[] = []) {
   const parent = document.createElement("div");
   document.body.append(parent);
   const view = new EditorView({ state: visualState(doc, anchor, sources), parent });
+  assert.equal(syntaxTree(view.state).length, doc.length, "the view starts from the whole parse tree");
   const numbering = computeLatexNumbering(syntaxTree(view.state), (from, to) => view.state.doc.sliceString(from, to), visualDefinitions(view.state));
   view.dispatch({ effects: setNumbering.of(numbering) });
   refreshVisualWidgets(view);

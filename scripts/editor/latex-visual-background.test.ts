@@ -41,9 +41,19 @@ test("the idle filler does not spin on pending pieces past what the parser has r
   let effects = 0;
   const view = mountWith(doc, (n) => { effects += n; });
   try {
-    // Let the background parser and the first builds settle.
-    await sleep(1500);
-    const tree = syntaxTree(view.state).length;
+    // Let the background parser and the first builds settle: the tree has stopped growing and the builder has caught up with it
+    // (waiting on that state, not on a clock: how far each gets in a fixed time depends on the machine's load).
+    let tree = 0;
+    let steady = 0;
+    for (let i = 0; i < 600 && steady < 10; i++) {
+      await sleep(50);
+      const reached = syntaxTree(view.state).length;
+      const pending = view.state.field(structuralField).pending;
+      const caughtUp = reached > 0 && pending.length > 0 && pending[0].from >= reached - 1;
+      steady = reached === tree && caughtUp ? steady + 1 : 0;
+      tree = reached;
+    }
+    assert.ok(steady >= 10, `the builder catches up with the parser within 30 s (tree ${tree}, first pending ${JSON.stringify(view.state.field(structuralField).pending[0])})`);
     assert.ok(tree < doc.length, `the parser stops short of the document (tree ${tree} of ${doc.length})`);
     const pending = view.state.field(structuralField).pending;
     assert.ok(pending.length > 0 && pending[0].from >= tree - 1, `only what the parser did not reach is pending (${JSON.stringify(pending[0])}, tree ${tree})`);
