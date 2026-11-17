@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { RefObject } from "react";
 import {
   BookMarked,
@@ -105,6 +105,13 @@ export function LeftPanel({
       onToggleCollapsed();
     }
   }
+  // The notebook panel is memoized: its "manage workspace" callback keeps one
+  // identity and reaches the latest selectPanel through a ref.
+  const latestSelectPanel = useRef(selectPanel);
+  useLayoutEffect(() => {
+    latestSelectPanel.current = selectPanel;
+  });
+  const manageWorkspace = useCallback(() => latestSelectPanel.current("workspaces"), []);
 
   // macOS frameless window: the collapsed rail is too narrow for the traffic
   // lights, so hide them until the panel expands again. No-op elsewhere.
@@ -217,7 +224,7 @@ export function LeftPanel({
                   <button className="min-w-0 flex-1 text-left" title="Manage active workspace" onClick={() => selectPanel("workspaces")}><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Workspace</span><span className="block truncate text-sm font-medium">{workspaceManager.activeWorkspace.name}</span></button>
                   <button className="libera-sidebar-icon-button rounded-lg p-1.5" aria-label="Exit workspace" title="Exit workspace" disabled={workspaceManager.switching} onClick={() => { void workspaceManager.switchWorkspace(null).catch(() => selectPanel("workspaces")); }}><LogOut className="h-3.5 w-3.5" /></button>
                 </div>}
-                <NotebookPanel {...notebookPanelProps} onManageWorkspace={() => selectPanel("workspaces")} workspaceActive={Boolean(workspaceManager.activeWorkspace)} />
+                <NotebookPanel {...notebookPanelProps} onManageWorkspace={manageWorkspace}workspaceActive={Boolean(workspaceManager.activeWorkspace)} />
               </>
             ) : activePanel === "gallery" ? (
               <ImageGenerationPanel

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { captureCanvasViewState } from "./canvas-view-state";
 import { apiRequest, encodeFilePath } from "./api-client";
@@ -347,10 +347,15 @@ export function useSavedWorkspaces(options: Options) {
     void task.finally(() => fileChanges.current.delete(task));
     return task;
   }
+  // Views of the workspace take it as a context value; reading the latest
+  // updateView through a ref keeps that value from changing on every render.
+  const latestUpdateView = useRef(updateView);
+  useLayoutEffect(() => { latestUpdateView.current = updateView; });
+  const stableUpdateView = useCallback((change: (view: WorkspaceView) => WorkspaceView) => latestUpdateView.current(change), []);
   return {
     workspaces: library.workspaces, activeWorkspace, ready, switching, loadError, epoch,
     retry: () => setAttempt((value) => value + 1),
-    visibleTree, organizedTree, updateView,
+    visibleTree, organizedTree, updateView: stableUpdateView,
     organizeTree: (tree: LiberaTree) => applyWorkspaceView(tree, libraryRef.current.workspaces.find((workspace) => workspace.id === libraryRef.current.activeWorkspaceId)?.view),
     runFileChange: async <T,>(operation: () => Promise<T>, describe: (result: T) => WorkspaceFileChange): Promise<T> => {
       if (locked.current || !readyRef.current) throw new Error("Please wait for your workspace to finish loading.");

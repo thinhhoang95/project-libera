@@ -292,6 +292,16 @@ export function LiberaApp({
   const viewedPhotoUrl = galleryViewingPhoto ? galleryRawUrl(galleryViewingPhoto) : null;
   const chatViewedPhoto = useMemo<ChatViewedPhoto | null>(() => viewedPhotoSource && viewedPhotoName && viewedPhotoUrl ? { source: viewedPhotoSource, name: viewedPhotoName, url: viewedPhotoUrl } : null, [viewedPhotoSource, viewedPhotoName, viewedPhotoUrl]);
   const galleryChat = useMemo(() => ({ open: !chatCollapsed, onToggle: () => changeChatCollapsed(!chatCollapsed) }), [chatCollapsed, changeChatCollapsed]);
+  // The workspace functions below keep their identity across renders, so what
+  // is built from them changes only with the data it reads.
+  const { openFile, files: workspaceFiles } = workspace;
+  const openFileByPath = useCallback((path: string) => {
+    const file = workspaceFiles.find((item) => item.path === path);
+    if (file) { void openFile(file); return; }
+    // A file outside the active workspace's view is still opened by path.
+    void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
+      .then((payload) => openFile(payload.file)).catch(() => undefined);
+  }, [workspaceFiles, openFile]);
   // Agent mode reads open drafts and puts its file changes back into the editor.
   const agentWorkspace: AgentWorkspaceBridge = {
     notebook: workspace.selectedNotebookName || undefined,
@@ -300,13 +310,7 @@ export function LiberaApp({
     restoreTabAfterUndo: workspace.restoreTabAfterUndo,
     replaceTabFromDisk: workspace.replaceTabFromDisk,
     refreshAfterChanges: workspace.refreshAfterAgentChanges,
-    openFile: (path) => {
-      const file = workspace.files.find((item) => item.path === path);
-      if (file) { void workspace.openFile(file); return; }
-      // A file outside the active workspace's view is still opened by path.
-      void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
-        .then((payload) => workspace.openFile(payload.file)).catch(() => undefined);
-    },
+    openFile: openFileByPath,
   };
 
   // The References panel: reveal/add requests from anywhere switch the rail
@@ -330,37 +334,49 @@ export function LiberaApp({
     () => activePdfPath ? { notebook: activePdfNotebook, path: activePdfPath } : null,
     [activePdfNotebook, activePdfPath],
   );
-  const references: LeftPanelReferences = {
-    activeMarkdownDraft: workspace.activeMarkdownDraft,
+  const activeMarkdownDraft = workspace.activeMarkdownDraft;
+  const activeDocumentPath = workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null;
+  const activeLatexDraft = activeLatexSource ? activeLatexSource.draft : null;
+  const activeLatexPath = activeLatexSource && !activeLatexSource.untitled ? activeLatexSource.file.path : null;
+  const canCite = workspace.activeTab?.file.fileType === "markdown" || Boolean(activeLatexSource);
+  const citeSyntax = activeLatexSource ? "latex" : "markdown";
+  const { insertCitation, insertBibliographyMarker, uploadFiles, applyCitationRewriteToTab, revertCitationRewriteInTab } = workspace;
+  const { request: referencesRequest, handled: referencesRequestHandled } = referenceRequests;
+  const references = useMemo<LeftPanelReferences>(() => ({
+    activeMarkdownDraft,
     activePdf: activeReferencePdf,
-    activeDocumentPath: workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null,
+    activeDocumentPath,
     openDrafts: openReferenceDrafts,
-    activeLatexDraft: activeLatexSource ? activeLatexSource.draft : null,
-    activeLatexPath: activeLatexSource && !activeLatexSource.untitled ? activeLatexSource.file.path : null,
-    canCite: workspace.activeTab?.file.fileType === "markdown" || Boolean(activeLatexSource),
-    citeSyntax: activeLatexSource ? "latex" : "markdown",
-    onCite: (key, command) => { workspace.insertCitation(key, command); },
-    onCiteMany: (keys, command) => { workspace.insertCitation(keys, command); },
-    onInsertBibliography: () => { workspace.insertBibliographyMarker(); },
-    onOpenPath: agentWorkspace.openFile,
+    activeLatexDraft,
+    activeLatexPath,
+    canCite,
+    citeSyntax,
+    onCite: (key, command) => { insertCitation(key, command); },
+    onCiteMany: (keys, command) => { insertCitation(keys, command); },
+    onInsertBibliography: () => { insertBibliographyMarker(); },
+    onOpenPath: openFileByPath,
     // The citation is selected and revealed, as a Global Search hit is.
     onOpenCitation: (path, { start, end, line, snippet }) => {
-      const open = (file: LiberaFileNode) => void workspace.openFile(file, {
+      const open = (file: LiberaFileNode) => void openFile(file, {
         viewState: isLatexCitingPath(file.path)
           ? { latex: { line, revealRange: { start, end, snippet, nonce: Date.now() } } }
           : { markdown: { line, selectionStart: start, selectionEnd: start, reveal: { start, end, nonce: Date.now() } } },
       });
-      const file = workspace.files.find((item) => item.path === path);
+      const file = workspaceFiles.find((item) => item.path === path);
       if (file) { open(file); return; }
       void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
         .then((payload) => open(payload.file)).catch(() => undefined);
     },
-    onUploadFiles: workspace.uploadFiles,
-    request: referenceRequests.request,
-    onRequestHandled: referenceRequests.handled,
-    onApplyCitationRewrite: workspace.applyCitationRewriteToTab,
-    onRevertCitationRewrite: workspace.revertCitationRewriteInTab,
-  };
+    onUploadFiles: uploadFiles,
+    request: referencesRequest,
+    onRequestHandled: referencesRequestHandled,
+    onApplyCitationRewrite: applyCitationRewriteToTab,
+    onRevertCitationRewrite: revertCitationRewriteInTab,
+  }), [
+    activeMarkdownDraft, activeReferencePdf, activeDocumentPath, openReferenceDrafts, activeLatexDraft, activeLatexPath, canCite, citeSyntax,
+    insertCitation, insertBibliographyMarker, openFileByPath, openFile, workspaceFiles, uploadFiles, referencesRequest, referencesRequestHandled,
+    applyCitationRewriteToTab, revertCitationRewriteInTab,
+  ]);
   const referenceNotebook = (workspace.activeTab && !workspace.activeTab.untitled ? workspace.activeTab.file.notebook : "") || workspace.selectedNotebookName;
   useReferencePaletteCommands({
     notebook: referenceNotebook,
@@ -633,6 +649,20 @@ export function LiberaApp({
     { id: "migration", label: "Migration…", onSelect: () => workspace.openMigrationDialog() },
   ]);
 
+  // What the left panel receives must not change identity when only a draft or
+  // a tab's view state changed, or the notebook tree behind it renders again.
+  const toggleNotebooksCollapsed = useCallback(() => setNotebooksCollapsed((current) => !current), []);
+  const { openMigrationDialog, refreshTree, openDirectory } = workspace;
+  const openMigration = useCallback(() => openMigrationDialog(), [openMigrationDialog]);
+  const saveGeneratedFiles = useCallback((files: LiberaFileNode[]) => {
+    void refreshTree(files[0]?.notebook).catch(() => undefined);
+  }, [refreshTree]);
+  const repairNotebook = useCallback((notebook: string) => refreshTree(notebook).catch(() => undefined), [refreshTree]);
+  const openLibraryDirectory = useCallback(() => void openDirectory(), [openDirectory]);
+  const { activeWorkspace, updateView } = workspace.workspaceManager;
+  const activeWorkspaceView = activeWorkspace?.view;
+  const workspaceView = useMemo(() => ({ view: activeWorkspaceView, updateView }), [activeWorkspaceView, updateView]);
+
   function renderCanvasPane(pane: CanvasPaneNode, focused: boolean) {
     const tab = workspace.tabs.find((currentTab) => currentTab.id === pane.tabId);
 
@@ -718,7 +748,7 @@ export function LiberaApp({
     <QuickPromptsContext.Provider value={quickPrompts}>
     <EditorThemesContext.Provider value={resolvedEditorThemes}>
     <NotebookIllustrationsContext.Provider value={illustrationLibrary}>
-    <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
+    <WorkspaceViewContext.Provider value={workspaceView}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <ReviewPaletteCommands />
     <DefinitionsPaletteCommands activeTab={workspace.activeTab} onShow={() => { changeLeftPanel("outlines"); setNotebooksCollapsed(false); }} />
@@ -794,7 +824,7 @@ export function LiberaApp({
           onCreateLatex={workspace.createLatexFromPrompt}
           onCreateTextFile={workspace.createTextFileFromPrompt}
           onCreateNotebook={workspace.openCreateNotebookDialog}
-          onOpenMigration={() => workspace.openMigrationDialog()}
+          onOpenMigration={openMigration}
           onCreateNotebookGroup={workspace.openCreateNotebookGroupDialog}
           onDeleteFile={workspace.deleteFileNodeFromPrompt}
           onDeleteFolder={workspace.deleteFolderFromPrompt}
@@ -816,19 +846,17 @@ export function LiberaApp({
           onStartUpload={workspace.startUpload}
           onToggleFileStar={workspace.toggleFileStar}
           onEditFileTags={workspace.openFileTagsDialog}
-          onToggleCollapsed={() => setNotebooksCollapsed((current) => !current)}
-          onGeneratedFilesSaved={(files) => {
-            void workspace.refreshTree(files[0]?.notebook).catch(() => undefined);
-          }}
+          onToggleCollapsed={toggleNotebooksCollapsed}
+          onGeneratedFilesSaved={saveGeneratedFiles}
           onToggleNotebook={workspace.toggleNotebook}
           onOpenSearchPreferences={openSearchPreferences}
           references={references}
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
-          onNotebookRepaired={(notebook) => workspace.refreshTree(notebook).catch(() => undefined)}
+          onNotebookRepaired={repairNotebook}
           canOpenDirectories={workspace.canOpenDirectories}
-          onOpenDirectory={() => void workspace.openDirectory()}
+          onOpenDirectory={openLibraryDirectory}
           onCloseDirectory={workspace.closeDirectory}
         />
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useWorkspaceView } from "./workspace-view-context";
-import { createContext, useContext, useMemo, useState, useSyncExternalStore } from "react";
+import { createContext, memo, useContext, useMemo, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
@@ -579,7 +579,7 @@ async function copyItemPath(
   await window.liberaClipboard?.copyItemPath(relativePath, mode);
 }
 
-export function NotebookPanel({
+function NotebookPanelContent({
   workspaceActive,
   canOpenDirectories,
   onOpenDirectory,
@@ -1151,6 +1151,10 @@ export function NotebookPanel({
     </div>
   );
 }
+
+// The shell re-renders for every draft publication; the tree only when its own
+// props change (the shell keeps their identities across a draft-only change).
+export const NotebookPanel = memo(NotebookPanelContent);
 
 function StarredFilesSection({
   activeTabId,
