@@ -31,7 +31,7 @@ test("dragging a Markdown document's card picks a page budget, and follow-ups se
   const root = createRoot(host);
   async function render(line: number) {
     const active = tab(line);
-    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: active, files: [active.file], tabs: [active], collapsed: false, mathMarkers: {}, onCollapsedChange: () => {}, onCreateDraft: () => {} } as never)));
+    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: active, files: [active.file], tabs: [active], readOpenTabs: () => [active], collapsed: false, mathMarkers: {}, onCollapsedChange: () => {}, onCreateDraft: () => {} } as never)));
     await act(flushPendingState);
   }
   const chip = () => host.querySelector<HTMLElement>('.libera-context-chip[data-kind="document"]')!;
