@@ -236,8 +236,9 @@ test("panel highlights files that link to the open file, with counts on collapse
   const render = (activeTabId: string) => new JSDOM(renderToStaticMarkup(createElement(NotebookPanel,
     new Proxy({ ...props, activeTabId }, { get: (target, key) => key in target ? target[key as keyof typeof target] : noop }),
   ))).window.document;
+  // The file's name only: an untagged row also shows its edited age beside it, which moves with today's date.
   const highlighted = (document: Document) =>
-    [...document.querySelectorAll('[data-backlink="true"]')].map((row) => row.textContent?.trim());
+    [...document.querySelectorAll('[data-backlink="true"]')].map((row) => row.querySelector(".truncate")?.textContent?.trim());
 
   let document = render("Alpha/photo.png");
   assert.deepEqual(highlighted(document), ["a.md"], "only expanded rows are listed");

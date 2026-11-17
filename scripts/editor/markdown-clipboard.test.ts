@@ -104,7 +104,8 @@ test("native copy writes only Markdown, spans messages and leaves outside select
   const event = { clipboardData: { clearData: () => data.clear(), setData: (type: string, value: string) => data.set(type, value) } as unknown as DataTransfer, preventDefault: () => { prevented = true; } };
   assert.equal(copyRenderedMarkdownSelection(host, event), true);
   assert.equal(prevented, true);
-  assert.deepEqual([...data], [['text/plain', '**First**\n\n*Second*']]);
+  // The marker type lets Libera's own editors read the copy as Markdown.
+  assert.deepEqual([...data], [['text/plain', '**First**\n\n*Second*'], ['application/x-libera-markdown', '**First**\n\n*Second*']]);
   selection.collapse(host, 0);
   assert.equal(copyRenderedMarkdownSelection(host, event), false);
   range.selectNodeContents(document.body);

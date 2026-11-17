@@ -209,7 +209,7 @@ test("outline depth collapses descendants, supports manual expansion and searche
     assert.equal(host.querySelector("select")?.value, "1");
     assert.deepEqual(visibleHeadings(), ["First", "Second"]);
 
-    assert.deepEqual(saved, { textWidth: 62, textScale: 120, outlineExpansionLevel: 1 },
+    assert.deepEqual(saved, { textWidth: 62, latexTextWidth: 62, codeTextWidth: 62, latexSpellcheck: true, textScale: 120, outlineExpansionLevel: 1 },
       "The selected level is saved without changing other display preferences");
     await act(async () => root.render(null));
     await act(async () => root.render(renderOutline(activeTab)));

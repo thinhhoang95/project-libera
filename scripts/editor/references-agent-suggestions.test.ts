@@ -30,6 +30,7 @@ async function withLibrary(run: (root: string) => Promise<void>) {
     await writeFile(path.join(root, "Research", "plan.md"), PLAN);
     await writeFile(path.join(root, "Research", "paper.tex"), "\\section{Intro}\n\nWe show a 12\\% gain.\nIt is robust.\n\nMore text.\n");
     await writeFile(path.join(root, "Research", "notes.txt"), "Plain.\n");
+    await writeFile(path.join(root, "Research", "figure.png"), "not really an image");
     await run(root);
   } finally {
     globalThis.fetch = originalFetch;
@@ -76,7 +77,9 @@ test("SuggestEdit matches a unique passage within a block and never changes the 
     assert.match((await call(context, "SuggestEdit", { path: "Research/plan.md", before: "budget", after: "plan", reason: "r" })).text, /^before matches 2 places in Research\/plan\.md \(lines 3, 6\)/);
     assert.match((await call(context, "SuggestEdit", { path: "Research/plan.md", before: "May.\n\nThe budget", after: "June.\n\nThe budget", reason: "r" })).text, /^Nothing was recorded: before spans parts of several paragraphs/);
     assert.match((await call(context, "SuggestEdit", { path: "Research/plan.md", before: "40k", after: "40k", reason: "r" })).text, /identical/);
-    assert.match((await call(context, "SuggestEdit", { path: "Research/notes.txt", before: "Plain", after: "Simple", reason: "r" })).text, /not a Markdown or LaTeX file/);
+    assert.match((await call(context, "SuggestEdit", { path: "Research/figure.png", before: "Plain", after: "Simple", reason: "r" })).text, /is not a text file/);
+    // Plain text takes suggested edits like Markdown and LaTeX, under the same read-first rule.
+    assert.match((await call(context, "SuggestEdit", { path: "Research/notes.txt", before: "Plain", after: "Simple", reason: "r" })).text, /^Read Research\/notes\.txt before suggesting edits to it\./);
 
     const recorded = await call(context, "SuggestEdit", { path: "Research/plan.md", before: "The Q3 budget is 40k.", after: "The Q3 budget is 45k.", reason: "The summary table says 45k. It was revised in August.", comment: "See the table on page 2." });
     assert.equal(recorded.isError, false);

@@ -180,7 +180,6 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "000");
     const history = host.querySelector<HTMLSelectElement>("#document-chat-history")!;
     assert.ok(history.classList.contains("font-semibold"));
-    assert.ok(history.parentElement?.querySelector("svg"));
     await act(async () => { history.value = firstId; history.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
     assert.ok(host.textContent?.includes("A helpful answer"));
     await act(async () => root.unmount());

@@ -27,7 +27,7 @@ test("both layouts bound visible rows and locate photos that have never mounted"
 
 test("10,000 photos keep a bounded DOM through seeking and preview navigation", async () => {
   const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: "http://localhost", pretendToBeVisual: true });
-  for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element", "Node", "Image", "CustomEvent", "Event"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element", "Node", "Image", "CustomEvent", "Event", "MutationObserver"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, ResizeObserver: class {
     constructor(readonly callback: ResizeObserverCallback) {}
     observe(target: Element) { this.callback([{ target, contentRect: { width: 1000 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }

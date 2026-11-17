@@ -85,11 +85,14 @@ test("PDF authority routing and copy", async (t) => {
     await t.test("F12: copy sends current host marks with fresh ids as part of publishing the blob", async () => {
       await writeFile(sidecar, original);
       const seen: FileOpRequest[] = [];
+      const hostVersion = Buffer.from("%PDF-1.4 the host's version");
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input));
         if (url.pathname === "/pdf-docs/resolve") return Response.json({ docId: "pdf_live", projectId: "prj_test", fileId: "fil_source", accountId: "acc_me", path: "Shared/source.pdf" });
         if (url.pathname === "/pdf-docs/pdf_live/snapshot") return Response.json({ marks: [annotation("fresh-from-host")], comments: [] });
         if (url.pathname === "/projects") return Response.json([{ projectId: "prj_test", notebook: "Shared", pdfLive: true }]);
+        // A copy is made from the host's version of the file, not from this device's working copy.
+        if (url.pathname === "/projects/prj_test/file-blob") return Response.json({ fileId: "fil_source", blobHash: "hash_host", contentBase64: hostVersion.toString("base64") });
         if (url.pathname.endsWith("/files")) {
           const operation = JSON.parse(String(init?.body)) as FileOpRequest;
           seen.push(operation);
@@ -100,6 +103,7 @@ test("PDF authority routing and copy", async (t) => {
       };
       await copyFileIntoSharedDirectory("Shared/source.pdf", "Shared", "copy.pdf");
       assert.equal(seen.length, 1);
+      assert.equal(seen[0].contentBase64, hostVersion.toString("base64"), "the copy carries the host's bytes");
       const copied = seen[0].pdfSeed!.marks as Array<{ id: string; text: string }>;
       assert.equal(copied[0].text, "fresh-from-host");
       assert.notEqual(copied[0].id, "fresh-from-host");

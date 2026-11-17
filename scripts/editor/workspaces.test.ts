@@ -406,6 +406,23 @@ test("active workspace tracks file operations, persists them, and owns uploads t
       children(directory).push(target);
       return Response.json({ file: target, content: body.content ?? "content" });
     }
+    if (url === "/api/notebooks/migrate") {
+      const body = JSON.parse(String(init?.body));
+      if (body.action !== "run") return Response.json({});
+      const { notebook: destination, folder } = body.request.destination as { notebook: string; folder?: string };
+      const directory = folder ? `${destination}/${folder}` : destination;
+      const moved = (body.request.paths as string[]).map((from) => {
+        const source = children(from.split("/").slice(0, -1).join("/"));
+        source.splice(source.findIndex((node) => node.path === from), 1);
+        const target = file(`${directory}/${from.split("/").at(-1)}`);
+        children(directory).push(target);
+        return { from, to: target.path, fileType: "markdown" };
+      });
+      return Response.json({
+        id: "mig_test", state: "done", source: body.request.source, destination, createdNotebook: false, moved, remaining: [], folders: [],
+        references: null, referenceEntries: { copied: 0, reused: 0 }, bookkeeping: [], leftovers: [], check: "clean",
+      });
+    }
     if (url === "/api/folders" && init?.method === "POST") {
       const body = JSON.parse(String(init.body));
       children(body.parentPath).push({ kind: "folder", name: body.name, path: `${body.parentPath}/${body.name}`, notebook: body.parentPath.split("/")[0], children: [], createdAt: date, updatedAt: date });
@@ -425,7 +442,13 @@ test("active workspace tracks file operations, persists them, and owns uploads t
   const visible = (path: string) => assert.ok(paths(workspace.tree).includes(path), `${path} should be visible`);
   try {
     await render();
+    // A move to another notebook is a one-file migration: "Move…" opens its review, and confirming runs it.
     await act(async () => { await workspace.moveFileToFolder(a, "Other"); });
+    assert.deepEqual(workspace.migrationPreset, { paths: [a.path], destination: "Other", folder: "", flat: true });
+    await act(async () => {
+      await workspace.runNotebookMigration({ source: a.notebook, paths: [a.path], destination: { notebook: "Other", folder: "" } }, "token");
+      workspace.closeMigrationDialog();
+    });
     visible("Other/a.md");
     assert.ok(!paths(workspace.tree).includes(d.path), "unrelated siblings remain hidden");
     await act(async () => { workspace.createUntitledFile("Other"); });

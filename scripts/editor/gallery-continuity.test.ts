@@ -13,7 +13,7 @@ const photo = (id: string, starred = false): GalleryPhoto => ({
 
 test("gallery sections and individual photos retain scroll, zoom and info state through panel switches", async () => {
   const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: "http://localhost", pretendToBeVisual: true });
-  for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element", "Node", "Image", "CustomEvent"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element", "Node", "Image", "CustomEvent", "MutationObserver"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true,
     ResizeObserver: class {
       constructor(readonly callback: ResizeObserverCallback) {}

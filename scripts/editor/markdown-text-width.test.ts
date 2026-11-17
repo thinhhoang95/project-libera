@@ -56,7 +56,8 @@ test("shared display preferences restore on reopen and dragging queues one CSS u
     assert.equal(canvas.style.getPropertyValue("--markdown-text-width"), "1");
     assert.equal(input.getAttribute("aria-valuetext"), "Full width");
     await act(async () => input.dispatchEvent(new dom.window.Event("pointerup", { bubbles: true })));
-    assert.deepEqual(saved, { textWidth: 100, textScale: 120, outlineExpansionLevel: 6 });
+    // The LaTeX and code editors keep their own page widths: they start at the stored Markdown width and do not follow the drag.
+    assert.deepEqual(saved, { textWidth: 100, latexTextWidth: 60, codeTextWidth: 60, latexSpellcheck: true, textScale: 120, outlineExpansionLevel: 6 });
     assert.equal(writes, 1);
 
     await act(async () => {
@@ -64,7 +65,7 @@ test("shared display preferences restore on reopen and dragging queues one CSS u
     });
     assert.equal(writes, 1, "Scale updates are debounced");
     await act(async () => settings.flushPreferences());
-    assert.deepEqual(saved, { textWidth: 100, textScale: 150, outlineExpansionLevel: 6 });
+    assert.deepEqual(saved, { textWidth: 100, latexTextWidth: 60, codeTextWidth: 60, latexSpellcheck: true, textScale: 150, outlineExpansionLevel: 6 });
     assert.equal(writes, 2);
     await act(async () => root.render(null));
     await render();
@@ -119,12 +120,13 @@ test("legacy width migrates once, failed saves can retry, and pagehide flushes p
     fail = false;
     await act(async () => document.querySelector("button")!.click());
     assert.equal(writes, 2);
-    assert.deepEqual(saved, { textWidth: 44, textScale: 100, outlineExpansionLevel: 6 });
+    // Only the Markdown width migrates from the legacy key; the other editors start at the default.
+    assert.deepEqual(saved, { textWidth: 44, latexTextWidth: 75, codeTextWidth: 75, latexSpellcheck: true, textScale: 100, outlineExpansionLevel: 6 });
     assert.equal(document.querySelector('[role="alert"]'), null);
     await act(async () => settings.updatePreferences({ textScale: 125 }));
     assert.equal(writes, 2);
     await act(async () => window.dispatchEvent(new dom.window.Event("pagehide")));
-    assert.deepEqual(saved, { textWidth: 44, textScale: 125, outlineExpansionLevel: 6 });
+    assert.deepEqual(saved, { textWidth: 44, latexTextWidth: 75, codeTextWidth: 75, latexSpellcheck: true, textScale: 125, outlineExpansionLevel: 6 });
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = oldFetch;
