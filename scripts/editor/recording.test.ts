@@ -190,3 +190,70 @@ test("a recording left as chunk files is moved into one file", () => inRecording
   const finished = await sessions.finishRecording(id);
   assert.match(finished.path, /^Meetings\/Old\.(m4a|wav)$/);
 }));
+
+test("a launcher consumer is not rendered again when the recorder's state changes", async () => {
+  const { JSDOM } = await import("jsdom");
+  const { act, createElement } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { MeetingRecorderProvider, useRecorderContext, useRecorderLauncher } = await import("../../src/components/libera/recording/meeting-recorder");
+  const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
+  for (const key of ["window", "document", "HTMLElement"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: Object.assign(dom.window.navigator, { mediaDevices: { getUserMedia: () => new Promise(() => undefined) } }) });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+  // The setup request is held so the test decides when the recorder's state changes.
+  let answerSetup!: () => void;
+  const setupAnswer = new Promise<void>((resolve) => { answerSetup = resolve; });
+  const json = (body: unknown) => ({ ok: true, status: 200, headers: new Headers(), json: async () => body });
+  Object.assign(globalThis, {
+    fetch: async (url: string) => {
+      if (url === "/api/transcripts/setup") {
+        await setupAnswer;
+        return json({ models: { state: "ready", asr: false }, hasApiKey: false });
+      }
+      return json({ recordings: [] });
+    },
+  });
+
+  let launcherRenders = 0;
+  let recorderRenders = 0;
+  let launcher: ReturnType<typeof useRecorderLauncher> = null;
+  function LauncherConsumer() {
+    launcherRenders++;
+    launcher = useRecorderLauncher();
+    return null;
+  }
+  function RecorderConsumer() {
+    recorderRenders++;
+    useRecorderContext();
+    return null;
+  }
+  const children = createElement("div", null, createElement(LauncherConsumer), createElement(RecorderConsumer));
+  const tabActions = () => ({ open: () => undefined, rename: () => undefined, saved: () => undefined, close: () => undefined });
+  const root = createRoot(document.getElementById("root")!);
+  try {
+    await act(async () => root.render(createElement(MeetingRecorderProvider, { tabs: tabActions(), visibleTabIds: [] }, children)));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.equal(launcher?.busy, false);
+    const startRecording = launcher!.startRecording;
+    const settled = { launcher: launcherRenders, recorder: recorderRenders };
+
+    // The parent hands the provider a new tabs object on each of its renders.
+    for (let i = 0; i < 5; i++) await act(async () => root.render(createElement(MeetingRecorderProvider, { tabs: tabActions(), visibleTabIds: [] }, children)));
+    assert.equal(launcherRenders, settled.launcher, "new tab actions do not render the launcher's consumers");
+    assert.ok(recorderRenders > settled.recorder, "the recorder's own consumers do follow the provider");
+    assert.equal(launcher!.startRecording, startRecording, "startRecording keeps its identity");
+
+    await act(async () => startRecording("Notes"));
+    assert.equal(launcher?.busy, true, "starting makes the launcher busy");
+    assert.equal(launcherRenders, settled.launcher + 1, "and renders its consumers once");
+
+    // The speech setup arriving changes the recorder's state but not whether it is busy.
+    const beforeSetup = { launcher: launcherRenders, recorder: recorderRenders };
+    await act(async () => { answerSetup(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.ok(recorderRenders > beforeSetup.recorder, "the recorder state changed");
+    assert.equal(launcherRenders, beforeSetup.launcher, "the launcher's consumers were not rendered");
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
