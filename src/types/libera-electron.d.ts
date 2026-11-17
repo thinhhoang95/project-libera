@@ -142,6 +142,8 @@ declare global {
       toggleMaximize: () => Promise<void>;
       setButtonsVisible: (visible: boolean) => Promise<void>;
       setTheme: (theme: "light" | "dark" | "system") => Promise<void>;
+      listUserFonts?: () => Promise<string[]>;
+      getUserFontFaces?: (families: string[]) => Promise<Array<{ family: string; weight: string; style: string; url: string; fullName: string }>>;
       onThemeChanged: (listener: (theme: "light" | "dark" | "system") => void) => () => void;
       onEditorThemesChanged?: (listener: (themes: import("../../electron/editor-themes.cjs").ResolvedEditorThemes) => void) => () => void;
       onNotebookIllustrationsChanged?: (listener: (library: import("../../electron/notebook-illustrations.cjs").NotebookIllustrationLibrary) => void) => () => void;

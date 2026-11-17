@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' libera-font:;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Set Up Libera Editor</title>
@@ -1897,15 +1897,38 @@
         codeFont: { label: "Code font", system: "System monospace (default)", stack: (font) => font ? `"${font}", ui-monospace, monospace` : "\"SFMono-Regular\", ui-monospace, Menlo, Consolas, monospace", help: "The Markdown source, LaTeX and code editors." },
       };
       let systemFontFamilies = null;
+      // Chromium's list can miss fonts Windows installed for the current user, so
+      // the list is merged with the ones main reads from their files, and those
+      // are registered here from the same files so the previews can draw them.
       async function readSystemFontFamilies() {
         if (typeof window.queryLocalFonts !== "function") throw new Error("System font discovery is unavailable in this version of Electron.");
         const fonts = await window.queryLocalFonts();
-        return Array.from(new Set(fonts.map((font) => (typeof font.family === "string" ? font.family.trim() : "")).filter(Boolean)))
-          .sort((left, right) => left.localeCompare(right));
+        const userFamilies = await window.liberaWindow?.listUserFonts?.().catch(() => []) ?? [];
+        const unique = new Map();
+        for (const family of [...fonts.map((font) => font.family), ...userFamilies]) {
+          const name = typeof family === "string" ? family.trim() : "";
+          if (name && !unique.has(name.toLowerCase())) unique.set(name.toLowerCase(), name);
+        }
+        return Array.from(unique.values()).sort((left, right) => left.localeCompare(right));
+      }
+      const userFontLoads = new Map();
+      function loadUserFontFamily(family) {
+        if (!family) return;
+        const key = family.toLowerCase();
+        if (userFontLoads.has(key)) return;
+        const get = window.liberaWindow?.getUserFontFaces;
+        if (!get) return;
+        userFontLoads.set(key, Promise.resolve(get([family])).catch(() => []).then((faces) => Promise.all(faces.map(async (face) => {
+          const source = `url(${JSON.stringify(face.url)})${face.fullName ? `, local(${JSON.stringify(face.fullName)})` : ""}`;
+          try {
+            document.fonts.add(await new FontFace(face.family, source, { weight: face.weight, style: face.style }).load());
+            return true;
+          } catch { return false; }
+        }))).then((added) => added.some(Boolean)));
       }
       function fillFontSelect(select, kind, value) {
         const options = [["", editorThemeFontKinds[kind].system], ...(systemFontFamilies ?? []).map((family) => [family, family])];
-        if (value && !options.some(([family]) => family === value)) options.push([value, systemFontFamilies ? `${value} (not installed)` : value]);
+        if (value && !options.some(([family]) => family === value)) options.push([value, systemFontFamilies ? `${value} (not found)` : value]);
         select.replaceChildren(...options.map(([family, label]) => {
           const option = document.createElement("option");
           option.value = family;
@@ -2144,6 +2167,8 @@
           }
           function refresh() {
             const colorsNow = theme[appearanceKey];
+            loadUserFontFamily(theme.textFont);
+            loadUserFontFamily(theme.codeFont);
             for (const [key] of editorThemeColorFields) inputs[key].value = colorsNow[key];
             preview.style.background = colorsNow.background;
             preview.style.color = colorsNow.text;

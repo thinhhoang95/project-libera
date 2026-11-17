@@ -14,6 +14,7 @@ const {
   nativeImage,
   nativeTheme,
   powerMonitor,
+  protocol,
   session,
   shell,
 } = require("electron");
@@ -39,6 +40,7 @@ const {
   isEncryptedPreferencesBackup,
   readPreferencesBackup,
 } = require("./preferences-io.cjs");
+const { attachUserFontProtocol, createUserFonts, registerUserFontScheme } = require("./user-fonts.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
 const { OPENROUTER_SPEECH_MODELS_URL, OPENROUTER_TRANSCRIPTION_MODELS_URL, createOpenRouterModelCatalog } = require("./openrouter-models.cjs");
@@ -194,9 +196,15 @@ function getRunningProfileId() {
   return runningProfileId;
 }
 
+// Windows per-user fonts that Chromium's font list misses (electron/user-fonts.cjs).
+const userFonts = createUserFonts();
+if (process.platform === "win32") registerUserFontScheme(protocol);
+
 function getProfileSession() {
   const partition = profileSessionPartition(getRunningProfileId());
-  return partition ? session.fromPartition(partition) : session.defaultSession;
+  const profileSession = partition ? session.fromPartition(partition) : session.defaultSession;
+  if (process.platform === "win32") attachUserFontProtocol(profileSession, userFonts);
+  return profileSession;
 }
 
 /** Plays the role of userData for the running profile (collaboration, workspace recovery). */
@@ -2383,6 +2391,12 @@ function installWindowControlHandlers() {
     profileSignedIn = false;
     await clearLoginCookie(getProfileSession(), nextServerUrl);
   });
+
+  // Windows only; elsewhere Chromium's own font list is complete, so these are empty.
+  ipcMain.handle("window:list-user-fonts", () =>
+    process.platform === "win32" ? userFonts.listFamilies().catch(() => []) : []);
+  ipcMain.handle("window:get-user-font-faces", (_event, families) =>
+    process.platform === "win32" && Array.isArray(families) ? userFonts.facesFor(families).catch(() => []) : []);
 
   ipcMain.handle("window:minimize", (event) => {
     getWindowFromIpcEvent(event)?.minimize();

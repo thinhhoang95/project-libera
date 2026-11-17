@@ -5,6 +5,7 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownSlidesPrintDocument } from "@/components/libera/markdown-slides-viewer";
 import { useNotebookCodeBlockRenderer, waitForSlideBlocksReady } from "@/components/libera/slide-live-blocks";
 import { parseMarkdownSlides } from "@/lib/markdown-slides";
+import { ensureUserFonts, whenUserFontsLoaded } from "@/lib/user-fonts";
 import {
   ReferenceRenderProvider,
   referenceNotebookForPath,
@@ -102,6 +103,8 @@ async function waitForExportReady(root: HTMLElement) {
   await waitForReferencesReady(root);
   await nextFrame();
   await nextFrame();
+  // Windows per-user fonts are registered from their files; wait for them too.
+  await whenUserFontsLoaded();
   await document.fonts?.ready;
   await waitForImages(root);
   // Slide charts and live HTML frames draw after their data and scripts load.
@@ -123,6 +126,10 @@ export function MarkdownPdfExportPage({
   );
   const documentFontFamily = getRenderedMarkdownFontStack(textFont || DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY);
   const renderCodeBlock = useNotebookCodeBlockRenderer(payload?.documentPath, documentFontFamily, "export");
+
+  useEffect(() => {
+    void ensureUserFonts([textFont]);
+  }, [textFont]);
 
   useEffect(() => {
     const { documentElement } = document;

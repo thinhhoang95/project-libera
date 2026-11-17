@@ -9,6 +9,7 @@ import {
   DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY,
   DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY,
 } from "@/lib/markdown-preferences";
+import { ensureUserFonts } from "@/lib/user-fonts";
 
 export const NO_EDITOR_THEMES: ResolvedEditorThemes = { visual: null, source: null, latex: null, pdf: null };
 
@@ -46,6 +47,12 @@ export function editorThemeFontStacks(themes: ResolvedEditorThemes) {
 export function useEditorThemes(initialThemes: ResolvedEditorThemes) {
   const [themes, setThemes] = useState(initialThemes);
   useEffect(() => window.liberaWindow?.onEditorThemesChanged?.(setThemes), []);
+  // Windows per-user fonts Chromium does not list are registered from their files.
+  useEffect(() => {
+    void ensureUserFonts([
+      themes.visual?.textFont, themes.latex?.textFont, themes.source?.codeFont, themes.latex?.codeFont,
+    ].filter((font): font is string => Boolean(font)));
+  }, [themes]);
   useEffect(() => {
     const root = document.documentElement;
     const properties: string[] = [];
