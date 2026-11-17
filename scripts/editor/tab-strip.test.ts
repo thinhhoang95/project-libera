@@ -3,6 +3,7 @@ import test from "node:test";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import type { OpenTab } from "../../src/components/libera/types";
+import type { ChromeTab } from "../../src/components/libera/tab-chrome";
 
 type MenuInput = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0];
 type MenuItem = MenuInput["items"][number];
@@ -47,7 +48,7 @@ test("file actions use one native menu between comments and the AI panel", async
   let editorMode = "";
   let latexMode = "";
   let saved = 0;
-  let addedToChat: OpenTab | null = null;
+  let addedToChat: ChromeTab | null = null;
   const pdfDownloads: string[] = [];
 
   window.liberaPlatform = { glass: false, isElectron: true, platform: "darwin" };
@@ -92,6 +93,7 @@ test("file actions use one native menu between comments and the AI panel", async
     onDeleteFile: async () => undefined,
     onDownloadAnnotatedPdf: async (selectedTab) => { pdfDownloads.push(`annotated:${selectedTab.file.name}`); },
     onDownloadFile: (file) => { pdfDownloads.push(`original:${file.name}`); },
+    readTabDraft: (tabId) => tabId === tab.id ? tab.draft : undefined,
     onDownloadMarkdownPdf: async () => undefined,
     onDuplicateMarkdown: () => undefined,
     onMarkdownEditorModeChange: (mode) => {

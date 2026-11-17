@@ -4,6 +4,7 @@ import { useMemo, useState, useSyncExternalStore } from "react";
 import { Check, ChevronDown, ChevronRight, FileDiff, X } from "lucide-react";
 import { agentReviewStore, reviewLineCounts } from "@/lib/agent-review/store";
 import type { AgentReviewRevertResult } from "@/lib/agent/types";
+import { useDraftRevision } from "./tab-chrome";
 
 type Row = { path: string; name: string; added: number; removed: number; created: boolean };
 
@@ -12,16 +13,17 @@ type Row = { path: string; name: string; added: number; removed: number; created
  * composer. Each file opens in its tab, where its changes are accepted or
  * rejected one by one; here they are accepted or rejected per file or all
  * at once. `readTabDraft` gives an open tab's live text, which the counts
- * follow; `revision` changes when tabs do.
+ * follow; it re-checks them after every draft publication (draftRevision),
+ * so the panel around it need not render for those.
  */
-export function AgentReviewStrip({ readTabDraft, revision, onOpenFile, onReverted, onError }: {
+export function AgentReviewStrip({ readTabDraft, onOpenFile, onReverted, onError }: {
   readTabDraft: (path: string) => string | null;
-  revision: unknown;
   onOpenFile: (path: string) => void;
   onReverted: (results: AgentReviewRevertResult[], drafts: Record<string, string | null>) => void | Promise<void>;
   onError: (message: string) => void;
 }) {
   const version = useSyncExternalStore(agentReviewStore.subscribe, agentReviewStore.version, () => 0);
+  const revision = useDraftRevision();
   const [collapsed, setCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const reviewError = agentReviewStore.error();

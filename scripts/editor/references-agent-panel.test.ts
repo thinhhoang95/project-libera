@@ -66,7 +66,7 @@ test("Agent mode: the web search toggle persists and is sent; child runs and sug
   let commentsShown = 0;
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); await act(flushPendingState); }
   async function mount() {
-    const panel = createElement(DocumentChatPanel, { activeTab: plan, tabs: [plan], files: [plan.file], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined, agentWorkspace: bridge });
+    const panel = createElement(DocumentChatPanel, { activeTab: plan, tabs: [plan], readOpenTabs: () => [plan], files: [plan.file], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined, agentWorkspace: bridge });
     // eslint-disable-next-line react/no-children-prop
     await act(async () => root.render(createElement(MarkdownReviewProvider, { activeTab: plan, getDraft: () => "# Plan", applyDraft: () => true, recoverDraft: () => {}, openChat: () => {}, openComments: () => { commentsShown++; }, children: panel })));
     await settle();

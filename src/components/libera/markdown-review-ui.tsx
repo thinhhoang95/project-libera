@@ -288,7 +288,7 @@ export function ReviewPopover() {
     {composing ? <form className="flex flex-col gap-2" onSubmit={async (e) => { e.preventDefault(); if (await r.action("comment", { range, text, ...(r.shared ? { mentions } : {}) })) { setText(""); setMentions([]); setComposing(false); r.clearSelection(); } }}>{r.shared ? <MentionTextarea autoFocus aria-label="New review comment" className="review-textarea" projectId={r.shared.projectId} selfId={r.shared.projection.me?.id} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Comment… Type @ to mention someone" /> : <textarea autoFocus aria-label="New review comment" className="review-textarea" value={text} onChange={(e) => setText(e.target.value)} />}<button className={`${button} self-start`} disabled={!text.trim() || !!r.busy} onMouseDown={keepFocus}><MessageSquarePlus size={14} /> Add comment</button></form> : <button className={button} disabled={!!r.busy} onMouseDown={keepFocus} onClick={() => setComposing(true)}><MessageSquarePlus size={14} /> Add comment</button>}
   </div>;
 }
-export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs: OpenTab[] }) {
+export function ReviewChatPanel({ files, readOpenTabs }: { files: LiberaFileNode[]; /** The open tabs with their text as of now, read when a file is attached. */ readOpenTabs: () => readonly OpenTab[] }) {
   const referenceFiles = useMemo(() => files.filter((file) => isTextFileType(file.fileType)), [files]);
   const r = useMarkdownReview()!;
   const [prompt, setPrompt] = useState("");
@@ -396,7 +396,7 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
         setAttachmentBusy(true);
         setError("");
         try {
-          const tab = tabs.find((item) => !item.untitled && item.file.path === file.path);
+          const tab = readOpenTabs().find((item) => !item.untitled && item.file.path === file.path);
           const existing = references.find((ref) => ref.path === file.path);
           const payload = existing || tab ? null : await apiRequest<{ content?: string }>(`/api/files?path=${encodeURIComponent(file.path)}`);
           const text = existing?.text ?? tab?.draft ?? payload?.content;

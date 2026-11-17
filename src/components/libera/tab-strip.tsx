@@ -1,7 +1,7 @@
 "use client";
 
 import { ReviewToggle } from "./markdown-review-ui";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import type { MouseEvent } from "react";
 import { Code, Download, Eye, FolderInput, MoreHorizontal, Plus, Sparkles, TextCursorInput, X } from "lucide-react";
 import { usePaletteCommands } from "./command-palette/commands";
@@ -9,10 +9,9 @@ import type { LatexTabViewState, MarkdownEditorMode, OpenTab } from "@/component
 
 import { TAB_DRAG_MIME } from "@/lib/canvas-layout";
 import { FileTypeIcon } from "./file-type";
-import { isGalleryTab } from "./gallery-tabs";
+import { chromeTabKind, type ChromeTab } from "./tab-chrome";
 import { announceImageSaved, imageSaveMenuItems, runImageSaveMenuAction } from "./image-save";
-import { isRecordingTab } from "./recording/recording-tabs";
-import { isPageTab, PAGES } from "./page-tabs";
+import { PAGES } from "./page-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { isCompilableLatexPath } from "@/lib/latex/project";
@@ -35,21 +34,23 @@ type TabStripProps = {
   /** The active .tex tab's editor mode (LaTeX opens in Source). */
   latexEditorMode: LatexEditorMode;
   onLatexEditorModeChange: (mode: LatexEditorMode) => void;
-  activeTab?: OpenTab;
+  activeTab?: ChromeTab;
   activeTabId: string;
   notebookColors: Record<string, string>;
-  tabs: OpenTab[];
+  tabs: readonly ChromeTab[];
   onActivateTab: (tabId: string) => void;
-  onAddToAiChat: (tab: OpenTab) => void;
+  onAddToAiChat: (tab: ChromeTab) => void;
   onDuplicateMarkdown: (file: OpenTab["file"]) => void;
   onCloseOtherTabs: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
-  onDeleteFile: (tab: OpenTab) => Promise<void>;
-  onDownloadAnnotatedPdf: (tab: OpenTab) => Promise<void>;
+  onDeleteFile: (tab: ChromeTab) => Promise<void>;
+  onDownloadAnnotatedPdf: (tab: ChromeTab) => Promise<void>;
   onDownloadFile: (file: OpenTab["file"], content?: string) => void;
-  onDownloadMarkdownPdf: (tab: OpenTab) => Promise<void>;
-  onMoveFile: (tab: OpenTab) => Promise<void>;
-  onRenameFile: (tab: OpenTab) => Promise<void>;
+  /** The published text of an open tab, read when the user downloads it. */
+  readTabDraft: (tabId: string) => string | undefined;
+  onDownloadMarkdownPdf: (tab: ChromeTab) => Promise<void>;
+  onMoveFile: (tab: ChromeTab) => Promise<void>;
+  onRenameFile: (tab: ChromeTab) => Promise<void>;
   onSave: () => Promise<void>;
   onSwapTabs: (sourceTabId: string, targetTabId: string) => void;
   // Split canvas. Tabs listed in `visibleTabIds` are on screen in some panel.
@@ -71,6 +72,7 @@ const SPLIT_SIDES: Array<{ zone: CanvasSplitZone; label: string }> = [
   { zone: "bottom", label: "Below" },
 ];
 type NativeMenuItems = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0]["items"];
+const { gallery: isGalleryTab, recording: isRecordingTab, page: isPageTab } = chromeTabKind;
 
 type ActiveFileActionsProps = Pick<
   TabStripProps,
@@ -82,6 +84,7 @@ type ActiveFileActionsProps = Pick<
   | "onDeleteFile"
   | "onDownloadAnnotatedPdf"
   | "onDownloadFile"
+  | "readTabDraft"
   | "onDownloadMarkdownPdf"
   | "onMoveFile"
   | "onRenameFile"
@@ -143,7 +146,7 @@ function nativeMenuPointFromMouseEvent(event: MouseEvent<HTMLElement>) {
   };
 }
 
-export function TabStrip({
+export const TabStrip = memo(function TabStrip({
   chatOpen,
   onToggleChat,
   onCreateUntitled,
@@ -162,6 +165,7 @@ export function TabStrip({
   onDeleteFile,
   onDownloadAnnotatedPdf,
   onDownloadFile,
+  readTabDraft,
   onDownloadMarkdownPdf,
   onMoveFile,
   onRenameFile,
@@ -184,7 +188,7 @@ export function TabStrip({
   }
 
   /** A tab's context menu; the macOS Tab menu leaves out the split items, which are in View. */
-  function tabMenuItems(tab: OpenTab, splitItems = true): NativeMenuItems {
+  function tabMenuItems(tab: ChromeTab, splitItems = true): NativeMenuItems {
     return [
       // A recording in progress has no file for AI Chat or another window to open.
       ...(isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "add-to-ai-chat", label: "Add to AI Chat" }, { type: "separator" as const }]),
@@ -206,7 +210,7 @@ export function TabStrip({
     ];
   }
 
-  async function openTabContextMenu(event: MouseEvent<HTMLButtonElement>, tab: OpenTab) {
+  async function openTabContextMenu(event: MouseEvent<HTMLButtonElement>, tab: ChromeTab) {
     event.preventDefault();
     event.stopPropagation();
 
@@ -226,7 +230,7 @@ export function TabStrip({
     runTabMenuAction(tab, selectedItemId);
   }
 
-  function runTabMenuAction(tab: OpenTab, selectedItemId: string | null) {
+  function runTabMenuAction(tab: ChromeTab, selectedItemId: string | null) {
     if (selectedItemId === "add-to-ai-chat") {
       onAddToAiChat(tab);
     } else if (selectedItemId === "open-split-right") {
@@ -364,7 +368,7 @@ export function TabStrip({
                 }}
               >
                 <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
-                  {isPageTab(tab) ? <PageTabIcon kind={tab.page.kind} /> : <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />}
+                  {tab.page ? <PageTabIcon kind={tab.page.kind} /> : <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />}
                 </span>
                 <span className="truncate">{tab.file.name}</span>
                 {isDragTarget ? (
@@ -414,6 +418,7 @@ export function TabStrip({
           onDeleteFile={onDeleteFile}
           onDownloadAnnotatedPdf={onDownloadAnnotatedPdf}
           onDownloadFile={onDownloadFile}
+          readTabDraft={readTabDraft}
           onDownloadMarkdownPdf={onDownloadMarkdownPdf}
           onMoveFile={onMoveFile}
           onRenameFile={onRenameFile}
@@ -439,7 +444,7 @@ export function TabStrip({
       </div>
     </div>
   );
-}
+});
 
 function ActiveFileActions({
   markdownEditorMode,
@@ -450,6 +455,7 @@ function ActiveFileActions({
   onDeleteFile,
   onDownloadAnnotatedPdf,
   onDownloadFile,
+  readTabDraft,
   onDownloadMarkdownPdf,
   onMoveFile,
   onRenameFile,
@@ -567,7 +573,7 @@ function ActiveFileActions({
   }
 
   /** The file actions of `tab`, the active tab, then the canvas layout. */
-  async function actionMenuItems(tab: OpenTab): Promise<NativeMenuItems> {
+  async function actionMenuItems(tab: ChromeTab): Promise<NativeMenuItems> {
     // Shared files have a version history.
     const historyItems = historyMenuItems(tab.id);
     // PDFs and images: their unsaved annotations and ink (pending-saves.ts).
@@ -671,7 +677,7 @@ function ActiveFileActions({
   }
 
   /** Runs a choice from actionMenuItems(tab). */
-  async function runAction(tab: OpenTab, selectedItemId: string | null) {
+  async function runAction(tab: ChromeTab, selectedItemId: string | null) {
     if (runCanvasMenuAction(selectedItemId, canvasActions)) {
       return;
     }
@@ -694,7 +700,7 @@ function ActiveFileActions({
     } else if (selectedItemId === "save") {
       await onSave();
     } else if (selectedItemId === "download-markdown") {
-      onDownloadFile(tab.file, tab.file.fileType === "markdown" || tab.file.fileType === "latex" || tab.file.fileType === "text" ? tab.draft : undefined);
+      onDownloadFile(tab.file, tab.file.fileType === "markdown" || tab.file.fileType === "latex" || tab.file.fileType === "text" ? readTabDraft(tab.id) : undefined);
     } else if (selectedItemId === "download-pdf") {
       await onDownloadMarkdownPdf(tab);
     } else if (selectedItemId === "download-pdf-annotated") {

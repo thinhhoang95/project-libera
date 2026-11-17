@@ -35,7 +35,7 @@ test("a photo viewed in the gallery is attached once per chat and replaces the d
   const host = document.getElementById("root")!;
   const root = createRoot(host);
   async function render(viewedPhoto: ChatViewedPhoto | null) {
-    await act(async () => root.render(createElement(DocumentChatPanel, { viewedPhoto, activeTab: markdown, files: [markdown.file], tabs: [markdown], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined })));
+    await act(async () => root.render(createElement(DocumentChatPanel, { viewedPhoto, activeTab: markdown, files: [markdown.file], tabs: [markdown], readOpenTabs: () => [markdown], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined })));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
   }
   async function click(label: string) { await act(async () => { const button = host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button, label); button.click(); }); await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); }); }

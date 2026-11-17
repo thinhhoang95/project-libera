@@ -50,7 +50,7 @@ test("a fact-check request opens the AI panel and starts an Agent run with the s
   const root = createRoot(host);
   const { DocumentChatPanel, factCheckPrompt } = await import("../../src/components/libera/document-chat-panel");
   const render = (collapsed: boolean) => root.render(createElement(DocumentChatPanel, {
-    activeTab: draft, tabs: [draft], files: [draft.file], collapsed, mathMarkers: {},
+    activeTab: draft, tabs: [draft], readOpenTabs: () => [draft], files: [draft.file], collapsed, mathMarkers: {},
     onCollapsedChange: (value: boolean) => { collapsedChanges.push(value); }, onCreateDraft: () => undefined,
     agentWorkspace: { notebook: "Research", readTabDraft: () => null, syncTabFromDisk: async () => null, restoreTabAfterUndo: () => undefined, replaceTabFromDisk: () => undefined, refreshAfterChanges: async () => undefined, openFile: () => undefined },
   }));
