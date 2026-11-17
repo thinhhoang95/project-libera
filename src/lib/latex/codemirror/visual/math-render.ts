@@ -651,7 +651,8 @@ function changeCaseForKatex(latex: string, direction: "Upper" | "Lower") {
     const group = readGroup(latex, match.index + match[0].length, TEX_GROUPS);
     if (!group || /\\(?:begin|end|label|ref|cite|eqref)(?![A-Za-z@])/.test(group.content)) continue;
     const changed = group.content.replace(/\\(?:[A-Za-z@]+|.)|[^\\]+/g, (token) => token[0] === "\\" ? token : direction === "Upper" ? token.toUpperCase() : token.toLowerCase());
-    out += `${latex.slice(at, match.index)}{${changed}}`;
+    // The braces only delimit the argument, as for TeX's `\uppercase`: no group is left (`\textup{\MakeUppercase{iv}}` is `\textup{IV}`).
+    out += `${latex.slice(at, match.index)}${changed}`;
     at = group.end;
   }
   return at ? out + latex.slice(at) : latex;

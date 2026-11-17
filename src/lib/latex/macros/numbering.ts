@@ -204,15 +204,24 @@ function fillEnumitemCounter(label: string, count: number, depth: number) {
 
 const LABEL_FONT_SWITCHES = /\\(?:normalfont|upshape|itshape|slshape|scshape|bfseries|mdseries|rmfamily|sffamily|ttfamily|normalsize|bf|it|rm|sf|tt|sl|sc|em)(?![A-Za-z@])\s*/g;
 const LABEL_FONT_WRAPPERS = /\\(?:textup|textnormal|textrm|textmd|textit|textbf|textsl|textsc|textsf|texttt|emph)\s*\{([^{}]*)\}/g;
+/** The switches that restore the default upright text a marker has anyway: dropping them changes nothing drawn. */
+const NEUTRAL_FONT_SWITCHES = /\\(?:normalfont|upshape|rmfamily|mdseries|normalsize)(?![A-Za-z@])\s*/g;
+const NEUTRAL_FONT_WRAPPERS = /\\(?:textup|textnormal|textrm|textmd)\s*\{([^{}]*)\}/g;
 
-/** A list label's font switches (`\normalfont(\roman*)`, `\textup{(\alph*)}`) outside formulas: dropped, they only restyle the marker (math.GR 2611.14085). */
-export function dropLabelFonts(label: string) {
+/**
+ * A list label's font switches outside formulas: dropped. `all` (a `\ref` chip, which is plain text): every switch and
+ * wrapper. Otherwise (an item's marker, which the walk draws as LaTeX): only the neutral ones (`\normalfont(\roman*)`,
+ * `\textup{(\alph*)}`, math.GR 2611.14085), so `\textbf{\alph*)}` stays bold.
+ */
+export function dropLabelFonts(label: string, all = true) {
   if (!label.includes("\\")) return label;
+  const switches = all ? LABEL_FONT_SWITCHES : NEUTRAL_FONT_SWITCHES;
+  const wrappers = all ? LABEL_FONT_WRAPPERS : NEUTRAL_FONT_WRAPPERS;
   return label.split(/(\$[^$]*\$)/).map((part, index) => {
     if (index % 2) return part;
-    let text = part.replace(LABEL_FONT_SWITCHES, "");
+    let text = part.replace(switches, "");
     for (let guard = 0; guard < 4; guard++) {
-      const next = text.replace(LABEL_FONT_WRAPPERS, "$1");
+      const next = text.replace(wrappers, "$1");
       if (next === text) break;
       text = next;
     }
@@ -252,9 +261,9 @@ export function plainTagText(tag: string) {
 /** The label an `enumerate` item shows: `1.`, `(a)`, or a custom `[(i)]` / `label=(\alph*)` template. */
 export function enumerateItemLabel(count: number, depth: number, template: string | null) {
   if (template && template.includes("\\")) {
-    // Font switches only restyle the marker: dropped. The walk draws the rest as LaTeX or leaves it as written.
+    // Neutral font switches change nothing drawn: dropped. The walk draws the rest as LaTeX or leaves it as written.
     const keyed = /(?:^|,)\s*label\s*=/.test(template);
-    const cleaned = keyed ? template.replace(/((?:^|,)\s*label\s*=\s*)(\{(?:[^{}]|\{[^{}]*\})*\}|[^,]*)/, (_, key: string, value: string) => key + dropLabelFonts(value)) : dropLabelFonts(template);
+    const cleaned = keyed ? template.replace(/((?:^|,)\s*label\s*=\s*)(\{(?:[^{}]|\{[^{}]*\})*\}|[^,]*)/, (_, key: string, value: string) => key + dropLabelFonts(value, false)) : dropLabelFonts(template, false);
     return enumerateItemLabelFor(count, depth, cleaned);
   }
   return enumerateItemLabelFor(count, depth, template);
@@ -293,7 +302,7 @@ export function enumerateItemReference(counts: number[], templates: Array<string
   const template = templates[depth - 1];
   if (template) {
     const ref = /(?:^|,)\s*ref\s*=\s*([^,]+)/.exec(template)?.[1]?.trim();
-    const shown = ref ? withoutLabelBraces(fillEnumitemCounter(dropLabelFonts(ref), counts[depth - 1], depth)) : enumerateItemLabel(counts[depth - 1], depth, template).replace(/\.$/, "");
+    const shown = ref ? withoutLabelBraces(fillEnumitemCounter(dropLabelFonts(ref), counts[depth - 1], depth)) : dropLabelFonts(enumerateItemLabel(counts[depth - 1], depth, template)).replace(/\.$/, "");
     // A `\ref` chip is plain text: a command it cannot show (outside a formula) falls back to LaTeX's own item reference.
     if (!hasRawCommand(shown)) return shown;
   }
