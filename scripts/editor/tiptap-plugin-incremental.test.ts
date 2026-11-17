@@ -357,11 +357,11 @@ test("a heading level change and a split of a heading renumber", () => {
     const intro = editor.state.doc.child(1);
     assert.equal(intro.type.name, "heading");
     editor.chain().setTextSelection(editor.state.doc.child(0).nodeSize + 3).setNode("heading", { level: 3 }).run();
-    assert.equal(applyTiptapStructuralNumbers(editor.state.tr, { enabled: true, skipTitle: true }).docChanged, false);
+    assert.equal(applyTiptapStructuralNumbers(editor.state.tr, { skipTitle: true }).docChanged, false);
     const heading = editor.state.doc.child(1);
     assert.equal(heading.attrs.level, 3);
     editor.view.dispatch(editor.state.tr.split(editor.state.doc.child(0).nodeSize + 3));
-    assert.equal(applyTiptapStructuralNumbers(editor.state.tr, { enabled: true, skipTitle: true }).docChanged, false);
+    assert.equal(applyTiptapStructuralNumbers(editor.state.tr, { skipTitle: true }).docChanged, false);
   } finally {
     editor.destroy();
   }

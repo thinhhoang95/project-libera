@@ -33,7 +33,7 @@ const findState = (editor: Editor) => tiptapFindPluginKey.getState(editor.state)
 const describe = (state: TiptapFindState) => ({
   active: state.activeMatchIndex,
   matches: state.matches,
-  decorations: state.decorations.find().map((decoration) => `${decoration.from}-${decoration.to}:${(decoration.type as unknown as { attrs: { class: string } }).attrs.class}`).sort(),
+  decorations: state.decorations.find().map((decoration) => `${decoration.from}-${decoration.to}:${(decoration as unknown as { type: { attrs: { class: string } } }).type.attrs.class}`).sort(),
 });
 function textPositions(doc: ProseMirrorNode) {
   const positions: number[] = [];

@@ -113,7 +113,7 @@ function sliceSource(source: SourceTextAccess, from: number, to: number) {
 
 /** A CodeMirror document as a lazy text source: windows come from the rope, the whole text is joined only on `read`. */
 export function lazyDocText(doc: { sliceString(from: number, to: number): string; toString(): string }): SourceTextAccess {
-  return { slice: (from, to) => doc.sliceString(from, to), read: () => doc.toString() };
+  return { slice: (from: number, to: number) => doc.sliceString(from, to), read: () => doc.toString() };
 }
 
 function readSource(source: SourceTextAccess) {

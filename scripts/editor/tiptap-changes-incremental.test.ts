@@ -37,7 +37,7 @@ function textRange(editor: Editor, text: string) {
 // Everything a decoration shows: its range and the type's attributes or widget key/side.
 function describe(set: DecorationSet) {
   return set.find().map((decoration) => {
-    const type = decoration.type as unknown as { attrs?: unknown; spec?: { key?: string; side?: number } };
+    const type = (decoration as unknown as { type: unknown }).type as { attrs?: unknown; spec?: { key?: string; side?: number } };
     return { from: decoration.from, to: decoration.to, attrs: type.attrs ?? null, key: decoration.spec?.key ?? null, side: decoration.spec?.side ?? null };
   });
 }
@@ -45,7 +45,7 @@ function assertMatchesFullRebuild(editor: Editor, label: string) {
   const state = stateOf(editor);
   const full = changeDecorationsFull(editor.state.doc, state.changes, PATH);
   assert.deepEqual(describe(state.decorations), describe(full), label);
-  assert.ok(state.decorations.eq(full), `${label}: set structure`);
+  assert.ok((state.decorations as unknown as { eq(other: DecorationSet): boolean }).eq(full), `${label}: set structure`);
 }
 function previews(doc: ProseMirrorNode, next: () => number, channel?: string) {
   const out: TrackedChange[] = [];

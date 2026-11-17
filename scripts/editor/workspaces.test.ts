@@ -738,7 +738,7 @@ test("the structure token stands in revisions for saved text, and changes exactl
     const changed = new Set([
       token(session([tab("a", huge + "y"), tab("b", "b")])),
       token(session([tab("b", "b"), tab("a", huge + "y")])),
-      token(session([tab("a", huge + "y"), tab("b", "b", { file: { name: "b.md", path: "Other/b.md", notebook: "Other", fileType: "markdown" } })])),
+      token(session([tab("a", huge + "y"), tab("b", "b", { file: { name: "b.md", path: "Other/b.md", notebook: "Other", fileType: "markdown" } as OpenTab["file"] })])),
       token(session([tab("a", huge + "y"), tab("b", "b", { untitled: true })])),
       token(session([tab("a", huge + "y"), tab("b", "b", { standaloneSaveId: "s1" })])),
       token(session([tab("a", huge + "y"), tab("b", "b")], { type: "pane", id: "p", tabId: "a" })),

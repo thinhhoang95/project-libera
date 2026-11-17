@@ -38,7 +38,7 @@ function spy(text: string) {
   const counts = { read: 0, slices: 0, sliced: 0 };
   const lazy = lazyDocText(doc);
   const source: SourceTextAccess = {
-    slice(from, to) { counts.slices++; counts.sliced += Math.max(0, to - from); return (lazy as { slice(a: number, b: number): string }).slice(from, to); },
+    slice(from: number, to: number) { counts.slices++; counts.sliced += Math.max(0, to - from); return (lazy as { slice(a: number, b: number): string }).slice(from, to); },
     read() { counts.read++; return doc.toString(); },
   };
   return { source, counts };
