@@ -123,6 +123,8 @@ export const WRAPPER_ENVIRONMENTS: Record<string, { args: string; lines?: string
   // Line- and page-breaking only: `sloppypar` (looser lines), `samepage` (no page break inside), the hanging package's
   // `\begin{hangparas}{3ex}{1}` (a hanging indent for the paragraphs).
   sloppypar: { args: "" }, samepage: { args: "" }, hangparas: { args: "mm" },
+  // lineno's `nolinenumbers` / `linenumbers` (cs.RO 2611.20185) and the `KeepFromToc` wrapper of a contents list (math.OA 2611.08668): they change only what the page margin or the contents list holds.
+  nolinenumbers: { args: "" }, linenumbers: { args: "o" }, KeepFromToc: { args: "" },
   // footnote's `savenotes`: a footnote inside a list or table is kept for the end of the block (the footnotes are drawn as they are anyway).
   savenotes: { args: "" }, "savenotes*": { args: "" },
   // `\begin{lrbox}{\box} … \end{lrbox}` saves its content in a box for `\usebox`: not printed where it is written.

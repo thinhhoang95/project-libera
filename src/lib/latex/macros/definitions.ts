@@ -1208,7 +1208,11 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         const list = defs.macros.get(target[1]) ?? [];
         let aliased: LatexMacro | undefined;
         for (let i = list.length - 1; i >= 0 && !aliased; i--) if (list[i].end === undefined || list[i].end! > context.offset + start) aliased = list[i];
-        added = addMacro(context, aliased ? { ...aliased, name: name.name, pos, file: context.file, end: undefined, provided: undefined }
+        // `\let\author\OriginalAuthor` after `\let\OriginalAuthor\author`: puts the original back (2611.17871 restores REVTeX's
+        // title block commands before its supplement), so the command is the built-in again, not an alias of itself.
+        if (aliased?.alias && aliased.body === `\\${name.name}`) {
+          for (const earlier of defs.macros.get(name.name) ?? []) if (earlier.end === undefined) earlier.end = context.offset + start;
+        } else added = addMacro(context, aliased ? { ...aliased, name: name.name, pos, file: context.file, end: undefined, provided: undefined }
           : { name: name.name, arity: 0, body: `\\${target[1]}`, alias: true, pos, file: context.file }, "renew");
       }
     } else if (command === "DeclareMathOperator") {
@@ -1470,6 +1474,11 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           defs.documentClass = name.content.trim();
           // The class's options, which its `\DeclareOption`s and every package's see.
           defs.classOptions = [...(defs.passedOptions?.get(name.content.trim()) ?? []), ...(options ? options.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) : [])];
+        }
+        // JMLR's class loads algorithm2e as `\PassOptionsToPackage{algo2e,ruled}{algorithm2e}` (the environment is `algorithm2e`; q-bio.NC 2611.07809).
+        if (name.content.trim() === "jmlr" && !defs.packages.includes("algorithm2e")) {
+          defs.packages.push("algorithm2e");
+          defs.packageOptions.set("algorithm2e", ["algo2e", "ruled", ...(defs.passedOptions?.get("algorithm2e") ?? [])]);
         }
         addClassTheorems(defs, name.content.trim(), options?.content ?? "");
         // The class's text commands written in packages.ts (AASTeX's `\apj`); the document's own definitions win.
