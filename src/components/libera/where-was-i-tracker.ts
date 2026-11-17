@@ -34,6 +34,8 @@ type Tracked = {
   baseline: string | null;
   /** Shared text before the debounced tab mirror catches up. */
   sharedText?: string;
+  /** Reads the shared document's live text on demand (close, quit), so typing never materializes it. */
+  readShared?: () => string;
   /** Added to the notebook during this session. */
   created: boolean;
   shared: boolean;
@@ -148,7 +150,7 @@ export class WhereWasITracker {
       if (current.has(tabId)) continue;
       this.open.delete(tabId);
       // A closed tab's saved text is what reached the disk; discarded drafts do not count.
-      const entry = this.recordClosed(tracked, tracked.sharedText ?? this.previousTabs.get(tabId)?.saved ?? null);
+      const entry = this.recordClosed(tracked, this.currentSharedText(tracked) ?? this.previousTabs.get(tabId)?.saved ?? null);
       if (entry.edited) notebooksWithEdits.add(tracked.notebook);
     }
     this.previousTabs = current;
@@ -157,7 +159,7 @@ export class WhereWasITracker {
   }
 
   /** A shared tab's document attached: its text is where the session's changes start. */
-  sharedAttached(tabId: string, text: string) {
+  sharedAttached(tabId: string, text: string, read?: () => string) {
     const tracked = this.open.get(tabId);
     if (!tracked) return;
     if (!tracked.shared || tracked.baseline === null) {
@@ -165,13 +167,26 @@ export class WhereWasITracker {
     }
     tracked.shared = true;
     tracked.sharedText = text;
+    tracked.readShared = read;
   }
 
-  /** A shared document changed, by this window (`local`) or by someone else. */
-  sharedEdited(tabId: string, local: boolean, text: string) {
+  /**
+   * The shared text as of now: read from the document when a reader is known
+   * (it is the exact text, however recent the last edit), else the text
+   * recorded at attach. Undefined before the document attached.
+   */
+  private currentSharedText(tracked: Tracked): string | undefined {
+    if (tracked.sharedText === undefined) return undefined;
+    if (tracked.readShared) {
+      try { return tracked.readShared(); } catch { /* the document is gone: keep the last known text */ }
+    }
+    return tracked.sharedText;
+  }
+
+  /** A shared document changed, by this window (`local`) or by someone else. Carries no text: it is read when needed. */
+  sharedEdited(tabId: string, local: boolean) {
     const tracked = this.open.get(tabId);
     if (!tracked) return;
-    tracked.sharedText = text;
     if (local) tracked.editedByYou = true;
     else tracked.editedByOthers = true;
   }
@@ -223,7 +238,7 @@ export class WhereWasITracker {
     const entries = new Map(this.closed.get(notebook) ?? []);
     for (const [tabId, tracked] of this.open) {
       if (tracked.notebook !== notebook) continue;
-      const text = tracked.sharedText ?? (readText ? readText(tabId) : this.previousTabs.get(tabId)?.saved ?? null);
+      const text = this.currentSharedText(tracked) ?? (readText ? readText(tabId) : this.previousTabs.get(tabId)?.saved ?? null);
       entries.set(tracked.path, mergeEntries(entries.get(tracked.path), this.entryFor(tracked, text)));
     }
     const library = this.libraryFiles(notebook);

@@ -416,10 +416,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     onText: mirrorSharedText,
     onAttached: (tabId, session) => {
       // The recap's baseline is the shared text before a pending draft is applied.
-      whereWasITracker.sharedAttached(tabId, session.replica.ytext.toString());
+      const ytext = session.replica.ytext;
+      whereWasITracker.sharedAttached(tabId, ytext.toString(), () => ytext.toString());
       adoptPendingDraft(tabId, session);
     },
-    onEdit: (tabId, local, text) => whereWasITracker.sharedEdited(tabId, local, text),
+    onEdit: (tabId, local) => whereWasITracker.sharedEdited(tabId, local),
   });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);

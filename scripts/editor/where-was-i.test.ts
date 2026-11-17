@@ -253,8 +253,10 @@ test("shared edits closed before the tab mirror updates keep their text and auth
       const tracker = new WhereWasITracker();
       const file = fileNode("shared.md", { createdAt: ago(600), updatedAt: ago(600) });
       tracker.syncTabs([{ id: file.path, file, saved: "stale local copy", draft: "stale local copy", status: "clean" }], () => true);
-      tracker.sharedAttached(file.path, "shared baseline");
-      tracker.sharedEdited(file.path, local, "shared baseline with the last edit");
+      let live = "shared baseline";
+      tracker.sharedAttached(file.path, live, () => live);
+      live = "shared baseline with the last edit";
+      tracker.sharedEdited(file.path, local);
       // No debounced saved/draft update has reached the tab yet.
       tracker.syncTabs([], () => true);
       await tracker.flush(() => null);
@@ -264,6 +266,39 @@ test("shared edits closed before the tab mirror updates keep their text and auth
       assert.match(entry.crops?.[0].added ?? "", /last edit/);
       assert.equal(sent.length, local ? 2 : 1, "quit should not write a duplicate checkpoint");
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (!hadWindow) delete (globalThis as { window?: unknown }).window;
+  }
+});
+
+test("shared edits do not materialize the text: it is read once when the tab closes", async () => {
+  const originalFetch = globalThis.fetch;
+  const hadWindow = "window" in globalThis;
+  if (!hadWindow) Object.assign(globalThis, { window: {} });
+  const sent: RecapSessionUpdate[] = [];
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    sent.push(JSON.parse(String(init.body)));
+    return Response.json({ ok: true });
+  }) as typeof fetch;
+  try {
+    const tracker = new WhereWasITracker();
+    const file = fileNode("typed.md", { createdAt: ago(600), updatedAt: ago(600) });
+    tracker.syncTabs([{ id: file.path, file, saved: "", draft: "", status: "clean" }], () => true);
+    let live = "baseline";
+    let reads = 0;
+    tracker.sharedAttached(file.path, live, () => { reads += 1; return live; });
+    for (let index = 0; index < 50; index += 1) {
+      live += ` word${index}`;
+      tracker.sharedEdited(file.path, true);
+    }
+    assert.equal(reads, 0, "typing reads no text");
+    tracker.syncTabs([], () => true);
+    await tracker.flush(() => null);
+    assert.equal(reads, 1, "closing reads the text once");
+    const entry = sent.at(-1)!.notebooks.Research[0];
+    assert.equal(entry.edited, true);
+    assert.match(entry.crops?.[0].added ?? "", /word0 word1/);
   } finally {
     globalThis.fetch = originalFetch;
     if (!hadWindow) delete (globalThis as { window?: unknown }).window;
