@@ -37,7 +37,7 @@ export interface UseSharedTabsOptions {
   /** A tab's shared document finished attaching (once per replica generation). */
   onAttached?(tabId: string, session: SharedDocSession): void;
   /** The shared text changed, by this window (`local`) or by someone else. Not debounced. */
-  onEdit?(tabId: string, local: boolean, text: string): void;
+  onEdit?(tabId: string, local: boolean): void;
 }
 
 const noopSubscribe = () => () => {};
@@ -125,7 +125,7 @@ export function useSharedTabs(tabs: readonly TabLike[], options: UseSharedTabsOp
           attachedReported: false,
           timer: null,
           observer: (_event, transaction) => {
-            latest.current.onEdit?.(tabId, transaction.local, created.ytext.toString());
+            latest.current.onEdit?.(tabId, transaction.local);
             if (created.timer) clearTimeout(created.timer);
             created.timer = setTimeout(() => {
               created.timer = null;

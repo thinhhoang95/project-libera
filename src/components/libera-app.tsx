@@ -210,7 +210,12 @@ export function LiberaApp({
       void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
     };
     publish();
-    return registry.subscribe(publish);
+    const stopVersion = registry.subscribe(publish);
+    const stopDurability = registry.subscribeDurability(publish);
+    return () => {
+      stopVersion();
+      stopDurability();
+    };
   }, [workspace.tabs, workspace.sharedTabIds]);
 
   useEffect(() => {

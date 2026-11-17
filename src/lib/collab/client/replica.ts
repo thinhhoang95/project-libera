@@ -126,6 +126,9 @@ export class CollabReplica {
   private needsResync = false;
   private resyncPending = false;
   private readonly listeners = new Set<() => void>();
+  /** Heard on every snapshot change, but not on acknowledgements (which change no snapshot field). */
+  private readonly changeListeners = new Set<() => void>();
+  private readonly durabilityListeners = new Set<() => void>();
   private readonly rebuildListeners = new Set<(subdoc: Subdoc) => void>();
   private readonly attachedWaiters: Array<() => void> = [];
   // Rejections already acted on: the hub repeats stored rejections on every
@@ -186,6 +189,18 @@ export class CollabReplica {
     return () => { this.listeners.delete(listener); };
   };
 
+  /** Like `subscribe`, without the wake-up for acknowledgements: only real snapshot changes. */
+  subscribeChanges = (listener: () => void): (() => void) => {
+    this.changeListeners.add(listener);
+    return () => { this.changeListeners.delete(listener); };
+  };
+
+  /** Fires when everything sent so far has been acknowledged (the unconfirmed count may have dropped). */
+  subscribeDurability = (listener: () => void): (() => void) => {
+    this.durabilityListeners.add(listener);
+    return () => { this.durabilityListeners.delete(listener); };
+  };
+
   /** Called after a sub-document was replaced; bindings must rebind to the new Y.Doc. */
   onRebuild(listener: (subdoc: Subdoc) => void): () => void {
     this.rebuildListeners.add(listener);
@@ -205,6 +220,7 @@ export class CollabReplica {
   private publish(patch: Partial<ReplicaSnapshot>) {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of [...this.listeners]) listener();
+    for (const listener of [...this.changeListeners]) listener();
   }
 
   private installDoc(subdoc: Subdoc, doc: Y.Doc) {
@@ -337,7 +353,12 @@ export class CollabReplica {
       case "ack":
         if (message.seq > this.ackedSeq) this.ackedSeq = Math.min(message.seq, this.sentSeq);
         // Observers of the unsaved count learn that everything is confirmed now.
-        if (this.ackedSeq >= this.sentSeq && !this.queue.length) this.publish({});
+        // No snapshot field changed, so the snapshot keeps its identity and the
+        // registry version is not bumped.
+        if (this.ackedSeq >= this.sentSeq && !this.queue.length) {
+          for (const listener of [...this.listeners]) listener();
+          for (const listener of [...this.durabilityListeners]) listener();
+        }
         return;
       case "rejected":
         this.handleRejected(message.subdoc, message.reason, message.rejectedText ?? "");
@@ -459,6 +480,8 @@ export class CollabReplica {
     for (const unsubscribe of this.docListeners.values()) unsubscribe();
     for (const doc of this.docs.values()) doc.destroy();
     this.listeners.clear();
+    this.changeListeners.clear();
+    this.durabilityListeners.clear();
     this.rebuildListeners.clear();
   }
 }

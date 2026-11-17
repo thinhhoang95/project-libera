@@ -120,6 +120,7 @@ export class SharedDocRegistry {
   private readonly entries = new Map<string, DocEntry>();
   private readonly tabs = new Map<string, TabBinding>();
   private readonly listeners = new Set<() => void>();
+  private readonly durabilityListeners = new Set<() => void>();
   private readonly statusReveal = new Set<(tabId: string) => void>();
   private version = 0;
   private user: CollabUser = DEFAULT_USER;
@@ -155,6 +156,20 @@ export class SharedDocRegistry {
   };
 
   getVersion = (): number => this.version;
+
+  /**
+   * Fires when a replica's acknowledgements caught up. It leaves `getVersion`
+   * alone, so it does not re-render the window; only consumers of the
+   * unconfirmed count (`unconfirmedDocumentCount`) need it, besides `subscribe`.
+   */
+  subscribeDurability = (listener: () => void): (() => void) => {
+    this.durabilityListeners.add(listener);
+    return () => { this.durabilityListeners.delete(listener); };
+  };
+
+  private emitDurability() {
+    for (const listener of [...this.durabilityListeners]) listener();
+  }
 
   private emit() {
     this.version += 1;
@@ -373,7 +388,8 @@ export class SharedDocRegistry {
     let session: SharedDocSession = { docId: resolved.docId, resolved, replica, editOrigin, undoManager: createUndoManager(replica, editOrigin) };
     entry.session = session;
     entry.unsubscribe.push(
-      replica.subscribe(() => this.emit()),
+      replica.subscribeChanges(() => this.emit()),
+      replica.subscribeDurability(() => this.emitDurability()),
       replica.onRebuild((subdoc) => {
         if (subdoc !== "content") return;
         // The old history refers to items of a destroyed Y.Doc.
@@ -548,6 +564,7 @@ export class SharedDocRegistry {
     for (const tabId of [...this.tabs.keys()]) this.releaseTab(tabId);
     for (const [docId, entry] of [...this.entries]) for (const holder of [...entry.holders]) this.releaseHolder(docId, holder);
     this.listeners.clear();
+    this.durabilityListeners.clear();
   }
 }
 

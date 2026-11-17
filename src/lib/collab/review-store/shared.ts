@@ -137,6 +137,10 @@ export class SharedReviewStore implements ReviewStore {
   private readonly listeners = new Set<(doc: ReviewDocument) => void>();
   private readonly projectionListeners = new Set<(projection: SharedReviewProjection) => void>();
   private projection: SharedReviewProjection;
+  /** What the listeners last heard; a rebuild that yields the same threads is not announced again. */
+  private published: SharedReviewProjection | null = null;
+  /** Bumped on every change of the source text, so a projection's lazily read `text` knows when to read again. */
+  private textEpoch = 0;
   private loaded = false;
   private loadError = "";
   private loading: Promise<void> | null = null;
@@ -164,6 +168,7 @@ export class SharedReviewStore implements ReviewStore {
     this.cleanup.push(
       options.replica.onRebuild(() => {
         // A rejected update replaced a Y.Doc; observe the new one.
+        this.textEpoch += 1;
         this.observe();
         this.changed();
       }),
@@ -619,9 +624,13 @@ export class SharedReviewStore implements ReviewStore {
     const ytext = this.options.replica.ytext;
     const anchors = this.options.replica.annotations.getMap(AnnotationKeys.anchors);
     const onChange = () => this.changed();
-    ytext.observe(onChange);
+    const onText = () => {
+      this.textEpoch += 1;
+      this.changed();
+    };
+    ytext.observe(onText);
     anchors.observe(onChange);
-    this.unobserve = [() => ytext.unobserve(onChange), () => anchors.unobserve(onChange)];
+    this.unobserve = [() => ytext.unobserve(onText), () => anchors.unobserve(onChange)];
   }
 
   private changed(): void {
@@ -632,9 +641,18 @@ export class SharedReviewStore implements ReviewStore {
       if (this.destroyed) return;
       this.projection = this.build();
       this.syncDetachedStatus(this.projection.threads);
-      const doc = this.document();
-      for (const listener of [...this.projectionListeners]) listener(this.projection);
-      for (const listener of [...this.listeners]) listener(doc);
+      const projection = this.projection;
+      const previous = this.published;
+      this.published = projection;
+      // Typing far from every comment rebuilds the same threads: those that
+      // render comments have nothing new to show, so they are not woken.
+      if (!previous || !sameShell(previous, projection)) {
+        for (const listener of [...this.projectionListeners]) listener(projection);
+      }
+      if (this.listeners.size) {
+        const doc = this.document();
+        for (const listener of [...this.listeners]) listener(doc);
+      }
     });
   }
 
@@ -662,7 +680,20 @@ export class SharedReviewStore implements ReviewStore {
   private build(): SharedReviewProjection {
     const replica = this.options.replica;
     const ytext = replica.ytext;
-    const text = ytext.toString();
+    // The text is only needed here for the context around attached anchors; the
+    // projection's `text` is read on demand, so a document without comments
+    // does not materialize its source on every keystroke.
+    let textMemo: string | undefined;
+    let memoEpoch = this.textEpoch;
+    const readText = () => {
+      // Read again once the source changed since the last read, as an eager
+      // build would have at that moment (the rebuild is already scheduled).
+      if (textMemo === undefined || memoEpoch !== this.textEpoch) {
+        textMemo = this.options.replica.ytext.toString();
+        memoEpoch = this.textEpoch;
+      }
+      return textMemo;
+    };
     const me = this.options.me();
     const role = this.options.role();
     const threads = new Map<string, Thread>();
@@ -758,6 +789,7 @@ export class SharedReviewStore implements ReviewStore {
       const record = readAnchor(replica.annotations, thread.anchorId);
       const resolved = record ? resolveAnchor(ytext, record) : null;
       const attached = resolved?.state === "attached";
+      const text = attached ? readText() : "";
       const anchor: ReviewAnchor = attached
         ? { start: resolved.start, end: resolved.end, quote: thread.quote, prefix: text.slice(Math.max(0, resolved.start - CONTEXT), resolved.start), suffix: text.slice(resolved.end, resolved.end + CONTEXT), state: "attached" }
         : { start: resolved?.start ?? 0, end: resolved?.start ?? 0, quote: thread.quote, prefix: "", suffix: "", state: "orphaned" };
@@ -811,12 +843,20 @@ export class SharedReviewStore implements ReviewStore {
       if (aAttached && a.anchor.start !== b.anchor.start) return a.anchor.start - b.anchor.start;
       return a.shared.createdAt.localeCompare(b.shared.createdAt) || a.id.localeCompare(b.id);
     });
+    // A thread equal to the previous projection's keeps that object, so
+    // consumers that compare by identity see only what really changed.
+    const before = new Map<string, SharedReviewThread>();
+    for (const thread of this.projection?.threads ?? []) before.set(thread.id, thread);
+    for (let index = 0; index < projected.length; index += 1) {
+      const old = before.get(projected[index].id);
+      if (old && sameValue(old, projected[index])) projected[index] = old;
+    }
     const revision = (this.projection?.revision ?? 0) + 1;
     return {
       docId: this.docId,
       projectId: this.options.projectId,
       key: this.options.key,
-      text,
+      get text() { return readText(); },
       threads: projected,
       loaded: this.loaded,
       error: this.loadError,
@@ -837,6 +877,27 @@ export class SharedReviewStore implements ReviewStore {
     this.projectionListeners.clear();
     for (const resolve of this.settledWaiters.splice(0)) resolve();
   }
+}
+
+/** Structural equality of plain data (projected threads hold only objects, arrays and primitives). */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const other = b as unknown[];
+    return a.length === other.length && a.every((item, index) => sameValue(item, other[index]));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => key in right && sameValue(left[key], right[key]));
+}
+
+/** Everything a projection carries except its revision and live text, with threads compared by identity. */
+function sameShell(a: SharedReviewProjection, b: SharedReviewProjection): boolean {
+  return a.loaded === b.loaded && a.error === b.error && a.role === b.role && sameValue(a.me, b.me) &&
+    a.threads.length === b.threads.length && a.threads.every((thread, index) => thread === b.threads[index]);
 }
 
 function isThread(value: unknown): value is Thread {

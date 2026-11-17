@@ -72,7 +72,12 @@ export function startSessionEndRevisions(registry: SharedDocRegistry, checkpoint
     }
   };
 
-  const unsubscribe = registry.subscribe(sync);
+  const stopVersion = registry.subscribe(sync);
+  const stopDurability = registry.subscribeDurability(sync);
+  const unsubscribe = () => {
+    stopVersion();
+    stopDurability();
+  };
   sync();
   return () => {
     unsubscribe();
