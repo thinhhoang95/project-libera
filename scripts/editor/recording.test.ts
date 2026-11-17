@@ -217,10 +217,12 @@ test("a launcher consumer is not rendered again when the recorder's state change
 
   let launcherRenders = 0;
   let recorderRenders = 0;
-  let launcher: ReturnType<typeof useRecorderLauncher> = null;
+  // Read through a function: the compiler cannot see the assignment made while rendering.
+  let latestLauncher: ReturnType<typeof useRecorderLauncher> = null;
+  const current = () => latestLauncher as ReturnType<typeof useRecorderLauncher>;
   function LauncherConsumer() {
     launcherRenders++;
-    launcher = useRecorderLauncher();
+    latestLauncher = useRecorderLauncher();
     return null;
   }
   function RecorderConsumer() {
@@ -232,20 +234,20 @@ test("a launcher consumer is not rendered again when the recorder's state change
   const tabActions = () => ({ open: () => undefined, rename: () => undefined, saved: () => undefined, close: () => undefined });
   const root = createRoot(document.getElementById("root")!);
   try {
-    await act(async () => root.render(createElement(MeetingRecorderProvider, { tabs: tabActions(), visibleTabIds: [] }, children)));
+    await act(async () => root.render(createElement(MeetingRecorderProvider, { tabs: tabActions(), visibleTabIds: [], children })));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    assert.equal(launcher?.busy, false);
-    const startRecording = launcher!.startRecording;
+    assert.equal(current()?.busy, false);
+    const startRecording = current()!.startRecording;
     const settled = { launcher: launcherRenders, recorder: recorderRenders };
 
     // The parent hands the provider a new tabs object on each of its renders.
-    for (let i = 0; i < 5; i++) await act(async () => root.render(createElement(MeetingRecorderProvider, { tabs: tabActions(), visibleTabIds: [] }, children)));
+    for (let i = 0; i < 5; i++) await act(async () => root.render(createElement(MeetingRecorderProvider, { tabs: tabActions(), visibleTabIds: [], children })));
     assert.equal(launcherRenders, settled.launcher, "new tab actions do not render the launcher's consumers");
     assert.ok(recorderRenders > settled.recorder, "the recorder's own consumers do follow the provider");
-    assert.equal(launcher!.startRecording, startRecording, "startRecording keeps its identity");
+    assert.equal(current()!.startRecording, startRecording, "startRecording keeps its identity");
 
     await act(async () => startRecording("Notes"));
-    assert.equal(launcher?.busy, true, "starting makes the launcher busy");
+    assert.equal(current()?.busy, true, "starting makes the launcher busy");
     assert.equal(launcherRenders, settled.launcher + 1, "and renders its consumers once");
 
     // The speech setup arriving changes the recorder's state but not whether it is busy.
