@@ -1,7 +1,7 @@
 "use client";
 
 import { AudioLines, Loader2, Maximize2, Pause, Play, Square, X } from "lucide-react";
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { recordingTabId } from "@/components/libera/recording/recording-tabs";
 import { useMeetingRecorder, type MeetingRecorder } from "@/components/libera/recording/use-meeting-recorder";
@@ -15,7 +15,6 @@ type RecorderLauncher = {
 };
 
 type RecorderContextValue = {
-  launcher: RecorderLauncher;
   recorder: MeetingRecorder;
   /** Deletes the recording and closes its tab. */
   discard: () => Promise<void>;
@@ -30,10 +29,12 @@ type RecorderContextValue = {
 };
 
 const RecorderContext = createContext<RecorderContextValue | null>(null);
+// Apart from the recorder: its seconds and levels change several times a second while recording, and the notebook tree only needs to start one.
+const RecorderLauncherContext = createContext<RecorderLauncher | null>(null);
 
 /** The "New → Audio recording" entry points; null outside the app shell. */
 export function useRecorderLauncher() {
-  return useContext(RecorderContext)?.launcher ?? null;
+  return useContext(RecorderLauncherContext);
 }
 
 /** The window's recorder, for the recording tab. */
@@ -85,16 +86,22 @@ export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { chi
     if (sessionId && sessionName) rename(sessionId, sessionName);
   }, [rename, sessionId, sessionName]);
 
+  // The launcher reads the newest start and open when called, so its value only changes with `busy`.
+  const startLatest = useRef({ start, open });
+  useEffect(() => {
+    startLatest.current = { start, open };
+  }, [start, open]);
+  const launcher = useMemo<RecorderLauncher>(() => ({
+    startRecording: (notebook, parentPath) => {
+      void startLatest.current.start(notebook, parentPath).then((created) => {
+        if (created) startLatest.current.open(created.id, created.name, created.notebook);
+      });
+    },
+    busy,
+  }), [busy]);
+
   // Rebuilt on each render: the recorder's state changes several times a second while recording anyway.
   const value: RecorderContextValue = {
-    launcher: {
-      startRecording: (notebook, parentPath) => {
-        void start(notebook, parentPath).then((created) => {
-          if (created) open(created.id, created.name, created.notebook);
-        });
-      },
-      busy,
-    },
     recorder,
     discard: async () => {
       const id = recorder.session?.id;
@@ -206,9 +213,11 @@ export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { chi
   }
 
   return (
-    <RecorderContext.Provider value={value}>
-      {children}
-      {overlay}
-    </RecorderContext.Provider>
+    <RecorderLauncherContext.Provider value={launcher}>
+      <RecorderContext.Provider value={value}>
+        {children}
+        {overlay}
+      </RecorderContext.Provider>
+    </RecorderLauncherContext.Provider>
   );
 }

@@ -17,6 +17,14 @@ import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferen
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookMarked, BookOpen, ChartColumnStacked, Columns2, FilePlus2, FileSearch, FolderInput, Images, Layers3, ListTree, LogOut, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, Settings, X } from "lucide-react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import {
+  chatWidthFromPointer as chatWidthAt,
+  clampSidebarWidth,
+  COLLAPSED_SIDEBAR_WIDTH,
+  DEFAULT_SIDEBAR_WIDTH,
+  sidebarWidthFromPointer as sidebarWidthAt,
+  type LayoutBox,
+} from "@/components/libera/panel-resize";
 import { apiRequest } from "@/components/libera/api-client";
 import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
 import { DocumentChatPanel, type AgentWorkspaceBridge, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
@@ -96,22 +104,6 @@ const PREFERENCES_SECTIONS: Array<{ section?: string; title: string; keywords?: 
   { section: "users", title: "Preferences: Users", keywords: "profiles accounts" },
   { section: "io", title: "Preferences: I/O", keywords: "import export backup" },
 ];
-const DEFAULT_SIDEBAR_WIDTH = 320;
-const MIN_SIDEBAR_WIDTH = 240;
-const MAX_SIDEBAR_WIDTH = 560;
-const MIN_WORKSPACE_WIDTH = 480;
-
-function clampSidebarWidth(width: number, layoutWidth?: number) {
-  const maximumWidth = layoutWidth
-    ? Math.max(
-        MIN_SIDEBAR_WIDTH,
-        Math.min(MAX_SIDEBAR_WIDTH, layoutWidth - MIN_WORKSPACE_WIDTH),
-      )
-    : MAX_SIDEBAR_WIDTH;
-
-  return Math.round(Math.max(MIN_SIDEBAR_WIDTH, Math.min(maximumWidth, width)));
-}
-
 const NO_QUICK_PROMPTS: QuickPrompt[] = [];
 
 export function LiberaApp({
@@ -502,30 +494,86 @@ export function LiberaApp({
     return () => window.removeEventListener("keydown", toggleChat, true);
   }, [authenticated, chatCollapsed, changeChatCollapsed]);
 
-  function chatWidthFromPointer(clientX: number) {
+  // A drag measures the layout once, then writes the width straight to the CSS
+  // variables and the handle (at most once per frame); React hears about the
+  // width when the drag ends. Its rendered style keeps the old value until
+  // then, so an unrelated render in between leaves the dragged width alone.
+  const resizeDrag = useRef<{
+    kind: "sidebar" | "chat";
+    handle: HTMLElement;
+    layout: LayoutBox | null;
+    /** The other panel's width, and the chat's own width for a layout that could not be measured. */
+    otherWidth: number;
+    fallbackWidth: number;
+    width: number;
+    clientX: number | null;
+    frame: number;
+  } | null>(null);
+
+  function resizeWidthAt(drag: NonNullable<typeof resizeDrag.current>, clientX: number) {
+    return drag.kind === "sidebar"
+      ? sidebarWidthAt(clientX, drag.layout, drag.otherWidth)
+      : chatWidthAt(clientX, drag.layout, drag.otherWidth, drag.fallbackWidth);
+  }
+
+  function paintResize(drag: NonNullable<typeof resizeDrag.current>) {
+    drag.frame = 0;
+    if (drag.clientX === null) return;
+    drag.width = resizeWidthAt(drag, drag.clientX);
+    drag.clientX = null;
+    mainLayoutRef.current?.style.setProperty(drag.kind === "sidebar" ? "--libera-sidebar-width" : "--libera-chat-width", `${drag.width}px`);
+    if (drag.kind === "sidebar") drag.handle.style.left = `${drag.width}px`;
+    else drag.handle.style.right = `${drag.width}px`;
+  }
+
+  function beginResize(kind: "sidebar" | "chat", handle: HTMLElement) {
     const bounds = mainLayoutRef.current?.getBoundingClientRect();
-    const available = (bounds?.width ?? 1200) - (notebooksCollapsed ? 48 : sidebarWidth) - 320;
-    return Math.round(Math.max(280, Math.min(560, available, (bounds?.right ?? clientX + chatWidth) - clientX)));
+    resizeDrag.current = {
+      kind,
+      handle,
+      layout: bounds ? { left: bounds.left, right: bounds.right, width: bounds.width } : null,
+      otherWidth: kind === "sidebar" ? (chatDocked ? chatWidth : 0) : (notebooksCollapsed ? COLLAPSED_SIDEBAR_WIDTH : sidebarWidth),
+      fallbackWidth: chatWidth,
+      width: kind === "sidebar" ? sidebarWidth : chatWidth,
+      clientX: null,
+      frame: 0,
+    };
+    if (kind === "sidebar") setSidebarResizing(true);
+    else setChatResizing(true);
   }
 
-  function sidebarWidthFromPointer(clientX: number) {
-    const layoutBounds = mainLayoutRef.current?.getBoundingClientRect();
-
-    return clampSidebarWidth(
-      clientX - (layoutBounds?.left ?? 0),
-      layoutBounds ? layoutBounds.width - (chatDocked ? chatWidth : 0) : undefined,
-    );
+  function moveResize(clientX: number) {
+    const drag = resizeDrag.current;
+    if (!drag) return;
+    drag.clientX = clientX;
+    if (!drag.frame) drag.frame = window.requestAnimationFrame(() => paintResize(drag));
   }
 
-  function resizeSidebar(event: ReactPointerEvent<HTMLDivElement>) {
-    setSidebarWidth(sidebarWidthFromPointer(event.clientX));
+  /** Ends the drag at `clientX` (or where it last was) and returns the width, so the state matches the screen; null when no drag was going. */
+  function endResize(clientX?: number) {
+    const drag = resizeDrag.current;
+    if (!drag) return null;
+    resizeDrag.current = null;
+    window.cancelAnimationFrame(drag.frame);
+    if (clientX !== undefined) drag.clientX = clientX;
+    paintResize(drag);
+    if (drag.kind === "sidebar") {
+      setSidebarWidth(drag.width);
+      setSidebarResizing(false);
+    } else {
+      setChatWidth(drag.width);
+      setChatResizing(false);
+    }
+    return drag.width;
   }
+
+  useEffect(() => () => {
+    if (resizeDrag.current) window.cancelAnimationFrame(resizeDrag.current.frame);
+  }, []);
 
   function finishSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
-    const nextWidth = sidebarWidthFromPointer(event.clientX);
-    setSidebarWidth(nextWidth);
-    setSidebarResizing(false);
-    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(nextWidth));
+    const nextWidth = endResize(event.clientX);
+    if (nextWidth !== null) window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(nextWidth));
 
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -879,10 +927,10 @@ export function LiberaApp({
             const width = Math.max(280, Math.min(560, chatWidth + (event.key === "ArrowLeft" ? 16 : -16)));
             setChatWidth(width); saveChatPanel(width, chatCollapsed);
           }}
-          onLostPointerCapture={() => setChatResizing(false)} onPointerCancel={() => setChatResizing(false)}
-          onPointerDown={(event) => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setChatResizing(true); }}
-          onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) setChatWidth(chatWidthFromPointer(event.clientX)); }}
-          onPointerUp={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const width = chatWidthFromPointer(event.clientX); setChatWidth(width); setChatResizing(false); saveChatPanel(width, chatCollapsed); event.currentTarget.releasePointerCapture(event.pointerId); }}
+          onLostPointerCapture={() => { endResize(); }} onPointerCancel={() => { endResize(); }}
+          onPointerDown={(event) => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); beginResize("chat", event.currentTarget); }}
+          onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) moveResize(event.clientX); }}
+          onPointerUp={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const width = endResize(event.clientX); if (width !== null) saveChatPanel(width, chatCollapsed); event.currentTarget.releasePointerCapture(event.pointerId); }}
         />}
 
         {!notebooksCollapsed ? (
@@ -890,8 +938,8 @@ export function LiberaApp({
             aria-hidden
             className="absolute bottom-0 top-0 z-40 hidden w-1.5 -translate-x-1/2 cursor-col-resize touch-none lg:block"
             style={{ left: sidebarWidth }}
-            onLostPointerCapture={() => setSidebarResizing(false)}
-            onPointerCancel={() => setSidebarResizing(false)}
+            onLostPointerCapture={() => { endResize(); }}
+            onPointerCancel={() => { endResize(); }}
             onPointerDown={(event) => {
               if (event.button !== 0) {
                 return;
@@ -899,11 +947,11 @@ export function LiberaApp({
 
               event.preventDefault();
               event.currentTarget.setPointerCapture(event.pointerId);
-              setSidebarResizing(true);
+              beginResize("sidebar", event.currentTarget);
             }}
             onPointerMove={(event) => {
               if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                resizeSidebar(event);
+                moveResize(event.clientX);
               }
             }}
             onPointerUp={finishSidebarResize}
