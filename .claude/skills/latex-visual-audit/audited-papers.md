@@ -152,3 +152,34 @@ Notable: math.AP 2611.14954 (`\chardef` switch and `\hbox{#1}` macros with `$` h
 (`\MoveEqLeft`, `equ`, `\burlalt`), siunitx abbreviations and `\DeclareSIUnit` (cond-mat.mes-hall 2611.13235,
 physics.flu-dyn 2611.12193), math.ST 2611.11874 (a user `parts` list). Fetched but lost before the audit, not audited:
 gr-qc 2611.15331 2611.15321, nucl-th 2611.10816 2611.10465.
+
+## 2026-11-17, round 8 (48 papers, docs/audits/2026-11-17-latex-visual-paper-review-8.md)
+
+- cond-mat.soft: 2611.14722 2611.18737
+- cond-mat.str-el: 2611.17871 2611.17927
+- cs.CL: 2611.20755 2611.20759
+- cs.DS: 2611.16966 2611.17050
+- cs.LG: 2611.21215 2611.21216
+- cs.LO: 2611.10810 2611.10842
+- cs.NI: 2611.13759 2611.13943
+- cs.RO: 2611.20185 2611.20202
+- econ.EM: 2611.06067 2611.06266
+- econ.GN: 2611.02033 2611.02533
+- econ.TH: 2611.05701 2611.05708
+- gr-qc: 2611.18558 2611.18827
+- hep-lat: 2611.09817 2611.09865
+- math.AG: 2611.18317 2611.18357
+- math.CT: 2611.03204 2611.03553
+- math.GR: 2611.13956 2611.14085
+- math.LO: 2611.11828 2611.11911
+- math.OA: 2611.08419 2611.08668
+- nucl-th: 2611.13953 2611.13954
+- physics.chem-ph: 2611.14372 2611.14377
+- physics.plasm-ph: 2611.11227 2611.11343
+- q-bio.NC: 2611.07214 2611.07809
+- q-bio.PE: 2610.35161 2610.38374
+- stat.ML: 2611.18367 2611.18394
+
+Notable: math.LO 2611.11828 (137 quiver tikz-cd diagrams), cs.NI 2611.13943 (sn-jnl inline bbl with `\ifx…\undefined\def` fallbacks),
+cond-mat.str-el 2611.17927 (REVTeX 4.2 inline bbl), math.OA 2611.08668 (inline `theindex`, `\index` with `\ref`), math.CT 2611.03553
+(`\usebox` arrows, its own `\lean` mark). q-bio.QM was asked for but the arXiv listing came back empty (rate limit); none audited.
