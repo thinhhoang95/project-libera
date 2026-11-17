@@ -172,10 +172,11 @@ export class LiteralTextWidget extends VisualWidget {
 
 /** A command's printed text (Pandoc's `\CSLLeftMargin{{[}1{]} }`, pifont's circled digit): a click shows the command. */
 export class PrintedTextWidget extends VisualWidget {
-  constructor(readonly printed: string, readonly source: string) { super(`printed\u0000${printed}\u0000${source}`); }
+  constructor(readonly printed: string, readonly source: string, readonly color?: string) { super(`printed\u0000${printed}\u0000${source}\u0000${color ?? ""}`); }
   toDOM(view: EditorView) {
     const span = el("span", "cm-vis-symbol", this.printed);
     span.title = this.source;
+    if (this.color) span.style.color = this.color;
     revealOnClick(view, span, this.source.length);
     return span;
   }

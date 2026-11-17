@@ -5,7 +5,7 @@ import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, equationAlias, isInLatexComment, isPartLabelMacro, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
-import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
+import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, formatCounterValue, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroPassThrough, structureMacroNames } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
@@ -320,7 +320,7 @@ function layoutRun(text: string, partial = false): number {
 }
 
 /** Layout inside a line of text, which prints nothing there: hidden, shown again at the cursor (`\noindent Text`, `\protect\ref`). */
-const INLINE_LAYOUT = /^\\(?:eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|tightlist|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing|allowbreak|nobreak|nolinebreak|relax)$/;
+const INLINE_LAYOUT = /^\\(?:begingroup|endgroup|nointerlineskip|vss|eject|onecolumngrid|twocolumngrid|noindent|indent|smallskip|medskip|bigskip|protect|justifying|onehalfspacing|doublespacing|singlespacing|newpage|clearpage|cleardoublepage|leavevmode|FloatBarrier|phantomsection|tightlist|nopagebreak|pagebreak|raggedright|raggedleft|appendix|frenchspacing|nonfrenchspacing|allowbreak|nobreak|nolinebreak|relax)$/;
 /** Wrappers whose last argument is text (`\afterpage{…}`, `\raisebox{-0.1cm}{\protect\includegraphics…}`), by the number of `{…}` arguments they read. */
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2, "\\resizebox": 3, "\\scalebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
@@ -839,6 +839,24 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return { className, textFrom, close, style: color ? `color: ${color.css}` : undefined };
   };
 
+  /**
+   * TeX's boxes written out to place a line (cs.RO 2611.20185's `\vbox to 0pt{\vskip-0.28in \hbox to \textwidth{\hfil … \hfil}\vss}`
+   * under the title): a box only positions its content, so `\vbox to 0pt{` and its `}` are hidden (shown at the caret) and the
+   * content is drawn as it would be on its own. False when what follows the command is not a box's `to <size>{`.
+   */
+  const transparentBox = (commandFrom: number, ctrlTo: number) => {
+    const head = /^[ \t]*(?:(?:to|spread)[ \t]*-?[\d.]*[ \t]*(?:pt|em|ex|in|cm|mm|bp|\\[A-Za-z@]+)[ \t]*)?\{/.exec(read(state, ctrlTo, Math.min(doc.length, ctrlTo + 80)));
+    if (!head) return false;
+    const open = ctrlTo + head[0].length - 1;
+    const group = readGroup(read(state, open, Math.min(doc.length, open + 20_000)), 0, TEX_GROUPS);
+    if (!group || open + group.end > doc.length) return false;
+    const close = open + group.end - 1;
+    emit({ kind: "style", from: commandFrom, to: close + 1, reveal: "touch", replaces: [{ from: commandFrom, to: open + 1 }, { from: close, to: close + 1 }] });
+    consumed.push([commandFrom, open + 1], [close, close + 1]);
+    return true;
+  };
+
+
   /** `\color[model]{name}`: its CSS colour and where its argument ends; null for a colour it cannot draw. */
   const colorSwitch = (command: SyntaxNode) => {
     const args = commandArguments(command);
@@ -867,6 +885,28 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const env = parent.parent;
         return env && env.name !== "DocumentEnvironment" && /Environment$/.test(env.name) ? { text: parent.to, end: env.to } : null;
       }
+    }
+    return null;
+  };
+
+  /**
+   * The switch that undoes a top-level `\itshape` / `\bfseries` (`\upshape`, `\mdseries`, `\normalfont`), after `from`, in the
+   * same run of text: no environment or group boundary in between. Null when there is none.
+   */
+  const pairedSwitchEnd = (command: string, from: number) => {
+    const cancels = /^\\(?:itshape|it|slshape|sl)$/.test(command) ? /\\(upshape|normalfont|rm)(?![A-Za-z@])/g : /^\\(?:bfseries|bf)$/.test(command) ? /\\(mdseries|normalfont|rm)(?![A-Za-z@])/g : null;
+    if (!cancels) return null;
+    const limit = Math.min(doc.length, from + 4000);
+    const span = read(state, from, limit);
+    cancels.lastIndex = 0;
+    for (let match = cancels.exec(span); match; match = cancels.exec(span)) {
+      const between = span.slice(0, match.index);
+      if (isInLatexComment(span, match.index)) continue;
+      if (/\\(?:begin|end|section|subsection|chapter|item)(?![A-Za-z@])/.test(between)) return null;
+      let balance = 0;
+      for (let i = 0; i < between.length && balance >= 0; i++) { if (between[i] === "\\") i++; else if (between[i] === "{") balance++; else if (between[i] === "}") balance--; }
+      if (balance !== 0) return null;
+      return { from: from + match.index, to: from + match.index + match[0].length };
     }
     return null;
   };
@@ -1262,6 +1302,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (inlineStyle) {
         const argument = node.getChild("TextArgument") ?? node.getChild("ShortTextArgument");
         const inner = argument && argumentInner(argument);
+        // `\hbox to \textwidth{…}` has a size the grammar does not read: its box is transparent.
+        if (name === "Hbox" && structural && hasDirectError(node) && transparentBox(node.from, node.from + 5)) return;
         if (!inner || inner.to <= inner.from || hasDirectError(node)) return;
         emit({
           kind: "style", from: node.from, to: node.to, reveal: "touch",
@@ -1273,7 +1315,10 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
 
       // `{\bf bold}`, `{\tt [CLS]}`, `{\small text}`: a group opened by a font or size switch styles what follows it.
       if (name === "Group") {
-        const switched = groupSwitch(node);
+        // A size switch around a list of contents (math.AG 2611.18357's `{\small\setlength{\parskip}{0pt}\tableofcontents}`) is layout scoped
+        // by the braces, as `{\hypersetup{…}\tableofcontents}` is: the list is drawn over the line, not styled inline.
+        const sized = groupSwitch(node);
+        const switched = sized && sized.className === "" && /\\(?:tableofcontents|listoffigures|listoftables)(?![A-Za-z@])/.test(read(state, node.from, Math.min(node.to, node.from + 200))) ? null : sized;
         if (!switched) {
           // `{\hypersetup{linkcolor=black}\tableofcontents}`, `{\setlength{\tabcolsep}{3.5pt}\input{tables/ablation}}`: braces that only
           // scope layout commands. The braces and the commands fold away (or hide, in a line of text); what follows them is drawn as usual.
@@ -2783,6 +2828,20 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         consumed.push([node.from, textFrom]);
         return undefined;
       }
+      // At the top level a style switch runs until the switch that undoes it (`\itshape … \upshape`, math.GR 2611.14085):
+      // the text between is styled, both switches are hidden (the caret in either shows its source).
+      const pair = text !== "\\color" && !container ? pairedSwitchEnd(text, ctrl.to) : null;
+      if (pair) {
+        let textFrom = ctrl.to;
+        while (textFrom < pair.from && / |\t|\n/.test(read(state, textFrom, textFrom + 1))) textFrom++;
+        emit({
+          kind: "style", from: node.from, to: pair.to, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: textFrom }, { from: pair.from, to: pair.to }] : [],
+          marks: [{ from: textFrom, to: pair.from, class: FONT_SWITCHES[text] }],
+        });
+        consumed.push([node.from, textFrom], [pair.from, pair.to]);
+        return undefined;
+      }
     }
     // ulem's underlines and strike-out: `\uline{…}` as `\underline`.
     if (ULEM_STYLES[text]) {
@@ -2797,6 +2856,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return undefined;
       }
     }
+    // `\vbox to 0pt{ … }` and `\hbox to \textwidth{ … }` written out to place a line: hidden braces, the content drawn on its own.
+    if (/^\\(?:vbox|hbox|vtop)$/.test(text) && structural && !macroAt(defs, text.slice(1), node.from) && transparentBox(node.from, ctrl.to)) return undefined;
     // Tracked changes, soul's styles, boxes, `\enquote`, margin notes: their text, styled, edited in place.
     const wrapped = textWrapper(node, text);
     if (wrapped !== null) return wrapped;
@@ -2849,6 +2910,55 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     const name = text.slice(1);
+    // titling's `\thetitle` (and `\theauthor`, `\thedate`): the document's `\title` text, drawn as written there; a click shows the command.
+    if (/^the(?:title|author|date)$/.test(name) && structural && !args.length && defs.packages.includes("titling") && !macroAt(defs, name, node.from) && !hasDirectError(node)) {
+      const parts = readTitleParts(state, node.from, titleClass(defs, defs.documentClass));
+      const printed = (name === "thetitle" ? parts.title : name === "theauthor" ? parts.author : parts.date)?.trim();
+      if (printed && !/\\(?:thanks|footnote|and|AND)(?![A-Za-z@])/.test(printed)) {
+        emit({ kind: "symbol", from: node.from, to: ctrl.to, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to, widget: new MacroWidget(name, printed, ctrl.to - node.from, `titling:${printed}`) }] });
+        return false;
+      }
+    }
+    // TeX's `\romannumeral1` (econ.GN 2611.02533's "(\romannumeral1)"): the number in lower-case Roman numerals, the number's digits and one space after them are part of it.
+    if (name === "romannumeral" && structural && !args.length && !macroAt(defs, "romannumeral", node.from) && !hasDirectError(node)) {
+      const digits = /^[ \t]*(\d{1,4})[ \t]?/.exec(read(state, ctrl.to, Math.min(doc.length, ctrl.to + 12)));
+      if (digits && Number(digits[1]) > 0 && Number(digits[1]) < 5000) {
+        const end = ctrl.to + digits[0].length;
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end, widget: new PrintedTextWidget(formatCounterValue(Number(digits[1]), "roman"), read(state, node.from, end)) }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
+    // A document's own `\lean{relation}{Decl, Decl2}` (math.CT 2611.03553): its macro sets a mark the theorem prints flush right at
+    // its end, a small coloured L∃∀N linking to the Lean declarations, with a numeral for each further one. It is drawn as that
+    // mark where the command stands (a chip; the declaration names are its tooltip), and a click shows the command.
+    const needed = args.filter((arg) => !arg.optional);
+    if (name === "lean" && needed.length === 2 &&needed[0].node.from === ctrl.to && !hasDirectError(node)) {
+      const relation = argumentInner(needed[0].node);
+      const names = argumentInner(needed[1].node);
+      if (documentSetsLeanMark(state, env.preambleEnd) && relation && names) {
+        const end = needed[1].node.to;
+        const count = read(state, names.from, names.to).split(",").filter((piece) => piece.trim()).length;
+        // The relation's colour, `\definecolor{lean@equivalent}{HTML}{009E73}` (a name with `@` is not one cssColor reads by name).
+        const defined = defs.colors.get(`lean@${read(state, relation.from, relation.to).trim()}`);
+        const color = defined ? cssColor(defined.model || null, defined.value, defs.colors) : null;
+        const printed = ["L∃∀N", ...Array.from({ length: Math.max(0, count - 1) }, (_, index) => String(index + 2))].join(" ");
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end, widget: new PrintedTextWidget(printed, read(state, node.from, end), color ?? undefined) }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
+    // leanblueprint's `\leanok`, `\notready`, `\mathlibok` and `\lean{…}`, `\uses{…}`, `\proves{…}` (the blueprint package):
+    // metadata for the web blueprint and its dependency graph that prints nothing in the PDF. Hidden, shown again at the caret.
+    if (/^(?:leanok|notready|mathlibok|lean|uses|proves)$/.test(name) && defs.packages.includes("blueprint") && !macroAt(defs, name, node.from) && !hasDirectError(node)) {
+      const takes = /^(?:lean|uses|proves)$/.test(name);
+      if (!takes || (needed.length >= 1 && needed[0].node.from === ctrl.to)) {
+        const end = takes ? needed[0].node.to : ctrl.to;
+        emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end }] });
+        consumed.push([node.from, end]);
+        return false;
+      }
+    }
     // A counter printed in the text (`\theex`, `\arabic{ex}`, `\Roman{section}`): its value here, from the numbering pass.
     const counters = /^(?:arabic|alph|Alph|roman|Roman|fnsymbol|value|the[A-Za-z]+)$/.test(name) ? documentCounters(defs, () => read(state, 0, Math.max(0, env.preambleEnd))) : null;
     if (counters) {
@@ -3991,7 +4101,7 @@ function algorithm2eSpec(node: SyntaxNode, state: EditorState, defs: LatexDefini
   if (node.name !== "Environment" || !defs.packages.includes("algorithm2e")) return null;
   const env = environmentName(node, (from, to) => read(state, from, to));
   const content = node.getChild("Content");
-  if ((env !== "algorithm" && env !== "algorithm*") || !content) return null;
+  if ((env !== "algorithm" && env !== "algorithm*" && env !== "algorithm2e") || !content) return null;
   const read2e = readAlgorithm2eBody(read(state, content.from, content.to), defs, node.from);
   if (read2e) read2e.algorithm.offset = content.from;
   return read2e;
@@ -4844,6 +4954,23 @@ export function handTitleBlock(state: EditorState, defs: LatexDefinitions, node:
 }
 
 /** `\title`, `\author` and `\date` from the document, for `\maketitle`. */
+/**
+ * Whether the document's preamble defines `\lean{relation}{declarations}` as a command that records its arguments for a mark
+ * printed later (`\newcommand*{\lean}[2]{… \gdef\CA@leanpending{#2}}`, math.CT 2611.03553), per document version. The macro itself is
+ * not read (its conditionals make the definition uncertain), so the text of the definition is.
+ */
+const leanMarkCache = new WeakMap<Text, boolean>();
+function documentSetsLeanMark(state: EditorState, preambleEnd: number) {
+  let found = leanMarkCache.get(state.doc);
+  if (found === undefined) {
+    const preamble = read(state, 0, Math.max(0, Math.min(preambleEnd, state.doc.length)));
+    const definition = /\\(?:re)?newcommand\*?\s*\{\s*\\lean\s*\}\s*\[2\]/.exec(preamble);
+    found = !!definition && /\\gdef\s*\\[A-Za-z@]*lean[A-Za-z@]*\s*\{#2\}/.test(preamble.slice(definition.index, definition.index + 800));
+    leanMarkCache.set(state.doc, found);
+  }
+  return found;
+}
+
 const titleCache = new WeakMap<Text, Map<string, ReturnType<typeof scanTitleParts>>>();
 
 /** The class that decides how the title block reads its commands: JHEP's `jheppub` package (over `article`) gives its own. */
@@ -4859,7 +4986,8 @@ function readTitleParts(state: EditorState, pos: number, documentClass: string |
   const included = (state.field(macroSourcesField, false) ?? [])
     .filter((source) => source.key?.startsWith("input:") && /\\(?:title|author)(?![A-Za-z@])/.test(stripTexComments(source.text)))
     .map((source) => `${source.text}\n`).join("");
-  const key = `${pos}:${included}`;
+  // The class decides how authors add up and where the details are: a class that arrives later (a chapter's, read from its main file) redraws it.
+  const key = `${pos}:${documentClass ?? ""}:${included}`;
   let parts = byPos.get(key);
   if (!parts) byPos.set(key, parts = scanTitleParts(included + state.doc.sliceString(0, Math.min(pos, 120_000)), documentClass));
   return parts;
@@ -5058,7 +5186,7 @@ function abstractIn(content: string) {
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo|makeatletter|makeatother|IEEEpubid|IEEEaftertitletext|IEEEpubidadjcol|markboth|markright)$/;
+const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo|makeatletter|makeatother|IEEEpubid|IEEEaftertitletext|IEEEpubidadjcol|markboth|markright|TITLE|RUNTITLE|RUNAUTHOR|ECRUNTITLE|ECRUNAUTHOR|ARTICLEAUTHORS|AUTHOR|AFF|EMAIL|URL|ABSTRACT|KEYWORDS|HISTORY|SUBJECTCLASS|AREAOFREVIEW|VOLUME|NO|MONTH|YEAR|FIRSTPAGE|LASTPAGE|SHORTYEAR|ISSUE|LONGFIRSTPAGE|DOI|MANUSCRIPTNO)$/;
 /** What ends a run of title declarations rather than staying source inside it: text, sections, environments. */
 const RUN_ENDERS = /^(?:begin|end|part|chapter|section|subsection|subsubsection|paragraph|subparagraph|item|maketitle|par|noindent|indent|bibliography|printbibliography|appendix|label|footnote|textbf|textit|emph|cite|ref|includegraphics|caption)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
@@ -5069,7 +5197,7 @@ const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRob
  */
 const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp|keywords|IEEEkeywords|comment)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys)$/;
+const ABSTRACT_WITH_TITLE = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys)$/;
 /** The headings of A&A's structured `\abstract{…}{…}{…}{…}{…}`. */
 const AA_ABSTRACT_LABELS = ["Context", "Aims", "Methods", "Results", "Conclusions"];
 
@@ -5096,10 +5224,11 @@ export function titleRunStart(state: EditorState, defs: LatexDefinitions, preamb
 }
 
 /** What `\keywords`, `\subjclass` and `\ccsdesc` add to a title block, as its small lines (label, LaTeX). */
-function titleNotes(keywords: string[], subjclass: string[], ccs: string[]): Array<[string, string]> {
+function titleNotes(keywords: string[], subjclass: string[], ccs: string[], history: string[] = []): Array<[string, string]> {
   const notes: Array<[string, string]> = [];
   if (ccs.length) notes.push(["CCS Concepts", ccs.map((concept) => concept.replace(/~/g, " → ")).join("; ")]);
   if (keywords.length) notes.push(["Keywords", keywords.join(", ")]);
+  if (history.length) notes.push(["History", history.join("; ")]);
   if (subjclass.length) notes.push(["Mathematics Subject Classification", subjclass.join("; ")]);
   return notes;
 }
@@ -5113,6 +5242,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
   let keywords: string[] = [];
   let subjclass: string[] = [];
   let ccs: string[] = [];
+  let history: string[] = [];
   // Commands the run does not know, each alone on its lines (revtex's `\pacs{…}` in a class not read here): they stay
   // source, and the declarations around them stay in the block (they are kept once a declaration follows, or `\maketitle`).
   let unknown: Array<{ from: number; to: number }> = [];
@@ -5162,8 +5292,10 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
     if (command && (TITLE_DECLARATIONS.test(command[1]) || TITLE_DEFINITIONS.test(command[1]))) {
       keep();
       run ??= { start, gaps: [], abstract: null, notes: [] };
-      if (command[1] === "keywords" && groups.length) keywords.push(groups.at(-1)!.trim());
-      if (command[1] === "subjclass" && groups.length) subjclass.push(groups.at(-1)!.trim());
+      if ((command[1] === "keywords" || command[1] === "KEYWORDS") && groups.length) keywords.push(groups.at(-1)!.trim());
+      if (command[1] === "HISTORY" && groups.length) history.push(groups.at(-1)!.trim());
+      if (command[1] === "ABSTRACT" && groups.length) run.abstract = stripTexComments(groups[0]).trim();
+      if ((command[1] === "subjclass" || command[1] === "SUBJECTCLASS") && groups.length) subjclass.push(groups.at(-1)!.trim());
       if (command[1] === "ccsdesc" && groups.length) ccs.push(groups.at(-1)!.trim());
       // sn-jnl's abstract is a command: `\abstract{…}`.
       // A&A's takes several (context, aims, methods, results, conclusions), each printed under its label.
@@ -5200,15 +5332,18 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
     keywords = [];
     subjclass = [];
     ccs = [];
+    history = [];
     i = command ? end : i + 1;
   }
   keep();
-  if (run) run.notes = titleNotes(keywords, subjclass, ccs);
+  if (run) run.notes = titleNotes(keywords, subjclass, ccs, history);
   return run;
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX, Cambridge's jfp. */
-export const ACCUMULATING_AUTHORS = /^(?:acmart|amsart|amsbook|amsproc|elsarticle|cas-[sd]c|lmcs|IEEEojcsys|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
+export const ACCUMULATING_AUTHORS = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsbook|amsproc|elsarticle|cas-[sd]c|lmcs|IEEEojcsys|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
+/** INFORMS' classes (informs3 and the journal variants): `TITLE{…}`, `ARTICLEAUTHORS{AUTHOR{…}AFF{…}}`, `ABSTRACT{…}` (econ.TH 2611.05708). */
+export const INFORMS = /^informs\d*(?:-[A-Za-z0-9-]+)?$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
 export const LIPICS = /^(?:lipics|oasics)(?:-v20\d\d)?$/;
 
@@ -5277,7 +5412,8 @@ function scanTitleParts(text: string, documentClass: string | null) {
   // IEEEtran's user macro for "`\and` with a line break" (`\linebreakand`): an author break; comments (a drafted list) are not shown.
   const breakMacro = authorBreakMacro(text);
   const plainName = (name: string) => (breakMacro ? stripTexComments(name).replace(new RegExp(`\\\\${breakMacro}(?![A-Za-z@])`, "g"), "\\and") : name);
-  const authors = (LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, "author")).map(/^(?:lmcs|IEEEojcsys)$/.test(documentClass ?? "") ? cleanName : plainName);
+  const informs = INFORMS.test(documentClass ?? "");
+  const authors = (LIPICS.test(documentClass ?? "") ? lipicsAuthors(text) : commandGroups(text, informs ? "AUTHOR" : "author")).map(/^(?:lmcs|IEEEojcsys)$/.test(documentClass ?? "") ? cleanName : plainName);
   const author = !authors.length ? null : ACCUMULATING_AUTHORS.test(documentClass ?? "") ? authors.join(" \\and ") : authors.at(-1)!;
   const bodyStart = beginDocumentIndex(text);
   const jhep = documentClass === "jheppub";
@@ -5293,5 +5429,5 @@ function scanTitleParts(text: string, documentClass: string | null) {
   // A class's affiliations, emails, institutes and notes (front-matter.ts).
   const authorCount = author ? author.split(/\\(?:and|And|AND)(?![A-Za-z])/).filter((piece) => piece.trim()).length : 0;
   const details = detailsView(frontMatterDetails(text, 0, documentClass ?? "", authorCount)) ?? (jhep ? jhepPlaces(text) : null);
-  return { title: last("title"), author, date: date && /\\(?:ifcase|month|year|day|number)(?![A-Za-z@])/.test(date) ? null : date, abstract, notes, details };
+  return { title: last(informs ? "TITLE" : "title"), author, date: date && /\\(?:ifcase|month|year|day|number)(?![A-Za-z@])/.test(date) ? null : date, abstract, notes, details };
 }

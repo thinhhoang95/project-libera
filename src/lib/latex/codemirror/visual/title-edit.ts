@@ -6,7 +6,7 @@ import { isInLatexComment } from "../../macros/definitions";
 import { beginDocumentIndex } from "../../document-begin";
 import { preambleOpenField, togglePreamble, visualConfig, visualDefinitions } from "./model";
 import { preambleEndOf } from "./structural";
-import { ACCUMULATING_AUTHORS, authorBreakMacro, LIPICS, titleClass } from "./walk";
+import { ACCUMULATING_AUTHORS, authorBreakMacro, INFORMS, LIPICS, titleClass } from "./walk";
 import { editableLines, frontMatterDetails } from "./front-matter";
 import { setTitleHooks, type TitleElement, type TitlePart } from "./widgets";
 
@@ -127,6 +127,8 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
   const scope = frontMatter ? block : text;
   const base = frontMatter ? from : 0;
   const documentClass = titleClass(visualDefinitions(state), visualDefinitions(state).documentClass ?? "") ?? "";
+  // INFORMS writes them in capitals: `TITLE`, `AUTHOR`, `ABSTRACT`, `KEYWORDS` (econ.TH 2611.05708).
+  const informs = INFORMS.test(documentClass);
   let authors: SourceSpan[];
   let addAuthorAt: number | null = null;
   if (!frontMatter && LIPICS.test(documentClass)) {
@@ -135,7 +137,7 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
     uses.forEach(note);
     authors = uses.map((groups) => ({ from: groups[0].from - 1, to: groups.at(-1)!.to + 1 }));
   } else {
-    const all = commandUses(scope, base, "author");
+    const all = commandUses(scope, base, informs ? "AUTHOR" : "author");
     // The classes that add an author with each `\author`; the others print the last one, and take another after `\and`.
     const accumulating = frontMatter || ACCUMULATING_AUTHORS.test(documentClass);
     const uses = accumulating ? all : all.slice(-1);
@@ -154,7 +156,7 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
   // sn-jnl's `\abstract{…}` command.
   // (A&A's `\abstract{…}{…}{…}{…}{…}`, drawn with a label before each part, has no one place to edit: a click shows its source.)
   if (!abstract) {
-    const use = commandUses(scope, base, "abstract").at(-1);
+    const use = commandUses(scope, base, informs ? "ABSTRACT" : "abstract").at(-1);
     const after = use ? state.sliceDoc(use[0].to + 1, Math.min(state.doc.length, use[0].to + 400)) : "";
     if (use && !/^(?:\s|%[^\n]*)*\{/.test(after)) {
       abstract = use[0];
@@ -166,7 +168,7 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
     if (abstractStart !== null) starts.push(abstractStart);
   }
   const span = (found: SourceSpan | null) => (found ? trimmed(state, found) : null);
-  const title = note(commandUses(scope, base, "title").at(-1));
+  const title = note(commandUses(scope, base, informs ? "TITLE" : "title").at(-1));
   const date = note(commandUses(scope, base, "date").at(-1));
   // A class's affiliations, emails, institutes and notes, in the order the block numbers them.
   const details = frontMatterDetails(scope, base, documentClass, authors.length, frontMatter);
@@ -177,7 +179,7 @@ export function titleSources(state: EditorState, from: number, to: number): Titl
   const addNotes = (source: string, offset: number) => {
     const blank = withoutNoteDefinitions(source);
     // CCS concepts, keywords, subject classes: the order titleNotes draws them in.
-    for (const name of ["ccsdesc", "keywords", "subjclass"]) {
+    for (const name of informs ? ["KEYWORDS", "HISTORY", "SUBJECTCLASS"] : ["ccsdesc", "keywords", "subjclass"]) {
       const uses = commandUses(blank, offset, name);
       if (!uses.length) continue;
       uses.forEach(note);

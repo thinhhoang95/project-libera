@@ -99,7 +99,7 @@ export const FLOAT_KINDS: Record<string, "figure" | "table" | "algorithm"> = {
   table: "table", "table*": "table", wraptable: "table", sidewaystable: "table", "sidewaystable*": "table", SCtable: "table",
   // AASTeX's tables, captioned by `\tablecaption` (numbered at the environment).
   deluxetable: "table", "deluxetable*": "table",
-  algorithm: "algorithm", "algorithm*": "algorithm",
+  algorithm: "algorithm", "algorithm*": "algorithm", algorithm2e: "algorithm",
 };
 
 /** KOMA-Script's `\captionabove` and `\captionbelow`: a float's `\caption`. */
@@ -202,6 +202,29 @@ function fillEnumitemCounter(label: string, count: number, depth: number) {
     .replace(/\\(arabic|alph|Alph|roman|Roman)\s*\{\s*(enum(?:i|ii|iii|iv))\s*\}/g, (whole, style: string, counter: string) => (counter === ENUM_COUNTERS[depth - 1] ? value(style) : whole));
 }
 
+const LABEL_FONT_SWITCHES = /\\(?:normalfont|upshape|itshape|slshape|scshape|bfseries|mdseries|rmfamily|sffamily|ttfamily|normalsize|bf|it|rm|sf|tt|sl|sc|em)(?![A-Za-z@])\s*/g;
+const LABEL_FONT_WRAPPERS = /\\(?:textup|textnormal|textrm|textmd|textit|textbf|textsl|textsc|textsf|texttt|emph)\s*\{([^{}]*)\}/g;
+
+/** A list label's font switches (`\normalfont(\roman*)`, `\textup{(\alph*)}`) outside formulas: dropped, they only restyle the marker (math.GR 2611.14085). */
+export function dropLabelFonts(label: string) {
+  if (!label.includes("\\")) return label;
+  return label.split(/(\$[^$]*\$)/).map((part, index) => {
+    if (index % 2) return part;
+    let text = part.replace(LABEL_FONT_SWITCHES, "");
+    for (let guard = 0; guard < 4; guard++) {
+      const next = text.replace(LABEL_FONT_WRAPPERS, "$1");
+      if (next === text) break;
+      text = next;
+    }
+    return text;
+  }).join("");
+}
+
+/** Whether a label has a command outside formulas: a marker or `\ref` chip cannot show it. */
+function hasRawCommand(label: string) {
+  return label.split(/(\$[^$]*\$)/).some((part, index) => !(index % 2) && /\\[A-Za-z]/.test(part));
+}
+
 /** A label's grouping braces (`{(\roman*)}`) only group: gone, unless it has commands or math, which need them (`$L_{10}$`). */
 function withoutLabelBraces(label: string) {
   return /[\\$]/.test(label) ? label : label.replace(/[{}]/g, "");
@@ -228,6 +251,16 @@ export function plainTagText(tag: string) {
 
 /** The label an `enumerate` item shows: `1.`, `(a)`, or a custom `[(i)]` / `label=(\alph*)` template. */
 export function enumerateItemLabel(count: number, depth: number, template: string | null) {
+  if (template && template.includes("\\")) {
+    // Font switches only restyle the marker: dropped. The walk draws the rest as LaTeX or leaves it as written.
+    const keyed = /(?:^|,)\s*label\s*=/.test(template);
+    const cleaned = keyed ? template.replace(/((?:^|,)\s*label\s*=\s*)(\{(?:[^{}]|\{[^{}]*\})*\}|[^,]*)/, (_, key: string, value: string) => key + dropLabelFonts(value)) : dropLabelFonts(template);
+    return enumerateItemLabelFor(count, depth, cleaned);
+  }
+  return enumerateItemLabelFor(count, depth, template);
+}
+
+function enumerateItemLabelFor(count: number, depth: number, template: string | null) {
   if (template) {
     // enumerate's `[(i)]` and enumitem's `label=(\alph*)`.
     const keyed = /(?:^|,)\s*label\s*=/.test(template);
@@ -260,8 +293,9 @@ export function enumerateItemReference(counts: number[], templates: Array<string
   const template = templates[depth - 1];
   if (template) {
     const ref = /(?:^|,)\s*ref\s*=\s*([^,]+)/.exec(template)?.[1]?.trim();
-    if (ref) return withoutLabelBraces(fillEnumitemCounter(ref, counts[depth - 1], depth));
-    return enumerateItemLabel(counts[depth - 1], depth, template).replace(/\.$/, "");
+    const shown = ref ? withoutLabelBraces(fillEnumitemCounter(dropLabelFonts(ref), counts[depth - 1], depth)) : enumerateItemLabel(counts[depth - 1], depth, template).replace(/\.$/, "");
+    // A `\ref` chip is plain text: a command it cannot show (outside a formula) falls back to LaTeX's own item reference.
+    if (!hasRawCommand(shown)) return shown;
   }
   const [first, second, third, fourth] = counts;
   if (depth === 1) return formatCounterValue(first, "arabic");
@@ -1248,7 +1282,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         const env = environmentName(node, read) ?? "";
         scopes.push({ node: node.from, target: env === "subtable" ? null : currentTarget() });
         // A `\label` on an algorithm's line (`\State … \label{l:x}`, algorithm2e's `\nllabel{l:x}`) is that line's number.
-        if (env === "algorithmic" || env === "algorithm" || env === "algorithm*") algorithmLabels(node, env);
+        if (env === "algorithmic" || env === "algorithm" || env === "algorithm2e" || env === "algorithm*") algorithmLabels(node, env);
         // enumitem's lists of the document's own (`\newlist{exercises}{enumerate}{6}`): numbered as their kind.
         const custom = defs.lists?.get(env);
         if (custom) {

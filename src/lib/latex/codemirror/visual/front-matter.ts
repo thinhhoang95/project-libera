@@ -27,6 +27,7 @@ export type FrontLineView = { label: string; latex: string; editable: boolean };
 
 const REVTEX = /^revtex4(?:-[12])?$/;
 const ACMART = /^acmart$/;
+const INFORMS_CLASS = /^informs\d*(?:-[A-Za-z0-9-]+)?$/;
 // A&A's `aa` numbers its institutes as llncs does (`\institute{A \and B}`, `\inst{1}`).
 const LLNCS = /^(?:llncs|svjour3?|svmult|aa)$/;
 const ELSARTICLE = /^elsarticle$/;
@@ -169,6 +170,17 @@ export function frontMatterDetails(text: string, offset: number, documentClass: 
       const line = trimmedLine(use.name === "email" ? "Email: " : use.name === "orcid" ? "ORCID: " : use.name === "authornote" ? "Note: " : "", use.arg.latex, use.arg.from);
       if (use.name === "affiliation" || use.name === "additionalaffiliation") line.latex = acmAffiliation(line.latex);
       details.authorLines[author].push(line);
+    }
+    return author + 1 === authorCount ? details : null;
+  }
+  if (INFORMS_CLASS.test(documentClass)) {
+    // INFORMS: `\ARTICLEAUTHORS{\AUTHOR{Name}\AFF{Affiliation}\AUTHOR{…}\AFF{…}\EMAIL{…}}`: each `\AFF`, `\EMAIL` and `\URL` belongs
+    // to the `\AUTHOR` before it (econ.TH 2611.05708).
+    let author = -1;
+    for (const use of uses(text, offset, ["AUTHOR", "AFF", "EMAIL", "URL"])) {
+      if (use.name === "AUTHOR") { author += authorIndices(use); continue; }
+      if (author < 0 || author >= authorCount) return null;
+      details.authorLines[author].push(trimmedLine(use.name === "EMAIL" ? "Email: " : use.name === "URL" ? "URL: " : "", use.arg.latex, use.arg.from));
     }
     return author + 1 === authorCount ? details : null;
   }
