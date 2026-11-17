@@ -3249,6 +3249,11 @@ span.cm-vis-math-display { display: inline-block; width: 100%; }
 /* thebibliography: each reference hangs from its [n] marker. */
 .libera-latex-visual .cm-line.cm-vis-bibliography { padding-left: 2.8em; }
 .libera-latex-visual .cm-line.cm-vis-bibliography .cm-vis-item { min-width: 2.2em; margin-left: -2.8em; padding-right: .6em; }
+/* theindex: an entry hangs from its first line, its subentries are indented; \indexspace is a gap. */
+.libera-latex-visual .cm-line.cm-vis-index-item { padding-left: 1.5em; text-indent: -1.5em; }
+.libera-latex-visual .cm-line.cm-vis-index-subitem { padding-left: 3em; text-indent: -1.5em; }
+.libera-latex-visual .cm-line.cm-vis-index-subsubitem { padding-left: 4.5em; text-indent: -1.5em; }
+.libera-latex-visual .cm-line.cm-vis-index-space { min-height: 1em; }
 .cm-vis-env-header { font-weight: 700; }
 .cm-vis-env-header-proof .cm-vis-env-title { font-style: italic; font-weight: 400; }
 .cm-vis-env-header-abstract { display: inline-block; width: 100%; text-align: center; font-size: .92em; }

@@ -18,6 +18,7 @@ import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectEr
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
+import { commandUseEnd, eplNameLatex, eplReviewLatex, readBibitemHead, REVTEX_ENTRY, revtexEntryLatex } from "./bibliography";
 import { gameTabular } from "./game";
 import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
@@ -342,7 +343,7 @@ function definitionsPrelude(text: string): { from: number; to: number } | null {
     const start = i;
     i += command[0].length;
     if (/^(?:providecommand|newcommand|renewcommand|def|gdef|let)$/.test(command[1])) {
-      const name = /^\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)(?:#\d)*/.exec(text.slice(i, i + 80));
+      const name = /^\s*(?:\{\s*\\[A-Za-z@]+\s*\}|\\[A-Za-z@]+)(?:[ \t]*#\d)*/.exec(text.slice(i, i + 80));
       if (!name) break;
       i += name[0].length;
       if (command[1] === "let") {
@@ -364,7 +365,10 @@ function definitionsPrelude(text: string): { from: number; to: number } | null {
       const end = text.indexOf("\\endcsname", i);
       if (end < 0) break;
       i = end + "\\endcsname".length;
-    } else if (!/^(?:BIBdecl|relax|expandafter|ifx|else|fi)$/.test(command[1])) break; // natbib's `\expandafter\ifx\csname urlstyle\endcsname\relax … \else … \fi` around the `\doi` definition
+    } else if (command[1] === "ifx" && /^\s*\\[A-Za-z@]+\s*\\[A-Za-z@]+/.test(text.slice(i, i + 80))) {
+      // `\ifx \bauthor \undefined \def \bauthor#1{#1}\fi` (Springer Nature's .bbl): the test's two names are part of the guard.
+      i += /^\s*\\[A-Za-z@]+\s*\\[A-Za-z@]+/.exec(text.slice(i, i + 80))![0].length;
+    } else if (!/^(?:BIBdecl|bibcommenthead|relax|expandafter|ifx|else|fi)$/.test(command[1])) break; // natbib's `\expandafter\ifx\csname urlstyle\endcsname\relax … \else … \fi` around the `\doi` definition
     if (from < 0) from = start;
     to = i;
   }
@@ -391,6 +395,8 @@ const INLINE_STYLES: Record<string, string> = {
 };
 const MATH_CONTAINERS = new Set(["DollarMath", "BracketMath", "ParenMath", "EquationEnvironment", "EquationArrayEnvironment", "Math", "InlineMath", "DisplayMath"]);
 /** Acknowledgment environments of conference classes (NeurIPS `ack`, ACM `acks`). */
+/** The environments of Springer Nature's and BioMed Central's `.bbl` entries (`barticle`, `bchapter`, `bbook`…). */
+const BIB_ENTRY_ENVIRONMENT = /^b(?:article|chapter|book|inbook|proceedings|inproceedings|incollection|techreport|thesis|phdthesis|mastersthesis|unpublished|misc|manual|booklet|preprint|other|otherref|parttitle|conf)$/;
 const ACKNOWLEDGMENTS = /^(?:ack|acks|acknowledgments|acknowledgements|acknowledgment|acknowledgement)$/;
 const BULLETS = ["•", "–", "∗", "·"];
 const TEXT_BLOCKS: Record<string, string> = {
@@ -791,6 +797,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   };
 
   const readNode = (start: number, end: number) => read(state, start, end);
+  /** Whether `node` is inside a `theindex` (an index `.ind` written into the file). */
+  const inIndexEnvironment = (node: SyntaxNode) => {
+    for (let parent = node.parent; parent; parent = parent.parent) if (parent.name === "Environment" && environmentName(parent, readNode) === "theindex") return true;
+    return false;
+  };
+  /** Whether `node` is inside a `thebibliography`. */
+  const inBibliography = (node: SyntaxNode) => {
+    for (let parent = node.parent; parent; parent = parent.parent) if (parent.name === "Environment" && /^(?:thebibliography|CSLReferences)$/.test(environmentName(parent, readNode) ?? "")) return true;
+    return false;
+  };
 
   /**
    * `\ref` and `\eqref` in a formula, which KaTeX has neither of: the number they show, as text. The
@@ -1440,8 +1456,26 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (!structural) return false;
           const keysNode = node.getChild(name === "Cite" ? "BibKeyArgument" : "RefArgument");
           const inner = keysNode && argumentInner(keysNode);
+          // hyperref's `\ref *{key}` (a space before the star, as makeindex's `.ind` writes it): the grammar ends the command at the star.
+          if (name === "Ref" && !inner && hasDirectError(node) && /^\\ref\s*$/.test(read(state, node.from, node.to))) {
+            const starred = /^\*\s*\{([^{}\s]+)\}/.exec(read(state, node.to, Math.min(doc.length, node.to + 300)));
+            if (starred) {
+              const to = node.to + starred[0].length;
+              consumed.push([node.from, to]);
+              emit({ kind: "ref", from: node.from, to, reveal: "strict", replaces: [{ from: node.from, to, widget: new ChipWidget("ref", "\\ref*", [starred[1]], {}, to - node.from) }] });
+              return false;
+            }
+          }
           if (!inner || hasDirectError(node)) return false;
-          const keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
+          let keys = read(state, inner.from, inner.to).split(",").map((key) => key.trim()).filter(Boolean);
+          // `\citep{\releasedCites}` (cs.LG 2611.21215): a macro that is the whole list of keys, read when its definition is known;
+          // a macro that is not known (or not only keys) leaves the citation as source, never a chip named after the macro.
+          if (name === "Cite" && keys.some((key) => /^\\[A-Za-z@]/.test(key))) {
+            const expanded = /^\s*\\[A-Za-z@]+\s*$/.test(read(state, inner.from, inner.to)) ? expandLatexMacros(read(state, inner.from, inner.to).trim(), defs, { mode: "text", pos: node.from }) : null;
+            const listed = expanded?.ok ? expanded.text.replace(/%[^\n]*/g, "").split(",").map((key) => key.trim()).filter(Boolean) : [];
+            if (!listed.length || listed.some((key) => /[\\{}\s]/.test(key))) return false;
+            keys = listed;
+          }
           if (!keys.length) return false;
           const ctrl = node.firstChild!;
           let command = read(state, ctrl.from, ctrl.to);
@@ -1529,6 +1563,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         }
         case "ListEnvironment": return drawList(node);
         case "Item": {
+          if (!lists.length && structural && inIndexEnvironment(node)) { indexLine(node.from, node.to, "cm-vis-index-item"); return false; }
           if (!lists.length || !structural) return false;
           const optional = node.getChild("OptionalArgument");
           const optionalRange = optional && argumentInner(optional);
@@ -1743,6 +1778,62 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (last >= first) emit({ kind: "list-body", from: node.from, to: node.to, reveal: "never", replaces: [], lines: [{ from: doc.line(first).from, to: doc.line(last).to, class: "cm-vis-bibliography" }] });
     }
     return undefined;
+  }
+
+  /**
+   * A `thebibliography` entry whose fields are marked up by commands (REVTeX's `\bibinfo`, `\bibfield`): its `\bibitem` marker and
+   * its body as text. True when drawn (the entry up to the next `\bibitem` is then consumed); false leaves it to the usual
+   * reading, so an entry with a command that is not understood stays source.
+   */
+  function bibliographyEntry(node: SyntaxNode, env: SyntaxNode): boolean {
+    const head = readBibitemHead(read(state, node.from, Math.min(doc.length, node.from + 3000)), 0);
+    if (!head) return false;
+    const headEnd = node.from + head.end;
+    const rest = read(state, headEnd, env.to);
+    const stop = /\\bibitem(?![A-Za-z@])|\\end\s*\{thebibliography\}/.exec(rest);
+    if (!stop) return false;
+    const body = rest.slice(0, stop.index);
+    const authorYear = head.label !== null && (/\(\s*\d{4}[a-z]?\s*\)/.test(head.label) || /\\citeauthoryear\s*\{/.test(head.label));
+    if (!REVTEX_ENTRY.test(body) || (head.label !== null && !authorYear)) return false;
+    const latex = revtexEntryLatex(body);
+    if (latex === null) return false;
+    const bodyEnd = headEnd + body.trimEnd().length;
+    consumed.push([node.from, bodyEnd]);
+    if (structural && node.from >= from && node.from < to) {
+      const label = head.label === null ? `[${bibitemNumber(doc, env.from, node.from)}]` : "";
+      emit({ kind: "item", from: node.from, to: headEnd, reveal: "strict", replaces: [{ from: node.from, to: headEnd, widget: new ItemMarkerWidget(label, "number", 1, {}, null, headEnd - node.from) }] });
+      // The entry is one piece: a click on it opens the source of the whole entry (the widget's own handler).
+      emit({ kind: "style", from: headEnd, to: bodyEnd, reveal: "strict", replaces: [{ from: headEnd, to: bodyEnd, widget: new TextDrawingWidget(latex, bodyEnd - headEnd) }] });
+    }
+    return true;
+  }
+
+  /**
+   * `theindex` (the `.ind` an index run writes, math.OA 2611.08668): an Index heading for its `\begin` line; its `\item`s, `\subitem`s
+   * and `\indexspace`s are drawn as they are met (indented lines, a gap), its `\end` line folds away.
+   */
+  function indexEnvironment(formed: NonNullable<ReturnType<typeof wellFormedEnvironment>>): false | undefined {
+    const begin = formed.begin;
+    consumed.push([begin.from, begin.to]);
+    const book = /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "");
+    const span = aloneOnLines(doc, begin.from, begin.to);
+    const start = span?.from ?? begin.from;
+    emit({
+      kind: "heading", from: start, to: begin.to, reveal: "line", wholeLine: true,
+      replaces: structural ? [{ from: start, to: begin.to, widget: new MacroHeadingWidget("Index", begin.to - start) }] : [],
+      hiddenLines: [{ from: start, to: begin.to, class: `cm-vis-heading ${book ? "cm-vis-h0" : "cm-vis-h1"}` }],
+    });
+    if (structural) collapseLine(formed.end, "env-end");
+    return undefined;
+  }
+
+  /** An index entry's command (`\item`, `\subitem`, `\indexspace`): hidden, its line indented (or a gap); the line shows its source at the caret. */
+  function indexLine(start: number, end: number, className: string) {
+    consumed.push([start, end]);
+    if (!structural || start < from || start >= to) return;
+    const line = doc.lineAt(start);
+    // ("touch", not the whole line: a construct that reveals with the line would take the reveal from the widgets that share it.)
+    emit({ kind: "symbol", from: start, to: end, reveal: "touch", replaces: [{ from: start, to: end }], hiddenLines: [{ from: line.from, to: line.from, class: className }] });
   }
 
   /** mathpartir's `mathpar`: its inference rules as one displayed formula; source when KaTeX cannot draw it. */
@@ -2056,6 +2147,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // IEEEtran's `IEEEproof` is amsthm's `proof` (its optional `[Proof of …]` heading and end mark), unless the document defines it.
     const name = formed.name === "IEEEproof" && !defs.environments.has("IEEEproof") && !defs.theorems.has("IEEEproof") ? "proof" : formed.name;
     if (name === "thebibliography" || (name === "CSLReferences" && !hasDirectError(node))) return bibliography(node, formed);
+    if (name === "theindex" && !defs.environments.has("theindex")) return indexEnvironment(formed);
     if (name === "frontmatter") return frontMatter(formed);
     if (name === "mathpar" || name === "mathpar*") return mathpar(node, formed);
     // thmtools' `\begin{restatable}[note]{theorem}{name}`: the theorem it names, with its heading over the whole opening.
@@ -2126,6 +2218,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       consumed.push([formed.begin.from, headerEnd]);
       if (structural) {
         collapseLine({ from: formed.begin.from, to: headerEnd }, "env-begin");
+        collapseLine(formed.end, "env-end");
+      }
+      return undefined;
+    }
+    // A `.bbl` entry's environment (Springer Nature's `\begin{barticle} … \end{barticle}`, cs.NI 2611.13943): it prints nothing of
+    // its own, so its two lines fold away and the entry's text is drawn as the paragraph it is.
+    if (BIB_ENTRY_ENVIRONMENT.test(name) && !defs.environments.has(name) && inBibliography(node)) {
+      consumed.push([formed.begin.from, formed.begin.to]);
+      if (structural) {
+        collapseLine({ from: formed.begin.from, to: formed.begin.to }, "env-begin");
         collapseLine(formed.end, "env-end");
       }
       return undefined;
@@ -2392,9 +2494,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (structural) emit({ kind: "bibliography", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new BibliographyListWidget(title ?? bibliographyHeading(defs), "", span.to - span.from) }] });
       return false;
     }
-    // `\index{social choice}` and `\glossary{…}`: entries for the back of the book, a small grey tag where they are
-    // (O'Donnell's book has one every few lines).
-    if (text === "\\index" || text === "\\glossary") {
+    // `\index{social choice}`, `\glossary{…}` and the glossaries package's `\glsadd{key}` (math.OA 2611.08668): entries for the back of
+    // the book, a small grey tag where they are (O'Donnell's book has one every few lines).
+    if (text === "\\index" || text === "\\glossary" || text === "\\glsadd") {
       const argument = commandArguments(node).find((arg) => !arg.optional);
       const inner = argument && argumentInner(argument.node);
       // Only `\index{…}` with nothing between the command and its argument (no `[…]` of another package).
@@ -2817,13 +2919,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         emit({ kind: "symbol", from: node.from, to: keyArgument.node.to, reveal: "touch", replaces: [{ from: node.from, to: keyArgument.node.to }] });
         return false;
       }
+      // REVTeX's `.bbl` entry (`\bibitem [{…(1979)…}]{key}\BibitemOpen \bibfield {author} {\bibinfo {author} {…}}…`, cond-mat 2611.17927):
+      // its marker, and the entry's text with the markup rewritten, drawn as one piece that a click turns back into the source.
+      if (env && environmentName(env, readNode) === "thebibliography" && bibliographyEntry(node, env)) return false;
       if (env && keyArgument && !hasDirectError(node)) {
         const optional = args.find((arg) => arg.optional && arg.node.to <= keyArgument.node.from);
         const range = optional && argumentInner(optional.node);
         const given = range ? read(state, range.from, range.to).trim().replace(/^\{([\s\S]*)\}$/, "$1") : null;
         // natbib's author–year labels (`[{Ba et~al.(2016)Ba, Kiros, and Hinton}]`) are not printed in the list.
         // A label with commands (`CGK{\etalchar{+}}20`) is printed as text, or the line stays source.
-        const authorYear = given !== null && /\(\s*\d{4}[a-z]?\s*\)/.test(given);
+        const authorYear = given !== null && (/\(\s*\d{4}[a-z]?\s*\)/.test(given) || /\\citeauthoryear\s*\{/.test(given));
         const printed = given !== null && !authorYear && /[\\{}]/.test(given) ? citationNoteText(citationNotes([given], defs, node.from).post ?? given) : given;
         if (given !== null && printed === null) return false;
         const label = given === null ? `[${bibitemNumber(doc, env.from, node.from)}]` : authorYear ? "" : `[${printed}]`;
@@ -2938,6 +3043,41 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       emit({ kind: "math", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new MathWidget(html, false, false, read(state, node.from, end), false, 0, end - node.from, referenced(expanded.text)) }] });
       consumed.push([node.from, end]);
       return false;
+    }
+    // An index's own commands (`theindex`, math.OA 2611.08668): `\subitem` and `\indexspace` set their line (indent, gap), `\hyperpage{12}`
+    // prints its number, `\see{entry}{page}` "see entry". The source of each shows again at the caret.
+    if (/^\\(?:subitem|subsubitem|indexspace|hyperpage|see|seealso)$/.test(text) && inIndexEnvironment(node) && !macroAt(defs, text.slice(1), node.from) && !hasDirectError(node)) {
+      if (text === "\\subitem" || text === "\\subsubitem" || text === "\\indexspace") {
+        indexLine(node.from, node.to, text === "\\subitem" ? "cm-vis-index-subitem" : text === "\\subsubitem" ? "cm-vis-index-subsubitem" : "cm-vis-index-space");
+        return false;
+      }
+      if (text === "\\hyperpage" && args.length === 1 && mandatory.length === 1 && first && mandatory[0].node.from === ctrl.to) {
+        if (structural && node.from >= from && node.from < to) {
+          emit({ kind: "macro-args", from: node.from, to: node.to, reveal: "touch", replaces: [{ from: node.from, to: first.from }, { from: first.to, to: node.to }] });
+        }
+        return undefined;
+      }
+      if (text !== "\\hyperpage" && mandatory.length === 2 && args.length === 2 && first) {
+        const entry = read(state, first.from, first.to).trim();
+        const end = mandatory[1].node.to;
+        if (entry) {
+          consumed.push([node.from, end]);
+          if (structural && node.from >= from && node.from < to) emit({ kind: "style", from: node.from, to: end, reveal: "strict", replaces: [{ from: node.from, to: end, widget: new TextDrawingWidget(`\\textit{${text === "\\see" ? "see" : "see also"}} ${entry}`, end - node.from) }] });
+          return false;
+        }
+      }
+    }
+    // EPL's bibliography commands (epl2.cls; q-bio 2610.35161): `\Name{A \and B}` the authors in small capitals, `\REVIEW{journal}{volume}{year}{page}`
+    // "journal, volume (year) page". Only in the class's own bibliography, and only when the document does not define them.
+    if ((text === "\\Name" || text === "\\REVIEW") && /^epl/i.test(defs.documentClass ?? "") && !macroAt(defs, text.slice(1), node.from) && inBibliography(node)) {
+      const source = read(state, node.from, Math.min(doc.length, node.from + 2000));
+      const end = commandUseEnd(source, 0, text.slice(1), text === "\\Name" ? 1 : 4);
+      const latex = end === null ? null : (text === "\\Name" ? eplNameLatex : eplReviewLatex)(source.slice(0, end));
+      if (end !== null && latex !== null) {
+        consumed.push([node.from, node.from + end]);
+        if (structural && node.from >= from && node.from < to) emit({ kind: "style", from: node.from, to: node.from + end, reveal: "strict", replaces: [{ from: node.from, to: node.from + end, widget: new TextDrawingWidget(latex, end) }] });
+        return false;
+      }
     }
     // bibtex's `\doi{10.1000/x}` (a natbib .bbl entry; its `\providecommand{\doi}[1]{doi: #1}` is the fallback): "doi: 10.1000/x", a link to doi.org.
     if (text === "\\doi" && args.length === 1 && mandatory.length === 1 && first && !hasDirectError(node)) {
