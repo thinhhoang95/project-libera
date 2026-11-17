@@ -25,6 +25,8 @@ import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
 import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
 import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { useHorizontalWheelScroll } from "../use-horizontal-wheel-scroll";
+import { inkPower } from "../ink/ink-power";
+import { autoCompileDelayMs } from "./latex-auto-compile-delay";
 import { latexPdfUrl, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
 import { latexCompileMenuItems, type LatexCompileTarget } from "./latex-compile-menu";
@@ -61,7 +63,6 @@ type LatexWorkspaceProps = {
   onUploadFiles?: (notebook: string, files: File[], destinationPath?: string, options?: { throwOnError?: boolean }) => Promise<LiberaFileNode[]>;
 };
 
-const AUTO_COMPILE_DELAY_MS = 1200;
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const compileShortcut = IS_MAC ? "⌘↵" : "Ctrl+Enter";
 const SPLIT_STORAGE_KEY = "libera.latexEditorPreviewSplitPercent";
@@ -175,6 +176,11 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   const [bibEntries, setBibEntries] = useState<BibEntrySummary[]>([]);
   const splitRef = useRef<HTMLDivElement>(null);
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Adaptive auto-compile pause: the last compile's duration, whether the PDF is on screen, and an automatic compile owed while the window was hidden.
+  const lastCompileMs = useRef<number | null>(null);
+  const pdfOffScreen = useRef(false);
+  const autoCompileOwed = useRef(false);
+  const compileRef = useRef<() => void>(() => undefined);
   const latest = useRef({ readOpenTabs, engineSetting, onSave, autoCompile, rootPath, canCompile, draftForAnalysis });
   useEffect(() => { latest.current = { readOpenTabs, engineSetting, onSave, autoCompile, rootPath, canCompile, draftForAnalysis }; });
 
@@ -215,6 +221,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     if (!isTex || !latest.current.canCompile) return;
     const { rootPath: root } = latest.current;
     if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
+    autoCompileOwed.current = false;
+    let startedAt = 0;
     void requestLatexCompile(root, {
       read: () => {
         const drafts: Record<string, string> = { [filePath]: editorRef.current?.text() ?? tab.draft };
@@ -225,18 +233,45 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
         }
         return { engine: latest.current.engineSetting, drafts };
       },
-      onStart: () => editorRef.current?.markCompileStarted(),
-      onFinish: (result) => { if (result?.fresh) editorRef.current?.markCompileShown(); },
+      onStart: () => { startedAt = Date.now(); editorRef.current?.markCompileStarted(); },
+      onFinish: (result) => {
+        if (startedAt) lastCompileMs.current = Date.now() - startedAt;
+        if (result?.fresh) editorRef.current?.markCompileShown();
+      },
     });
   }, [filePath, isTex, tab.draft, tab.id]);
+  useEffect(() => { compileRef.current = compile; }, [compile]);
 
   const scheduleAutoCompile = useCallback(() => {
     if (!latest.current.autoCompile || !isTex) return;
     if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
-    autoCompileTimer.current = setTimeout(compile, AUTO_COMPILE_DELAY_MS);
+    // A hidden window does not typeset; the compile is owed until it is shown again.
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      autoCompileOwed.current = true;
+      return;
+    }
+    const delay = autoCompileDelayMs({ lastCompileMs: lastCompileMs.current, onBattery: inkPower.onBattery, pdfHidden: pdfOffScreen.current });
+    autoCompileTimer.current = setTimeout(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        autoCompileOwed.current = true;
+        return;
+      }
+      compile();
+    }, delay);
   }, [compile, isTex]);
 
   useEffect(() => () => { if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current); }, []);
+
+  // The compile owed while the window was hidden runs once it is visible.
+  useEffect(() => {
+    function onVisibility() {
+      if (document.visibilityState !== "visible" || !autoCompileOwed.current) return;
+      autoCompileOwed.current = false;
+      if (latest.current.autoCompile) compileRef.current();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
 
   // Show a PDF as soon as the document opens or the compile target changes.
   const initialCompileRef = useRef<string | null>(null);
@@ -534,6 +569,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   const pdfWindowOpen = useLatexPdfWindowOpen(rootPath);
   const showsPdfWindow = isTex && canCompile && pdfWindowOpen;
   const pdfHidden = viewState?.pdfHidden ?? false;
+  useEffect(() => { pdfOffScreen.current = pdfHidden && !showsPdfWindow; }, [pdfHidden, showsPdfWindow]);
 
   useEffect(() => {
     if (!showsPdfWindow) return;
