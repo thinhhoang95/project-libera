@@ -51,8 +51,7 @@ export function useSavedWorkspaces(options: Options) {
   const lastJournal = useRef("");
   const lastStructure = useRef<string | null>(null);
   // One tokenizer for the render-time token and the one taken in persist(), which are compared.
-  const structureTokenizer = useRef<ReturnType<typeof createWorkspaceStructureTokenizer> | null>(null);
-  structureTokenizer.current ??= createWorkspaceStructureTokenizer();
+  const [structureToken] = useState(createWorkspaceStructureTokenizer);
   const structureSaveTimer = useRef<number | undefined>(undefined);
   const pendingSnapshot = useRef<WorkspaceLibrary | null>(null);
   const epoch = useRef(0);
@@ -101,7 +100,7 @@ export function useSavedWorkspaces(options: Options) {
   function persist(next: WorkspaceLibrary) {
     // Every save carries the whole session, including any change still waiting.
     cancelStructureSave();
-    const structure = structureTokenizer.current!(current.current.session);
+    const structure = structureToken(current.current.session);
     pendingSnapshot.current = next;
     journal(next);
     const body = JSON.stringify(next);
@@ -269,7 +268,7 @@ export function useSavedWorkspaces(options: Options) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, options.authenticated, journalKey]);
 
-  const structure = useMemo(() => structureTokenizer.current!(options.session), [options.session]);
+  const structure = useMemo(() => structureToken(options.session), [structureToken, options.session]);
   useEffect(() => {
     if (!ready || !options.authenticated) return;
     if (lastStructure.current === null) { lastStructure.current = structure; return; }

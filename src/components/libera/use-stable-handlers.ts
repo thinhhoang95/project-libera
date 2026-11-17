@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 type Handlers = Record<string, (...args: never[]) => unknown>;
 
@@ -20,9 +20,12 @@ export function useStableHandlers<T extends Handlers>(handlers: T): T {
   useLayoutEffect(() => {
     latest.current = handlers;
   });
-  const [stable] = useState(() => Object.fromEntries(Object.keys(handlers).map((key) => [
+  const [keys] = useState(() => Object.keys(handlers));
+  return useMemo(() => Object.fromEntries(keys.map((key) => [
     key,
-    (...args: never[]) => latest.current[key](...args),
-  ])) as T);
-  return stable;
+    (...args: never[]) => {
+      const handler = latest.current[key];
+      return handler(...args);
+    },
+  ])) as T, [keys, latest]);
 }

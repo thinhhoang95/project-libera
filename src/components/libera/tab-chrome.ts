@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import type { OpenTab } from "./types";
 
 /**
@@ -43,10 +43,11 @@ export function projectChromeTabs(previous: readonly ChromeTab[], tabs: readonly
  * is not woken by them; a name, path, status or order change is.
  */
 export function useChromeTabs(tabs: readonly OpenTab[]): readonly ChromeTab[] {
-  const last = useRef<readonly ChromeTab[]>([]);
-  // The projection is a pure function of `tabs`; the ref only keeps identities.
-  const next = projectChromeTabs(last.current, tabs);
-  last.current = next;
+  const [held, setHeld] = useState<readonly ChromeTab[]>(() => projectChromeTabs([], tabs));
+  // The projection is a pure function of `tabs`; the state only keeps identities.
+  // It is replaced while rendering, and only when the chrome really changed.
+  const next = projectChromeTabs(held, tabs);
+  if (next !== held) setHeld(next);
   return next;
 }
 
