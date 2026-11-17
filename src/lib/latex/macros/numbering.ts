@@ -1492,7 +1492,8 @@ export function referenceText(command: string, targets: Array<LabelTarget | null
   const first = targets[0];
   if (name === "eqref") return numbers.map((number) => `(${number})`).join(", ");
   if (name === "pageref" || name === "vpageref") return targets.map((target) => (target?.kind === "page" ? target.number : "?")).join(", ");
-  if (name === "nameref") return first?.title ?? numbers[0];
+  // (A heading written with `\boldmath`: the font switches print nothing, math.OA 2611.08668.)
+  if (name === "nameref") return first?.title?.replace(/\\(?:boldmath|unboldmath|normalfont|protect)(?![A-Za-z@])\s*/g, "") ?? numbers[0];
   // jmlr's `\tableref{a,b}`, `\sectionref{x}`, `\appendixref{y}` (jmlrutils.sty's `\objectref`): "Tables 1 and 2", "Appendix A".
   const word = /ref$/.test(name) && Object.hasOwn(JMLR_REF_WORDS, name.replace(/ref$/, "")) ? JMLR_REF_WORDS[name.replace(/ref$/, "")] : null;
   if (word) {
