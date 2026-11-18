@@ -1,6 +1,6 @@
 import { compileFind, compileFindReplacement, replaceAllInText } from "./index";
 import type { FindPreset, FindRecipeStep } from "./presets";
-import type { FindError, FindFlavor } from "./types";
+import type { FindError, FindFlavor, FindOptions } from "./types";
 
 /* Recipes: an ordered list of find & replace steps, each run over the result of
  * the one before, applied by the editor as one edit (one undo step). */
@@ -13,19 +13,24 @@ export function recipeSteps(preset: FindPreset): FindRecipeStep[] {
   return preset.steps?.length ? preset.steps : [preset];
 }
 
+/** The engine options of one step. */
+export function recipeStepOptions(step: FindRecipeStep, flavor: FindFlavor): FindOptions {
+  return {
+    mode: step.mode,
+    matchCase: step.matchCase ?? false,
+    wholeWord: step.wholeWord ?? false,
+    flexibleSpacing: step.flexibleSpacing ?? false,
+    scope: step.scope ?? "anywhere",
+    flavor,
+  };
+}
+
 /** Runs every step over `text` in order. A step that does not compile is reported and skipped. */
 export function runRecipe(text: string, steps: readonly FindRecipeStep[], flavor: FindFlavor): RecipeResult {
   let current = text;
   const results: RecipeStepResult[] = [];
   for (const step of steps) {
-    const compiled = compileFind(step.query, {
-      mode: step.mode,
-      matchCase: step.matchCase ?? false,
-      wholeWord: step.wholeWord ?? false,
-      flexibleSpacing: step.flexibleSpacing ?? false,
-      scope: step.scope ?? "anywhere",
-      flavor,
-    });
+    const compiled = compileFind(step.query, recipeStepOptions(step, flavor));
     if (!compiled.ok) { results.push({ replaced: 0, skipped: 0, incomplete: false, error: compiled.error }); continue; }
     const replacement = compileFindReplacement(compiled.finder, step.replacement, step.preserveCase ?? false);
     if (!replacement.ok) { results.push({ replaced: 0, skipped: 0, incomplete: false, error: replacement.error }); continue; }

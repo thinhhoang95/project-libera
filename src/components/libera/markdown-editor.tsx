@@ -62,7 +62,7 @@ import type {
   MarkdownEditorCachedLine,
   MarkdownEditorLineTone,
 } from "@/lib/markdown-editor-highlighting";
-import type { TextMatch } from "@/lib/text-find";
+import type { TextRange as TextMatch } from "@/lib/find";
 import type { SmartPasteMode } from "@/lib/markdown-smart-paste";
 import {
   applyTextChanges,

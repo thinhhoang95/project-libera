@@ -5104,19 +5104,6 @@
     },
     "markdownSourceEditor": {
       "loading": "Loading editor…"
-    },
-    "markdownSourceFindBar": {
-      "closeFind": "Close find",
-      "closeTitle": "Close",
-      "findInNote": "Find in note",
-      "nextMatch": "Next match",
-      "previousMatch": "Previous match",
-      "replace": "Replace",
-      "replaceAll": "Replace all",
-      "replaceWith": "Replace with",
-      "wildcardMatches": "Wildcard matches",
-      "wildcards": "Wildcards",
-      "wildcardsHint": "Use * for any text and ? for one character"
     }
   },
   "markdownStatusBar": {
@@ -7669,18 +7656,6 @@
     "fixChatGptEquationsButton": "Fix ChatGPT equations",
     "chooseImages": "Choose images",
     "dismiss": "Dismiss",
-    "findInNote": "Find in note",
-    "findMatchCount": "{current}/{total}",
-    "previousMatch": "Previous match",
-    "nextMatch": "Next match",
-    "closeFind": "Close find",
-    "close": "Close",
-    "replaceWith": "Replace with",
-    "replace": "Replace",
-    "replaceAll": "Replace all",
-    "wildcardsTitle": "Use * for any text and ? for one character",
-    "wildcardMatches": "Wildcard matches",
-    "wildcards": "Wildcards",
     "editEquation": "Edit equation",
     "insertEquation": "Insert equation",
     "equationDescription": "Write LaTeX without the surrounding equation markers.",

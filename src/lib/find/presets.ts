@@ -13,6 +13,8 @@ export type FindRecipeStep = {
   flexibleSpacing?: boolean;
   preserveCase?: boolean;
   scope?: FindScope;
+  /** TipTap: interpret this step's replacement as Markdown. */
+  markdownReplacement?: boolean;
 };
 
 export type FindPreset = {
@@ -48,8 +50,8 @@ export const BUILT_IN_FIND_PRESETS: readonly FindPreset[] = [
     replacement: "$$@1$$",
     mode: "pattern",
     steps: [
-      { query: "\\[@x:block\\]", replacement: "$$@x$$", mode: "pattern" },
-      { query: "\\(*\\)", replacement: "$@1$", mode: "pattern" },
+      { query: "\\[@x:block\\]", replacement: "$$@x$$", mode: "pattern", markdownReplacement: true },
+      { query: "\\(*\\)", replacement: "$@1$", mode: "pattern", markdownReplacement: true },
     ],
   },
 ];

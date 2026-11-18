@@ -5104,19 +5104,6 @@
     },
     "markdownSourceEditor": {
       "loading": "Chargement de l’éditeur…"
-    },
-    "markdownSourceFindBar": {
-      "closeFind": "Fermer la recherche",
-      "closeTitle": "Fermer",
-      "findInNote": "Rechercher dans la note",
-      "nextMatch": "Occurrence suivante",
-      "previousMatch": "Occurrence précédente",
-      "replace": "Remplacer",
-      "replaceAll": "Tout remplacer",
-      "replaceWith": "Remplacer par",
-      "wildcardMatches": "Résultats avec caractères génériques",
-      "wildcards": "Caractères génériques",
-      "wildcardsHint": "Utilisez * pour n’importe quel texte et ? pour un seul caractère"
     }
   },
   "markdownStatusBar": {
@@ -7669,18 +7656,6 @@
     "fixChatGptEquationsButton": "Corriger les formules ChatGPT",
     "chooseImages": "Choisir des images",
     "dismiss": "Ignorer",
-    "findInNote": "Rechercher dans la note",
-    "findMatchCount": "{current}/{total}",
-    "previousMatch": "Occurrence précédente",
-    "nextMatch": "Occurrence suivante",
-    "closeFind": "Fermer la recherche",
-    "close": "Fermer",
-    "replaceWith": "Remplacer par",
-    "replace": "Remplacer",
-    "replaceAll": "Tout remplacer",
-    "wildcardsTitle": "Utilisez * pour n’importe quel texte et ? pour un seul caractère",
-    "wildcardMatches": "Résultats avec caractères génériques",
-    "wildcards": "Caractères génériques",
     "editEquation": "Modifier la formule",
     "insertEquation": "Insérer une formule",
     "equationDescription": "Écrivez du LaTeX sans les marqueurs de formule qui l’entourent.",

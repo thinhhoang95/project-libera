@@ -67,7 +67,7 @@ test("matches carry their captures in document positions", () => {
   } finally { editor.destroy(); }
 });
 
-test("inline math reads with the primary inline markers, display math with the display markers", () => {
+test("inline math reads with its markers, display math with the display markers", () => {
   const parens = mount("A \\(4x+3\\) b\n\n\\[\ny^2\n\\]");
   const dollars = mount("A $4x+3$ b", {});
   try {
@@ -82,6 +82,18 @@ test("inline math reads with the primary inline markers, display math with the d
     // The reading is the find plugin's: copying the text is unchanged.
     assert.equal(parens.state.doc.textBetween(0, parens.state.doc.content.size, "\n").includes("4x+3"), false);
   } finally { parens.destroy(); dollars.destroy(); }
+});
+
+test("math reads with the delimiters it was written with, whatever the settings prefer", () => {
+  // Default settings prefer `$`, but a formula typed as `\(…\)` is found (and replaced) as typed.
+  const editor = mount("Let \\(4x+3,3y\\) be", {});
+  try {
+    assert.equal(search(editor, finderFor("$4x+3,3y$")).length, 0);
+    const result = replaceAll(editor, finderFor("\\(*,*\\)", { mode: "pattern" }), "\\(@2,@1\\)");
+    assert.equal(result.replaced, 1);
+    const inline = blocks(editor).flatMap((block) => block.content ?? []).filter((node) => node.type === "inlineMath");
+    assert.deepEqual(inline.map((node) => node.attrs?.latex), ["3y,4x+3"]);
+  } finally { editor.destroy(); }
 });
 
 test("a match inside an atom decorates the atom", () => {

@@ -13,7 +13,6 @@ import { createMarkdownExtensions, mergeHighlightSeams } from "../../src/lib/tip
 import { createMathExtensions } from "../../src/lib/tiptap-math";
 import { HighlightTool, highlightToolKey } from "../../src/lib/tiptap-highlight-tool";
 import { findTiptapTextMatches } from "../../src/lib/tiptap-find";
-import { findTextMatches, replaceTextMatches } from "../../src/lib/text-find";
 import { remarkMarkdownTextStyles } from "../../src/lib/markdown-text-styles";
 import { enumerateMarkdownHeadings } from "../../src/lib/markdown-heading-enumeration";
 import {
@@ -316,25 +315,6 @@ test("visual find matches case-insensitively across inline formatting but not ac
   } finally {
     editor.destroy();
   }
-});
-
-test("wildcard find supports star, question mark, escaping, and literal replacement", () => {
-  const value = "file-01.md file-aa.md file-123.md\na*b a?b axb";
-  assert.deepEqual(
-    findTextMatches(value, "file-??.md", { wildcards: true }).map((match) => value.slice(match.start, match.end)),
-    ["file-01.md", "file-aa.md"],
-  );
-  assert.deepEqual(
-    findTextMatches(value, "a\\*b", { wildcards: true }).map((match) => value.slice(match.start, match.end)),
-    ["a*b"],
-  );
-  assert.deepEqual(
-    findTextMatches(value, "a\\?b", { wildcards: true }).map((match) => value.slice(match.start, match.end)),
-    ["a?b"],
-  );
-  assert.equal(findTextMatches("start here\nend there", "start*end", { wildcards: true }).length, 0);
-  const matches = findTextMatches("one ONE one", "one");
-  assert.equal(replaceTextMatches("one ONE one", matches, "two"), "two two two");
 });
 
 test("image assets retain portable relative paths when serialized", () => {

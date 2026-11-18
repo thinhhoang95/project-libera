@@ -8,7 +8,7 @@ import { preferredMathMarkerPair, type MathMarkerSettings } from "./math-markers
 /* Find in the rich (TipTap) editor with the shared engine (src/lib/find,
  * docs/find-replace-patterns-plan.md §10). Every text block is searched as
  * its text plus a reading of each inline atom: math reads as it is written
- * with the configured primary markers (`$4x+3$`, `\(4x+3\)`), a citation as
+ * (its own delimiters, else the configured primary markers) (`$4x+3$`, `\(4x+3\)`), a citation as
  * its `leafText`. A display math node is searched on its own, between the
  * display markers. The reading lives here, not in the schema, so it never
  * changes `textBetween`, copy or paste. */
@@ -101,10 +101,17 @@ const isSearchUnit = (node: ProseMirrorNode) => node.isTextblock || isBlockMath(
 const readingCaches = new Map<string, WeakMap<ProseMirrorNode, TiptapUnitReading>>();
 const readingKey = (reading: TiptapFindReading) => JSON.stringify(reading);
 
+/** Math reads with the delimiters it was written with (as the Markdown serializer writes it back), else the configured ones. */
+function writtenMarkers(node: ProseMirrorNode, configured: { open: string; close: string }) {
+  const open = typeof node.attrs.mathOpen === "string" ? node.attrs.mathOpen : null;
+  const close = typeof node.attrs.mathClose === "string" ? node.attrs.mathClose : null;
+  return open ? { open, close: close ?? open } : configured;
+}
+
 function readUnitUncached(node: ProseMirrorNode, reading: TiptapFindReading): TiptapUnitReading {
   if (isBlockMath(node)) {
     const latex = String(node.attrs.latex ?? "");
-    const { open, close } = reading.block;
+    const { open, close } = writtenMarkers(node, reading.block);
     const text = `${open}${latex}${close}`;
     return { runs: [{ text, skipped: [], pieces: [{ start: 0, end: text.length, pos: 0, size: node.nodeSize, kind: "math", contentStart: open.length, contentEnd: open.length + latex.length }] }] };
   }
@@ -138,7 +145,7 @@ function readUnitUncached(node: ProseMirrorNode, reading: TiptapFindReading): Ti
     }
     if (child.type.name === "inlineMath") {
       const latex = String(child.attrs.latex ?? "");
-      const { open, close } = reading.inline;
+      const { open, close } = writtenMarkers(child, reading.inline);
       const start = text.length;
       push(`${open}${latex}${close}`, pos, child.nodeSize, "math", start + open.length, start + open.length + latex.length);
       return;

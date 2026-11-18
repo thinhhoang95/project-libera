@@ -399,3 +399,20 @@ test("the session sends Regex mode to the runner and ignores stale results", asy
   assert.equal(view.state.doc.toString(), "c0 c1 c2 c3");
   session.dispose();
 });
+
+test("a recipe runs its steps over the document as one transaction and one undo step", () => {
+  const { session, view, transactions } = sessionView("Let \\(x\\) and \\[y\\].");
+  session.open(view, "replace");
+  const before = transactions.length;
+  session.runRecipe([
+    { query: "\\[*\\]", replacement: "$$@1$$", mode: "pattern" },
+    { query: "\\(*\\)", replacement: "$@1$", mode: "pattern" },
+  ], "latex");
+  const edits = transactions.slice(before).filter((tr) => tr.docChanged);
+  assert.equal(edits.length, 1);
+  assert.equal(view.state.doc.toString(), "Let $x$ and $$y$$.");
+  assert.deepEqual(session.getSnapshot().summary, { replaced: 2, skipped: 0 });
+  assert.equal(undoDepth(view.state), 1);
+  undo(view);
+  assert.equal(view.state.doc.toString(), "Let \\(x\\) and \\[y\\].");
+});

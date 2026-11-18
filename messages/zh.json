@@ -5104,19 +5104,6 @@
     },
     "markdownSourceEditor": {
       "loading": "正在加载编辑器…"
-    },
-    "markdownSourceFindBar": {
-      "closeFind": "关闭查找",
-      "closeTitle": "关闭",
-      "findInNote": "在笔记中查找",
-      "nextMatch": "下一个匹配项",
-      "previousMatch": "上一个匹配项",
-      "replace": "替换",
-      "replaceAll": "全部替换",
-      "replaceWith": "替换为",
-      "wildcardMatches": "通配符匹配",
-      "wildcards": "通配符",
-      "wildcardsHint": "使用 * 匹配任意文本，使用 ? 匹配一个字符"
     }
   },
   "markdownStatusBar": {
@@ -7669,18 +7656,6 @@
     "fixChatGptEquationsButton": "修复 ChatGPT 公式",
     "chooseImages": "选择图片",
     "dismiss": "忽略",
-    "findInNote": "在笔记中查找",
-    "findMatchCount": "{current}/{total}",
-    "previousMatch": "上一个匹配项",
-    "nextMatch": "下一个匹配项",
-    "closeFind": "关闭查找",
-    "close": "关闭",
-    "replaceWith": "替换为",
-    "replace": "替换",
-    "replaceAll": "全部替换",
-    "wildcardsTitle": "使用 * 匹配任意文本，使用 ? 匹配一个字符",
-    "wildcardMatches": "通配符匹配",
-    "wildcards": "通配符",
     "editEquation": "编辑公式",
     "insertEquation": "插入公式",
     "equationDescription": "请输入 LaTeX，无需包含外围的公式标记。",

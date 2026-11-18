@@ -379,6 +379,7 @@ function PresetsPanel({ find, markdownReplacement, onApply, onRun, recipe, onRec
     flexibleSpacing: find.settings.flexibleSpacing,
     preserveCase: find.settings.preserveCase,
     scope: find.settings.scope,
+    ...(markdownReplacement !== undefined ? { markdownReplacement } : {}),
   });
   const canSave = (!!find.query || recipe.length > 0) && !!name.trim();
   const save = () => {

@@ -66,6 +66,7 @@ export function CodeMirrorFindBar({ session, kind, flavor, showScopes = false }:
       onReplaceAll={() => { void session.replaceAll(); }}
       showScopes={showScopes}
       inSelection={{ active: snapshot.inSelection, onToggle: session.toggleInSelection }}
+      onRunRecipe={(steps) => session.runRecipe(steps, flavor)}
     />
   );
 }

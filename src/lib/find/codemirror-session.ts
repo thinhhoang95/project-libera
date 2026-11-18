@@ -3,10 +3,13 @@ import { EditorView, type KeyBinding, type ViewUpdate } from "@codemirror/view";
 import { describeMatch, type Finder, type MatchPreview, type Replacer } from "./index";
 import {
   excerptMatch, findHighlightsField, findInState, findKeymap, findSeedFromSelection, findWithinField, replaceAllSpec, replaceOneSpec,
-  setActiveFindMatch, setFindMatches, setFindWithin,
+  replaceTextSpec, setActiveFindMatch, setFindMatches, setFindWithin,
 } from "./codemirror";
-import type { FindMatch, FindResult, TextRange } from "./types";
+import type { FindFlavor, FindMatch, FindResult, TextRange } from "./types";
 import { createFindSearchRunner, type FindSearchRunner } from "./worker-search";
+import type { FindRecipeStep } from "./presets";
+import { runRecipe } from "./recipe";
+import { isolateHistory } from "@codemirror/commands";
 
 /* One CodeMirror editor's find bar, outside React: when to search (at once
  * for a new query, debounced after edits, in a worker for Regex mode), which
@@ -192,6 +195,18 @@ export class CodeMirrorFindSession {
     const { spec, replaced, skipped } = replaceAllSpec(view.state, matches, replacer);
     if (spec) view.dispatch(spec);
     this.summary = { replaced, skipped };
+    this.emit();
+    void this.search("doc");
+  };
+
+  /** Runs a recipe's steps over the document in order, as one transaction (one undo step). */
+  runRecipe = (steps: readonly FindRecipeStep[], flavor: FindFlavor) => {
+    const view = this.view;
+    if (!view) return;
+    const result = runRecipe(view.state.doc.toString(), steps, flavor);
+    const spec = replaceTextSpec(view.state, result.text);
+    if (spec) view.dispatch({ ...spec, annotations: isolateHistory.of("full") });
+    this.summary = { replaced: result.replaced, skipped: result.skipped };
     this.emit();
     void this.search("doc");
   };

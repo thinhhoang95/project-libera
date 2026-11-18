@@ -5104,19 +5104,6 @@
     },
     "markdownSourceEditor": {
       "loading": "Đang tải trình chỉnh sửa…"
-    },
-    "markdownSourceFindBar": {
-      "closeFind": "Đóng tìm kiếm",
-      "closeTitle": "Đóng",
-      "findInNote": "Tìm trong ghi chú",
-      "nextMatch": "Kết quả tiếp theo",
-      "previousMatch": "Kết quả trước",
-      "replace": "Thay thế",
-      "replaceAll": "Thay thế tất cả",
-      "replaceWith": "Thay bằng",
-      "wildcardMatches": "Kết quả khớp ký tự đại diện",
-      "wildcards": "Ký tự đại diện",
-      "wildcardsHint": "Dùng * cho mọi văn bản và ? cho một ký tự"
     }
   },
   "markdownStatusBar": {
@@ -7669,18 +7656,6 @@
     "fixChatGptEquationsButton": "Sửa công thức ChatGPT",
     "chooseImages": "Chọn hình ảnh",
     "dismiss": "Bỏ qua",
-    "findInNote": "Tìm trong ghi chú",
-    "findMatchCount": "{current}/{total}",
-    "previousMatch": "Kết quả trước",
-    "nextMatch": "Kết quả tiếp theo",
-    "closeFind": "Đóng tìm kiếm",
-    "close": "Đóng",
-    "replaceWith": "Thay bằng",
-    "replace": "Thay thế",
-    "replaceAll": "Thay thế tất cả",
-    "wildcardsTitle": "Dùng * cho mọi văn bản và ? cho một ký tự",
-    "wildcardMatches": "Kết quả khớp ký tự đại diện",
-    "wildcards": "Ký tự đại diện",
     "editEquation": "Chỉnh sửa công thức",
     "insertEquation": "Chèn công thức",
     "equationDescription": "Viết LaTeX mà không có ký hiệu bao quanh công thức.",

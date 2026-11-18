@@ -1,10 +1,10 @@
 import { StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
-import type { TextMatch } from "@/lib/text-find";
+import type { TextRange as TextMatch } from "@/lib/find";
 
 /* Find and Replace matches, drawn with the same classes (and so the same
  * colours) as the textarea editor's overlay. The matches themselves come from
- * `findTextMatches`, which also handles the Wildcards option. */
+ * the shared find engine (src/lib/find). */
 
 export const setFindMatches = StateEffect.define<{ matches: TextMatch[]; active: number }>();
 

@@ -34,7 +34,10 @@ import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigat
 import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
 import { TiptapFind, tiptapFindMatchRun, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
-import { replaceTiptapFindMatches } from "@/lib/tiptap-find-replace";
+import { replaceAllTiptapFindInTransaction, replaceTiptapFindMatches } from "@/lib/tiptap-find-replace";
+import { compileFind, compileFindReplacement } from "@/lib/find";
+import type { FindRecipeStep } from "@/lib/find/presets";
+import { recipeStepOptions } from "@/lib/find/recipe";
 import { describeMatch } from "@/lib/find";
 import type { FindPreset } from "@/lib/find/presets";
 import { FindReplaceBar } from "@/components/libera/find/find-replace-bar";
@@ -999,6 +1002,29 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     scrollToActiveFindMatch();
   }
 
+  /** Runs a recipe's steps in order in one transaction (one undo step). */
+  function runFindRecipe(steps: FindRecipeStep[]) {
+    if (!editor) return;
+    const tr = closeHistory(editor.state.tr);
+    let replaced = 0, skipped = 0;
+    for (const step of steps) {
+      const compiled = compileFind(step.query, recipeStepOptions(step, "markdown"));
+      if (!compiled.ok) continue;
+      const replacement = compileFindReplacement(compiled.finder, step.replacement, step.preserveCase ?? false);
+      if (!replacement.ok) continue;
+      const result = replaceAllTiptapFindInTransaction(editor, tr, compiled.finder, {
+        replacer: replacement.replacer, markdown: step.markdownReplacement ?? markdownReplacement, firstCounter: 1,
+      });
+      replaced += result.replaced;
+      skipped += result.skipped;
+    }
+    if (tr.docChanged) {
+      tr.setMeta(tiptapFindPluginKey, { activeMatchIndex: 0 });
+      editor.view.dispatch(tr);
+    }
+    setReplaceSummary({ replaced, skipped, key: replaceSummaryKey });
+  }
+
   function replaceFindMatches(replaceAll: boolean) {
     if (!editor || !find.replacer) return;
     const current = tiptapFindPluginKey.getState(editor.state);
@@ -1210,6 +1236,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
             inSelection={{ active: findInSelection, onToggle: toggleFindInSelection }}
             markdownReplacement={{ active: markdownReplacement, onToggle: () => setMarkdownReplacement((active) => !active) }}
             onPresetApplied={(preset: FindPreset) => setMarkdownReplacement(!!preset.markdownReplacement)}
+            onRunRecipe={runFindRecipe}
           />
         ) : null}
         <TiptapChangeBar editor={editor} />
