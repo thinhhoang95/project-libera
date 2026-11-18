@@ -75,14 +75,6 @@ function body(source: string, preamble = "") {
   return { view, lines: lines(view), left: left(view).filter((name) => name !== "end"), done };
 }
 
-/** The source the view shows for the caret placed in the `needle` of `source` (the widget there gives way to it). */
-function withCaretIn(source: string, needle: string, preamble = "") {
-  const doc = inDoc(source, preamble);
-  const at = doc.indexOf(needle) + 1;
-  const { view, done } = mount(doc, at);
-  return { view, done, text: text(view) };
-}
-
 const WIDE_DEFS = String.raw`\newcommand{\TableText}{\footnotesize}
 \newenvironment{widefigure}{\begin{figure*}[!tp]\setkeys{Gin}{trim=3pt 3pt 3pt 3pt}}{\end{figure*}}
 \newenvironment{widetable}{\begin{table*}[!tp]}{\end{table*}}
