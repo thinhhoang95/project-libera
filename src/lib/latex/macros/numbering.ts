@@ -107,11 +107,27 @@ export const KOMA_CAPTION = /^\\caption(?:above|below)$/;
 /** caption's `\captionof{table}{…}` and KOMA-Script's `\captionaboveof` and `\captionbelowof`. */
 export const CAPTION_OF = /^\\caption(?:above|below)?of$/;
 
-/** The kind of float an environment node is (its `\caption` numbers a figure, table or algorithm), or null. */
-export function floatKind(node: SyntaxNode, read: Read): "figure" | "table" | "algorithm" | null {
+/** Set-up a user float environment's opening may hold after the float's `\begin`: layout and size switches, `\setkeys`, `\setlength`. */
+const FLOAT_ALIAS_SETUP = /(?:\\(?:centering|raggedright|raggedleft|tiny|scriptsize|footnotesize|small|normalsize|large)(?![A-Za-z@])|\\setkeys\{[^{}]*\}\{[^{}]*\}|\\setlength\\?[A-Za-z@]*(?:\{\\[A-Za-z@]+\})?\{[^{}]*\})*/;
+
+/**
+ * The float a user environment is another name for (2611.19192's `\newenvironment{widefigure}{\begin{figure*}[!tp]\setkeys{Gin}{…}}{\end{figure*}}`):
+ * its begin code opens a figure or table (with a placement and set-up that draws nothing) and its end code closes it. Null for any other environment.
+ */
+export function floatAlias(defs: LatexDefinitions, name: string): "figure" | "table" | null {
+  const own = defs.environments.get(name);
+  if (!own || own.arity || own.spec || own.optional !== undefined || name in FLOAT_KINDS || defs.theorems.has(name)) return null;
+  const plain = (code: string) => stripTexComments(code).replace(/\s+/g, "");
+  const opening = new RegExp(`^\\\\begin\\{(figure|table)\\*?\\}(?:\\[[^\\]{}]*\\])?${FLOAT_ALIAS_SETUP.source}$`).exec(plain(own.begin));
+  if (!opening) return null;
+  return new RegExp(`^\\\\end\\{${opening[1]}\\*?\\}$`).test(plain(own.end)) ? (opening[1] as "figure" | "table") : null;
+}
+
+/** The kind of float an environment node is (its `\caption` numbers a figure, table or algorithm), or null. `defs` lets a user environment that wraps a float be one. */
+export function floatKind(node: SyntaxNode, read: Read, defs?: LatexDefinitions): "figure" | "table" | "algorithm" | null {
   if (node.name !== "FigureEnvironment" && node.name !== "TableEnvironment" && node.name !== "Environment") return null;
   const env = environmentName(node, read) ?? "";
-  return FLOAT_KINDS[env] ?? (node.name === "FigureEnvironment" && !/^sub/.test(env) ? "figure" : node.name === "TableEnvironment" && !/^sub/.test(env) ? "table" : null);
+  return FLOAT_KINDS[env] ?? (node.name === "Environment" && defs ? floatAlias(defs, env) : null) ?? (node.name === "FigureEnvironment" && !/^sub/.test(env) ? "figure" : node.name === "TableEnvironment" && !/^sub/.test(env) ? "table" : null);
 }
 
 /**
@@ -966,7 +982,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
       // Most nodes (text, groups, arguments) are none of what follows: no node object made for them.
       if (!NUMBERED_NODES.has(name) && !(name in SECTION_LEVELS)) return undefined;
       const node = ref.node;
-      const kindOfFloat = name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" ? floatKind(node, read) : null;
+      const kindOfFloat = name === "FigureEnvironment" || name === "TableEnvironment" || name === "Environment" ? floatKind(node, read, defs) : null;
       if (kindOfFloat) floats.push({ from: ref.from, kind: kindOfFloat, number: null, count: 0, waiting: [] });
       if (name === "VerbatimEnvironment" && environmentName(node, read) === "lstlisting") {
         // `\begin{lstlisting}[caption={…},label=lst:x]`: the options start its (verbatim) content.
@@ -1276,7 +1292,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           // Inside, a `\label` refers to the panel (Normalizing Flows' `\caption{Forward\label{fwd}}`): the caption is entered.
           if (env === "subfigure" || env === "subtable") { numberSubCaption(env === "subtable" ? "table" : "figure", parent); return undefined; }
           if (env === "minipage") { panel ??= [parent, outer]; continue; }
-          const kind = floatKind(parent, readParent);
+          const kind = floatKind(parent, readParent, defs);
           if (!kind) continue;
           // A \label inside the caption refers to the figure too. A float's second caption (two tables in
           // one float, without minipages) numbers another table: recorded at that caption.

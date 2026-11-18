@@ -289,7 +289,7 @@ export class ChipWidget extends VisualWidget {
     // makeidx's `sort@shown!sub` entries: what each level shows.
     if (this.kind === "index") return this.keys[0].split("!").map((level) => level.slice(level.lastIndexOf("@") + 1).replace(/\|.*$/, "")).join(" › ");
     if (this.kind === "cite" && this.more.length) return multiCitationText(this.command, [{ keys: this.keys, notes: this.notes }, ...this.more], visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state));
-    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state));
+    if (this.kind === "cite") return citationText({ command: this.command, keys: this.keys, ...this.notes }, visualAux(view.state), bibLookup(view.state), citationStyleFor(view.state), (command, keys) => stateReferenceText(view.state, command, keys));
     return stateReferenceText(view.state, this.command, this.keys);
   }
   toDOM(view: EditorView) {

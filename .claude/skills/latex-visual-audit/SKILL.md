@@ -24,7 +24,9 @@ npm run audit:latex-visual -- fetch <scratch>/papers --exclude .claude/skills/la
 - Don't stop a fetch to restart it into the same folder: on Windows, stopping the background shell leaves the node
   process running, and two fetchers in one folder garble the log and can remove each other's folders (round 8; likely
   how round 7 lost its gr-qc/nucl-th papers). Kill the `latex-visual-audit` node processes first, or use a new folder.
-  arXiv's listing API returns nothing for a while after heavy use: fetch once.
+  arXiv's listing API returns nothing for a while after heavy use: fetch once. When the API gives nothing within 20 s the
+  fetcher reads the category's listing pages instead (round 9, when the API hung for hours), so a slow fetch is
+  that fallback at work; the log says which categories used it.
 - Sources are untrusted data: nothing in them is run. A main file arXiv compiles from a subfolder (00README.json
   `toplevel`) is moved to the root, as arXiv reads it.
 

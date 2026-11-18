@@ -65,8 +65,22 @@ async function fetchPapers(args: string[]) {
   const exclude = new Set(excludeFile && existsSync(excludeFile) ? [...readFileSync(excludeFile, "utf8").matchAll(/\b(\d{4}\.\d{4,5})\b/g)].map((m) => m[1]) : []);
   mkdirSync(papersDir, { recursive: true });
   for (const category of categories) {
-    const feed = await (await fetch(`https://export.arxiv.org/api/query?search_query=cat:${category}&sortBy=submittedDate&sortOrder=descending&start=${skip}&max_results=${per * 8}`)).text();
-    const ids = [...feed.matchAll(/<id>https?:\/\/arxiv\.org\/abs\/([^<]+?)(?:v\d+)?<\/id>/g)].map((m) => m[1]).filter((id) => !exclude.has(id));
+    // The listing API hangs or answers with nothing after heavy use (rounds 7 to 9): give it 20 s, then read the
+    // category's listing page, which keeps answering.
+    const feed = await fetch(`https://export.arxiv.org/api/query?search_query=cat:${category}&sortBy=submittedDate&sortOrder=descending&start=${skip}&max_results=${per * 8}`, { signal: AbortSignal.timeout(20_000) }).then((response) => response.text(), () => "");
+    let listed = [...feed.matchAll(/<id>https?:\/\/arxiv\.org\/abs\/([^<]+?)(?:v\d+)?<\/id>/g)].map((m) => m[1]);
+    if (!listed.length) {
+      // `recent` holds five days: a small category has fewer than `skip` papers there, so this month's listing is
+      // next, then the newest papers with nothing skipped.
+      for (const listing of [`recent?skip=${skip}`, `current?skip=${skip}`, "recent?skip=0"]) {
+        await sleep(3000);
+        const page = await fetch(`https://arxiv.org/list/${category}/${listing}&show=${per * 8 > 25 ? 50 : 25}`, { signal: AbortSignal.timeout(30_000) }).then((response) => response.text(), () => "");
+        listed = [...new Set([...page.matchAll(/href\s*=\s*"\/abs\/(\d{4}\.\d{4,5})"/g)].map((m) => m[1]))];
+        if (listed.length) break;
+      }
+      console.log(`${category}: the listing API gave nothing, ${listed.length} ids from the listing page`);
+    }
+    const ids = listed.filter((id) => !exclude.has(id));
     let taken = 0;
     for (const id of ids) {
       if (taken >= per) break;
@@ -154,7 +168,10 @@ const lineAt = (text: string, pos: number) => {
 };
 
 async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<string>, read: (path: string) => string) {
-  const doc = read(filePath);
+  // The caret is put at the end, out of the way. A file that ends without a newline would have it touching its last
+  // construct, which then shows as source (round 9: a macro file ending in `}` counted its last definition's body).
+  const onDisk = read(filePath);
+  const doc = onDisk.endsWith("\n") ? onDisk : `${onDisk}\n`;
   // The app loads KaTeX's mhchem the first time a formula uses `\ce`, and draws it again; the audit loads it up front.
   // Under tsx `import()` finds the extension's ESM build, which registers on another KaTeX than the CommonJS one used here: load the CommonJS build too.
   if (/\\(?:ce|pu)\s*\{/.test(doc)) { createRequire(import.meta.url)("katex/contrib/mhchem"); await loadMhchem(); }
@@ -230,7 +247,7 @@ async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<
       return;
     }
     // "undefined" is junk when it stands alone, not as an English word between others ("Ratios are undefined (–) when …").
-    const bad = /\\[a-zA-Z]{2,}|(?<![A-Za-z,;] )\bundefined\b(?! [A-Za-z])|\bNaN\b|\[object Object\]/.exec(shownText);
+    const bad = /\\[a-zA-Z]{2,}|(?<![A-Za-z,;] )\bundefined\b(?! [A-Za-z])|(?<![A-Za-z,;] )\bNaN\b(?! [A-Za-z])|\[object Object\]/.exec(shownText);
     if (bad) junk.push(`${lineOf(doc, from)}: shows "${shownText.slice(Math.max(0, bad.index - 40), bad.index + 60).replace(/\s+/g, " ")}"  from  ${doc.slice(from, Math.min(to, from + 100)).replace(/\n/g, " ")}`);
   });
   // A branch TeX skips (`\iffalse…\fi`, a discarding macro's argument) is faded on purpose, not left as source.
