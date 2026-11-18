@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Images, Landmark, Loader2, Shuffle, Sparkles } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { useNotebookIllustrationLibrary } from "@/components/libera/use-notebook-illustrations";
@@ -18,6 +19,7 @@ type NotebookIllustrationDialogProps = {
  * the chosen set's random pick. The picked image is copied into the notebook.
  */
 export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClose }: NotebookIllustrationDialogProps) {
+  const t = useTranslations("notebookIllustrationDialog");
   const library = useNotebookIllustrationLibrary();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -34,7 +36,7 @@ export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClo
       await onChange(notebook.name, illustration);
       onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not change the illustration.");
+      setError(cause instanceof Error ? cause.message : t("fallbackError"));
       setBusy(null);
     }
   }
@@ -42,8 +44,8 @@ export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClo
   return (
     <ModalDialog
       open
-      title="Change illustration"
-      description={`Choose the picture across the top of ${notebook.name}. It is copied into the notebook, so it stays even if its set is deleted.`}
+      title={t("title")}
+      description={t("description", { notebook: notebook.name })}
       panelClassName="max-w-3xl"
       onClose={onClose}
     >
@@ -56,8 +58,8 @@ export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClo
               style={{ backgroundImage: `url("${coverUrl}")` }}
             />
             <div className="min-w-0 text-sm">
-              <p className="font-semibold">Current</p>
-              <p className="text-xs text-[var(--muted-foreground)]">{isRandom ? `Random from ${selectedSet?.name ?? "the chosen set"}` : "Picked for this notebook"}</p>
+              <p className="font-semibold">{t("current")}</p>
+              <p className="text-xs text-[var(--muted-foreground)]">{isRandom ? t("randomFromSet", { set: selectedSet?.name ?? "" }) : t("pickedForNotebook")}</p>
             </div>
           </div>
           <button
@@ -70,9 +72,9 @@ export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClo
               {busy === "random" ? <Loader2 aria-hidden className="h-5 w-5 animate-spin" /> : <Shuffle aria-hidden className="h-5 w-5" />}
             </span>
             <span className="min-w-0 text-sm">
-              <span className="block font-semibold">Random</span>
+              <span className="block font-semibold">{t("random")}</span>
               <span className="block text-xs text-[var(--muted-foreground)]">
-                {isRandom ? "In use" : `Let ${selectedSet?.name ?? "the chosen set"} pick, and remove the copy`}
+                {isRandom ? t("inUse") : t("letSetPick", { set: selectedSet?.name ?? "" })}
               </span>
             </span>
           </button>
@@ -88,7 +90,7 @@ export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClo
               <span className="font-medium normal-case tracking-normal">· {set.images.length}</span>
               {set.id === library.selected ? (
                 <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-[var(--muted)] px-2 py-0.5 text-[10px] normal-case tracking-normal text-[var(--foreground)]">
-                  <Check aria-hidden className="h-3 w-3" /> Chosen in Preferences
+                  <Check aria-hidden className="h-3 w-3" /> {t("chosenInPreferences")}
                 </span>
               ) : null}
             </h3>
@@ -101,8 +103,8 @@ export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClo
                       key={key}
                       type="button"
                       disabled={Boolean(busy)}
-                      title={`${set.name} ${index + 1}`}
-                      aria-label={`${set.name}, illustration ${index + 1}`}
+                      title={t("imageTitle", { set: set.name, number: index + 1 })}
+                      aria-label={t("imageLabel", { set: set.name, number: index + 1 })}
                       onClick={() => void choose(key, image.url)}
                       className="group relative overflow-hidden rounded-lg outline-none ring-[var(--accent)] ring-offset-2 ring-offset-[var(--dialog-surface)] transition focus-visible:ring-2 disabled:cursor-default"
                     >
@@ -118,7 +120,7 @@ export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClo
                 })}
               </div>
             ) : (
-              <p className="text-xs text-[var(--muted-foreground)]">This set has no illustrations.</p>
+              <p className="text-xs text-[var(--muted-foreground)]">{t("noIllustrations")}</p>
             )}
           </section>
         ))}

@@ -1,6 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronRight, ListTree, Search, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useDeferredValue, useMemo, useState } from "react";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import type { OpenTab, OpenTabViewState } from "@/components/libera/types";
@@ -16,6 +17,7 @@ export function LatexOutline({ activeTab, expansionLevel, onExpansionLevelChange
   onExpansionLevelChange: (level: number) => void;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
 }) {
+  const t = useTranslations("latex.latexOutline");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const draft = useDeferredValue(activeTab.draft);
@@ -44,9 +46,9 @@ export function LatexOutline({ activeTab, expansionLevel, onExpansionLevelChange
       <div className="relative mb-3">
         <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <input
-          aria-label="Search LaTeX sections"
+          aria-label={t("searchLabel")}
           className="libera-panel-field libera-panel-field--search w-full"
-          placeholder="Search sections"
+          placeholder={t("searchPlaceholder")}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
@@ -60,7 +62,7 @@ export function LatexOutline({ activeTab, expansionLevel, onExpansionLevelChange
         />
         {query ? (
           <button
-            aria-label="Clear section search"
+            aria-label={t("clearSearch")}
             className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
             type="button"
             onClick={() => setQuery("")}
@@ -71,10 +73,10 @@ export function LatexOutline({ activeTab, expansionLevel, onExpansionLevelChange
         ) : null}
       </div>
       <label className="mb-3 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
-        <span>Expand to</span>
+        <span>{t("expandTo")}</span>
         <span className="relative">
           <select
-            aria-label="Outline expansion level"
+            aria-label={t("expansionLevelLabel")}
             className="libera-panel-field libera-panel-field--compact pl-3 pr-8"
             value={expansionLevel}
             onChange={(event) => {
@@ -82,23 +84,23 @@ export function LatexOutline({ activeTab, expansionLevel, onExpansionLevelChange
               setExpanded({});
             }}
           >
-            {[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>Level {level}</option>)}
+            {[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>{t("levelOption", { level })}</option>)}
           </select>
         </span>
       </label>
       <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         <ListTree aria-hidden className="h-3.5 w-3.5" />
-        <span className="min-w-0 flex-1 truncate">Sections</span>
+        <span className="min-w-0 flex-1 truncate">{t("sectionsHeading")}</span>
       </div>
       {rows.length ? (
-        <div className="space-y-0.5" role="tree" aria-label={`Sections of ${activeTab.file.name}`}>
+        <div className="space-y-0.5" role="tree" aria-label={t("treeLabel", { name: activeTab.file.name })}>
           {rows.map(({ entry, hasChildren, expanded: isExpanded }) => {
             const isActive = entry.id === activeEntryId;
             return (
               <div key={entry.id} role="treeitem" aria-level={entry.level} aria-selected={isActive} aria-expanded={hasChildren ? isExpanded : undefined} className="flex items-start gap-0.5" style={{ paddingLeft: searching ? 0 : `${(entry.level - 1) * 12}px` }}>
                 {hasChildren ? (
                   <button
-                    aria-label={`${isExpanded ? "Collapse" : "Expand"} ${entry.title}`}
+                    aria-label={isExpanded ? t("collapseSection", { title: entry.title }) : t("expandSection", { title: entry.title })}
                     aria-expanded={isExpanded}
                     className="libera-sidebar-icon-button mt-1 inline-flex h-6 w-5 shrink-0 items-center justify-center rounded"
                     type="button"
@@ -116,7 +118,7 @@ export function LatexOutline({ activeTab, expansionLevel, onExpansionLevelChange
                   onClick={() => navigate(entry.line)}
                 >
                   <span className={`min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] ${entry.level === 1 ? "font-medium" : ""}`}>{entry.title}</span>
-                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">L. {entry.line}</span>
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">{t("lineNumber", { line: entry.line })}</span>
                 </SidebarNameTooltipButton>
               </div>
             );
@@ -124,7 +126,7 @@ export function LatexOutline({ activeTab, expansionLevel, onExpansionLevelChange
         </div>
       ) : (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          {entries.length ? "No matching sections." : "Add \\section{…} commands to build an outline."}
+          {entries.length ? t("noMatchingSections") : t("emptyOutline")}
         </p>
       )}
     </section>

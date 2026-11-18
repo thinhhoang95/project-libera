@@ -11,6 +11,7 @@ import {
 } from "@codemirror/view";
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { useTranslations } from "next-intl";
 import { ClipboardPaste, Copy, Scissors, Volume2 } from "lucide-react";
 import { speakMarkdown } from "@/lib/tts/player";
 import { readCodeMirrorScroll, restoreCodeMirrorScroll } from "@/lib/codemirror-scroll";
@@ -62,6 +63,7 @@ export function CodeEditor({
   fileName, documentPath, value, fontFamily, fontSizePx, lineHeight, initialViewState, saving,
   onChange, onRegisterDraft, onViewStateChange, onSave, collab,
 }: CodeEditorProps) {
+  const t = useTranslations("codeEditor");
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -72,7 +74,8 @@ export function CodeEditor({
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelRestoreRef = useRef<(() => void) | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath });
+  // The editor's accessible name is set once, when the view is created.
+  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath, label: t("sourceEditorLabel", { name: fileName }) });
   const shared = !!collab;
   // Prose-like files wrap (and get the page-width ruler); code keeps its lines.
   const [wraps] = useState(() => wrapsLines(fileName));
@@ -160,7 +163,7 @@ export function CodeEditor({
         language.of([]),
         ...(wrap ? [EditorView.lineWrapping] : []),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, indentWithTab]),
-        EditorView.contentAttributes.of({ "aria-label": `${name} source editor`, spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
+        EditorView.contentAttributes.of({ "aria-label": initialRef.current.label, spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
         EditorView.updateListener.of((update) => {
           const hunks = update.state.field(reviewHunksField, false);
           if (hunks !== update.startState.field(reviewHunksField, false)) setAgentHunks(hunks ?? []);
@@ -319,7 +322,7 @@ export function CodeEditor({
       <div className="libera-code-editor-status flex shrink-0 items-center gap-4 border-t border-border bg-card px-3 py-1 text-xs text-muted-foreground">
         <span>{codeLanguageName(fileName)}</span>
         <span className="ml-auto tabular-nums">
-          {`Ln ${cursor.line}, Col ${cursor.column}`}{cursor.selected ? ` (${cursor.selected} selected)` : ""}
+          {cursor.selected ? t("cursorPositionSelected", cursor) : t("cursorPosition", cursor)}
         </span>
       </div>
     </div>
@@ -332,6 +335,7 @@ const menuItemClass = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text
 
 /** The code editor's right-click menu: Read Out Loud and the clipboard, as the LaTeX editor's menu has them. */
 function CodeEditorMenu({ view, menu, onClose }: { view: EditorView; menu: CodeEditorMenuState; onClose: () => void }) {
+  const t = useTranslations("codeEditor");
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: menu.x, top: menu.y });
   const hasText = !!view.state.sliceDoc(menu.from, menu.to).trim();
@@ -383,18 +387,18 @@ function CodeEditorMenu({ view, menu, onClose }: { view: EditorView; menu: CodeE
   }
 
   return createPortal(
-    <div ref={menuRef} role="menu" aria-label="Editor actions"
+    <div ref={menuRef} role="menu" aria-label={t("editorActions")}
       className="fixed z-50 rounded-lg border border-border bg-card p-1 shadow-lg"
       style={{ left: position.left, top: position.top, width: MENU_WIDTH }}
       onContextMenu={(event) => event.preventDefault()}>
       <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText}
-        onClick={() => { onClose(); speakMarkdown(view.state.sliceDoc(menu.from, menu.to), { label: "Selection", format: "plain" }); }}>
-        <Volume2 aria-hidden className="h-4 w-4" />Read Out Loud
+        onClick={() => { onClose(); speakMarkdown(view.state.sliceDoc(menu.from, menu.to), { label: t("readAloudSelection"), format: "plain" }); }}>
+        <Volume2 aria-hidden className="h-4 w-4" />{t("readOutLoud")}
       </button>
       <div className="my-1 border-t border-border" />
-      <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => void clipboard("cut")}><Scissors aria-hidden className="h-4 w-4" />Cut</button>
-      <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => void clipboard("copy")}><Copy aria-hidden className="h-4 w-4" />Copy</button>
-      <button type="button" role="menuitem" className={menuItemClass} onClick={() => void clipboard("paste")}><ClipboardPaste aria-hidden className="h-4 w-4" />Paste</button>
+      <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => void clipboard("cut")}><Scissors aria-hidden className="h-4 w-4" />{t("cut")}</button>
+      <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => void clipboard("copy")}><Copy aria-hidden className="h-4 w-4" />{t("copy")}</button>
+      <button type="button" role="menuitem" className={menuItemClass} onClick={() => void clipboard("paste")}><ClipboardPaste aria-hidden className="h-4 w-4" />{t("paste")}</button>
     </div>,
     document.body,
   );

@@ -13,17 +13,21 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { MergeView } from "@codemirror/merge";
+import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
 
 import type { Reconciliation } from "@/lib/collab/local-api";
-import { resolveReconciliation } from "./reconcile-api";
+import { ReconcileError, resolveReconciliation } from "./reconcile-api";
 
 type Pair = "disk" | "shared" | "both";
 
-const PAIRS: Array<{ id: Pair; label: string; a: keyof Texts; b: keyof Texts; aLabel: string; bLabel: string }> = [
-  { id: "disk", label: "Changes on disk", a: "base", b: "disk", aLabel: "Last synced", bLabel: "File on disk" },
-  { id: "shared", label: "Changes in the shared document", a: "base", b: "shared", aLabel: "Last synced", bLabel: "Shared document" },
-  { id: "both", label: "Disk and shared side by side", a: "disk", b: "shared", aLabel: "File on disk", bLabel: "Shared document" },
+type Side = "lastSynced" | "fileOnDisk" | "sharedDocument";
+
+/** Labels are the `pairs.{id}` and `sides.{side}` messages. */
+const PAIRS: Array<{ id: Pair; a: keyof Texts; b: keyof Texts; aSide: Side; bSide: Side }> = [
+  { id: "disk", a: "base", b: "disk", aSide: "lastSynced", bSide: "fileOnDisk" },
+  { id: "shared", a: "base", b: "shared", aSide: "lastSynced", bSide: "sharedDocument" },
+  { id: "both", a: "disk", b: "shared", aSide: "fileOnDisk", bSide: "sharedDocument" },
 ];
 
 type Texts = Pick<Reconciliation, "base" | "disk" | "shared">;
@@ -58,6 +62,8 @@ export function ReconcileView({
   onResolved?: (result: { docId: string; text: string }) => void;
   onCancel?: () => void;
 }) {
+  const t = useTranslations("collab.reconcile.reconcileView");
+  const tCommon = useTranslations("common");
   const [reviewed] = useState(reconciliation);
   const [pair, setPair] = useState<Pair>("both");
   const [merged, setMerged] = useState(reviewed.shared);
@@ -75,7 +81,7 @@ export function ReconcileView({
       const result = await resolveReconciliation(reviewed.id, text, { shared: reviewed.shared, disk: reviewed.disk });
       onResolved?.(result);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "The merged text could not be saved.");
+      setError(failure instanceof ReconcileError ? failure.serverMessage || t("requestFailed", { status: failure.status }) : failure instanceof Error ? failure.message : t("saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -87,15 +93,14 @@ export function ReconcileView({
     <section className="space-y-4" aria-labelledby={`${mergedId}-title`} aria-describedby={descriptionId}>
       <header className="space-y-1">
         <h2 id={`${mergedId}-title`} className="text-base font-semibold">
-          Reconcile {reconciliation.path}
+          {t("title", { path: reconciliation.path })}
         </h2>
         <p id={descriptionId} className="text-sm text-muted-foreground">
-          This file was changed on disk while the shared document changed too. Nothing was overwritten. Choose what to keep;
-          it is saved to the shared document as your edit and written back to the file.
+          {t("description")}
         </p>
       </header>
 
-      <div role="group" aria-label="Compare" className="flex flex-wrap gap-2">
+      <div role="group" aria-label={t("compare")} className="flex flex-wrap gap-2">
         {PAIRS.map((candidate) => (
           <button
             key={candidate.id}
@@ -104,15 +109,15 @@ export function ReconcileView({
             aria-pressed={candidate.id === pair}
             onClick={() => setPair(candidate.id)}
           >
-            {candidate.label}
+            {t(`pairs.${candidate.id}`)}
           </button>
         ))}
       </div>
       <div className="grid grid-cols-2 gap-2 text-xs font-medium text-muted-foreground" aria-hidden="true">
-        <span>{current.aLabel}</span>
-        <span>{current.bLabel}</span>
+        <span>{t(`sides.${current.aSide}`)}</span>
+        <span>{t(`sides.${current.bSide}`)}</span>
       </div>
-      <MergeComparison a={texts[current.a]} b={texts[current.b]} label={`${current.aLabel} compared with ${current.bLabel}`} />
+      <MergeComparison a={texts[current.a]} b={texts[current.b]} label={t("comparedWith", { a: t(`sides.${current.aSide}`), b: t(`sides.${current.bSide}`) })} />
 
       <form
         className="space-y-2"
@@ -123,14 +128,14 @@ export function ReconcileView({
       >
         <fieldset disabled={submitting} className="space-y-2 disabled:opacity-60">
           <label htmlFor={mergedId} className="block text-sm font-medium">
-            Merged result
+            {t("mergedResult")}
           </label>
           <div className="flex flex-wrap gap-2">
             <button type="button" className={buttonClass} onClick={() => setMerged(reviewed.disk)}>
-              Start from the file on disk
+              {t("startFromDisk")}
             </button>
             <button type="button" className={buttonClass} onClick={() => setMerged(reviewed.shared)}>
-              Start from the shared document
+              {t("startFromShared")}
             </button>
           </div>
           <textarea
@@ -148,11 +153,11 @@ export function ReconcileView({
           <div className="libera-dialog-actions flex justify-end gap-2 pt-2">
             {onCancel ? (
               <button type="button" className="rounded-lg border border-border px-4 py-2 text-sm" onClick={onCancel}>
-                Later
+                {t("later")}
               </button>
             ) : null}
             <button type="submit" className="libera-dialog-primary">
-              {submitting ? "Saving…" : "Keep merged text"}
+              {submitting ? tCommon("saving") : t("keepMerged")}
             </button>
           </div>
         </fieldset>

@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertCircle, Check, Loader2, Mic, Square, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatClock } from "@/lib/transcription/format";
 
@@ -53,6 +54,7 @@ export type DictationState = "idle" | "starting" | "recording" | "transcribing";
  * transcribed with the engine chosen in Preferences → Speech → Dictation.
  */
 export function useDictation(onText: (text: string) => void) {
+  const t = useTranslations("audio.dictation");
   const [state, setState] = useState<DictationState>("idle");
   const [seconds, setSeconds] = useState(0);
   /** Loudness over the last moments, 0–1, newest last, for the meter. */
@@ -103,16 +105,16 @@ export function useDictation(onText: (text: string) => void) {
         signal: controller.signal,
       });
       const payload = (await response.json().catch(() => ({}))) as { text?: string; error?: string };
-      if (!response.ok) throw new Error(payload.error || "Could not transcribe the recording.");
+      if (!response.ok) throw new Error(payload.error || t("transcribeFailed"));
       if (payload.text?.trim()) onTextRef.current(payload.text.trim());
-      else setError("No speech was heard.");
+      else setError(t("noSpeech"));
     } catch (failure) {
-      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Could not transcribe the recording.");
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : t("transcribeFailed"));
     } finally {
       if (request.current === controller) request.current = null;
       setState("idle");
     }
-  }, [release]);
+  }, [release, t]);
 
   const start = useCallback(async () => {
     if (recording.current || state !== "idle") return;
@@ -152,10 +154,10 @@ export function useDictation(onText: (text: string) => void) {
       release();
       setState("idle");
       setError(failure instanceof DOMException && failure.name === "NotAllowedError"
-        ? "Libera may not use the microphone. Allow it in your system's privacy settings."
-        : failure instanceof Error ? failure.message : "Could not start the microphone.");
+        ? t("micPermission")
+        : failure instanceof Error ? failure.message : t("startMicFailed"));
     }
-  }, [finish, release, state]);
+  }, [finish, release, state, t]);
 
   const cancel = useCallback(() => {
     release();
@@ -177,6 +179,7 @@ export function useDictation(onText: (text: string) => void) {
  * time, a level meter, Stop and Cancel. The text goes in at the caret.
  */
 export function DictationButton({ dictation, disabled }: { dictation: ReturnType<typeof useDictation>; disabled?: boolean }) {
+  const t = useTranslations("audio.dictation");
   const { state, start, stop } = dictation;
   const recording = state === "recording";
   const busy = state === "transcribing" || state === "starting";
@@ -184,8 +187,8 @@ export function DictationButton({ dictation, disabled }: { dictation: ReturnType
     <button
       type="button"
       className={`relative inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${recording ? "bg-destructive text-destructive-foreground shadow-sm shadow-destructive/40 hover:bg-destructive/90" : busy ? "text-accent" : "text-muted-foreground hover:bg-foreground/10 hover:text-foreground"} disabled:cursor-default disabled:opacity-40`}
-      aria-label={recording ? "Stop dictating" : "Dictate"}
-      title={recording ? "Stop and transcribe" : "Dictate: speak your prompt"}
+      aria-label={recording ? t("stopDictating") : t("dictate")}
+      title={recording ? t("stopAndTranscribe") : t("dictateTitle")}
       disabled={disabled || busy}
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => (recording ? void stop() : void start())}
@@ -218,27 +221,29 @@ function LevelMeter({ levels, frozen }: { levels: number[]; frozen?: boolean }) 
 const stripButton = "inline-flex h-6 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60";
 
 export function DictationStatus({ dictation }: { dictation: ReturnType<typeof useDictation> }) {
+  const t = useTranslations("audio.dictation");
+  const tCommon = useTranslations("common");
   const { state, seconds, levels, error, clearError, stop, cancel } = dictation;
   if (state === "recording") {
     const remaining = MAX_SECONDS - seconds;
     return (
-      <div role="status" aria-label="Dictating" className="mb-1.5 flex items-center gap-2.5 rounded-xl border border-destructive/25 bg-destructive/5 py-1 pl-3 pr-1 text-xs shadow-sm">
+      <div role="status" aria-label={t("dictatingLabel")} className="mb-1.5 flex items-center gap-2.5 rounded-xl border border-destructive/25 bg-destructive/5 py-1 pl-3 pr-1 text-xs shadow-sm">
         <span aria-hidden className="relative flex h-2 w-2 shrink-0">
           <span className="absolute inset-0 animate-ping rounded-full bg-destructive/60" />
           <span className="relative h-2 w-2 rounded-full bg-destructive" />
         </span>
         <span className="flex shrink-0 flex-col leading-tight">
-          <span className="font-medium text-foreground">Listening</span>
+          <span className="font-medium text-foreground">{t("listening")}</span>
           <span className={`font-mono text-[10px] tabular-nums ${remaining <= 30 ? "text-destructive" : "text-muted-foreground"}`}>
-            {formatClock(seconds)}{remaining <= 30 ? ` · ${Math.ceil(remaining)}s left` : ""}
+            {remaining <= 30 ? t("timeLeft", { clock: formatClock(seconds), seconds: Math.ceil(remaining) }) : formatClock(seconds)}
           </span>
         </span>
         <LevelMeter levels={levels} />
-        <button type="button" className={`${stripButton} w-6 text-muted-foreground hover:bg-foreground/10 hover:text-foreground`} aria-label="Cancel dictation" title="Discard" onMouseDown={(event) => event.preventDefault()} onClick={cancel}>
+        <button type="button" className={`${stripButton} w-6 text-muted-foreground hover:bg-foreground/10 hover:text-foreground`} aria-label={t("cancelDictation")} title={t("discard")} onMouseDown={(event) => event.preventDefault()} onClick={cancel}>
           <X aria-hidden className="h-3.5 w-3.5" />
         </button>
-        <button type="button" className={`${stripButton} gap-1 bg-primary px-2.5 font-medium text-primary-foreground hover:bg-primary/85`} title="Stop and transcribe" onMouseDown={(event) => event.preventDefault()} onClick={() => void stop()}>
-          <Check aria-hidden className="h-3 w-3" /> Done
+        <button type="button" className={`${stripButton} gap-1 bg-primary px-2.5 font-medium text-primary-foreground hover:bg-primary/85`} title={t("stopAndTranscribe")} onMouseDown={(event) => event.preventDefault()} onClick={() => void stop()}>
+          <Check aria-hidden className="h-3 w-3" /> {tCommon("done")}
         </button>
       </div>
     );
@@ -247,9 +252,9 @@ export function DictationStatus({ dictation }: { dictation: ReturnType<typeof us
     return (
       <div role="status" className="mb-1.5 flex items-center gap-2.5 rounded-xl border border-border bg-card py-1 pl-3 pr-1 text-xs shadow-sm">
         <Loader2 aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
-        <span className="shrink-0 font-medium text-foreground">Transcribing…</span>
+        <span className="shrink-0 font-medium text-foreground">{t("transcribing")}</span>
         <LevelMeter levels={levels} frozen />
-        <button type="button" className={`${stripButton} px-2.5 font-medium text-muted-foreground hover:bg-foreground/10 hover:text-foreground`} onMouseDown={(event) => event.preventDefault()} onClick={cancel}>Cancel</button>
+        <button type="button" className={`${stripButton} px-2.5 font-medium text-muted-foreground hover:bg-foreground/10 hover:text-foreground`} onMouseDown={(event) => event.preventDefault()} onClick={cancel}>{tCommon("cancel")}</button>
       </div>
     );
   }
@@ -258,7 +263,7 @@ export function DictationStatus({ dictation }: { dictation: ReturnType<typeof us
       <div role="alert" className="mb-1.5 flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive-muted py-1.5 pl-3 pr-1.5 text-xs text-destructive">
         <AlertCircle aria-hidden className="mt-px h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 flex-1 leading-relaxed">{error}</span>
-        <button type="button" className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full hover:bg-destructive/10" aria-label="Dismiss" onClick={clearError}><X aria-hidden className="h-3 w-3" /></button>
+        <button type="button" className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full hover:bg-destructive/10" aria-label={tCommon("dismiss")} onClick={clearError}><X aria-hidden className="h-3 w-3" /></button>
       </div>
     );
   }

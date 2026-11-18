@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { createContext, createRef, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { syncReview, commentRange, paragraphRange, plainParagraphRange, ReviewDraftTracker, REVIEWS_MOVED_EVENT, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
 import type { ChatContext } from "@/lib/document-chat";
@@ -73,6 +74,10 @@ function sharedAccount() {
 export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recoverDraft, openChat, openComments, children }: {
   activeTab?: OpenTab; getDraft: (id: string) => string; applyDraft: (id: string, before: string, after: string) => boolean; openChat: () => void; openComments: () => void; recoverDraft: (key: string, snapshot: string) => void; children: ReactNode;
 }) {
+  const t = useTranslations("markdownReviewContext");
+  // Callbacks and effects below read the latest translator, so they need no dependency on it.
+  const tRef = useRef(t);
+  useLayoutEffect(() => { tRef.current = t; }, [t]);
   const [doc, setDoc] = useState<ReviewDocument | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -104,7 +109,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const publish = useCallback((next: ReviewDocument | null) => { tabRef.current!.doc = next; latest.current = next; setDoc(next); }, [tabRef]);
   const snapshot = useCallback(() => {
     const tab = current.current.activeTab;
-    if (!tab) throw new Error("Open the review document first.");
+    if (!tab) throw new Error(tRef.current("openReviewFirst"));
     return bridge.current?.snapshot() ?? current.current.getDraft(tab.id);
   }, []);
   // The local store is the review route, exactly as before (one per key);
@@ -141,13 +146,13 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       if (disposed) return;
       const loaded = await localStore!.load(loadController.signal, text);
       if (disposed) return;
-      if (loaded.schemaVersion !== 1 || !Array.isArray(loaded.threads) || !Array.isArray(loaded.undo)) throw new Error("Could not load valid review metadata. Reload review to retry.");
+      if (loaded.schemaVersion !== 1 || !Array.isArray(loaded.threads) || !Array.isArray(loaded.undo)) throw new Error(tRef.current("loadMetadataError"));
       publish(loaded);
       lastTab.current = { id: tabId!, key: key!, doc: loaded };
       // Never automatically overwrite disk/user content with a recovered buffer.
       setRecovery(loaded.snapshot !== text && !!loaded.undo.length && loaded.undo.at(-1)?.after === loaded.snapshot);
     }
-    void load().catch((cause) => { if (!disposed) setError(cause instanceof Error ? cause.message : "Could not load review."); });
+    void load().catch((cause) => { if (!disposed) setError(cause instanceof Error ? cause.message : tRef.current("loadReviewError")); });
     return () => {
       disposed = true;
       loadController.abort();
@@ -210,13 +215,13 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       open: () => current.current.openComments(),
       send: async (request) => {
         const store = sharedStore.current;
-        if (!store || store.docId !== request.docId) throw new Error("Open the document's comments to reply.");
+        if (!store || store.docId !== request.docId) throw new Error(tRef.current("commentsToReply"));
         const text = store.getProjection().text;
         const range = request.end > request.start ? { start: request.start, end: request.end } : paragraphRange(text, { start: request.start, end: request.end }) ?? plainParagraphRange(text, { start: request.start, end: request.end });
-        if (!range || range.end <= range.start) throw new Error("The suggestion's passage is no longer in the document.");
+        if (!range || range.end <= range.start) throw new Error(tRef.current("passageGone"));
         await store.comment({ range, text: request.body, mentions: request.mentions });
         const threadId = store.lastCreatedThreadId();
-        if (!threadId) throw new Error("The reply could not be created.");
+        if (!threadId) throw new Error(tRef.current("replyNotCreated"));
         return threadId;
       },
     });
@@ -247,7 +252,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       }
       return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Review failed.");
+      setError(cause instanceof Error ? cause.message : tRef.current("reviewFailed"));
       return false;
     }
   }, []);
@@ -260,7 +265,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     const ids = Array.isArray(fields.ids) ? (fields.ids as unknown[]).filter((id): id is string => typeof id === "string") : [];
     const decision = fields.decision;
     if (!controller || !ids.length) return false;
-    if (decision !== "accept" && decision !== "reject") { setError("A decided suggestion in a shared document cannot be reopened. Ask for a revision instead."); return false; }
+    if (decision !== "accept" && decision !== "reject") { setError(tRef.current("decidedNotReopenable")); return false; }
     setError("");
     const outcomes = await controller.decide(ids.map(agenticGroupId), decision, { checkpoint: ids.length > 1 }).settled;
     const failed = [...outcomes.values()].find((outcome) => outcome.kind === "failed" || outcome.kind === "stale" || outcome.kind === "not-found");
@@ -285,7 +290,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       if (activeState.current !== tabState || controller.signal.aborted) return false;
       if (result.snapshot !== before) {
         if (snapshot() !== before || !current.current.applyDraft(tab.id, before, result.snapshot)) {
-          publish(result); setRecovery(true); throw new Error("The document changed while applying. Your text was preserved; recover the review result or reload review.");
+          publish(result); setRecovery(true); throw new Error(tRef.current("changedWhileApplying"));
         }
         bridge.current?.apply(result.snapshot);
       }
@@ -296,7 +301,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       return true;
     } catch (cause) {
       if (pending.current === controller && current.current.activeTab?.id === tab.id) {
-        setError(controller.signal.aborted ? "Review operation stopped. Reload review to check its saved state." : cause instanceof Error ? cause.message : "Review failed.");
+        setError(controller.signal.aborted ? tRef.current("operationStopped") : cause instanceof Error ? cause.message : tRef.current("reviewFailed"));
       }
       return false;
     }
@@ -327,10 +332,10 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
         // Proposals become overlay groups collaborators see; superseded ones
         // (a revision, a new plan) are withdrawn.
         const synced = await syncAgenticReviewSuggestions({ doc: result, controller: suggestions, snapshot: result.snapshot });
-        if (synced.failed.length) setError(`${synced.failed.length === 1 ? "A proposed change" : `${synced.failed.length} proposed changes`} could not be shared as suggestions: ${synced.failed[0].message}`);
+        if (synced.failed.length) setError(tRef.current("proposedChangesNotShared", { count: synced.failed.length, message: synced.failed[0].message }));
       }
       return true;
-    } catch (cause) { if (pending.current === controller && current.current.activeTab?.id === tab.id) setError(controller.signal.aborted ? "Generation stopped. No proposed changes were applied. Reload review before retrying." : cause instanceof Error ? cause.message : "Agentic review failed."); return false; }
+    } catch (cause) { if (pending.current === controller && current.current.activeTab?.id === tab.id) setError(controller.signal.aborted ? tRef.current("generationStopped") : cause instanceof Error ? cause.message : tRef.current("agenticReviewFailed")); return false; }
     finally { tabRef.current!.write = null; if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
   }, [publish, snapshot, tracker, tabState, tabRef]);
   const reload = useCallback(async () => {
@@ -348,7 +353,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       const text = snapshot();
       publish(next); setError(""); setRecovery(!!next && next.snapshot !== text && !!next.undo.length && next.undo.at(-1)?.after === next.snapshot);
     } catch (cause) {
-      if (pending.current === controller && current.current.activeTab?.id === tab.id) setError(cause instanceof Error ? cause.message : "Reload failed.");
+      if (pending.current === controller && current.current.activeTab?.id === tab.id) setError(cause instanceof Error ? cause.message : tRef.current("reloadFailed"));
     } finally {
       if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); }
     }
@@ -411,7 +416,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       let base = result ?? await store.read(stored.id);
       if (base.snapshot === text) return;
       for (let attempt = 0; ; attempt++) {
-        if (base.snapshot !== (result?.snapshot ?? stored.snapshot)) throw new Error("Review text changed in another window. Reload review before retrying.");
+        if (base.snapshot !== (result?.snapshot ?? stored.snapshot)) throw new Error(tRef.current("textChangedInAnotherWindow"));
         try {
           base = await store.mutate("sync", { edits: base.snapshot === stored.snapshot ? edits : tracker.edits(base, text) }, { doc: base, snapshot: text });
           break;
@@ -436,7 +441,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
         if (stored && tabRef.current!.due && stored.snapshot !== snapshot()) void action("sync");
         return;
       }
-      void flushTab()?.catch((cause) => { if (activeState.current === tabState) setError(cause instanceof Error ? cause.message : "Review sync failed."); });
+      void flushTab()?.catch((cause) => { if (activeState.current === tabState) setError(cause instanceof Error ? cause.message : tRef.current("syncFailed")); });
     };
     const onVisibility = () => { if (document.visibilityState === "hidden") onBlur(); };
     window.addEventListener("blur", onBlur);
@@ -475,7 +480,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       if (!expanded) return;
       const replica = sharedStore.current ? sharedReplica : null;
       setSelection({ range: expanded, x, y, ...(replica && expanded.end <= replica.ytext.length ? { anchor: relativeRange(replica.ytext, expanded.start, expanded.end) } : {}) });
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Selection failed."); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tRef.current("selectionFailed")); }
   }, [snapshot, sharedReplica]);
   // A collaborator's edit moves the selected passage; the projection changes
   // with every text change, so resolving here keeps the popover on it.
@@ -496,7 +501,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     showComments: () => current.current.openComments(),
     clearSelection: () => setSelection(null), focus: (range) => bridge.current?.focus(range),
     setChatReview: (value) => { setChatReviewState(value); if (value) current.current.openChat(); },
-    restore: () => { try { const saved = latest.current; if (!saved || !current.current.activeTab) return; const before = snapshot(); if (!current.current.applyDraft(current.current.activeTab.id, before, saved.snapshot)) throw new Error("Document changed. Retry recovery."); bridge.current?.apply(saved.snapshot); setRecovery(false); } catch (cause) { setError(cause instanceof Error ? cause.message : "Recovery failed."); } },
+    restore: () => { try { const saved = latest.current; if (!saved || !current.current.activeTab) return; const before = snapshot(); if (!current.current.applyDraft(current.current.activeTab.id, before, saved.snapshot)) throw new Error(tRef.current("documentChangedRetry")); bridge.current?.apply(saved.snapshot); setRecovery(false); } catch (cause) { setError(cause instanceof Error ? cause.message : tRef.current("recoveryFailed")); } },
     stop: () => pending.current?.abort(), reportError: setError,
     recoverDraft: (key, text) => current.current.recoverDraft(key, text),
   }), [editorSelection, shown, busy, locked, error, recovery, liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate]);

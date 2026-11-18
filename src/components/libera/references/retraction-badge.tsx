@@ -1,12 +1,13 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import type { ReferenceEntry, RetractionStatus } from "@/lib/references/types";
 import {
   isConcerningRetraction,
-  RETRACTION_LABELS,
   retractionBadgeState,
   retractionDescription,
   retractionNoticeUrl,
+  retractionStateLabel,
 } from "@/lib/references/retraction";
 
 // Retraction and correction badges (retraction.ts). RetractionBadge is for
@@ -36,12 +37,17 @@ export function citationRetractionClass(entries: Array<Pick<ReferenceEntry, "ret
  * ("[Retracted]").
  */
 export function RetractionBadge({ status, compact = false, className }: { status: RetractionStatus | undefined | null; compact?: boolean; className?: string }) {
+  const t = useTranslations("references.retractionBadge");
+  const tLib = useTranslations("lib.references.retraction");
   const state = retractionBadgeState(status);
   if (!state) return null;
   const tone = retractionTone(status);
-  const label = compact ? `[${RETRACTION_LABELS[state]}]` : RETRACTION_LABELS[state];
+  const stateLabel = retractionStateLabel(state, tLib);
+  const label = compact ? `[${stateLabel}]` : stateLabel;
   const url = retractionNoticeUrl(status);
-  const title = [retractionDescription(status), status?.checkedAt ? `Checked ${status.checkedAt.slice(0, 10)}` : ""].filter(Boolean).join(" · ");
+  const title = status?.checkedAt
+    ? t("titleChecked", { description: retractionDescription(status, tLib), date: status.checkedAt.slice(0, 10) })
+    : retractionDescription(status, tLib);
   const classes = ["libera-retraction-badge", `libera-retraction-${tone}`, compact ? "libera-retraction-compact" : "", className ?? ""].filter(Boolean).join(" ");
   return url ? (
     <a className={classes} data-retraction-state={state} href={url} target="_blank" rel="noopener noreferrer" title={title}>{label}</a>

@@ -3,6 +3,7 @@ import { markdownBoxStyle } from "@/lib/markdown-boxes";
 
 import type { CSSProperties, ReactNode } from "react";
 import { memo, useCallback, useMemo, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { useTranslations } from "next-intl";
 import type { PreviewCitation, PreviewSourcePosition } from "@/lib/markdown-preview-patch";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import type { Root } from "hast";
@@ -21,7 +22,7 @@ import {
   isExternalMarkdownLink,
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
-import { rehypeLiberaSanitize, type ContentTrust } from "@/lib/markdown-sanitize";
+import { rehypeLiberaSanitize, type ContentTrust, type SanitizeMessages } from "@/lib/markdown-sanitize";
 import { rehypeBoldLeadIns } from "@/lib/markdown-lead-in";
 import { getCollabBridge } from "@/lib/collab/ui/bridge";
 import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
@@ -234,10 +235,17 @@ function markdownUrlTransform(url: string, key: string) {
 // Reused worker blocks also skip conversion and reconciliation altogether.
 // The worker already sanitized the block; it is sanitized again here with
 // this document's trust (the worker does not know whether it is shared).
+/** The sanitizer's placeholder text for blocked images, in the interface language. */
+function useSanitizeMessages(): SanitizeMessages {
+  const t = useTranslations("lib.markdownSanitize");
+  return useMemo(() => ({ imageBlocked: t("imageBlocked"), imageFallback: t("imageFallback") }), [t]);
+}
+
 const PreparedMarkdownBlock = memo(function PreparedMarkdownBlock({ node, components, trust }: { node: Root["children"][number]; components: Components; trust: ContentTrust }) {
+  const messages = useSanitizeMessages();
   const plugins = useMemo<PluggableList>(
-    () => [() => () => ({ type: "root", children: [structuredClone(node)] }), [rehypeLiberaSanitize, { trust }], rehypeBoldLeadIns],
-    [node, trust],
+    () => [() => () => ({ type: "root", children: [structuredClone(node)] }), [rehypeLiberaSanitize, { trust, messages }], rehypeBoldLeadIns],
+    [node, trust, messages],
   );
   return <ReactMarkdown urlTransform={markdownUrlTransform} rehypePlugins={plugins} components={components}>{""}</ReactMarkdown>;
 });
@@ -267,7 +275,8 @@ function MarkdownRendererContent({
   const trust = useContentTrust(documentPath, contentTrust);
   const citationDocument = useCitationDocumentValue({ content, mathMarkers, preparedTree, preparedCitations, citationScopeIndex });
   // KaTeX first: its output is part of what the sanitizer allows.
-  const rehypePlugins = useMemo<PluggableList>(() => [rehypeKatex, [rehypeLiberaSanitize, { trust }], rehypeBoldLeadIns], [trust]);
+  const sanitizeMessages = useSanitizeMessages();
+  const rehypePlugins = useMemo<PluggableList>(() => [rehypeKatex, [rehypeLiberaSanitize, { trust, messages: sanitizeMessages }], rehypeBoldLeadIns], [trust, sanitizeMessages]);
   // Read at click time so heading links do not rebuild the component table.
   const contentRef = useRef(content);
   useLayoutEffect(() => { contentRef.current = content; }, [content]);

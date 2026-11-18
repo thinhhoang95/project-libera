@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -52,16 +53,17 @@ export function notebookDrafts(notebook: string, drafts: OpenReferenceDraft[]) {
   return result;
 }
 
-export function previewRewrite(notebook: string, map: Record<string, string>, drafts: Record<string, string>) {
-  return postRewrite<RewritePreviewResponse>({ notebook, map, dryRun: true, drafts }, "Could not find the citations to update.");
+/** `fallback` (translated by the caller) is shown when the server gives no reason; English by default. */
+export function previewRewrite(notebook: string, map: Record<string, string>, drafts: Record<string, string>, fallback = "Could not find the citations to update.") {
+  return postRewrite<RewritePreviewResponse>({ notebook, map, dryRun: true, drafts }, fallback);
 }
 
-export function applyRewrite(notebook: string, map: Record<string, string>, expected: Record<string, string>, drafts: Record<string, string>) {
-  return postRewrite<RewriteApplyResponse>({ notebook, map, dryRun: false, expected, drafts }, "Could not update the citations.");
+export function applyRewrite(notebook: string, map: Record<string, string>, expected: Record<string, string>, drafts: Record<string, string>, fallback = "Could not update the citations.") {
+  return postRewrite<RewriteApplyResponse>({ notebook, map, dryRun: false, expected, drafts }, fallback);
 }
 
-export function undoRewrite(notebook: string, rewriteId: string) {
-  return postRewrite<RewriteUndoResponse>({ notebook, undo: rewriteId }, "Could not undo the citation update.");
+export function undoRewrite(notebook: string, rewriteId: string, fallback = "Could not undo the citation update.") {
+  return postRewrite<RewriteUndoResponse>({ notebook, undo: rewriteId }, fallback);
 }
 
 /** Skips that a new preview can pick up: the file changed after the preview, or was not in it. */
@@ -69,13 +71,9 @@ export function isStaleSkip(skip: RewriteSkip) {
   return /preview again/i.test(skip.reason);
 }
 
-function plural(count: number, one: string, many: string) {
-  return `${count} ${count === 1 ? one : many}`;
-}
-
-function keyList(keys: string[]) {
+function keyList(keys: string[], t: (key: "keyListMore", values: { keys: string; count: number }) => string) {
   const shown = keys.slice(0, 4).join(", ");
-  return keys.length > 4 ? `${shown} and ${keys.length - 4} more` : shown;
+  return keys.length > 4 ? t("keyListMore", { keys: shown, count: keys.length - 4 }) : shown;
 }
 
 type Round = { rewriteId: string | null; tabs: Array<{ path: string; change: TabRewriteChange; savedRewritten: boolean }> };
@@ -106,6 +104,8 @@ export function RewriteCitationsDialog(props: DialogProps) {
 }
 
 function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onRevertTab, onChanged, onClose }: DialogProps & { request: CitationRewriteRequest }) {
+  const t = useTranslations("references.rewriteCitationsDialog");
+  const tc = useTranslations("common");
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [rounds, setRounds] = useState<Round[]>([]);
   // The drafts and tab callbacks of the latest render: a request reads them when it is sent and when it answers.
@@ -121,12 +121,12 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
     setPhase({ kind: "loading" });
     const drafts = notebookDrafts(notebook, latest.current.openDrafts);
     try {
-      const preview = await previewRewrite(notebook, request.map, drafts);
+      const preview = await previewRewrite(notebook, request.map, drafts, t("findFailed"));
       setPhase({ kind: "preview", preview, draftPaths: new Set(Object.keys(drafts)) });
     } catch (error) {
-      setPhase({ kind: "error", message: error instanceof Error ? error.message : "Could not find the citations to update.", retry: "preview" });
+      setPhase({ kind: "error", message: error instanceof Error && error.message ? error.message : t("findFailed"), retry: "preview" });
     }
-  }, [notebook, request.map]);
+  }, [notebook, request.map, t]);
 
   useEffect(() => {
     // The preview loads when the dialog opens.
@@ -137,7 +137,7 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
   async function apply(preview: RewritePreviewResponse) {
     setPhase({ kind: "applying" });
     try {
-      const result = await applyRewrite(notebook, request.map, preview.expected, notebookDrafts(notebook, latest.current.openDrafts));
+      const result = await applyRewrite(notebook, request.map, preview.expected, notebookDrafts(notebook, latest.current.openDrafts), t("updateFailed"));
       // Open tabs take the same rewrite: their drafts (rewritten live, so typing since the preview stays) and, for files written on disk, their saved copy.
       const changed = new Set(result.changed);
       const tabs: Round["tabs"] = [];
@@ -149,7 +149,7 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
       if (result.changed.length) latest.current.onChanged?.();
       setPhase({ kind: "done", result, tabCount: tabs.filter((tab) => tab.change.before !== tab.change.after).length });
     } catch (error) {
-      setPhase({ kind: "error", message: error instanceof Error ? error.message : "Could not update the citations.", retry: "preview" });
+      setPhase({ kind: "error", message: error instanceof Error && error.message ? error.message : t("updateFailed"), retry: "preview" });
     }
   }
 
@@ -160,7 +160,7 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
     let tabCount = 0;
     try {
       for (const round of [...rounds].reverse()) {
-        const result = round.rewriteId ? await undoRewrite(notebook, round.rewriteId) : { restored: [], skipped: [] };
+        const result = round.rewriteId ? await undoRewrite(notebook, round.rewriteId, t("undoFailed")) : { restored: [], skipped: [] };
         restored.push(...result.restored);
         skipped.push(...result.skipped);
         const files = new Set(result.restored);
@@ -173,14 +173,15 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
       if (restored.length) latest.current.onChanged?.();
       setPhase({ kind: "undone", restored, skipped, tabCount });
     } catch (error) {
-      setPhase({ kind: "error", message: error instanceof Error ? error.message : "Could not undo the citation update.", retry: "none" });
+      setPhase({ kind: "error", message: error instanceof Error && error.message ? error.message : t("undoFailed"), retry: "none" });
     }
   }
 
-  const title = request.reason.kind === "merge" ? `Update citations to ${request.reason.keep}` : `Update citations of ${keyList(oldKeys)}`;
+  const oldKeyList = keyList(oldKeys, t);
+  const title = request.reason.kind === "merge" ? t("titleMerge", { key: request.reason.keep }) : t("titleRename", { keys: oldKeyList });
   const description = request.reason.kind === "merge"
-    ? `The merged keys (${keyList(oldKeys)}) are now aliases of ${request.reason.keep}, so documents citing them keep working. You can also rewrite those citations to ${request.reason.keep}.`
-    : `${keyList(oldKeys)} stays an alias of ${keyList(target)}, so documents citing it keep working. You can also rewrite those citations to the new key.`;
+    ? t("descriptionMerge", { keys: oldKeyList, keep: request.reason.keep })
+    : t("descriptionRename", { keys: oldKeyList, target: keyList(target, t) });
   const cancelButton = "rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50";
   const primaryButton = "rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50";
   const canUndo = rounds.some((round) => round.rewriteId || round.tabs.length);
@@ -194,17 +195,17 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
       body = (
         <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
           <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-          {phase.kind === "loading" ? "Finding citations…" : phase.kind === "applying" ? "Updating citations…" : "Undoing…"}
+          {phase.kind === "loading" ? t("findingCitations") : phase.kind === "applying" ? t("updatingCitations") : t("undoing")}
         </p>
       );
-      footer = <button type="button" className={cancelButton} disabled>Close</button>;
+      footer = <button type="button" className={cancelButton} disabled>{tc("close")}</button>;
       break;
     case "error":
       body = <div role="alert" className="rounded-lg bg-destructive-muted p-2.5 text-xs text-destructive">{phase.message}</div>;
       footer = (
         <>
-          <button type="button" className={cancelButton} onClick={onClose}>Close</button>
-          {phase.retry === "preview" ? <button type="button" className={primaryButton} onClick={() => void runPreview()}>Try again</button> : null}
+          <button type="button" className={cancelButton} onClick={onClose}>{tc("close")}</button>
+          {phase.retry === "preview" ? <button type="button" className={primaryButton} onClick={() => void runPreview()}>{tc("tryAgain")}</button> : null}
         </>
       );
       break;
@@ -213,18 +214,18 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
       const total = files.reduce((sum, file) => sum + file.count, 0);
       body = files.length ? (
         <div className="space-y-3 text-sm">
-          <p>{plural(total, "citation", "citations")} in {plural(files.length, "document", "documents")} still use {plural(oldKeys.length, "the old key", "the old keys")}.</p>
-          <ul className="max-h-[50vh] space-y-2 overflow-auto" aria-label="Documents to update">
+          <p>{t("citationsInDocuments", { total, files: files.length, oldKeys: oldKeys.length })}</p>
+          <ul className="max-h-[50vh] space-y-2 overflow-auto" aria-label={t("documentsToUpdate")}>
             {files.map((file) => (
               <li key={file.path} className="rounded-lg border border-border p-2" data-path={file.path}>
                 <div className="flex items-baseline gap-2">
                   <span className="min-w-0 flex-1 truncate font-medium" title={file.path}>{fileBaseName(file.path)}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">{plural(file.count, "citation", "citations")}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">{t("citationCount", { count: file.count })}</span>
                 </div>
-                <p className="truncate text-[11px] text-muted-foreground">{file.path}{phase.draftPaths.has(file.path) ? " · unsaved changes included" : ""}</p>
+                <p className="truncate text-[11px] text-muted-foreground">{phase.draftPaths.has(file.path) ? t("pathWithDraft", { path: file.path }) : file.path}</p>
                 <ul className="mt-1 space-y-1 font-mono text-[11px]">
                   {file.excerpts.map((excerpt) => (
-                    <li key={excerpt.line} aria-label={`Line ${excerpt.line}`}>
+                    <li key={excerpt.line} aria-label={t("lineAria", { line: excerpt.line })}>
                       <span className="text-muted-foreground">{excerpt.line}:</span>
                       <del className="block whitespace-pre-wrap break-words text-destructive">{excerpt.before}</del>
                       <ins className="block whitespace-pre-wrap break-words text-accent no-underline">{excerpt.after}</ins>
@@ -236,34 +237,31 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
           </ul>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">No document cites {keyList(oldKeys)} any more. There is nothing to update.</p>
+        <p className="text-sm text-muted-foreground">{t("noDocumentCites", { keys: oldKeyList })}</p>
       );
       footer = files.length ? (
         <>
-          <button type="button" className={cancelButton} onClick={onClose}>Not now</button>
-          <button type="button" className={primaryButton} onClick={() => void apply(phase.preview)}>Update {plural(total, "citation", "citations")}</button>
+          <button type="button" className={cancelButton} onClick={onClose}>{t("notNow")}</button>
+          <button type="button" className={primaryButton} onClick={() => void apply(phase.preview)}>{t("updateCitations", { count: total })}</button>
         </>
-      ) : <button type="button" className={cancelButton} onClick={onClose}>Close</button>;
+      ) : <button type="button" className={cancelButton} onClick={onClose}>{tc("close")}</button>;
       break;
     }
     case "done": {
       const { result, tabCount } = phase;
       const stale = result.skipped.filter(isStaleSkip);
       body = (
-        <div className="space-y-2 text-sm" role="status" aria-label="Update result">
-          <p>
-            {result.changed.length ? `Updated ${plural(result.changed.length, "saved document", "saved documents")}` : "No saved document was changed"}
-            {tabCount ? ` and ${plural(tabCount, "open tab", "open tabs")}` : ""}.
-          </p>
+        <div className="space-y-2 text-sm" role="status" aria-label={t("updateResultAria")}>
+          <p>{t("doneSummary", { changed: result.changed.length, tabs: tabCount })}</p>
           {result.changed.length ? (
-            <ul className="max-h-40 overflow-auto text-xs text-muted-foreground" aria-label="Updated documents">
+            <ul className="max-h-40 overflow-auto text-xs text-muted-foreground" aria-label={t("updatedDocumentsAria")}>
               {result.changed.map((path) => <li key={path} title={path}>{path}</li>)}
             </ul>
           ) : null}
           {result.skipped.length ? (
             <div className="space-y-1">
-              <p className="text-xs font-medium">{plural(result.skipped.length, "document was", "documents were")} left unchanged:</p>
-              <ul className="max-h-40 space-y-0.5 overflow-auto text-xs" aria-label="Skipped documents">
+              <p className="text-xs font-medium">{t("leftUnchanged", { count: result.skipped.length })}</p>
+              <ul className="max-h-40 space-y-0.5 overflow-auto text-xs" aria-label={t("skippedAria")}>
                 {result.skipped.map((skip) => <li key={skip.path}><span className="font-medium">{fileBaseName(skip.path)}</span>: {skip.reason}</li>)}
               </ul>
             </div>
@@ -272,25 +270,25 @@ function RewriteDialogBody({ notebook, request, openDrafts, onApplyToTab, onReve
       );
       footer = (
         <>
-          {canUndo ? <button type="button" className={cancelButton} onClick={() => void undo()}>Undo</button> : null}
-          {stale.length ? <button type="button" className={cancelButton} onClick={() => void runPreview()}>Preview again</button> : null}
-          <button type="button" className={primaryButton} onClick={onClose}>Done</button>
+          {canUndo ? <button type="button" className={cancelButton} onClick={() => void undo()}>{tc("undo")}</button> : null}
+          {stale.length ? <button type="button" className={cancelButton} onClick={() => void runPreview()}>{t("previewAgain")}</button> : null}
+          <button type="button" className={primaryButton} onClick={onClose}>{tc("done")}</button>
         </>
       );
       break;
     }
     case "undone":
       body = (
-        <div className="space-y-2 text-sm" role="status" aria-label="Undo result">
-          <p>Restored {plural(phase.restored.length, "saved document", "saved documents")}{phase.tabCount ? ` and ${plural(phase.tabCount, "open tab", "open tabs")}` : ""}.</p>
+        <div className="space-y-2 text-sm" role="status" aria-label={t("undoResultAria")}>
+          <p>{t("undoneSummary", { restored: phase.restored.length, tabs: phase.tabCount })}</p>
           {phase.skipped.length ? (
-            <ul className="max-h-40 space-y-0.5 overflow-auto text-xs" aria-label="Documents not restored">
+            <ul className="max-h-40 space-y-0.5 overflow-auto text-xs" aria-label={t("documentsNotRestoredAria")}>
               {phase.skipped.map((skip) => <li key={skip.path}><span className="font-medium">{fileBaseName(skip.path)}</span>: {skip.reason}</li>)}
             </ul>
           ) : null}
         </div>
       );
-      footer = <button type="button" className={primaryButton} onClick={onClose}>Done</button>;
+      footer = <button type="button" className={primaryButton} onClick={onClose}>{tc("done")}</button>;
       break;
   }
 

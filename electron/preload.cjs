@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld("liberaPlatform", {
 });
 
 contextBridge.exposeInMainWorld("liberaSetup", {
+  // The Preferences window formats its own text; main sends it the messages for the interface language (electron/i18n.cjs).
+  getI18n: () => ipcRenderer.sendSync("i18n:setup"),
   close: () => ipcRenderer.invoke("setup:close"),
   onRequestClose: (listener) => {
     const handler = () => listener();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useWorkspaceView } from "./workspace-view-context";
+import { useLocale, useTranslations } from "next-intl";
 import { createContext, memo, useContext, useMemo, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
@@ -19,6 +20,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCollabShell } from "@/components/libera/collab/collab-provider";
+import { useCollabNotebookMenuLabels } from "@/components/libera/collab/collab-shell";
 import {
   CollabJoinButton,
   SharedNotebookBadge,
@@ -30,7 +32,7 @@ import { importReferenceFile, isReferenceImportPath, referenceImportSummary } fr
 import { requestReferenceForFile } from "@/components/libera/references/add-reference-box";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import { TagChip } from "@/components/libera/file-tags";
-import { fullDateLabel, relativeTimeLabel } from "@/lib/relative-time";
+import { fullDateLabel, relativeTimeLabel, relativeTimeShort } from "@/lib/relative-time";
 import { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
@@ -150,16 +152,17 @@ const STARRED_FILES_PAGINATION_KEY = "__starred-files__";
 const SORT_OPTIONS: Array<{
   direction: SidebarSortDirection;
   key: SidebarSortKey;
+  /** The `notebookPanel` message that names the option. */
   label: string;
 }> = [
-  { key: "name", direction: "asc", label: "Name, A to Z" },
-  { key: "name", direction: "desc", label: "Name, Z to A" },
-  { key: "createdAt", direction: "desc", label: "Date created, newest first" },
-  { key: "createdAt", direction: "asc", label: "Date created, oldest first" },
-  { key: "updatedAt", direction: "desc", label: "Last modified, newest first" },
-  { key: "updatedAt", direction: "asc", label: "Last modified, oldest first" },
-  { key: "interactedAt", direction: "desc", label: "Last interacted, newest first" },
-  { key: "interactedAt", direction: "asc", label: "Last interacted, oldest first" },
+  { key: "name", direction: "asc", label: "sortNameAsc" },
+  { key: "name", direction: "desc", label: "sortNameDesc" },
+  { key: "createdAt", direction: "desc", label: "sortCreatedNewest" },
+  { key: "createdAt", direction: "asc", label: "sortCreatedOldest" },
+  { key: "updatedAt", direction: "desc", label: "sortModifiedNewest" },
+  { key: "updatedAt", direction: "asc", label: "sortModifiedOldest" },
+  { key: "interactedAt", direction: "desc", label: "sortInteractedNewest" },
+  { key: "interactedAt", direction: "asc", label: "sortInteractedOldest" },
 ];
 
 function hasExternalFiles(dataTransfer: DataTransfer) {
@@ -433,13 +436,11 @@ const NoteLinksContext = createContext<NoteLinks>({
 const FileTagsContext = createContext<Record<string, string[]>>({});
 const ShowFileDetailsContext = createContext(true);
 
-function lastEditedLabel(updatedAt: string) {
-  const edited = relativeTimeLabel(updatedAt);
-  return edited ? `Edited ${edited}` : "";
-}
-
 function FileTooltipDetails({ file, tags }: { file: LiberaFileNode; tags: string[] }) {
-  const edited = lastEditedLabel(file.updatedAt);
+  const t = useTranslations("notebookPanel");
+  const locale = useLocale();
+  const relative = relativeTimeLabel(file.updatedAt, undefined, locale);
+  const edited = relative ? t("editedLabel", { time: relative }) : "";
   return (
     <>
       {tags.length > 0 ? (
@@ -448,7 +449,7 @@ function FileTooltipDetails({ file, tags }: { file: LiberaFileNode; tags: string
         </div>
       ) : null}
       {edited ? (
-        <div className="mt-1 font-normal text-muted-foreground" title={fullDateLabel(file.updatedAt)}>
+        <div className="mt-1 font-normal text-muted-foreground" title={fullDateLabel(file.updatedAt, locale)}>
           {edited}
         </div>
       ) : null}
@@ -491,8 +492,9 @@ function NoteLinkCounts({ path }: { path: string }) {
   const { backlinkCounts, forwardLinkCounts } = useContext(NoteLinksContext);
   const backCount = backlinkCounts.get(path);
   const forwardCount = forwardLinkCounts.get(path);
-  const backLabel = `${backCount} ${backCount === 1 ? "file links" : "files link"} to the open file`;
-  const forwardLabel = `The open file links to ${forwardCount} ${forwardCount === 1 ? "file" : "files"} here`;
+  const t = useTranslations("notebookPanel");
+  const backLabel = t("backlinkCountLabel", { count: backCount ?? 0 });
+  const forwardLabel = t("forwardLinkCountLabel", { count: forwardCount ?? 0 });
   return (
     <>
       {backCount ? (
@@ -629,6 +631,9 @@ function NotebookPanelContent({
   onUpdateNotebookViewOptions,
   onNotebookRepaired,
 }: NotebookPanelProps) {
+  const t = useTranslations("notebookPanel");
+  const tCommon = useTranslations("common");
+  const tImport = useTranslations("lib.references.import");
   const [draggingFile, setDraggingFile] = useState<LiberaFileNode | null>(null);
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
@@ -725,7 +730,7 @@ function NotebookPanelContent({
       setViewOptionsOpen(false);
     } catch (error) {
       setViewOptionsError(
-        error instanceof Error ? error.message : "Could not save view options.",
+        error instanceof Error ? error.message : t("saveViewOptionsError"),
       );
     } finally {
       setViewOptionsSubmitting(false);
@@ -740,19 +745,19 @@ function NotebookPanelContent({
   }
 
   async function importIntoReferences(file: LiberaFileNode) {
-    setReferenceImportNotice({ tone: "status", message: `Importing ${file.name} into References…`, details: [] });
+    setReferenceImportNotice({ tone: "status", message: t("importingReference", { name: file.name }), details: [] });
     try {
       const result = await importReferenceFile(file.notebook, file.path);
       setReferenceImportNotice({
         tone: "status",
-        message: referenceImportSummary(result),
+        message: referenceImportSummary(result, tImport),
         details: [
-          ...result.renamedKeys.map(({ sourceKey, key }) => `Key ${sourceKey} is now ${key}`),
-          ...result.errors.map(({ line, message }) => `Line ${line}: ${message}`),
+          ...result.renamedKeys.map(({ sourceKey, key }) => t("referenceKeyRenamed", { sourceKey, key })),
+          ...result.errors.map(({ line, message }) => t("referenceImportLineError", { line, message })),
         ].slice(0, 8),
       });
     } catch (error) {
-      setReferenceImportNotice({ tone: "alert", message: error instanceof Error ? error.message : "Could not import the references.", details: [] });
+      setReferenceImportNotice({ tone: "alert", message: error instanceof Error ? error.message : t("referenceImportFailed"), details: [] });
     }
   }
 
@@ -771,55 +776,55 @@ function NotebookPanelContent({
         ? [
             {
               id: "toggle-star",
-              label: fileIsStarred ? "Unstar" : "Star",
+              label: fileIsStarred ? t("menuUnstar") : t("menuStar"),
               type: "checkbox",
               checked: fileIsStarred,
             },
-            { id: "edit-tags", label: "Edit Tags…" },
+            { id: "edit-tags", label: t("menuEditTags") },
             { type: "separator" },
-            { id: "download", label: "Download" },
-            { id: "copy", label: "Copy" },
-            { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
-            ...(isReferenceImportPath(target.file.path) ? [{ id: "import-references", label: "Import into References" }] : []),
-            ...(/\.pdf$/i.test(target.file.path) ? [{ id: "create-reference", label: "Create entry in References" }] : []),
+            { id: "download", label: t("menuDownload") },
+            { id: "copy", label: t("menuCopy") },
+            { id: "duplicate-markdown", label: t("menuDuplicateTabInNewWindow") },
+            ...(isReferenceImportPath(target.file.path) ? [{ id: "import-references", label: t("menuImportIntoReferences") }] : []),
+            ...(/\.pdf$/i.test(target.file.path) ? [{ id: "create-reference", label: t("menuCreateReferenceEntry") }] : []),
             { type: "separator" },
             {
               id: "copy-relative-path",
-              label: "Copy Relative Path",
+              label: t("menuCopyRelativePath"),
               enabled: Boolean(window.liberaClipboard?.copyItemPath),
             },
             {
               id: "copy-absolute-path",
-              label: "Copy Absolute Path",
+              label: t("menuCopyAbsolutePath"),
               enabled: Boolean(window.liberaClipboard?.copyItemPath),
             },
             { type: "separator" },
-            { id: "rename", label: "Rename" },
-            { id: "archive", label: "Archive", enabled: !isArchivedItem },
+            { id: "rename", label: t("menuRename") },
+            { id: "archive", label: t("menuArchive"), enabled: !isArchivedItem },
             {
               id: "reveal-in-file-explorer",
-              label: "Reveal in File Explorer",
+              label: t("menuRevealInFileExplorer"),
               enabled: Boolean(window.liberaFileExplorer?.revealItem),
             },
             { type: "separator" },
-            { id: "delete", label: "Delete" },
+            { id: "delete", label: t("menuDelete") },
           ]
         : [
-            { id: "add-note", label: "Add Note" },
-            { id: "add-latex", label: "Add LaTeX Document", enabled: Boolean(onCreateLatex) },
-            { id: "add-text-file", label: "Add Text File", enabled: Boolean(onCreateTextFile) },
-            { id: "add-recording", label: "Add Audio Recording", enabled: Boolean(recorder && !recorder.busy) },
-            { id: "new-folder", label: "New folder" },
+            { id: "add-note", label: t("menuAddNote") },
+            { id: "add-latex", label: t("menuAddLatexDocument"), enabled: Boolean(onCreateLatex) },
+            { id: "add-text-file", label: t("menuAddTextFile"), enabled: Boolean(onCreateTextFile) },
+            { id: "add-recording", label: t("menuAddAudioRecording"), enabled: Boolean(recorder && !recorder.busy) },
+            { id: "new-folder", label: t("menuNewFolder") },
             { type: "separator" },
-            { id: "rename", label: "Rename" },
-            { id: "archive", label: "Archive", enabled: !isArchivedItem },
+            { id: "rename", label: t("menuRename") },
+            { id: "archive", label: t("menuArchive"), enabled: !isArchivedItem },
             {
               id: "reveal-in-file-explorer",
-              label: "Reveal in File Explorer",
+              label: t("menuRevealInFileExplorer"),
               enabled: Boolean(window.liberaFileExplorer?.revealItem),
             },
             { type: "separator" },
-            { id: "delete", label: "Delete" },
+            { id: "delete", label: t("menuDelete") },
           ],
       point,
     );
@@ -886,15 +891,15 @@ function NotebookPanelContent({
       [
         ...SORT_OPTIONS.map((option) => ({
           id: `sort:${option.key}:${option.direction}`,
-          label: option.label,
+          label: t(option.label),
           type: "radio" as const,
           checked:
             option.key === sortPreference.key &&
             option.direction === sortPreference.direction,
         })),
         { type: "separator" as const },
-        { id: "view-options", label: workspaceActive ? "Workspace visibility…" : "View Options" },
-        ...(onOpenMigration ? [{ id: "migration", label: "Migration…" }] : []),
+        { id: "view-options", label: workspaceActive ? t("menuWorkspaceVisibility") : t("viewOptions") },
+        ...(onOpenMigration ? [{ id: "migration", label: t("menuMigration") }] : []),
       ],
       nativeMenuPointFromButton(event.currentTarget),
     );
@@ -933,20 +938,20 @@ function NotebookPanelContent({
       <SidebarSearch
         query={query}
         searchResults={searchResults}
-        placeholder="Search notebooks, folders and files"
+        placeholder={t("searchPlaceholder")}
         onDeepSearch={openDeepSearch}
         onQueryChange={onQueryChange}
         onSelectSearchResult={onSelectSearchResult}
       />
 
       <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
-        <h2 className="min-w-0 truncate text-sm font-semibold">Library</h2>
+        <h2 className="min-w-0 truncate text-sm font-semibold">{t("libraryHeading")}</h2>
         <div className="flex items-center gap-2">
           <button
             aria-haspopup="menu"
-            aria-label="Sort notebooks and files"
+            aria-label={t("sortNotebooksAndFiles")}
             className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-            title="Sort notebooks and files"
+            title={t("sortNotebooksAndFiles")}
             type="button"
             onClick={(event) => void openSortMenu(event)}
           >
@@ -954,9 +959,9 @@ function NotebookPanelContent({
           </button>
           {canOpenDirectories && onOpenDirectory ? (
             <button
-              aria-label="Open folder"
+              aria-label={t("openFolderLabel")}
               className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-              title="Open a folder from disk alongside your notebooks"
+              title={t("openFolderTooltip")}
               type="button"
               onClick={onOpenDirectory}
             >
@@ -965,18 +970,18 @@ function NotebookPanelContent({
           ) : null}
           <CollabJoinButton className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg" />
           <button
-            aria-label="New group"
+            aria-label={t("newGroup")}
             className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-            title="New group"
+            title={t("newGroup")}
             type="button"
             onClick={onCreateNotebookGroup}
           >
             <FolderPlus aria-hidden className="h-4 w-4" />
           </button>
           <button
-            aria-label="New notebook"
+            aria-label={t("newNotebook")}
             className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-            title="New notebook"
+            title={t("newNotebook")}
             type="button"
             onClick={onCreateNotebook}
           >
@@ -997,12 +1002,12 @@ function NotebookPanelContent({
       <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
         {!hasPanelItems ? (
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
-            {workspaceActive ? "No files selected for this workspace. Open Workspaces to adjust your selection." : "No notebooks or folders yet."}
+            {workspaceActive ? t("noWorkspaceFiles") : t("noItemsYet")}
           </div>
         ) : null}
         {hasPanelItems && !hasVisiblePanelItems ? (
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
-            No notebooks or folders are visible.
+            {t("noItemsVisible")}
           </div>
         ) : null}
 
@@ -1123,7 +1128,7 @@ function NotebookPanelContent({
         >
           <div className="flex items-start gap-3">
             <span className="min-w-0 flex-1">{referenceImportNotice.message}</span>
-            <button className="text-muted-foreground underline" type="button" onClick={() => setReferenceImportNotice(null)}>Dismiss</button>
+            <button className="text-muted-foreground underline" type="button" onClick={() => setReferenceImportNotice(null)}>{tCommon("dismiss")}</button>
           </div>
           {referenceImportNotice.details.length ? (
             <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
@@ -1191,6 +1196,7 @@ function StarredFilesSection({
   ) => Promise<void>;
   visibleLimit: number;
 }) {
+  const t = useTranslations("notebookPanel");
   if (!files.length) {
     return null;
   }
@@ -1201,7 +1207,7 @@ function StarredFilesSection({
   return (
     <section className="space-y-1 pb-2">
       <h3 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        Starred
+        {t("starredHeading")}
       </h3>
       <div className="space-y-1">
         {visibleFiles.map((file) => (
@@ -1248,6 +1254,7 @@ function ShowMoreNodesButton({
   remainingCount: number;
   onClick: () => void;
 }) {
+  const t = useTranslations("notebookPanel");
   return (
     <button
       className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs font-medium text-accent hover:bg-muted"
@@ -1255,7 +1262,7 @@ function ShowMoreNodesButton({
       type="button"
       onClick={onClick}
     >
-      Show more... ({Math.min(SIDEBAR_PAGE_SIZE, remainingCount)} more)
+      {t("showMore", { count: Math.min(SIDEBAR_PAGE_SIZE, remainingCount) })}
     </button>
   );
 }
@@ -1333,8 +1340,11 @@ function NotebookSection({
   ) => Promise<void>;
   visibleNodeLimitForPath: (path: string) => number;
 }) {
+  const t = useTranslations("notebookPanel");
+  const locale = useLocale();
   const linkedFolder = notebook.folder;
   const collabShell = useCollabShell();
+  const collabMenuLabels = useCollabNotebookMenuLabels();
   const recorder = useRecorderLauncher();
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
@@ -1348,45 +1358,45 @@ function NotebookSection({
     const available = !linkedFolder?.missing;
     const selectedItemId = await showNativeMenu(
       [
-        { id: "new-note", label: "New note", enabled: available },
-        { id: "new-slides", label: "New slides", enabled: available },
-        { id: "new-latex", label: "New LaTeX document", enabled: available && Boolean(onCreateLatex) },
-        { id: "new-text-file", label: "New text file", enabled: available && Boolean(onCreateTextFile) },
-        { id: "new-recording", label: "New audio recording", enabled: available && Boolean(recorder && !recorder.busy) },
-        { id: "new-folder", label: "New folder", enabled: available },
-        { id: "upload", label: "Upload", enabled: available },
-        ...collabNotebookMenuItems(collabShell, notebook),
+        { id: "new-note", label: t("menuNewNote"), enabled: available },
+        { id: "new-slides", label: t("menuNewSlides"), enabled: available },
+        { id: "new-latex", label: t("menuNewLatexDocument"), enabled: available && Boolean(onCreateLatex) },
+        { id: "new-text-file", label: t("menuNewTextFile"), enabled: available && Boolean(onCreateTextFile) },
+        { id: "new-recording", label: t("menuNewAudioRecording"), enabled: available && Boolean(recorder && !recorder.busy) },
+        { id: "new-folder", label: t("menuNewFolder"), enabled: available },
+        { id: "upload", label: t("menuUpload"), enabled: available },
+        ...collabNotebookMenuItems(collabShell, notebook, collabMenuLabels),
         { type: "separator" },
         {
           id: "show-archive",
-          label: "Show Archive",
+          label: t("menuShowArchive"),
           type: "checkbox",
           checked: showArchive,
         },
         { type: "separator" },
         ...(linkedFolder
           ? [
-              { id: "edit", label: "Edit" },
+              { id: "edit", label: t("menuEdit") },
               {
                 id: "reveal-in-file-explorer",
-                label: "Reveal in File Explorer",
+                label: t("menuRevealInFileExplorer"),
                 enabled: available && Boolean(window.liberaFileExplorer),
               },
-              { id: "check-notebook", label: "Check Notebook…", enabled: available },
+              { id: "check-notebook", label: t("menuCheckNotebook"), enabled: available },
               { type: "separator" as const },
-              { id: "remove-folder", label: "Remove from Libera", enabled: Boolean(onRemoveFolder) },
+              { id: "remove-folder", label: t("menuRemoveFromLibera"), enabled: Boolean(onRemoveFolder) },
             ]
           : [
-              { id: "edit", label: "Edit" },
-              { id: "download", label: "Download" },
+              { id: "edit", label: t("menuEdit") },
+              { id: "download", label: t("menuDownload") },
               {
                 id: "reveal-in-file-explorer",
-                label: "Reveal in File Explorer",
+                label: t("menuRevealInFileExplorer"),
                 enabled: Boolean(window.liberaFileExplorer),
               },
-              { id: "check-notebook", label: "Check Notebook…" },
+              { id: "check-notebook", label: t("menuCheckNotebook") },
               { type: "separator" as const },
-              { id: "delete", label: "Delete" },
+              { id: "delete", label: t("menuDelete") },
             ]),
       ],
       point,
@@ -1491,7 +1501,7 @@ function NotebookSection({
         <button
           className="libera-sidebar-icon-button h-5 w-5 shrink-0 rounded text-sm"
           type="button"
-          aria-label={`${isExpanded ? "Collapse" : "Expand"} ${notebook.name}`}
+          aria-label={isExpanded ? t("collapseNotebook", { name: notebook.name }) : t("expandNotebook", { name: notebook.name })}
           aria-expanded={isExpanded}
           onClick={() => onToggleNotebook(notebook.name)}
         >
@@ -1513,7 +1523,7 @@ function NotebookSection({
             {notebook.emoji}
           </span>
           {isRelated ? (
-            <span className="shrink-0 text-accent" title="Linked from the open notebook" aria-label="Related notebook">
+            <span className="shrink-0 text-accent" title={t("relatedNotebookTitle")} aria-label={t("relatedNotebookLabel")}>
               <Link2 aria-hidden className="h-3.5 w-3.5" />
             </span>
           ) : null}
@@ -1521,23 +1531,23 @@ function NotebookSection({
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{notebook.name}</span>
               {linkedFolder ? (
-                <FolderOpen aria-label="Linked folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <FolderOpen aria-label={t("linkedFolderLabel")} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               ) : null}
               <SharedNotebookBadge notebook={notebook.name} />
               {isExpanded ? null : <NoteLinkCounts path={notebook.path} />}
             </span>
-            <span className="block truncate text-xs font-normal text-muted-foreground" title={linkedFolder?.missing ? undefined : fullDateLabel(notebook.updatedAt)}>
+            <span className="block truncate text-xs font-normal text-muted-foreground" title={linkedFolder?.missing ? undefined : fullDateLabel(notebook.updatedAt, locale)}>
               {linkedFolder?.missing
-                ? "Folder not found"
-                : `Updated ${relativeTimeLabel(notebook.updatedAt)}`}
+                ? t("folderNotFound")
+                : t("notebookUpdated", { time: relativeTimeLabel(notebook.updatedAt, undefined, locale) })}
             </span>
           </span>
         </button>
         <button
           aria-haspopup="menu"
-          aria-label={`${linkedFolder ? "Folder" : "Notebook"} actions for ${notebook.name}`}
+          aria-label={linkedFolder ? t("folderActionsLabel", { name: notebook.name }) : t("notebookActionsLabel", { name: notebook.name })}
           className="libera-sidebar-icon-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
-          title={linkedFolder ? "Folder actions" : "Notebook actions"}
+          title={linkedFolder ? t("folderActions") : t("notebookActions")}
           type="button"
           onClick={openNotebookActionsMenu}
         >
@@ -1567,7 +1577,7 @@ function NotebookSection({
           <div className="space-y-1">
             {linkedFolder?.truncated ? (
               <p className="rounded-lg border border-dashed border-input px-3 py-2 text-xs text-muted-foreground">
-                This folder is very large, so only part of it is shown.
+                {t("folderTruncated")}
               </p>
             ) : null}
             {visibleChildren.map((node) => (
@@ -1602,8 +1612,8 @@ function NotebookSection({
             {!notebook.children.length ? (
               <p className="px-2 py-2 text-sm text-muted-foreground">
                 {linkedFolder?.missing
-                  ? "This folder was moved or its drive is disconnected."
-                  : "No files."}
+                  ? t("folderMissing")
+                  : t("noFiles")}
               </p>
             ) : null}
           </div>
@@ -1689,6 +1699,7 @@ function NotebookGroupSection({
   ) => Promise<void>;
   visibleNodeLimitForPath: (path: string) => number;
 }) {
+  const t = useTranslations("notebookPanel");
   return (
     <section className="space-y-2 pt-2">
       <div className="flex items-start justify-between gap-3 px-1">
@@ -1704,19 +1715,19 @@ function NotebookGroupSection({
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
-            aria-label={`Edit ${group.title}`}
+            aria-label={t("editGroupLabel", { title: group.title })}
             className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground"
-            title="Edit group"
+            title={t("editGroup")}
             type="button"
             onClick={() => onEditGroup(group)}
           >
             <Pencil aria-hidden className="h-3.5 w-3.5" />
           </button>
           <button
-            aria-label={`Delete ${group.title}`}
+            aria-label={t("deleteGroupLabel", { title: group.title })}
             className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground"
             data-tone="destructive"
-            title="Delete group"
+            title={t("deleteGroup")}
             type="button"
             onClick={() => void onDeleteGroup(group)}
           >
@@ -1766,7 +1777,7 @@ function NotebookGroupSection({
         </div>
       ) : (
         <div className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">
-          No notebooks in this group.
+          {t("noNotebooksInGroup")}
         </div>
       )}
     </section>
@@ -1816,6 +1827,8 @@ function TreeNodeRow({
   showNotebookName?: boolean;
   visibleNodeLimitForPath: (path: string) => number;
 }) {
+  const t = useTranslations("notebookPanel");
+  const locale = useLocale();
   const noteLinks = useContext(NoteLinksContext);
   const fileTags = useContext(FileTagsContext);
   const showFileDetails = useContext(ShowFileDetailsContext);
@@ -1941,8 +1954,8 @@ function TreeNodeRow({
   const isBacklink = noteLinks.backlinks.has(node.path);
   const isForwardLink = noteLinks.forwardLinks.has(node.path);
   const tags = fileTags[node.path] ?? [];
-  // "3h ago" → "3h": the rail only has room for the bare age.
-  const edited = relativeTimeLabel(node.updatedAt).replace(/ ago$/, "").replace(/^just now$/, "now");
+  // The rail only has room for the bare age ("3h"), not "3 hours ago".
+  const edited = relativeTimeShort(node.updatedAt, undefined, locale);
 
   // Untagged files have no second line: the age sits beside the name instead.
   const inlineEdited = showFileDetails && tags.length === 0 && Boolean(edited);
@@ -1990,8 +2003,8 @@ function TreeNodeRow({
         <span className={inlineEdited ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}>{node.name}</span>
         {inlineEdited ? (
           <>
-            <span className="libera-tree-file-edited" title={`Edited ${fullDateLabel(node.updatedAt)}`}>
-              · {edited}
+            <span className="libera-tree-file-edited" title={t("editedOn", { date: fullDateLabel(node.updatedAt, locale) })}>
+              {t("inlineEditedTime", { time: edited })}
             </span>
             <span className="flex-1" />
           </>
@@ -2002,12 +2015,12 @@ function TreeNodeRow({
           </span>
         ) : null}
         {isBacklink ? (
-          <span className="shrink-0 text-accent" title="Links to the open file" aria-label="Links to the open file">
+          <span className="shrink-0 text-accent" title={t("linksToOpenFile")} aria-label={t("linksToOpenFile")}>
             <Link2 aria-hidden className="h-3.5 w-3.5" />
           </span>
         ) : null}
         {isForwardLink ? (
-          <span className="libera-forwardlink-icon shrink-0" title="Linked from the open file" aria-label="Linked from the open file">
+          <span className="libera-forwardlink-icon shrink-0" title={t("linkedFromOpenFile")} aria-label={t("linkedFromOpenFile")}>
             <ArrowUpRight aria-hidden className="h-3.5 w-3.5" />
           </span>
         ) : null}
@@ -2021,8 +2034,8 @@ function TreeNodeRow({
       {showFileDetails && tags.length > 0 ? (
         <span className="libera-tree-file-tags">
           {edited ? (
-            <span className="libera-tree-file-edited" title={`Edited ${fullDateLabel(node.updatedAt)}`}>
-              {`${edited} ·`}
+            <span className="libera-tree-file-edited" title={t("editedOn", { date: fullDateLabel(node.updatedAt, locale) })}>
+              {t("tagsEditedTime", { time: edited })}
             </span>
           ) : null}
           {tags.map((tag) => <TagChip key={tag} tag={tag} />)}
@@ -2045,6 +2058,8 @@ function NotebookViewOptionsDialog({
   onClose: () => void;
   onSubmit: (viewOptions: LiberaNotebookViewOptions) => void;
 }) {
+  const t = useTranslations("notebookPanel");
+  const tCommon = useTranslations("common");
   const [hiddenGroupIds, setHiddenGroupIds] = useState(
     () => new Set(tree.notebookViewOptions.hiddenGroupIds),
   );
@@ -2120,8 +2135,8 @@ function NotebookViewOptionsDialog({
   return (
     <ModalDialog
       open
-      title="View Options"
-      description="Choose what appears in the Notebook panel."
+      title={t("viewOptions")}
+      description={t("viewOptionsDescription")}
       panelClassName="max-w-lg"
       onClose={onClose}
       footer={
@@ -2131,7 +2146,7 @@ function NotebookViewOptionsDialog({
             type="button"
             onClick={onClose}
           >
-            Cancel
+            {tCommon("cancel")}
           </button>
           <button
             className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -2139,7 +2154,7 @@ function NotebookViewOptionsDialog({
             disabled={submitting}
             onClick={submitViewOptions}
           >
-            {submitting ? "Saving" : "Save options"}
+            {submitting ? t("saving") : t("saveOptions")}
           </button>
         </>
       }
@@ -2147,7 +2162,7 @@ function NotebookViewOptionsDialog({
       <div className="max-h-[60vh] space-y-4 overflow-auto pr-1">
         <div>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Files
+            {t("filesHeading")}
           </h3>
           <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2 hover:bg-muted">
             <input
@@ -2157,9 +2172,9 @@ function NotebookViewOptionsDialog({
               onChange={(event) => setShowFileDetails(event.target.checked)}
             />
             <span className="min-w-0">
-              <span className="block text-sm font-medium">Show edit time and tags</span>
+              <span className="block text-sm font-medium">{t("showEditTimeAndTags")}</span>
               <span className="block text-xs text-muted-foreground">
-                A second line under each file name, like “3h · tag”.
+                {t("editTimeAndTagsHint")}
               </span>
             </span>
           </label>
@@ -2168,7 +2183,7 @@ function NotebookViewOptionsDialog({
         {topLevelNotebooks.length ? (
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Notebooks
+              {t("notebooksHeading")}
             </h3>
             <div className="rounded-lg border border-border">
               {topLevelNotebooks.map((notebook) => (
@@ -2222,7 +2237,7 @@ function NotebookViewOptionsDialog({
                 </div>
               ) : (
                 <div className="ml-6 rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">
-                  No notebooks in this group.
+                  {t("noNotebooksInGroup")}
                 </div>
               )}
             </div>
@@ -2231,7 +2246,7 @@ function NotebookViewOptionsDialog({
 
         {!topLevelNotebooks.length && !groupedSections.length ? (
           <div className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">
-            No notebooks or groups are available.
+            {t("noNotebooksOrGroups")}
           </div>
         ) : null}
       </div>

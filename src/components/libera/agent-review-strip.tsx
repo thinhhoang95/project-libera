@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, useSyncExternalStore } from "react";
+import { useTranslations } from "next-intl";
 import { Check, ChevronDown, ChevronRight, FileDiff, X } from "lucide-react";
 import { agentReviewStore, reviewLineCounts } from "@/lib/agent-review/store";
 import type { AgentReviewRevertResult } from "@/lib/agent/types";
@@ -22,11 +23,14 @@ export function AgentReviewStrip({ readTabDraft, onOpenFile, onReverted, onError
   onReverted: (results: AgentReviewRevertResult[], drafts: Record<string, string | null>) => void | Promise<void>;
   onError: (message: string) => void;
 }) {
+  const t = useTranslations("agentReviewStrip");
   const version = useSyncExternalStore(agentReviewStore.subscribe, agentReviewStore.version, () => 0);
   const revision = useDraftRevision();
   const [collapsed, setCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const reviewError = agentReviewStore.error();
+  const storeError = agentReviewStore.error();
+  // A failure the store has no message for (saving the review baseline) is worded here.
+  const reviewError = storeError === null ? null : storeError || t("couldNotSaveBaseline");
   const rows = useMemo<Row[]>(() => {
     void version;
     void revision;
@@ -55,7 +59,7 @@ export function AgentReviewStrip({ readTabDraft, onOpenFile, onReverted, onError
         if (problems.length) { onError(problems.join(" ")); void agentReviewStore.refresh(); }
       }
     } catch (cause) {
-      onError(cause instanceof Error ? cause.message : "Could not update the review.");
+      onError(cause instanceof Error && cause.message ? cause.message : t("couldNotUpdate"));
       void agentReviewStore.refresh();
     } finally {
       setBusy(false);
@@ -64,28 +68,28 @@ export function AgentReviewStrip({ readTabDraft, onOpenFile, onReverted, onError
 
   const all = rows.map((row) => row.path);
   const iconButton = "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40";
-  return <section className="libera-agent-review rounded-xl border border-border bg-card text-xs" aria-label="Agent changes to review">
+  return <section className="libera-agent-review rounded-xl border border-border bg-card text-xs" aria-label={t("sectionLabel")}>
     {reviewError && <p role="alert" className="px-2 py-1 text-destructive">{reviewError}</p>}
     <div className="flex items-center gap-1 px-2 py-1">
       <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-0.5 text-left font-medium" aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)}>
         {collapsed ? <ChevronRight aria-hidden size={13} className="shrink-0" /> : <ChevronDown aria-hidden size={13} className="shrink-0" />}
         <FileDiff aria-hidden size={13} className="shrink-0 text-accent" />
-        <span className="truncate">{rows.length === 1 ? "1 file to review" : `${rows.length} files to review`}</span>
+        <span className="truncate">{t("fileCount", { count: rows.length })}</span>
       </button>
       <button type="button" disabled={busy} className="libera-change-bar-reject inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-md px-2 font-medium disabled:opacity-40"
-        title="Reject every change the agent made in these files" onClick={() => void decide(all, "revert")}><X aria-hidden size={12} />Reject all</button>
+        title={t("rejectAllTitle")} onClick={() => void decide(all, "revert")}><X aria-hidden size={12} />{t("rejectAll")}</button>
       <button type="button" disabled={busy} className="libera-change-bar-accept inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-md px-2 font-medium disabled:opacity-40"
-        title="Accept every change the agent made in these files" onClick={() => void decide(all, "keep")}><Check aria-hidden size={12} />Accept all</button>
+        title={t("acceptAllTitle")} onClick={() => void decide(all, "keep")}><Check aria-hidden size={12} />{t("acceptAll")}</button>
     </div>
     {!collapsed && <ul className="max-h-40 overflow-auto border-t border-border py-1">
       {rows.map((row) => <li key={row.path} className="flex items-center gap-1 px-2">
-        <button type="button" className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted" aria-label={`Review ${row.path}`} title={`Review ${row.path}`} onClick={() => onOpenFile(row.path)}>
+        <button type="button" className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted" aria-label={t("reviewFileLabel", { path: row.path })} title={t("reviewFileLabel", { path: row.path })} onClick={() => onOpenFile(row.path)}>
           <span className="min-w-0 truncate">{row.name}</span>
-          {row.created && <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">new</span>}
+          {row.created && <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">{t("newBadge")}</span>}
           <span className="ml-auto shrink-0 tabular-nums"><span className="libera-agent-review-added">+{row.added}</span> <span className="libera-agent-review-removed">−{row.removed}</span></span>
         </button>
-        <button type="button" disabled={busy} className={iconButton} aria-label={`Reject changes in ${row.path}`} title={row.created ? "Reject: remove the file the agent created" : "Reject the agent's changes in this file"} onClick={() => void decide([row.path], "revert")}><X aria-hidden size={13} /></button>
-        <button type="button" disabled={busy} className={iconButton} aria-label={`Accept changes in ${row.path}`} title="Accept the agent's changes in this file" onClick={() => void decide([row.path], "keep")}><Check aria-hidden size={13} /></button>
+        <button type="button" disabled={busy} className={iconButton} aria-label={t("rejectFileLabel", { path: row.path })} title={row.created ? t("rejectNewFileTitle") : t("rejectFileTitle")} onClick={() => void decide([row.path], "revert")}><X aria-hidden size={13} /></button>
+        <button type="button" disabled={busy} className={iconButton} aria-label={t("acceptFileLabel", { path: row.path })} title={t("acceptFileTitle")} onClick={() => void decide([row.path], "keep")}><Check aria-hidden size={13} /></button>
       </li>)}
     </ul>}
   </section>;

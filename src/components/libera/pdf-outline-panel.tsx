@@ -2,6 +2,7 @@
 
 import { AlertTriangle, Bookmark, ChevronDown, ChevronRight, Highlighter, ListTree, Loader2, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useFormatter, useTranslations } from "next-intl";
 import { apiRequest } from "@/components/libera/api-client";
 import { usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
@@ -86,20 +87,21 @@ function isPdfTab(tab?: OpenTab | null): tab is OpenTab {
  * opens the Outlines panel, `onShowAnnotations` the PDF's Annotations tab.
  */
 export function PdfOutlinePaletteCommands({ activeTab, onShowOutlines, onShowAnnotations }: { activeTab?: OpenTab | null; onShowOutlines: () => void; onShowAnnotations: () => void }) {
+  const t = useTranslations("pdfOutlinePanel");
   usePaletteCommands(null, () => {
-    const group = "PDF";
+    const group = t("paletteGroup");
     const pdf = isPdfTab(activeTab);
     const path = pdf ? activeTab.file.path : "";
     const running = Boolean(path && runningRequests.has(path));
     const known = path ? knownOutlines.get(path) : undefined;
-    const unavailable = "Open a PDF";
+    const unavailable = t("openPdf");
     return [
       {
         id: "pdf:generate-outline",
-        title: running ? "Generating PDF outline…" : known?.generated ? "Regenerate PDF outline" : "Generate PDF outline",
+        title: running ? t("generatingPdfOutline") : known?.generated ? t("regeneratePdfOutline") : t("generatePdfOutline"),
         group,
         icon: known?.generated ? RefreshCw : Sparkles,
-        detail: !pdf ? unavailable : known?.embedded ? `${activeTab?.file.name} has its own bookmarks` : `The AI Agent reads ${activeTab?.file.name} and saves an outline of its headings beside it`,
+        detail: !pdf ? unavailable : known?.embedded ? t("hasBookmarks", { name: activeTab?.file.name ?? "" }) : t("agentReadsOutline", { name: activeTab?.file.name ?? "" }),
         keywords: "ai agent table of contents toc headings chapters sections bookmarks structure",
         disabled: !pdf || running || Boolean(known?.embedded),
         run: () => {
@@ -109,7 +111,7 @@ export function PdfOutlinePaletteCommands({ activeTab, onShowOutlines, onShowAnn
       },
       {
         id: "pdf:show-annotations",
-        title: "Show PDF annotations",
+        title: t("showAnnotations"),
         group,
         icon: Highlighter,
         detail: pdf ? undefined : unavailable,
@@ -132,9 +134,13 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
   onExpansionLevelChange: (level: number) => void;
   onOpenFile: OpenFile;
 }) {
+  const t = useTranslations("pdfOutlinePanel");
+  const format = useFormatter();
   const path = activeTab.file.path;
   const [payload, setPayload] = useState<PdfOutlinePayload | null>(null);
   const [loadError, setLoadError] = useState("");
+  /** What failed when the server gave no message of its own. */
+  const [loadFailure, setLoadFailure] = useState<"" | "load" | "delete">("");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [preferGenerated, setPreferGenerated] = useState(false);
@@ -151,10 +157,12 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
         knownOutlines.set(path, { embedded: next.embedded.length, generated: next.generated?.entries.length ?? 0 });
         setPayload(next);
         setLoadError("");
+        setLoadFailure("");
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
-        setLoadError(error instanceof Error ? error.message : "Could not load the outline.");
+        setLoadError(error instanceof Error ? error.message : "");
+        setLoadFailure(error instanceof Error ? "" : "load");
       });
     return () => controller.abort();
   }, [path, refreshKey, running]);
@@ -183,8 +191,10 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
       knownOutlines.set(path, { embedded: next.embedded.length, generated: 0 });
       setPayload(next);
       setLoadError("");
+      setLoadFailure("");
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Could not delete the outline.");
+      setLoadError(error instanceof Error ? error.message : "");
+      setLoadFailure(error instanceof Error ? "" : "delete");
     } finally {
       setDeleting(false);
       setConfirmingDelete(false);
@@ -196,7 +206,7 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
     await onOpenFile(activeTab.file, { viewState: { pdf: { reveal: { page: entry.page, ...(entry.top !== undefined ? { top: entry.top } : {}), nonce: Date.now() } } } });
   }
 
-  const sourceLabel = showingGenerated ? "AI outline" : "Bookmarks";
+  const shownError = loadError || (loadFailure === "load" ? t("loadOutlineFailed") : loadFailure === "delete" ? t("deleteOutlineFailed") : "");
   const SourceIcon = showingGenerated ? Sparkles : Bookmark;
 
   return (
@@ -206,9 +216,9 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
           <div className="relative mb-3">
             <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
-              aria-label="Search the PDF outline"
+              aria-label={t("searchOutlineLabel")}
               className="libera-panel-field libera-panel-field--search w-full"
-              placeholder="Search outline"
+              placeholder={t("searchOutline")}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
@@ -222,7 +232,7 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
             />
             {query ? (
               <button
-                aria-label="Clear outline search"
+                aria-label={t("clearOutlineSearch")}
                 className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
                 type="button"
                 onClick={() => setQuery("")}
@@ -233,10 +243,10 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
             ) : null}
           </div>
           <label className="mb-3 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
-            <span>Expand to</span>
+            <span>{t("expandTo")}</span>
             <span className="relative">
               <select
-                aria-label="Outline expansion level"
+                aria-label={t("expansionLevel")}
                 className="libera-panel-field libera-panel-field--compact pl-3 pr-8"
                 value={expansionLevel}
                 onChange={(event) => {
@@ -244,7 +254,7 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
                   setExpanded({});
                 }}
               >
-                {[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>Level {level}</option>)}
+                {[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>{t("level", { level })}</option>)}
               </select>
             </span>
           </label>
@@ -253,30 +263,30 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
 
       <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {entries.length ? <SourceIcon aria-hidden className="h-3.5 w-3.5" /> : <ListTree aria-hidden className="h-3.5 w-3.5" />}
-        <span className="min-w-0 flex-1 truncate">{entries.length ? sourceLabel : "Outline"}</span>
+        <span className="min-w-0 flex-1 truncate">{entries.length ? (showingGenerated ? t("aiOutline") : t("bookmarks")) : t("outline")}</span>
         {embedded.length && generated ? (
           <button
             type="button"
             className="rounded px-1.5 py-0.5 text-[11px] font-medium normal-case tracking-normal hover:bg-muted hover:text-foreground"
             onClick={() => { setPreferGenerated((current) => !current); setExpanded({}); }}
           >
-            {showingGenerated ? "Show bookmarks" : "Show AI outline"}
+            {showingGenerated ? t("showBookmarks") : t("showAiOutline")}
           </button>
         ) : null}
         {showingGenerated && !running ? (
           confirmingDelete ? (
             <span className="flex items-center gap-1 normal-case tracking-normal">
               <button type="button" className="rounded px-1.5 py-0.5 font-medium text-destructive hover:bg-destructive-muted" disabled={deleting} onClick={() => void deleteOutline()}>
-                {deleting ? "Deleting…" : "Delete outline"}
+                {deleting ? t("deleting") : t("deleteOutline")}
               </button>
-              <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => setConfirmingDelete(false)}>Cancel</button>
+              <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => setConfirmingDelete(false)}>{t("cancel")}</button>
             </span>
           ) : (
             <>
               <button
                 type="button"
-                aria-label="Regenerate outline"
-                title="Regenerate with the AI Agent"
+                aria-label={t("regenerateOutlineButton")}
+                title={t("regenerateWithAgent")}
                 className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded"
                 onClick={() => requestPdfOutline(path)}
               >
@@ -284,8 +294,8 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
               </button>
               <button
                 type="button"
-                aria-label="Delete outline"
-                title="Delete the outline file"
+                aria-label={t("deleteOutline")}
+                title={t("deleteOutlineFile")}
                 className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded"
                 onClick={() => setConfirmingDelete(true)}
               >
@@ -299,17 +309,17 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
       {running ? (
         <p role="status" className="mb-3 flex items-start gap-2 rounded-lg border border-input bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
           <Loader2 aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
-          <span>The AI Agent is outlining the PDF in parallel parts, then checking that they fit together. Follow along in the AI panel.</span>
+          <span>{t("outliningInProgress")}</span>
         </p>
       ) : null}
       {runError ? <p role="alert" className="mb-3 rounded-lg border border-destructive/40 bg-destructive-muted px-3 py-2.5 text-xs text-destructive">{runError}</p> : null}
-      {loadError ? <p role="alert" className="mb-3 rounded-lg border border-destructive/40 bg-destructive-muted px-3 py-2.5 text-xs text-destructive">{loadError}</p> : null}
+      {shownError ? <p role="alert" className="mb-3 rounded-lg border border-destructive/40 bg-destructive-muted px-3 py-2.5 text-xs text-destructive">{shownError}</p> : null}
       {showingGenerated && payload?.stale && !running ? (
         <div className="mb-3 flex items-start gap-2 rounded-lg border border-input px-3 py-2.5 text-xs text-muted-foreground">
           <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
-            The PDF changed since this outline was generated.{" "}
-            <button type="button" className="font-medium text-foreground underline-offset-2 hover:underline" onClick={() => requestPdfOutline(path)}>Regenerate</button>
+            {t("pdfChanged")}{" "}
+            <button type="button" className="font-medium text-foreground underline-offset-2 hover:underline" onClick={() => requestPdfOutline(path)}>{t("regenerate")}</button>
           </span>
         </div>
       ) : null}
@@ -317,8 +327,8 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
         <details className="mb-3 rounded-lg border border-input px-3 py-2 text-xs text-muted-foreground">
           <summary className="cursor-pointer select-none">
             {errors.length
-              ? `${errors.length} structural ${errors.length === 1 ? "issue" : "issues"} left unresolved`
-              : `${problems.length} ${problems.length === 1 ? "note" : "notes"} from verification`}
+              ? t("structuralIssues", { count: errors.length })
+              : t("verificationNotes", { count: problems.length })}
           </summary>
           <ul className="mt-2 list-disc space-y-1 pl-4">
             {problems.slice(0, 30).map((problem, index) => <li key={index}>{problem.message}</li>)}
@@ -326,19 +336,19 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
         </details>
       ) : null}
 
-      {!payload && !loadError ? (
-        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">Loading outline.</p>
+      {!payload && !shownError ? (
+        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">{t("loadingOutline")}</p>
       ) : !entries.length ? (
         running ? null : (
           <div className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
             {generated && !generated.entries.length ? (
-              <p className="mb-2 font-medium text-foreground">The AI Agent found no headings in this PDF.</p>
+              <p className="mb-2 font-medium text-foreground">{t("noHeadingsFound")}</p>
             ) : finished && !runError ? (
-              <p className="mb-2 font-medium text-foreground">The AI Agent finished without saving an outline. Its reply in the AI panel says why.</p>
+              <p className="mb-2 font-medium text-foreground">{t("finishedWithoutOutline")}</p>
             ) : null}
             <p>
-              {payload?.embeddedError ? "This PDF's bookmarks could not be read. " : "This PDF has no bookmarks of its own. "}
-              The AI Agent can outline it: it reads the PDF in parts at once, checks that the parts fit together into one hierarchy, and saves the outline beside the PDF.
+              {payload?.embeddedError ? t("bookmarksUnreadable") : t("noBookmarks")}{" "}
+              {t("outlineHint")}
             </p>
             <button
               type="button"
@@ -346,19 +356,19 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
               onClick={() => requestPdfOutline(path)}
             >
               <Sparkles aria-hidden className="h-4 w-4" />
-              {generated ? "Regenerate outline" : "Generate outline"}
+              {generated ? t("regenerateOutlineButton") : t("generateOutlineButton")}
             </button>
           </div>
         )
       ) : rows.length ? (
-        <div className="space-y-0.5" role="tree" aria-label={`${sourceLabel} of ${activeTab.file.name}`}>
+        <div className="space-y-0.5" role="tree" aria-label={t("treeLabel", { source: showingGenerated ? "generated" : "bookmarks", name: activeTab.file.name })}>
           {rows.map(({ entry, hasChildren, expanded: isExpanded }) => {
             const isCurrent = entry.id === currentEntryId;
             return (
               <div key={entry.id} role="treeitem" aria-level={entry.level} aria-selected={isCurrent} aria-expanded={hasChildren ? isExpanded : undefined} className="flex items-start gap-0.5" style={{ paddingLeft: query ? 0 : `${(entry.level - 1) * 12}px` }}>
                 {hasChildren ? (
                   <button
-                    aria-label={`${isExpanded ? "Collapse" : "Expand"} ${entry.title}`}
+                    aria-label={isExpanded ? t("collapseEntry", { title: entry.title }) : t("expandEntry", { title: entry.title })}
                     aria-expanded={isExpanded}
                     className="libera-sidebar-icon-button mt-1 inline-flex h-6 w-5 shrink-0 items-center justify-center rounded"
                     type="button"
@@ -371,14 +381,14 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
                   className={`flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${entry.page ? "" : "cursor-default opacity-60"}`}
                   style={isCurrent ? { backgroundColor: "color-mix(in srgb, var(--accent) 12%, transparent)" } : undefined}
                   aria-current={isCurrent ? "location" : undefined}
-                  fullName={entry.unverified ? `${entry.title} (not found in the page's text)` : entry.title}
+                  fullName={entry.unverified ? t("unverifiedEntry", { title: entry.title }) : entry.title}
                   type="button"
                   disabled={!entry.page}
                   onClick={() => void navigate(entry)}
                 >
                   <span className={`min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] ${entry.level === 1 ? "font-medium" : ""} ${entry.unverified ? "italic text-muted-foreground" : ""}`}>{entry.title}</span>
                   {entry.page ? (
-                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">p. {entry.page}</span>
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">{t("pageLabel", { page: entry.page })}</span>
                   ) : null}
                 </SidebarNameTooltipButton>
               </div>
@@ -386,12 +396,16 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
           })}
           {showingGenerated && generated?.generatedAt ? (
             <p className="px-1 pt-2 text-[11px] text-muted-foreground">
-              Generated {new Date(generated.generatedAt).toLocaleString()}{generated.model ? ` with ${generated.model}` : ""}{generated.updatedAt ? `, amended ${new Date(generated.updatedAt).toLocaleString()}` : ""}
+              {t("generatedLine", {
+                date: format.dateTime(new Date(generated.generatedAt), { dateStyle: "medium", timeStyle: "short" }),
+                model: generated.model || "none",
+                amended: generated.updatedAt ? format.dateTime(new Date(generated.updatedAt), { dateStyle: "medium", timeStyle: "short" }) : "none",
+              })}
             </p>
           ) : null}
         </div>
       ) : (
-        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">No matching outline entries.</p>
+        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">{t("noMatchingEntries")}</p>
       )}
     </section>
   );

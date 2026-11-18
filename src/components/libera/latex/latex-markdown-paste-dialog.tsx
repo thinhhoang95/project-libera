@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Copy, TriangleAlert } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import {
@@ -25,9 +26,10 @@ export type MarkdownPasteDialogRequest = {
 };
 
 const PREVIEW_LINES = 400;
-const HEADING_LABELS: Record<HeadingTarget, string> = {
+/** The LaTeX commands the headings can become; `bold`, `plain` and `custom` are described in words. */
+const HEADING_COMMANDS: Partial<Record<HeadingTarget, string>> = {
   part: "\\part", chapter: "\\chapter", section: "\\section", subsection: "\\subsection", subsubsection: "\\subsubsection",
-  paragraph: "\\paragraph", subparagraph: "\\subparagraph", bold: "Bold paragraph", plain: "Plain paragraph", custom: "Custom…",
+  paragraph: "\\paragraph", subparagraph: "\\subparagraph",
 };
 
 const selectClass = "min-w-0 rounded-md border border-border bg-card px-2 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -71,6 +73,9 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
   onPlain: () => void;
   onCancel: () => void;
 }) {
+  const t = useTranslations("latex.latexMarkdownPasteDialog");
+  const tc = useTranslations("common");
+  const headingLabel = (target: HeadingTarget) => HEADING_COMMANDS[target] ?? t(target === "bold" ? "headingBold" : target === "plain" ? "headingPlain" : "headingCustom");
   const { prepared, context, origin } = request;
   const { analysis } = prepared;
   const ranks = analysis.headingDepths.length;
@@ -104,7 +109,7 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
   });
   const invalid = templateErrors.some(Boolean);
   const previewLines = result.latex.split("\n");
-  const preview = previewLines.length > PREVIEW_LINES ? `${previewLines.slice(0, PREVIEW_LINES).join("\n")}\n% … ${previewLines.length - PREVIEW_LINES} more lines` : result.latex;
+  const preview = previewLines.length > PREVIEW_LINES ? `${previewLines.slice(0, PREVIEW_LINES).join("\n")}\n${t("previewTruncated", { count: previewLines.length - PREVIEW_LINES })}` : result.latex;
   const missingLines = result.missing.map((pkg) => pkg.line).join("\n");
   const longtableChosen = options.tableEnvironment === "longtable";
   // In two-column documents a chosen longtable is written as tabular, with the float choices of a tabular.
@@ -185,30 +190,30 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
 
   const ladder = SECTION_COMMANDS.map((command) => ({ command, disabled: command === "chapter" && !hasChapters(context) }));
   const selection = origin === "selection";
-  const title = selection ? "Convert Markdown to LaTeX" : request.rich ? "Paste as LaTeX" : "Paste Markdown as LaTeX";
+  const title = selection ? t("titleConvert") : request.rich ? t("titlePasteRich") : t("titlePasteMarkdown");
   const cursorHint = context.sectionCommand && context.sectionTitle
-    ? `The cursor is in \\${context.sectionCommand}{${context.sectionTitle.length > 48 ? `${context.sectionTitle.slice(0, 47)}…` : context.sectionTitle}}.`
-    : "There is no heading before the cursor.";
+    ? t("cursorInSection", { command: context.sectionCommand, title: context.sectionTitle.length > 48 ? `${context.sectionTitle.slice(0, 47)}…` : context.sectionTitle })
+    : t("noHeadingBeforeCursor");
 
   return (
     <ModalDialog
       open
       title={title}
-      description={`Choose how the ${request.rich ? "pasted text's" : "Markdown's"} headings and tables are written. The LaTeX on the right is what will be inserted.`}
+      description={request.rich ? t("descriptionRich") : t("descriptionMarkdown")}
       panelClassName="max-w-5xl"
       onClose={onCancel}
       footer={
         <div className="flex w-full flex-wrap items-center gap-2">
           {!selection ? (
-            <Toggle checked={remember} onChange={setRemember}>Next time, paste without asking</Toggle>
+            <Toggle checked={remember} onChange={setRemember}>{t("rememberChoice")}</Toggle>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
             {!selection ? (
-              <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted" onClick={onPlain} title="Paste the Markdown as it is (⇧⌘V)">Paste as plain text</button>
+              <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted" onClick={onPlain} title={t("pastePlainTitle")}>{t("pastePlain")}</button>
             ) : null}
-            <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted" onClick={onCancel}>Cancel</button>
+            <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted" onClick={onCancel}>{t("cancel")}</button>
             <button type="submit" form={formId} disabled={invalid} className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60">
-              {selection ? "Convert" : "Paste as LaTeX"}
+              {selection ? t("convert") : t("pasteAsLatex")}
             </button>
           </div>
         </div>
@@ -226,62 +231,62 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
       >
         <div className="flex max-h-[62vh] min-w-0 flex-col gap-3 overflow-y-auto pr-1">
           {ranks ? (
-            <Group title="Headings" hint={cursorHint}>
+            <Group title={t("headingsGroup")} hint={cursorHint}>
               {analysis.headingDepths.map((depth, rank) => (
                 <div key={depth} className="flex flex-col gap-1">
                   <div className="flex items-center gap-2">
                     <span className="w-14 shrink-0 font-mono text-sm text-muted-foreground">{"#".repeat(depth)}</span>
-                    <span className="min-w-0 flex-1 truncate text-sm" title={analysis.headingSamples[rank]}>{analysis.headingSamples[rank] || "(empty)"}</span>
+                    <span className="min-w-0 flex-1 truncate text-sm" title={analysis.headingSamples[rank]}>{analysis.headingSamples[rank] || t("emptyHeading")}</span>
                     <span aria-hidden className="text-muted-foreground">→</span>
                     <select
                       ref={rank === 0 ? firstFieldRef : undefined}
-                      aria-label={`Heading level ${depth} becomes`}
+                      aria-label={t("headingLevelBecomes", { depth })}
                       className={`${selectClass} w-44`}
                       value={rank === 0 && options.headingTop === "auto" ? "auto" : headingMap[rank]}
                       onChange={(event) => rank === 0 ? setTop(event.target.value as "auto" | HeadingTarget) : setRow(rank, event.target.value as HeadingTarget)}
                     >
-                      {rank === 0 ? <option value="auto">Automatic ({HEADING_LABELS[autoTop]} here)</option> : null}
+                      {rank === 0 ? <option value="auto">{t("automaticHeading", { target: headingLabel(autoTop) })}</option> : null}
                       {ladder.map(({ command, disabled }) => (
-                        <option key={command} value={command} disabled={disabled}>{HEADING_LABELS[command]}{disabled ? " (not in this class)" : ""}</option>
+                        <option key={command} value={command} disabled={disabled}>{disabled ? t("unavailableClass", { label: headingLabel(command) }) : headingLabel(command)}</option>
                       ))}
-                      <option value="bold">{HEADING_LABELS.bold}</option>
-                      <option value="plain">{HEADING_LABELS.plain}</option>
-                      <option value="custom">{HEADING_LABELS.custom}</option>
+                      <option value="bold">{headingLabel("bold")}</option>
+                      <option value="plain">{headingLabel("plain")}</option>
+                      <option value="custom">{headingLabel("custom")}</option>
                     </select>
                   </div>
                   {headingMap[rank] === "custom" ? (
                     <div className="ml-16 flex flex-col gap-0.5">
                       <input
                         className={`${inputClass} font-mono`}
-                        placeholder="\frametitle  or  \textbf{\large #1}\par"
-                        aria-label={`Custom command for heading level ${depth}`}
+                        placeholder={t("customCommandPlaceholder")}
+                        aria-label={t("customCommandLabel", { depth })}
                         value={customs[rank] ?? ""}
                         spellCheck={false}
                         aria-invalid={!!templateErrors[rank]}
                         onChange={(event) => setCustoms((current) => current.map((value, index) => index === rank ? event.target.value : value))}
                       />
                       <span className={`text-xs ${templateErrors[rank] ? "text-destructive" : "text-muted-foreground"}`}>
-                        {templateErrors[rank] ?? "A command name, or a template where #1 is the heading's text."}
+                        {templateErrors[rank] ?? t("customTemplateHint")}
                       </span>
                     </div>
                   ) : null}
                 </div>
               ))}
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                <Toggle checked={options.headingStarred} onChange={(value) => set("headingStarred", value)}>Unnumbered (\section*)</Toggle>
-                <Toggle checked={options.headingLabels} onChange={(value) => { setLabelsTouched(true); set("headingLabels", value); }}>Add labels</Toggle>
+                <Toggle checked={options.headingStarred} onChange={(value) => set("headingStarred", value)}>{t("unnumbered")}</Toggle>
+                <Toggle checked={options.headingLabels} onChange={(value) => { setLabelsTouched(true); set("headingLabels", value); }}>{t("addLabels")}</Toggle>
                 {analysis.numberedHeadings ? (
-                  <Toggle checked={options.stripHeadingNumbers} onChange={(value) => set("stripHeadingNumbers", value)}>Remove numbers such as “1.2”</Toggle>
+                  <Toggle checked={options.stripHeadingNumbers} onChange={(value) => set("stripHeadingNumbers", value)}>{t("removeNumbers")}</Toggle>
                 ) : null}
               </div>
             </Group>
           ) : null}
 
           {analysis.tables.length ? (
-            <Group title={`Tables (${analysis.tables.length})`}>
+            <Group title={t("tablesGroup", { count: analysis.tables.length })}>
               <div className="flex items-center justify-between gap-3 text-sm">
-                <span className="text-muted-foreground">Environment</span>
-                <div role="group" aria-label="Table environment" className="inline-flex overflow-hidden rounded-md border border-border">
+                <span className="text-muted-foreground">{t("environment")}</span>
+                <div role="group" aria-label={t("tableEnvironmentLabel")} className="inline-flex overflow-hidden rounded-md border border-border">
                   {(["tabular", "tabularx", "longtable"] as TableEnvironment[]).map((name) => {
                     // longtable does not work in two-column documents.
                     const unavailable = name === "longtable" && twoColumn;
@@ -292,7 +297,7 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
                         ref={name === "tabular" ? tableButtonRef : undefined}
                         aria-pressed={options.tableEnvironment === name}
                         disabled={unavailable}
-                        title={unavailable ? "longtable does not work in two-column documents" : undefined}
+                        title={unavailable ? t("longtableTwoColumnTitle") : undefined}
                         className={`px-2.5 py-1 font-mono text-xs disabled:cursor-not-allowed disabled:opacity-50 ${options.tableEnvironment === name && !unavailable ? "bg-primary text-primary-foreground" : "bg-card text-foreground hover:bg-muted"}`}
                         onClick={() => set("tableEnvironment", name)}
                       >{name}</button>
@@ -300,40 +305,40 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
                   })}
                 </div>
               </div>
-              {longtable ? <p className="text-xs text-muted-foreground">A longtable breaks across pages and repeats its header. It is shown as source in Visual mode.</p> : null}
-              {longtableChosen && twoColumn ? <p className="text-xs text-muted-foreground">longtable does not work in two-column documents: the tables are written as tabular.</p> : null}
-              <Choice label="Rules" value={options.tableRules} onChange={(value) => set("tableRules", value)} options={[["booktabs", "booktabs (\\toprule, \\midrule)"], ["simple", "\\hline top, header, bottom"], ["grid", "Grid (| and \\hline)"], ["none", "None"]]} />
-              <Choice label="Size" value={options.tableSize} onChange={(value) => set("tableSize", value)} options={[["normal", "Normal"], ["small", "\\small"], ["footnotesize", "\\footnotesize"], ["scriptsize", "\\scriptsize"]]} />
+              {longtable ? <p className="text-xs text-muted-foreground">{t("longtableNote")}</p> : null}
+              {longtableChosen && twoColumn ? <p className="text-xs text-muted-foreground">{t("longtableTwoColumnNote")}</p> : null}
+              <Choice label={t("rules")} value={options.tableRules} onChange={(value) => set("tableRules", value)} options={[["booktabs", t("rulesBooktabs")], ["simple", t("rulesHline")], ["grid", t("rulesGrid")], ["none", t("rulesNone")]]} />
+              <Choice label={t("size")} value={options.tableSize} onChange={(value) => set("tableSize", value)} options={[["normal", t("sizeNormal")], ["small", "\\small"], ["footnotesize", "\\footnotesize"], ["scriptsize", "\\scriptsize"]]} />
               <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {options.tableEnvironment !== "tabularx" ? <Toggle checked={options.tableWrap} onChange={(value) => set("tableWrap", value)}>Wrap long columns</Toggle> : null}
-                <Toggle checked={options.tableBoldHeader} onChange={(value) => set("tableBoldHeader", value)}>Bold header row</Toggle>
+                {options.tableEnvironment !== "tabularx" ? <Toggle checked={options.tableWrap} onChange={(value) => set("tableWrap", value)}>{t("wrapLongColumns")}</Toggle> : null}
+                <Toggle checked={options.tableBoldHeader} onChange={(value) => set("tableBoldHeader", value)}>{t("boldHeaderRow")}</Toggle>
               </div>
               {!longtable ? (
                 <Choice
-                  label="Float"
+                  label={t("float")}
                   value={options.tableFloat}
                   onChange={(value) => set("tableFloat", value)}
-                  options={[["table", "table"], ...(twoColumn ? [["table*", "table* (both columns)"] as ["table*", string]] : []), ["none", "None (at the cursor)"]]}
+                  options={[["table", "table"], ...(twoColumn ? [["table*", t("floatTableBoth")] as ["table*", string]] : []), ["none", t("floatNone")]]}
                 />
               ) : null}
               {floatAllowed ? (
                 <div className="flex flex-wrap gap-x-4 gap-y-1">
                   <Toggle checked={options.tableCentering} onChange={(value) => set("tableCentering", value)}>\centering</Toggle>
-                  <Toggle checked={options.tableCaptionBelow} onChange={(value) => set("tableCaptionBelow", value)}>Caption below the table</Toggle>
+                  <Toggle checked={options.tableCaptionBelow} onChange={(value) => set("tableCaptionBelow", value)}>{t("captionBelow")}</Toggle>
                 </div>
               ) : null}
               {(floatAllowed || longtable) && analysis.tables.some((table) => table.caption) ? (
-                <Toggle checked={options.tableCaptionFromText} onChange={setCaptionDetection}>Use a “Table 1: …” line next to a table as its caption</Toggle>
+                <Toggle checked={options.tableCaptionFromText} onChange={setCaptionDetection}>{t("captionFromText")}</Toggle>
               ) : null}
               {(floatAllowed || longtable) ? analysis.tables.map((table, index) => (
                 <div key={index} className="flex flex-col gap-1 rounded-md bg-muted/40 p-2">
                   <span className="truncate text-xs text-muted-foreground" title={table.header.join(", ")}>
-                    Table {index + 1}: {table.header.filter(Boolean).slice(0, 4).join(", ") || "no header"} ({table.columns} × {table.rows})
+                    {t("tableSummary", { number: index + 1, headers: table.header.filter(Boolean).slice(0, 4).join(", ") || t("noHeader"), columns: table.columns, rows: table.rows })}
                   </span>
                   <input
                     className={inputClass}
-                    placeholder="Caption (Markdown allowed; empty for none)"
-                    aria-label={`Caption of table ${index + 1}`}
+                    placeholder={t("captionPlaceholder")}
+                    aria-label={t("captionLabel", { number: index + 1 })}
                     value={tables[index]?.caption ?? ""}
                     onChange={(event) => {
                       const caption = event.target.value;
@@ -343,23 +348,23 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
                   />
                   <input
                     className={`${inputClass} font-mono`}
-                    placeholder="Label (made from the caption when empty)"
-                    aria-label={`Label of table ${index + 1}`}
+                    placeholder={t("labelPlaceholder")}
+                    aria-label={t("tableLabel", { number: index + 1 })}
                     spellCheck={false}
                     value={tables[index]?.label ?? ""}
                     onChange={(event) => setTables((current) => current.map((value, at) => at === index ? { ...value, label: event.target.value } : value))}
                   />
                 </div>
-              )) : <p className="text-xs text-muted-foreground">Without a float, tables have no caption or label.</p>}
+              )) : <p className="text-xs text-muted-foreground">{t("noFloatNote")}</p>}
             </Group>
           ) : null}
 
           {analysis.images ? (
-            <Group title={`Images (${analysis.images})`}>
-              <Choice label="Images as" value={options.images} onChange={(value) => set("images", value)} options={[["figure", "figure float"], ["inline", "\\includegraphics only"], ["comment", "A comment"]]} />
+            <Group title={t("imagesGroup", { count: analysis.images })}>
+              <Choice label={t("imagesAs")} value={options.images} onChange={(value) => set("images", value)} options={[["figure", t("imagesFigure")], ["inline", t("imagesIncludegraphics")], ["comment", t("imagesComment")]]} />
               {options.images !== "comment" ? (
                 <label className="flex items-center justify-between gap-3 text-sm">
-                  <span className="text-muted-foreground">Width (× \linewidth)</span>
+                  <span className="text-muted-foreground">{t("imageWidth")}</span>
                   <input type="number" min={0.1} max={1} step={0.05} className={`${inputClass} w-24`} value={options.imageWidth}
                     onChange={(event) => { const value = Number(event.target.value); if (value > 0 && value <= 1) set("imageWidth", value); }} />
                 </label>
@@ -368,7 +373,7 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
           ) : null}
 
           {showPlacement ? (
-            <Group title="Float placement">
+            <Group title={t("floatPlacement")}>
               <div className="flex flex-wrap gap-x-3 gap-y-1">
                 {["h", "t", "b", "p", "!"].map((letter) => (
                   <Toggle key={letter} checked={options.tablePlacement !== "H" && options.tablePlacement.includes(letter)} onChange={(value) => togglePlacement(letter, value)}>
@@ -376,31 +381,31 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
                   </Toggle>
                 ))}
                 <Toggle checked={options.tablePlacement === "H"} onChange={(value) => togglePlacement("H", value)}>
-                  <span className="font-mono">H</span> <span className="text-xs text-muted-foreground">(float package)</span>
+                  <span className="font-mono">H</span> <span className="text-xs text-muted-foreground">{t("floatPackage")}</span>
                 </Toggle>
               </div>
             </Group>
           ) : null}
 
           <details className="rounded-lg border border-border p-3 [&_summary]:cursor-pointer">
-            <summary className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">More options</summary>
+            <summary className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("moreOptions")}</summary>
             <div className="mt-2 flex flex-col gap-2">
-              <Choice label="Italics" value={options.italic} onChange={(value) => set("italic", value)} options={[["emph", "\\emph"], ["textit", "\\textit"]]} />
-              <Choice label="Strikethrough" value={options.strike} onChange={(value) => set("strike", value)} options={[["sout", "\\sout (ulem)"], ["st", "\\st (soul)"]]} />
-              <Choice label="Inline code" value={options.inlineCode} onChange={(value) => set("inlineCode", value)} options={[["texttt", "\\texttt"], ["verb", "\\verb"]]} />
-              <Choice label="Code blocks" value={options.codeBlocks} onChange={(value) => set("codeBlocks", value)} options={[["verbatim", "verbatim"], ["lstlisting", "lstlisting (listings)"]]} />
-              <Choice label="Display math" value={options.displayMath} onChange={(value) => set("displayMath", value)} options={[["brackets", "\\[ … \\]"], ["equation*", "equation*"], ["equation", "equation (numbered)"]]} />
-              <Choice label="Inline math" value={options.inlineMath} onChange={(value) => set("inlineMath", value)} options={[["dollar", "$ … $"], ["paren", "\\( … \\)"]]} />
-              <Choice label="Links" value={options.links} onChange={(value) => set("links", value)} options={[["href", "\\href"], ["footnote", "Text and \\footnote{\\url}"], ["text", "Text only"]]} />
-              <Choice label="Quotation marks" value={options.quotes} onChange={(value) => set("quotes", value)} options={[["latex", "``…''"], ["csquotes", "\\enquote (csquotes)"], ["keep", "As written"]]} />
-              <Choice label="Block quotes" value={options.blockquote} onChange={(value) => set("blockquote", value)} options={[["quote", "quote"], ["quotation", "quotation"], ["displayquote", "displayquote (csquotes)"]]} />
-              <Choice label="Highlights" value={options.highlight} onChange={(value) => set("highlight", value)} options={[["hl", "\\hl (soul)"], ["colorbox", "\\colorbox"], ["drop", "Plain text"]]} />
-              <Toggle checked={options.keepLatex} onChange={(value) => set("keepLatex", value)}>Keep LaTeX commands written in the text</Toggle>
+              <Choice label={t("italics")} value={options.italic} onChange={(value) => set("italic", value)} options={[["emph", "\\emph"], ["textit", "\\textit"]]} />
+              <Choice label={t("strikethrough")} value={options.strike} onChange={(value) => set("strike", value)} options={[["sout", "\\sout (ulem)"], ["st", "\\st (soul)"]]} />
+              <Choice label={t("inlineCode")} value={options.inlineCode} onChange={(value) => set("inlineCode", value)} options={[["texttt", "\\texttt"], ["verb", "\\verb"]]} />
+              <Choice label={t("codeBlocks")} value={options.codeBlocks} onChange={(value) => set("codeBlocks", value)} options={[["verbatim", "verbatim"], ["lstlisting", "lstlisting (listings)"]]} />
+              <Choice label={t("displayMath")} value={options.displayMath} onChange={(value) => set("displayMath", value)} options={[["brackets", "\\[ … \\]"], ["equation*", "equation*"], ["equation", t("displayMathNumbered")]]} />
+              <Choice label={t("inlineMath")} value={options.inlineMath} onChange={(value) => set("inlineMath", value)} options={[["dollar", "$ … $"], ["paren", "\\( … \\)"]]} />
+              <Choice label={t("links")} value={options.links} onChange={(value) => set("links", value)} options={[["href", "\\href"], ["footnote", t("linksFootnote")], ["text", t("linksTextOnly")]]} />
+              <Choice label={t("quotationMarks")} value={options.quotes} onChange={(value) => set("quotes", value)} options={[["latex", "``…''"], ["csquotes", "\\enquote (csquotes)"], ["keep", t("quotesAsWritten")]]} />
+              <Choice label={t("blockQuotes")} value={options.blockquote} onChange={(value) => set("blockquote", value)} options={[["quote", "quote"], ["quotation", "quotation"], ["displayquote", "displayquote (csquotes)"]]} />
+              <Choice label={t("highlights")} value={options.highlight} onChange={(value) => set("highlight", value)} options={[["hl", "\\hl (soul)"], ["colorbox", "\\colorbox"], ["drop", t("highlightsPlainText")]]} />
+              <Toggle checked={options.keepLatex} onChange={(value) => set("keepLatex", value)}>{t("keepLatexCommands")}</Toggle>
               <Choice
-                label="When pasting Markdown"
+                label={t("whenPastingMarkdown")}
                 value={options.ask}
                 onChange={(value) => set("ask", value)}
-                options={[["structure", "Ask when it has headings or tables"], ["always", "Always ask"], ["never", "Never ask"], ["off", "Do not convert Markdown"]]}
+                options={[["structure", t("askStructure")], ["always", t("askAlways")], ["never", t("askNever")], ["off", t("askOff")]]}
               />
             </div>
           </details>
@@ -408,22 +413,22 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
 
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
           <pre
-            aria-label="LaTeX to be inserted"
+            aria-label={t("latexToBeInserted")}
             className="max-h-[48vh] min-h-40 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 p-2.5 font-mono text-xs leading-relaxed text-foreground"
           >{preview || " "}</pre>
           {result.missing.length ? (
             <div className="flex flex-col gap-1.5 rounded-lg border border-border p-2.5 text-sm">
               <div className="flex items-center gap-2">
-                <span className="font-medium">The preamble does not load:</span>
+                <span className="font-medium">{t("preambleNotLoad")}</span>
                 <button type="button" className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs hover:bg-muted" onClick={() => void copyPackages()}>
-                  {copied ? <Check aria-hidden className="h-3 w-3" /> : <Copy aria-hidden className="h-3 w-3" />}{copied ? "Copied" : "Copy"}
+                  {copied ? <Check aria-hidden className="h-3 w-3" /> : <Copy aria-hidden className="h-3 w-3" />}{copied ? tc("copied") : tc("copy")}
                 </button>
               </div>
               <pre className="select-text whitespace-pre-wrap font-mono text-xs text-muted-foreground">{missingLines}</pre>
               {request.canAddPackages ? (
-                <Toggle checked={addPackages} onChange={setAddPackages}>Add to the preamble</Toggle>
+                <Toggle checked={addPackages} onChange={setAddPackages}>{t("addToPreamble")}</Toggle>
               ) : (
-                <p className="text-xs text-muted-foreground">Add them to the main file&apos;s preamble.</p>
+                <p className="text-xs text-muted-foreground">{t("addToMainPreamble")}</p>
               )}
             </div>
           ) : null}

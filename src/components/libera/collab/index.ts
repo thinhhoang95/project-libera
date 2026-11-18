@@ -23,5 +23,6 @@ export {
   ProjectBadge,
   SharedNotebookBadge,
   collabNotebookMenuItems,
+  useCollabNotebookMenuLabels,
   runCollabNotebookMenuItem,
 } from "./collab-shell";

@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Copy, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 
 /* After Markdown was converted without the dialog (docs/latex-markdown-paste-plan.md
@@ -20,6 +21,8 @@ export function LatexPasteNotice({ rich = false, missing, warnings, onPlain, onO
   onOptions: () => void;
   onClose: () => void;
 }) {
+  const t = useTranslations("latex.latexPasteNotice");
+  const tc = useTranslations("common");
   const [copied, setCopied] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -43,16 +46,16 @@ export function LatexPasteNotice({ rich = false, missing, warnings, onPlain, onO
       onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span>{rich ? "Pasted formatted text as LaTeX." : "Pasted Markdown as LaTeX."}</span>
-        <button type="button" className={link} onClick={onPlain}>Paste as plain text instead</button>
-        <button type="button" className={link} onClick={onOptions}>Options…</button>
-        <button type="button" aria-label="Dismiss" className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onClose}>
+        <span>{rich ? t("pastedFormatted") : t("pastedMarkdown")}</span>
+        <button type="button" className={link} onClick={onPlain}>{t("pastePlainInstead")}</button>
+        <button type="button" className={link} onClick={onOptions}>{t("options")}</button>
+        <button type="button" aria-label={tc("dismiss")} className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onClose}>
           <X aria-hidden className="h-3.5 w-3.5" />
         </button>
       </div>
       {missing.length ? (
         <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="min-w-0 break-all">Needs <code className="font-mono">{missing.join(" ")}</code></span>
+          <span className="min-w-0 break-all">{t.rich("needsPackages", { packages: missing.join(" "), code: (chunks) => <code className="font-mono">{chunks}</code> })}</span>
           <button
             type="button"
             className="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 hover:bg-muted"
@@ -60,7 +63,7 @@ export function LatexPasteNotice({ rich = false, missing, warnings, onPlain, onO
               navigator.clipboard.writeText(missing.join("\n")).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, () => undefined);
             }}
           >
-            {copied ? <Check aria-hidden className="h-3 w-3" /> : <Copy aria-hidden className="h-3 w-3" />}{copied ? "Copied" : "Copy"}
+            {copied ? <Check aria-hidden className="h-3 w-3" /> : <Copy aria-hidden className="h-3 w-3" />}{copied ? tc("copied") : tc("copy")}
           </button>
         </div>
       ) : null}

@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowDown, ArrowUp, Building2, Plus, User, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { CslName } from "@/lib/references/types";
 
 // Editor for a CSL name list (authors, editors): each name is a person
@@ -30,13 +31,17 @@ export function cleanNameList(names: CslName[]) {
 
 export function NameListEditor({
   label,
+  addLabel,
   names,
   onChange,
 }: {
   label: string;
+  /** The Add button's text ("Add author"), translated by the caller. */
+  addLabel?: string;
   names: CslName[];
   onChange: (names: CslName[]) => void;
 }) {
+  const t = useTranslations("references.nameListEditor");
   function update(index: number, patch: Partial<CslName>) {
     onChange(names.map((name, current) => current === index ? { ...name, ...patch } : name));
   }
@@ -63,41 +68,41 @@ export function NameListEditor({
       <legend className="mb-1 text-xs font-medium text-muted-foreground">{label}</legend>
       {names.map((name, index) => {
         const institution = isInstitution(name);
-        const rowLabel = `${label} ${index + 1}`;
+        const rowLabel = t("row", { label, number: index + 1 });
         return (
           <div key={index} className="flex items-center gap-1" role="group" aria-label={rowLabel}>
             <button
               type="button"
               className={iconButton}
-              title={institution ? "Institution: make this a person" : "Person: make this an institution"}
-              aria-label={institution ? `${rowLabel}: switch to person` : `${rowLabel}: switch to institution`}
+              title={institution ? t("institutionTitle") : t("personTitle")}
+              aria-label={institution ? t("switchToPerson", { row: rowLabel }) : t("switchToInstitution", { row: rowLabel })}
               onClick={() => toggleKind(index)}
             >
               {institution ? <Building2 aria-hidden className="h-3.5 w-3.5" /> : <User aria-hidden className="h-3.5 w-3.5" />}
             </button>
             {institution ? (
-              <input className={`${field} flex-1`} aria-label={`${rowLabel} name`} placeholder="Institution" value={name.literal ?? ""} onChange={(event) => update(index, { literal: event.target.value })} />
+              <input className={`${field} flex-1`} aria-label={t("nameAria", { row: rowLabel })} placeholder={t("institutionPlaceholder")} value={name.literal ?? ""} onChange={(event) => update(index, { literal: event.target.value })} />
             ) : (
               <>
-                <input className={`${field} w-16`} aria-label={`${rowLabel} particle`} placeholder="van" value={name["non-dropping-particle"] ?? ""} onChange={(event) => update(index, { "non-dropping-particle": event.target.value })} />
-                <input className={`${field} flex-1`} aria-label={`${rowLabel} family name`} placeholder="Family name" value={name.family ?? ""} onChange={(event) => update(index, { family: event.target.value })} />
-                <input className={`${field} flex-1`} aria-label={`${rowLabel} given name`} placeholder="Given name" value={name.given ?? ""} onChange={(event) => update(index, { given: event.target.value })} />
+                <input className={`${field} w-16`} aria-label={t("particleAria", { row: rowLabel })} placeholder={t("particleExample")} value={name["non-dropping-particle"] ?? ""} onChange={(event) => update(index, { "non-dropping-particle": event.target.value })} />
+                <input className={`${field} flex-1`} aria-label={t("familyAria", { row: rowLabel })} placeholder={t("familyPlaceholder")} value={name.family ?? ""} onChange={(event) => update(index, { family: event.target.value })} />
+                <input className={`${field} flex-1`} aria-label={t("givenAria", { row: rowLabel })} placeholder={t("givenPlaceholder")} value={name.given ?? ""} onChange={(event) => update(index, { given: event.target.value })} />
               </>
             )}
-            <button type="button" className={iconButton} aria-label={`Move ${rowLabel} up`} title="Move up" disabled={index === 0} onClick={() => move(index, -1)}>
+            <button type="button" className={iconButton} aria-label={t("moveUpAria", { row: rowLabel })} title={t("moveUp")} disabled={index === 0} onClick={() => move(index, -1)}>
               <ArrowUp aria-hidden className="h-3.5 w-3.5" />
             </button>
-            <button type="button" className={iconButton} aria-label={`Move ${rowLabel} down`} title="Move down" disabled={index === names.length - 1} onClick={() => move(index, 1)}>
+            <button type="button" className={iconButton} aria-label={t("moveDownAria", { row: rowLabel })} title={t("moveDown")} disabled={index === names.length - 1} onClick={() => move(index, 1)}>
               <ArrowDown aria-hidden className="h-3.5 w-3.5" />
             </button>
-            <button type="button" className={iconButton} data-tone="destructive" aria-label={`Remove ${rowLabel}`} title="Remove" onClick={() => onChange(names.filter((_, position) => position !== index))}>
+            <button type="button" className={iconButton} data-tone="destructive" aria-label={t("removeAria", { row: rowLabel })} title={t("remove")} onClick={() => onChange(names.filter((_, position) => position !== index))}>
               <X aria-hidden className="h-3.5 w-3.5" />
             </button>
           </div>
         );
       })}
       <button type="button" className="libera-panel-button h-7 px-2.5" onClick={() => onChange([...names, { family: "", given: "" }])}>
-        <Plus aria-hidden className="h-3.5 w-3.5" /> Add {label.toLowerCase().replace(/s$/, "")}
+        <Plus aria-hidden className="h-3.5 w-3.5" /> {addLabel ?? `Add ${label.toLowerCase().replace(/s$/, "")}`}
       </button>
     </fieldset>
   );

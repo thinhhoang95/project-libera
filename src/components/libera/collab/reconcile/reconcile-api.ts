@@ -3,6 +3,14 @@
 
 import { ControlRoutes, LOCAL_API_PREFIX, type Reconciliation, type ResolveReconciliationRequest } from "@/lib/collab/local-api";
 
+/** A failed request; `serverMessage` is the text the server sent, empty when it sent none (the view then words it itself). */
+export class ReconcileError extends Error {
+  constructor(message: string, readonly status: number, readonly serverMessage: string) {
+    super(message);
+    this.name = "ReconcileError";
+  }
+}
+
 async function request<T>(route: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${LOCAL_API_PREFIX}${route}`, {
     ...init,
@@ -11,7 +19,8 @@ async function request<T>(route: string, init?: RequestInit): Promise<T> {
   const body = (await response.json().catch(() => null)) as { error?: { message?: string } | string } | T | null;
   if (!response.ok) {
     const error = (body as { error?: { message?: string } | string } | null)?.error;
-    throw new Error(typeof error === "string" ? error : error?.message ?? `Request failed (${response.status}).`);
+    const serverMessage = typeof error === "string" ? error : error?.message ?? "";
+    throw new ReconcileError(serverMessage || `Request failed (${response.status}).`, response.status, serverMessage);
   }
   return body as T;
 }

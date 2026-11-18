@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2 } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -14,32 +15,36 @@ type LatexCacheDialogProps = {
   onCleared: (recompile: boolean) => void;
 };
 
+/** Message keys of what each kind of build file is. */
 const FILE_DESCRIPTIONS: [RegExp, string][] = [
-  [/\.aux$/i, "Cross-references and citations"],
-  [/\.(bbl|bcf|run\.xml)$/i, "Bibliography data"],
-  [/\.blg$/i, "Bibliography log"],
-  [/\.fdb_latexmk$/i, "latexmk dependency database"],
-  [/\.fls$/i, "List of files read"],
-  [/\.log$/i, "Compile log"],
-  [/\.(toc|lof|lot|out)$/i, "Contents, lists and bookmarks"],
-  [/\.synctex(\.gz)?$/i, "Source ↔ PDF positions"],
-  [/\.pdf$/i, "PDF output (the preview keeps its own copy)"],
-  [/\.(nav|snm|vrb)$/i, "Beamer navigation data"],
-  [/\.(idx|ind|ilg|glo|gls|glg|ist|acn|acr|alg)$/i, "Index and glossary data"],
-  [/\.(tex|sty|cls)$/i, "Staged source (written again on every compile)"],
+  [/\.aux$/i, "fileDescAux"],
+  [/\.(bbl|bcf|run\.xml)$/i, "fileDescBibliography"],
+  [/\.blg$/i, "fileDescBibLog"],
+  [/\.fdb_latexmk$/i, "fileDescLatexmk"],
+  [/\.fls$/i, "fileDescFls"],
+  [/\.log$/i, "fileDescCompileLog"],
+  [/\.(toc|lof|lot|out)$/i, "fileDescContents"],
+  [/\.synctex(\.gz)?$/i, "fileDescSynctex"],
+  [/\.pdf$/i, "fileDescPdf"],
+  [/\.(nav|snm|vrb)$/i, "fileDescBeamer"],
+  [/\.(idx|ind|ilg|glo|gls|glg|ist|acn|acr|alg)$/i, "fileDescIndex"],
+  [/\.(tex|sty|cls)$/i, "fileDescStaged"],
 ];
 
-function describe(file: string) {
-  return FILE_DESCRIPTIONS.find(([pattern]) => pattern.test(file))?.[1] ?? "Generated file";
-}
-
-function formatSize(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+function descriptionKey(file: string) {
+  return FILE_DESCRIPTIONS.find(([pattern]) => pattern.test(file))?.[1] ?? "fileDescGenerated";
 }
 
 export function LatexCacheDialog({ rootPath, onClose, onCleared }: LatexCacheDialogProps) {
+  const t = useTranslations("latex.latexCacheDialog");
+  const tc = useTranslations("common");
+  const format = useFormatter();
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return format.number(bytes, { style: "unit", unit: "byte" });
+    const digits = bytes < 10 * 1024 ? 1 : 0;
+    if (bytes < 1024 * 1024) return format.number(bytes / 1024, { style: "unit", unit: "kilobyte", maximumFractionDigits: digits, minimumFractionDigits: digits });
+    return format.number(bytes / 1024 / 1024, { style: "unit", unit: "megabyte", maximumFractionDigits: 1, minimumFractionDigits: 1 });
+  };
   const [files, setFiles] = useState<LatexCacheFile[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [recompile, setRecompile] = useState(true);
@@ -57,10 +62,10 @@ export function LatexCacheDialog({ rootPath, onClose, onCleared }: LatexCacheDia
       .catch((reason: unknown) => {
         if (cancelled) return;
         setFiles([]);
-        setError(reason instanceof Error ? reason.message : "Could not read the build cache.");
+        setError(reason instanceof Error && reason.message ? reason.message : t("readCacheError"));
       });
     return () => { cancelled = true; };
-  }, [rootPath]);
+  }, [rootPath, t]);
 
   const selectedSize = useMemo(() => (files ?? []).reduce((total, file) => total + (selected.has(file.path) ? file.size : 0), 0), [files, selected]);
   const allSelected = !!files?.length && selected.size === files.length;
@@ -82,7 +87,7 @@ export function LatexCacheDialog({ rootPath, onClose, onCleared }: LatexCacheDia
       onCleared(recompile);
       onClose();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not clear the build cache.");
+      setError(reason instanceof Error && reason.message ? reason.message : t("clearCacheError"));
     } finally {
       setClearing(false);
     }
@@ -91,17 +96,17 @@ export function LatexCacheDialog({ rootPath, onClose, onCleared }: LatexCacheDia
   return (
     <ModalDialog
       open
-      title="Clear build cache"
-      description={`Delete the files left by earlier compiles of ${rootPath.split("/").at(-1)} so the next build starts clean. Your source files are not touched.`}
+      title={t("title")}
+      description={t("description", { name: rootPath.split("/").at(-1) ?? "" })}
       panelClassName="max-w-xl"
       onClose={onClose}
       footer={
         <div className="flex w-full flex-wrap items-center gap-2">
           <label className="mr-auto flex cursor-pointer items-center gap-1.5 text-sm text-muted-foreground">
             <input type="checkbox" checked={recompile} onChange={(event) => setRecompile(event.target.checked)} />
-            Recompile after clearing
+            {t("recompileAfterClear")}
           </label>
-          <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted" onClick={onClose}>Cancel</button>
+          <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted" onClick={onClose}>{tc("cancel")}</button>
           <button
             type="button"
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -109,16 +114,16 @@ export function LatexCacheDialog({ rootPath, onClose, onCleared }: LatexCacheDia
             onClick={() => void clear()}
           >
             {clearing ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null}
-            {selected.size ? `Clear ${selected.size} file${selected.size === 1 ? "" : "s"}` : "Clear"}
+            {selected.size ? t("clearFiles", { count: selected.size }) : t("clear")}
           </button>
         </div>
       }
     >
       {error ? <p role="alert" className="mb-3 text-sm text-destructive">{error}</p> : null}
       {files === null ? (
-        <p className="inline-flex items-center gap-2 text-sm text-muted-foreground"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />Reading the build cache…</p>
+        <p className="inline-flex items-center gap-2 text-sm text-muted-foreground"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />{t("readingCache")}</p>
       ) : !files.length ? (
-        <p className="text-sm text-muted-foreground">{error ? "" : "The build cache is already empty."}</p>
+        <p className="text-sm text-muted-foreground">{error ? "" : t("cacheEmpty")}</p>
       ) : (
         <div className="flex flex-col gap-2">
           <label className="flex cursor-pointer items-center gap-2 border-b border-border pb-2 text-sm font-medium text-foreground">
@@ -128,8 +133,8 @@ export function LatexCacheDialog({ rootPath, onClose, onCleared }: LatexCacheDia
               ref={(input) => { if (input) input.indeterminate = selected.size > 0 && !allSelected; }}
               onChange={() => setSelected(allSelected ? new Set() : new Set(files.map((file) => file.path)))}
             />
-            <span className="flex-1">All files</span>
-            <span className="text-xs font-normal text-muted-foreground">{selected.size} of {files.length} · {formatSize(selectedSize)}</span>
+            <span className="flex-1">{t("allFiles")}</span>
+            <span className="text-xs font-normal text-muted-foreground">{t("selectionSummary", { selected: selected.size, total: files.length, size: formatSize(selectedSize) })}</span>
           </label>
           <ul className="max-h-80 overflow-auto">
             {files.map((file) => (
@@ -138,7 +143,7 @@ export function LatexCacheDialog({ rootPath, onClose, onCleared }: LatexCacheDia
                   <input type="checkbox" checked={selected.has(file.path)} onChange={() => toggle(file.path)} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-mono text-xs text-foreground" title={file.path}>{file.path}</span>
-                    <span className="block text-xs text-muted-foreground">{describe(file.path)}</span>
+                    <span className="block text-xs text-muted-foreground">{t(descriptionKey(file.path))}</span>
                   </span>
                   <span className="shrink-0 text-xs text-muted-foreground">{formatSize(file.size)}</span>
                 </label>

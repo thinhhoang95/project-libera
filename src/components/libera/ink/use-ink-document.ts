@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { InkHistory } from "@/lib/ink/history";
 import type { PhotoInkView as PhotoView } from "@/lib/ink/frame";
@@ -189,7 +190,8 @@ export class InkWriter {
         // Kept for the next Save; the journal still has it.
         if (generation === this.generation) {
           this.retry = batch;
-          this.onError(cause instanceof Error ? cause.message : "Ink could not be saved.");
+          // An empty message is worded by the hook (it has the translator).
+          this.onError(cause instanceof Error ? cause.message : "");
         }
         throw cause;
       } finally {
@@ -213,6 +215,7 @@ function withOps(strokes: readonly MergedInkStroke[], ops: InkOps, author: strin
 }
 
 export function useInkDocument({ path, chunk, frame: initialFrame, rendering, photoId }: WriterTarget) {
+  const t = useTranslations("ink.useInkDocument");
   // Frame and rendering are updated below; identity follows the file and chunk.
   const writer = useMemo(() => pendingSaves.getWriter<InkWriter>(inkSavePath({ path, photoId }), inkSaveKey(chunk)) ?? new InkWriter({ path, chunk, frame: initialFrame, rendering, photoId }), [path, chunk, photoId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [strokes, setStrokes] = useState<MergedInkStroke[]>([]);
@@ -249,9 +252,9 @@ export function useInkDocument({ path, chunk, frame: initialFrame, rendering, ph
     writer.setCallbacks((payload, idle) => {
       loadVersion.current += 1;
       if (idle) apply(payload);
-    }, setError);
+    }, (message) => setError(message === "" ? t("inkSaveFailed") : message));
     return () => { writer.setCallbacks(() => {}, () => {}); };
-  }, [writer, apply]);
+  }, [writer, apply, t]);
 
   const load = useCallback(async () => {
     const version = ++loadVersion.current;
@@ -277,11 +280,11 @@ export function useInkDocument({ path, chunk, frame: initialFrame, rendering, ph
       return payload;
     } catch (cause) {
       if (version !== loadVersion.current) return null;
-      setError(cause instanceof Error ? cause.message : "Ink could not be loaded.");
+      setError(cause instanceof Error && cause.message ? cause.message : t("inkLoadFailed"));
       setLoaded(true);
       return null;
     }
-  }, [apply, writer]);
+  }, [apply, t, writer]);
 
   const commit = useCallback((ops: InkOps, removedIds: Set<string>, added: MergedInkStroke[]) => {
     writer.push(ops);

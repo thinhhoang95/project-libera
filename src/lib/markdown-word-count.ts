@@ -55,13 +55,14 @@ export function getMarkdownWordCountStats(content: string): MarkdownWordCountSta
   };
 }
 
+/** The status bar's counts; `key` names each one in lib.markdownWordCount (readingTime is in minutes). */
 export function wordCountStatItems(stats: MarkdownWordCountStats) {
   return [
-    { label: "Words", value: stats.words },
-    { label: "Characters", value: stats.characters },
-    { label: "Characters without spaces", value: stats.charactersNoSpaces },
-    { label: "Paragraphs", value: stats.paragraphs },
-    { label: "Lines", value: stats.lines },
-    { label: "Reading time", value: stats.readingMinutes, suffix: " min" },
-  ];
+    { key: "words", value: stats.words },
+    { key: "characters", value: stats.characters },
+    { key: "charactersNoSpaces", value: stats.charactersNoSpaces },
+    { key: "paragraphs", value: stats.paragraphs },
+    { key: "lines", value: stats.lines },
+    { key: "readingTime", value: stats.readingMinutes },
+  ] as const;
 }

@@ -18,9 +18,17 @@ export type MarkdownSlideTemplateId = string;
 
 export type MarkdownSlideMetadata = Record<string, unknown>;
 
+/** A diagnostic's identity and values, so the interface can word it in its own language (messages: lib.markdownSlides.diagnostics). */
+export type MarkdownSlideDiagnosticCode = {
+  id: "invalidJson" | "unknownOption" | "notCssColor" | "columnWidths";
+  params: Record<string, string>;
+};
+
 export type MarkdownSlideDiagnostic = {
   level: "warning";
+  /** English text, kept as the fallback. */
   message: string;
+  code?: MarkdownSlideDiagnosticCode;
   line?: number;
 };
 
@@ -262,6 +270,7 @@ function parseMetadataBlock(
         diagnostics.push({
           level: "warning",
           message: `Invalid value for $${key}: it starts like JSON but does not parse.`,
+          code: { id: "invalidJson", params: { key } },
           line: lineNumberForOffset(source, block.sourceStart + line.start),
         });
       } else {
@@ -382,7 +391,7 @@ function fontSizeValue(metadata: MarkdownSlideMetadata) {
   return numberValue(metadata.fontsize ?? metadata.fontSize);
 }
 
-type Diagnose = (message: string) => void;
+type Diagnose = (message: string, code?: MarkdownSlideDiagnosticCode) => void;
 
 function enumValue<T extends string>(value: unknown, allowed: readonly T[], fallback: T, name: string, diagnose: Diagnose): T {
   const text = stringValue(value)?.toLowerCase();
@@ -395,7 +404,7 @@ function enumValue<T extends string>(value: unknown, allowed: readonly T[], fall
     return text as T;
   }
 
-  diagnose(`Unknown $${name} "${text}"; expected ${allowed.join(", ")}.`);
+  diagnose(`Unknown $${name} "${text}"; expected ${allowed.join(", ")}.`, { id: "unknownOption", params: { name, text, allowed: allowed.join(", ") } });
   return fallback;
 }
 
@@ -410,7 +419,7 @@ function colorValue(value: unknown, name: string, diagnose: Diagnose) {
     return text;
   }
 
-  diagnose(`$${name} "${text}" is not a CSS color.`);
+  diagnose(`$${name} "${text}" is not a CSS color.`, { id: "notCssColor", params: { name, text } });
   return undefined;
 }
 
@@ -425,7 +434,7 @@ function columnWidthsValue(value: unknown, diagnose: Diagnose) {
     return widths;
   }
 
-  diagnose("$columns should list relative widths, like [2, 1].");
+  diagnose("$columns should list relative widths, like [2, 1].", { id: "columnWidths", params: {} });
   return undefined;
 }
 
@@ -459,7 +468,7 @@ function takeLeadingMetadata(text: string, diagnose: Diagnose) {
 
     if (match) {
       const parsed = parseMetadataValue(match[2]);
-      if ("error" in parsed) diagnose(`Invalid value for $${match[1]}: it starts like JSON but does not parse.`);
+      if ("error" in parsed) diagnose(`Invalid value for $${match[1]}: it starts like JSON but does not parse.`, { id: "invalidJson", params: { key: match[1] } });
       else metadata[match[1]] = parsed.value;
     }
 
@@ -627,8 +636,8 @@ export function parseMarkdownSlides(source: string): MarkdownSlideDeck {
   }
 
   const deckMetadata = deckParsed.metadata;
-  const deckDiagnose: Diagnose = (message) =>
-    diagnostics.push({ level: "warning", message, line: lineNumberForOffset(source, deckBlock.sourceStart) });
+  const deckDiagnose: Diagnose = (message, code) =>
+    diagnostics.push({ level: "warning", message, ...(code ? { code } : {}), line: lineNumberForOffset(source, deckBlock.sourceStart) });
   const drafts: SlideDraft[] = [];
 
   if (hasTitleSlideContent(deckMetadata, deckParsed.content)) {
@@ -651,7 +660,7 @@ export function parseMarkdownSlides(source: string): MarkdownSlideDeck {
       block,
       content: parsed.content,
       contentStart: parsed.contentStart,
-      diagnose: (message) => diagnostics.push({ level: "warning", message, line }),
+      diagnose: (message, code) => diagnostics.push({ level: "warning", message, ...(code ? { code } : {}), line }),
       kind: "slide",
       metadata: parsed.metadata,
     });
@@ -673,7 +682,7 @@ export function parseMarkdownSlides(source: string): MarkdownSlideDeck {
     : stringValue(deckMetadata.footer);
 
   if (aspectKey && !aspect) {
-    deckDiagnose(`Unknown $aspect "${aspectKey}"; expected ${Object.keys(ASPECTS).join(", ")}.`);
+    deckDiagnose(`Unknown $aspect "${aspectKey}"; expected ${Object.keys(ASPECTS).join(", ")}.`, { id: "unknownOption", params: { name: "aspect", text: aspectKey, allowed: Object.keys(ASPECTS).join(", ") } });
   }
 
   return {

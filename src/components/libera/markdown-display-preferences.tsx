@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiRequest } from "./api-client";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
@@ -22,12 +23,13 @@ export function MarkdownDisplayPreferencesProvider({ initialPreferences = {}, ch
   children?: ReactNode;
 }) {
   const [preferences, setPreferences] = useState(() => normalizeMarkdownDisplayPreferences(initialPreferences));
-  const [error, setError] = useState("");
+  const t = useTranslations("markdownDisplayPreferences");
+  const [error, setError] = useState(false);
   const latest = useRef(preferences);
   const writer = useMemo(() => createDeferredSave(async (body) => {
     await apiRequest("/api/preferences/markdown-display", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
-    setError("");
-  }, () => setError("Could not save Markdown display settings.")), []);
+    setError(false);
+  }, () => setError(true)), []);
   const flushPreferences = useCallback(() => writer.flush().catch(() => undefined), [writer]);
 
   const updatePreferences = useCallback((patch: Partial<MarkdownDisplayPreferences>) => {
@@ -60,7 +62,7 @@ export function MarkdownDisplayPreferencesProvider({ initialPreferences = {}, ch
   return <Context.Provider value={context}>
     {children}
     {error && <div role="alert" className="fixed bottom-4 right-4 z-50 rounded border border-border bg-card p-3 text-sm">
-      {error} <button type="button" className="underline" onClick={flushPreferences}>Retry</button>
+      {t("saveError")} <button type="button" className="underline" onClick={flushPreferences}>{t("retry")}</button>
     </div>}
   </Context.Provider>;
 }

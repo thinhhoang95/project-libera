@@ -1,8 +1,9 @@
 "use client";
 
 import { Clock3, Database, Loader2, Pause, Play, RefreshCw, RotateCcw, Settings2, Sparkles, X } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { useState } from "react";
-import { scheduleSummary, statusSummary } from "@/components/libera/global-search/search-view";
+import { useIndexStatusText } from "@/components/libera/global-search/search-view";
 import {
   forgetRecentSearches,
   nudgeSearchStatus,
@@ -22,22 +23,25 @@ function fileName(filePath?: string) {
 const iconButton = "libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg disabled:pointer-events-none disabled:opacity-40";
 
 function Stat({ label, value, tone }: { label: string; value: number; tone?: "destructive" }) {
+  const format = useFormatter();
   return (
     <div className="libera-search-panel-stat flex flex-col-reverse rounded-[10px] px-2.5 py-2">
       <dt className="text-[11px] text-muted-foreground">{label}</dt>
-      <dd className={`text-sm font-semibold tabular-nums ${tone === "destructive" ? "text-destructive" : ""}`}>{value.toLocaleString()}</dd>
+      <dd className={`text-sm font-semibold tabular-nums ${tone === "destructive" ? "text-destructive" : ""}`}>{format.number(value)}</dd>
     </div>
   );
 }
 
 /** The left panel beside the Search page: the index, the model, and recent searches. */
 export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => void }) {
+  const t = useTranslations("globalSearch.searchPanel");
+  const statusText = useIndexStatusText();
   useSearchStatusPolling();
-  const { status, statusError, recent } = useSearchStore();
+  const { status, statusError, statusFailed, recent } = useSearchStore();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmRebuild, setConfirmRebuild] = useState(false);
-  const summary = statusSummary(status);
+  const summary = statusText.summary(status);
   const working = status?.state === "scanning" || status?.state === "embedding";
   const progress = working && status?.total ? Math.min(100, Math.round((status.done / status.total) * 100)) : null;
   const noIndex = status ? !status.exists : false;
@@ -49,59 +53,59 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
       await searchIndexAction(action);
       nudgeSearchStatus();
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "The index could not be updated.");
+      setError(actionError instanceof Error ? actionError.message : t("updateError"));
     } finally {
       setBusy(false);
     }
   }
 
-  const errorText = error || statusError || status?.error;
+  const errorText = error || statusError || (statusFailed ? t("readIndexFailed") : "") || status?.error;
   const modelState = !status?.model.configured
-    ? { label: "Not set up", tone: "idle" }
+    ? { label: t("modelNotSetUp"), tone: "idle" }
     : status.model.error || status.model.state === "error"
-      ? { label: "Error", tone: "error" }
+      ? { label: t("modelError"), tone: "error" }
       : status.model.state === "ready"
-        ? { label: "Loaded", tone: "ready" }
+        ? { label: t("modelLoaded"), tone: "ready" }
         : status.model.state === "loading"
-          ? { label: "Loading…", tone: "busy" }
-          : { label: "Loads when needed", tone: "idle" };
+          ? { label: t("modelLoading"), tone: "busy" }
+          : { label: t("modelLoadsWhenNeeded"), tone: "idle" };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
-        <h2 className="min-w-0 truncate text-sm font-semibold">Search</h2>
+        <h2 className="min-w-0 truncate text-sm font-semibold">{t("searchHeading")}</h2>
         <div className="flex items-center">
-          <button type="button" className={iconButton} disabled={busy || working || noIndex} aria-label="Update index" title="Look for new and changed files now" onClick={() => void act("scan")}>
+          <button type="button" className={iconButton} disabled={busy || working || noIndex} aria-label={t("updateIndex")} title={t("updateIndexTitle")} onClick={() => void act("scan")}>
             <RefreshCw aria-hidden className={`h-4 w-4 ${working ? "animate-spin" : ""}`} />
           </button>
           {status?.state === "paused" ? (
-            <button type="button" className={iconButton} disabled={busy} aria-label="Resume indexing" title="Resume indexing" onClick={() => void act("resume")}>
+            <button type="button" className={iconButton} disabled={busy} aria-label={t("resumeIndexing")} title={t("resumeIndexing")} onClick={() => void act("resume")}>
               <Play aria-hidden className="h-4 w-4" />
             </button>
           ) : (
-            <button type="button" className={iconButton} disabled={busy || noIndex} aria-label="Pause indexing" title="Pause automatic index updates" onClick={() => void act("pause")}>
+            <button type="button" className={iconButton} disabled={busy || noIndex} aria-label={t("pauseIndexing")} title={t("pauseIndexingTitle")} onClick={() => void act("pause")}>
               <Pause aria-hidden className="h-4 w-4" />
             </button>
           )}
-          <button type="button" className={iconButton} disabled={busy || noIndex} aria-label="Rebuild index" title="Forget the index and build it again" onClick={() => setConfirmRebuild(true)}>
+          <button type="button" className={iconButton} disabled={busy || noIndex} aria-label={t("rebuildIndex")} title={t("rebuildIndexTitle")} onClick={() => setConfirmRebuild(true)}>
             <RotateCcw aria-hidden className="h-4 w-4" />
           </button>
           {onOpenPreferences ? (
-            <button type="button" className={iconButton} aria-label="Search preferences" title="Preferences → Search" onClick={onOpenPreferences}>
+            <button type="button" className={iconButton} aria-label={t("searchPreferences")} title={t("searchPreferencesTitle")} onClick={onOpenPreferences}>
               <Settings2 aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
         </div>
       </div>
       <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">
-        Find passages, PDF pages and images by meaning or by keyword.
+        {t("description")}
       </p>
 
       <div className="min-h-0 flex-1 space-y-5 overflow-auto px-3 pb-4 pt-2">
         {errorText ? <div role="alert" className="rounded-lg bg-destructive-muted p-3 text-xs leading-relaxed text-destructive">{errorText}</div> : null}
 
-        <section className="space-y-2" aria-label="Search index">
-          <h3 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Index</h3>
+        <section className="space-y-2" aria-label={t("searchIndexLabel")}>
+          <h3 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("indexHeading")}</h3>
           {status && noIndex && !working ? <IndexSetup status={status} compact /> : <>
           <div className="libera-search-panel-card flex items-center gap-3 p-2.5">
             <span className="libera-notebook-emoji flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#5b8def] text-white">
@@ -110,23 +114,23 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
             <span className="min-w-0 flex-1">
               <span role="status" className="block truncate text-sm font-medium">{summary.text}</span>
               <span className="block truncate text-xs text-muted-foreground" title={working ? status?.current : status?.indexPath}>
-                {working && status?.current ? fileName(status.current) : scheduleSummary(status)}
+                {working && status?.current ? fileName(status.current) : statusText.schedule(status)}
               </span>
             </span>
             {progress !== null ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{progress}%</span> : null}
           </div>
           {progress !== null ? (
-            <div className="mx-1 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label="Indexing progress" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
+            <div className="mx-1 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={t("indexingProgress")} aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
               <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${progress}%` }} />
             </div>
           ) : null}
           {status ? (
             <dl className="grid grid-cols-2 gap-1.5">
-              <Stat label="Files" value={status.files} />
-              <Stat label="Passages" value={status.chunks} />
-              <Stat label="With vectors" value={status.embeddedChunks} />
-              <Stat label="Images" value={status.images} />
-              {status.failedFiles ? <Stat label="Unreadable" value={status.failedFiles} tone="destructive" /> : null}
+              <Stat label={t("files")} value={status.files} />
+              <Stat label={t("passages")} value={status.chunks} />
+              <Stat label={t("withVectors")} value={status.embeddedChunks} />
+              <Stat label={t("images")} value={status.images} />
+              {status.failedFiles ? <Stat label={t("unreadable")} value={status.failedFiles} tone="destructive" /> : null}
             </dl>
           ) : null}
           {status ? <IndexMismatch status={status} /> : null}
@@ -135,9 +139,9 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
               <button
                 type="button"
                 className="block w-full truncate rounded px-1 text-left text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                title={`Show in ${navigator.platform.toLowerCase().includes("mac") ? "Finder" : "Explorer"}: ${status.indexPath}`}
+                title={t("showIndexLocation", { place: navigator.platform.toLowerCase().includes("mac") ? "finder" : "explorer", path: status.indexPath })}
                 onClick={() => void revealSearchIndex(status.indexPath).then((shown) => {
-                  if (!shown) setError("The index file was not found.");
+                  if (!shown) setError(t("indexFileNotFound"));
                 })}
               >
                 {status.indexPath}
@@ -149,8 +153,8 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
           </>}
         </section>
 
-        <section className="space-y-2" aria-label="Embedding model">
-          <h3 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Model</h3>
+        <section className="space-y-2" aria-label={t("embeddingModelLabel")}>
+          <h3 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("modelHeading")}</h3>
           <div className="libera-search-panel-card flex items-center gap-3 p-2.5">
             <span className="libera-notebook-emoji flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#8b7fd1] text-white">
               <Sparkles aria-hidden className="h-4 w-4" />
@@ -159,34 +163,34 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
               <span className="block truncate text-sm font-medium">EmbeddingGemma 2</span>
               <span className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
                 <span aria-hidden className="libera-search-status-dot" data-tone={modelState.tone} />
-                {status ? modelState.label : "Checking…"}
+                {status ? modelState.label : t("checking")}
               </span>
             </span>
           </div>
           {!status ? null : !status.model.configured ? (
             <p className="px-1 text-xs leading-relaxed text-muted-foreground">
-              Keyword search only for now.{" "}
-              <button type="button" className="font-medium text-accent hover:underline" onClick={() => openLocalModelDialog("search")}>Download the model</button>{" "}
-              to search by meaning.
+              {t.rich("keywordOnlyNotice", {
+                link: (chunks) => <button type="button" className="font-medium text-accent hover:underline" onClick={() => openLocalModelDialog("search")}>{chunks}</button>,
+              })}
             </p>
           ) : (
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 px-1 text-xs">
-              <dt className="text-muted-foreground">Text</dt>
+              <dt className="text-muted-foreground">{t("textWeights")}</dt>
               <dd className="truncate text-right" title={status.model.textWeights}>{fileName(status.model.textWeights)}</dd>
-              <dt className="text-muted-foreground">Vision</dt>
-              <dd className="truncate text-right" title={status.model.visionWeights}>{status.model.vision ? fileName(status.model.visionWeights) : "Off"}</dd>
-              <dt className="text-muted-foreground">Dimensions</dt>
+              <dt className="text-muted-foreground">{t("visionWeights")}</dt>
+              <dd className="truncate text-right" title={status.model.visionWeights}>{status.model.vision ? fileName(status.model.visionWeights) : t("off")}</dd>
+              <dt className="text-muted-foreground">{t("dimensions")}</dt>
               <dd className="text-right tabular-nums">{status.model.dimensions}</dd>
             </dl>
           )}
           {status?.model.error ? <p role="alert" className="rounded-lg bg-destructive-muted p-3 text-xs leading-relaxed text-destructive">{status.model.error}</p> : null}
         </section>
 
-        <section className="space-y-1" aria-label="Recent searches">
+        <section className="space-y-1" aria-label={t("recentSearchesLabel")}>
           <div className="flex h-7 items-center justify-between px-1">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Recent</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("recentHeading")}</h3>
             {recent.length ? (
-              <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground" aria-label="Clear recent searches" title="Clear recent searches" onClick={forgetRecentSearches}>
+              <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground" aria-label={t("clearRecent")} title={t("clearRecent")} onClick={forgetRecentSearches}>
                 <X aria-hidden className="h-3.5 w-3.5" />
               </button>
             ) : null}
@@ -203,20 +207,20 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
               ))}
             </ul>
           ) : (
-            <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">Searches you run appear here.</div>
+            <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">{t("noRecent")}</div>
           )}
         </section>
       </div>
 
       <ModalDialog
         open={confirmRebuild}
-        title="Rebuild the search index?"
-        description="The index is deleted and built again from your files."
+        title={t("rebuildTitle")}
+        description={t("rebuildDescription")}
         onClose={() => setConfirmRebuild(false)}
         footer={
           <>
             <button className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" type="button" onClick={() => setConfirmRebuild(false)}>
-              Cancel
+              {t("cancel")}
             </button>
             <button
               className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
@@ -226,14 +230,13 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
                 void act("rebuild");
               }}
             >
-              Rebuild
+              {t("rebuild")}
             </button>
           </>
         }
       >
         <p className="text-sm text-muted-foreground">
-          Searching keeps working, but results are incomplete until it finishes, which can take a while with many PDFs and images.
-          Your files are not changed.
+          {t("rebuildWarning")}
         </p>
       </ModalDialog>
     </div>

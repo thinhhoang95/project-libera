@@ -1,5 +1,6 @@
 import { LogOut, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import type { MouseEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { AboutDialog } from "@/components/libera/about-dialog";
@@ -26,6 +27,7 @@ export function SidebarAppMenu({
   collapsed = false,
   onLogout,
 }: SidebarAppMenuProps) {
+  const t = useTranslations("sidebarAppMenu");
   const [menuOpen, setMenuOpen] = useState(false);
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>("light");
@@ -75,19 +77,19 @@ export function SidebarAppMenu({
         items: [
           {
             id: "preferences",
-            label: "Preferences…",
+            label: t("preferences"),
             enabled: Boolean(window.liberaPreferences),
           },
           { type: "separator" },
           {
             id: "toggle-dark-mode",
-            label: "Dark Mode",
+            label: t("darkMode"),
             type: "checkbox",
             checked: theme === "dark",
           },
           { type: "separator" },
-          { id: "visit-blog", label: "Visit Libera Blog" },
-          { id: "about", label: "About Libera" },
+          { id: "visit-blog", label: t("visitBlog") },
+          { id: "about", label: t("aboutLibera") },
         ],
       })
       .catch(() => null);
@@ -117,18 +119,18 @@ export function SidebarAppMenu({
             <button
               aria-expanded={menuOpen}
               aria-haspopup="menu"
-              aria-label="Libera menu"
+              aria-label={t("liberaMenu")}
               className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg text-sm font-semibold"
-              title="Libera menu"
+              title={t("liberaMenu")}
               type="button"
               onClick={(event) => void openMenu(event)}
             >
               <Settings aria-hidden className="h-4 w-4" />
             </button>
             <button
-              aria-label="Logout"
+              aria-label={t("logout")}
               className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-              title="Logout"
+              title={t("logout")}
               type="button"
               onClick={() => void onLogout()}
             >
@@ -147,9 +149,9 @@ export function SidebarAppMenu({
               Libera
             </button>
             <button
-              aria-label="Logout"
+              aria-label={t("logout")}
               className="libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-              title="Logout"
+              title={t("logout")}
               type="button"
               onClick={() => void onLogout()}
             >

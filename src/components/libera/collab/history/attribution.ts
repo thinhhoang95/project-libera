@@ -7,11 +7,18 @@
 // can be coloured by author. AI edits are shown as the feature on behalf of
 // its user ("AI rewrite · Minh"), restores as the restore they were.
 
+import { createTranslator } from "next-intl";
 import * as Y from "yjs";
 import type { Actor, AiFeature, Provenance } from "@/lib/collab/protocol/actor";
 import type { UpdateRecord, UpdatesPage, UserSummary } from "@/lib/collab/protocol/api";
 import { ContentKeys } from "@/lib/collab/protocol/schema";
-import { aiFeatureLabel } from "@/lib/collab/review-store/authors";
+import english from "./attribution-en.json";
+
+/** What `useTranslations("collab.history.attribution")` returns, as far as this file needs it. */
+export type AttributionTranslator = (key: string, values?: Record<string, string>) => string;
+
+/** English wording, used when the caller passes no translator (tests, code outside React). */
+const englishTranslator = createTranslator({ locale: "en", messages: english, onError: () => {} }) as unknown as AttributionTranslator;
 
 export interface AttributionAuthor {
   key: string;
@@ -47,29 +54,29 @@ function decode(base64: string): Uint8Array {
   return bytes;
 }
 
-function person(users: ReadonlyMap<string, UserSummary>, userId: string | null | undefined): { name: string; color: string } {
+function person(users: ReadonlyMap<string, UserSummary>, userId: string | null | undefined, t: AttributionTranslator): { name: string; color: string } {
   const user = userId ? users.get(userId) : undefined;
-  return { name: user?.displayName ?? "Someone", color: user?.color ?? UNKNOWN_COLOR };
+  return { name: user?.displayName ?? t("someone"), color: user?.color ?? UNKNOWN_COLOR };
 }
 
 /** The author an update is shown as. */
-export function updateAuthor(update: Pick<UpdateRecord, "actor" | "provenance" | "userId">, users: ReadonlyMap<string, UserSummary>): AttributionAuthor {
+export function updateAuthor(update: Pick<UpdateRecord, "actor" | "provenance" | "userId">, users: ReadonlyMap<string, UserSummary>, t: AttributionTranslator = englishTranslator): AttributionAuthor {
   const actor = update.actor as Actor | null;
   const provenance = (update.provenance ?? null) as Provenance | null;
   if (actor?.kind === "ai" || provenance?.source === "ai") {
     const userId = actor?.kind === "ai" ? actor.onBehalfOf : update.userId;
     const feature = (actor?.kind === "ai" ? actor.feature : provenance?.feature) as AiFeature | undefined;
-    const { name, color } = person(users, userId);
-    return { key: `ai:${feature ?? "ai"}:${userId ?? ""}`, label: `${aiFeatureLabel(feature)} · ${name}`, color, kind: "ai", userId: userId ?? null };
+    const { name, color } = person(users, userId, t);
+    const featureLabel = t(`features.${feature ?? "default"}`);
+    return { key: `ai:${feature ?? "ai"}:${userId ?? ""}`, label: t("ai", { feature: featureLabel, name }), color, kind: "ai", userId: userId ?? null };
   }
   if (actor?.kind === "system") {
     const userId = actor.onBehalfOf ?? update.userId;
-    const { name, color } = person(users, userId);
-    const what = actor.reason === "restore" ? "Restore" : actor.reason === "decision" ? "Accepted suggestion" : actor.reason === "import" ? "Imported" : "Libera";
-    return { key: `system:${actor.reason}:${userId ?? ""}`, label: userId ? `${what} · ${name}` : what, color, kind: "system", userId: userId ?? null };
+    const { name, color } = person(users, userId, t);
+    return { key: `system:${actor.reason}:${userId ?? ""}`, label: userId ? t("systemWithName", { reason: actor.reason, name }) : t("system", { reason: actor.reason }), color, kind: "system", userId: userId ?? null };
   }
   const userId = actor?.kind === "user" ? actor.userId : update.userId;
-  const { name, color } = person(users, userId);
+  const { name, color } = person(users, userId, t);
   return { key: `user:${userId ?? ""}`, label: name, color, kind: "user", userId: userId ?? null };
 }
 
@@ -83,6 +90,7 @@ export function attributeUpdates(
   fromSeq: number,
   toSeq: number | null,
   users: ReadonlyMap<string, UserSummary>,
+  t: AttributionTranslator = englishTranslator,
 ): Attribution {
   const doc = new Y.Doc();
   try {
@@ -113,7 +121,7 @@ export function attributeUpdates(
     for (const update of sorted) {
       if (update.serverSeq <= fromSeq) continue;
       if (toSeq !== null && update.serverSeq > toSeq) break;
-      current = updateAuthor(update, users);
+      current = updateAuthor(update, users, t);
       Y.applyUpdate(doc, decode(update.update));
     }
     ytext.unobserve(observer);

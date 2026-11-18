@@ -36,7 +36,16 @@ export type MarkdownMacro = {
   /** 1-based line of the definition in its block. */
   line: number;
 };
-export type MacroDefinitionError = { line: number; message: string };
+/**
+ * `message` is English (kept for callers outside the interface); `code` and `params` let the UI render
+ * the lib.markdownMacros message of the same name in the interface language.
+ */
+export type MacroDefinitionError = {
+  line: number;
+  message: string;
+  code: "argumentCount" | "noBody" | "emptyValue" | "notDefinition";
+  params: { name?: string; highest?: number; arity?: number; text?: string };
+};
 export type MarkdownMacroDefinitions = { macros: Map<string, MarkdownMacro>; errors: MacroDefinitionError[] };
 /** Definitions and counters carried into a part of a document (a slide), so it expands as the whole would. */
 export type MarkdownMacroScope = { definitions: MarkdownMacroDefinitions; counters?: Record<string, number> };
@@ -118,7 +127,7 @@ function defineMacro(definitions: MarkdownMacroDefinitions, name: string, body: 
   const highest = highestParameter(content);
   const arity = declared ?? highest;
   if (highest > arity) {
-    definitions.errors.push({ line, message: `\\${name} uses #${highest} but takes ${arity} argument${arity === 1 ? "" : "s"}` });
+    definitions.errors.push({ line, message: `\\${name} uses #${highest} but takes ${arity} argument${arity === 1 ? "" : "s"}`, code: "argumentCount", params: { name, highest, arity } });
     return;
   }
   definitions.macros.set(name, { name, arity, body: content, math: math ? (math.display ? "display" : "inline") : false, line });
@@ -148,7 +157,7 @@ export function parseMacroDefinitions(source: string, definitions = emptyMacroDe
       const name = command ? command[1] ?? command[2] : def![1];
       const group = readGroup(source, index + (command ?? def)![0].length);
       if (!group) {
-        definitions.errors.push({ line, message: `\\${name} has no {…} body` });
+        definitions.errors.push({ line, message: `\\${name} has no {…} body`, code: "noBody", params: { name } });
         skipLine();
         continue;
       }
@@ -159,10 +168,11 @@ export function parseMacroDefinitions(source: string, definitions = emptyMacroDe
     }
     const assignment = /^\\([A-Za-z]+)[ \t]*(?:\[[ \t]*(\d)[ \t]*\])?[ \t]*=[ \t]*([^\n]*)/.exec(rest);
     if (assignment) {
-      if (!assignment[3].trim()) definitions.errors.push({ line, message: `\\${assignment[1]} has an empty value` });
+      if (!assignment[3].trim()) definitions.errors.push({ line, message: `\\${assignment[1]} has an empty value`, code: "emptyValue", params: { name: assignment[1] } });
       else defineMacro(definitions, assignment[1], assignment[3], assignment[2] ? Number(assignment[2]) : null, line);
     } else {
-      definitions.errors.push({ line, message: `Not a definition: ${rest.split("\n")[0].slice(0, 60)}` });
+      const text = rest.split("\n")[0].slice(0, 60);
+      definitions.errors.push({ line, message: `Not a definition: ${text}`, code: "notDefinition", params: { text } });
     }
     skipLine();
   }

@@ -1,14 +1,17 @@
 "use client";
 
 import { Check, Copy, LoaderCircle, LogOut, Mail, ShieldAlert, Trash2, UserMinus, UserPlus, Users } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import { createContext, useCallback, useContext, useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import type { Invitation, LocalProject, Member, ShareProgress } from "@/lib/collab/local-api";
 import { can, type Role } from "@/lib/collab/protocol/roles";
-import { collabClient, describeError } from "@/lib/collab/ui/client";
+import { collabClient } from "@/lib/collab/ui/client";
+import { useDescribeError } from "@/lib/collab/ui/use-describe-error";
+import { dateTimeFormat } from "@/lib/i18n/format";
 import { useCollabProjects, useCollabStatus, useHostEvents } from "@/lib/collab/ui/hooks";
-import { initials, INVITABLE_ROLES, readableTextColor, ROLE_DESCRIPTION, ROLE_LABEL, shareProgressLabel } from "@/lib/collab/ui/wording";
+import { initials, INVITABLE_ROLES, readableTextColor, roleDescription, roleLabel, shareProgressLabel } from "@/lib/collab/ui/wording";
 import { ActivityLogSection } from "./activity-log";
 import { useCopyFeedback } from "./collab-banners";
 import "./collab.css";
@@ -29,25 +32,31 @@ export interface ShareWording {
   leave: string;
 }
 
-const NOTEBOOK_WORDING: ShareWording = {
-  noun: "notebook",
-  roleLabel: ROLE_LABEL,
-  roleDescription: ROLE_DESCRIPTION,
-  takeDown:
-    "This permanently deletes the shared notebook and its collaboration history from the server. Everyone loses access and invitation links stop working. Your local notebook stays on this device and can be edited or shared again; collaborators keep their local copies as read-only.",
-  leave: "You lose access to the shared version. The folder stays on this device as a read-only copy.",
-};
+const ROLES: Role[] = ["owner", "editor", "commenter", "viewer"];
 
-const Wording = createContext<ShareWording>(NOTEBOOK_WORDING);
+/** The words for a shared notebook, from the messages. */
+function useNotebookWording(): ShareWording {
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tWording = useTranslations("lib.collab.ui.wording");
+  return {
+    noun: t("notebookNoun"),
+    roleLabel: Object.fromEntries(ROLES.map((role) => [role, roleLabel(role, tWording)])) as Record<Role, string>,
+    roleDescription: Object.fromEntries(ROLES.map((role) => [role, roleDescription(role, tWording)])) as Record<Role, string>,
+    takeDown: t("takeDownNotebook"),
+    leave: t("leaveNotebook"),
+  };
+}
+
+const Wording = createContext<ShareWording | null>(null);
+const useWording = () => useContext(Wording)!;
 
 /** Members, invitations, take down and leave, for any shared project (album dialogs pass their wording). */
 export function ManageSharedProject({ project, onLeft, wording }: { project: LocalProject; onLeft: () => void; wording?: ShareWording }) {
-  return (
-    <Wording.Provider value={wording ?? NOTEBOOK_WORDING}>
-      <ManageProject project={project} onLeft={onLeft} />
-    </Wording.Provider>
-  );
+  return <ManageProject project={project} onLeft={onLeft} wording={wording} />;
 }
+
+/** "album" or "notebook", for the messages that name what is shared. */
+const kindOf = (project: Pick<LocalProject, "kind">) => (project.kind === "album" ? "album" : "notebook");
 
 const DANGER_SMALL = "inline-flex items-center justify-center gap-1 rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white disabled:opacity-60";
 
@@ -63,6 +72,9 @@ export interface ShareNotebookDialogProps {
  * that is already shared goes straight to the management view.
  */
 export function ShareNotebookDialog({ notebook, onClose }: ShareNotebookDialogProps) {
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tCommon = useTranslations("common");
+  const tWording = useTranslations("lib.collab.ui.wording");
   const { projectForNotebook } = useCollabProjects();
   const [justShared, setJustShared] = useState<LocalProject | null>(null);
   const project = projectForNotebook(notebook) ?? justShared;
@@ -72,18 +84,18 @@ export function ShareNotebookDialog({ notebook, onClose }: ShareNotebookDialogPr
       open
       panelClassName="max-w-xl"
       sectioned
-      title={project ? `Share “${project.name}”` : "Share notebook"}
+      title={project ? t("shareTitle", { name: project.name }) : t("shareTitleNew")}
       description={
         project
           ? project.revoked
-            ? project.role === "owner" ? "This notebook is no longer shared." : "This notebook is no longer shared with you."
-            : `${ROLE_LABEL[project.role]} · ${project.notebook}`
-          : "Invite people to edit this notebook with you in real time."
+            ? project.role === "owner" ? t("noLongerShared") : t("noLongerSharedWithYou")
+            : t("roleAndNotebook", { role: roleLabel(project.role, tWording, project.kind === "album"), notebook: project.notebook })
+          : t("shareDescription")
       }
       onClose={onClose}
       footer={
         <button className={SECONDARY_BUTTON} type="button" onClick={onClose}>
-          {project ? "Done" : "Cancel"}
+          {project ? tCommon("done") : tCommon("cancel")}
         </button>
       }
     >
@@ -92,18 +104,19 @@ export function ShareNotebookDialog({ notebook, onClose }: ShareNotebookDialogPr
   );
 }
 
-const PDF_LIVE_WARNING = "Everyone can see and change marks on this notebook's PDFs as they are made. Highlights, notes and comments already on these PDFs become visible to everyone, and this cannot be turned off.";
-
 /** The owner of a notebook shared before live PDFs existed turns them on here. */
 function PdfLiveSection({ project }: { project: LocalProject }) {
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tCommon = useTranslations("common");
+  const describeError = useDescribeError();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   if (project.pdfLive || project.role !== "owner" || project.kind === "album") return null;
   return (
     <section className="space-y-2">
-      <h3 className="text-sm font-medium">Live PDF annotations</h3>
-      <p className="text-xs text-muted-foreground">{PDF_LIVE_WARNING} Members need the latest Libera to see them.</p>
+      <h3 className="text-sm font-medium">{t("pdfLive")}</h3>
+      <p className="text-xs text-muted-foreground">{t("pdfLiveWarning")} {t("pdfLiveMembers")}</p>
       {error ? <p className="text-sm text-destructive" role="alert">{error}</p> : null}
       {confirming ? (
         <div className="flex gap-2">
@@ -117,12 +130,12 @@ function PdfLiveSection({ project }: { project: LocalProject }) {
               collabClient.enablePdfLive(project.projectId).catch((failure: unknown) => setError(describeError(failure))).finally(() => setBusy(false));
             }}
           >
-            Turn on for everyone
+            {t("turnOnForEveryone")}
           </button>
-          <button className={SMALL_BUTTON} disabled={busy} type="button" onClick={() => setConfirming(false)}>Cancel</button>
+          <button className={SMALL_BUTTON} disabled={busy} type="button" onClick={() => setConfirming(false)}>{tCommon("cancel")}</button>
         </div>
       ) : (
-        <button className={SMALL_BUTTON} type="button" onClick={() => setConfirming(true)}>Turn on…</button>
+        <button className={SMALL_BUTTON} type="button" onClick={() => setConfirming(true)}>{t("turnOn")}</button>
       )}
     </section>
   );
@@ -130,6 +143,9 @@ function PdfLiveSection({ project }: { project: LocalProject }) {
 
 function ShareStep({ notebook, onShared }: { notebook: string; onShared: (project: LocalProject) => void }) {
   const id = useId();
+  const t = useTranslations("collab.shareNotebookDialog");
+  const describeError = useDescribeError();
+  const tWording = useTranslations("lib.collab.ui.wording");
   const { status } = useCollabStatus();
   const { refresh } = useCollabProjects();
   const [name, setName] = useState(notebook);
@@ -168,26 +184,25 @@ function ShareStep({ notebook, onShared }: { notebook: string; onShared: (projec
     <form className="libera-dialog-section space-y-3" onSubmit={share}>
       <div>
         <label className="block text-sm font-medium text-foreground" htmlFor={`${id}-name`}>
-          Name collaborators see
+          {t("nameCollaboratorsSee")}
         </label>
         <input autoFocus className={FIELD} disabled={sharing} id={`${id}-name`} value={name} onChange={(event) => setName(event.target.value)} />
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Libera uploads this notebook’s notes, LaTeX files and images to {status?.account?.serverUrl ?? "your collaboration server"}. Your
-        folder stays where it is and keeps working offline; people you invite get their own synced copy.
+        {t("uploadInfo", { server: status?.account?.serverUrl ?? t("yourServer") })}
       </p>
       {sharing || progress ? (
         <div className="space-y-1.5" aria-live="polite">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>{progress ? shareProgressLabel(progress) : "Starting…"}</span>
+            <span>{progress ? shareProgressLabel(progress, tWording) : t("starting")}</span>
             {percent !== null ? <span>{percent}%</span> : null}
           </div>
           <div
-            aria-label="Sharing progress"
+            aria-label={t("progressLabel")}
             aria-valuemax={100}
             aria-valuemin={0}
             aria-valuenow={percent ?? undefined}
-            aria-valuetext={progress ? shareProgressLabel(progress) : "Starting"}
+            aria-valuetext={progress ? shareProgressLabel(progress, tWording) : t("starting")}
             className="h-1.5 overflow-hidden rounded-full bg-muted"
             role="progressbar"
           >
@@ -203,20 +218,20 @@ function ShareStep({ notebook, onShared }: { notebook: string; onShared: (projec
       <label className="flex items-start gap-2 text-sm">
         <input checked={pdfLive} className="mt-0.5" disabled={sharing} type="checkbox" onChange={(event) => setPdfLive(event.target.checked)} />
         <span>
-          Live PDF annotations
-          <span className="block text-xs text-muted-foreground">{PDF_LIVE_WARNING}</span>
+          {t("pdfLive")}
+          <span className="block text-xs text-muted-foreground">{t("pdfLiveWarning")}</span>
         </span>
       </label>
       <button className={PRIMARY_BUTTON} disabled={sharing} type="submit">
         {sharing ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Users aria-hidden className="h-3.5 w-3.5" />}
-        {sharing ? "Sharing…" : "Share"}
+        {sharing ? t("sharing") : t("share")}
       </button>
     </form>
   );
 }
 
 /** Members, plus pending invitations for those who may see them (owners). */
-async function fetchAccess(projectId: string, withInvitations: boolean): Promise<{ members: Member[]; invitations: Invitation[] } | { error: string }> {
+async function fetchAccess(projectId: string, withInvitations: boolean, describeError: (caught: unknown) => string): Promise<{ members: Member[]; invitations: Invitation[] } | { error: string }> {
   try {
     const [members, invitations] = await Promise.all([
       collabClient.members(projectId),
@@ -228,7 +243,12 @@ async function fetchAccess(projectId: string, withInvitations: boolean): Promise
   }
 }
 
-function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () => void }) {
+function ManageProject({ project, onLeft, wording: given }: { project: LocalProject; onLeft: () => void; wording?: ShareWording }) {
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tCommon = useTranslations("common");
+  const describeError = useDescribeError();
+  const notebookWording = useNotebookWording();
+  const wording = given ?? notebookWording;
   const { status } = useCollabStatus();
   const { refresh: refreshProjects } = useCollabProjects();
   const myId = status?.account?.id;
@@ -249,18 +269,18 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
     setLoadError("");
   }, []);
 
-  const load = useCallback(() => fetchAccess(project.projectId, canInvite).then(applyResult), [applyResult, canInvite, project.projectId]);
+  const load = useCallback(() => fetchAccess(project.projectId, canInvite, describeError).then(applyResult), [applyResult, canInvite, project.projectId, describeError]);
 
   useEffect(() => {
     if (project.revoked) return;
     let live = true;
-    void fetchAccess(project.projectId, canInvite).then((result) => {
+    void fetchAccess(project.projectId, canInvite, describeError).then((result) => {
       if (live) applyResult(result);
     });
     return () => {
       live = false;
     };
-  }, [applyResult, canInvite, project.projectId, project.revoked]);
+  }, [applyResult, canInvite, project.projectId, project.revoked, describeError]);
 
   useHostEvents("project-changed", (event) => {
     if (event.projectId === project.projectId && !project.revoked) void load();
@@ -291,24 +311,27 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
 
   if (project.revoked) {
     return (
+      <Wording.Provider value={wording}>
       <div className="space-y-4">
         <div className="libera-collab-tone flex items-start gap-2 rounded-lg px-3 py-2 text-sm" data-tone="danger" role="status">
           <ShieldAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
             {project.role === "owner" ? (
-              <>The shared version is no longer available. Take down this notebook to finish returning “{project.notebook}” to an editable local notebook.</>
+              t("revokedOwner", { notebook: project.notebook })
             ) : (
-              <>Your access was removed. The folder “{project.notebook}” stays on this device as a read-only copy; nothing was deleted. Export anything you need from it.</>
+              t("revokedMember", { notebook: project.notebook })
             )}
           </p>
         </div>
         {actionError ? <p className="text-sm text-destructive" role="alert">{actionError}</p> : null}
-        {project.role === "owner" ? <TakeDownSection name={project.name} onTakeDown={takeDown} /> : null}
+        {project.role === "owner" ? <TakeDownSection name={project.name} kind={kindOf(project)} onTakeDown={takeDown} /> : null}
       </div>
+      </Wording.Provider>
     );
   }
 
   return (
+    <Wording.Provider value={wording}>
     <div className="space-y-4">
       <PdfLiveSection project={project} />
       {canInvite ? (
@@ -322,7 +345,7 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
         <div className="libera-dialog-section space-y-2 text-sm" role="alert">
           <p className="text-destructive">{loadError}</p>
           <button className={SMALL_BUTTON} type="button" onClick={() => void load()}>
-            Try again
+            {tCommon("tryAgain")}
           </button>
         </div>
       ) : null}
@@ -335,7 +358,7 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
       {canInvite && invitations.length ? (
         <section aria-labelledby="collab-pending-invitations" className="libera-dialog-section space-y-2">
           <h3 className="text-sm font-medium" id="collab-pending-invitations">
-            Pending invitations
+            {t("pendingInvitations")}
           </h3>
           <ul className="divide-y divide-border">
             {invitations.map((invitation) => (
@@ -351,11 +374,11 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
 
       <section aria-labelledby="collab-members" className="libera-dialog-section space-y-2">
         <h3 className="text-sm font-medium" id="collab-members">
-          People with access
+          {t("peopleWithAccess")}
         </h3>
         {members === null && !loadError ? (
           <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-            <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Loading members…
+            <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> {t("loadingMembers")}
           </p>
         ) : (
           <ul className="divide-y divide-border">
@@ -376,10 +399,11 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
       {!project.revoked && can(project.role, "view-audit") ? <ActivityLogSection projectId={project.projectId} members={members} /> : null}
 
       {project.role === "owner" ? (
-        <TakeDownSection name={project.name} onTakeDown={takeDown} />
+        <TakeDownSection name={project.name} kind={kindOf(project)} onTakeDown={takeDown} />
       ) : (
         <LeaveSection
           name={project.name}
+          kind={kindOf(project)}
           onLeave={async () => {
             setActionError("");
             try {
@@ -393,13 +417,17 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
         />
       )}
     </div>
+    </Wording.Provider>
   );
 }
 
 function InviteSection({ projectId, onInvited }: { projectId: string; onInvited: (invitation: Invitation) => void }) {
   const id = useId();
+  const t = useTranslations("collab.shareNotebookDialog");
+  const describeError = useDescribeError();
+
   const [email, setEmail] = useState("");
-  const wording = useContext(Wording);
+  const wording = useWording();
   const [role, setRole] = useState<Exclude<Role, "owner">>("editor");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -409,7 +437,7 @@ function InviteSection({ projectId, onInvited }: { projectId: string; onInvited:
     event.preventDefault();
     const address = email.trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
-      setError("Enter an email address.");
+      setError(t("enterEmail"));
       return;
     }
     setSubmitting(true);
@@ -427,10 +455,10 @@ function InviteSection({ projectId, onInvited }: { projectId: string; onInvited:
   }
 
   return (
-    <form aria-label="Invite people" className="libera-dialog-section space-y-3" noValidate onSubmit={invite}>
+    <form aria-label={t("invitePeople")} className="libera-dialog-section space-y-3" noValidate onSubmit={invite}>
       <div>
         <label className="block text-sm font-medium text-foreground" htmlFor={`${id}-email`}>
-          Invite by email
+          {t("inviteByEmail")}
         </label>
         <input
           autoComplete="off"
@@ -443,7 +471,7 @@ function InviteSection({ projectId, onInvited }: { projectId: string; onInvited:
         />
       </div>
       <fieldset>
-        <legend className="text-sm font-medium text-foreground">Role</legend>
+        <legend className="text-sm font-medium text-foreground">{t("role")}</legend>
         <div className="mt-1.5 space-y-1">
           {INVITABLE_ROLES.map((value) => (
             <label key={value} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-muted">
@@ -463,7 +491,7 @@ function InviteSection({ projectId, onInvited }: { projectId: string; onInvited:
       ) : null}
       <button className={PRIMARY_BUTTON} disabled={submitting} type="submit">
         <UserPlus aria-hidden className="h-3.5 w-3.5" />
-        {submitting ? "Inviting…" : "Invite"}
+        {submitting ? t("inviting") : t("invite")}
       </button>
       {created ? <InvitationLink invitation={created} /> : null}
     </form>
@@ -475,20 +503,21 @@ function invitationLink(invitation: Invitation): string {
 }
 
 function InvitationLink({ invitation }: { invitation: Invitation }) {
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tCommon = useTranslations("common");
   const [copied, copy] = useCopyFeedback();
   const link = invitationLink(invitation);
   return (
     <div className="rounded-lg border border-border bg-muted/50 p-2.5 text-xs" role="status">
       <p className="mb-1.5">
-        Invitation sent to <span className="font-medium">{invitation.email}</span>
-        {link ? ". You can also send them this link:" : "."}
+        {t.rich("invitationSent", { email: invitation.email, hasLink: link ? "yes" : "no", strong: (chunks) => <span className="font-medium">{chunks}</span> })}
       </p>
       {link ? (
         <div className="flex items-center gap-2">
-          <input aria-label="Invitation link" className="h-8 min-w-0 flex-1 rounded-md border border-input px-2 font-mono text-xs" readOnly value={link} onFocus={(event) => event.currentTarget.select()} />
+          <input aria-label={t("invitationLink")} className="h-8 min-w-0 flex-1 rounded-md border border-input px-2 font-mono text-xs" readOnly value={link} onFocus={(event) => event.currentTarget.select()} />
           <button className={SMALL_BUTTON} type="button" onClick={() => void copy(link)}>
             {copied ? <Check aria-hidden className="h-3.5 w-3.5" /> : <Copy aria-hidden className="h-3.5 w-3.5" />}
-            {copied ? "Copied" : "Copy link"}
+            {copied ? tCommon("copied") : t("copyLink")}
           </button>
         </div>
       ) : null}
@@ -496,26 +525,28 @@ function InvitationLink({ invitation }: { invitation: Invitation }) {
   );
 }
 
-function formatDate(value: string) {
+function formatDate(value: string, locale: string) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  return Number.isNaN(date.getTime()) ? "" : dateTimeFormat(locale, { day: "numeric", month: "short" }).format(date);
 }
 
 function InvitationRow({ invitation, onRevoke }: { invitation: Invitation; onRevoke: () => Promise<boolean> }) {
-  const wording = useContext(Wording);
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tCommon = useTranslations("common");
+  const locale = useLocale();
+  const wording = useWording();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copied, copy] = useCopyFeedback();
   const link = invitationLink(invitation);
-  const expires = formatDate(invitation.expiresAt);
+  const expires = formatDate(invitation.expiresAt, locale);
   return (
     <li className="flex flex-wrap items-center gap-2 py-2">
       <Mail aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm">{invitation.email}</span>
         <span className="block text-xs text-muted-foreground">
-          {wording.roleLabel[invitation.role]}
-          {expires ? ` · expires ${expires}` : ""}
+          {t("roleExpires", { role: wording.roleLabel[invitation.role], hasExpiry: expires ? "yes" : "no", date: expires })}
         </span>
       </span>
       {confirming ? (
@@ -532,23 +563,23 @@ function InvitationRow({ invitation, onRevoke }: { invitation: Invitation; onRev
               });
             }}
           >
-            {busy ? "Revoking…" : "Revoke"}
+            {busy ? t("revoking") : t("revoke")}
           </button>
           <button className={SMALL_BUTTON} type="button" onClick={() => setConfirming(false)}>
-            Keep
+            {t("keep")}
           </button>
         </span>
       ) : (
         <span className="flex items-center gap-1">
           {link ? (
-            <button aria-label={`Copy invitation link for ${invitation.email}`} className={SMALL_BUTTON} type="button" onClick={() => void copy(link)}>
+            <button aria-label={t("copyInvitationFor", { email: invitation.email })} className={SMALL_BUTTON} type="button" onClick={() => void copy(link)}>
               {copied ? <Check aria-hidden className="h-3.5 w-3.5" /> : <Copy aria-hidden className="h-3.5 w-3.5" />}
-              {copied ? "Copied" : "Copy link"}
+              {copied ? tCommon("copied") : t("copyLink")}
             </button>
           ) : null}
-          <button aria-label={`Revoke invitation for ${invitation.email}`} className={SMALL_BUTTON} type="button" onClick={() => setConfirming(true)}>
+          <button aria-label={t("revokeInvitationFor", { email: invitation.email })} className={SMALL_BUTTON} type="button" onClick={() => setConfirming(true)}>
             <Trash2 aria-hidden className="h-3.5 w-3.5" />
-            Revoke
+            {t("revoke")}
           </button>
         </span>
       )}
@@ -569,7 +600,9 @@ function MemberRow({
   onChangeRole: (role: Role) => Promise<boolean>;
   onRemove: () => Promise<boolean>;
 }) {
-  const wording = useContext(Wording);
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tCommon = useTranslations("common");
+  const wording = useWording();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   return (
@@ -584,7 +617,7 @@ function MemberRow({
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm">
           {member.displayName}
-          {isMe ? <span className="text-muted-foreground"> (you)</span> : null}
+          {isMe ? <span className="text-muted-foreground"> {t("you")}</span> : null}
         </span>
         <span className="block truncate text-xs text-muted-foreground">{member.email}</span>
       </span>
@@ -603,16 +636,16 @@ function MemberRow({
                 });
               }}
             >
-              {busy ? "Removing…" : `Remove ${member.displayName}`}
+              {busy ? t("removing") : t("removeMember", { name: member.displayName })}
             </button>
             <button className={SMALL_BUTTON} type="button" onClick={() => setConfirming(false)}>
-              Cancel
+              {tCommon("cancel")}
             </button>
           </span>
         ) : (
           <span className="flex items-center gap-1">
             <select
-              aria-label={`Role for ${member.displayName}`}
+              aria-label={t("roleFor", { name: member.displayName })}
               className="h-7 rounded-md border border-input bg-card px-1.5 text-xs"
               disabled={busy}
               title={wording.roleDescription[member.role]}
@@ -628,7 +661,7 @@ function MemberRow({
                 </option>
               ))}
             </select>
-            <button aria-label={`Remove ${member.displayName}`} className={SMALL_BUTTON} type="button" onClick={() => setConfirming(true)}>
+            <button aria-label={t("removeMember", { name: member.displayName })} className={SMALL_BUTTON} type="button" onClick={() => setConfirming(true)}>
               <UserMinus aria-hidden className="h-3.5 w-3.5" />
             </button>
           </span>
@@ -642,16 +675,18 @@ function MemberRow({
   );
 }
 
-function TakeDownSection({ name, onTakeDown }: { name: string; onTakeDown: () => Promise<void> }) {
-  const wording = useContext(Wording);
+function TakeDownSection({ name, kind, onTakeDown }: { name: string; kind: string; onTakeDown: () => Promise<void> }) {
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tCommon = useTranslations("common");
+  const wording = useWording();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   return (
-    <section aria-label={`Take down ${wording.noun}`} className="libera-dialog-section space-y-2">
+    <section aria-label={t("takeDownKind", { kind })} className="libera-dialog-section space-y-2">
       {confirming ? (
         <>
           <p className="text-sm">
-            Take down “{name}”? {wording.takeDown}
+            {t("takeDownConfirm", { name })} {wording.takeDown}
           </p>
           <div className="flex gap-2">
             <button
@@ -664,32 +699,34 @@ function TakeDownSection({ name, onTakeDown }: { name: string; onTakeDown: () =>
               }}
             >
               {busy ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Trash2 aria-hidden className="h-3.5 w-3.5" />}
-              {busy ? "Taking down…" : `Take down ${wording.noun}`}
+              {busy ? t("takingDown") : t("takeDownKind", { kind })}
             </button>
             <button className={SECONDARY_BUTTON} disabled={busy} type="button" onClick={() => setConfirming(false)}>
-              Cancel
+              {tCommon("cancel")}
             </button>
           </div>
         </>
       ) : (
         <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(true)}>
-          <Trash2 aria-hidden className="h-3.5 w-3.5" /> Take down {wording.noun}…
+          <Trash2 aria-hidden className="h-3.5 w-3.5" /> {t("takeDownKindOpen", { kind })}
         </button>
       )}
     </section>
   );
 }
 
-function LeaveSection({ name, onLeave }: { name: string; onLeave: () => Promise<void> }) {
-  const wording = useContext(Wording);
+function LeaveSection({ name, kind, onLeave }: { name: string; kind: string; onLeave: () => Promise<void> }) {
+  const t = useTranslations("collab.shareNotebookDialog");
+  const tCommon = useTranslations("common");
+  const wording = useWording();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   return (
-    <section aria-label="Leave" className="libera-dialog-section space-y-2">
+    <section aria-label={t("leaveSection")} className="libera-dialog-section space-y-2">
       {confirming ? (
         <>
           <p className="text-sm">
-            Leave “{name}”? {wording.leave}
+            {t("leaveConfirm", { name })} {wording.leave}
           </p>
           <div className="flex gap-2">
             <button
@@ -701,16 +738,16 @@ function LeaveSection({ name, onLeave }: { name: string; onLeave: () => Promise<
                 void onLeave().finally(() => setBusy(false));
               }}
             >
-              {busy ? "Leaving…" : `Leave ${wording.noun}`}
+              {busy ? t("leaving") : t("leaveKind", { kind })}
             </button>
             <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(false)}>
-              Cancel
+              {tCommon("cancel")}
             </button>
           </div>
         </>
       ) : (
         <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(true)}>
-          <LogOut aria-hidden className="h-3.5 w-3.5" /> Leave this {wording.noun}…
+          <LogOut aria-hidden className="h-3.5 w-3.5" /> {t("leaveKindOpen", { kind })}
         </button>
       )}
     </section>

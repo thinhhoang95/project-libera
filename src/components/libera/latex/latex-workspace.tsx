@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertCircle, AlertTriangle, ChevronDown, Info, Loader2, PanelRightClose, PanelRightOpen, PictureInPicture2, Play, ScrollText, X } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -27,7 +28,7 @@ import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { useHorizontalWheelScroll } from "../use-horizontal-wheel-scroll";
 import { inkPower } from "../ink/ink-power";
 import { autoCompileDelayMs } from "./latex-auto-compile-delay";
-import { latexPdfUrl, requestLatexCompile, useLatexBuild } from "./latex-build-store";
+import { latexPdfUrl, latexRequestErrorText, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
 import { latexCompileMenuItems, type LatexCompileTarget } from "./latex-compile-menu";
 import { nativeMenuPointBelow, popupNativeMenu } from "../native-menu";
@@ -86,10 +87,6 @@ function fileKind(file: LiberaFileNode): LatexProjectFile["kind"] {
   return "other";
 }
 
-function formatDuration(milliseconds: number) {
-  return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
-}
-
 const bibCache = new Map<string, { key: string; entries: BibEntrySummary[] }>();/** Main files found for chapter files, so reopening a chapter needs no lookup. */
 const discoveredRoots = new Map<string, string | null>();
 /** Each notebook's Auto Compile choice, so reopening a file starts with it. */
@@ -112,6 +109,14 @@ function sameMacroSources(a: readonly MacroSource[], b: readonly MacroSource[]) 
 }
 
 export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab, mathMarkers, onUploadFiles }: LatexWorkspaceProps) {
+  const t = useTranslations("latex.latexWorkspace");
+  const tc = useTranslations("common");
+  const tCompileMenu = useTranslations("latex.latexCompileMenu");
+  const tBuild = useTranslations("latex.latexBuildStore");
+  const format = useFormatter();
+  const formatDuration = (milliseconds: number) => milliseconds < 1000
+    ? format.number(milliseconds, { style: "unit", unit: "millisecond" })
+    : format.number(milliseconds / 1000, { style: "unit", unit: "second", minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const filePath = tab.file.path;
   const notebook = tab.file.notebook;
   const viewState = tab.viewState?.latex;
@@ -148,7 +153,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   }, [discoveredRoot, filePath, needsDiscovery]);
   const resolvedRoot: string | null = !isTex ? null : magicRoot && magicRoot !== filePath ? magicRoot : subfilesRoot ?? (standalone ? filePath : discoveredRoot ?? null);
   // "Compile current file" typesets this file on its own, which needs its own \documentclass.
-  const currentDisabledReason = !standalone ? "Has no \\documentclass, so it cannot be typeset on its own" : resolvedRoot === filePath ? "This file is already the main file" : null;
+  const currentDisabledReason = !standalone ? t("noDocumentClass") : resolvedRoot === filePath ? t("alreadyMainFile") : null;
   const compileTarget: LatexCompileTarget = viewState?.compileTarget === "current" && !currentDisabledReason ? "current" : "main";
   const rootPath = compileTarget === "current" ? filePath : resolvedRoot ?? filePath;
   const editorMode = viewState?.editorMode ?? "source";
@@ -203,7 +208,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     notebookAutoCompile.set(notebook, enabled);
     setAutoCompile(enabled);
     void apiRequest("/api/latex/auto-compile", { method: "PUT", body: JSON.stringify({ notebook, enabled }) })
-      .catch(() => setNotice("Could not save Auto Compile for this notebook, so it will reset next time."));
+      .catch(() => setNotice(t("autoCompileSaveError")));
   }
 
   const shared = !!collab;
@@ -318,7 +323,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     files: files.map((file) => file.path),
     save: async (directory, file) => {
       const [saved] = await uploadRef.current!(directory.split("/")[0], [file], directory, { throwOnError: true });
-      if (!saved) throw new Error("The image could not be saved.");
+      if (!saved) throw new Error("");
       return saved.path;
     },
   }), [files, onUploadFiles]);
@@ -500,10 +505,10 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   const enableBibMirror = useCallback(() => {
     void apiRequest<{ mirror: BibMirrorResult }>("/api/references/bib-mirror", { method: "POST", body: JSON.stringify({ notebook, enabled: true }) })
       .then(({ mirror }) => setNotice(mirror.status === "protected"
-        ? `${mirror.editedPath} was edited outside Libera, so References are written to ${mirror.path} instead.`
-        : `${mirror.path} is now generated from this notebook's References.`))
-      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not turn on references.bib."));
-  }, [notebook]);
+        ? t("bibMirrorEdited", { edited: mirror.editedPath ?? "", path: mirror.path })
+        : t("bibMirrorGenerated", { path: mirror.path })))
+      .catch((error: unknown) => setNotice(error instanceof Error && error.message ? error.message : t("couldNotEnableBibMirror")));
+  }, [notebook, t]);
   const project = useMemo<LatexProjectData>(
     () => ({ labels: otherLabels, bibEntries: allBibEntries, files: projectFiles, allPaths: projectPaths, libraryEntries, hasBibliography, enableBibMirror }),
     [allBibEntries, otherLabels, projectFiles, projectPaths, libraryEntries, hasBibliography, enableBibMirror],
@@ -526,11 +531,11 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     }
     const file = files.find((candidate) => candidate.path === path);
     if (!file) {
-      setSyncError(`${path} is not in this notebook.`);
+      setSyncError(t("fileNotInNotebook", { path }));
       return;
     }
     await onOpenFile(file, { viewState: { latex: { revealLine: { line, hint, nonce: Date.now() } } } });
-  }, [filePath, files, onOpenFile]);
+  }, [filePath, files, onOpenFile, t]);
 
   const inverseSync = useCallback(async ({ hint, ...location }: { page: number; x: number; y: number; hint?: SynctexTextHint }) => {
     if (!build.buildId) return;
@@ -542,9 +547,9 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       });
       if (source) await openNotebookPath(source.path, source.line, hint);
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : "Could not find this spot in the source.");
+      setSyncError(error instanceof Error && error.message ? error.message : t("sourceSpotError"));
     }
-  }, [build.buildId, openNotebookPath, rootPath]);
+  }, [build.buildId, openNotebookPath, rootPath, t]);
 
   const forwardSync = useCallback(async (location: { line: number; column: number }) => {
     if (!build.buildId || !isTex) return;
@@ -560,9 +565,9 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
         setHighlight({ locations, nonce: Date.now() });
       }
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : "Could not find this spot in the PDF.");
+      setSyncError(error instanceof Error && error.message ? error.message : t("pdfSpotError"));
     }
-  }, [build.buildId, filePath, isTex, onSetViewState, rootPath]);
+  }, [build.buildId, filePath, isTex, onSetViewState, rootPath, t]);
 
   /* ---- PDF in a separate window ------------------------------------------------- */
 
@@ -585,7 +590,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       closeLatexPdfWindow(rootPath);
       onSetViewState({ pdfHidden: false });
     } else if (!openLatexPdfWindow(rootPath)) {
-      setSyncError("Could not open the PDF window. Please allow pop-up windows and try again.");
+      setSyncError(t("pdfWindowError"));
     }
   }
 
@@ -656,18 +661,18 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   const pdfUrl = build.buildId ? latexPdfUrl(rootPath, build.buildId) : null;
 
   const status = isTex && !canCompile
-    ? needsDiscovery && discoveredRoot === undefined ? "Finding the main file…" : "No main file"
+    ? needsDiscovery && discoveredRoot === undefined ? t("findingMainFile") : t("noMainFile")
     : build.compiling
-    ? "Compiling…"
+    ? t("compiling")
     : build.requestError
-      ? build.requestError
+      ? latexRequestErrorText(build.requestError, tBuild("compileFailed"))
       : !result
-        ? isTex ? "Not compiled yet" : ""
+        ? isTex ? t("notCompiledYet") : ""
         : result.status === "failure"
-          ? "Compile failed"
+          ? t("compileFailed")
           : result.status === "error"
-            ? `Compiled with errors in ${formatDuration(result.durationMs)}`
-            : `Compiled in ${formatDuration(result.durationMs)}`;
+            ? t("compiledWithErrorsIn", { duration: formatDuration(result.durationMs) })
+            : t("compiledIn", { duration: formatDuration(result.durationMs) });
 
   function revealDiagnostic(diagnostic: LatexDiagnostic) {
     if (!diagnostic.path || !diagnostic.line) return;
@@ -715,7 +720,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     setCompileMenuOpen(true);
     await popupNativeMenu(latexCompileMenuItems({
       target: compileTarget,
-      mainName: resolvedRoot ? resolvedRoot.split("/").at(-1)! : needsDiscovery && discoveredRoot === undefined ? "Finding the main file…" : "No main file found",
+      mainName: resolvedRoot ? resolvedRoot.split("/").at(-1)! : needsDiscovery && discoveredRoot === undefined ? t("findingMainFile") : t("noMainFileFound"),
       currentName: tab.file.name,
       currentDisabledReason,
       onSelect: (target) => onSetViewState({ compileTarget: target }),
@@ -726,6 +731,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       onEngineChange: (engine) => onSetViewState({ engine }),
       clearCacheDisabled: !canCompile || build.compiling,
       onClearCache: () => setCacheDialogOpen(true),
+      t: tCompileMenu,
     }), nativeMenuPointBelow(anchor));
     setCompileMenuOpen(false);
   }
@@ -748,18 +754,18 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
         {isTex ? (
           <>
             <div ref={compileMenuAnchorRef} className="libera-latex-compile flex shrink-0 items-stretch overflow-hidden rounded-lg">
-              <button type="button" className="inline-flex items-center gap-1.5 px-3 py-1 text-sm font-medium disabled:opacity-50" disabled={!canCompile} onClick={compile} title={`Recompile ${rootPath.split("/").at(-1)} (${compileShortcut})`} aria-keyshortcuts="Meta+Enter Control+Enter">
+              <button type="button" className="inline-flex items-center gap-1.5 px-3 py-1 text-sm font-medium disabled:opacity-50" disabled={!canCompile} onClick={compile} title={t("recompileTitle", { name: rootPath.split("/").at(-1) ?? "", shortcut: compileShortcut })} aria-keyshortcuts="Meta+Enter Control+Enter">
                 {build.compiling ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Play aria-hidden className="h-3.5 w-3.5" />}
-                {compileTarget === "current" ? "Recompile file" : "Recompile"}
+                {compileTarget === "current" ? t("recompileFile") : t("recompile")}
                 <kbd className="hidden @min-[80rem]:inline">{compileShortcut}</kbd>
               </button>
               <button
                 type="button"
                 className="inline-flex items-center px-1.5"
-                aria-label="Compile options"
+                aria-label={t("compileOptions")}
                 aria-haspopup="menu"
                 aria-expanded={compileMenuOpen}
-                title={`Compile options · ${LATEX_ENGINE_LABELS[resolvedEngine]}${autoCompile ? " · auto compile on" : ""}`}
+                title={t(autoCompile ? "compileOptionsAutoTitle" : "compileOptionsTitle", { engine: LATEX_ENGINE_LABELS[resolvedEngine] })}
                 onClick={() => void openCompileMenu()}
               >
                 <ChevronDown aria-hidden className="h-3.5 w-3.5" />
@@ -777,17 +783,17 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
             />
           </>
         ) : (
-          <span className="text-xs text-muted-foreground">{/\.bib$/i.test(filePath) ? "Bibliography database" : "LaTeX source"} · compile the main .tex file to see changes</span>
+          <span className="text-xs text-muted-foreground">{t("nonTexHint", { kind: /\.bib$/i.test(filePath) ? t("bibliographyDatabase") : t("latexSource") })}</span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-2">
-          {isTex && rootPath !== filePath ? <span className="max-w-[10rem] shrink-0 truncate text-xs text-muted-foreground" title={`Typesetting ${rootPath} (set by % !TEX root)`}>Main file: {rootPath.split("/").at(-1)}</span> : null}
+          {isTex && rootPath !== filePath ? <span className="max-w-[10rem] shrink-0 truncate text-xs text-muted-foreground" title={t("typesettingTitle", { path: rootPath })}>{t("mainFile", { name: rootPath.split("/").at(-1) ?? "" })}</span> : null}
           {isTex ? (
             <button
               type="button"
               className="libera-latex-status inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
               aria-expanded={logOpen}
               onClick={() => { setLogOpen((open) => !open); onSetViewState({ logOpen: !logOpen }); }}
-              title={status ? `${status} · Show logs and problems` : "Show logs and problems"}
+              title={status ? t("statusWithLogs", { status }) : t("showLogs")}
             >
               <span className={`sr-only max-w-[14rem] truncate @min-[80rem]:not-sr-only ${result?.status === "failure" || build.requestError ? "text-destructive" : ""}`}>{status}</span>
               {counts.error ? <span className="inline-flex items-center gap-0.5 text-destructive"><AlertCircle aria-hidden className="h-3.5 w-3.5" />{counts.error}</span> : null}
@@ -802,8 +808,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
             <button
               type="button"
               className="libera-latex-icon-button disabled:opacity-50"
-              aria-label={pdfHidden ? "Show PDF pane" : "Hide PDF pane"}
-              title={showsPdfWindow ? "The PDF is in a separate window" : pdfHidden ? "Show PDF pane" : "Hide PDF pane"}
+              aria-label={pdfHidden ? t("showPdfPane") : t("hidePdfPane")}
+              title={showsPdfWindow ? t("pdfInSeparateWindow") : pdfHidden ? t("showPdfPane") : t("hidePdfPane")}
               disabled={showsPdfWindow}
               onClick={() => onSetViewState({ pdfHidden: !pdfHidden })}
             >
@@ -812,9 +818,9 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
             <button
               type="button"
               className="libera-latex-icon-button disabled:opacity-50"
-              aria-label={pdfWindowOpen ? "Show PDF beside the editor" : "Open PDF in a separate window"}
+              aria-label={pdfWindowOpen ? t("showPdfBeside") : t("openPdfWindow")}
               aria-pressed={pdfWindowOpen}
-              title={pdfWindowOpen ? "Close the PDF window and show the PDF beside the editor" : "Open the PDF in a separate window"}
+              title={pdfWindowOpen ? t("closePdfWindowTitle") : t("openPdfWindowTitle")}
               disabled={!canCompile}
               onClick={togglePdfWindow}
             >
@@ -837,7 +843,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       {aiError || syncError ? (
         <div role="alert" className="flex items-start gap-2 border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
           <span className="min-w-0 flex-1">{aiError || syncError}</span>
-          <button type="button" aria-label="Dismiss" className="shrink-0 rounded p-0.5 hover:bg-destructive/10" onClick={() => { setAiError(""); setSyncError(""); }}><X aria-hidden className="h-4 w-4" /></button>
+          <button type="button" aria-label={tc("dismiss")} className="shrink-0 rounded p-0.5 hover:bg-destructive/10" onClick={() => { setAiError(""); setSyncError(""); }}><X aria-hidden className="h-4 w-4" /></button>
         </div>
       ) : null}
 
@@ -845,7 +851,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
         <div role="status" className="flex items-start gap-2 border-b border-border bg-muted px-4 py-2 text-sm text-foreground">
           <Info aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1">{notice}</span>
-          <button type="button" aria-label="Dismiss" className="shrink-0 rounded p-0.5 hover:bg-card" onClick={() => setNotice("")}><X aria-hidden className="h-4 w-4" /></button>
+          <button type="button" aria-label={tc("dismiss")} className="shrink-0 rounded p-0.5 hover:bg-card" onClick={() => setNotice("")}><X aria-hidden className="h-4 w-4" /></button>
         </div>
       ) : null}
 
@@ -863,7 +869,7 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
         >
           <div className="grid min-h-0 min-w-0 flex-1">{editor}</div>
           <div
-            aria-label="Resize LaTeX editor and PDF"
+            aria-label={t("resizeEditorAndPdf")}
             aria-orientation="vertical"
             aria-valuemax={MAX_SPLIT}
             aria-valuemin={MIN_SPLIT}
@@ -903,9 +909,9 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
               downloadUrl={build.buildId ? latexPdfUrl(rootPath, build.buildId, true) : null}
               emptyState={!canCompile ? (
                 needsDiscovery && discoveredRoot === undefined
-                  ? <span className="inline-flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />Finding the main file…</span>
-                  : <span className="max-w-sm">This file has no <code>\documentclass</code>, and no main file includes it. Add <code>% !TEX root = main.tex</code> as its first line to typeset it with its main file.</span>
-              ) : build.compiling ? <span className="inline-flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />Compiling your document…</span> : result?.status === "failure" ? "The document did not compile. Open the log to see why." : "Press Recompile to typeset the document."}
+                  ? <span className="inline-flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />{t("findingMainFile")}</span>
+                  : <span className="max-w-sm">{t.rich("noDocumentClassHint", { code: (chunks) => <code>{chunks}</code> })}</span>
+              ) : build.compiling ? <span className="inline-flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />{t("compilingDocument")}</span> : result?.status === "failure" ? t("documentDidNotCompile") : t("pressRecompile")}
               onZoomChange={(zoom) => onSetViewState({ pdfZoom: zoom })}
               onScrollChange={(scrollTop, scrollLeft, anchor) => onSetViewState({
                 pdfScrollTop: scrollTop, pdfScrollLeft: scrollLeft, pdfScrollPage: anchor?.page, pdfScrollPageOffset: anchor?.offset,
@@ -930,6 +936,7 @@ function LatexLogPanel({ diagnostics, log, rawLog, onRawLogChange, onReveal, onC
   onReveal: (diagnostic: LatexDiagnostic) => void;
   onClose: () => void;
 }) {
+  const t = useTranslations("latex.latexWorkspace");
   const [showInfo, setShowInfo] = useState(false);
   const visible = diagnostics.filter((diagnostic) => showInfo || diagnostic.severity !== "info");
   const logRef = useRef<HTMLPreElement>(null);
@@ -938,23 +945,23 @@ function LatexLogPanel({ diagnostics, log, rawLog, onRawLogChange, onReveal, onC
   }, [rawLog, log]);
 
   return (
-    <section aria-label="Compile log" className="libera-latex-log flex max-h-[45%] min-h-32 shrink-0 flex-col border-t border-border bg-card">
+    <section aria-label={t("compileLogLabel")} className="libera-latex-log flex max-h-[45%] min-h-32 shrink-0 flex-col border-t border-border bg-card">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 text-xs">
-        <span className="font-medium text-foreground">Problems</span>
+        <span className="font-medium text-foreground">{t("problems")}</span>
         <div className="ml-2 inline-flex rounded-md border border-border p-0.5">
-          <button type="button" className={`rounded px-2 py-0.5 ${rawLog ? "text-muted-foreground" : "bg-muted text-foreground"}`} onClick={() => onRawLogChange(false)}>List</button>
-          <button type="button" className={`rounded px-2 py-0.5 ${rawLog ? "bg-muted text-foreground" : "text-muted-foreground"}`} onClick={() => onRawLogChange(true)}>Raw log</button>
+          <button type="button" className={`rounded px-2 py-0.5 ${rawLog ? "text-muted-foreground" : "bg-muted text-foreground"}`} onClick={() => onRawLogChange(false)}>{t("listView")}</button>
+          <button type="button" className={`rounded px-2 py-0.5 ${rawLog ? "bg-muted text-foreground" : "text-muted-foreground"}`} onClick={() => onRawLogChange(true)}>{t("rawLog")}</button>
         </div>
         {!rawLog ? (
           <label className="flex cursor-pointer items-center gap-1 text-muted-foreground">
             <input type="checkbox" checked={showInfo} onChange={(event) => setShowInfo(event.target.checked)} />
-            Box warnings
+            {t("boxWarnings")}
           </label>
         ) : null}
-        <button type="button" aria-label="Close log" className="ml-auto rounded p-1 text-muted-foreground hover:bg-muted" onClick={onClose}><X aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" aria-label={t("closeLog")} className="ml-auto rounded p-1 text-muted-foreground hover:bg-muted" onClick={onClose}><X aria-hidden className="h-3.5 w-3.5" /></button>
       </div>
       {rawLog ? (
-        <pre ref={logRef} className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-4 text-muted-foreground">{log || "No log yet."}</pre>
+        <pre ref={logRef} className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-4 text-muted-foreground">{log || t("noLogYet")}</pre>
       ) : (
         <ul className="min-h-0 flex-1 overflow-auto py-1 text-xs">
           {visible.length ? visible.map((diagnostic, index) => (
@@ -966,7 +973,7 @@ function LatexLogPanel({ diagnostics, log, rawLog, onRawLogChange, onReveal, onC
                 onClick={() => onReveal(diagnostic)}
                 title={diagnostic.details}
               >
-                {diagnostic.severity === "error" ? <AlertCircle aria-label="Error" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" /> : diagnostic.severity === "warning" ? <AlertTriangle aria-label="Warning" className="libera-latex-warning-count mt-0.5 h-3.5 w-3.5 shrink-0" /> : <Info aria-label="Note" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                {diagnostic.severity === "error" ? <AlertCircle aria-label={t("diagnosticError")} className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" /> : diagnostic.severity === "warning" ? <AlertTriangle aria-label={t("diagnosticWarning")} className="libera-latex-warning-count mt-0.5 h-3.5 w-3.5 shrink-0" /> : <Info aria-label={t("diagnosticNote")} className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
                 <span className="min-w-0 flex-1">
                   <span className="block break-words text-foreground">{diagnostic.message}</span>
                   {diagnostic.details ? <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{diagnostic.details.split("\n")[0]}</span> : null}
@@ -974,7 +981,7 @@ function LatexLogPanel({ diagnostics, log, rawLog, onRawLogChange, onReveal, onC
                 {diagnostic.path ? <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{diagnostic.path.split("/").at(-1)}{diagnostic.line ? `:${diagnostic.line}` : ""}</span> : null}
               </button>
             </li>
-          )) : <li className="px-3 py-2 text-muted-foreground">{diagnostics.length ? "Only box warnings. Turn on “Box warnings” to see them." : "No problems."}</li>}
+          )) : <li className="px-3 py-2 text-muted-foreground">{diagnostics.length ? t("onlyBoxWarnings") : t("noProblems")}</li>}
         </ul>
       )}
     </section>

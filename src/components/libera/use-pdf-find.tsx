@@ -1,6 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import { PdfTextContentCache } from "./pdf-rendering";
@@ -8,6 +9,7 @@ import { PdfSearchIndex, findPdfMatches, type PdfSearchPage } from "./pdf-find";
 import { useCanvasPaneFocused } from "./canvas-pane-context";
 
 export function usePdfFind(pdfDocument: PDFDocumentProxy | null, cache: PdfTextContentCache | null, viewerRef: RefObject<HTMLDivElement | null>) {
+  const t = useTranslations("usePdfFind");
   const paneFocused = useCanvasPaneFocused();
   const inputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
@@ -37,10 +39,10 @@ export function usePdfFind(pdfDocument: PDFDocumentProxy | null, cache: PdfTextC
     void index.read(controller.signal).then((pages) => {
       if (!controller.signal.aborted) setResult({ index, pages });
     }).catch(() => {
-      if (!controller.signal.aborted) setResult({ index, error: "Could not search PDF." });
+      if (!controller.signal.aborted) setResult({ index, error: t("searchError") });
     });
     return () => controller.abort();
-  }, [enabled, index, ready]);
+  }, [enabled, index, ready, t]);
 
   function openFind() {
     const selection = window.getSelection();
@@ -98,23 +100,23 @@ export function usePdfFind(pdfDocument: PDFDocumentProxy | null, cache: PdfTextC
   return {
     openFind, findText, activeMatch, matchesByPage,
     bar: open ? (
-      <div role="search" aria-label="Search PDF" data-command-toolbar="Find in PDF" className="flex flex-wrap items-center justify-end gap-1 border-b border-input bg-card px-4 py-2"
+      <div role="search" aria-label={t("searchPdf")} data-command-toolbar={t("findInPdf")} className="flex flex-wrap items-center justify-end gap-1 border-b border-input bg-card px-4 py-2"
         onKeyDown={(event) => {
           if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeFind(); }
         }}>
         <Search aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <input ref={inputRef} aria-label="Find in PDF" placeholder="Find in PDF" value={query}
+        <input ref={inputRef} aria-label={t("findInPdf")} placeholder={t("findInPdf")} value={query}
           className="h-8 min-w-24 flex-1 border-0 bg-transparent px-1 text-sm outline-none"
           onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); navigate(event.shiftKey ? -1 : 1); }
           }} />
         <span role="status" aria-live="polite" className="text-xs text-muted-foreground">
-          {enabled && searchError ? searchError : enabled && !ready ? "Searching…" : `${activeMatch ? activeIndex % matches.length + 1 : 0}/${matches.length}`}
+          {enabled && searchError ? searchError : enabled && !ready ? t("searching") : `${activeMatch ? activeIndex % matches.length + 1 : 0}/${matches.length}`}
         </span>
-        <button type="button" aria-label="Previous match" title="Previous match (Shift+Enter)" className={buttonClass} disabled={!matches.length} onClick={() => navigate(-1)}><ChevronUp aria-hidden className="h-4 w-4" /></button>
-        <button type="button" aria-label="Next match" title="Next match (Enter)" className={buttonClass} disabled={!matches.length} onClick={() => navigate(1)}><ChevronDown aria-hidden className="h-4 w-4" /></button>
-        <button type="button" aria-label="Close find" title="Close (Escape)" className={buttonClass} onClick={closeFind}><X aria-hidden className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("previousMatch")} title={t("previousMatchTitle")} className={buttonClass} disabled={!matches.length} onClick={() => navigate(-1)}><ChevronUp aria-hidden className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("nextMatch")} title={t("nextMatchTitle")} className={buttonClass} disabled={!matches.length} onClick={() => navigate(1)}><ChevronDown aria-hidden className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("closeFind")} title={t("closeFindTitle")} className={buttonClass} onClick={closeFind}><X aria-hidden className="h-4 w-4" /></button>
       </div>
     ) : null,
   };

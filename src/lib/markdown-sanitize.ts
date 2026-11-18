@@ -36,7 +36,23 @@ export type ContentTrust = "local" | "shared";
 export interface SanitizeOptions {
   /** "shared" for documents from a shared notebook (stricter images). Default "local". */
   trust?: ContentTrust;
+  /** The interface's words for a blocked image (lib.markdownSanitize); English when omitted. */
+  messages?: SanitizeMessages;
 }
+
+export interface SanitizeMessages {
+  /** Tooltip of the placeholder shown where an image is blocked. */
+  imageBlocked: string;
+  /** The placeholder's text when the image has no alt text. */
+  imageFallback: string;
+}
+
+const DEFAULT_MESSAGES: SanitizeMessages = {
+  imageBlocked: "Image not shown: shared notebooks show only https images and their own files.",
+  imageFallback: "[image]",
+};
+// Set for the duration of one synchronous sanitizeHast call.
+let activeMessages = DEFAULT_MESSAGES;
 
 /** Dropped together with everything inside them. */
 const DROP_WITH_CONTENT = new Set([
@@ -200,9 +216,9 @@ function blockedImage(node: Element): Element {
     tagName: "span",
     properties: {
       className: ["markdown-blocked-image"],
-      title: "Image not shown: shared notebooks show only https images and their own files.",
+      title: activeMessages.imageBlocked,
     },
-    children: [{ type: "text", value: alt ? `[${alt}]` : "[image]" }],
+    children: [{ type: "text", value: alt ? `[${alt}]` : activeMessages.imageFallback }],
   };
 }
 
@@ -286,7 +302,13 @@ function cleanChildren(parent: Parents, inSvg: boolean, trust: ContentTrust): vo
 
 /** Sanitizes a hast tree in place and returns it. */
 export function sanitizeHast<T extends Root | Element>(tree: T, options: SanitizeOptions = {}): T {
-  cleanChildren(tree, tree.type === "element" && tree.tagName.toLowerCase() === "svg", options.trust ?? "local");
+  const previous = activeMessages;
+  activeMessages = options.messages ?? DEFAULT_MESSAGES;
+  try {
+    cleanChildren(tree, tree.type === "element" && tree.tagName.toLowerCase() === "svg", options.trust ?? "local");
+  } finally {
+    activeMessages = previous;
+  }
   return tree;
 }
 

@@ -2,6 +2,7 @@
 
 import { AlertCircle, CheckCircle2, ChevronRight, Download, Info, Mail, RefreshCw } from "lucide-react";
 import { useEffect, useId, useState } from "react";
+import { useTranslations } from "next-intl";
 import { appMetadata } from "@/lib/app-metadata";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 
@@ -17,24 +18,27 @@ const DEFAULT_UPDATE_STATE: LiberaUpdaterState = {
   currentVersion: appMetadata.version,
 };
 
-function updateStatusText(state: LiberaUpdaterState) {
+function updateStatusText(state: LiberaUpdaterState, t: ReturnType<typeof useTranslations>) {
+  // "none" selects the wording for an update whose version number is not known yet.
+  const version = state.availableVersion ?? "none";
   switch (state.status) {
     case "idle":
-      return "Automatic updates are enabled.";
+      return t("statusIdle");
     case "checking":
-      return "Checking for updates…";
+      return t("statusChecking");
     case "available":
-      return `Version ${state.availableVersion ?? "new"} is available.`;
+      return t("statusAvailable", { version });
     case "downloading":
-      return `Downloading version ${state.availableVersion ?? "new"} (${state.percent ?? 0}%)…`;
+      return t("statusDownloading", { version, percent: (state.percent ?? 0) / 100 });
     case "downloaded":
-      return `Version ${state.availableVersion ?? "new"} is ready to install.`;
+      return t("statusDownloaded", { version });
     case "up-to-date":
-      return "Libera is up to date.";
+      return t("statusUpToDate");
     case "error":
-      return state.error || "The update check failed.";
+      // The updater's own error text is not translated.
+      return state.error || t("statusErrorFallback");
     default:
-      return "Automatic updates are available in the installed desktop app.";
+      return t("statusUnsupported");
   }
 }
 
@@ -59,6 +63,7 @@ function UpdateStatusIcon({ status }: { status: LiberaUpdaterState["status"] }) 
 }
 
 export function AboutDialog({ open, onClose }: AboutDialogProps) {
+  const t = useTranslations("aboutDialog");
   const [updateState, setUpdateState] = useState(DEFAULT_UPDATE_STATE);
   // Update details stay collapsed until asked for; each opening of the dialog starts collapsed.
   const [updatesExpanded, setUpdatesExpanded] = useState(false);
@@ -89,8 +94,8 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
     updateState.status,
   );
   const aboutRows = [
-    ["Authors", appMetadata.authors],
-    ["Release date", appMetadata.releaseDate],
+    [t("authors"), appMetadata.authors],
+    [t("releaseDate"), appMetadata.releaseDate],
   ] as const;
 
   return (
@@ -98,7 +103,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
       sectioned
       open={open}
       panelClassName="max-w-md"
-      title={`About ${appMetadata.name}`}
+      title={t("title", { name: appMetadata.name })}
       onClose={handleClose}
       footer={
         <div className="flex w-full flex-wrap items-center justify-end gap-2">
@@ -107,10 +112,10 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
             href={`mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(
               `${appMetadata.name} feedback (version ${updateState.currentVersion})`,
             )}`}
-            title={`Email ${FEEDBACK_EMAIL}`}
+            title={t("feedbackTitle", { email: FEEDBACK_EMAIL })}
           >
             <Mail aria-hidden className="h-4 w-4" />
-            Feedback
+            {t("feedback")}
           </a>
           {updaterAvailable ? (
             <button
@@ -123,7 +128,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
                 void window.liberaUpdater?.check().catch(() => undefined);
               }}
             >
-              {updateState.status === "checking" ? "Checking…" : "Check for Updates"}
+              {updateState.status === "checking" ? t("checking") : t("checkForUpdates")}
             </button>
           ) : null}
           {updateReady ? (
@@ -132,13 +137,13 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
               disabled={updateState.hasUnsavedDocuments}
               title={
                 updateState.hasUnsavedDocuments
-                  ? "Save all open edits before restarting."
+                  ? t("saveBeforeRestart")
                   : undefined
               }
               type="button"
               onClick={() => void window.liberaUpdater?.restartAndInstall().catch(() => undefined)}
             >
-              Restart and Update
+              {t("restartAndUpdate")}
             </button>
           ) : null}
           <button
@@ -146,7 +151,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
             type="button"
             onClick={handleClose}
           >
-            Close
+            {t("close")}
           </button>
         </div>
       }
@@ -185,9 +190,9 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
           <div className="mt-5 text-[22px] font-semibold tracking-tight text-foreground">
             {appMetadata.name}
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">A liberal notetaking app.</p>
+          <p className="mt-1 text-sm text-muted-foreground">{t("tagline")}</p>
           <span className="mt-3 inline-flex items-center rounded-full border border-[color-mix(in_srgb,var(--about-brand)_30%,transparent)] bg-[color-mix(in_srgb,var(--about-brand)_10%,transparent)] px-2.5 py-0.5 text-xs font-medium tabular-nums text-[var(--about-brand)]">
-            Version {updateState.currentVersion}
+            {t("versionLabel", { version: updateState.currentVersion })}
           </span>
         </div>
 
@@ -209,10 +214,10 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
             onClick={() => setUpdatesExpanded((expanded) => !expanded)}
           >
             <span className="flex items-center gap-2">
-              Updates
+              {t("updates")}
               {updateNeedsAttention && !updatesExpanded ? (
                 <span
-                  aria-label="Update information available"
+                  aria-label={t("updateInfoAvailable")}
                   className={`h-1.5 w-1.5 rounded-full ${
                     updateState.status === "error" ? "bg-destructive" : "bg-[var(--about-brand)]"
                   }`}
@@ -230,7 +235,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
               <div className="mb-1 flex items-start gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-muted-foreground">
                 <UpdateStatusIcon status={updateState.status} />
                 <div className="min-w-0 flex-1">
-                  {updateStatusText(updateState)}
+                  {updateStatusText(updateState, t)}
                   {updateState.status === "downloading" ? (
                     <div className="mt-2 h-1 overflow-hidden rounded-full bg-border">
                       <div
@@ -240,7 +245,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
                     </div>
                   ) : null}
                   {updateReady && updateState.hasUnsavedDocuments ? (
-                    <div className="mt-1 text-foreground">Save all open edits before restarting.</div>
+                    <div className="mt-1 text-foreground">{t("saveBeforeRestart")}</div>
                   ) : null}
                 </div>
               </div>

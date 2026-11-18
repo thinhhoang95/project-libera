@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
@@ -8,11 +9,11 @@ import { Check, ChevronDown, ChevronUp, Sparkles, X } from "lucide-react";
 import { SUGGESTIONS_CHANNEL, decideTiptapChanges, tiptapChangeUnits, tiptapChangesKey, type ChangeSource, type TrackedChange } from "@/lib/tiptap-changes";
 
 const NO_CHANGES: TrackedChange[] = [];
-const SOURCE_LABELS: Record<ChangeSource, string> = { rewrite: "AI Rewrite", write: "Write with AI", format: "AI Format", image: "AI Image to Markdown", review: "Agentic review", agent: "Agent changes" };
 const navClass = "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground";
 
 /** Summary of proposed changes with navigation and Accept/Reject all. */
 export function TiptapChangeBar({ editor }: { editor: Editor }) {
+  const t = useTranslations("tiptapChangeBar");
   const changes = useEditorState({
     editor,
     selector: ({ editor: current }) => tiptapChangesKey.getState(current.state)?.changes ?? NO_CHANGES,
@@ -26,7 +27,7 @@ export function TiptapChangeBar({ editor }: { editor: Editor }) {
   const sources = [...new Set(units.map((unit) => unit.source))];
   // Shared-document suggestions come from collaborators (and AI acting for
   // them), not from one AI feature of this window.
-  const title = units.every((unit) => unit.channel === SUGGESTIONS_CHANNEL) ? "Suggestions" : sources.length === 1 ? SOURCE_LABELS[sources[0]] : "AI changes";
+  const title = units.every((unit) => unit.channel === SUGGESTIONS_CHANNEL) ? t("suggestions") : sources.length === 1 ? t(`source.${sources[0] as ChangeSource}`) : t("aiChanges");
   const decidable = units.some((unit) => unit.decidable);
 
   function reveal(next: number) {
@@ -37,17 +38,17 @@ export function TiptapChangeBar({ editor }: { editor: Editor }) {
     view.focus();
   }
 
-  return <div role="toolbar" aria-label="Proposed changes" className="libera-change-bar absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-1 rounded-xl border border-border bg-card p-1 pl-3 text-sm shadow-lg">
+  return <div role="toolbar" aria-label={t("proposedChanges")} className="libera-change-bar absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-1 rounded-xl border border-border bg-card p-1 pl-3 text-sm shadow-lg">
     <Sparkles aria-hidden className="h-4 w-4 shrink-0 text-accent" />
     <span className="mr-1 min-w-0 truncate font-medium">{title}</span>
-    <button type="button" className={navClass} aria-label="Previous change" title="Previous change" onClick={() => reveal(current - 1)}><ChevronUp aria-hidden className="h-4 w-4" /></button>
-    <span aria-live="polite" className="min-w-14 whitespace-nowrap text-center text-xs tabular-nums text-muted-foreground">{current + 1} of {units.length}</span>
-    <button type="button" className={navClass} aria-label="Next change" title="Next change" onClick={() => reveal(current + 1)}><ChevronDown aria-hidden className="h-4 w-4" /></button>
+    <button type="button" className={navClass} aria-label={t("previousChange")} title={t("previousChange")} onClick={() => reveal(current - 1)}><ChevronUp aria-hidden className="h-4 w-4" /></button>
+    <span aria-live="polite" className="min-w-14 whitespace-nowrap text-center text-xs tabular-nums text-muted-foreground">{t("changeCount", { current: current + 1, total: units.length })}</span>
+    <button type="button" className={navClass} aria-label={t("nextChange")} title={t("nextChange")} onClick={() => reveal(current + 1)}><ChevronDown aria-hidden className="h-4 w-4" /></button>
     {decidable ? <>
-    <button type="button" className="libera-change-bar-reject ml-1 inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-2.5 font-medium" title="Reject all changes (⌘/Ctrl+Shift+Backspace)"
-      onMouseDown={(event) => event.preventDefault()} onClick={() => decideTiptapChanges(editor.view, "all", "reject")}><X aria-hidden className="h-3.5 w-3.5" />Reject all</button>
-    <button type="button" className="libera-change-bar-accept inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-2.5 font-medium" title="Accept all changes (⌘/Ctrl+Shift+Enter)"
-      onMouseDown={(event) => event.preventDefault()} onClick={() => decideTiptapChanges(editor.view, "all", "accept")}><Check aria-hidden className="h-3.5 w-3.5" />Accept all</button>
+    <button type="button" className="libera-change-bar-reject ml-1 inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-2.5 font-medium" title={t("rejectAllChangesTitle")}
+      onMouseDown={(event) => event.preventDefault()} onClick={() => decideTiptapChanges(editor.view, "all", "reject")}><X aria-hidden className="h-3.5 w-3.5" />{t("rejectAll")}</button>
+    <button type="button" className="libera-change-bar-accept inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-2.5 font-medium" title={t("acceptAllChangesTitle")}
+      onMouseDown={(event) => event.preventDefault()} onClick={() => decideTiptapChanges(editor.view, "all", "accept")}><Check aria-hidden className="h-3.5 w-3.5" />{t("acceptAll")}</button>
     </> : null}
   </div>;
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { startTransition, useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import type { MarkdownPreviewRequest, MarkdownPreviewResponse } from "@/lib/markdown-preview";
@@ -11,7 +12,8 @@ type Result = { markdown: string; tree: Root; sources?: PreviewSourcePosition[];
 
 export function MarkdownWorkerPreview({ content, mathMarkers, onContentReady, ...props }: Props) {
   const [result, setResult] = useState<Result | null>(null);
-  const [error, setError] = useState("");
+  const t = useTranslations("markdownWorkerPreview");
+  const [error, setError] = useState<"" | "unavailable" | "failed">("");
   const request = useRef<((markdown: string, mathMarkers?: Props["mathMarkers"]) => void) | null>(null);
   const inline = mathMarkers?.inlineMathMarkers;
   const block = mathMarkers?.blockMathMarkers;
@@ -30,7 +32,7 @@ export function MarkdownWorkerPreview({ content, mathMarkers, onContentReady, ..
       worker?.terminate();
       worker = null;
       // Never silently put full-document parsing back on the typing thread.
-      if (!disposed) setError("Preview unavailable. Reload to retry.");
+      if (!disposed) setError("unavailable");
     }
     function start() {
       if (disposed || failed || running || !latest) return;
@@ -56,7 +58,7 @@ export function MarkdownWorkerPreview({ content, mathMarkers, onContentReady, ..
                   setResult((previous) => !disposed && latest === completed ? { markdown: completed.markdown, tree, sources: response.sources, citations: response.citations } : previous);
                   setError("");
                 });
-              } else setError("Could not prepare preview. Edit the document to retry.");
+              } else setError("failed");
             } else start();
           };
         }
@@ -78,8 +80,8 @@ export function MarkdownWorkerPreview({ content, mathMarkers, onContentReady, ..
   useLayoutEffect(() => { if (result) onContentReady(result.markdown); }, [result, onContentReady]);
 
   return <>
-    {error ? <p role="status" className="mb-3 text-sm text-muted-foreground">{error}</p> : null}
+    {error ? <p role="status" className="mb-3 text-sm text-muted-foreground">{error === "unavailable" ? t("previewUnavailable") : t("couldNotPrepare")}</p> : null}
     {result ? <MarkdownRenderer {...props} content={result.markdown} preparedTree={result.tree} preparedSources={result.sources} preparedCitations={result.citations} />
-      : !error ? <p role="status" className="text-sm text-muted-foreground">Preparing preview…</p> : null}
+      : !error ? <p role="status" className="text-sm text-muted-foreground">{t("preparingPreview")}</p> : null}
   </>;
 }

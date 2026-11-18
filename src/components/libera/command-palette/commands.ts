@@ -18,8 +18,10 @@ import { useEffect, useLayoutEffect, useRef, type ComponentType, type RefObject 
 export type PaletteCommand = {
   id: string;
   title: string;
-  /** Where the command comes from, e.g. the toolbar's name. */
+  /** Where the command comes from, e.g. the toolbar's name. Shown text: translated, so never compare it. */
   group?: string;
+  /** A stable code for the group (the toolbar's `data-command-toolbar-id`), for code that must recognise it. */
+  groupId?: string;
   /** A longer description, searched and shown beside the title. */
   detail?: string;
   /** Extra words to match, e.g. synonyms. */
@@ -131,7 +133,17 @@ async function clickRevealed(scope: HTMLElement, label: string) {
   control?.click();
 }
 
-export function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
+/** Words the palette shows that this file builds itself; the palette passes translated ones. */
+export type ToolbarCommandLabels = {
+  /** The group of a toolbar that has no name. */
+  fallbackGroup: string;
+  /** A choice inside a named control: "Ink color: Red". */
+  choiceTitle: (control: string, choice: string) => string;
+};
+
+const defaultLabels: ToolbarCommandLabels = { fallbackGroup: "Toolbar", choiceTitle: (control, choice) => `${control}: ${choice}` };
+
+export function toolbarCommands(scope: HTMLElement, labels: ToolbarCommandLabels = defaultLabels): PaletteCommand[] {
   const commands: PaletteCommand[] = [];
   const seen = new Set<string>();
 
@@ -139,7 +151,8 @@ export function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
     if (toolbar.closest(SCOPE_SELECTOR) !== scope) continue;
     const offstage = toolbar.hasAttribute("data-command-reveal");
     if (!offstage && !shown(toolbar)) continue;
-    const group = toolbar.dataset.commandToolbar || toolbar.getAttribute("aria-label") || "Toolbar";
+    const group = toolbar.dataset.commandToolbar || toolbar.getAttribute("aria-label") || labels.fallbackGroup;
+    const groupId = toolbar.dataset.commandToolbarId || undefined;
 
     for (const control of toolbar.querySelectorAll<HTMLElement>(CONTROL_SELECTOR)) {
       if (control.closest(TOOLBAR_SELECTOR) !== toolbar || control.closest("[data-command-skip]")) continue;
@@ -150,13 +163,14 @@ export function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
       if (control instanceof HTMLSelectElement) {
         for (const option of control.options) {
           if (option.disabled || !option.text.trim()) continue;
-          const title = `${label}: ${option.text.trim()}`;
+          const title = labels.choiceTitle(label, option.text.trim());
           if (seen.has(`${group}\n${title}`)) continue;
           seen.add(`${group}\n${title}`);
           commands.push({
             id: `${group}\n${title}`,
             title,
             group,
+            groupId,
             checked: control.value === option.value,
             disabled: control.disabled,
             run: () => chooseOption(control, option.value),
@@ -168,7 +182,7 @@ export function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
       const tooltip = splitShortcut(control.getAttribute("title") ?? "");
       // A choice in a named radio group, such as one of several color swatches, says which group: "Ink color: Red".
       const choices = control.getAttribute("role") === "radio" ? control.closest('[role="radiogroup"]')?.getAttribute("aria-label") : null;
-      const title = choices ? `${choices}: ${splitShortcut(label).text}` : splitShortcut(label).text;
+      const title = choices ? labels.choiceTitle(choices, splitShortcut(label).text) : splitShortcut(label).text;
       if (seen.has(`${group}\n${title}`)) continue;
       seen.add(`${group}\n${title}`);
       const pressed = control.getAttribute("aria-pressed") ?? control.getAttribute("aria-selected") ?? control.getAttribute("aria-checked");
@@ -176,6 +190,7 @@ export function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
         id: `${group}\n${title}`,
         title,
         group,
+        groupId,
         detail: tooltip.text && tooltip.text.toLowerCase() !== title.toLowerCase() ? tooltip.text : undefined,
         shortcut: tooltip.shortcut ?? splitShortcut(label).shortcut,
         iconElement: control.querySelector("svg") ?? undefined,
@@ -193,7 +208,7 @@ export function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
 }
 
 /** Every command available right now: the scope's own first, then the ones offered everywhere. */
-export function collectPaletteCommands(focused: Element | null): PaletteCommand[] {
+export function collectPaletteCommands(focused: Element | null, labels?: ToolbarCommandLabels): PaletteCommand[] {
   const scope = activeCommandScope(focused);
   const scoped: PaletteCommand[] = [];
   const general: PaletteCommand[] = [];
@@ -209,6 +224,6 @@ export function collectPaletteCommands(focused: Element | null): PaletteCommand[
 
   // A registered command replaces the toolbar's own entry with the same name.
   const registered = new Set(scoped.map((command) => command.title.toLowerCase()));
-  const harvested = scope ? toolbarCommands(scope).filter((command) => !registered.has(command.title.toLowerCase())) : [];
+  const harvested = scope ? toolbarCommands(scope, labels).filter((command) => !registered.has(command.title.toLowerCase())) : [];
   return [...harvested, ...scoped, ...general];
 }

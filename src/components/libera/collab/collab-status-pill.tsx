@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   type LucideIcon,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { SyncState, SyncStatus } from "@/lib/collab/protocol/local";
 import { formatAge, syncWording } from "@/lib/collab/ui/wording";
 import { CollabTooltip } from "./collab-tooltip";
@@ -55,13 +56,15 @@ export interface CollabStatusPillProps {
  * adds the detail, the pending count and the oldest pending age.
  */
 export function CollabStatusPill({ status, compact = false, onClick, className = "", tooltipPlacement = "below", now }: CollabStatusPillProps) {
-  const wording = syncWording(status, now);
+  const t = useTranslations("collab.collabStatusPill");
+  const tWording = useTranslations("lib.collab.ui.wording");
+  const wording = syncWording(status, now, tWording);
   const Icon = ICONS[status.state];
   const pendingLine =
     status.pending > 0
-      ? `${status.pending} pending · oldest ${formatAge(status.oldestPendingAgeMs)}`
+      ? t("pendingOldest", { count: status.pending, age: formatAge(status.oldestPendingAgeMs, tWording) })
       : status.state === "saved-remote"
-        ? "Nothing pending"
+        ? t("nothingPending")
         : null;
   const classes = `libera-collab-tone inline-flex h-6 max-w-full shrink-0 items-center gap-1.5 rounded-full text-[11px] font-medium leading-none ${
     compact ? "w-6 justify-center" : "px-2"
@@ -88,7 +91,7 @@ export function CollabStatusPill({ status, compact = false, onClick, className =
         onClick ? (
           <button
             {...tooltip}
-            aria-label={`${wording.label}. ${wording.detail}`}
+            aria-label={t("ariaLabel", { label: wording.label, detail: wording.detail })}
             className={classes}
             data-state={status.state}
             data-tone={wording.tone}
@@ -100,7 +103,7 @@ export function CollabStatusPill({ status, compact = false, onClick, className =
         ) : (
           <span
             {...tooltip}
-            aria-label={`${wording.label}. ${wording.detail}`}
+            aria-label={t("ariaLabel", { label: wording.label, detail: wording.detail })}
             className={classes}
             data-state={status.state}
             data-tone={wording.tone}

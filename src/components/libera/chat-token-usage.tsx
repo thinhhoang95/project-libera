@@ -1,10 +1,9 @@
 import { useSyncExternalStore } from "react";
+import { useFormatter, useTranslations } from "next-intl";
 import { ArrowDownToLine, ArrowUpFromLine, Database } from "lucide-react";
 import { chatUsageRequests, totalChatUsage } from "@/lib/chat-token-usage";
 import type { DocumentChat } from "@/lib/document-chat";
 
-const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
-const exact = new Intl.NumberFormat("en");
 const MANAGE_MODELS_ID = "chat-model-manage";
 const subscribeNever = () => () => {};
 
@@ -14,6 +13,8 @@ export function ChatTokenUsage({ chat, model, models = [], onModelChange }: {
   models?: string[];
   onModelChange?: (model: string) => void;
 }) {
+  const t = useTranslations("chatTokenUsage");
+  const format = useFormatter();
   const requests = chatUsageRequests(chat);
   const totals = totalChatUsage(requests);
   const modelName = model?.split("/").filter(Boolean).at(-1);
@@ -21,9 +22,9 @@ export function ChatTokenUsage({ chat, model, models = [], onModelChange }: {
   const canManageModels = useSyncExternalStore(subscribeNever, () => !!window.liberaMenu && !!window.liberaPreferences, () => false);
   const switchable = models.length > 1 || canManageModels;
   const counters = [
-    { label: "Input tokens", value: totals.inputTokens, reported: totals.reported, Icon: ArrowUpFromLine, detail: "Includes system instructions, attachments, and conversation history sent on each request." },
-    { label: "Output tokens", value: totals.outputTokens, reported: totals.reported, Icon: ArrowDownToLine, detail: "Output usage reported by the model provider, including reasoning where counted." },
-    { label: "Cached input tokens", value: totals.cachedTokens, reported: totals.cacheReported, Icon: Database, detail: "Input tokens read from cache; already included in input tokens." },
+    { label: t("inputTokens"), value: totals.inputTokens, reported: totals.reported, Icon: ArrowUpFromLine, detail: t("detailInput") },
+    { label: t("outputTokens"), value: totals.outputTokens, reported: totals.reported, Icon: ArrowDownToLine, detail: t("detailOutput") },
+    { label: t("cachedInputTokens"), value: totals.cachedTokens, reported: totals.cacheReported, Icon: Database, detail: t("detailCached") },
   ];
   async function openModelMenu(button: HTMLButtonElement) {
     if (!model || !switchable || !window.liberaMenu) return;
@@ -39,7 +40,7 @@ export function ChatTokenUsage({ chat, model, models = [], onModelChange }: {
             type: "radio" as const,
             checked: candidate === model,
           })),
-          ...(window.liberaPreferences ? [{ type: "separator" as const }, { id: MANAGE_MODELS_ID, label: "Manage models…" }] : []),
+          ...(window.liberaPreferences ? [{ type: "separator" as const }, { id: MANAGE_MODELS_ID, label: t("manageModels") }] : []),
         ],
       });
       if (selected === MANAGE_MODELS_ID) { void window.liberaPreferences?.open("ai"); return; }
@@ -50,19 +51,19 @@ export function ChatTokenUsage({ chat, model, models = [], onModelChange }: {
     }
   }
   return <div className="libera-chat-status">
-    <div className="libera-chat-token-usage" role="group" aria-label="Chat token usage">
+    <div className="libera-chat-token-usage" role="group" aria-label={t("tokenUsageGroup")}>
       {counters.map(({ label, value, reported, Icon, detail }) => {
         const missing = requests.length - reported;
-        const amount = requests.length && !reported ? "Unavailable" : `${missing ? "At least " : ""}${exact.format(value)}`;
-        const description = `${label}: ${amount}. Chat total, including retries and inherited branch history. ${detail}${missing ? ` Usage unavailable for ${missing} request${missing === 1 ? "" : "s"} (older, pending, interrupted, or unreported).` : ""}`;
+        const amount = requests.length && !reported ? t("unavailable") : missing ? t("atLeast", { amount: format.number(value) }) : format.number(value);
+        const description = t("tokenDescription", { label, amount, detail, missing });
         return <span key={label} tabIndex={0} aria-label={description} title={description}>
           <Icon size={12} aria-hidden="true" />
-          <span aria-hidden="true">{requests.length && !reported ? "—" : `${missing ? "≥" : ""}${compact.format(value)}`}</span>
+          <span aria-hidden="true">{requests.length && !reported ? "—" : `${missing ? "≥" : ""}${format.number(value, { notation: "compact", maximumFractionDigits: 1 })}`}</span>
         </span>;
       })}
     </div>
     {modelName && (switchable
-      ? <button type="button" className="libera-chat-model" aria-haspopup="menu" aria-label={`Model: ${model}`} title={`Model: ${model}. Click to switch models.`} onClick={(event) => void openModelMenu(event.currentTarget)}>{modelName}</button>
-      : <span className="libera-chat-model" tabIndex={0} aria-label={`Model: ${model}`} title={`Model: ${model}`}>{modelName}</span>)}
+      ? <button type="button" className="libera-chat-model" aria-haspopup="menu" aria-label={t("modelLabel", { model: model ?? "" })} title={t("modelSwitchTitle", { model: model ?? "" })} onClick={(event) => void openModelMenu(event.currentTarget)}>{modelName}</button>
+      : <span className="libera-chat-model" tabIndex={0} aria-label={t("modelLabel", { model: model ?? "" })} title={t("modelLabel", { model: model ?? "" })}>{modelName}</span>)}
   </div>;
 }

@@ -15,6 +15,7 @@ import { editableLines, type FrontDetailsView, type FrontLineView } from "./fron
 import { columnSpans, parseTabular, type TableModel, type TableRow, type TableSettings } from "./table-model";
 import { algorithmLineNumbers, type AlgorithmSpec } from "./algorithm";
 import { attachDrawingPreview } from "./drawing-preview";
+import { visualText } from "./labels";
 import { readCodeBlock, renderCodeBlock } from "./text-commands";
 
 /* The widgets the Visual mode draws in place of LaTeX constructs
@@ -186,9 +187,9 @@ export class PrintedTextWidget extends VisualWidget {
 /** `\\`: a faint mark where the line breaks. */
 export class LineBreakWidget extends VisualWidget {
   constructor() { super("br"); }
-  toDOM() {
+  toDOM(view: EditorView) {
     const span = el("span", "cm-vis-linebreak", "↵");
-    span.title = "\\\\ (line break)";
+    span.title = visualText(view.state)("widgets.lineBreakTitle");
     return span;
   }
 }
@@ -322,8 +323,10 @@ export class ChipWidget extends VisualWidget {
       if (this.kind === "ref") {
         const missing = this.keys.some((key) => !labelTarget(key, visualNumbering(target.state), visualAux(target.state)));
         dom.classList.toggle("cm-vis-missing", missing);
-        setIfChanged(dom, "title", `${this.command}{${this.keys.join(",")}}${missing ? " (label not found)" : ""}`);
-        setAttributeIfChanged(dom, "aria-label", `Reference to ${text.replace(/\$/g, "")}`);
+        const t = visualText(target.state);
+        const reference = `${this.command}{${this.keys.join(",")}}`;
+        setIfChanged(dom, "title", missing ? t("widgets.labelNotFound", { reference }) : reference);
+        setAttributeIfChanged(dom, "aria-label", t("widgets.referenceLabel", { text: text.replace(/\$/g, "") }));
       } else if (this.kind === "cite") {
         const bib = bibLookup(target.state);
         const keys = [...this.keys, ...this.more.flatMap((group) => group.keys)];
@@ -332,8 +335,8 @@ export class ChipWidget extends VisualWidget {
         dom.classList.toggle("cm-vis-missing", missing.length > 0);
         // biblatex's `\supercite`: a superscript number.
         dom.classList.toggle("cm-vis-cite-super", /^\\supercites?\*?$/.test(this.command) && /^[\d,\s–-]+$/.test(dom.textContent ?? ""));
-        setIfChanged(dom, "title", keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : missing.includes(key) ? `${key} (citation not found)` : key; }).join("\n"));
-        setAttributeIfChanged(dom, "aria-label", `Citation ${dom.textContent}`);
+        setIfChanged(dom, "title", keys.map((key) => { const entry = bib(key); return entry?.title ? `${key}: ${entry.title}` : missing.includes(key) ? visualText(target.state)("widgets.citationNotFound", { key }) : key; }).join("\n"));
+        setAttributeIfChanged(dom, "aria-label", visualText(target.state)("widgets.citationLabel", { text: dom.textContent ?? "" }));
       } else {
         setIfChanged(dom, "title", `${this.command}{${this.keys[0]}}`);
       }
@@ -456,7 +459,7 @@ export class MacroWidget extends VisualWidget {
   }
   toDOM(view: EditorView) {
     const dom = el("span", "cm-vis-macro");
-    dom.title = `\\${this.name}: Alt-click or Alt+Enter to edit`;
+    dom.title = visualText(view.state)("widgets.altClickToEdit", { name: this.name });
     const render = (target: EditorView) => {
       replaceChildrenIfChanged(dom, renderLatexFragment(this.expansion, widgetContext(target, dom)));
     };
@@ -719,16 +722,17 @@ function renderImage(container: HTMLElement, view: EditorView, name: string, cla
   const placeholder = (message: string) => {
     container.replaceChildren(el("span", "cm-vis-image-placeholder", message));
   };
-  if (!resolvedPaths.length) { placeholder(`${name} (outside the notebook)`); return; }
+  const t = visualText(view.state);
+  if (!resolvedPaths.length) { placeholder(t("widgets.outsideNotebook", { name })); return; }
   const extensions = graphicsExtensions(view.state.doc);
   const candidates = resolvedPaths.flatMap((resolved) => (/\.([a-z0-9]+)$/i.test(resolved) ? [resolved] : extensions.map((ext) => `${resolved}.${ext}`)));
   const tryNext = (index: number) => {
     const path = candidates[index];
-    if (!path) { placeholder(`${name} (not found)`); return; }
+    if (!path) { placeholder(t("widgets.notFound", { name })); return; }
     const url = config.fileUrl(path);
     if (!url) { placeholder(name); return; }
     const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase();
-    if (ext === "eps" || ext === "ps") { placeholder(`${name} (${ext.toUpperCase()}: shown in the PDF only)`); return; }
+    if (ext === "eps" || ext === "ps") { placeholder(t("widgets.epsOnlyInPdf", { name, ext: ext.toUpperCase() })); return; }
     if (ext === "pdf") {
       const key = style?.page ? `${url}#page=${style.page}` : url;
       let thumbnail = pdfThumbnails.get(key);
@@ -971,13 +975,13 @@ function sourcePartElement(view: EditorView, dom: HTMLElement, part: NonNullable
   if (code) {
     element = el("div", "cm-vis-figure-source cm-vis-figure-source-code");
     element.append(renderCodeBlock(code, (latex) => renderLatexFragment(latex, widgetContext(view, dom, part.offset)), null));
-    element.title = "Click to edit its source";
+    element.title = visualText(view.state)("widgets.clickToEditSource");
   } else if (part.name) {
     element = el("span", "cm-vis-figure-drawing cm-vis-figure-source cm-vis-figure-source-named");
-    element.append(el("span", "cm-vis-figure-drawing-name", part.name), el("span", "cm-vis-figure-drawing-note", "Click to edit its source"));
+    element.append(el("span", "cm-vis-figure-drawing-name", part.name), el("span", "cm-vis-figure-drawing-note", visualText(view.state)("widgets.clickToEditSource")));
   } else {
     element = el("code", "cm-vis-raw cm-vis-figure-source", part.text);
-    element.title = "Not drawn here: click to edit its source";
+    element.title = visualText(view.state)("widgets.notDrawnHere");
   }
   if (part.before) element.classList.add("cm-vis-figure-source-before");
   element.dataset.floatOffset = String(part.offset);
@@ -1088,8 +1092,8 @@ export class FigureWidget extends VisualWidget {
         // package that draws it ("diagram:tikz-cd").
         const placeholder = el("span", "cm-vis-figure-drawing");
         const diagram = /^diagram:(.*)$/.exec(drawing)?.[1];
-        placeholder.append(el("span", "cm-vis-figure-drawing-name", diagram ? `Diagram (${diagram})` : drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : "TikZ picture"));
-        placeholder.append(el("span", "cm-vis-figure-drawing-note", "Drawn in the PDF"));
+        placeholder.append(el("span", "cm-vis-figure-drawing-name", diagram ? visualText(view.state)("widgets.diagramName", { diagram }) : drawing ? (/\.[A-Za-z]+$/.test(drawing) ? drawing : `${drawing}.tex`) : visualText(view.state)("widgets.tikzPicture")));
+        placeholder.append(el("span", "cm-vis-figure-drawing-note", visualText(view.state)("widgets.drawnInPdf")));
         attachDrawingPreview(view, placeholder, drawing, () => { const pos = start(); return pos === null ? null : view.state.sliceDoc(pos, pos + spec.length); });
         body.append(placeholder);
       }
@@ -1100,7 +1104,7 @@ export class FigureWidget extends VisualWidget {
         for (const part of box.body.split(/\\tcblower(?![A-Za-z@])/)) frame.append(renderLatexInto("div", "cm-vis-figure-box-part", part.trim(), fragmentContext(view, content.captionPos)));
         body.append(frame);
       }
-      if (content.overlay) body.append(el("div", "cm-vis-figure-overlay", "+ overlay (labels drawn in the PDF)"));
+      if (content.overlay) body.append(el("div", "cm-vis-figure-overlay", visualText(view.state)("widgets.overlayNote")));
       for (const tabular of content.tabulars ?? []) {
         const grid = renderTableGrid(view, tabular.source, () => {
           const pos = start();
@@ -1136,7 +1140,7 @@ export class FigureWidget extends VisualWidget {
         const original = content.caption;
         text.classList.add("cm-vis-editable-part");
         text.dataset.floatOffset = String(offset);
-        text.title = "Click to edit the caption";
+        text.title = visualText(view.state)("widgets.clickToEditCaption");
         text.addEventListener("mousedown", (event) => {
           if (event.button !== 0 || event.altKey || event.detail >= 2 || (event.target as HTMLElement).closest(".cm-vis-float-editor")) return;
           const from = widgetPos(view, dom);
@@ -1509,7 +1513,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       const td = el("td", "cm-vis-table-cell cm-vis-table-macro") as HTMLTableCellElement;
       td.colSpan = Math.max(1, model.columns.length);
       td.append(el("code", "cm-vis-raw", source.slice(macro.from, macro.to)));
-      td.title = "A row written through a macro: click to edit its source";
+      td.title = visualText(view.state)("widgets.macroRow");
       td.addEventListener("mousedown", revealMacro);
       tr.append(td);
       table.append(tr);
@@ -1520,7 +1524,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       const width = row.cells.reduce((sum, cell) => sum + cell.span, 0);
       if (model.columns.length && width > model.columns.length) {
         tr.classList.add("cm-vis-table-row-odd");
-        tr.title = `This row has ${width} columns; the table's specification has ${model.columns.length}`;
+        tr.title = visualText(view.state)("widgets.rowWidthMismatch", { width, specColumns: model.columns.length });
       }
     }
     // Rows read from another file (`\input{./tables/summary_stats_post.tex} \\`, the Grammarly paper): a placeholder row.
@@ -1528,7 +1532,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
     if (input) {
       const name = input[1].trim().replace(/^\.\//, "");
       // Not a cell of the grid: the cell editor and keys leave it alone.
-      const td = el("td", "cm-vis-table-input", `Rows from ${/\.[A-Za-z]+$/.test(name) ? name : `${name}.tex`}`) as HTMLTableCellElement;
+      const td = el("td", "cm-vis-table-input", visualText(view.state)("widgets.rowsFrom", { name: /\.[A-Za-z]+$/.test(name) ? name : `${name}.tex` })) as HTMLTableCellElement;
       td.colSpan = Math.max(1, model.columns.length);
       const cell = row.cells[0];
       td.addEventListener("mousedown", (event) => {
@@ -1606,7 +1610,7 @@ export function renderTableGrid(view: EditorView, source: string, start: () => n
       if (macro) {
         // A row the document's macros write: drawn from their expansion; a click shows the row's source.
         td.classList.add("cm-vis-table-macro");
-        td.title = "Written through a macro: click to edit its source";
+        td.title = visualText(view.state)("widgets.writtenThroughMacro");
         td.addEventListener("mousedown", revealMacro);
         tr.append(td);
         column += cell.span;
@@ -1706,8 +1710,8 @@ export class PreambleWidget extends VisualWidget {
     const button = el("button", "cm-vis-preamble-toggle") as HTMLButtonElement;
     button.type = "button";
     button.setAttribute("aria-expanded", String(this.open));
-    button.textContent = `${this.open ? "▾" : "▸"} Preamble`;
-    const summary = el("span", "cm-vis-preamble-summary", this.summary);
+    button.textContent = `${this.open ? "▾" : "▸"} ${visualText(view.state)("widgets.preambleToggle")}`;
+    const summary = el("span", "cm-vis-preamble-summary", formatPreambleSummary(this.summary, visualText(view.state)));
     // Pressing keeps the editor's focus; the click (also from Enter or Space on the button) toggles.
     button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", (event) => {
@@ -1725,11 +1729,16 @@ export class PreambleWidget extends VisualWidget {
 export function preambleSummary(view: EditorView | null, defs = view ? visualDefinitions(view.state) : null) {
   if (!defs) return "";
   const counts = definitionCounts(defs);
-  const parts = [defs.documentClass ?? "no class", `${counts.packages} package${counts.packages === 1 ? "" : "s"}`, `${counts.macros} macro${counts.macros === 1 ? "" : "s"}`];
-  if (counts.environments) parts.push(`${counts.environments} environment${counts.environments === 1 ? "" : "s"}`);
-  if (counts.theorems) parts.push(`${counts.theorems} theorem type${counts.theorems === 1 ? "" : "s"}`);
-  if (defs.problems.length) parts.push(`${defs.problems.length} problem${defs.problems.length === 1 ? "" : "s"}`);
-  return parts.join(" · ");
+  // The counts, not the sentence: the widget words them when it is drawn, in the editor's language.
+  return `${PREAMBLE_SUMMARY_MARK}${JSON.stringify({ documentClass: defs.documentClass ?? null, packages: counts.packages, macros: counts.macros, environments: counts.environments, theorems: counts.theorems, problems: defs.problems.length })}`;
+}
+
+const PREAMBLE_SUMMARY_MARK = "\u0000summary:";
+
+function formatPreambleSummary(summary: string, t: ReturnType<typeof visualText>) {
+  if (!summary.startsWith(PREAMBLE_SUMMARY_MARK)) return summary;
+  const counts = JSON.parse(summary.slice(PREAMBLE_SUMMARY_MARK.length)) as { documentClass: string | null; packages: number; macros: number; environments: number; theorems: number; problems: number };
+  return t("widgets.preambleSummary", { ...counts, documentClass: counts.documentClass ?? t("widgets.noDocumentClass") });
 }
 
 /** The parts of a title block that open in the title editor (title-edit.ts). */
@@ -1806,7 +1815,7 @@ export class TitleWidget extends VisualWidget {
     const part = (node: HTMLElement, name: TitlePart, index = 0) => {
       node.dataset.titlePart = name;
       node.dataset.titleIndex = String(index);
-      if (editable) node.title = "Click to edit · Alt-click for the source";
+      if (editable) node.title = visualText(view.state)("widgets.clickToEdit");
       return node;
     };
     const render = (target: EditorView) => {
@@ -1843,8 +1852,8 @@ export class TitleWidget extends VisualWidget {
         if (editable && titleHooks?.addAuthor && titleHooks.canAddAuthor) {
           const add = el("button", "cm-vis-title-add-author") as HTMLButtonElement;
           add.type = "button";
-          add.title = "Add an author";
-          add.setAttribute("aria-label", "Add an author");
+          add.title = visualText(view.state)("widgets.addAuthor");
+          add.setAttribute("aria-label", visualText(view.state)("widgets.addAuthor"));
           add.addEventListener("mousedown", (event) => event.preventDefault());
           add.addEventListener("click", (event) => {
             event.preventDefault();
@@ -1876,7 +1885,7 @@ export class TitleWidget extends VisualWidget {
       this.notes.forEach(([label, latex], index) => {
         const note = el("div", "cm-vis-title-note");
         note.dataset.titleNote = String(index);
-        if (editable) note.title = "Click to edit · Alt-click for the source";
+        if (editable) note.title = visualText(view.state)("widgets.clickToEdit");
         note.append(el("span", "cm-vis-title-note-label", `${label}: `), renderLatexFragment(latex, context));
         dom.append(note);
       });
@@ -1885,8 +1894,8 @@ export class TitleWidget extends VisualWidget {
       const tools = el("div", "cm-vis-title-tools");
       const source = el("button", "cm-vis-title-source") as HTMLButtonElement;
       source.type = "button";
-      source.title = "Edit source";
-      source.setAttribute("aria-label", "Edit the title block's source");
+      source.title = visualText(view.state)("widgets.editSource");
+      source.setAttribute("aria-label", visualText(view.state)("widgets.editTitleSource"));
       source.addEventListener("mousedown", (event) => event.preventDefault());
       source.addEventListener("click", (event) => { event.preventDefault(); showSource(); });
       tools.append(source);
@@ -1950,7 +1959,7 @@ export class BibliographyListWidget extends VisualWidget {
       dom.replaceChildren(el("div", "cm-vis-references-heading", this.heading));
       const entries = (source ?? []).filter((entry) => entry.label !== undefined || entry.citeAuthor !== undefined);
       if (!entries.length) {
-        dom.append(el("div", "cm-vis-references-note", `Listed in the PDF${this.files ? ` (from ${this.files})` : ""}`));
+        dom.append(el("div", "cm-vis-references-note", this.files ? visualText(target.state)("widgets.listedInPdfFrom", { files: this.files }) : visualText(target.state)("widgets.listedInPdf")));
         return;
       }
       const numeric = entries.every((entry) => entry.label && /^\d+$/.test(entry.label));

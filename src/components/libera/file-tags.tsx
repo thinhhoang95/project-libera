@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { CSSProperties } from "react";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import type { LiberaFileNode } from "@/lib/types";
@@ -11,11 +12,12 @@ export function tagHue(tag: string) {
 }
 
 export function TagChip({ tag, onRemove }: { tag: string; onRemove?: () => void }) {
+  const t = useTranslations("fileTags");
   return (
     <span className="libera-tag-chip" style={{ "--tag-hue": tagHue(tag) } as CSSProperties}>
       {tag}
       {onRemove ? (
-        <button type="button" aria-label={`Remove tag ${tag}`} onClick={onRemove}>
+        <button type="button" aria-label={t("removeTagLabel", { tag })} onClick={onRemove}>
           <X aria-hidden size={11} />
         </button>
       ) : null}
@@ -33,16 +35,11 @@ export function fileKind(file: Pick<LiberaFileNode, "fileType" | "name">): FileK
   return file.fileType;
 }
 
-export const FILE_KIND_LABELS: Record<FileKind, string> = {
-  markdown: "Markdown document",
-  slides: "Slide deck",
-  latex: "LaTeX document",
-  bibtex: "BibTeX bibliography",
-  text: "Text file",
-  image: "Image",
-  pdf: "PDF document",
-  audio: "Voice memo",
-};
+/** The translated name of a file kind ("Slide deck", "Voice memo", …). */
+export function useFileKindLabel(): (kind: FileKind) => string {
+  const t = useTranslations("fileTags");
+  return (kind) => t(`kind.${kind}`);
+}
 
 /** Every tag in use, sorted, keeping the first spelling seen. */
 export function collectAllTags(fileTags: Record<string, string[]>) {

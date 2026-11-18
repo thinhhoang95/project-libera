@@ -13,6 +13,7 @@ import {
   Trash2,
   type LucideIcon,
 } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { apiRequest } from "@/components/libera/api-client";
@@ -68,13 +69,14 @@ function useStickToBottom(ref: RefObject<HTMLDivElement | null>, dependency: unk
 }
 
 function LatestButton({ onClick }: { onClick: () => void }) {
+  const t = useTranslations("recording.recordingTabView");
   return (
     <button
       type="button"
       className="absolute bottom-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs shadow-lg hover:bg-muted"
       onClick={onClick}
     >
-      <ArrowDown aria-hidden className="h-3 w-3" /> Latest
+      <ArrowDown aria-hidden className="h-3 w-3" /> {t("latest")}
     </button>
   );
 }
@@ -98,6 +100,8 @@ export function RecordingTabView({ tabId, recordingId }: { tabId: string; record
  * crash or a reload (record on, save or delete it), or already saved.
  */
 function DetachedRecording({ recordingId }: { recordingId: string }) {
+  const t = useTranslations("recording.recordingTabView");
+  const tCommon = useTranslations("common");
   const context = useRecorderContext()!;
   const { recorder, unfinished } = context;
   const [status, setStatus] = useState<RecordingStatus | null | "loading">("loading");
@@ -112,32 +116,32 @@ function DetachedRecording({ recordingId }: { recordingId: string }) {
   }, [recordingId]);
 
   if (recorder.state === "stopping" || status === "loading") {
-    return <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground"><Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> {recorder.state === "stopping" ? "Saving the recording…" : "Opening the recording…"}</div>;
+    return <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground"><Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> {recorder.state === "stopping" ? t("savingRecording") : t("openingRecording")}</div>;
   }
   if (!status) {
-    return <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">This recording was saved or deleted.</div>;
+    return <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">{t("savedOrDeleted")}</div>;
   }
   const busy = Boolean(unfinished.saving) || (recorder.state !== "idle" && recorder.state !== "error");
   return (
     <div className="flex flex-1 items-center justify-center p-8">
       <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 text-sm shadow-sm">
-        <div className="mb-1 flex items-center gap-2 text-muted-foreground"><Mic aria-hidden className="h-4 w-4" /> Not finished</div>
+        <div className="mb-1 flex items-center gap-2 text-muted-foreground"><Mic aria-hidden className="h-4 w-4" /> {t("notFinished")}</div>
         <h1 className="mb-1 truncate text-xl font-semibold tracking-tight">{status.name}</h1>
         <p className="mb-4 text-muted-foreground">
-          {formatClock(status.savedSeconds)} recorded into {status.parentPath}. The recording stopped before it was saved; everything up to then is safe{status.segmentCount ? `, with ${status.segmentCount} transcript passages` : ""}{status.recap?.bullets.length ? ` and ${status.recap.bullets.length} recap points` : ""}.
+          {t("recordedInto", { duration: formatClock(status.savedSeconds), path: status.parentPath, passages: status.segmentCount ?? 0, points: status.recap?.bullets.length ?? 0 })}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" className="inline-flex h-9 items-center gap-1.5 rounded-full bg-destructive px-4 font-medium text-white hover:bg-destructive/90 disabled:opacity-50" disabled={busy} onClick={() => void unfinished.recordOn(recordingId)}>
-            <span className="h-2.5 w-2.5 rounded-full bg-white" /> Record on
+            <span className="h-2.5 w-2.5 rounded-full bg-white" /> {t("recordOn")}
           </button>
           <button type="button" className="inline-flex h-9 items-center gap-1.5 rounded-full border border-border px-4 font-medium hover:bg-muted disabled:opacity-50" disabled={busy} onClick={() => void unfinished.save(recordingId, status.notebook)}>
-            {unfinished.saving === recordingId ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null} Save
+            {unfinished.saving === recordingId ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null} {tCommon("save")}
           </button>
           <button type="button" className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={busy} onClick={() => void unfinished.remove(recordingId)}>
-            <Trash2 aria-hidden className="h-4 w-4" /> Delete
+            <Trash2 aria-hidden className="h-4 w-4" /> {tCommon("delete")}
           </button>
         </div>
-        {recorder.state !== "idle" && recorder.state !== "error" ? <p className="mt-3 text-xs text-muted-foreground">Another recording is in progress; stop it to record on into this one.</p> : null}
+        {recorder.state !== "idle" && recorder.state !== "error" ? <p className="mt-3 text-xs text-muted-foreground">{t("anotherRecording")}</p> : null}
         {unfinished.error ? <p role="alert" className="mt-3 text-xs text-destructive">{unfinished.error}</p> : null}
       </div>
     </div>
@@ -145,6 +149,8 @@ function DetachedRecording({ recordingId }: { recordingId: string }) {
 }
 
 function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder: MeetingRecorder; onDiscard: () => Promise<void> }) {
+  const t = useTranslations("recording.recordingTabView");
+  const format = useFormatter();
   const { state, error, session, segments, transcriptEdits, recap, seconds, levels, saving, setup } = recorder;
   const rootRef = useRef<HTMLDivElement>(null);
   const railSlot = useRailSlot(tabId);
@@ -203,7 +209,7 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
   }
 
   function confirmDiscard() {
-    if (window.confirm(`Delete this recording (${formatClock(seconds)})? This cannot be undone.`)) void onDiscard();
+    if (window.confirm(t("deleteConfirm", { duration: formatClock(seconds) }))) void onDiscard();
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -219,29 +225,34 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
   }
 
   const startedAt = session?.createdAt ? new Date(session.createdAt) : null;
-  const meta = [
-    startedAt && !Number.isNaN(startedAt.getTime()) ? `Started ${startedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : null,
-    session?.parentPath ? `into ${session.parentPath}` : null,
-    liveTranscribe ? "transcribing on this computer" : null,
-  ].filter(Boolean).join(" · ");
+  const hasStart = Boolean(startedAt && !Number.isNaN(startedAt.getTime()));
+  const hasPath = Boolean(session?.parentPath);
+  const meta = t("meta", {
+    a: hasStart ? "yes" : "no",
+    b: hasPath ? "yes" : "no",
+    c: liveTranscribe ? "yes" : "no",
+    ab: hasStart || hasPath ? "yes" : "no",
+    time: hasStart && startedAt ? format.dateTime(startedAt, { hour: "numeric", minute: "2-digit" }) : "",
+    path: session?.parentPath ?? "",
+  });
   const listening = recording && liveTranscribe;
-  const recapStatus = liveRecap && recap?.updating ? <><Loader2 aria-hidden className="h-3 w-3 animate-spin" /> Updating</> : liveRecap ? "Written live" : null;
-  const transcriptStatus = liveTranscribe && !stopping ? <><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-destructive" /> Live</> : null;
+  const recapStatus = liveRecap && recap?.updating ? <><Loader2 aria-hidden className="h-3 w-3 animate-spin" /> {t("updating")}</> : liveRecap ? t("writtenLive") : null;
+  const transcriptStatus = liveTranscribe && !stopping ? <><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-destructive" /> {t("live")}</> : null;
   const recapEmpty = liveRecap
-    ? "Points appear after a minute or so of speech. You can add your own meanwhile."
-    : canRecap ? "Turn on Live recap in the Recording panel, or write the points yourself."
-      : !asrReady ? "The live recap reads the live transcript, which needs the Parakeet speech model. You can still write points yourself."
-        : !setup?.hasApiKey ? "The live recap needs an OpenRouter API key (Preferences → AI). You can still write points yourself."
-          : "Turn on Live transcribe for the recap, or write the points yourself.";
+    ? t("recapEmptyLiveRecap")
+    : canRecap ? t("recapEmptyEnableLive")
+      : !asrReady ? t("recapEmptyNoModel")
+        : !setup?.hasApiKey ? t("recapEmptyNoKey")
+          : t("recapEmptyTranscribe");
 
   return (
     <div ref={rootRef} className="libera-media-viewer libera-recording flex min-h-0 flex-1 flex-col overflow-hidden outline-none" tabIndex={-1} onKeyDown={onKeyDown}>
       <div className="libera-viewer-toolbar flex shrink-0 items-center gap-3 border-b border-input bg-card px-4 py-2">
         <Mic aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{[name || "Recording", "16 kHz mono"].join(" · ")}</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{t("toolbarSummary", { name: name || t("recording") })}</span>
         {!railSlot ? (
-          <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-2.5 text-sm font-medium transition hover:bg-muted" title="Show the recorder's controls in the left panel" onClick={() => requestRailTab("recording")}>
-            <PanelLeft aria-hidden className="h-4 w-4" /> Controls
+          <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-2.5 text-sm font-medium transition hover:bg-muted" title={t("showControlsTitle")} onClick={() => requestRailTab("recording")}>
+            <PanelLeft aria-hidden className="h-4 w-4" /> {t("controls")}
           </button>
         ) : null}
       </div>
@@ -254,8 +265,8 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
         <input
           className="-mx-2 mt-2.5 w-[calc(100%+1rem)] truncate rounded-lg bg-transparent! px-2 py-0.5 text-[28px] font-semibold leading-tight tracking-tight outline-none transition-colors placeholder:text-muted-foreground hover:bg-muted/60! focus:bg-muted/60!"
           value={name}
-          aria-label="Recording name"
-          placeholder="Untitled recording"
+          aria-label={t("recordingNameLabel")}
+          placeholder={t("untitledRecording")}
           disabled={stopping}
           onChange={(event) => setEditedName(event.target.value)}
           onBlur={commitName}
@@ -269,18 +280,18 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
         />
 
         <div className="mt-6 flex items-center gap-5">
-          <span className={`shrink-0 font-mono text-[34px] font-medium leading-none tabular-nums tracking-tight ${paused ? "text-muted-foreground" : ""}`} aria-label={`Recorded ${formatClock(seconds)}`}>
+          <span className={`shrink-0 font-mono text-[34px] font-medium leading-none tabular-nums tracking-tight ${paused ? "text-muted-foreground" : ""}`} aria-label={t("recordedLabel", { duration: formatClock(seconds) })}>
             {formatClock(seconds)}
           </span>
           <div className="min-w-0 flex-1">
             <LiveWaveform levels={levels} active={recording} />
           </div>
           {paused ? (
-            <button type="button" className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-destructive text-white shadow-[0_6px_20px_-6px] shadow-destructive/60 transition hover:scale-[1.04] active:scale-95" aria-label="Resume recording" title="Resume (Space)" onClick={() => void recorder.resume()}>
+            <button type="button" className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-destructive text-white shadow-[0_6px_20px_-6px] shadow-destructive/60 transition hover:scale-[1.04] active:scale-95" aria-label={t("resumeRecordingLabel")} title={t("resumeTitle")} onClick={() => void recorder.resume()}>
               <span className="h-4 w-4 rounded-full bg-white" />
             </button>
           ) : (
-            <button type="button" className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-border bg-card text-foreground shadow-sm transition hover:scale-[1.04] hover:bg-muted active:scale-95 disabled:opacity-40" disabled={!recording} aria-label="Pause recording" title="Pause (Space)" onClick={recorder.pause}>
+            <button type="button" className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-border bg-card text-foreground shadow-sm transition hover:scale-[1.04] hover:bg-muted active:scale-95 disabled:opacity-40" disabled={!recording} aria-label={t("pauseRecordingLabel")} title={t("pauseTitle")} onClick={recorder.pause}>
               <Pause aria-hidden className="h-5 w-5" fill="currentColor" />
             </button>
           )}
@@ -293,7 +304,7 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
         <div className="border-t border-border" />
         {/* Narrow: one at a time. Wide: side by side. */}
         <div className="mt-4 flex items-center justify-between gap-3 @3xl:hidden">
-        <div className="grid grid-cols-2 gap-0.5 rounded-[10px] bg-muted p-0.5" role="tablist" aria-label="Show">
+        <div className="grid grid-cols-2 gap-0.5 rounded-[10px] bg-muted p-0.5" role="tablist" aria-label={t("show")}>
           {(["recap", "transcript"] as const).map((option) => (
             <button
               key={option}
@@ -303,7 +314,9 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
               className={`h-7 rounded-lg px-3 text-xs font-medium transition ${view === option ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => setView(option)}
             >
-              {option === "recap" ? `Recap${recapDraft.bullets.length ? ` · ${recapDraft.bullets.length}` : ""}` : `Transcript${lines.length ? ` · ${lines.length}` : ""}`}
+              {option === "recap"
+                ? (recapDraft.bullets.length ? t("recapTabCount", { count: recapDraft.bullets.length }) : t("recap"))
+                : (lines.length ? t("transcriptTabCount", { count: lines.length }) : t("transcript"))}
             </button>
           ))}
         </div>
@@ -311,9 +324,9 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
         </div>
 
         <div className="grid min-h-0 flex-1 @3xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-          <section className={`${view === "recap" ? "flex" : "hidden"} min-h-0 flex-col @3xl:flex @3xl:pr-10`} aria-label="Live recap">
+          <section className={`${view === "recap" ? "flex" : "hidden"} min-h-0 flex-col @3xl:flex @3xl:pr-10`} aria-label={t("liveRecapLabel")}>
             <SectionHeading
-              title="Recap"
+              title={t("recap")}
               count={recapDraft.bullets.length}
               status={recapStatus}
             />
@@ -326,8 +339,8 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
                         <span aria-hidden className="mt-[0.68rem] h-[5px] w-[5px] shrink-0 rounded-full bg-foreground/45" />
                         <EditableLine
                           text={bullet.text}
-                          label={`Recap point ${index + 1}`}
-                          placeholder="A point to remember…"
+                          label={t("recapPointLabel", { number: index + 1 })}
+                          placeholder={t("recapPointPlaceholder")}
                           readOnly={stopping}
                           className="flex-1 text-[15px] leading-[1.6]"
                           focus={recapDraft.focus?.id === bullet.id ? recapDraft.focus : null}
@@ -339,7 +352,7 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
                           onMove={(direction) => recapDraft.move(bullet.id, direction)}
                         />
                         <span className="flex shrink-0 items-center gap-1 self-start pt-[5px] font-mono text-[11px] tabular-nums text-muted-foreground/80">
-                          {bullet.edited ? <Pencil aria-label="Written or corrected by you" className="h-2.5 w-2.5" /> : null}
+                          {bullet.edited ? <Pencil aria-label={t("writtenByYou")} className="h-2.5 w-2.5" /> : null}
                           {formatClock(bullet.addedAt)}
                         </span>
                       </li>
@@ -350,7 +363,7 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
                 )}
                 {!stopping ? (
                   <button type="button" className="mt-1 inline-flex h-8 items-center gap-2 rounded-lg pr-2 text-[13px] text-muted-foreground transition-colors hover:text-foreground" onClick={recapDraft.add}>
-                    <Plus aria-hidden className="h-3.5 w-3.5" /> Add a point
+                    <Plus aria-hidden className="h-3.5 w-3.5" /> {t("addPoint")}
                   </button>
                 ) : null}
                 {liveRecap && recap?.error ? <p className="mt-2 text-xs leading-5 text-destructive">{recap.error}</p> : null}
@@ -359,9 +372,9 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
             </div>
           </section>
 
-          <section className={`${view === "transcript" ? "flex" : "hidden"} min-h-0 flex-col @3xl:flex @3xl:border-l @3xl:border-border @3xl:pl-10`} aria-label="Live transcript">
+          <section className={`${view === "transcript" ? "flex" : "hidden"} min-h-0 flex-col @3xl:flex @3xl:border-l @3xl:border-border @3xl:pl-10`} aria-label={t("liveTranscriptLabel")}>
             <SectionHeading
-              title="Transcript"
+              title={t("transcript")}
               count={lines.length}
               status={transcriptStatus}
             />
@@ -374,8 +387,8 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
                         <span className="w-10 shrink-0 pt-[5px] text-right font-mono text-[11px] tabular-nums text-muted-foreground/80">{formatClock(segment.start)}</span>
                         <EditableLine
                           text={segment.text}
-                          label={`Passage at ${formatClock(segment.start)}`}
-                          placeholder="Type here…"
+                          label={t("passageAt", { time: formatClock(segment.start) })}
+                          placeholder={t("typeHere")}
                           readOnly={stopping}
                           className="flex-1 text-[15px] leading-[1.65] text-foreground/90"
                           focus={transcript.focus?.index === index ? transcript.focus : null}
@@ -392,11 +405,11 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
                   </div>
                 ) : listening ? (
                   <>
-                    <EmptyNote icon={AudioLines} text="Listening. Each phrase appears here a few seconds after it is said." />
+                    <EmptyNote icon={AudioLines} text={t("listening")} />
                     <ListeningDots />
                   </>
                 ) : (
-                  <EmptyNote icon={AudioLines} text={stopping ? "Finishing the transcript…" : liveTranscribe ? "The transcript appears a few seconds after each phrase." : asrReady ? "Live transcription is off. Turn it on in the Recording panel, or transcribe the memo once it is saved." : "Live transcription needs the Parakeet speech model, which the Recording panel can download."} />
+                  <EmptyNote icon={AudioLines} text={stopping ? t("finishingTranscript") : liveTranscribe ? t("transcriptAppears") : asrReady ? t("liveTranscriptionOff") : t("liveTranscriptionNeedsModel")} />
                 )}
               </div>
               {!transcriptScroll.atBottom ? <LatestButton onClick={transcriptScroll.jump} /> : null}
@@ -406,7 +419,7 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
       </div>
 
       {railSlot ? createPortal(<RecordingControls recorder={recorder} onStop={stopAndSave} onDiscard={confirmDiscard} />, railSlot) : null}
-      {saving ? <span className="sr-only" role="status">Saving the recording</span> : null}
+      {saving ? <span className="sr-only" role="status">{t("savingSrOnly")}</span> : null}
     </div>
   );
 }
@@ -415,6 +428,7 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
 const scrollArea = "absolute inset-y-0 -inset-x-2 overflow-x-hidden overflow-y-auto px-2 pb-12 pt-3 @3xl:pt-1 [mask-image:linear-gradient(to_bottom,transparent,black_10px,black_calc(100%-32px),transparent)]";
 
 function StatusPill({ state }: { state: "recording" | "paused" | "saving" }) {
+  const t = useTranslations("recording.recordingTabView");
   const tone = state === "recording"
     ? "bg-destructive/10 text-destructive"
     : state === "paused" ? "bg-amber-500/12 text-amber-700 dark:text-amber-400" : "bg-muted text-muted-foreground";
@@ -423,7 +437,7 @@ function StatusPill({ state }: { state: "recording" | "paused" | "saving" }) {
       {state === "saving" ? <Loader2 aria-hidden className="h-3 w-3 animate-spin" /> : (
         <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${state === "recording" ? "animate-pulse bg-destructive" : "bg-current"}`} />
       )}
-      {state === "recording" ? "Recording" : state === "paused" ? "Paused" : "Saving"}
+      {state === "recording" ? t("statusRecording") : state === "paused" ? t("statusPaused") : t("statusSaving")}
     </span>
   );
 }

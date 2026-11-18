@@ -6,6 +6,7 @@ import { EditorView } from "@codemirror/view";
 import {
   startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties,
 } from "react";
+import { useTranslations } from "next-intl";
 import { createPortal, flushSync } from "react-dom";
 import {
   textareaEditSpec,
@@ -109,6 +110,8 @@ export function MarkdownCodeMirrorEditor({
 }: MarkdownSourceEditorProps & { adapter: CodeMirrorTextareaAdapter }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const t = useTranslations("markdownSource.markdownCodemirrorEditor");
+  const tCitations = useTranslations("lib.markdownCodemirror.citations");
   const viewRef = useRef<EditorView | null>(null);
   const [view, setView] = useState<EditorView | null>(null);
   const [contextMenu, setContextMenu] = useState<SourceContextMenuState | null>(null);
@@ -459,6 +462,7 @@ export function MarkdownCodeMirrorEditor({
             return () => setCitationTooltips((list) => list.filter((tooltip) => tooltip.id !== id));
           },
           open: (citation) => openCitationAttachment(referenceRenderRef.current, citation),
+          labels: { unresolvedKey: tCitations("unresolvedKeyTitle"), details: tCitations("citationDetails") },
         }),
         extensionsCompartment.of(initial.extensions ?? []),
       ],
@@ -744,7 +748,7 @@ export function MarkdownCodeMirrorEditor({
 
       {draggingImage ? (
         <div className="pointer-events-none absolute inset-3 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-input bg-white/70 text-sm font-medium text-foreground">
-          Drop image to insert
+          {t("dropImage")}
         </div>
       ) : null}
 
@@ -765,7 +769,7 @@ export function MarkdownCodeMirrorEditor({
           onImageToMarkdown={() => runMenuAction((menu) => { if (menu.image && !aiWorking) void onAiImageToMarkdown(menu.image); })}
           onReadAloud={() => runMenuAction((menu) => {
             const text = viewRef.current?.state.sliceDoc(menu.start, menu.end) ?? "";
-            if (text.trim()) speakMarkdown(text, { label: "Selection" });
+            if (text.trim()) speakMarkdown(text, { label: t("selectionLabel") });
           })}
         />
       ) : null}

@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { apiRequest } from "./api-client";
 import type { PythonRuntimeStatus } from "@/lib/python/runtime";
@@ -8,13 +9,9 @@ import type { PythonRuntimeStatus } from "@/lib/python/runtime";
 // (the app starts that on a new computer, see libera-app.tsx), or when the
 // setup failed, with Retry. Nothing shows once Python is ready.
 
-const PHASES: Record<NonNullable<PythonRuntimeStatus["job"]>["phase"], string> = {
-  uv: "Downloading the installer",
-  python: "Installing Python",
-  packages: "Installing NumPy, pandas, Matplotlib and more",
-};
-
 export function PythonSetupStatus() {
+  const t = useTranslations("pythonSetupStatus");
+  const tCommon = useTranslations("common");
   const [status, setStatus] = useState<PythonRuntimeStatus | null>(null);
 
   useEffect(() => {
@@ -39,8 +36,8 @@ export function PythonSetupStatus() {
   const job = status?.job;
   if (!status || status.ready || !job || (!job.running && !job.error)) return null;
   if (job.running) {
-    const percent = job.phase === "uv" && job.totalBytes ? ` ${Math.round((job.downloadedBytes / job.totalBytes) * 100)}%` : "";
-    return <p role="status" className="truncate text-xs text-muted-foreground" title={`Libera installs a private Python (about ${Math.round(status.estimatedBytes / 1e6)} MB) so the agent can compute results and plot figures in notes.`}>{`Setting up Python for notes: ${PHASES[job.phase]}…${percent}`}</p>;
+    const percent = job.phase === "uv" && job.totalBytes ? job.downloadedBytes / job.totalBytes : -1;
+    return <p role="status" className="truncate text-xs text-muted-foreground" title={t("runningTitle", { megabytes: Math.round(status.estimatedBytes / 1e6) })}>{percent >= 0 ? t("runningStatusPercent", { phase: t(`phase.${job.phase}`), fraction: percent }) : t("runningStatus", { phase: t(`phase.${job.phase}`) })}</p>;
   }
   const retry = () => {
     void apiRequest<PythonRuntimeStatus>("/api/python", { method: "POST" }).then((next) => {
@@ -54,8 +51,8 @@ export function PythonSetupStatus() {
   };
   return (
     <p role="alert" className="flex items-center gap-1 text-xs text-destructive" title={job.error}>
-      <span className="min-w-0 flex-1 truncate">{`Python for notes is not set up: ${job.error}`}</span>
-      <button type="button" className="shrink-0 underline" onClick={retry}>Retry</button>
+      <span className="min-w-0 flex-1 truncate">{t("notSetUp", { error: job.error })}</span>
+      <button type="button" className="shrink-0 underline" onClick={retry}>{tCommon("retry")}</button>
     </p>
   );
 }

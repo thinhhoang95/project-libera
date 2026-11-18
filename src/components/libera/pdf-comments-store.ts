@@ -19,6 +19,8 @@ export type PdfCommentsState = {
   /** The action being sent ("comment", "reply"…), or "". */
   busy: string;
   error: string;
+  /** Where `error` came from: the server's own words ("server", still English), or a failure this store words itself, which the UI shows translated. */
+  errorKind: "" | "server" | "load" | "save";
   /** The thread whose card is open and whose passage is marked as selected. */
   selectedId: string | null;
   /** On a live PDF: this person can read comments, not write them. */
@@ -34,7 +36,7 @@ export type PdfCommentChange =
   | { action: "resolve"; threadId: string; resolved: boolean }
   | { action: "delete"; threadId: string };
 
-const EMPTY: PdfCommentsState = { threads: [], loaded: false, busy: "", error: "", selectedId: null, readOnly: false, live: null };
+const EMPTY: PdfCommentsState = { threads: [], loaded: false, busy: "", error: "", errorKind: "", selectedId: null, readOnly: false, live: null };
 const ROUTE = "/api/pdf-comments";
 const CHANNEL = "libera-pdf-comments";
 const FOCUS_EVENT = "libera:pdf-comment-focus";
@@ -55,7 +57,7 @@ function set(path: string, patch: Partial<PdfCommentsState>) {
 function adopt(path: string, received: unknown, readOnly = pdfCommentsState(path).readOnly, live = pdfCommentsState(path).live) {
   const threads = Array.isArray(received) ? received as PdfCommentThread[] : [];
   const selectedId = states.get(path)?.selectedId ?? null;
-  set(path, { threads, loaded: true, error: "", readOnly, live, selectedId: selectedId && threads.some((thread) => thread.id === selectedId) ? selectedId : null });
+  set(path, { threads, loaded: true, error: "", errorKind: "", readOnly, live, selectedId: selectedId && threads.some((thread) => thread.id === selectedId) ? selectedId : null });
 }
 
 export function pdfCommentsState(path: string): PdfCommentsState {
@@ -82,7 +84,7 @@ export function loadPdfComments(path: string): Promise<void> {
       loadedUnder.set(path, authority);
       adopt(path, payload.threads, payload.readOnly === true, payload.live ?? null);
     })
-    .catch((error) => set(path, { loaded: true, error: error instanceof Error ? error.message : "Could not load comments." }))
+    .catch((error) => set(path, { loaded: true, error: error instanceof Error ? error.message : "Could not load comments.", errorKind: error instanceof Error ? "server" : "load" }))
     .finally(() => loads.delete(path));
   loads.set(path, work);
   return work;
@@ -95,7 +97,7 @@ export function refreshPdfComments(path: string) {
 
 /** Sends one change; resolves false (with the error shown) when it was refused. */
 export async function changePdfComments(path: string, change: PdfCommentChange): Promise<PdfCommentThread[] | null> {
-  set(path, { busy: change.action, error: "" });
+  set(path, { busy: change.action, error: "", errorKind: "" });
   try {
     const payload = await apiRequest<PdfCommentsPayload>(ROUTE, { method: "POST", body: JSON.stringify({ ...change, path }) });
     adopt(path, payload.threads, payload.readOnly === true, payload.live ?? null);
@@ -103,7 +105,7 @@ export async function changePdfComments(path: string, change: PdfCommentChange):
     broadcast(path, threads);
     return threads;
   } catch (error) {
-    set(path, { error: error instanceof Error ? error.message : "Could not save the comment." });
+    set(path, { error: error instanceof Error ? error.message : "Could not save the comment.", errorKind: error instanceof Error ? "server" : "save" });
     return null;
   } finally {
     set(path, { busy: "" });
@@ -115,7 +117,7 @@ export function selectPdfComment(path: string, threadId: string | null) {
 }
 
 export function clearPdfCommentsError(path: string) {
-  if (pdfCommentsState(path).error) set(path, { error: "" });
+  if (pdfCommentsState(path).error) set(path, { error: "", errorKind: "" });
 }
 
 /** The panel asks the viewer showing `path` to scroll a thread's passage into view. */

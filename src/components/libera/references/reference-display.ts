@@ -17,6 +17,12 @@ import type {
   ReferenceLibrary,
 } from "@/lib/references/types";
 
+/**
+ * Pass `useTranslations("references.referenceDisplay")` to the label helpers below to get the interface language;
+ * without one they return English.
+ */
+export type DisplayTranslator = (key: string, values?: Record<string, string | number>) => string;
+
 // ---------------------------------------------------------------------------
 // Names, years, rows
 // ---------------------------------------------------------------------------
@@ -36,12 +42,12 @@ export function entryCreators(csl: CslItem): CslName[] {
 }
 
 /** "Smith", "Smith & Lee" or "Smith et al.". Empty when the entry has no creator. */
-export function authorsLabel(csl: CslItem) {
+export function authorsLabel(csl: CslItem, t?: DisplayTranslator) {
   const names = entryCreators(csl).map(familyName).filter(Boolean);
   if (!names.length) return "";
   if (names.length === 1) return names[0];
-  if (names.length === 2) return `${names[0]} & ${names[1]}`;
-  return `${names[0]} et al.`;
+  if (names.length === 2) return t ? t("authorsTwo", { first: names[0], second: names[1] }) : `${names[0]} & ${names[1]}`;
+  return t ? t("authorsMany", { first: names[0] }) : `${names[0]} et al.`;
 }
 
 /** The first year of a CSL date, from date-parts or a literal/raw string. */
@@ -53,25 +59,26 @@ export function dateYear(date: CslDate | undefined): number | undefined {
 }
 
 /** "2020", or "n.d." without a date. */
-export function yearLabel(csl: CslItem) {
+export function yearLabel(csl: CslItem, t?: DisplayTranslator) {
   const year = dateYear(csl.issued);
   if (year !== undefined) return String(year);
   if (csl.issued?.literal) return csl.issued.literal;
-  return "n.d.";
+  return t ? t("noDate") : "n.d.";
 }
 
 /** "Smith et al. (2020)"; "Untitled (2020)" style fallbacks use the title's first words. */
-export function authorYearLabel(csl: CslItem) {
-  const authors = authorsLabel(csl);
-  return `${authors || "No author"} (${yearLabel(csl)})`;
+export function authorYearLabel(csl: CslItem, t?: DisplayTranslator) {
+  const authors = authorsLabel(csl, t);
+  if (!t) return `${authors || "No author"} (${yearLabel(csl)})`;
+  return t("authorYear", { authors: authors || t("noAuthor"), year: yearLabel(csl, t) });
 }
 
 /** The title, or the free text of an entry that has none yet (an unresolved pasted reference). */
-export function entryTitle(entry: Pick<ReferenceEntry, "csl">) {
+export function entryTitle(entry: Pick<ReferenceEntry, "csl">, t?: DisplayTranslator) {
   const title = typeof entry.csl.title === "string" ? entry.csl.title.trim() : "";
   if (title) return title;
   const note = typeof entry.csl.note === "string" ? entry.csl.note.trim() : "";
-  return note ? note.replace(/\s+/g, " ") : "Untitled";
+  return note ? note.replace(/\s+/g, " ") : t ? t("untitled") : "Untitled";
 }
 
 /** Where the work appeared: journal or book title, event, else publisher. */
@@ -250,6 +257,10 @@ export function highlightSegments(text: string, words: string[]): Array<{ text: 
 
 export type ReferenceSort = "author" | "year" | "title" | "added" | "cited";
 
+export function sortLabel(sort: ReferenceSort, t?: DisplayTranslator) {
+  return t ? t(`sort.${sort}`) : REFERENCE_SORTS.find((item) => item.id === sort)!.label;
+}
+
 export const REFERENCE_SORTS: Array<{ id: ReferenceSort; label: string }> = [
   { id: "author", label: "Author" },
   { id: "year", label: "Year" },
@@ -336,8 +347,14 @@ export function changedTags(entry: ReferenceEntry, add: string[], remove: string
 }
 
 /** The undo label and the notice for adding or removing tags on `count` entries. */
-export function tagChangeText(count: number, add: string[], remove: string[]) {
+export function tagChangeText(count: number, add: string[], remove: string[], t?: DisplayTranslator) {
   const tags = (add.length ? add : remove).map((tag) => `“${tag}”`).join(", ");
+  if (t) {
+    const values = { tags, count };
+    return add.length
+      ? { label: t("tagAddUndo", values), message: t("tagAddNotice", values) }
+      : { label: t("tagRemoveUndo", values), message: t("tagRemoveNotice", values) };
+  }
   const entries = `${count} reference${count === 1 ? "" : "s"}`;
   return add.length
     ? { label: `Add ${tags} to ${entries}`, message: `Added ${tags} to ${entries}.` }
@@ -389,6 +406,10 @@ export const DUPLICATE_GROUP_LABELS: Record<DuplicateGroupKind, string> = {
   identifier: "Same identifier",
   title: "Similar title",
 };
+
+export function duplicateGroupLabel(kind: DuplicateGroupKind, t?: DisplayTranslator) {
+  return t ? t(`duplicateGroup.${kind}`) : DUPLICATE_GROUP_LABELS[kind];
+}
 
 /** The entry a merge keeps: the published version, else the oldest. */
 export function chooseKeptEntry(group: ReferenceEntry[]) {
@@ -454,8 +475,9 @@ export const CSL_TYPE_LABELS: Record<CslItemType, string> = {
   webpage: "Web page",
 };
 
-export function typeLabel(type: string) {
-  return CSL_TYPE_LABELS[type as CslItemType] ?? type;
+export function typeLabel(type: string, t?: DisplayTranslator) {
+  if (!(type in CSL_TYPE_LABELS)) return type;
+  return t ? t(`cslType.${type}`) : CSL_TYPE_LABELS[type as CslItemType];
 }
 
 export const CSL_FIELD_LABELS: Record<string, string> = {
@@ -492,8 +514,9 @@ export const CSL_FIELD_LABELS: Record<string, string> = {
   PMCID: "PMCID",
 };
 
-export function fieldLabel(field: string) {
-  return CSL_FIELD_LABELS[field] ?? field;
+export function fieldLabel(field: string, t?: DisplayTranslator) {
+  if (!Object.hasOwn(CSL_FIELD_LABELS, field)) return field;
+  return t ? t(`cslField.${field}`) : CSL_FIELD_LABELS[field];
 }
 
 export const PROVENANCE_LABELS: Record<ProvenanceSource, string> = {
@@ -511,6 +534,10 @@ export const PROVENANCE_LABELS: Record<ProvenanceSource, string> = {
   user: "You",
 };
 
+export function provenanceLabel(source: ProvenanceSource, t?: DisplayTranslator) {
+  return t ? t(`provenance.${source}`) : PROVENANCE_LABELS[source];
+}
+
 export const INPUT_KIND_LABELS: Record<ReferenceInputKind, string> = {
   doi: "DOI",
   arxiv: "arXiv ID",
@@ -525,16 +552,28 @@ export const INPUT_KIND_LABELS: Record<ReferenceInputKind, string> = {
   bibliography: "Bibliography",
 };
 
+export function inputKindLabel(kind: ReferenceInputKind, t?: DisplayTranslator) {
+  return t ? t(`inputKind.${kind}`) : INPUT_KIND_LABELS[kind];
+}
+
 export const READING_LABELS = {
   "to-read": "To read",
   read: "Read",
 } as const;
+
+export function readingLabel(reading: keyof typeof READING_LABELS, t?: DisplayTranslator) {
+  return t ? t(`reading.${reading}`) : READING_LABELS[reading];
+}
 
 export const STATUS_LABELS = {
   confirmed: "Confirmed",
   "needs-review": "Needs review",
   unresolved: "Unresolved",
 } as const;
+
+export function statusLabel(status: keyof typeof STATUS_LABELS, t?: DisplayTranslator) {
+  return t ? t(`status.${status}`) : STATUS_LABELS[status];
+}
 
 /** A CSL date as text: "2020-03-14", "2020", or its literal. */
 export function formatCslDate(date: CslDate | undefined) {

@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { speakerColor } from "@/components/libera/audio/speaker-colors";
 import { formatClock } from "@/lib/transcription/format";
@@ -37,6 +38,7 @@ export function Waveform({
   onSeek: (time: number) => void;
   loading?: boolean;
 }) {
+  const t = useTranslations("audio.waveform");
   const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
@@ -180,11 +182,11 @@ export function Waveform({
       ref={wrapperRef}
       role="slider"
       tabIndex={0}
-      aria-label="Seek"
+      aria-label={t("seek")}
       aria-valuemin={0}
       aria-valuemax={Math.round(duration)}
       aria-valuenow={Math.round(currentTime)}
-      aria-valuetext={`${formatClock(currentTime)} of ${formatClock(duration)}`}
+      aria-valuetext={t("valueText", { current: formatClock(currentTime), duration: formatClock(duration) })}
       className={`relative w-full cursor-pointer touch-none select-none rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring ${loading ? "animate-pulse" : ""}`}
       style={{ height }}
       onPointerDown={onPointerDown}

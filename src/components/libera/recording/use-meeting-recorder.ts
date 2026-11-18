@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { encodeWav } from "@/components/libera/audio/dictation";
@@ -77,6 +78,7 @@ function quietThreshold(rms: number[]) {
  * their editing ends, in order, and saving the recording waits for them.
  */
 export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRecording, notebook: string, recordingId: string) => void }) {
+  const t = useTranslations("recording.useMeetingRecorder");
   const [state, setState] = useState<RecorderState>("idle");
   const [error, setError] = useState("");
   // The edit-save failure last shown, so a later successful save clears that message and no other.
@@ -266,14 +268,14 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
         paused.current = true;
         cut();
         setState("paused");
-        setError("The microphone was disconnected. Resume to record on.");
+        setError(t("micDisconnected"));
       }));
       capture.current = { context, stream, node };
     } catch (failure) {
       stream.getTracks().forEach((track) => track.stop());
       throw failure;
     }
-  }, [cut, onFrame]);
+  }, [cut, onFrame, t]);
 
   const reset = useCallback(() => {
     releaseCapture();
@@ -310,9 +312,9 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     }
   }, []);
 
-  const micError = (failure: unknown) => failure instanceof DOMException && failure.name === "NotAllowedError"
-    ? "Libera may not use the microphone. Allow it in your system's privacy settings."
-    : failure instanceof Error ? failure.message : "Could not start the microphone.";
+  const micError = useCallback((failure: unknown) => failure instanceof DOMException && failure.name === "NotAllowedError"
+    ? t("micPermissionDenied")
+    : failure instanceof Error ? failure.message : t("startMicFailed"), [t]);
 
   /** Starts a new recording into `parentPath` (a folder) or the notebook; returns it once recording. */
   const start = useCallback(async (notebook: string, parentPath?: string): Promise<RecordingStatus | null> => {
@@ -344,7 +346,7 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
       setError(micError(failure));
       return null;
     }
-  }, [applyStatus, openMicrophone, refreshSetup, releaseCapture, reset]);
+  }, [applyStatus, micError, openMicrophone, refreshSetup, releaseCapture, reset]);
 
   /** Gives up on a start still waiting for the microphone (for example on a permission prompt). */
   const cancelStart = useCallback(() => {
@@ -373,10 +375,10 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     } catch (failure) {
       reset();
       setState("error");
-      setError(failure instanceof Error ? failure.message : "Could not open the recording.");
+      setError(failure instanceof Error ? failure.message : t("openRecordingFailed"));
       return null;
     }
-  }, [applyStatus, refreshSetup, reset]);
+  }, [applyStatus, refreshSetup, reset, t]);
 
   const pause = useCallback(() => {
     if (state !== "recording") return;
@@ -404,7 +406,7 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     } catch (failure) {
       setError(micError(failure));
     }
-  }, [openMicrophone, releaseCapture, state]);
+  }, [micError, openMicrophone, releaseCapture, state]);
 
   /** Stops, sends what is left and saves the recording, its transcript and its recap. */
   const stop = useCallback(async () => {
@@ -428,9 +430,9 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
       // The chunks stay on disk; saving can be tried again.
       setSaving(false);
       setState("paused");
-      setError(failure instanceof Error ? failure.message : "Could not save the recording.");
+      setError(failure instanceof Error ? failure.message : t("saveRecordingFailed"));
     }
-  }, [cut, drainUploads, releaseCapture, reset, session, state]);
+  }, [cut, drainUploads, releaseCapture, reset, session, state, t]);
 
   const discard = useCallback(async () => {
     const id = sessionId.current;
@@ -450,14 +452,14 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     try {
       applyStatus(await apiRequest<RecordingStatus>(`/api/recordings/${id}`, { method: "PATCH", body: JSON.stringify(changes) }));
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not change the recording.");
+      setError(failure instanceof Error ? failure.message : t("changeRecordingFailed"));
     }
-  }, [applyStatus]);
+  }, [applyStatus, t]);
 
   /** Sends the reader's edits after any still on their way; rejects when they could not be kept. */
   const sendEdits = useCallback((changes: { transcriptEdits?: SegmentEdits; recapEdits?: RecapEdit[] }, closing: boolean) => {
     const id = sessionId.current;
-    if (!id) return Promise.reject(new Error("The recording is not open."));
+    if (!id) return Promise.reject(new Error(t("recordingNotOpen")));
     const body = JSON.stringify(changes);
     const send = editSaves.current.catch(() => undefined).then(async () => {
       try {
@@ -470,7 +472,8 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
         }
       } catch (failure) {
         if (sessionId.current === id) {
-          editSaveError.current = failure instanceof Error ? `Your edits could not be saved: ${failure.message}` : "Your edits could not be saved.";
+          // The shown message is remembered by value, so a later successful save clears this one and no other.
+          editSaveError.current = failure instanceof Error ? t("editsNotSavedWithReason", { message: failure.message }) : t("editsNotSaved");
           setError(editSaveError.current);
         }
         throw failure;
@@ -478,7 +481,7 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     });
     editSaves.current = send.catch(() => undefined);
     return send;
-  }, [applyStatus]);
+  }, [applyStatus, t]);
 
   const saveTranscriptEdits = useCallback((edits: SegmentEdits, closing = false) => sendEdits({ transcriptEdits: edits }, closing), [sendEdits]);
   const saveRecapEdits = useCallback((edits: RecapEdit[], closing = false) => sendEdits({ recapEdits: edits }, closing), [sendEdits]);
@@ -490,17 +493,17 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     try {
       applyStatus(await apiRequest<RecordingStatus>(`/api/recordings/${id}/recap`, { method: "POST" }));
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not update the recap.");
+      setError(failure instanceof Error ? failure.message : t("updateRecapFailed"));
     }
-  }, [applyStatus]);
+  }, [applyStatus, t]);
 
   const downloadModels = useCallback(async () => {
     try {
       setSetup(await apiRequest<TranscriptionSetupStatus>("/api/transcripts/setup", { method: "POST", body: JSON.stringify({}) }));
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not start the download.");
+      setError(failure instanceof Error ? failure.message : t("startDownloadFailed"));
     }
-  }, []);
+  }, [t]);
 
   // The clock and the level meter. The clock counts recorded audio, so pauses do not add to it.
   const active = state === "recording" || state === "paused" || state === "stopping";

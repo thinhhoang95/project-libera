@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { memo, useEffect, useRef, type RefObject } from "react";
 import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
 import { TEXT_WIDTH_PREFERENCE_KEY, type TextWidthKind } from "@/lib/markdown-display-preferences";
@@ -13,6 +14,7 @@ export const MarkdownTextWidth = memo(function MarkdownTextWidth({
   /** The editor family whose own saved width this triangle shows and sets. */
   kind?: TextWidthKind;
 }) {
+  const t = useTranslations("markdownTextWidth");
   const { preferences, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
   const preferenceKey = TEXT_WIDTH_PREFERENCE_KEY[kind];
   const textWidth = preferences[preferenceKey];
@@ -24,7 +26,7 @@ export const MarkdownTextWidth = memo(function MarkdownTextWidth({
     frameRef.current = null;
     const width = pendingRef.current;
     canvasRef.current?.style.setProperty("--markdown-text-width", String(width / 100));
-    inputRef.current?.setAttribute("aria-valuetext", width === 100 ? "Full width" : `${width}% of adjustable width`);
+    inputRef.current?.setAttribute("aria-valuetext", width === 100 ? t("fullWidth") : t("widthPercent", { width: width / 100 }));
   }
 
   function commitWidth() {
@@ -39,12 +41,12 @@ export const MarkdownTextWidth = memo(function MarkdownTextWidth({
     pendingRef.current = textWidth;
     if (inputRef.current) inputRef.current.value = String(textWidth);
     canvasRef.current?.style.setProperty("--markdown-text-width", String(textWidth / 100));
-    inputRef.current?.setAttribute("aria-valuetext", textWidth === 100 ? "Full width" : `${textWidth}% of adjustable width`);
+    inputRef.current?.setAttribute("aria-valuetext", textWidth === 100 ? t("fullWidth") : t("widthPercent", { width: textWidth / 100 }));
     return () => {
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     };
-  }, [canvasRef, textWidth]);
+  }, [canvasRef, t, textWidth]);
 
   return (
     <div className="libera-text-width-ruler">
@@ -57,8 +59,8 @@ export const MarkdownTextWidth = memo(function MarkdownTextWidth({
           max={100}
           step={1}
           defaultValue={textWidth}
-          aria-label="Page text width"
-          title="Drag to adjust page margins. Move all the way right for full width. Arrow keys adjust; Home/End select minimum/full width."
+          aria-label={t("pageTextWidthLabel")}
+          title={t("sliderTitle")}
           onInput={(event) => {
             pendingRef.current = event.currentTarget.valueAsNumber;
             if (frameRef.current === null) frameRef.current = requestAnimationFrame(applyWidth);

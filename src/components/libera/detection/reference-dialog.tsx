@@ -1,6 +1,7 @@
 "use client";
 
 import { Undo2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { DEFAULT_LAYERS, DetectionCanvas } from "@/components/libera/detection/detection-canvas";
@@ -19,6 +20,7 @@ export function ReferenceDialog({ file, color, onCancel, onAdd }: {
   onCancel: () => void;
   onAdd: (prompt: Omit<VisualPrompt, "id">) => void;
 }) {
+  const t = useTranslations("detection.referenceDialog");
   const [reference, setReference] = useState<{ dataUrl: string; width: number; height: number; image: HTMLImageElement } | null>(null);
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [label, setLabel] = useState("");
@@ -36,9 +38,9 @@ export function ReferenceDialog({ file, color, onCancel, onAdd }: {
       setBoxes([]);
       setLabel(file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").slice(0, 60));
       setError("");
-    }, () => !canceled && setError("Could not read this image. Use a JPEG, PNG or WebP file.")).finally(() => URL.revokeObjectURL(url));
+    }, () => !canceled && setError(t("readImageError"))).finally(() => URL.revokeObjectURL(url));
     return () => { canceled = true; };
-  }, [file]);
+  }, [file, t]);
 
   function add(useWholeImage: boolean) {
     if (!reference || !file) return;
@@ -46,7 +48,7 @@ export function ReferenceDialog({ file, color, onCancel, onAdd }: {
     if (!chosen.length) return;
     onAdd({
       type: "visual",
-      label: label.trim() || "reference",
+      label: label.trim() || t("defaultLabel"),
       color,
       source: "upload",
       name: file.name,
@@ -64,15 +66,15 @@ export function ReferenceDialog({ file, color, onCancel, onAdd }: {
   return (
     <ModalDialog
       open={Boolean(file)}
-      title="Reference image"
-      description="Draw a box around each example of the object to find. More examples make a steadier prompt."
+      title={t("referenceImage")}
+      description={t("description")}
       panelClassName="max-w-3xl"
       onClose={onCancel}
       footer={(
         <>
-          <button type="button" className={buttonClass} disabled={!reference} onClick={() => add(true)}>Use whole image</button>
+          <button type="button" className={buttonClass} disabled={!reference} onClick={() => add(true)}>{t("useWholeImage")}</button>
           <button type="button" className={primaryClass} disabled={!boxes.length} onClick={() => add(false)}>
-            Add prompt{boxes.length ? ` (${boxes.length} ${boxes.length === 1 ? "example" : "examples"})` : ""}
+            {boxes.length ? t("addPromptWithCount", { count: boxes.length }) : t("addPrompt")}
           </button>
         </>
       )}
@@ -80,11 +82,11 @@ export function ReferenceDialog({ file, color, onCancel, onAdd }: {
       <div className="space-y-3">
         <div className="flex items-end gap-2">
           <label className="flex-1 space-y-1 text-sm">
-            <span className="text-xs text-muted-foreground">Label</span>
+            <span className="text-xs text-muted-foreground">{t("label")}</span>
             <input className="w-full rounded-md border border-input bg-background px-2.5 py-1.5" value={label} maxLength={80} onChange={(event) => setLabel(event.target.value)} />
           </label>
           <button type="button" className={buttonClass} disabled={!boxes.length} onClick={() => setBoxes((current) => current.slice(0, -1))}>
-            <Undo2 aria-hidden className="h-4 w-4" /> Undo box
+            <Undo2 aria-hidden className="h-4 w-4" /> {t("undoBox")}
           </button>
         </div>
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}

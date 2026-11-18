@@ -1,6 +1,7 @@
 "use client";
 
 import { Presentation } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useMemo } from "react";
 import type { RefObject } from "react";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
@@ -61,7 +62,9 @@ function markdownToPreviewText(markdown: string) {
   );
 }
 
-function slideTitle(deck: MarkdownSlideDeck, slide: MarkdownSlide) {
+type Translate = ReturnType<typeof useTranslations>;
+
+function slideTitle(deck: MarkdownSlideDeck, slide: MarkdownSlide, t: Translate) {
   const title = slide.title ?? (slide.kind === "title" ? deck.title : undefined);
 
   if (title) {
@@ -69,7 +72,7 @@ function slideTitle(deck: MarkdownSlideDeck, slide: MarkdownSlide) {
     return title.replace(/(\*\*|__|\*|_|`)(.+?)\1/g, "$2");
   }
 
-  return slide.kind === "title" ? "Title Slide" : `Slide ${slide.index + 1}`;
+  return slide.kind === "title" ? t("titleSlide") : t("slideLabel", { number: slide.index + 1 });
 }
 
 function titleSlideMetadataPreview(deck: MarkdownSlideDeck) {
@@ -78,7 +81,7 @@ function titleSlideMetadataPreview(deck: MarkdownSlideDeck) {
     .join(" - ");
 }
 
-function slideContentPreview(deck: MarkdownSlideDeck, slide: MarkdownSlide) {
+function slideContentPreview(deck: MarkdownSlideDeck, slide: MarkdownSlide, t: Translate) {
   const markdownPreview = markdownToPreviewText(slide.content);
 
   if (markdownPreview) {
@@ -93,7 +96,7 @@ function slideContentPreview(deck: MarkdownSlideDeck, slide: MarkdownSlide) {
     }
   }
 
-  return "No body content";
+  return t("noBodyContent");
 }
 
 function activeSlideIndexForTab(deck: MarkdownSlideDeck, activeTab: OpenTab) {
@@ -158,6 +161,7 @@ export function MarkdownSlidesOutlinePreview({
   textareaRef,
   onOpenFile,
 }: MarkdownSlidesOutlinePreviewProps) {
+  const t = useTranslations("markdownSlidesOutlinePreview");
   const deck = useMemo(() => parseMarkdownSlides(activeTab.draft), [activeTab.draft]);
   const activeSlideIndex = activeSlideIndexForTab(deck, activeTab);
 
@@ -183,13 +187,13 @@ export function MarkdownSlidesOutlinePreview({
     <section>
       <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         <Presentation aria-hidden className="h-3.5 w-3.5" />
-        Slide Outlines
+        {t("outlinesHeading")}
       </div>
       {deck.slides.length ? (
         <div className="space-y-2">
           {deck.slides.map((slide) => {
-            const title = slideTitle(deck, slide);
-            const preview = slideContentPreview(deck, slide);
+            const title = slideTitle(deck, slide, t);
+            const preview = slideContentPreview(deck, slide, t);
             const isActive = activeSlideIndex === slide.index;
 
             return (
@@ -210,7 +214,7 @@ export function MarkdownSlidesOutlinePreview({
                     {title}
                   </span>
                   <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
-                    {slide.hidden ? "Hidden" : `Slide ${slide.index + 1}`}
+                    {slide.hidden ? t("hidden") : t("slideLabel", { number: slide.index + 1 })}
                   </span>
                 </span>
                 <span className="line-clamp-3 block text-xs leading-5 text-muted-foreground">
@@ -218,8 +222,8 @@ export function MarkdownSlidesOutlinePreview({
                 </span>
                 {slide.stepCount > 1 || slide.notes ? (
                   <span className="mt-1.5 flex gap-2 text-[10px] font-medium text-muted-foreground">
-                    {slide.stepCount > 1 ? <span>{slide.stepCount} steps</span> : null}
-                    {slide.notes ? <span>Notes</span> : null}
+                    {slide.stepCount > 1 ? <span>{t("stepCount", { count: slide.stepCount })}</span> : null}
+                    {slide.notes ? <span>{t("notes")}</span> : null}
                   </span>
                 ) : null}
               </SidebarNameTooltipButton>
@@ -228,7 +232,7 @@ export function MarkdownSlidesOutlinePreview({
         </div>
       ) : (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          No slides in this deck.
+          {t("noSlides")}
         </p>
       )}
     </section>

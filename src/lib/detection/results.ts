@@ -459,23 +459,42 @@ function isNumberArray(value: unknown, length?: number): value is number[] {
   return Array.isArray(value) && (length === undefined || value.length === length) && value.every((item) => typeof item === "number" && Number.isFinite(item));
 }
 
+export type DetectionFileErrorCode = "notDetectionFile" | "wrongVersion" | "missingImageSize" | "missingPromptsOrDetections";
+
+/**
+ * A detection file that cannot be read. `code` (a key of `lib.detection.results`) and `values` let the UI word it in
+ * the interface language; `message` is the English fallback.
+ */
+export class DetectionFileError extends Error {
+  constructor(readonly code: DetectionFileErrorCode, message: string, readonly values: Record<string, string | number> = {}) {
+    super(message);
+  }
+}
+
+/** Names for what a file leaves unnamed; the defaults are English, the UI passes its own. */
+export type DetectionFileLabels = { prompt?: (number: number) => string; object?: string };
+
 /**
  * Read a saved detection file, checking what the viewer relies on. Measurements
  * are recomputed from the outlines, so an edited file cannot disagree with them.
  */
-export function parseDetectionFile(input: unknown): DetectionFile {
-  if (!isRecord(input) || input.format !== DETECTION_FILE_FORMAT) throw new Error("This is not a Libera detection file.");
-  if (input.version !== DETECTION_FILE_VERSION) throw new Error(`This detection file is version ${String(input.version)}; this Libera reads version ${DETECTION_FILE_VERSION}.`);
+export function parseDetectionFile(input: unknown, labels: DetectionFileLabels = {}): DetectionFile {
+  const promptName = labels.prompt ?? ((number: number) => `Prompt ${number}`);
+  const objectName = labels.object ?? "object";
+  if (!isRecord(input) || input.format !== DETECTION_FILE_FORMAT) throw new DetectionFileError("notDetectionFile", "This is not a Libera detection file.");
+  if (input.version !== DETECTION_FILE_VERSION) {
+    throw new DetectionFileError("wrongVersion", `This detection file is version ${String(input.version)}; this Libera reads version ${DETECTION_FILE_VERSION}.`, { found: String(input.version), current: DETECTION_FILE_VERSION });
+  }
   const image = input.image;
   if (!isRecord(image) || typeof image.width !== "number" || typeof image.height !== "number" || image.width <= 0 || image.height <= 0) {
-    throw new Error("The detection file does not say the image's size.");
+    throw new DetectionFileError("missingImageSize", "The detection file does not say the image's size.");
   }
-  if (!Array.isArray(input.prompts) || !Array.isArray(input.detections)) throw new Error("The detection file has no prompts or detections.");
+  if (!Array.isArray(input.prompts) || !Array.isArray(input.detections)) throw new DetectionFileError("missingPromptsOrDetections", "The detection file has no prompts or detections.");
 
   const prompts: DetectionPrompt[] = input.prompts.filter(isRecord).map((prompt, index) => {
     const base = {
       id: typeof prompt.id === "string" ? prompt.id : `prompt-${index}`,
-      label: typeof prompt.label === "string" ? prompt.label : `Prompt ${index + 1}`,
+      label: typeof prompt.label === "string" ? prompt.label : promptName(index + 1),
       color: typeof prompt.color === "string" && /^#[0-9a-f]{6}$/i.test(prompt.color) ? prompt.color : PROMPT_COLORS[index % PROMPT_COLORS.length],
     };
     if (prompt.type === "visual") {
@@ -512,7 +531,7 @@ export function parseDetectionFile(input: unknown): DetectionFile {
       id: typeof detection.id === "number" ? detection.id : index + 1,
       promptId,
       // An edited object may have been relabeled; otherwise the prompt names it.
-      label: typeof detection.label === "string" && detection.label ? detection.label : prompts.find((entry) => entry.id === promptId)?.label ?? "object",
+      label: typeof detection.label === "string" && detection.label ? detection.label : prompts.find((entry) => entry.id === promptId)?.label ?? objectName,
       confidence: detection.confidence,
       box,
       polygon,

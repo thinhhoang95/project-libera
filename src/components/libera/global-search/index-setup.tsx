@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertTriangle, Database, FolderOpen, Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { nudgeSearchStatus, refreshSearchStatus, searchIndexAction } from "@/components/libera/global-search/search-store";
 import type { SearchIndexStatus } from "@/lib/global-search";
@@ -16,6 +17,7 @@ export async function revealSearchIndex(filePath: string) {
 }
 
 function useIndexAction() {
+  const t = useTranslations("globalSearch.indexSetup");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -26,7 +28,7 @@ function useIndexAction() {
       await work();
       nudgeSearchStatus();
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "The index could not be updated.");
+      setError(actionError instanceof Error ? actionError.message : t("updateError"));
     } finally {
       setBusy(false);
     }
@@ -41,6 +43,7 @@ function useIndexAction() {
  * from another computer, say) can be used instead.
  */
 export function IndexSetup({ status, compact = false }: { status: SearchIndexStatus; compact?: boolean }) {
+  const t = useTranslations("globalSearch.indexSetup");
   const { busy, error, run } = useIndexAction();
   const canChoose = canManageIndexFile();
 
@@ -51,10 +54,10 @@ export function IndexSetup({ status, compact = false }: { status: SearchIndexSta
   );
   const message = (
     <>
-      <p className="text-sm font-medium">No search index yet</p>
+      <p className="text-sm font-medium">{t("noIndexYet")}</p>
       <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-        Building reads every note, PDF and photo once. It runs in the background and can take a while for a large library.
-        {canChoose ? " If you already have an index for these notes, use it instead." : ""}
+        {t("buildDescription")}
+        {canChoose ? ` ${t("useExistingHint")}` : ""}
       </p>
     </>
   );
@@ -82,7 +85,7 @@ export function IndexSetup({ status, compact = false }: { status: SearchIndexSta
           onClick={() => void run(() => searchIndexAction("build"))}
         >
           {busy ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Database aria-hidden className="h-4 w-4" />}
-          Build index
+          {t("buildIndex")}
         </button>
         {canChoose ? (
           <button
@@ -94,11 +97,11 @@ export function IndexSetup({ status, compact = false }: { status: SearchIndexSta
               if (chosen) await refreshSearchStatus(true);
             })}
           >
-            <FolderOpen aria-hidden className="h-4 w-4" /> Use existing index…
+            <FolderOpen aria-hidden className="h-4 w-4" /> {t("useExistingIndex")}
           </button>
         ) : null}
       </div>
-      <p className="truncate text-[11px] text-muted-foreground" title={status.indexPath}>Will be created at {status.indexPath}</p>
+      <p className="truncate text-[11px] text-muted-foreground" title={status.indexPath}>{t("willBeCreated", { path: status.indexPath })}</p>
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
@@ -106,6 +109,7 @@ export function IndexSetup({ status, compact = false }: { status: SearchIndexSta
 
 /** The index's vectors were made with other settings: say so, and offer to embed again. */
 export function IndexMismatch({ status }: { status: SearchIndexStatus }) {
+  const t = useTranslations("globalSearch.indexSetup");
   const { busy, error, run } = useIndexAction();
   if (!status.mismatch) return null;
 
@@ -114,8 +118,7 @@ export function IndexMismatch({ status }: { status: SearchIndexStatus }) {
       <p className="flex items-start gap-2">
         <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
         <span>
-          {status.mismatch} Its vectors are not used with your current Search preferences, so only keyword search works.
-          Switch back to those settings, or embed everything again.
+          {t("mismatchNotice", { mismatch: status.mismatch })}
         </span>
       </p>
       <button
@@ -125,7 +128,7 @@ export function IndexMismatch({ status }: { status: SearchIndexStatus }) {
         onClick={() => void run(() => searchIndexAction("reembed"))}
       >
         {busy ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null}
-        Re-embed with current settings
+        {t("reembedWithCurrent")}
       </button>
       {error ? <p className="text-destructive">{error}</p> : null}
     </div>

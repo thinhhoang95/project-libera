@@ -10,6 +10,7 @@
 
 import { Lock, MessageSquarePlus } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useTranslations } from "next-intl";
 import { AccessChangedBanner, CollabStatusPill, PresenceAvatars, RejectedEditBanner } from "@/components/libera/collab";
 import { syncWording } from "../ui/wording";
 import type { SyncStatus } from "../protocol/local";
@@ -85,8 +86,10 @@ export function SharedTabStatus({ tabId, session, snapshot, notice, placement = 
     return () => clearTimeout(timer);
   }, [revealedAt, placement]);
 
+  const t = useTranslations("lib.collab.bindings.reactSharedChrome");
+  const tWording = useTranslations("lib.collab.ui.wording");
   const status = snapshot?.status ?? LOADING_STATUS;
-  const wording = syncWording(status);
+  const wording = syncWording(status, undefined, tWording);
   const banner = sharedBannerKind(snapshot);
   const role = snapshot?.meta?.role;
   const roleReadOnly = !!role && (role === "viewer" || role === "commenter") && banner === null;
@@ -102,14 +105,14 @@ export function SharedTabStatus({ tabId, session, snapshot, notice, placement = 
             style={revealPosition ?? undefined}
           >
             <span className="block font-semibold">{wording.label}</span>
-            <span className="block text-muted-foreground">Shared notes save as you type. {wording.detail}</span>
+            <span className="block text-muted-foreground">{t("savesAsYouType", { detail: wording.detail })}</span>
           </div>
         ) : null}
       </div>
       {roleReadOnly ? (
         <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
           <Lock aria-hidden className="h-3.5 w-3.5" />
-          {role === "commenter" ? "You can suggest changes and comment; editors decide." : "View only"}
+          {role === "commenter" ? t("commenterNote") : t("viewOnly")}
         </span>
       ) : null}
       {controls.canSuggest ? (
@@ -118,11 +121,11 @@ export function SharedTabStatus({ tabId, session, snapshot, notice, placement = 
           className="libera-collab-suggesting-toggle inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs font-medium aria-pressed:bg-primary aria-pressed:text-primary-foreground disabled:opacity-80"
           aria-pressed={controls.suggesting}
           disabled={controls.suggestForced}
-          title={controls.suggestForced ? "Commenters always suggest: your edits become suggestions for an editor to accept." : controls.suggesting ? "Typing makes suggestions. Click to edit directly." : "Make your edits suggestions that others accept or reject."}
+          title={controls.suggestForced ? t("suggestForcedTitle") : controls.suggesting ? t("suggestingOnTitle") : t("suggestingOffTitle")}
           onClick={() => controller.setSuggesting(!controls.suggesting)}
         >
           <MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />
-          Suggesting
+          {t("suggesting")}
         </button>
       ) : null}
       {notice ? <span className="truncate text-xs text-muted-foreground">{notice}</span> : null}
@@ -144,6 +147,8 @@ export function SharedTabStatus({ tabId, session, snapshot, notice, placement = 
 
 export function SharedTabChrome({ tabId, fileName, session, snapshot, notice, statusInStatusBar = false }: SharedTabChromeProps) {
   const { replica } = session;
+  const t = useTranslations("lib.collab.bindings.reactSharedChrome");
+  const tWording = useTranslations("lib.collab.ui.wording");
   const [dismissedAccess, setDismissedAccess] = useState(false);
   const banner = sharedBannerKind(snapshot);
   const showAccessBanner = banner === "access-changed" && !dismissedAccess;
@@ -168,16 +173,16 @@ export function SharedTabChrome({ tabId, fileName, session, snapshot, notice, st
       {banner === "deleted" ? (
         <div className="libera-collab-tone flex items-center gap-2 rounded-lg px-3 py-2 text-sm" data-tone="warn" role="alert">
           <Lock aria-hidden className="h-4 w-4 shrink-0" />
-          <p className="flex-1">This file was deleted. Your local text is kept here for recovery.</p>
-          <button type="button" className="shrink-0 underline" onClick={() => downloadText(fileName, replica.text())}>Export text</button>
+          <p className="flex-1">{t("fileDeleted")}</p>
+          <button type="button" className="shrink-0 underline" onClick={() => downloadText(fileName, replica.text())}>{t("exportText")}</button>
         </div>
       ) : null}
       {banner === "update-required" ? (
         <div className="libera-collab-tone flex items-start gap-2 rounded-lg px-3 py-2 text-sm" data-tone="danger" role="alert">
           <Lock aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0 flex-1">
-            <p className="font-medium">Update required</p>
-            <p className="text-xs opacity-80">{syncWording({ ...(snapshot?.status ?? LOADING_STATUS), state: "read-only" }).detail}</p>
+            <p className="font-medium">{t("updateRequired")}</p>
+            <p className="text-xs opacity-80">{syncWording({ ...(snapshot?.status ?? LOADING_STATUS), state: "read-only" }, undefined, tWording).detail}</p>
           </div>
         </div>
       ) : null}

@@ -22,8 +22,10 @@ import {
 } from "lucide-react";
 import { MouseEvent, PointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useFormatter, useLocale, useTranslations } from "next-intl";
 import { apiRequest } from "@/components/libera/api-client";
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
+import { galleryText, useRegisterGalleryTranslator } from "@/components/libera/gallery-i18n";
 import { PhotoEditor } from "@/components/libera/photo-editor";
 import { downloadImage, openImageSaveMenu, subscribeImageSaved, type ImageSaveDestination } from "@/components/libera/image-save";
 import { copyImage, formatBytes } from "@/components/libera/photo-viewer";
@@ -111,10 +113,10 @@ function readInfoOpen() {
   }
 }
 
-function formatDate(value?: string) {
+function formatDate(value: string | undefined, format: ReturnType<typeof useFormatter>) {
   const date = value ? new Date(value) : null;
   return date && !Number.isNaN(date.getTime())
-    ? date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+    ? format.dateTime(date, { dateStyle: "medium", timeStyle: "short" })
     : "";
 }
 
@@ -145,6 +147,10 @@ export function ImageViewer({
   onViewStateChange,
   saveDestination,
 }: ImageViewerProps) {
+  const t = useTranslations("imageViewer");
+  const format = useFormatter();
+  const locale = useLocale();
+  useRegisterGalleryTranslator();
   const paneFocused = useCanvasPaneFocused();
   const stageRef = useRef<HTMLDivElement>(null);
   const imageFrameRef = useRef<HTMLDivElement>(null);
@@ -255,7 +261,7 @@ export function ImageViewer({
           setError(
             loadError instanceof Error
               ? loadError.message
-              : "Could not load image annotations.",
+              : galleryText("imageViewer.loadAnnotationsFailed"),
           );
         }
       });
@@ -314,7 +320,7 @@ export function ImageViewer({
     latestAnnotationsRef.current = savedAnnotations;
     setAnnotations(savedAnnotations);
   }, (saveError) => {
-    setError(saveError instanceof Error ? saveError.message : "Could not save image annotations.");
+    setError(saveError instanceof Error ? saveError.message : galleryText("imageViewer.saveAnnotationsFailed"));
   });
   useLayoutEffect(() => { annotationWriterRef.current = annotationWriter; });
   const saveAnnotations = useCallback(
@@ -772,8 +778,8 @@ export function ImageViewer({
     }
 
     copyImage(src).then(
-      () => setNotice("Copied to the clipboard"),
-      () => setNotice("Could not copy this image"),
+      () => setNotice(t("copiedToClipboard")),
+      () => setNotice(t("copyFailed")),
     );
   }
 
@@ -856,19 +862,19 @@ export function ImageViewer({
       setError(
         captureError instanceof Error
           ? captureError.message
-          : "Could not capture image screenshot.",
+          : t("captureFailed"),
       );
     }
   }
 
   const naturalDimensions = naturalSize.width ? `${naturalSize.width} × ${naturalSize.height}` : "";
   const infoRows = [
-    ["Name", fileName],
-    ["Dimensions", naturalDimensions],
-    ["Size", details?.size !== undefined ? formatBytes(details.size) : ""],
-    ["Created", formatDate(details?.createdAt)],
-    ["Modified", formatDate(details?.updatedAt)],
-    ["Location", details?.location ?? ""],
+    [t("infoName"), fileName],
+    [t("infoDimensions"), naturalDimensions],
+    [t("infoSize"), details?.size !== undefined ? formatBytes(details.size, locale) : ""],
+    [t("infoCreated"), formatDate(details?.createdAt, format)],
+    [t("infoModified"), formatDate(details?.updatedAt, format)],
+    [t("infoLocation"), details?.location ?? ""],
   ].filter(([, value]) => value);
 
   const viewer = (
@@ -878,7 +884,7 @@ export function ImageViewer({
       }`}
       data-image-viewer-fullscreen={fullscreen ? "" : undefined}
     >
-      <div className="libera-viewer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2" data-command-toolbar="Image">
+      <div className="libera-viewer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2" data-command-toolbar={t("toolbarGroup")}>
         <div className="flex min-w-0 flex-wrap items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
           <Move aria-hidden className="h-4 w-4 shrink-0" />
           {annotatable ? <>
@@ -897,7 +903,7 @@ export function ImageViewer({
             }}
           >
             <MousePointer2 aria-hidden className="h-4 w-4" />
-            Select
+            {t("toolSelect")}
           </button>
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
@@ -914,7 +920,7 @@ export function ImageViewer({
             }}
           >
             <Type aria-hidden className="h-4 w-4" />
-            Text
+            {t("toolText")}
           </button>
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
@@ -925,14 +931,14 @@ export function ImageViewer({
             type="button"
             aria-pressed={tool === "ink"}
             data-viewer-tool="ink"
-            title="Draw on the image with a pen, mouse or finger"
+            title={t("toolDrawTitle")}
             onClick={() => {
               setTool("ink");
               updateViewState({ tool: "ink" });
             }}
           >
             <PenLine aria-hidden className="h-4 w-4" />
-            Draw
+            {t("toolDraw")}
           </button>
           {tool === "ink" ? <span ref={setInkToolbarSlot} className="libera-ink-toolbar-slot" /> : <>
           <TextAnnotationStyleControls
@@ -946,57 +952,57 @@ export function ImageViewer({
           <button
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 text-destructive hover:bg-destructive-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
-            aria-label="Delete selected annotation"
-            title="Delete selected annotation"
+            aria-label={t("deleteAnnotation")}
+            title={t("deleteAnnotation")}
             disabled={!selectedAnnotationId}
             onClick={deleteSelectedAnnotation}
           >
             <Trash2 aria-hidden className="h-4 w-4" />
           </button>
           </>}
-          </> : <span className="text-xs text-muted-foreground">View only</span>}
+          </> : <span className="text-xs text-muted-foreground">{t("viewOnly")}</span>}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1">
           <button
-            aria-label="Zoom out"
+            aria-label={t("zoomOut")}
             className={iconButton}
             type="button"
             onClick={() => zoomBy(1 / ZOOM_FACTOR)}
             disabled={zoom <= MIN_ZOOM}
-            title="Zoom out (−)"
+            title={t("zoomOutTitle")}
           >
             <ZoomOut aria-hidden className="h-4 w-4" />
           </button>
           <button
-            aria-label={atFit ? "Show actual size" : "Fit to view"}
+            aria-label={atFit ? t("showActualSize") : t("fitToView")}
             className="h-8 min-w-14 rounded-lg px-1 text-center text-sm font-medium tabular-nums text-foreground hover:bg-muted"
             type="button"
             onClick={toggleActualSize}
-            title={atFit ? "Actual size" : "Fit to view (0)"}
+            title={atFit ? t("actualSizeTitle") : t("fitToViewTitle")}
           >
-            {atFit ? "Fit" : `${Math.round(zoom * fitScale * 100)}%`}
+            {atFit ? t("fitLabel") : format.number(Math.round(zoom * fitScale * 100) / 100, { style: "percent" })}
           </button>
           <button
-            aria-label="Zoom in"
+            aria-label={t("zoomIn")}
             className={iconButton}
             type="button"
             onClick={() => zoomBy(ZOOM_FACTOR)}
             disabled={zoom >= MAX_ZOOM}
-            title="Zoom in (+)"
+            title={t("zoomInTitle")}
           >
             <ZoomIn aria-hidden className="h-4 w-4" />
           </button>
           <span aria-hidden className="mx-1 h-6 w-px bg-border" />
           {editable ? (
-            <button aria-label="Edit image" className={iconButton} type="button" title="Edit: crop, rotate, adjust. Saves a copy (E)" onClick={startEditing}>
+            <button aria-label={t("editImage")} className={iconButton} type="button" title={t("editImageTitle")} onClick={startEditing}>
               <Pencil aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
           <button
-            aria-label="Detection and Segmentation"
+            aria-label={t("detectionAria")}
             className={iconButton}
             type="button"
-            title="Detection and Segmentation: find, outline and count objects"
+            title={t("detectionTitle")}
             disabled={!src}
             onClick={() => {
               setPlaying(false);
@@ -1008,39 +1014,39 @@ export function ImageViewer({
           </button>
           {siblingCount > 1 ? (
             <button
-              aria-label={playing ? "Pause slideshow" : "Play slideshow"}
+              aria-label={playing ? t("pauseSlideshow") : t("playSlideshow")}
               className={iconButton}
               type="button"
-              title={playing ? "Pause slideshow (Space)" : "Slideshow of this folder (Space)"}
+              title={playing ? t("pauseSlideshowTitle") : t("slideshowTitle")}
               onClick={() => setPlaying((value) => !value)}
             >
               {playing ? <Pause aria-hidden className="h-4 w-4" /> : <Play aria-hidden className="h-4 w-4" />}
             </button>
           ) : null}
-          <button aria-label="Copy image" className={iconButton} type="button" title="Copy image" disabled={!src} onClick={copyToClipboard}>
+          <button aria-label={t("copyImage")} className={iconButton} type="button" title={t("copyImage")} disabled={!src} onClick={copyToClipboard}>
             <Copy aria-hidden className="h-4 w-4" />
           </button>
           <button
-            aria-label={saveDestination ? "Save image" : "Download image"}
+            aria-label={saveDestination ? t("saveImageAria") : t("downloadImageAria")}
             aria-haspopup={saveDestination ? "menu" : undefined}
             className={iconButton}
             type="button"
-            title={saveDestination === "gallery" ? "Save to computer, the Gallery or an album" : saveDestination === "notebook" ? "Save to computer or a notebook folder" : "Download"}
+            title={saveDestination === "gallery" ? t("saveTitleGallery") : saveDestination === "notebook" ? t("saveTitleNotebook") : t("downloadTitle")}
             disabled={!src}
             onClick={(event) => saveImage(event.currentTarget)}
           >
             <Download aria-hidden className="h-4 w-4" />
           </button>
           <button
-            aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+            aria-label={fullscreen ? t("exitFullscreen") : t("fullscreen")}
             className={iconButton}
             type="button"
-            title={fullscreen ? "Exit full screen (F)" : "Full screen (F)"}
+            title={fullscreen ? t("exitFullscreenTitle") : t("fullscreenTitle")}
             onClick={toggleFullscreen}
           >
             {fullscreen ? <Minimize aria-hidden className="h-4 w-4" /> : <Maximize aria-hidden className="h-4 w-4" />}
           </button>
-          <button aria-label="Info" aria-pressed={infoOpen} className={iconButton} type="button" title="Info (I)" onClick={toggleInfo}>
+          <button aria-label={t("info")} aria-pressed={infoOpen} className={iconButton} type="button" title={t("infoTitle")} onClick={toggleInfo}>
             <Info aria-hidden className="h-4 w-4" />
           </button>
         </div>
@@ -1132,16 +1138,16 @@ export function ImageViewer({
             />
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">Image preview is unavailable.</p>
+          <p className="text-sm text-muted-foreground">{t("previewUnavailable")}</p>
         )}
       </div>
       {/* Outside the stage, so pressing them never starts a pan. */}
       {previousSibling ? (
         <button
-          aria-label="Previous image"
+          aria-label={t("previousImage")}
           className="absolute left-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60"
           type="button"
-          title="Previous image in this folder (←)"
+          title={t("previousImageTitle")}
           onClick={() => showSibling(previousSibling.path, { playing, fullscreen })}
         >
           <ChevronLeft aria-hidden className="h-6 w-6" />
@@ -1149,10 +1155,10 @@ export function ImageViewer({
       ) : null}
       {nextSibling ? (
         <button
-          aria-label="Next image"
+          aria-label={t("nextImage")}
           className="absolute right-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60"
           type="button"
-          title="Next image in this folder (→)"
+          title={t("nextImageTitle")}
           onClick={() => showSibling(nextSibling.path, { playing, fullscreen })}
         >
           <ChevronRight aria-hidden className="h-6 w-6" />
@@ -1160,7 +1166,7 @@ export function ImageViewer({
       ) : null}
       {siblingCount > 1 ? (
         <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/40 px-2.5 py-0.5 text-xs tabular-nums text-white">
-          {siblingIndex + 1} of {siblingCount}
+          {t("imageCounter", { index: siblingIndex + 1, count: siblingCount })}
         </span>
       ) : null}
       {notice ? (
@@ -1170,8 +1176,8 @@ export function ImageViewer({
       ) : null}
       </div>
       {infoOpen ? (
-        <aside aria-label="Image info" className="flex w-64 shrink-0 flex-col gap-3 overflow-auto border-l border-border bg-card p-4 text-sm max-sm:hidden">
-          <h2 className="text-sm font-semibold">Info</h2>
+        <aside aria-label={t("infoAsideLabel")} className="flex w-64 shrink-0 flex-col gap-3 overflow-auto border-l border-border bg-card p-4 text-sm max-sm:hidden">
+          <h2 className="text-sm font-semibold">{t("info")}</h2>
           <dl className="space-y-3">
             {infoRows.map(([label, value]) => (
               <div key={label}>
@@ -1182,7 +1188,7 @@ export function ImageViewer({
           </dl>
           {annotatable ? (
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {annotations.length === 1 ? "1 text note" : `${annotations.length} text notes`} on this image.
+              {t("textNotesCount", { count: annotations.length })}
             </p>
           ) : null}
         </aside>
@@ -1197,7 +1203,7 @@ export function ImageViewer({
       {detecting && src ? <DetectionTool src={src} name={fileName} source={filePath} onClose={() => setDetecting(false)} /> : null}
       {editing && src && onSaveEditedCopy
         ? createPortal(
-            <div role="dialog" aria-modal="true" aria-label={`Edit ${fileName}`} className="fixed inset-0 z-[60] flex flex-col bg-neutral-950 text-white">
+            <div role="dialog" aria-modal="true" aria-label={t("editDialogLabel", { name: fileName })} className="fixed inset-0 z-[60] flex flex-col bg-neutral-950 text-white">
               <PhotoEditor
                 src={src}
                 copyOnly

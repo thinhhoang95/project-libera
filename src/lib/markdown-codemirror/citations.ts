@@ -39,7 +39,11 @@ export type CitationEditorHandlers = {
   open?: (citation: Citation) => boolean;
   /** Source panes share the textarea's hover timing and card; other hosts may use native tooltips. */
   pointer?: (target: { citation: Citation; rect: () => DOMRect | null } | null) => void;
+  /** The interface's words for the editor's marks and cards (English when the host gives none). */
+  labels?: { unresolvedKey: string; details: string };
 };
+
+const DEFAULT_LABELS = { unresolvedKey: "Not in this notebook's references", details: "Citation details" };
 
 export const citationEditorHandlers = Facet.define<CitationEditorHandlers, CitationEditorHandlers>({
   combine: (values) => values.at(-1) ?? {},
@@ -66,7 +70,12 @@ export function citationKeyRanges(occurrence: CitationOccurrence) {
 const chip = Decoration.mark({ class: "cm-libera-citation" });
 const unresolvedChip = Decoration.mark({ class: "cm-libera-citation cm-libera-citation-unresolved" });
 const keyMark = Decoration.mark({ class: "cm-libera-citation-key" });
-const unresolvedKeyMark = Decoration.mark({ class: "cm-libera-citation-key cm-libera-citation-key-unresolved", attributes: { title: "Not in this notebook's references" } });
+const unresolvedKeyMarks = new Map<string, Decoration>();
+function unresolvedKeyMark(title: string) {
+  let mark = unresolvedKeyMarks.get(title);
+  if (!mark) unresolvedKeyMarks.set(title, (mark = Decoration.mark({ class: "cm-libera-citation-key cm-libera-citation-key-unresolved", attributes: { title } })));
+  return mark;
+}
 
 /** Whether an occurrence is a citation given the library: narrative ones only when their key resolves. */
 export function citationShown(occurrence: CitationOccurrence, library: CitationLibraryKeys) {
@@ -76,13 +85,14 @@ export function citationShown(occurrence: CitationOccurrence, library: CitationL
 /** Chip and key decorations for every citation in the document. */
 export function buildCitationDecorations(state: EditorState, citations: readonly CitationOccurrence[]): DecorationSet {
   const library = state.field(citationLibraryField, false) ?? null;
+  const unresolvedTitle = (state.facet(citationEditorHandlers).labels ?? DEFAULT_LABELS).unresolvedKey;
   const ranges: Range<Decoration>[] = [];
   for (const occurrence of citations) {
     if (!citationShown(occurrence, library)) continue;
     const keys = citationKeyRanges(occurrence);
     const unresolved = library ? keys.filter((range) => !library.has(range.key)) : [];
     ranges.push((unresolved.length ? unresolvedChip : chip).range(occurrence.start, occurrence.end));
-    for (const range of keys) ranges.push((unresolved.includes(range) ? unresolvedKeyMark : keyMark).range(range.from, range.to));
+    for (const range of keys) ranges.push((unresolved.includes(range) ? unresolvedKeyMark(unresolvedTitle) : keyMark).range(range.from, range.to));
   }
   return Decoration.set(ranges, true);
 }
@@ -157,7 +167,7 @@ export function citationHoverSource(view: EditorView, pos: number, side: -1 | 1)
       const dom = document.createElement("div");
       dom.className = "cm-libera-citation-card citation-hover-card";
       dom.setAttribute("role", "dialog");
-      dom.setAttribute("aria-label", "Citation details");
+      dom.setAttribute("aria-label", (handlers.labels ?? DEFAULT_LABELS).details);
       const cleanup = handlers.hover?.(dom, occurrence.citation);
       return { dom, destroy: () => cleanup?.() };
     },

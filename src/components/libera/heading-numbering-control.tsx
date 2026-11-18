@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, ChevronDown, ListOrdered, ListX } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -42,6 +43,7 @@ export function HeadingNumberingControl({
   onSkipTitleChange: (skipTitle: boolean) => void;
   onToggle: (enabled: boolean) => void;
 }) {
+  const t = useTranslations("headingNumberingControl");
   const [menu, setMenu] = useState<{ left: number; top: number } | null>(null);
   const [startAt, setStartAt] = useState("1");
   const chevronRef = useRef<HTMLButtonElement>(null);
@@ -90,9 +92,9 @@ export function HeadingNumberingControl({
   return <>
     <button
       type="button"
-      aria-label="Heading Numbering"
+      aria-label={t("headingNumbering")}
       aria-pressed={enabled}
-      title={enabled ? "Heading numbering is on: headings are numbered automatically" : "Number headings automatically"}
+      title={enabled ? t("headingNumberingOn") : t("numberHeadingsAutomatically")}
       className={buttonClassName}
       disabled={disabled}
       onMouseDown={(event) => event.preventDefault()}
@@ -103,10 +105,10 @@ export function HeadingNumberingControl({
     <button
       ref={chevronRef}
       type="button"
-      aria-label="Heading numbering options"
+      aria-label={t("headingNumberingOptions")}
       aria-haspopup="menu"
       aria-expanded={!!menu}
-      title="Heading numbering options"
+      title={t("headingNumberingOptions")}
       className={buttonClassName}
       style={{ marginLeft: -4, paddingLeft: 0, paddingRight: 0, width: 16 }}
       disabled={disabled}
@@ -119,7 +121,7 @@ export function HeadingNumberingControl({
       <div
         ref={menuRef}
         role="menu"
-        aria-label="Heading numbering"
+        aria-label={t("headingNumberingMenu")}
         className="fixed z-50 w-72 max-w-[calc(100vw-1rem)] rounded-lg border border-border bg-card p-1 shadow-lg"
         style={{ left: menu.left, top: menu.top }}
         onPointerDown={(event) => event.stopPropagation()}
@@ -134,11 +136,11 @@ export function HeadingNumberingControl({
           <span aria-hidden className="flex h-4 w-4 items-center justify-center rounded-sm border border-border">
             {skipTitle ? <Check className="h-3 w-3" /> : null}
           </span>
-          Skip the first level-1 heading (title)
+          {t("skipFirstTitle")}
         </button>
         <div className="px-2.5 py-2">
           <div id="heading-numbering-max-depth" className="text-xs font-medium text-muted-foreground">
-            Number up to level
+            {t("numberUpToLevel")}
           </div>
           <div role="group" aria-labelledby="heading-numbering-max-depth" className="mt-1 flex gap-1">
             {DEPTH_CHOICES.map((depth) => (
@@ -147,8 +149,8 @@ export function HeadingNumberingControl({
                 type="button"
                 role="menuitemradio"
                 aria-checked={maxDepth === depth}
-                aria-label={depth ? `Number up to level ${depth}` : "Number every level"}
-                title={depth ? `Number headings down to ${Array.from({ length: depth }, (_, index) => index + 1).join(".")}` : "Number every heading level"}
+                aria-label={depth ? t("numberUpToLevelN", { depth }) : t("numberEveryLevel")}
+                title={depth ? t("numberDownTo", { levels: Array.from({ length: depth }, (_, index) => index + 1).join(".") }) : t("numberEveryHeadingLevel")}
                 // A ring, not `border`: the global `button.border` rule would
                 // override the selected background.
                 className={`h-7 min-w-0 flex-1 rounded-md text-xs font-medium ring-1 ring-inset ${maxDepth === depth
@@ -156,7 +158,7 @@ export function HeadingNumberingControl({
                   : "text-foreground ring-border hover:bg-muted"}`}
                 onClick={() => onMaxDepthChange(depth)}
               >
-                {depth || "All"}
+                {depth || t("all")}
               </button>
             ))}
           </div>
@@ -164,11 +166,11 @@ export function HeadingNumberingControl({
         <div className="my-1 border-t border-border" />
         <button type="button" role="menuitem" className={itemClass} onClick={() => run(onNumberAll)}>
           <ListOrdered aria-hidden className="h-4 w-4 text-muted-foreground" />
-          Enumerate All Headings
+          {t("enumerateAll")}
         </button>
         <button type="button" role="menuitem" className={itemClass} onClick={() => run(onRemoveAll)}>
           <ListX aria-hidden className="h-4 w-4 text-muted-foreground" />
-          Remove All Heading Numbers
+          {t("removeAllNumbers")}
         </button>
         {onEnumerateSelected && !enabled ? (
           <form
@@ -180,12 +182,12 @@ export function HeadingNumberingControl({
             }}
           >
             <label className="block text-xs font-medium text-muted-foreground" htmlFor="heading-numbering-selected-start">
-              Enumerate Selected Headings
+              {t("enumerateSelected")}
             </label>
             <div className="mt-1 flex items-center gap-2">
               <input
                 id="heading-numbering-selected-start"
-                aria-label="Selected heading start value"
+                aria-label={t("selectedStartValue")}
                 type="number"
                 min="1"
                 step="1"
@@ -193,7 +195,7 @@ export function HeadingNumberingControl({
                 className="h-8 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-sm"
                 onChange={(event) => setStartAt(event.target.value)}
               />
-              <button type="submit" className="h-8 rounded-md bg-primary px-3 text-sm text-primary-foreground">Apply</button>
+              <button type="submit" className="h-8 rounded-md bg-primary px-3 text-sm text-primary-foreground">{t("apply")}</button>
             </div>
           </form>
         ) : null}

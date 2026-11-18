@@ -3,6 +3,7 @@
 // The Comments rail of a shared document gains Suggestions and Reviews tabs.
 // Files that are not shared show the comments exactly as before.
 
+import { useTranslations } from "next-intl";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { useSharedTab } from "@/lib/collab/bindings/react-shared-tabs";
 import { pendingReviewOpen, subscribeReviewOpen } from "@/lib/collab/client/reviews";
@@ -17,6 +18,7 @@ const badgeClass = "rounded-full bg-primary px-1.5 text-[10px] leading-4 text-pr
 type RailView = "comments" | "suggestions" | "reviews";
 
 export function CommentsWithSuggestions({ tabId, comments }: { tabId?: string; comments: ReactNode }) {
+  const t = useTranslations("collab.suggestions.commentsWithSuggestions");
   const shared = useSharedTab(tabId, "suggestions-rail");
   const session = shared.snapshot?.attached ? shared.session : null;
   const { controller, snapshot } = useSuggestions(session);
@@ -38,15 +40,15 @@ export function CommentsWithSuggestions({ tabId, comments }: { tabId?: string; c
   const choose = (next: RailView) => { if (next !== "suggestions") controller?.cancelReply(); setView(next); };
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div role="tablist" aria-label="Comments, suggestions and reviews" className="flex gap-1 border-b border-border px-2 py-1.5">
-        <button type="button" role="tab" aria-selected={view === "comments"} className={tabClass} onClick={() => choose("comments")}>Comments</button>
+      <div role="tablist" aria-label={t("tabs")} className="flex gap-1 border-b border-border px-2 py-1.5">
+        <button type="button" role="tab" aria-selected={view === "comments"} className={tabClass} onClick={() => choose("comments")}>{t("comments")}</button>
         <button type="button" role="tab" aria-selected={view === "suggestions"} className={tabClass} onClick={() => choose("suggestions")}>
-          Suggestions
+          {t("suggestions")}
           {open ? <span className={badgeClass}>{open}</span> : null}
         </button>
         <button type="button" role="tab" aria-selected={view === "reviews"} className={tabClass} onClick={() => choose("reviews")}>
-          Reviews
-          {waiting ? <span className={badgeClass} title="Reviews waiting for you">{waiting}</span> : null}
+          {t("reviews")}
+          {waiting ? <span className={badgeClass} title={t("reviewsWaiting")}>{waiting}</span> : null}
         </button>
       </div>
       {view === "comments" ? comments : view === "suggestions" ? <SuggestionsPanel session={session} /> : <ReviewsPanel session={session} />}

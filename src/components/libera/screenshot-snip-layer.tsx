@@ -3,6 +3,7 @@
 import { Loader2, X } from "lucide-react";
 import type { PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import type { PdfAnnotationRect } from "@/lib/types";
 import {
   clamp,
@@ -56,6 +57,7 @@ export function ScreenshotSnipLayer({
   onCancel,
   onCapture,
 }: ScreenshotSnipLayerProps) {
+  const t = useTranslations("screenshotSnipLayer");
   const draftRef = useRef<DraftSnip | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [draftSnip, setDraftSnip] = useState<DraftSnip | null>(null);
@@ -167,10 +169,10 @@ export function ScreenshotSnipLayer({
       onPointerUp={finishSnip}
     >
       <button
-        aria-label="Cancel snip"
+        aria-label={t("cancelSnip")}
         className="absolute right-2 top-2 z-20 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/50 bg-zinc-950/75 text-white shadow-sm hover:bg-zinc-900"
         type="button"
-        title="Cancel snip"
+        title={t("cancelSnip")}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={onCancel}
       >

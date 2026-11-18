@@ -25,6 +25,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -41,13 +42,13 @@ import {
 import { encodeFilePath } from "@/components/libera/api-client";
 import { FileTypeIcon } from "@/components/libera/file-type";
 import {
-  FILE_KIND_LABELS,
   TagChip,
   collectAllTags,
   completeTagQuery,
   fileKind,
   fileMatchesTags,
   parseTagQuery,
+  useFileKindLabel,
 } from "@/components/libera/file-tags";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
@@ -144,6 +145,10 @@ export function NotebookHome({
   onOpenFile,
   onChangeIllustration,
 }: NotebookHomeProps) {
+  const t = useTranslations("notebookHome");
+  const locale = useLocale();
+  const kindLabel = useFileKindLabel();
+  const kind = isFolder ? "folder" : "notebook";
   const recorder = useRecorderLauncher();
   const illustrationLibrary = useNotebookIllustrationLibrary();
   const coverUrl = notebookCoverUrl(notebook, illustrationLibrary);
@@ -246,19 +251,19 @@ export function NotebookHome({
               <div className="min-w-0">
                 <h2 className={styles.title}>{notebook.name}</h2>
                 <p className={styles.metadata}>
-                  <FileText aria-hidden size={15} /> {notes.length} {notes.length === 1 ? "note" : "notes"}
-                  <span aria-hidden>·</span> <time dateTime={updatedAt} title={fullDateLabel(updatedAt)}>Updated {relativeTimeLabel(updatedAt)}</time>
+                  <FileText aria-hidden size={15} /> {t("noteCount", { count: notes.length })}
+                  <span aria-hidden>·</span> <time dateTime={updatedAt} title={fullDateLabel(updatedAt, locale)}>{t("updatedAt", { time: relativeTimeLabel(updatedAt, undefined, locale) })}</time>
                 </p>
               </div>
             </div>
             <div className={styles.actions}>
               <NewMenu
                 items={[
-                  { label: "Note", icon: <FileText aria-hidden size={16} />, onSelect: () => onCreateMarkdown(notebook.name) },
-                  ...(onCreateLatex ? [{ label: "LaTeX document", icon: <FileCode2 aria-hidden size={16} />, onSelect: () => onCreateLatex(notebook.name) }] : []),
-                  { label: "Slides", icon: <FilePlus2 aria-hidden size={16} />, onSelect: () => onCreateSlides(notebook.name) },
-                  ...(recorder && !recorder.busy ? [{ label: "Audio recording", icon: <Mic aria-hidden size={16} />, onSelect: () => recorder.startRecording(notebook.name) }] : []),
-                  ...(onChangeIllustration ? [{ label: "Change illustration", icon: <ImagePlus aria-hidden size={16} />, onSelect: () => setChangingIllustration(true), separated: true }] : []),
+                  { label: t("newNote"), icon: <FileText aria-hidden size={16} />, onSelect: () => onCreateMarkdown(notebook.name) },
+                  ...(onCreateLatex ? [{ label: t("newLatex"), icon: <FileCode2 aria-hidden size={16} />, onSelect: () => onCreateLatex(notebook.name) }] : []),
+                  { label: t("newSlides"), icon: <FilePlus2 aria-hidden size={16} />, onSelect: () => onCreateSlides(notebook.name) },
+                  ...(recorder && !recorder.busy ? [{ label: t("newAudioRecording"), icon: <Mic aria-hidden size={16} />, onSelect: () => recorder.startRecording(notebook.name) }] : []),
+                  ...(onChangeIllustration ? [{ label: t("changeIllustration"), icon: <ImagePlus aria-hidden size={16} />, onSelect: () => setChangingIllustration(true), separated: true }] : []),
                 ]}
               />
             </div>
@@ -268,8 +273,8 @@ export function NotebookHome({
             <div className={styles.search}>
               <Search aria-hidden className={styles.searchIcon} size={20} />
               <input
-                aria-label={`Search files in ${notebook.name}`}
-                placeholder={`Search files in this ${isFolder ? "folder" : "notebook"}… (tags:name to filter)`}
+                aria-label={t("searchLabel", { name: notebook.name })}
+                placeholder={t("searchPlaceholder", { kind })}
                 value={fileSearchQuery}
                 onChange={(event) => setFileSearchQuery(event.target.value)}
                 onKeyDown={(event) => {
@@ -279,13 +284,13 @@ export function NotebookHome({
               />
               {trimmedFileSearchQuery ? (
                 <>
-                  <button className={styles.clearSearch} type="button" aria-label="Clear notebook search" onClick={() => setFileSearchQuery("")}><X size={16} /></button>
+                  <button className={styles.clearSearch} type="button" aria-label={t("clearSearchLabel")} onClick={() => setFileSearchQuery("")}><X size={16} /></button>
                   <div className={styles.searchResults}>
                     {tagSuggestions.length ? (
                       <div className={styles.tagSuggestions}>
-                        <span>Tags</span>
+                        <span>{t("tagsLabel")}</span>
                         {tagSuggestions.map((tag) => (
-                          <button key={tag} type="button" aria-label={`Filter by tag ${tag}`} onClick={() => setFileSearchQuery((query) => completeTagQuery(query, tag))}>
+                          <button key={tag} type="button" aria-label={t("filterByTagLabel", { tag })} onClick={() => setFileSearchQuery((query) => completeTagQuery(query, tag))}>
                             <TagChip tag={tag} />
                           </button>
                         ))}
@@ -296,9 +301,9 @@ export function NotebookHome({
                         <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} name={file.name} /></span>
                         <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
                         <span className={styles.resultTags}>{(fileTags[file.path] ?? []).map((tag) => <TagChip key={tag} tag={tag} />)}</span>
-                        <span className={styles.kindChip} data-kind={fileKind(file)}>{FILE_KIND_LABELS[fileKind(file)]}</span>
+                        <span className={styles.kindChip} data-kind={fileKind(file)}>{kindLabel(fileKind(file))}</span>
                       </button>
-                    )) : !tagSuggestions.length ? <p className={styles.noResults}>No files found in this {isFolder ? "folder" : "notebook"}.</p> : null}
+                    )) : !tagSuggestions.length ? <p className={styles.noResults}>{t("noFilesFound", { kind })}</p> : null}
                   </div>
                 </>
               ) : null}
@@ -310,32 +315,32 @@ export function NotebookHome({
       <div className={styles.content}>
         <WhereWasICard notebook={notebook} files={files} onOpenFile={(file) => { void onOpenFile(file); }} />
 
-        <section className={styles.stats} aria-label="Notebook overview">
-          <div className={styles.stat} data-tone="blue"><span className={styles.statIcon}><FileText aria-hidden /></span><div><strong>{notes.length}</strong><span>Notes</span></div></div>
-          <div className={styles.stat} data-tone="green"><span className={styles.statIcon}><ImageIcon aria-hidden /></span><div><strong>{images.length}</strong><span>Images</span></div></div>
-          <div className={styles.stat} data-tone="amber"><span className={styles.statIcon}><FolderOpen aria-hidden /></span><div><strong>{folders}</strong><span>Folders</span></div></div>
-          <div className={styles.stat} data-tone="violet"><span className={styles.statIcon}><CalendarDays aria-hidden /></span><div><span>Last updated</span><strong className={styles.statDate} title={fullDateLabel(updatedAt)}>{relativeTimeLabel(updatedAt)}</strong></div></div>
+        <section className={styles.stats} aria-label={t("overviewLabel")}>
+          <div className={styles.stat} data-tone="blue"><span className={styles.statIcon}><FileText aria-hidden /></span><div><strong>{notes.length}</strong><span>{t("statNotes")}</span></div></div>
+          <div className={styles.stat} data-tone="green"><span className={styles.statIcon}><ImageIcon aria-hidden /></span><div><strong>{images.length}</strong><span>{t("statImages")}</span></div></div>
+          <div className={styles.stat} data-tone="amber"><span className={styles.statIcon}><FolderOpen aria-hidden /></span><div><strong>{folders}</strong><span>{t("statFolders")}</span></div></div>
+          <div className={styles.stat} data-tone="violet"><span className={styles.statIcon}><CalendarDays aria-hidden /></span><div><span>{t("statLastUpdated")}</span><strong className={styles.statDate} title={fullDateLabel(updatedAt, locale)}>{relativeTimeLabel(updatedAt, undefined, locale)}</strong></div></div>
         </section>
 
         <section aria-labelledby="notebook-files">
           <div className={styles.sectionHeader}>
-            <h3 id="notebook-files">Files <span>{files.length}</span></h3>
+            <h3 id="notebook-files">{t("filesHeading")} <span>{files.length}</span></h3>
             <div className={styles.fileControls}>
-              <select aria-label={`Sort ${isFolder ? "folder" : "notebook"} files`} value={sort} onChange={(event) => changeSort(event.target.value === "name" ? "name" : "updated")}>
-                <option value="updated">Last modified</option><option value="name">Name</option>
+              <select aria-label={t("sortLabel", { kind })} value={sort} onChange={(event) => changeSort(event.target.value === "name" ? "name" : "updated")}>
+                <option value="updated">{t("sortUpdated")}</option><option value="name">{t("sortName")}</option>
               </select>
-              <div className={styles.viewToggle} aria-label="File view" role="group">
-                <button type="button" aria-label="List view" aria-pressed={view === "list"} onClick={() => changeView("list")}><List size={17} /></button>
-                <button type="button" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => changeView("grid")}><LayoutGrid size={16} /></button>
+              <div className={styles.viewToggle} aria-label={t("fileViewLabel")} role="group">
+                <button type="button" aria-label={t("listView")} aria-pressed={view === "list"} onClick={() => changeView("list")}><List size={17} /></button>
+                <button type="button" aria-label={t("gridView")} aria-pressed={view === "grid"} onClick={() => changeView("grid")}><LayoutGrid size={16} /></button>
               </div>
             </div>
           </div>
           {sortedFiles.length ? (
             <div className={view === "list" ? styles.fileList : styles.fileGrid}>
-              {view === "list" ? <div className={styles.tableHeading}><span>Name</span><span>Type</span><span>Tags</span><span>Last modified</span><span /></div> : null}
+              {view === "list" ? <div className={styles.tableHeading}><span>{t("columnName")}</span><span>{t("columnType")}</span><span>{t("columnTags")}</span><span>{t("columnLastModified")}</span><span /></div> : null}
               {sortedFiles.map((file) => {
                 const tags = fileTags[file.path] ?? [];
-                const kind = fileKind(file);
+                const fileKindValue = fileKind(file);
                 return (
                   <div key={file.path} className={styles.fileRow}>
                     {/* The open button stretches over the whole row; the tag button sits above it. */}
@@ -345,21 +350,21 @@ export function NotebookHome({
                         <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
                       </span>
                     </button>
-                    <span className={styles.fileKind}><span className={styles.kindChip} data-kind={kind}>{FILE_KIND_LABELS[kind]}</span></span>
+                    <span className={styles.fileKind}><span className={styles.kindChip} data-kind={fileKindValue}>{kindLabel(fileKindValue)}</span></span>
                     <span className={styles.fileTags}>
                       {tags.map((tag) => <TagChip key={tag} tag={tag} />)}
                       <button
                         className={styles.editTags}
                         data-empty={!tags.length}
                         type="button"
-                        aria-label={`Edit tags for ${file.name}`}
-                        title="Edit tags"
+                        aria-label={t("editTagsLabel", { name: file.name })}
+                        title={t("editTagsTitle")}
                         onClick={() => onEditFileTags(file)}
                       >
-                        <Tag aria-hidden size={12} />{tags.length ? null : <span>Add tag</span>}
+                        <Tag aria-hidden size={12} />{tags.length ? null : <span>{t("addTag")}</span>}
                       </button>
                     </span>
-                    <time className={styles.fileDate} dateTime={file.updatedAt} title={fullDateLabel(file.updatedAt)}>{relativeTimeLabel(file.updatedAt)}</time>
+                    <time className={styles.fileDate} dateTime={file.updatedAt} title={fullDateLabel(file.updatedAt, locale)}>{relativeTimeLabel(file.updatedAt, undefined, locale)}</time>
                     <ArrowUpRight aria-hidden className={styles.openArrow} size={16} />
                   </div>
                 );
@@ -368,24 +373,24 @@ export function NotebookHome({
           ) : (
             <div className={styles.emptyState}>
               <span className={styles.emptyIllustration}><FilePlus2 aria-hidden size={34} /><Sparkles aria-hidden size={20} /></span>
-              <h4>Big ideas start with a blank page.</h4>
-              <p>Create your first note and give this {isFolder ? "folder" : "notebook"} a little life.</p>
-              <button className={styles.primaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}><FilePlus2 aria-hidden size={16} /> Create a note</button>
+              <h4>{t("emptyTitle")}</h4>
+              <p>{t("emptyBody", { kind })}</p>
+              <button className={styles.primaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}><FilePlus2 aria-hidden size={16} /> {t("createNote")}</button>
             </div>
           )}
         </section>
 
         {images.length ? (
           <section aria-labelledby="notebook-images">
-            <div className={styles.sectionHeader}><h3 id="notebook-images">Image gallery <span>{images.length}</span></h3></div>
+            <div className={styles.sectionHeader}><h3 id="notebook-images">{t("imageGalleryHeading")} <span>{images.length}</span></h3></div>
             <div className={styles.gallery}>
               {images.map((image, index) => (
                 <figure key={image.path}>
-                  <button className={styles.imagePreview} type="button" aria-label={`Preview ${image.name}`} onClick={() => setPreviewIndex(index)}>
+                  <button className={styles.imagePreview} type="button" aria-label={t("previewImageLabel", { name: image.name })} onClick={() => setPreviewIndex(index)}>
                     {/* eslint-disable-next-line @next/next/no-img-element -- Authenticated local file URLs should not use Next image optimization. */}
                     <img alt={image.name} loading="lazy" src={rawFileUrl(image)} />
                   </button>
-                  <figcaption><span>{image.name}</span><button type="button" aria-label={`Open ${image.name} in official viewer`} onClick={() => onOpenFile(image)}><ExternalLink aria-hidden size={16} /></button></figcaption>
+                  <figcaption><span>{image.name}</span><button type="button" aria-label={t("openViewerLabel", { name: image.name })} onClick={() => onOpenFile(image)}><ExternalLink aria-hidden size={16} /></button></figcaption>
                 </figure>
               ))}
             </div>
@@ -431,6 +436,7 @@ function ImagePreviewModal({
   onIndexChange: (index: number) => void;
   onOpenOfficialViewer: (image: LiberaFileNode) => void;
 }) {
+  const t = useTranslations("notebookHome");
   const currentImage = images[index];
   const lastPointerRef = useRef<Point | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -524,7 +530,7 @@ function ImagePreviewModal({
       className="fixed inset-0 z-50 flex flex-col bg-zinc-950 text-white"
       role="dialog"
       aria-modal="true"
-      aria-label="Image preview"
+      aria-label={t("imagePreviewLabel")}
     >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-zinc-950 px-4 py-3">
         <div className="min-w-0">
@@ -535,8 +541,8 @@ function ImagePreviewModal({
           <button
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 hover:bg-white/10 disabled:opacity-40"
             type="button"
-            aria-label="Zoom out"
-            title="Zoom out"
+            aria-label={t("zoomOut")}
+            title={t("zoomOut")}
             disabled={zoom <= MIN_ZOOM}
             onClick={() => changeZoom(-ZOOM_STEP)}
           >
@@ -546,8 +552,8 @@ function ImagePreviewModal({
           <button
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 hover:bg-white/10 disabled:opacity-40"
             type="button"
-            aria-label="Zoom in"
-            title="Zoom in"
+            aria-label={t("zoomIn")}
+            title={t("zoomIn")}
             disabled={zoom >= MAX_ZOOM}
             onClick={() => changeZoom(ZOOM_STEP)}
           >
@@ -556,8 +562,8 @@ function ImagePreviewModal({
           <button
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 hover:bg-white/10"
             type="button"
-            aria-label="Reset view"
-            title="Reset view"
+            aria-label={t("resetView")}
+            title={t("resetView")}
             onClick={resetView}
           >
             <RotateCcw aria-hidden className="h-4 w-4" />
@@ -568,13 +574,13 @@ function ImagePreviewModal({
             onClick={() => onOpenOfficialViewer(currentImage)}
           >
             <ExternalLink aria-hidden className="h-4 w-4" />
-            Open viewer
+            {t("openViewer")}
           </button>
           <button
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 hover:bg-white/10"
             type="button"
-            aria-label="Close preview"
-            title="Close"
+            aria-label={t("closePreviewLabel")}
+            title={t("closeTitle")}
             onClick={onClose}
           >
             <X aria-hidden className="h-4 w-4" />
@@ -600,7 +606,7 @@ function ImagePreviewModal({
             <button
               className="absolute left-4 top-1/2 z-10 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-zinc-950/70 hover:bg-zinc-900"
               type="button"
-              aria-label="Previous image"
+              aria-label={t("previousImage")}
               onClick={showPrevious}
             >
               <ChevronLeft aria-hidden className="h-5 w-5" />
@@ -608,7 +614,7 @@ function ImagePreviewModal({
             <button
               className="absolute right-4 top-1/2 z-10 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-zinc-950/70 hover:bg-zinc-900"
               type="button"
-              aria-label="Next image"
+              aria-label={t("nextImage")}
               onClick={showNext}
             >
               <ChevronRight aria-hidden className="h-5 w-5" />
@@ -639,6 +645,7 @@ type NewMenuItem = { label: string; icon: ReactNode; onSelect: () => void; separ
 
 /** The cover's single "New" button; opens a menu of the file kinds a notebook can create. */
 function NewMenu({ items }: { items: NewMenuItem[] }) {
+  const t = useTranslations("notebookHome");
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -684,10 +691,10 @@ function NewMenu({ items }: { items: NewMenuItem[] }) {
           if (event.key === "ArrowDown" && !open) { event.preventDefault(); setOpen(true); }
         }}
       >
-        <Plus aria-hidden size={17} /> New <ChevronDown aria-hidden size={15} className={styles.newMenuChevron} data-open={open} />
+        <Plus aria-hidden size={17} /> {t("newButton")} <ChevronDown aria-hidden size={15} className={styles.newMenuChevron} data-open={open} />
       </button>
       {open ? (
-        <div ref={menuRef} role="menu" aria-label="Create new" className={styles.newMenuList} onKeyDown={onMenuKeyDown}>
+        <div ref={menuRef} role="menu" aria-label={t("createNewMenuLabel")} className={styles.newMenuList} onKeyDown={onMenuKeyDown}>
           {items.map((item) => (
             <Fragment key={item.label}>
               {item.separated ? <div role="separator" className={styles.newMenuSeparator} /> : null}

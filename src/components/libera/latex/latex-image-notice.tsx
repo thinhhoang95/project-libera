@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Copy, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 
 /* After images were pasted or dropped: where they were saved, what could not
@@ -10,6 +11,8 @@ import { useEffect, useRef, useState } from "react";
 const VISIBLE_MS = 10_000;
 
 export function LatexImageNotice({ message, missing, onClose }: { message: string | null; missing: string[]; onClose: () => void }) {
+  const t = useTranslations("latex.latexImageNotice");
+  const tc = useTranslations("common");
   const [copied, setCopied] = useState(false);
   const [held, setHeld] = useState(false);
   const closeRef = useRef(onClose);
@@ -31,13 +34,13 @@ export function LatexImageNotice({ message, missing, onClose }: { message: strin
     >
       <div className="flex items-start gap-2">
         {message ? <span className="min-w-0 break-words">{message}</span> : null}
-        <button type="button" aria-label="Dismiss" className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onClose}>
+        <button type="button" aria-label={tc("dismiss")} className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onClose}>
           <X aria-hidden className="h-3.5 w-3.5" />
         </button>
       </div>
       {missing.length ? (
         <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="min-w-0 break-all">The preamble does not load it. Needs <code className="font-mono">{missing.join(" ")}</code></span>
+          <span className="min-w-0 break-all">{t.rich("preambleMissing", { packages: missing.join(" "), code: (chunks) => <code className="font-mono">{chunks}</code> })}</span>
           <button
             type="button"
             className="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 hover:bg-muted"
@@ -45,7 +48,7 @@ export function LatexImageNotice({ message, missing, onClose }: { message: strin
               navigator.clipboard.writeText(missing.join("\n")).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, () => undefined);
             }}
           >
-            {copied ? <Check aria-hidden className="h-3 w-3" /> : <Copy aria-hidden className="h-3 w-3" />}{copied ? "Copied" : "Copy"}
+            {copied ? <Check aria-hidden className="h-3 w-3" /> : <Copy aria-hidden className="h-3 w-3" />}{copied ? tc("copied") : tc("copy")}
           </button>
         </div>
       ) : null}

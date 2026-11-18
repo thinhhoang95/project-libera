@@ -63,6 +63,7 @@ export function isCollabDisabledError(error: unknown): boolean {
   );
 }
 
+/** English wording, used when no translator is passed (tests, code outside React). */
 const MESSAGES: Record<string, string> = {
   [COLLAB_DISABLED]: "Collaboration is not enabled on this device.",
   [NETWORK_ERROR]: "Libera could not reach its collaboration service. Try again in a moment.",
@@ -85,26 +86,56 @@ const MESSAGES: Record<string, string> = {
   internal: "Something went wrong on the server. Try again later.",
 };
 
-/** UI wording for an error code; falls back to the server's message. */
-export function errorMessage(code: string, serverMessage?: string, status?: number): string {
+/** What `useTranslations("lib.collab.ui.client")` returns, as far as this file needs it. */
+export type ClientTranslator = (key: string) => string;
+
+/** Message keys (under `errors`) for each error code that has UI wording. */
+const ERROR_KEY: Record<string, string> = {
+  [COLLAB_DISABLED]: "collabDisabled",
+  [NETWORK_ERROR]: "network",
+  "bad-request": "badRequest",
+  unauthorized: "unauthorized",
+  "token-expired": "tokenExpired",
+  forbidden: "forbidden",
+  "not-found": "notFound",
+  conflict: "conflict",
+  "rate-limited": "rateLimited",
+  "too-large": "tooLarge",
+  "invalid-invitation": "invalidInvitation",
+  "email-taken": "emailTaken",
+  "signup-disabled": "signupDisabled",
+  "invalid-registration-code": "invalidRegistrationCode",
+  "client-too-old": "clientTooOld",
+  "ai-cannot-decide": "aiCannotDecide",
+  "host-unavailable": "hostUnavailable",
+  "not-signed-in": "notSignedIn",
+  internal: "internal",
+};
+
+/**
+ * UI wording for an error code; falls back to the server's message. Pass `t` (the `lib.collab.ui.client` messages) to
+ * get it in the interface language; without it the English text in MESSAGES is returned.
+ */
+export function errorMessage(code: string, serverMessage?: string, status?: number, t?: ClientTranslator): string {
+  const known = (key: string) => (t ? t(`errors.${ERROR_KEY[key]}`) : MESSAGES[key]);
   if (MESSAGES[code]) {
-    return MESSAGES[code];
+    return known(code);
   }
   if (serverMessage) {
     return serverMessage;
   }
   if (status && status >= 500) {
-    return MESSAGES.internal;
+    return known("internal");
   }
-  return "The request failed.";
+  return t ? t("requestFailed") : "The request failed.";
 }
 
-/** Error text for anything a client call threw. */
-export function describeError(error: unknown): string {
+/** Error text for anything a client call threw; pass `t` to word a CollabClientError in the interface language. */
+export function describeError(error: unknown, t?: ClientTranslator): string {
   if (error instanceof CollabClientError) {
-    return error.message;
+    return t ? errorMessage(error.code, error.serverMessage, error.status, t) : error.message;
   }
-  return error instanceof Error && error.message ? error.message : "The request failed.";
+  return error instanceof Error && error.message ? error.message : t ? t("requestFailed") : "The request failed.";
 }
 
 type Method = "GET" | "POST" | "PATCH" | "DELETE";

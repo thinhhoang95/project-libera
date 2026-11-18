@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import {
@@ -29,11 +30,7 @@ import type {
   PdfTextAnnotation,
 } from "@/lib/types";
 
-const MARKUP_LABELS = {
-  underline: "Underline",
-  strikethrough: "Strikethrough",
-  squiggly: "Squiggly underline",
-} as const;
+type PanelTranslator = ReturnType<typeof useTranslations>;
 
 /** The annotations the panel lists: the ones that carry words. */
 type ListedAnnotation = PdfHighlightAnnotation | PdfTextAnnotation;
@@ -43,12 +40,12 @@ function isListedAnnotation(annotation: PdfAnnotation): annotation is ListedAnno
 }
 
 /** What the annotation is: the card's title. */
-function annotationKind(annotation: ListedAnnotation) {
+function annotationKind(t: PanelTranslator, annotation: ListedAnnotation) {
   if (annotation.type === "text") {
-    return "Note";
+    return t("kindNote");
   }
 
-  return annotation.markup ? MARKUP_LABELS[annotation.markup] : "Highlight";
+  return t(annotation.markup ? `markup.${annotation.markup}` : "kindHighlight");
 }
 
 /** The annotation's words, if any; the card clamps them to an excerpt. */
@@ -110,10 +107,13 @@ export function PdfAnnotationsPanel({
     options?: { viewState?: OpenTab["viewState"] },
   ) => Promise<void>;
 }) {
+  const t = useTranslations("pdfAnnotationsPanel");
   const [query, setQuery] = useState("");
   const [outlineState, setOutlineState] = useState<{
     annotations: PdfAnnotation[];
     error: string;
+    /** The load failed with no message from the server. */
+    failed?: boolean;
     path: string;
   }>({
     annotations: [],
@@ -125,7 +125,7 @@ export function PdfAnnotationsPanel({
     () => (outlineState.path === filePath ? outlineState.annotations : []),
     [filePath, outlineState.annotations, outlineState.path],
   );
-  const error = outlineState.path === filePath ? outlineState.error : "";
+  const error = outlineState.path === filePath ? (outlineState.error || (outlineState.failed ? t("loadFailed") : "")) : "";
   const loading = Boolean(activeTab) && outlineState.path !== filePath;
   const selectedAnnotationId = activeTab?.viewState?.pdf?.selectedAnnotationId;
   // A highlight's context menu: Quote and cite.
@@ -196,10 +196,8 @@ export function PdfAnnotationsPanel({
 
         setOutlineState({
           annotations: [],
-          error:
-            fetchError instanceof Error
-              ? fetchError.message
-              : "Could not load PDF annotations.",
+          error: fetchError instanceof Error ? fetchError.message : "",
+          failed: !(fetchError instanceof Error),
           path,
         });
       });
@@ -252,19 +250,19 @@ export function PdfAnnotationsPanel({
   const normalizedQuery = query.trim().toLowerCase();
   const filteredAnnotations = useMemo(
     () => sortedAnnotations.filter((annotation) =>
-      `${annotationKind(annotation)} ${annotationExcerpt(annotation)}`.toLowerCase().includes(normalizedQuery) ||
-      `p. ${annotation.pageNumber}`.includes(normalizedQuery),
+      `${annotationKind(t, annotation)} ${annotationExcerpt(annotation)}`.toLowerCase().includes(normalizedQuery) ||
+      t("pageLabel", { page: annotation.pageNumber }).toLowerCase().includes(normalizedQuery),
     ),
-    [sortedAnnotations, normalizedQuery],
+    [sortedAnnotations, normalizedQuery, t],
   );
 
   const emptyNote = "rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground";
 
   return (
-    <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="PDF annotations">
+    <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label={t("pdfAnnotations")}>
       <header className="shrink-0 space-y-3 px-3 pb-3 pt-4">
         <div className="libera-notebook-heading flex items-center gap-1">
-          <h2 className="min-w-0 flex-1 text-sm font-semibold">Annotations</h2>
+          <h2 className="min-w-0 flex-1 text-sm font-semibold">{t("annotationsHeading")}</h2>
           {sortedAnnotations.length ? (
             <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{sortedAnnotations.length}</span>
           ) : null}
@@ -276,9 +274,9 @@ export function PdfAnnotationsPanel({
               className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
             />
             <input
-              aria-label="Search PDF annotations"
+              aria-label={t("searchLabel")}
               className="libera-panel-field libera-panel-field--search w-full"
-              placeholder="Search annotations"
+              placeholder={t("searchPlaceholder")}
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -294,9 +292,9 @@ export function PdfAnnotationsPanel({
             />
             {query ? (
               <button
-                aria-label="Clear annotation search"
+                aria-label={t("clearSearchLabel")}
                 className="libera-sidebar-icon-button absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md"
-                title="Clear search"
+                title={t("clearSearch")}
                 type="button"
                 onClick={() => setQuery("")}
                 onMouseDown={(event) => event.preventDefault()}
@@ -309,9 +307,9 @@ export function PdfAnnotationsPanel({
       </header>
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
         {!activeTab ? (
-          <p className={emptyNote}>Open a PDF to see annotations.</p>
+          <p className={emptyNote}>{t("openPdfHint")}</p>
         ) : loading ? (
-          <p className="px-1 py-6 text-center text-sm text-muted-foreground">Loading annotations…</p>
+          <p className="px-1 py-6 text-center text-sm text-muted-foreground">{t("loading")}</p>
         ) : error ? (
           <p className="rounded-lg border border-destructive/40 bg-destructive-muted px-3 py-4 text-sm text-destructive">
             {error}
@@ -332,8 +330,8 @@ export function PdfAnnotationsPanel({
               >
                 <span className="flex items-center gap-2">
                   <span className="pdf-annotation-icon">{annotationIcon(annotation)}</span>
-                  <strong className="min-w-0 flex-1 truncate text-xs font-semibold">{annotationKind(annotation)}</strong>
-                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">p. {annotation.pageNumber}</span>
+                  <strong className="min-w-0 flex-1 truncate text-xs font-semibold">{annotationKind(t, annotation)}</strong>
+                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{t("pageLabel", { page: annotation.pageNumber })}</span>
                 </span>
                 {excerpt ? (
                   <span className="pdf-annotation-excerpt mt-2 line-clamp-3 text-xs leading-relaxed" data-kind={annotation.type}>
@@ -345,10 +343,10 @@ export function PdfAnnotationsPanel({
           })
         ) : sortedAnnotations.length ? (
           <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">
-            No matching annotations.
+            {t("noMatches")}
           </p>
         ) : (
-          <p className={emptyNote}>No highlights or notes in this PDF.</p>
+          <p className={emptyNote}>{t("noAnnotations")}</p>
         )}
         {contextMenu ? (
           <div
@@ -364,7 +362,7 @@ export function PdfAnnotationsPanel({
               onClick={() => quoteHighlight(contextMenu.annotation)}
             >
               <Quote aria-hidden className="h-4 w-4" />
-              Quote and cite
+              {t("quoteAndCite")}
             </button>
           </div>
         ) : null}

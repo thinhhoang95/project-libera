@@ -1,11 +1,13 @@
 "use client";
 
 import { Bell, CheckCheck, LoaderCircle } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import type { NotificationInfo } from "@/lib/collab/local-api";
-import { collabClient, describeError } from "@/lib/collab/ui/client";
+import { collabClient } from "@/lib/collab/ui/client";
+import { useDescribeError } from "@/lib/collab/ui/use-describe-error";
 import { useCollabProjects, useCollabStatus, useHostEvents } from "@/lib/collab/ui/hooks";
 import { describeNotification, timeAgo } from "@/lib/collab/ui/wording";
 import { useDesktopNotificationsSetting } from "./desktop-notifications";
@@ -23,6 +25,7 @@ export interface NotificationGroup {
 export function groupNotifications(
   notifications: NotificationInfo[],
   projectName: (projectId: string) => string | undefined,
+  otherTitle = "Other",
 ): NotificationGroup[] {
   const groups = new Map<string, NotificationGroup>();
   const sorted = [...notifications].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
@@ -33,7 +36,7 @@ export function groupNotifications(
       const payloadName = typeof notification.payload?.projectName === "string" ? notification.payload.projectName : undefined;
       group = {
         projectId: notification.projectId,
-        title: (notification.projectId && projectName(notification.projectId)) || payloadName || "Other",
+        title: (notification.projectId && projectName(notification.projectId)) || payloadName || otherTitle,
         items: [],
       };
       groups.set(key, group);
@@ -43,7 +46,7 @@ export function groupNotifications(
   return [...groups.values()];
 }
 
-function fetchNotifications(): Promise<{ items: NotificationInfo[] } | { error: string }> {
+function fetchNotifications(describeError: (caught: unknown) => string): Promise<{ items: NotificationInfo[] } | { error: string }> {
   return collabClient.notifications({ limit: PAGE }).then(
     (items) => ({ items }),
     (caught: unknown) => ({ error: describeError(caught) }),
@@ -66,6 +69,10 @@ export function NotificationsBell({ onOpenDocument, onOpenInvitation }: Notifica
 
 function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: NotificationsBellProps) {
   const popoverId = useId();
+  const t = useTranslations("collab.notificationsBell");
+  const tCommon = useTranslations("common");
+  const tWording = useTranslations("lib.collab.ui.wording");
+  const describeError = useDescribeError();
   const { projectById } = useCollabProjects();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -88,24 +95,24 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
     setLoading(false);
   }, []);
 
-  const load = useCallback(() => fetchNotifications().then(applyResult), [applyResult]);
+  const load = useCallback(() => fetchNotifications(describeError).then(applyResult), [applyResult, describeError]);
 
   useEffect(() => {
     let live = true;
-    void fetchNotifications().then((result) => {
+    void fetchNotifications(describeError).then((result) => {
       if (live) applyResult(result);
     });
     return () => {
       live = false;
     };
-  }, [applyResult]);
+  }, [applyResult, describeError]);
 
   useHostEvents("notification", (event) => {
     setItems((current) => [event.notification, ...current.filter((item) => item.id !== event.notification.id)].slice(0, PAGE));
   });
 
   const unread = items.filter((item) => !item.readAt).length;
-  const groups = useMemo(() => groupNotifications(items, (projectId) => projectById(projectId)?.name), [items, projectById]);
+  const groups = useMemo(() => groupNotifications(items, (projectId) => projectById(projectId)?.name, t("other")), [items, projectById, t]);
 
   const close = useCallback((refocus: boolean) => {
     setAnchor(null);
@@ -182,9 +189,9 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
         aria-controls={open ? popoverId : undefined}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}
+        aria-label={unread ? t("ariaUnread", { count: unread }) : t("title")}
         className="libera-sidebar-icon-button relative inline-flex h-9 w-9 items-center justify-center rounded-lg"
-        title="Notifications"
+        title={t("title")}
         type="button"
         onClick={toggle}
       >
@@ -202,7 +209,7 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
         ? createPortal(
             <div
               ref={popoverRef}
-              aria-label="Notifications"
+              aria-label={t("title")}
               className="libera-collab-popover fixed z-[60] flex max-h-[min(32rem,calc(100vh-16px))] w-[22rem] max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl"
               id={popoverId}
               role="dialog"
@@ -210,9 +217,9 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
               onKeyDown={onPopoverKeyDown}
             >
               <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-                <h2 className="min-w-0 truncate text-sm font-semibold">Notifications</h2>
-                <label className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground" title="Also show notifications on the desktop while Libera is in the background">
-                  <input checked={desktopAlerts} type="checkbox" onChange={(event) => setDesktopAlerts(event.target.checked)} /> Desktop alerts
+                <h2 className="min-w-0 truncate text-sm font-semibold">{t("title")}</h2>
+                <label className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground" title={t("desktopAlertsHint")}>
+                  <input checked={desktopAlerts} type="checkbox" onChange={(event) => setDesktopAlerts(event.target.checked)} /> {t("desktopAlerts")}
                 </label>
                 <button
                   className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
@@ -221,7 +228,7 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
                   type="button"
                   onClick={() => void markRead("all")}
                 >
-                  <CheckCheck aria-hidden className="h-3.5 w-3.5" /> Mark all read
+                  <CheckCheck aria-hidden className="h-3.5 w-3.5" /> {t("markAllRead")}
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-1.5">
@@ -232,10 +239,10 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
                 ) : null}
                 {loading && !items.length ? (
                   <p className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground" role="status">
-                    <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> Loading…
+                    <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> {tCommon("loading")}
                   </p>
                 ) : !items.length ? (
-                  <p className="px-2 py-6 text-center text-xs text-muted-foreground">No notifications yet.</p>
+                  <p className="px-2 py-6 text-center text-xs text-muted-foreground">{t("empty")}</p>
                 ) : (
                   groups.map((group) => (
                     <section key={group.projectId ?? "other"} aria-label={group.title} className="mb-1.5 last:mb-0">
@@ -259,11 +266,11 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
                                 />
                                 <span className="min-w-0 flex-1">
                                   <span className={`line-clamp-3 ${notification.readAt ? "text-muted-foreground" : "font-medium text-foreground"}`}>
-                                    {describeNotification(notification)}
+                                    {describeNotification(notification, tWording)}
                                   </span>
                                   <span className="mt-0.5 block text-[10px] text-muted-foreground">
-                                    {timeAgo(now - Date.parse(notification.createdAt))}
-                                    {notification.readAt ? "" : " · unread"}
+                                    {timeAgo(now - Date.parse(notification.createdAt), tWording)}
+                                    {notification.readAt ? "" : t("unreadSuffix")}
                                   </span>
                                 </span>
                               </button>

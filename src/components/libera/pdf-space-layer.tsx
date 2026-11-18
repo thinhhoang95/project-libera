@@ -1,6 +1,7 @@
 "use client";
 
 import { X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { memo, useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
 import { createAnnotationId, nowIso } from "@/components/libera/text-annotation-layer";
 import { PDF_SPACE_MIN_HEIGHT, availableSpaceHeight, columnBounds, sameBand } from "@/lib/pdf-space";
@@ -75,6 +76,7 @@ export const PdfSpaceLayer = memo(function PdfSpaceLayer({
   onDelete,
   onSelect,
 }: PdfSpaceLayerProps) {
+  const t = useTranslations("pdfSpaceLayer");
   const gestureRef = useRef<Gesture | null>(null);
   const frameRef = useRef<number | null>(null);
   const [hover, setHover] = useState<{ y: number; snapped: boolean; x0: number; x1: number } | null>(null);
@@ -300,8 +302,8 @@ export const PdfSpaceLayer = memo(function PdfSpaceLayer({
             <button
               type="button"
               className="pdf-space-delete"
-              aria-label="Delete space"
-              title="Delete space and what is in it"
+              aria-label={t("deleteSpace")}
+              title={t("deleteSpaceTitle")}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
@@ -313,7 +315,7 @@ export const PdfSpaceLayer = memo(function PdfSpaceLayer({
             <div
               role="separator"
               aria-orientation="horizontal"
-              aria-label="Resize space"
+              aria-label={t("resizeSpace")}
               className="pdf-space-grip"
               onPointerDown={(event) => {
                 if (event.button === 0) begin(event, space, false);

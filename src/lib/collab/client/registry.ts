@@ -44,7 +44,8 @@ export type SharedTabState =
   /** In a shared notebook; resolving the path or attaching the replica. */
   | { kind: "pending"; path: string }
   | { kind: "shared"; path: string; session: SharedDocSession }
-  | { kind: "error"; path: string; message: string };
+  /** `message` is English; `code` names the wording to show instead (messages `lib.collab.client.registry.{code}`) when the failure is ours rather than a server message. */
+  | { kind: "error"; path: string; message: string; code?: "openFailed" | "fileDeleted" };
 
 export interface SharedDocLease {
   readonly docId: string;
@@ -462,13 +463,13 @@ export class SharedDocRegistry {
     } catch (error) {
       binding.lease?.release();
       binding.lease = null;
-      return settle({ kind: "error", path, message: error instanceof Error ? error.message : "Could not open the shared document." });
+      return settle({ kind: "error", path, message: error instanceof Error ? error.message : "Could not open the shared document.", ...(error instanceof Error ? {} : { code: "openFailed" as const }) });
     }
     if (this.tabs.get(tabId) !== binding) return this.tabs.get(tabId)?.state ?? { kind: "none" };
     if (!resolved) {
       binding.lease?.release();
       binding.lease = null;
-      if (binding.deleted) return settle({ kind: "error", path, message: "This shared file was deleted." });
+      if (binding.deleted) return settle({ kind: "error", path, message: "This shared file was deleted.", code: "fileDeleted" });
       return settle({ kind: "none" });
     }
     if (binding.lease?.docId !== resolved.docId) {
@@ -480,7 +481,7 @@ export class SharedDocRegistry {
       if (binding.deleted) session.replica.markDeleted();
       return settle({ kind: "shared", path, session });
     } catch (error) {
-      return settle({ kind: "error", path, message: error instanceof Error ? error.message : "Could not open the shared document." });
+      return settle({ kind: "error", path, message: error instanceof Error ? error.message : "Could not open the shared document.", ...(error instanceof Error ? {} : { code: "openFailed" as const }) });
     }
   }
 

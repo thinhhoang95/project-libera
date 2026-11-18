@@ -5,9 +5,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
+import { useFormatter, useTranslations } from "next-intl";
 import { CalendarDays, CalendarSearch, Check, ListFilter, X } from "lucide-react";
 import {
-  filterCount, GALLERY_GROUPINGS, GROUPING_LABEL, indexAtOffset, ME, NO_FILTER, parseDay, toDay, UNKNOWN_CONTRIBUTOR,
+  filterCount, GALLERY_GROUPINGS, indexAtOffset, ME, NO_FILTER, parseDay, toDay, UNKNOWN_CONTRIBUTOR,
   type GalleryFilter, type GalleryGrouping,
 } from "@/lib/gallery-timeline";
 
@@ -37,20 +38,21 @@ function Popover({ anchor, label, onClose, children, width = 256 }: { anchor: HT
 
 /** Group by: Auto (sections start where the dates jump), Day, Week, Month or Year. */
 export function GroupingButton({ grouping, onChange }: { grouping: GalleryGrouping; onChange: (grouping: GalleryGrouping) => void }) {
+  const t = useTranslations("galleryTimeline");
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const close = useCallback(() => setAnchor(null), []);
   return <>
-    <button className={toolbarButton} aria-haspopup="menu" aria-expanded={Boolean(anchor)} aria-label={`Group by: ${GROUPING_LABEL[grouping]}`} title="Group photos by date"
-      onClick={(event) => setAnchor(anchor ? null : event.currentTarget)}><CalendarDays className="h-4 w-4" /><span className="max-sm:hidden">{GROUPING_LABEL[grouping]}</span></button>
-    {anchor && <Popover anchor={anchor} label="Group by" onClose={close} width={224}>
-      <p className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">Group by</p>
-      <div role="menu" aria-label="Group by">
+    <button className={toolbarButton} aria-haspopup="menu" aria-expanded={Boolean(anchor)} aria-label={t("groupByAria", { grouping: t(`grouping.${grouping}`) })} title={t("groupPhotosByDate")}
+      onClick={(event) => setAnchor(anchor ? null : event.currentTarget)}><CalendarDays className="h-4 w-4" /><span className="max-sm:hidden">{t(`grouping.${grouping}`)}</span></button>
+    {anchor && <Popover anchor={anchor} label={t("groupBy")} onClose={close} width={224}>
+      <p className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">{t("groupBy")}</p>
+      <div role="menu" aria-label={t("groupBy")}>
         {GALLERY_GROUPINGS.map((option) => <button key={option} role="menuitemradio" aria-checked={grouping === option} className={menuItem}
           {...(grouping === option ? { "data-autofocus": true } : {})}
           onClick={() => { onChange(option); close(); }}>
           <Check className={`h-4 w-4 ${grouping === option ? "" : "invisible"}`} />
-          <span className="flex-1">{GROUPING_LABEL[option]}</span>
-          {option === "auto" && <span className="text-xs text-muted-foreground">by gaps in time</span>}
+          <span className="flex-1">{t(`grouping.${option}`)}</span>
+          {option === "auto" && <span className="text-xs text-muted-foreground">{t("byGapsInTime")}</span>}
         </button>)}
       </div>
     </Popover>}
@@ -59,6 +61,8 @@ export function GroupingButton({ grouping, onChange }: { grouping: GalleryGroupi
 
 /** Jump to date: a day, or one of the years and months the photos span. */
 export function JumpToDateButton({ times, onJump }: { times: number[]; onJump: (day: string) => void }) {
+  const t = useTranslations("galleryTimeline");
+  const format = useFormatter();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [day, setDay] = useState("");
   const close = useCallback(() => setAnchor(null), []);
@@ -86,21 +90,21 @@ export function JumpToDateButton({ times, onJump }: { times: number[]; onJump: (
     close();
   }
   return <>
-    <button className={toolbarButton} aria-haspopup="dialog" aria-expanded={Boolean(anchor)} aria-label="Jump to date…" title="Jump to a date" disabled={!times.length}
-      onClick={(event) => { setDay((current) => current || max); setAnchor(anchor ? null : event.currentTarget); }}><CalendarSearch className="h-4 w-4" /><span className="max-sm:hidden">Jump to</span></button>
-    {anchor && <Popover anchor={anchor} label="Jump to date" onClose={close} width={272}>
+    <button className={toolbarButton} aria-haspopup="dialog" aria-expanded={Boolean(anchor)} aria-label={t("jumpToDateAria")} title={t("jumpToADate")} disabled={!times.length}
+      onClick={(event) => { setDay((current) => current || max); setAnchor(anchor ? null : event.currentTarget); }}><CalendarSearch className="h-4 w-4" /><span className="max-sm:hidden">{t("jumpTo")}</span></button>
+    {anchor && <Popover anchor={anchor} label={t("jumpToDate")} onClose={close} width={272}>
       <form className="flex items-end gap-2 p-2" onSubmit={(event) => { event.preventDefault(); jump(day); }}>
-        <label className="flex-1 text-xs font-medium text-muted-foreground">Date
+        <label className="flex-1 text-xs font-medium text-muted-foreground">{t("date")}
           <input type="date" data-autofocus className={`${dateInput} mt-1`} value={day} min={min} max={max} onChange={(event) => setDay(event.target.value)} />
         </label>
-        <button type="submit" className="h-9 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={parseDay(day) === null}>Go</button>
+        <button type="submit" className="h-9 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={parseDay(day) === null}>{t("go")}</button>
       </form>
       <div className="border-t border-border px-2 pb-2 pt-1.5">
         {years.map(({ year, months }) => <div key={year} className="mt-1.5">
           <button type="button" className="text-xs font-semibold hover:underline" onClick={() => jump(`${year}-${months.at(-1)! < 9 ? "0" : ""}${months.at(-1)! + 1}-15`)}>{year}</button>
           <div className="mt-1 flex flex-wrap gap-1">
             {months.map((month) => <button key={month} type="button" className="rounded-md bg-muted px-1.5 py-0.5 text-xs hover:bg-primary hover:text-primary-foreground"
-              onClick={() => jump(`${year}-${String(month + 1).padStart(2, "0")}-15`)}>{new Date(year, month, 1).toLocaleDateString(undefined, { month: "short" })}</button>)}
+              onClick={() => jump(`${year}-${String(month + 1).padStart(2, "0")}-15`)}>{format.dateTime(new Date(year, month, 1), { month: "short" })}</button>)}
           </div>
         </div>)}
       </div>
@@ -110,10 +114,13 @@ export function JumpToDateButton({ times, onJump }: { times: number[]; onJump: (
 
 export type Contributor = { id: string; name: string; count: number };
 
-export function contributorName(id: string, names: Map<string, string>) {
+type TimelineT = ReturnType<typeof useTranslations<"galleryTimeline">>;
+type Formatter = ReturnType<typeof useFormatter>;
+
+export function contributorName(id: string, names: Map<string, string>, t: TimelineT) {
   // Members' names load from the collaboration service; until then (or for
   // someone who left) a short id keeps them apart.
-  return id === ME ? "You" : id === UNKNOWN_CONTRIBUTOR ? "Unknown member" : names.get(id) ?? `Member ${id.slice(-6)}`;
+  return id === ME ? t("you") : id === UNKNOWN_CONTRIBUTOR ? t("unknownMember") : names.get(id) ?? t("memberFallback", { id: id.slice(-6) });
 }
 
 /** Filter: the photos of some contributors (yourself included), taken from one day to another. */
@@ -125,6 +132,7 @@ export function FilterButton({ filter, contributors, min, max, onChange }: {
   max: string;
   onChange: (filter: GalleryFilter) => void;
 }) {
+  const t = useTranslations("galleryTimeline");
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const close = useCallback(() => setAnchor(null), []);
   const count = filterCount(filter);
@@ -135,60 +143,58 @@ export function FilterButton({ filter, contributors, min, max, onChange }: {
     onChange({ ...filter, contributors: [...next] });
   }
   return <>
-    <button className={`${toolbarButton} ${count ? "bg-primary/10 text-primary" : ""}`} aria-haspopup="dialog" aria-expanded={Boolean(anchor)} aria-label="Filter photos…" title="Show only some photos"
+    <button className={`${toolbarButton} ${count ? "bg-primary/10 text-primary" : ""}`} aria-haspopup="dialog" aria-expanded={Boolean(anchor)} aria-label={t("filterPhotosAria")} title={t("showOnlySomePhotos")}
       onClick={(event) => setAnchor(anchor ? null : event.currentTarget)}>
-      <ListFilter className="h-4 w-4" /><span className="max-sm:hidden">Filter</span>
+      <ListFilter className="h-4 w-4" /><span className="max-sm:hidden">{t("filter")}</span>
       {count > 0 && <span className="rounded-full bg-primary px-1.5 text-[11px] font-semibold leading-4 text-primary-foreground">{count}</span>}
     </button>
-    {anchor && <Popover anchor={anchor} label="Filter photos" onClose={close} width={288}>
+    {anchor && <Popover anchor={anchor} label={t("filterPhotos")} onClose={close} width={288}>
       <div className="p-2">
-        <p className="text-xs font-medium text-muted-foreground">Added by</p>
-        {contributors.length > 1 || filter.contributors.length ? <div className="mt-1" role="group" aria-label="Added by">
+        <p className="text-xs font-medium text-muted-foreground">{t("addedBy")}</p>
+        {contributors.length > 1 || filter.contributors.length ? <div className="mt-1" role="group" aria-label={t("addedBy")}>
           {contributors.map((contributor) => <label key={contributor.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-sm hover:bg-muted">
             <input type="checkbox" className="h-4 w-4 accent-[var(--primary)]" checked={chosen.has(contributor.id)} onChange={() => toggle(contributor.id)} />
             <span className="flex-1 truncate">{contributor.name}</span>
             <span className="text-xs text-muted-foreground">{contributor.count}</span>
           </label>)}
-          <p className="px-1.5 pt-1 text-xs text-muted-foreground">{chosen.size ? "Only the people ticked are shown." : "Everyone is shown. Tick people to show only their photos."}</p>
-        </div> : <p className="mt-1 text-xs leading-relaxed text-muted-foreground">All of these photos are yours. Photos other members add to shared albums can be filtered by who added them.</p>}
+          <p className="px-1.5 pt-1 text-xs text-muted-foreground">{chosen.size ? t("onlyTickedShown") : t("everyoneShown")}</p>
+        </div> : <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t("allYours")}</p>}
       </div>
       <div className="border-t border-border p-2">
-        <p className="text-xs font-medium text-muted-foreground">Taken</p>
+        <p className="text-xs font-medium text-muted-foreground">{t("taken")}</p>
         <div className="mt-1 grid grid-cols-2 gap-2">
-          <label className="text-xs text-muted-foreground">From
+          <label className="text-xs text-muted-foreground">{t("from")}
             <input type="date" className={`${dateInput} mt-1`} value={filter.from} min={min} max={filter.to || max} onChange={(event) => onChange({ ...filter, from: event.target.value })} />
           </label>
-          <label className="text-xs text-muted-foreground">To
+          <label className="text-xs text-muted-foreground">{t("to")}
             <input type="date" className={`${dateInput} mt-1`} value={filter.to} min={filter.from || min} max={max} onChange={(event) => onChange({ ...filter, to: event.target.value })} />
           </label>
         </div>
       </div>
       {count > 0 && <div className="border-t border-border p-1">
-        <button type="button" className={menuItem} onClick={() => onChange(NO_FILTER)}><X className="h-4 w-4" />Clear filter</button>
+        <button type="button" className={menuItem} onClick={() => onChange(NO_FILTER)}><X className="h-4 w-4" />{t("clearFilter")}</button>
       </div>}
     </Popover>}
   </>;
 }
 
 /** What the filter shows, in words, for the bar under the toolbar. */
-export function describeFilter(filter: GalleryFilter, names: Map<string, string>) {
-  const parts: string[] = [];
-  if (filter.contributors.length) parts.push(`Added by ${filter.contributors.map((id) => contributorName(id, names)).join(", ")}`);
-  const format = (day: string) => new Date(parseDay(day)!).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-  if (filter.from && filter.to) parts.push(`${format(filter.from)} – ${format(filter.to)}`);
-  else if (filter.from) parts.push(`From ${format(filter.from)}`);
-  else if (filter.to) parts.push(`Until ${format(filter.to)}`);
-  return parts.join(" · ");
+export function describeFilter(filter: GalleryFilter, names: Map<string, string>, t: TimelineT, format: Formatter) {
+  const day = (value: string) => format.dateTime(new Date(parseDay(value)!), { month: "short", day: "numeric", year: "numeric" });
+  const when = filter.from && filter.to ? "range" : filter.from ? "from" : filter.to ? "until" : "none";
+  return t("filterSummary", {
+    who: filter.contributors.length ? "yes" : "none",
+    names: filter.contributors.map((id) => contributorName(id, names, t)).join(", "),
+    when,
+    start: day(filter.from || filter.to),
+    end: day(filter.to || filter.from),
+  });
 }
 
 type Rows = { tops: number[]; times: number[] };
 
 const SEEKER_PADDING = 12;
 const LABEL_SPACING = 18;
-
-function seekLabel(time: number) {
-  return new Date(time).toLocaleDateString(undefined, { month: "short", year: "numeric" });
-}
 
 /**
  * A rail beside the photos, like a timeline: years are marked where their
@@ -202,6 +208,9 @@ export function TimelineSeeker({ scrollRef, rows, layoutKey }: {
   /** Changes when the photos or their layout change. */
   layoutKey: string;
 }) {
+  const t = useTranslations("galleryTimeline");
+  const format = useFormatter();
+  const seekLabel = (time: number) => format.dateTime(new Date(time), { month: "short", year: "numeric" });
   const railRef = useRef<HTMLDivElement>(null);
   const [metrics, setMetrics] = useState({ scrollTop: 0, maxScroll: 0, clientHeight: 0, rail: 0 });
   const [hover, setHover] = useState<number | null>(null);
@@ -283,7 +292,7 @@ export function TimelineSeeker({ scrollRef, rows, layoutKey }: {
   const hoverTime = hover === null ? undefined : timeAt(toOffset(hover));
   const bubble = (y: number, text: string, strong: boolean) => <span className={`pointer-events-none absolute right-11 -translate-y-1/2 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium shadow-md ${strong ? "bg-primary text-primary-foreground" : "bg-foreground text-background"}`} style={{ top: y }}>{text}</span>;
 
-  return <div ref={railRef} role="slider" tabIndex={0} aria-label="Scroll through photos by date" aria-orientation="vertical"
+  return <div ref={railRef} role="slider" tabIndex={0} aria-label={t("scrollByDate")} aria-orientation="vertical"
     aria-valuemin={0} aria-valuemax={100} aria-valuenow={maxScroll ? Math.round((scrollTop / maxScroll) * 100) : 0} aria-valuetext={current ? seekLabel(current) : undefined}
     className="group/seeker absolute inset-y-0 right-0 z-10 w-12 cursor-row-resize touch-none select-none outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
     onPointerDown={(event) => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); setDragging(true); seek(event); }}

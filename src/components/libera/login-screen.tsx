@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent } from "react";
+import { useTranslations } from "next-intl";
 import { ArrowRight, Check, Eye, EyeOff, ImagePlus, LoaderCircle, MoreHorizontal } from "lucide-react";
 import { WindowControls } from "@/components/libera/window-controls";
 import styles from "./login-screen.module.css";
@@ -31,6 +32,8 @@ export function LoginScreen({
   onLogin,
   onPasswordChange,
 }: LoginScreenProps) {
+  const t = useTranslations("loginScreen");
+  const tWallpaper = useTranslations("loginWallpaper");
   const [showPassword, setShowPassword] = useState(false);
   const [wallpaperError, setWallpaperError] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -98,7 +101,7 @@ export function LoginScreen({
       if (!(await window.liberaProfiles!.switchTo(profile.id)).switched) setSwitchingTo(undefined);
     } catch {
       setSwitchingTo(undefined);
-      setSwitchError(`Could not switch to ${profile.name}. Please try again.`);
+      setSwitchError(t("switchUserError", { name: profile.name }));
     }
   }
 
@@ -112,7 +115,7 @@ export function LoginScreen({
 
   async function uploadWallpaper(file: File) {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 10 * 1024 * 1024) {
-      setWallpaperError("Choose a PNG, JPEG, or WebP smaller than 10 MB.");
+      setWallpaperError(t("wallpaperTypeError"));
       return;
     }
     setUploading(true);
@@ -120,12 +123,12 @@ export function LoginScreen({
     try {
       const response = await fetch("/api/preferences/login-wallpaper", { method: "POST", headers: { "Content-Type": file.type }, body: file });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not save your wallpaper.");
+      if (!response.ok) throw new Error(result.error ?? t("wallpaperSaveError"));
       setImageVersion((version) => version + 1);
       setHasCustomImage(true);
-      if (!saveLoginWallpaper("custom")) throw new Error("Image saved, but the selection could not be remembered. Please enable cookies.");
+      if (!saveLoginWallpaper("custom")) throw new Error(t("imageSavedNotRemembered"));
     } catch (error) {
-      setWallpaperError(error instanceof Error ? error.message : "Could not save your wallpaper.");
+      setWallpaperError(error instanceof Error ? error.message : t("wallpaperSaveError"));
     } finally {
       setUploading(false);
     }
@@ -144,48 +147,48 @@ export function LoginScreen({
     >
       <div className="libera-window-drag-region fixed inset-x-0 top-0 h-12" aria-hidden />
       <div className={`libera-window-no-drag fixed right-3 top-3 z-50 ${styles.toolbar}`}>
-        <button type="button" className={styles.wallpaperTrigger} popoverTarget="login-wallpapers" aria-label="Choose login wallpaper" title="Choose login wallpaper">
+        <button type="button" className={styles.wallpaperTrigger} popoverTarget="login-wallpapers" aria-label={t("chooseWallpaper")} title={t("chooseWallpaper")}>
           <MoreHorizontal aria-hidden size={22} />
         </button>
         <WindowControls />
       </div>
       <div id="login-wallpapers" popover="auto" className={`libera-window-no-drag ${styles.wallpaperPicker}`}>
-        <h2>Login wallpaper</h2>
-        <p>Make this space yours.</p>
+        <h2>{t("wallpaperTitle")}</h2>
+        <p>{t("wallpaperSubtitle")}</p>
         <div className={styles.wallpaperGrid}>
           {LOGIN_WALLPAPERS.map((option) => (
             <button key={option.id} type="button" disabled={uploading} className={styles.wallpaperOption} aria-pressed={wallpaper.id === option.id} onClick={() => {
               try {
-                setWallpaperError(saveLoginWallpaper(option.id) ? "" : "Could not save your wallpaper. Please enable cookies and try again.");
+                setWallpaperError(saveLoginWallpaper(option.id) ? "" : t("wallpaperCookiesError"));
               } catch {
-                setWallpaperError("Could not save your wallpaper. Please try again.");
+                setWallpaperError(t("wallpaperRetryError"));
               }
             }}>
               <span className={styles.wallpaperSwatch} style={{ background: option.background }}>
                 {wallpaper.id === option.id && <Check aria-hidden size={18} />}
               </span>
-              <span>{option.name}</span>
+              <span>{tWallpaper(option.id)}</span>
             </button>
           ))}
-          <button type="button" className={styles.wallpaperOption} disabled={uploading} aria-label="Custom image" aria-pressed={wallpaper.id === "custom"} onClick={() => {
+          <button type="button" className={styles.wallpaperOption} disabled={uploading} aria-label={t("customImage")} aria-pressed={wallpaper.id === "custom"} onClick={() => {
             if (hasCustomImage || wallpaper.id === "custom") {
-              try { if (!saveLoginWallpaper("custom")) setWallpaperError("Could not remember your selection."); }
-              catch { setWallpaperError("Could not remember your selection."); }
+              try { if (!saveLoginWallpaper("custom")) setWallpaperError(t("rememberSelectionError")); }
+              catch { setWallpaperError(t("rememberSelectionError")); }
             } else imageInput.current?.click();
           }}>
             <span className={styles.wallpaperSwatch} style={{ background: (hasCustomImage || wallpaper.id === "custom") ? customBackground : "#e7edf8" }}>
               <ImagePlus aria-hidden size={18} />
             </span>
-            <span>{uploading ? "Saving…" : "Custom"}</span>
+            <span>{uploading ? t("savingWallpaper") : t("customWallpaper")}</span>
           </button>
         </div>
-        <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" tabIndex={-1} aria-label="Upload custom wallpaper" onChange={(event) => {
+        <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" tabIndex={-1} aria-label={t("uploadWallpaperLabel")} onChange={(event) => {
           const file = event.target.files?.[0];
           event.target.value = "";
           if (file) void uploadWallpaper(file);
         }} />
-        <button type="button" className={styles.uploadButton} disabled={uploading} onClick={() => imageInput.current?.click()}>Choose an image…</button>
-        <p>PNG, JPEG or WebP · up to 10 MB</p>
+        <button type="button" className={styles.uploadButton} disabled={uploading} onClick={() => imageInput.current?.click()}>{t("chooseImage")}</button>
+        <p>{t("wallpaperFormats")}</p>
         {wallpaperError && <p role="alert" className={styles.error}>{wallpaperError}</p>}
       </div>
       <div className={styles.scrim} aria-hidden />
@@ -205,7 +208,7 @@ export function LoginScreen({
             <span className={styles.logoInk} />
           </div>
           {canSwitchUser && (
-            <div ref={usersGroup} id="login-users" className={styles.users} role="group" aria-label="Choose a user" inert={!choosingUser}>
+            <div ref={usersGroup} id="login-users" className={styles.users} role="group" aria-label={t("chooseUser")} inert={!choosingUser}>
               {users!.profiles.map((profile) => {
                 const current = profile.id === users!.currentId;
                 return (
@@ -215,7 +218,7 @@ export function LoginScreen({
                     className={styles.user}
                     disabled={busy || Boolean(switchingTo)}
                     aria-current={current ? "true" : undefined}
-                    aria-label={current ? `Sign in as ${profile.name}` : `Switch to ${profile.name}`}
+                    aria-label={current ? t("signInAs", { name: profile.name }) : t("switchToUser", { name: profile.name })}
                     title={profile.name}
                     onClick={() => void switchUser(profile)}
                   >
@@ -230,17 +233,17 @@ export function LoginScreen({
           )}
         </div>
         <h1 id="login-heading" className={styles.heading}>
-          {choosingUser ? "Who is signing in?" : yourName ? `Welcome, ${yourName}` : "Welcome to Libera"}
+          {choosingUser ? t("whoSigningIn") : yourName ? t("welcomeName", { name: yourName }) : t("welcomeLibera")}
         </h1>
         <form className={styles.form} onSubmit={onLogin} aria-busy={busy}>
           <label className={styles.label} htmlFor="password">
-            Password
+            {t("passwordLabel")}
           </label>
           <div ref={field} className={styles.passwordField}>
             <input
               id="password"
               type={showPassword ? "text" : "password"}
-              placeholder="Enter password"
+              placeholder={t("passwordPlaceholder")}
               autoComplete="current-password"
               ref={passwordInput}
               aria-invalid={Boolean(authError)}
@@ -252,18 +255,18 @@ export function LoginScreen({
             <button
               className={styles.fieldButton}
               type="button"
-              aria-label={showPassword ? "Hide password" : "Show password"}
-              title={showPassword ? "Hide password" : "Show password"}
+              aria-label={showPassword ? t("hidePassword") : t("showPassword")}
+              title={showPassword ? t("hidePassword") : t("showPassword")}
               onClick={() => setShowPassword((visible) => !visible)}
             >
               {showPassword ? <EyeOff aria-hidden size={15} /> : <Eye aria-hidden size={15} />}
             </button>
-            <button className={styles.submit} type="submit" disabled={busy || !password} aria-label={busy ? "Signing in" : "Sign in"} title="Sign in">
+            <button className={styles.submit} type="submit" disabled={busy || !password} aria-label={busy ? t("signingIn") : t("signIn")} title={t("signIn")}>
               {busy ? <LoaderCircle aria-hidden size={16} className={styles.spinner} /> : <ArrowRight aria-hidden size={16} strokeWidth={2.5} />}
             </button>
           </div>
           <p id="login-error" role="alert" className={styles.hint} data-error={authError || switchError ? "" : undefined}>
-            {switchingTo ? `Switching to ${switchingTo.name}…` : authError || switchError || (busy ? "Signing in…" :" ")}
+            {switchingTo ? t("switchingStatus", { name: switchingTo.name }) : authError || switchError || (busy ? t("signingInStatus") : " ")}
           </p>
         </form>
         {canSwitchUser && (
@@ -275,7 +278,7 @@ export function LoginScreen({
             disabled={busy || Boolean(switchingTo)}
             onClick={() => setUserChooserOpen(!choosingUser)}
           >
-            {choosingUser ? "Cancel" : "Switch user"}
+            {choosingUser ? t("cancel") : t("switchUser")}
           </button>
         )}
       </section>

@@ -6,6 +6,7 @@ import {
   Bold, BookMarked, ChevronDown, Code, Columns2, Hash, Heading, Image as ImageIcon, Italic, Link, List,
   Puzzle, Quote, Sigma, SpellCheck, Superscript, Table,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { wrapSelection, type LatexProjectFile } from "@/lib/latex/codemirror/editing";
 import { toggleLatexFormat } from "@/lib/latex/codemirror/visual/keys";
@@ -51,6 +52,8 @@ type LatexInsertToolbarProps = {
  * formatting, structure, math, floats, code, references, bibliography and
  * saved snippets. Their menus are native ones, except the table size grid. */
 export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, missingInMainFile, onNotice, fontSizePx, visualMode = false }: LatexInsertToolbarProps) {
+  const t = useTranslations("latex.latexInsertToolbar");
+  const tStyles = useTranslations("lib.latex.snippets");
   const { preferences: { textScale, latexSpellcheck }, updatePreferences } = useMarkdownDisplayPreferences();
   const [open, setOpen] = useState<MenuId | null>(null);
   const anchors = useRef(new Map<MenuId, HTMLButtonElement>());
@@ -65,7 +68,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
   function reportUnavailable(packages: string[]) {
     if (!packages.length) return;
     void missingInMainFile(packages).then((missing) => {
-      if (missing.length) onNotice(`This file has no preamble. Load ${missing.map((name) => `\\usepackage{${name}}`).join(", ")} in the main file.`);
+      if (missing.length) onNotice(t("missingPackagesNotice", { packages: missing.map((name) => `\\usepackage{${name}}`).join(", ") }));
     });
   }
 
@@ -103,7 +106,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       if (style.system === "biblatex") {
         const preamble = preambleInsertion(doc, [`\\usepackage[style=${style.value}]{biblatex}`, `\\addbibresource{${bibFile}}`]);
         if (preamble) view.dispatch({ changes: preamble, userEvent: "input" });
-        else onNotice(`This file has no preamble. Add \\usepackage[style=${style.value}]{biblatex} and \\addbibresource{${bibFile}} to the main file.`);
+        else onNotice(t("biblatexPreambleNotice", { style: style.value, file: bibFile }));
       }
       const unavailable = style.system === "bibtex" ? ensurePackages(view, style.packages ?? []).unavailable : [];
       insertSnippetText(view, bibliographyBlock(style, bibFile));
@@ -121,9 +124,9 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
   }
 
   async function removeSnippet(name: string, id: string) {
-    if (!window.confirm(`Delete the snippet /${name}?`)) return;
+    if (!window.confirm(t("confirmDeleteSnippet", { name }))) return;
     try { await deleteLatexSnippet(id); } catch (reason) {
-      onNotice(reason instanceof Error ? reason.message : "Could not delete the snippet.");
+      onNotice(reason instanceof Error && reason.message ? reason.message : t("deleteSnippetError"));
     }
   }
 
@@ -136,42 +139,42 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
     switch (id) {
       case "heading":
         return (["chapter", "section", "subsection", "subsubsection", "paragraph"] as const).map((command) => ({
-          id: command, label: command[0].toUpperCase() + command.slice(1),
+          id: command, label: t(`headingLevel.${command}`),
           onSelect: () => template((selection) => `\\${command}{\${${field(selection, "Title")}}}\${}`),
         }));
       case "list":
         return [
-          { id: "itemize", label: "Bulleted List", onSelect: () => template((selection) => listTemplate("itemize", selection)) },
-          { id: "enumerate", label: "Numbered List", onSelect: () => template((selection) => listTemplate("enumerate", selection)) },
-          { id: "description", label: "Description List", onSelect: () => template((selection) => listTemplate("description", selection)) },
+          { id: "itemize", label: t("bulletedList"), onSelect: () => template((selection) => listTemplate("itemize", selection)) },
+          { id: "enumerate", label: t("numberedList"), onSelect: () => template((selection) => listTemplate("enumerate", selection)) },
+          { id: "description", label: t("descriptionList"), onSelect: () => template((selection) => listTemplate("description", selection)) },
         ];
       case "math":
         return [
-          { id: "inline", label: "Inline Math", onSelect: () => template((selection) => `\\(\${${field(selection, "")}}\\)\${}`) },
-          { id: "display", label: "Display Math", onSelect: () => template((selection) => `\\[\n\t\${${field(selection, "")}}\n\\]\${}`) },
-          { id: "equation", label: "Numbered Equation", onSelect: () => template((selection) => `\\begin{equation}\n\t\${${field(selection, "")}}\n\t\\label{eq:\${label}}\n\\end{equation}\${}`) },
-          { id: "align", label: "Aligned Equations", onSelect: () => template(() => "\\begin{align}\n\t${a} &= ${b} \\\\\n\t${c} &= ${d}\n\\end{align}${}", ["amsmath"]) },
-          { id: "cases", label: "Cases", onSelect: () => template(() => "\\begin{cases}\n\t${value} & \\text{if } ${condition} \\\\\n\t${other} & \\text{otherwise}\n\\end{cases}${}", ["amsmath"]) },
-          { id: "matrix", label: "Matrix", onSelect: () => template(() => "\\begin{pmatrix}\n\t${a} & ${b} \\\\\n\t${c} & ${d}\n\\end{pmatrix}${}", ["amsmath"]) },
-          { id: "fraction", label: "Fraction", onSelect: () => template((selection) => `\\frac{\${${field(selection, "numerator")}}}{\${denominator}}\${}`) },
+          { id: "inline", label: t("inlineMath"), onSelect: () => template((selection) => `\\(\${${field(selection, "")}}\\)\${}`) },
+          { id: "display", label: t("displayMath"), onSelect: () => template((selection) => `\\[\n\t\${${field(selection, "")}}\n\\]\${}`) },
+          { id: "equation", label: t("numberedEquation"), onSelect: () => template((selection) => `\\begin{equation}\n\t\${${field(selection, "")}}\n\t\\label{eq:\${label}}\n\\end{equation}\${}`) },
+          { id: "align", label: t("alignedEquations"), onSelect: () => template(() => "\\begin{align}\n\t${a} &= ${b} \\\\\n\t${c} &= ${d}\n\\end{align}${}", ["amsmath"]) },
+          { id: "cases", label: t("cases"), onSelect: () => template(() => "\\begin{cases}\n\t${value} & \\text{if } ${condition} \\\\\n\t${other} & \\text{otherwise}\n\\end{cases}${}", ["amsmath"]) },
+          { id: "matrix", label: t("matrix"), onSelect: () => template(() => "\\begin{pmatrix}\n\t${a} & ${b} \\\\\n\t${c} & ${d}\n\\end{pmatrix}${}", ["amsmath"]) },
+          { id: "fraction", label: t("fraction"), onSelect: () => template((selection) => `\\frac{\${${field(selection, "numerator")}}}{\${denominator}}\${}`) },
         ];
       case "figure":
         return [
-          { id: "empty", label: "Empty Figure", onSelect: () => template(() => figureTemplate(), ["graphicx"]) },
-          ...(images.length ? [{ type: "separator" } as const, heading("images", "Images in This Folder")] : []),
+          { id: "empty", label: t("emptyFigure"), onSelect: () => template(() => figureTemplate(), ["graphicx"]) },
+          ...(images.length ? [{ type: "separator" } as const, heading("images", t("imagesInFolder"))] : []),
           ...images.map((file) => ({ id: `image:${file.path}`, label: file.path, onSelect: () => template(() => figureTemplate(file.path), ["graphicx"]) })),
         ];
       case "subfigures":
         return [
-          { id: "two", label: "Two Figures Side by Side", onSelect: () => template(() => sideBySideTemplate(2), ["graphicx", "subcaption"]) },
-          { id: "three", label: "Three Figures in a Row", onSelect: () => template(() => sideBySideTemplate(3), ["graphicx", "subcaption"]) },
+          { id: "two", label: t("twoFiguresSideBySide"), onSelect: () => template(() => sideBySideTemplate(2), ["graphicx", "subcaption"]) },
+          { id: "three", label: t("threeFiguresInRow"), onSelect: () => template(() => sideBySideTemplate(3), ["graphicx", "subcaption"]) },
         ];
       case "code":
         return [
-          { id: "verbatim", label: "Verbatim", onSelect: () => template((selection) => codeTemplate("verbatim", selection)) },
-          { id: "listing", label: "Listing", onSelect: () => template((selection) => codeTemplate("listing", selection), ["listings"]) },
+          { id: "verbatim", label: t("verbatim"), onSelect: () => template((selection) => codeTemplate("verbatim", selection)) },
+          { id: "listing", label: t("listing"), onSelect: () => template((selection) => codeTemplate("listing", selection), ["listings"]) },
           {
-            id: "languages", label: "Listing in a Language",
+            id: "languages", label: t("listingInLanguage"),
             submenu: CODE_LANGUAGES.map((language) => ({ id: `language:${language}`, label: language, onSelect: () => template((selection) => codeTemplate("listing", selection, language), ["listings"]) })),
           },
         ];
@@ -179,7 +182,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
         // A document uses BibTeX or biblatex; only its own styles can be switched to.
         const bibliography = readBibliographySetup(editorRef.current?.view.state.doc.toString() ?? "");
         const styles = (system: BibliographyStyle["system"], list: BibliographyStyle[]): NativeMenuEntry[] => list.map((style) => ({
-          id: `${system}:${style.value}`, label: style.label, type: "checkbox",
+          id: `${system}:${style.value}`, label: tStyles(`bibliographyStyles.${system}.${style.value}`), type: "checkbox",
           checked: bibliography.system === system && bibliography.style === style.value,
           enabled: !bibliography.system || bibliography.system === system,
           onSelect: () => applyBibliographyStyle(style),
@@ -197,12 +200,12 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
         return [
           ...(sorted.length
             ? each("insert", (snippet) => edit((view) => { insertSnippetText(view, snippet.body); }))
-            : [heading("none", "No Snippets Yet")]),
+            : [heading("none", t("noSnippetsYet"))]),
           { type: "separator" },
-          { id: "add", label: "Add Selection as Snippet…", enabled: menuBar || (!!selection && !selection.empty), onSelect: addSelectionAsSnippet },
+          { id: "add", label: t("addSelectionAsSnippet"), enabled: menuBar || (!!selection && !selection.empty), onSelect: addSelectionAsSnippet },
           ...(sorted.length ? [
-            { id: "rename", label: "Rename", submenu: each("rename", (snippet) => onSnippetDialog({ mode: "rename", snippet })) },
-            { id: "delete", label: "Delete", submenu: each("delete", (snippet) => void removeSnippet(snippet.name, snippet.id)) },
+            { id: "rename", label: t("rename"), submenu: each("rename", (snippet) => onSnippetDialog({ mode: "rename", snippet })) },
+            { id: "delete", label: t("delete"), submenu: each("delete", (snippet) => void removeSnippet(snippet.name, snippet.id)) },
           ] : []),
         ];
       }
@@ -217,27 +220,27 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
   // The macOS menu bar's Format and Insert menus, with the toolbar's tools.
   useAppMenuEditor(toolbarRef, () => ({
     format: [
-      { id: "bold", label: "Bold", onSelect: () => edit((view) => { toggleLatexFormat("textbf")(view); }) },
-      { id: "italic", label: "Italic", onSelect: () => edit((view) => { toggleLatexFormat("textit")(view); }) },
+      { id: "bold", label: t("bold"), onSelect: () => edit((view) => { toggleLatexFormat("textbf")(view); }) },
+      { id: "italic", label: t("italic"), onSelect: () => edit((view) => { toggleLatexFormat("textit")(view); }) },
       { type: "separator" },
-      { id: "heading", label: "Heading", submenu: menuItems("heading", true) },
-      { id: "list", label: "List", submenu: menuItems("list", true) },
+      { id: "heading", label: t("heading"), submenu: menuItems("heading", true) },
+      { id: "list", label: t("list"), submenu: menuItems("list", true) },
       { type: "separator" },
-      { id: "bibliography", label: "Bibliography Style", submenu: menuItems("bibliography", true) },
+      { id: "bibliography", label: t("bibliographyStyle"), submenu: menuItems("bibliography", true) },
     ],
     insert: [
-      { id: "math", label: "Math", submenu: menuItems("math", true) },
-      { id: "figure", label: "Figure", submenu: menuItems("figure", true) },
-      { id: "subfigures", label: "Side-by-Side Graphics", submenu: menuItems("subfigures", true) },
+      { id: "math", label: t("math"), submenu: menuItems("math", true) },
+      { id: "figure", label: t("figure"), submenu: menuItems("figure", true) },
+      { id: "subfigures", label: t("sideBySideGraphics"), submenu: menuItems("subfigures", true) },
       tableSizeMenu((rows, columns) => template(() => tableTemplate(rows, columns), ["booktabs"])),
-      { id: "code", label: "Code Block", submenu: menuItems("code", true) },
+      { id: "code", label: t("codeBlock"), submenu: menuItems("code", true) },
       { type: "separator" },
-      { id: "cite", label: "Citation", onSelect: cite },
-      { id: "ref", label: "Cross-Reference", onSelect: crossReference },
-      { id: "footnote", label: "Footnote", onSelect: footnote },
-      { id: "hyperlink", label: "Hyperlink", onSelect: hyperlink },
+      { id: "cite", label: t("citation"), onSelect: cite },
+      { id: "ref", label: t("crossReference"), onSelect: crossReference },
+      { id: "footnote", label: t("footnote"), onSelect: footnote },
+      { id: "hyperlink", label: t("hyperlink"), onSelect: hyperlink },
       { type: "separator" },
-      { id: "snippets", label: "Snippets", submenu: menuItems("snippets", true) },
+      { id: "snippets", label: t("snippetsMenu"), submenu: menuItems("snippets", true) },
     ],
   }));
 
@@ -277,37 +280,37 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
   const mod = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl+";
 
   return (
-    <div ref={toolbarRef} role="toolbar" aria-label="Insert LaTeX" className="libera-latex-insertbar flex shrink-0 items-center gap-0.5">
-      {button(null, "Bold", <Bold aria-hidden className={iconClass} />, () => edit((view) => { toggleLatexFormat("textbf")(view); }), `${mod}B`)}
-      {button(null, "Italic", <Italic aria-hidden className={iconClass} />, () => edit((view) => { toggleLatexFormat("textit")(view); }), `${mod}I`)}
+    <div ref={toolbarRef} role="toolbar" aria-label={t("toolbarLabel")} className="libera-latex-insertbar flex shrink-0 items-center gap-0.5">
+      {button(null, t("bold"), <Bold aria-hidden className={iconClass} />, () => edit((view) => { toggleLatexFormat("textbf")(view); }), `${mod}B`)}
+      {button(null, t("italic"), <Italic aria-hidden className={iconClass} />, () => edit((view) => { toggleLatexFormat("textit")(view); }), `${mod}I`)}
       {separator}
-      {button("heading", "Heading", <Heading aria-hidden className={iconClass} />)}
-      {button("list", "List", <List aria-hidden className={iconClass} />)}
-      {button("math", "Math", <Sigma aria-hidden className={iconClass} />)}
+      {button("heading", t("heading"), <Heading aria-hidden className={iconClass} />)}
+      {button("list", t("list"), <List aria-hidden className={iconClass} />)}
+      {button("math", t("math"), <Sigma aria-hidden className={iconClass} />)}
       {separator}
-      {button("figure", "Insert figure", <ImageIcon aria-hidden className={iconClass} />)}
-      {button("subfigures", "Side-by-side graphics", <Columns2 aria-hidden className={iconClass} />)}
-      {button("table", "Insert table", <Table aria-hidden className={iconClass} />)}
-      {button("code", "Code block", <Code aria-hidden className={iconClass} />)}
+      {button("figure", t("insertFigure"), <ImageIcon aria-hidden className={iconClass} />)}
+      {button("subfigures", t("sideBySideGraphicsButton"), <Columns2 aria-hidden className={iconClass} />)}
+      {button("table", t("insertTable"), <Table aria-hidden className={iconClass} />)}
+      {button("code", t("codeBlockButton"), <Code aria-hidden className={iconClass} />)}
       {separator}
-      {button(null, "Cite", <Quote aria-hidden className={iconClass} />, cite)}
-      {button(null, "Cross-reference", <Hash aria-hidden className={iconClass} />, crossReference)}
-      {button(null, "Footnote", <Superscript aria-hidden className={iconClass} />, footnote)}
-      {button(null, "Hyperlink", <Link aria-hidden className={iconClass} />, hyperlink)}
-      {button("bibliography", "Bibliography", <BookMarked aria-hidden className={iconClass} />)}
+      {button(null, t("cite"), <Quote aria-hidden className={iconClass} />, cite)}
+      {button(null, t("crossReferenceButton"), <Hash aria-hidden className={iconClass} />, crossReference)}
+      {button(null, t("footnoteButton"), <Superscript aria-hidden className={iconClass} />, footnote)}
+      {button(null, t("hyperlinkButton"), <Link aria-hidden className={iconClass} />, hyperlink)}
+      {button("bibliography", t("bibliography"), <BookMarked aria-hidden className={iconClass} />)}
       {separator}
       <button
         type="button"
         className="libera-latex-snippets-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-        aria-label={`Snippets${snippets.length ? ` (${snippets.length})` : ""}`}
+        aria-label={snippets.length ? t("snippetsLabelWithCount", { count: snippets.length }) : t("snippetsLabel")}
         aria-haspopup="menu"
         aria-expanded={open === "snippets"}
-        title="Insert, rename or delete saved snippets. Type /name in the editor to insert one."
+        title={t("snippetsTitle")}
         onMouseDown={(event) => event.preventDefault()}
         onClick={(event) => void toggleMenu("snippets", event.currentTarget)}
       >
         <Puzzle aria-hidden className="h-3.5 w-3.5" />
-        Snippets
+        {t("snippetsLabel")}
         {snippets.length ? <span className="rounded bg-muted px-1 text-[10px] tabular-nums">{snippets.length}</span> : null}
         <ChevronDown aria-hidden className="h-3 w-3 opacity-70" />
       </button>
@@ -316,10 +319,10 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       <button
         type="button"
         className="libera-latex-icon-button"
-        aria-label="Check spelling"
+        aria-label={t("checkSpelling")}
         aria-pressed={latexSpellcheck}
         disabled={!visualMode}
-        title={!visualMode ? "Spelling is checked in the Visual mode only" : latexSpellcheck ? "Check spelling: on (Visual mode)" : "Check spelling: off"}
+        title={!visualMode ? t("spellingVisualOnly") : latexSpellcheck ? t("spellingOn") : t("spellingOff")}
         style={latexSpellcheck && visualMode ? undefined : { opacity: 0.45 }}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => updatePreferences({ latexSpellcheck: !latexSpellcheck })}
@@ -332,7 +335,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       </span>
 
       {open === "table" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Insert table" width={TABLE_GRID_MENU_WIDTH} onClose={close}>
+        <ToolbarMenu anchorRef={anchorRef} label={t("tableMenuLabel")} width={TABLE_GRID_MENU_WIDTH} onClose={close}>
           <TableGridPicker onPick={(rows, columns) => template(() => tableTemplate(rows, columns), ["booktabs"])} />
         </ToolbarMenu>
       ) : null}

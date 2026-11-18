@@ -1,6 +1,7 @@
 "use client";
 
 import { Eye, EyeOff } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
 import { initials, readableTextColor } from "@/lib/collab/ui/wording";
 import { CollabTooltip } from "./collab-tooltip";
@@ -45,8 +46,8 @@ function Avatar({ user, size = "h-6 w-6" }: { user: PresenceUser; size?: string 
   );
 }
 
-function describe(user: PresenceUser) {
-  return user.section ? `${user.name} — ${user.section}` : user.name;
+function describe(user: PresenceUser, t: (key: string, values?: Record<string, string>) => string) {
+  return user.section ? t("describe", { name: user.name, section: user.section }) : user.name;
 }
 
 /**
@@ -63,6 +64,7 @@ export function PresenceAvatars({
   popoverPlacement = "below",
   className = "",
 }: PresenceAvatarsProps) {
+  const t = useTranslations("collab.presenceAvatars");
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [overflowPosition, setOverflowPosition] = useState<{ right: number; bottom: number } | null>(null);
   const overflowId = useId();
@@ -96,17 +98,17 @@ export function PresenceAvatars({
   }
 
   return (
-    <div ref={containerRef} className={`relative inline-flex items-center gap-1.5 ${className}`} role="group" aria-label="People in this document">
+    <div ref={containerRef} className={`relative inline-flex items-center gap-1.5 ${className}`} role="group" aria-label={t("group")}>
       {users.length ? (
         <div className="flex items-center pl-1.5">
           {visible.map((user) => {
             const following = followingClientId === user.clientId;
             return (
-              <CollabTooltip key={user.clientId} placement={popoverPlacement} content={<span><span className="font-semibold">{user.name}</span>{user.section ? <span className="block text-muted-foreground">{user.section}</span> : null}{onFollow ? <span className="block text-muted-foreground">{following ? "Following" : "Click to follow"}</span> : null}</span>}>
+              <CollabTooltip key={user.clientId} placement={popoverPlacement} content={<span><span className="font-semibold">{user.name}</span>{user.section ? <span className="block text-muted-foreground">{user.section}</span> : null}{onFollow ? <span className="block text-muted-foreground">{following ? t("following") : t("clickToFollow")}</span> : null}</span>}>
                 {(tooltip) => (
                   <button
                     {...tooltip}
-                    aria-label={onFollow ? `${following ? "Following" : "Follow"} ${describe(user)}` : describe(user)}
+                    aria-label={onFollow ? t(following ? "followingUser" : "followUser", { who: describe(user, t) }) : describe(user, t)}
                     aria-pressed={onFollow ? following : undefined}
                     className="libera-collab-avatar -ml-1.5 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                     data-following={following}
@@ -125,10 +127,10 @@ export function PresenceAvatars({
               aria-controls={overflowId}
               aria-expanded={overflowOpen}
               aria-haspopup="true"
-              aria-label={`${hidden.length} more ${hidden.length === 1 ? "person" : "people"}`}
+              aria-label={t("more", { count: hidden.length })}
               className="libera-collab-avatar -ml-1.5 inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
               data-overflow-trigger
-              title={hidden.map(describe).join("\n")}
+              title={hidden.map((user) => describe(user, t)).join("\n")}
               type="button"
               onClick={() => {
                 // Above the avatars, the list is fixed so a scrolling status bar does not clip it.
@@ -144,7 +146,7 @@ export function PresenceAvatars({
       ) : null}
       {overflowOpen && hidden.length ? (
         <ul
-          aria-label="More people"
+          aria-label={t("morePeople")}
           className={`libera-collab-popover z-50 max-h-64 w-56 overflow-auto rounded-lg p-1 ${overflowPosition ? "fixed" : "absolute right-0 top-full mt-1"}`}
           id={overflowId}
           style={overflowPosition ?? undefined}
@@ -173,10 +175,10 @@ export function PresenceAvatars({
       ) : null}
       {onQuietChange && quiet !== undefined ? (
         <button
-          aria-label="Quiet mode (hide other people's cursors)"
+          aria-label={t("quietLabel")}
           aria-pressed={quiet}
           className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded-md"
-          title={quiet ? "Quiet mode is on: other cursors are hidden" : "Quiet mode: hide other cursors"}
+          title={quiet ? t("quietOn") : t("quietOff")}
           type="button"
           onClick={() => onQuietChange(!quiet)}
         >

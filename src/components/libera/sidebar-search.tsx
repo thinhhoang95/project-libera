@@ -1,3 +1,4 @@
+import { useTranslations } from "next-intl";
 import { BookOpen, FileSearch, Search, X } from "lucide-react";
 import { FileTypeIcon } from "@/components/libera/file-type";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
@@ -15,11 +16,13 @@ type SidebarSearchProps = {
 export function SidebarSearch({
   query,
   searchResults,
-  placeholder = "Search notebooks and files",
+  placeholder,
   onDeepSearch,
   onQueryChange,
   onSelectSearchResult,
 }: SidebarSearchProps) {
+  const t = useTranslations("sidebarSearch");
+  const label = placeholder ?? t("placeholder");
   const normalizedQuery = query.trim();
   const suggestionsOpen = Boolean(normalizedQuery);
 
@@ -30,15 +33,15 @@ export function SidebarSearch({
         className="pointer-events-none absolute left-6 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
       />
       <input
-        aria-label={placeholder}
+        aria-label={label}
         className="libera-panel-field libera-panel-field--search w-full"
-        placeholder={placeholder}
+        placeholder={label}
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
       />
       {query ? (
         <button
-          aria-label="Clear search"
+          aria-label={t("clearSearch")}
           className="absolute right-5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
           type="button"
           onClick={() => onQueryChange("")}
@@ -66,7 +69,7 @@ export function SidebarSearch({
                 <span className="truncate">{result.label}</span>
               </span>
               <span className="shrink-0 text-xs uppercase text-muted-foreground">
-                {result.type}
+                {t(result.type === "notebook" ? "typeNotebook" : "typeFile")}
               </span>
             </SidebarNameTooltipButton>
           ))}
@@ -77,9 +80,9 @@ export function SidebarSearch({
           >
             <span className="flex min-w-0 items-center gap-2">
               <FileSearch aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate">Deep Search</span>
+              <span className="truncate">{t("deepSearch")}</span>
             </span>
-            <span className="shrink-0 text-xs text-muted-foreground">content</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{t("deepSearchKind")}</span>
           </button>
         </div>
       ) : null}

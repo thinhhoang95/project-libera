@@ -64,7 +64,15 @@ export const RETRACTION_SEVERITY: Readonly<Record<RetractionState, number>> = {
   retracted: 4,
 };
 
-/** The badge text of a state. */
+/** Translates a `lib.references.retraction` message (pass `useTranslations("lib.references.retraction")`). */
+export type RetractionTranslator = (key: string, values?: Record<string, string>) => string;
+
+/** The badge text of a state, in the interface language when a translator is given. */
+export function retractionStateLabel(state: Exclude<RetractionState, "none">, t?: RetractionTranslator) {
+  return t ? t(`state.${state}`) : RETRACTION_LABELS[state];
+}
+
+/** English badge text of each state (the fallback when no translator is given). */
 export const RETRACTION_LABELS: Readonly<Record<Exclude<RetractionState, "none">, string>> = {
   retracted: "Retracted",
   corrected: "Corrected",
@@ -91,11 +99,13 @@ export function retractionNoticeUrl(status: RetractionStatus | undefined | null)
 }
 
 /** A sentence for tooltips: "Retracted (Retraction, 2010-02-06)". */
-export function retractionDescription(status: RetractionStatus | undefined | null) {
+export function retractionDescription(status: RetractionStatus | undefined | null, t?: RetractionTranslator) {
   const state = retractionBadgeState(status);
   if (!state) return "";
   const details = [status?.notice?.label, status?.notice?.date].filter(Boolean).join(", ");
-  return details ? `${RETRACTION_LABELS[state]} (${details})` : RETRACTION_LABELS[state];
+  const label = retractionStateLabel(state, t);
+  if (!details) return label;
+  return t ? t("withDetails", { state: label, details }) : `${label} (${details})`;
 }
 
 type CrossrefUpdate = {

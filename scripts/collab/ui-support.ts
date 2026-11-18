@@ -4,6 +4,7 @@
 // small render and input helpers.
 import { JSDOM } from "jsdom";
 import type { ReactElement } from "react";
+import { withEnglishIntl } from "../editor/intl";
 import type { HostEvent, HostStatus, LiberaCollabBridge, LocalProject } from "../../src/lib/collab/local-api";
 
 export const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
@@ -132,12 +133,12 @@ export async function render(element: ReactElement) {
     host.remove();
   };
   mounted.add(unmount);
-  await act(async () => root.render(element));
+  await act(async () => root.render(withEnglishIntl(element)));
   await flush();
   return {
     host,
     async rerender(next: ReactElement) {
-      await act(async () => root.render(next));
+      await act(async () => root.render(withEnglishIntl(next)));
       await flush();
     },
     unmount,

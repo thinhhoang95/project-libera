@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { citedKeys } from "@/lib/references/citation-syntax";
 import { isLatexCitingPath, latexCitedKeys } from "@/lib/references/latex-cite-syntax";
@@ -48,10 +49,11 @@ export function mergeCitationIndex(index: ReferenceCitationIndex, draftKeys: Rec
   return byKey;
 }
 
-export async function fetchCitationIndex(notebook: string): Promise<ReferenceCitationIndex> {
+/** `fallback` (translated by the caller) is shown when the server gives no reason; English by default. */
+export async function fetchCitationIndex(notebook: string, fallback = "Could not load which documents cite these references."): Promise<ReferenceCitationIndex> {
   const response = await fetch(`/api/references/citations?notebook=${encodeURIComponent(notebook)}`, { cache: "no-store" });
   if (!response.ok) {
-    let message = "Could not load which documents cite these references.";
+    let message = fallback;
     try {
       const body = await response.json() as { error?: unknown };
       if (typeof body.error === "string" && body.error) message = body.error;
@@ -109,6 +111,7 @@ export function useDocumentCitedKeys(draft: string | null, delay = CITATION_SCAN
  * changes when saved files may have changed, which refetches the index.
  */
 export function useReferenceCitations(notebook: string | null, openDrafts: OpenReferenceDraft[], refreshToken = "") {
+  const t = useTranslations("references.useReferenceCitations");
   const [state, setState] = useState<{ notebook: string | null; index: ReferenceCitationIndex; error: string | null; loading: boolean }>(
     { notebook: null, index: EMPTY_INDEX, error: null, loading: false },
   );
@@ -121,14 +124,14 @@ export function useReferenceCitations(notebook: string | null, openDrafts: OpenR
     const request = ++requestRef.current;
     setState((current) => ({ ...current, loading: true }));
     try {
-      const index = await fetchCitationIndex(notebook);
+      const index = await fetchCitationIndex(notebook, t("citationsLoadError"));
       if (request === requestRef.current) setState({ notebook, index, error: null, loading: false });
     } catch (error) {
       if (request === requestRef.current) {
-        setState({ notebook, index: EMPTY_INDEX, error: error instanceof Error ? error.message : "Could not load citations.", loading: false });
+        setState({ notebook, index: EMPTY_INDEX, error: error instanceof Error && error.message ? error.message : t("citationsFallbackError"), loading: false });
       }
     }
-  }, [notebook]);
+  }, [notebook, t]);
 
   useEffect(() => {
     // Fetching on mount, on notebook change and when saved files change.

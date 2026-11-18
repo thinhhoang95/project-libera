@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
@@ -20,9 +21,11 @@ export function MarkdownPreviewPage({
   /** The preview takes the visual editor's heading colors. */
   editorThemes: ResolvedEditorThemes;
 }) {
+  const t = useTranslations("markdownPreviewPage");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  // A message of ours ("closed" / "noResponse") or the text the main window sent back.
+  const [error, setError] = useState<{ code: "closed" | "noResponse" } | { text: string } | null>(null);
   const request = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useMarkdownAccents(markdownPreferences);
@@ -32,16 +35,16 @@ export function MarkdownPreviewPage({
 
   const refresh = useCallback(() => {
     if (!window.opener || window.opener.closed) {
-      setError("The main window is closed. Reopen the document there to create a new preview.");
+      setError({ code: "closed" });
       return;
     }
     clearTimeout(timer.current);
     setBusy(true);
-    setError("");
+    setError(null);
     window.opener.postMessage({ type: "libera-markdown-refresh", requestId: ++request.current }, window.location.origin);
     timer.current = setTimeout(() => {
       setBusy(false);
-      setError("The main window did not respond. Try refreshing again.");
+      setError({ code: "noResponse" });
     }, 15000);
   }, []);
 
@@ -52,11 +55,11 @@ export function MarkdownPreviewPage({
       clearTimeout(timer.current);
       setBusy(false);
       if (event.data.error) {
-        setError(event.data.error);
+        setError({ text: String(event.data.error) });
       } else {
         setSnapshot(event.data);
-        setError("");
-        document.title = `${event.data.title} — Preview`;
+        setError(null);
+        document.title = t("documentTitle", { title: event.data.title });
       }
     }
     window.addEventListener("message", receive);
@@ -66,19 +69,19 @@ export function MarkdownPreviewPage({
       window.removeEventListener("message", receive);
       clearTimeout(timer.current);
     };
-  }, [refresh]);
+  }, [refresh, t]);
 
   return (
     <main className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <header className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-3">
-        <h1 className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot?.title ?? "Markdown preview"}</h1>
-        <span className="text-xs text-muted-foreground">Read-only snapshot</span>
-        <button type="button" onClick={refresh} disabled={busy} aria-label="Refresh from main app" title="Refresh from main app"
+        <h1 className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot?.title ?? t("fallbackTitle")}</h1>
+        <span className="text-xs text-muted-foreground">{t("readOnlySnapshot")}</span>
+        <button type="button" onClick={refresh} disabled={busy} aria-label={t("refreshLabel")} title={t("refreshLabel")}
           className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50">
           <RefreshCw aria-hidden className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
         </button>
       </header>
-      {error ? <p role="alert" className="px-5 py-2 text-sm text-destructive">{error}</p> : null}
+      {error ? <p role="alert" className="px-5 py-2 text-sm text-destructive">{"text" in error ? error.text : error.code === "closed" ? t("windowClosedError") : t("noResponseError")}</p> : null}
       <div className="min-h-0 flex-1 overflow-auto" aria-busy={busy}>
         <article className="markdown-preview-window mx-auto max-w-4xl p-8">
           {snapshot ? (
@@ -93,7 +96,7 @@ export function MarkdownPreviewPage({
             </ReferenceRenderProvider>
           ) : (
             <p className="text-sm text-muted-foreground" role="status">
-              {busy ? "Loading preview…" : "No preview loaded."}
+              {busy ? t("loadingPreview") : t("noPreview")}
             </p>
           )}
         </article>

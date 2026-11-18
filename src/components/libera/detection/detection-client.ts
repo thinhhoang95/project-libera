@@ -64,7 +64,29 @@ export type DetectionRunResult = {
   timing: Record<string, unknown>;
 };
 
-export class DetectionNotReady extends Error {}
+export type DetectionErrorCode = "loadPhotoFailed" | "readImageFailed" | "convertImageFailed" | "referenceMissing" | "modelNotDownloaded" | "detectionFailed";
+
+/**
+ * A failure of this client. It carries a code (a key of `detection.detectionClient`) so the UI can word it in the
+ * interface language; `message` holds the server's own text, which stays English, when there is one.
+ */
+export class DetectionClientError extends Error {
+  constructor(readonly code: DetectionErrorCode, readonly values: Record<string, string> = {}, serverMessage = "") {
+    super(serverMessage);
+  }
+}
+
+export class DetectionNotReady extends DetectionClientError {
+  constructor(serverMessage = "") {
+    super("modelNotDownloaded", {}, serverMessage);
+  }
+}
+
+/** The text to show for any error thrown by this module: the server's own words, else the translated fallback. */
+export function detectionErrorMessage(error: unknown, t: (key: DetectionErrorCode, values?: Record<string, string>) => string, fallback: DetectionErrorCode = "detectionFailed") {
+  if (error instanceof DetectionClientError) return error.message || t(error.code, error.values);
+  return error instanceof Error && error.message ? error.message : t(fallback);
+}
 
 export function fetchDetectionStatus() {
   return apiRequest<DetectionStatus>("/api/detection");
@@ -88,7 +110,7 @@ const SENDABLE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/
 /** The photo's bytes in a format the runtime reads; others (SVG, AVIF, HEIC…) are drawn to a PNG first. */
 export async function photoBlob(url: string) {
   const response = await fetch(url);
-  if (!response.ok) throw new Error("Could not load the photo.");
+  if (!response.ok) throw new DetectionClientError("loadPhotoFailed");
   const blob = await response.blob();
   if (SENDABLE_TYPES.has(blob.type)) return blob;
   const image = await loadImage(URL.createObjectURL(blob));
@@ -99,7 +121,7 @@ export function loadImage(src: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Could not read this image."));
+    image.onerror = () => reject(new DetectionClientError("readImageFailed"));
     image.src = src;
   });
 }
@@ -109,7 +131,7 @@ function canvasBlob(image: CanvasImageSource, width: number, height: number, typ
   canvas.width = width;
   canvas.height = height;
   canvas.getContext("2d")!.drawImage(image, 0, 0, width, height);
-  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not convert the image."))), type, quality));
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new DetectionClientError("convertImageFailed"))), type, quality));
 }
 
 /** A crop of `image` as a small JPEG data URL, for a visual prompt's thumbnail. */
@@ -152,15 +174,15 @@ export async function runDetection(photo: Blob, prompts: DetectionPrompt[], sett
   }));
   for (const prompt of prompts) {
     if (prompt.type === "visual" && prompt.source === "upload") {
-      if (!prompt.reference) throw new Error(`The reference image for “${prompt.label}” is missing. Upload it again.`);
+      if (!prompt.reference) throw new DetectionClientError("referenceMissing", { label: prompt.label });
       form.set(`reference:${prompt.id}`, await dataUrlBlob(prompt.reference), "reference.jpg");
     }
   }
   const response = await fetch("/api/detection/detect", { method: "POST", body: form });
   const payload = (await response.json().catch(() => ({}))) as { error?: string; notReady?: boolean } & DetectionRunResult;
   if (!response.ok) {
-    if (payload.notReady) throw new DetectionNotReady(payload.error ?? "The model is not downloaded yet.");
-    throw new Error(payload.error ?? "Detection failed.");
+    if (payload.notReady) throw new DetectionNotReady(payload.error);
+    throw new DetectionClientError("detectionFailed", {}, payload.error);
   }
   return payload;
 }

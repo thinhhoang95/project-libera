@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import type { FormEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
+import { DEFAULT_NEW_FOLDER_NAME, suggestedCopyName } from "@/components/libera/default-names";
 import type {
   WorkspaceInputDialogState,
   WorkspaceInputDialogValues,
@@ -13,38 +15,29 @@ type WorkspaceInputDialogProps = {
   onSubmit: (values: WorkspaceInputDialogValues) => Promise<void>;
 };
 
-function suggestedCopyName(name: string) {
-  const extensionMatch = name.match(/(\.[^.]+)$/);
-  const extension = extensionMatch?.[1] ?? "";
-  const stem = extension ? name.slice(0, -extension.length) : name;
-
-  return `${stem} copy${extension}`;
-}
-
 function parentPathForFilePath(filePath: string, notebook: string) {
   const parts = filePath.split("/");
   return parts.slice(0, -1).join("/") || notebook;
 }
 
-function getDialogContent(dialog: WorkspaceInputDialogState) {
-  const destination = "a notebook or folder";
+function getDialogContent(dialog: WorkspaceInputDialogState, t: ReturnType<typeof useTranslations>) {
   switch (dialog.mode) {
     case "create-folder":
       return {
-        title: "New folder",
-        description: `Create a folder in ${dialog.parentPath}.`,
-        submitLabel: "Create folder",
+        title: t("newFolderTitle"),
+        description: t("createFolderDescription", { parentPath: dialog.parentPath }),
+        submitLabel: t("createFolderSubmit"),
         initialValues: {
-          name: "New folder",
+          name: DEFAULT_NEW_FOLDER_NAME,
           destinationDirectory: "",
           destinationName: "",
         },
       };
     case "copy-file":
       return {
-        title: "Copy file",
-        description: `Copy ${dialog.file.name} to ${destination}.`,
-        submitLabel: "Copy file",
+        title: t("copyFileTitle"),
+        description: t("copyFileDescription", { name: dialog.file.name }),
+        submitLabel: t("copyFileSubmit"),
         initialValues: {
           name: "",
           destinationDirectory: parentPathForFilePath(dialog.file.path, dialog.file.notebook),
@@ -53,9 +46,9 @@ function getDialogContent(dialog: WorkspaceInputDialogState) {
       };
     case "move-file":
       return {
-        title: "Move file",
-        description: `Move ${dialog.file.name} to ${destination}.`,
-        submitLabel: "Move file",
+        title: t("moveFileTitle"),
+        description: t("moveFileDescription", { name: dialog.file.name }),
+        submitLabel: t("moveFileSubmit"),
         initialValues: {
           name: "",
           destinationDirectory: parentPathForFilePath(dialog.file.path, dialog.file.notebook),
@@ -64,9 +57,9 @@ function getDialogContent(dialog: WorkspaceInputDialogState) {
       };
     case "rename-file":
       return {
-        title: "Rename file",
-        description: `Rename ${dialog.file.path}.`,
-        submitLabel: "Rename file",
+        title: t("renameFileTitle"),
+        description: t("renameFileDescription", { path: dialog.file.path }),
+        submitLabel: t("renameFileSubmit"),
         initialValues: {
           name: dialog.file.name,
           destinationDirectory: "",
@@ -75,9 +68,9 @@ function getDialogContent(dialog: WorkspaceInputDialogState) {
       };
     case "rename-folder":
       return {
-        title: "Rename folder",
-        description: `Rename ${dialog.folder.path}.`,
-        submitLabel: "Rename folder",
+        title: t("renameFolderTitle"),
+        description: t("renameFolderDescription", { path: dialog.folder.path }),
+        submitLabel: t("renameFolderSubmit"),
         initialValues: {
           name: dialog.folder.name,
           destinationDirectory: "",
@@ -93,11 +86,12 @@ export function WorkspaceInputDialog({
   onClose,
   onSubmit,
 }: WorkspaceInputDialogProps) {
+  const t = useTranslations("workspaceInputDialog");
   if (!dialog) {
     return null;
   }
 
-  const content = getDialogContent(dialog);
+  const content = getDialogContent(dialog, t);
 
   return (
     <ModalDialog
@@ -112,7 +106,7 @@ export function WorkspaceInputDialog({
             type="button"
             onClick={onClose}
           >
-            Cancel
+            {t("cancel")}
           </button>
           <button
             className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -120,7 +114,7 @@ export function WorkspaceInputDialog({
             type="submit"
             disabled={submitting}
           >
-            {submitting ? "Saving" : content.submitLabel}
+            {submitting ? t("saving") : content.submitLabel}
           </button>
         </>
       }
@@ -147,6 +141,7 @@ function WorkspaceInputDialogForm({
   initialValues: WorkspaceInputDialogValues;
   onSubmit: (values: WorkspaceInputDialogValues) => Promise<void>;
 }) {
+  const t = useTranslations("workspaceInputDialog");
   const [values, setValues] = useState(initialValues);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -162,7 +157,7 @@ function WorkspaceInputDialogForm({
             className="block text-sm font-medium text-foreground"
             htmlFor="workspace-destination-directory"
           >
-            Destination notebook or folder path
+            {t("destinationPathLabel")}
           </label>
           <input
             id="workspace-destination-directory"
@@ -185,7 +180,7 @@ function WorkspaceInputDialogForm({
             className="block text-sm font-medium text-foreground"
             htmlFor="workspace-destination-name"
           >
-            Copy file name
+            {t("copyFileNameLabel")}
           </label>
           <input
             id="workspace-destination-name"
@@ -209,7 +204,7 @@ function WorkspaceInputDialogForm({
             className="block text-sm font-medium text-foreground"
             htmlFor="workspace-item-name"
           >
-            Name
+            {t("nameLabel")}
           </label>
           <input
             id="workspace-item-name"

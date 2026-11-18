@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { beginAiActivity } from "@/lib/ai-activity";
@@ -17,6 +18,7 @@ export type StartTranscriptionOptions = { engine?: "local" | "openrouter"; speak
 
 /** A recording's transcript and transcription, polled while one runs. */
 export function useTranscript(path: string) {
+  const t = useTranslations("audio.useVoiceMemo");
   const [loaded, setLoaded] = useState<TranscriptPayload | null>(null);
   const [error, setError] = useState("");
   // Another recording opened in this tab: its answers count, a late one for the previous does not.
@@ -32,8 +34,8 @@ export function useTranscript(path: string) {
     setError("");
   }, []);
   const fail = useCallback((failure: unknown) => {
-    setError(failure instanceof Error ? failure.message : "Could not load the transcript.");
-  }, []);
+    setError(failure instanceof Error ? failure.message : t("loadTranscriptFailed"));
+  }, [t]);
 
   const refresh = useCallback(
     () => apiRequest<TranscriptPayload>(`/api/transcripts?path=${encodeURIComponent(path)}`).then(apply, fail),
@@ -85,6 +87,7 @@ export function useTranscript(path: string) {
 
 /** What transcription can use on this computer, polled while models download. */
 export function useTranscriptionSetup(enabled: boolean) {
+  const t = useTranslations("audio.useVoiceMemo");
   const [status, setStatus] = useState<TranscriptionSetupStatus | null>(null);
   const [error, setError] = useState("");
 
@@ -93,18 +96,18 @@ export function useTranscriptionSetup(enabled: boolean) {
       setStatus(next);
       setError("");
     },
-    (failure: unknown) => setError(failure instanceof Error ? failure.message : "Could not check the speech models."),
-  ), []);
+    (failure: unknown) => setError(failure instanceof Error ? failure.message : t("checkSpeechModelsFailed")),
+  ), [t]);
 
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
     apiRequest<TranscriptionSetupStatus>("/api/transcripts/setup").then(
       (next) => { if (!cancelled) setStatus(next); },
-      (failure: unknown) => { if (!cancelled) setError(failure instanceof Error ? failure.message : "Could not check the speech models."); },
+      (failure: unknown) => { if (!cancelled) setError(failure instanceof Error ? failure.message : t("checkSpeechModelsFailed")); },
     );
     return () => { cancelled = true; };
-  }, [enabled]);
+  }, [enabled, t]);
 
   // Preferences may change while the viewer is open; check again when the window regains focus.
   useEffect(() => {
@@ -126,9 +129,9 @@ export function useTranscriptionSetup(enabled: boolean) {
       setStatus(await apiRequest<TranscriptionSetupStatus>("/api/transcripts/setup", { method: "POST", body: JSON.stringify({ only }) }));
       setError("");
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not start the download.");
+      setError(failure instanceof Error ? failure.message : t("startDownloadFailed"));
     }
-  }, []);
+  }, [t]);
 
   const cancelDownload = useCallback(async () => {
     setStatus(await apiRequest<TranscriptionSetupStatus>("/api/transcripts/setup", { method: "DELETE" }).catch(() => null));

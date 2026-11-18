@@ -1,5 +1,5 @@
 /** Interface languages Libera ships. English is the source language and the fallback for missing messages. */
-export const LOCALES = ["en", "fr"] as const;
+export const LOCALES = ["en", "fr", "vi", "zh"] as const;
 export type Locale = (typeof LOCALES)[number];
 export const DEFAULT_LOCALE: Locale = "en";
 

@@ -21,6 +21,8 @@ export const FRONT_MATTER_NODE_NAME = "frontMatter";
 export type FrontMatterOptions = {
   /** The document's library path: style requests for it are applied here. */
   documentPath: string | null;
+  /** The tooltip on the block, in the interface language (lib.tiptapFrontMatter.frontMatterTitle). */
+  title?: string;
 };
 
 /** The document's front matter node, if it has one (always the first block). */
@@ -70,7 +72,7 @@ export const FrontMatterNode = Node.create<FrontMatterOptions, { listener: ((eve
   draggable: false,
 
   addOptions() {
-    return { documentPath: null };
+    return { documentPath: null, title: "Front matter (edit it in the Source editor)" };
   },
 
   addStorage() {
@@ -112,7 +114,7 @@ export const FrontMatterNode = Node.create<FrontMatterOptions, { listener: ((eve
 
   renderHTML({ node }) {
     return ["pre", {
-      "data-front-matter": "", class: "libera-front-matter", title: "Front matter (edit it in the Source editor)",
+      "data-front-matter": "", class: "libera-front-matter", title: this.options.title,
       // The editor's prose styles would otherwise fold its lines together.
       style: "white-space: pre-wrap",
     }, String(node.attrs.raw ?? "")];

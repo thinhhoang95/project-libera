@@ -5,6 +5,7 @@
 // changed access and a note someone deleted while it was open here.
 
 import { Lock, RotateCcw, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { AccessChangedBanner, CollabStatusPill, PresenceAvatars, RejectedEditBanner } from "@/components/libera/collab";
 import { downloadText, REVEAL_MS, sharedBannerKind } from "@/lib/collab/bindings/react-shared-chrome";
@@ -25,14 +26,15 @@ const noPresence = () => NO_PRESENCE;
 
 /** Anyone can change anyone's marks, so a selected mark says whose it is. */
 function MarkAuthors({ shared, id }: { shared: Extract<SharedPdfState, { kind: "shared" }>; id: string }) {
+  const t = useTranslations("collab.pdfCollabChrome");
   const members = useProjectMembers(shared.resolved.projectId);
   const record = shared.store.record(id);
   if (!record || !members.length) return null;
-  const name = (accountId: string) => accountId === shared.resolved.accountId ? "you" : members.find((member) => member.id === accountId)?.displayName ?? "a former member";
+  const name = (accountId: string) => accountId === shared.resolved.accountId ? t("you") : members.find((member) => member.id === accountId)?.displayName ?? t("formerMember");
   const added = name(record.createdBy);
   return (
     <span className="min-w-0 truncate text-xs text-muted-foreground">
-      Added by {added}{record.updatedBy && record.updatedBy !== record.createdBy ? `, last changed by ${name(record.updatedBy)}` : ""}
+      {record.updatedBy && record.updatedBy !== record.createdBy ? t("addedAndChanged", { added, changer: name(record.updatedBy) }) : t("added", { added })}
     </span>
   );
 }
@@ -62,6 +64,9 @@ export interface PdfCollabChromeProps {
 }
 
 export function PdfCollabChrome({ shared, snapshot, fileName, filePath, selectedMarkId, presence, followingClientId, onFollow, deletedMark, onRestoreDeleted, onDismissDeleted, canAnnotate = false, staleMarks = 0, onAcceptVersion, children }: PdfCollabChromeProps) {
+  const t = useTranslations("collab.pdfCollabChrome");
+  const tCommon = useTranslations("common");
+  const tWording = useTranslations("lib.collab.ui.wording");
   const { users } = useSyncExternalStore(presence?.subscribe ?? noSubscribe, presence?.getSnapshot ?? noPresence, noPresence);
   // Cmd/Ctrl+S: there is nothing to save, so say where the marks are.
   const [revealedAt, setRevealedAt] = useState<number | null>(null);
@@ -88,8 +93,8 @@ export function PdfCollabChrome({ shared, snapshot, fileName, filePath, selected
           <CollabStatusPill status={snapshot?.status ?? LOADING_STATUS} />
           {revealedAt !== null ? (
             <div className="libera-collab-popover absolute left-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-16px)] whitespace-normal break-words rounded-md border border-border bg-card px-2.5 py-1.5 text-xs leading-relaxed shadow-lg" role="status">
-              <span className="block font-semibold">{syncWording(snapshot?.status ?? LOADING_STATUS).label}</span>
-              <span className="block text-muted-foreground">Marks on a live PDF save as you make them. {syncWording(snapshot?.status ?? LOADING_STATUS).detail}</span>
+              <span className="block font-semibold">{syncWording(snapshot?.status ?? LOADING_STATUS, undefined, tWording).label}</span>
+              <span className="block text-muted-foreground">{t("savesAsYouGo", { detail: syncWording(snapshot?.status ?? LOADING_STATUS, undefined, tWording).detail })}</span>
             </div>
           ) : null}
         </div>
@@ -97,15 +102,15 @@ export function PdfCollabChrome({ shared, snapshot, fileName, filePath, selected
         {viewOnly ? (
           <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
             <Lock aria-hidden className="h-3.5 w-3.5" />
-            View only
+            {t("viewOnly")}
           </span>
         ) : null}
         <PdfCollabTools canAnnotate={canAnnotate} shared={shared} />
-        {otherVersion ? <span className="truncate text-xs text-muted-foreground">{otherVersion.name} has a different version of this PDF.</span> : null}
+        {otherVersion ? <span className="truncate text-xs text-muted-foreground">{t("differentVersion", { name: otherVersion.name })}</span> : null}
         {children}
         <PresenceAvatars
           className="ml-auto"
-          users={users.map((user) => ({ clientId: user.clientId, name: user.name, color: user.color, section: user.presence ? `Page ${user.presence.page}` : undefined }))}
+          users={users.map((user) => ({ clientId: user.clientId, name: user.name, color: user.color, section: user.presence ? t("page", { page: user.presence.page }) : undefined }))}
           followingClientId={followingClientId ?? null}
           onFollow={onFollow ? (clientId) => onFollow(Number(clientId)) : undefined}
         />
@@ -118,22 +123,22 @@ export function PdfCollabChrome({ shared, snapshot, fileName, filePath, selected
         />
       ) : null}
       {banner === "access-changed" ? <AccessChangedBanner onExport={exportMarks} /> : null}
-      {banner === "deleted" ? <AccessChangedBanner detail="This PDF was deleted from the notebook." onExport={exportMarks} /> : null}
-      {banner === "update-required" ? <AccessChangedBanner detail="Update Libera to change these annotations." onExport={exportMarks} /> : null}
+      {banner === "deleted" ? <AccessChangedBanner detail={t("pdfDeleted")} onExport={exportMarks} /> : null}
+      {banner === "update-required" ? <AccessChangedBanner detail={t("updateRequired")} onExport={exportMarks} /> : null}
       {staleMarks > 0 ? (
         <div className="flex items-center gap-2 border-b border-input bg-card px-4 py-1.5 text-xs" role="status">
-          <span className="min-w-0 flex-1">This PDF changed. {staleMarks === 1 ? "1 mark was" : `${staleMarks} marks were`} placed on an earlier version and may not line up.</span>
-          {canAnnotate ? <button type="button" className="shrink-0 rounded-md border border-input px-2 py-0.5 font-medium hover:bg-muted" onClick={onAcceptVersion}>Keep them here</button> : null}
+          <span className="min-w-0 flex-1">{t("staleMarks", { count: staleMarks })}</span>
+          {canAnnotate ? <button type="button" className="shrink-0 rounded-md border border-input px-2 py-0.5 font-medium hover:bg-muted" onClick={onAcceptVersion}>{t("keepHere")}</button> : null}
         </div>
       ) : null}
       {deletedMark ? (
         <div className="flex items-center gap-2 border-b border-input bg-card px-4 py-1.5 text-xs" role="status">
-          <span className="min-w-0 flex-1">Someone deleted the annotation you had open. What you wrote is kept with it.</span>
+          <span className="min-w-0 flex-1">{t("deletedWhileOpen")}</span>
           <button type="button" className="inline-flex shrink-0 items-center gap-1 rounded-md border border-input px-2 py-0.5 font-medium hover:bg-muted" onClick={onRestoreDeleted}>
             <RotateCcw aria-hidden className="h-3.5 w-3.5" />
-            Restore
+            {t("restore")}
           </button>
-          <button type="button" className="shrink-0 rounded p-0.5 opacity-70 hover:opacity-100" aria-label="Dismiss" onClick={onDismissDeleted}>
+          <button type="button" className="shrink-0 rounded p-0.5 opacity-70 hover:opacity-100" aria-label={tCommon("dismiss")} onClick={onDismissDeleted}>
             <X aria-hidden className="h-3.5 w-3.5" />
           </button>
         </div>

@@ -20,21 +20,14 @@ export function fetchDiagnostics(client: CollabClient = collabClient): Promise<H
   return client.request<HostDiagnostics>("GET", ControlRoutes.diagnostics);
 }
 
-/** Shown above the bundle, so users know what they are about to share. */
-export const DIAGNOSTICS_INCLUDED: readonly string[] = [
-  "Libera, collaboration host and operating system versions",
-  "The last 50 connection changes (connected, offline, reconnecting) with times",
-  "Per shared document: its id, sync state, how many changes wait to be sent, and rejected-edit reasons",
-  "Counts: queued changes and comments, reconnects, divergence checks, host restarts",
-  "Recent error codes and messages, with emails, paths and tokens removed",
-  "Local database size",
-];
+/** What `useTranslations("lib.collab.ui.diagnostics")` returns, as far as this file needs it. */
+export type DiagnosticsTranslator = (key: string, values?: Record<string, string | number>) => string;
 
-export const DIAGNOSTICS_EXCLUDED: readonly string[] = [
-  "Document text, file names and notebook names",
-  "Comment and reply bodies",
-  "Your email, password and sign-in tokens",
-];
+/** Message keys (`included.*`) for what the bundle holds, shown above it so users know what they are about to share. */
+export const DIAGNOSTICS_INCLUDED: readonly string[] = ["versions", "connectionChanges", "perDocument", "counts", "errors", "databaseSize"];
+
+/** Message keys (`excluded.*`) for what it never holds. */
+export const DIAGNOSTICS_EXCLUDED: readonly string[] = ["documentText", "commentBodies", "credentials"];
 
 export function diagnosticsText(bundle: HostDiagnostics): string {
   return `${JSON.stringify(bundle, null, 2)}\n`;
@@ -56,32 +49,45 @@ export interface DiagnosticsSummaryLine {
 }
 
 /** A few human-readable lines above the raw bundle. */
-export function diagnosticsSummary(bundle: HostDiagnostics): DiagnosticsSummaryLine[] {
+export function diagnosticsSummary(bundle: HostDiagnostics, t: DiagnosticsTranslator): DiagnosticsSummaryLine[] {
   const stuck = bundle.docs.filter((doc) => doc.pending > 0);
   const oldestMinutes = Math.floor(bundle.pending.oldestUnackedSeconds / 60);
   const unresolved = bundle.divergence.filter((record) => record.outcome === "mismatch" && !record.recovered).length;
   return [
-    { label: "Connection", value: bundle.connection.current },
+    { label: t("rows.connection"), value: t("rows.connectionValue", { state: bundle.connection.current }) },
     {
-      label: "Waiting to sync",
+      label: t("rows.waiting"),
       value:
         bundle.pending.unackedUpdates === 0
-          ? "Nothing"
-          : `${bundle.pending.unackedUpdates} ${bundle.pending.unackedUpdates === 1 ? "change" : "changes"} in ${stuck.length || bundle.pending.docsWithUnacked} ${(stuck.length || bundle.pending.docsWithUnacked) === 1 ? "document" : "documents"}${oldestMinutes > 0 ? `, oldest ${oldestMinutes} min` : ""}`,
+          ? t("rows.waitingNothing")
+          : t("rows.waitingValue", {
+              changes: bundle.pending.unackedUpdates,
+              docs: stuck.length || bundle.pending.docsWithUnacked,
+              hasOldest: oldestMinutes > 0 ? "yes" : "no",
+              minutes: oldestMinutes,
+            }),
       warn: bundle.pending.oldestUnackedSeconds > 300,
     },
     {
-      label: "Comments waiting",
+      label: t("rows.commentsWaiting"),
       value: String(bundle.pending.commands),
       warn: bundle.pending.commands > 0 && bundle.connection.current === "connected",
     },
     {
-      label: "Divergence checks",
-      value: `${bundle.counters.divergenceChecks} checked, ${bundle.counters.divergenceFailures} differed${unresolved ? `, ${unresolved} unresolved` : ""}`,
+      label: t("rows.divergence"),
+      value: t("rows.divergenceValue", {
+        checked: bundle.counters.divergenceChecks,
+        differed: bundle.counters.divergenceFailures,
+        hasUnresolved: unresolved ? "yes" : "no",
+        unresolved,
+      }),
       warn: unresolved > 0,
     },
-    { label: "Recent errors", value: String(bundle.errors.length), warn: bundle.errors.length > 0 },
-    { label: "Versions", value: `Libera ${bundle.appVersion} · host ${bundle.hostVersion} · protocol ${bundle.protocolVersion}` },
+    { label: t("rows.errors"), value: String(bundle.errors.length), warn: bundle.errors.length > 0 },
+    {
+      label: t("rows.versions"),
+      value: t("rows.versionsValue", { app: bundle.appVersion, host: bundle.hostVersion, protocol: bundle.protocolVersion }),
+    },
   ];
 }
 

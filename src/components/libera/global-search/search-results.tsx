@@ -1,18 +1,20 @@
 "use client";
 
 import { ArrowUpRight, BookOpen, ImageIcon, ScanSearch } from "lucide-react";
-import { Fragment, useEffect, useRef, type ReactNode } from "react";
+import { useFormatter, useTranslations } from "next-intl";
+import { Fragment, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { FileTypeIcon } from "@/components/libera/file-type";
 import { SEARCH_IMAGE_DRAG_MIME, searchImageThumbnail } from "@/components/libera/global-search/search-query-input";
 import {
   findTermRanges,
-  searchKindLabel,
-  searchLocationLabel,
   snippetWindow,
+  type SearchFileKind,
   type SearchImageRef,
+  type SearchLocation,
   type SearchResultFile,
 } from "@/lib/global-search";
 import { embeddingText } from "@/lib/search/chunking";
+import { formatClock } from "@/lib/transcription/format";
 
 export type SearchSelection = { key: string; hit: number };
 /** A result and one of its passages; `terms` (the query's words) travel along when it is opened. */
@@ -60,10 +62,55 @@ export function Highlighted({ text, terms }: { text: string; terms: string[] }) 
   return <>{pieces}</>;
 }
 
-function matchLabel(result: SearchResultFile) {
-  const hit = result.hits[0];
-  if (hit.similarity !== undefined) return `${Math.round(Math.max(0, Math.min(1, hit.similarity)) * 100)}%`;
-  return "Keyword";
+type Translator = ReturnType<typeof useTranslations>;
+
+/** The words a result shows for its kind, location and place; the lib helpers of the same names are English only. */
+export type ResultLabels = {
+  kind: (kind: SearchFileKind) => string;
+  location: (kind: SearchFileKind, location: SearchLocation) => string;
+  where: (result: SearchResultFile) => string;
+};
+
+function makeResultLabels(t: Translator): ResultLabels {
+  const kind = (value: SearchFileKind) => t(`kind.${value}`);
+  const location = (value: SearchFileKind, place: SearchLocation) => {
+    const parts: string[] = [];
+    if (value === "audio") {
+      if (place.start !== undefined) parts.push(formatClock(place.start / 1000));
+      if (place.section) parts.push(place.section);
+      return parts.join(" · ");
+    }
+    if (place.page) parts.push(t("pageLabel", { page: place.page }));
+    if (place.section) parts.push(place.section);
+    if (!place.page && place.line && value !== "markdown") {
+      parts.push(place.endLine && place.endLine > place.line ? t("linesLabel", { start: place.line, end: place.endLine }) : t("lineLabel", { line: place.line }));
+    }
+    return parts.join(" · ");
+  };
+  const where = (result: SearchResultFile) => {
+    if (result.reference) {
+      const byline = [result.reference.authors, result.reference.year ? `(${result.reference.year})` : ""].filter(Boolean).join(" ");
+      return [byline, t("referencesNotebook", { notebook: result.reference.notebook })].filter(Boolean).join(" · ");
+    }
+    return result.source === "gallery" ? t("imageGallery") : folderOf(result.path);
+  };
+  return { kind, location, where };
+}
+
+export function useResultLabels(): ResultLabels {
+  const t = useTranslations("globalSearch.searchResults");
+  return useMemo(() => makeResultLabels(t), [t]);
+}
+
+/** The match badge: the best passage's similarity as a percentage, or "Keyword". */
+export function useMatchLabel() {
+  const t = useTranslations("globalSearch.searchResults");
+  const format = useFormatter();
+  return (result: SearchResultFile) => {
+    const hit = result.hits[0];
+    if (hit.similarity !== undefined) return format.number(Math.max(0, Math.min(1, hit.similarity)), { style: "percent", maximumFractionDigits: 0 });
+    return t("keyword");
+  };
 }
 
 function folderOf(path: string) {
@@ -75,15 +122,6 @@ function folderOf(path: string) {
 export function ResultKindIcon({ result }: { result: SearchResultFile }) {
   if (result.kind === "reference") return <BookOpen aria-hidden className="h-4 w-4" />;
   return <FileTypeIcon fileType={result.kind} name={result.name} />;
-}
-
-/** Where a result is: its folder, or for a References entry its authors, year and notebook. */
-export function resultWhere(result: SearchResultFile) {
-  if (result.reference) {
-    const byline = [result.reference.authors, result.reference.year ? `(${result.reference.year})` : ""].filter(Boolean).join(" ");
-    return [byline, `References · ${result.reference.notebook}`].filter(Boolean).join(" · ");
-  }
-  return result.source === "gallery" ? "Image Gallery" : folderOf(result.path);
 }
 
 export function SearchResults({
@@ -101,6 +139,9 @@ export function SearchResults({
   onSelect: (selection: SearchSelection) => void;
   onOpen: (entry: SearchEntry, placement: "tab" | "right") => void;
 }) {
+  const t = useTranslations("globalSearch.searchResults");
+  const labels = useResultLabels();
+  const matchLabel = useMatchLabel();
   const listRef = useRef<HTMLDivElement>(null);
   const images = results.filter((result) => result.kind === "image");
   const documents = results.filter((result) => result.kind !== "image");
@@ -123,7 +164,7 @@ export function SearchResults({
         type="button"
         data-search-entry={`${result.key}#0`}
         aria-pressed={selected}
-        title={`${result.source === "gallery" ? "Gallery" : folderOf(result.path) || result.path} — ${result.name}`}
+        title={t("tileTitle", { where: result.source === "gallery" ? t("gallery") : folderOf(result.path) || result.path, name: result.name })}
         draggable
         onDragStart={(event) => {
           if (image) event.dataTransfer.setData(SEARCH_IMAGE_DRAG_MIME, JSON.stringify(image));
@@ -143,11 +184,11 @@ export function SearchResults({
   }
 
   return (
-    <div ref={listRef} role="listbox" aria-label="Search results" className="flex flex-col gap-4 pb-8">
+    <div ref={listRef} role="listbox" aria-label={t("resultsListLabel")} className="flex flex-col gap-4 pb-8">
       {images.length ? (
-        <section aria-label="Images">
+        <section aria-label={t("imagesSection")}>
           <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <ImageIcon aria-hidden className="h-3.5 w-3.5" /> Images
+            <ImageIcon aria-hidden className="h-3.5 w-3.5" /> {t("imagesHeading")}
             <span className="font-normal normal-case tracking-normal">{images.length}</span>
           </h3>
           {imagesAsGrid ? (
@@ -161,10 +202,10 @@ export function SearchResults({
       ) : null}
 
       {documents.length ? (
-        <section aria-label="Documents" className="flex flex-col gap-2">
+        <section aria-label={t("documentsSection")} className="flex flex-col gap-2">
           {images.length ? (
             <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <ScanSearch aria-hidden className="h-3.5 w-3.5" /> Documents
+              <ScanSearch aria-hidden className="h-3.5 w-3.5" /> {t("documentsHeading")}
               <span className="font-normal normal-case tracking-normal">{documents.length}</span>
             </h3>
           ) : null}
@@ -174,11 +215,11 @@ export function SearchResults({
                 <span className="mt-0.5 text-muted-foreground"><ResultKindIcon result={result} /></span>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold"><Highlighted text={result.name} terms={terms} /></div>
-                  <div className="truncate text-xs text-muted-foreground">{resultWhere(result) || searchKindLabel(result.kind)}</div>
+                  <div className="truncate text-xs text-muted-foreground">{labels.where(result) || labels.kind(result.kind)}</div>
                 </div>
                 <span
                   className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground"
-                  title={result.hits[0].similarity !== undefined ? "Similarity of the best passage to your search" : "Matched your words"}
+                  title={result.hits[0].similarity !== undefined ? t("similarityTitle") : t("matchedWordsTitle")}
                 >
                   {matchLabel(result)}
                 </span>
@@ -187,7 +228,7 @@ export function SearchResults({
                 {result.hits.slice(0, MAX_LISTED_HITS).map((hit, index) => {
                   const selected = isSelected(result.key, index);
                   const snippet = snippetWindow(embeddingText(result.kind, hit.text), terms, 240);
-                  const location = searchLocationLabel(result.kind, hit.location);
+                  const location = labels.location(result.kind, hit.location);
                   return (
                     <li key={hit.chunkId}>
                       <div
@@ -208,13 +249,13 @@ export function SearchResults({
                         <button
                           type="button"
                           className={`absolute right-1.5 top-1.5 inline-flex items-center gap-1 rounded-md border border-border bg-card px-1.5 py-0.5 text-[11px] shadow-sm transition ${selected ? "opacity-100" : "opacity-0 group-hover/hit:opacity-100 focus-visible:opacity-100"}`}
-                          title="Open here (Enter)"
+                          title={t("openHere")}
                           onClick={(event) => {
                             event.stopPropagation();
                             onOpen({ result, hit: index }, "tab");
                           }}
                         >
-                          Open <ArrowUpRight aria-hidden className="h-3 w-3" />
+                          {t("open")} <ArrowUpRight aria-hidden className="h-3 w-3" />
                         </button>
                       </div>
                     </li>
@@ -222,7 +263,7 @@ export function SearchResults({
                 })}
                 {result.hits.length > MAX_LISTED_HITS ? (
                   <li className="px-3.5 pb-1 text-[11px] text-muted-foreground">
-                    +{result.hits.length - MAX_LISTED_HITS} more in this file
+                    {t("moreInFile", { count: result.hits.length - MAX_LISTED_HITS })}
                   </li>
                 ) : null}
               </ul>

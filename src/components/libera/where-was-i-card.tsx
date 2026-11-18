@@ -1,9 +1,11 @@
 "use client";
 
 import { History, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, Users, X } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { FileTypeIcon } from "@/components/libera/file-type";
+import { fullDateLabel } from "@/lib/relative-time";
 import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
 import { changesSinceSession, type RecapFileEntry, type RecapSummary, type RecapView } from "@/lib/where-was-i";
 import { whereWasITracker } from "./where-was-i-tracker";
@@ -43,32 +45,36 @@ function requestSummary(notebook: string, sessionId: string, force = false) {
     .catch(() => setSummaryRequest(key, { status: "failed" }));
 }
 
-function relativeTime(value: string) {
+type Translate = ReturnType<typeof useTranslations<"whereWasICard">>;
+
+function relativeTime(value: string, locale: string, t: Translate) {
   const seconds = (new Date(value).getTime() - Date.now()) / 1000;
-  // English, like the rest of the card.
-  const format = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  const format = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
   const units: [Intl.RelativeTimeFormatUnit, number][] = [["day", 86_400], ["hour", 3_600], ["minute", 60]];
   for (const [unit, size] of units) if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
-  return "just now";
+  return t("justNow");
 }
 
-function sessionLength(startedAt: string, endedAt: string) {
+function sessionLength(startedAt: string, endedAt: string, t: Translate) {
   const minutes = Math.round((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 60_000);
   if (!Number.isFinite(minutes) || minutes < 1) return "";
-  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60 ? `${minutes % 60} min` : ""}`.trim();
+  if (minutes < 60) return t("sessionMinutes", { minutes });
+  return minutes % 60
+    ? t("sessionHoursMinutes", { hours: Math.floor(minutes / 60), minutes: minutes % 60 })
+    : t("sessionHours", { hours: Math.floor(minutes / 60) });
 }
 
-function changeLabel(entry: RecapFileEntry) {
-  if (entry.created) return "New";
-  if (!entry.edited) return "Viewed";
-  if (entry.by === "others") return "Collaborators";
-  return "Edited";
+function changeLabel(entry: RecapFileEntry, t: Translate) {
+  if (entry.created) return t("new");
+  if (!entry.edited) return t("viewed");
+  if (entry.by === "others") return t("collaborators");
+  return t("edited");
 }
 
-function cropPreview(entry: RecapFileEntry) {
-  if (entry.unopened) return `${entry.path}\n\nAdded during the session`;
+function cropPreview(entry: RecapFileEntry, t: Translate) {
+  if (entry.unopened) return `${entry.path}\n\n${t("addedDuringSession")}`;
   const crop = entry.crops?.find((item) => item.added) ?? entry.crops?.[0];
-  const text = crop?.added ?? (crop?.removed ? `Removed: ${crop.removed}` : "");
+  const text = crop?.added ?? (crop?.removed ? t("removedText", { text: crop.removed }) : "");
   return text ? `${entry.path}\n\n${text}` : entry.path;
 }
 
@@ -81,6 +87,9 @@ export function WhereWasICard({
   files: LiberaFileNode[];
   onOpenFile: (file: LiberaFileNode) => void;
 }) {
+  const t = useTranslations("whereWasICard");
+  const tCommon = useTranslations("common");
+  const locale = useLocale();
   const [view, setView] = useState<{ notebook: string; value: RecapView } | null>(null);
   const [, setRenders] = useState(0);
   const hidden = dismissed.has(notebook.name);
@@ -134,7 +143,7 @@ export function WhereWasICard({
 
   if (!current || current.disabled || !session || hidden || (!trail.length && !away.length)) return null;
 
-  const length = sessionLength(session.startedAt, session.endedAt);
+  const length = sessionLength(session.startedAt, session.endedAt, t);
   const editedCount = session.files.filter((entry) => entry.edited).length;
   const summary = request?.status === "done" ? request.summary : current.summary;
   const bullets = summary?.sessionId === session.id ? summary.bullets : [];
@@ -150,19 +159,19 @@ export function WhereWasICard({
       <header className={styles.header}>
         <span className={styles.badge} aria-hidden><History size={18} /></span>
         <div className={styles.heading}>
-          <h3 id="where-was-i-title">Where you left off</h3>
+          <h3 id="where-was-i-title">{t("heading")}</h3>
           <p>
-            <time dateTime={session.endedAt} title={new Date(session.endedAt).toLocaleString()}>{relativeTime(session.endedAt)}</time>
+            <time dateTime={session.endedAt} title={fullDateLabel(session.endedAt, locale)}>{relativeTime(session.endedAt, locale, t)}</time>
             {length ? <><span aria-hidden>·</span>{length}</> : null}
-            {editedCount ? <><span aria-hidden>·</span>{editedCount} {editedCount === 1 ? "file" : "files"} edited</> : null}
-            {current.deviceName ? <><span aria-hidden>·</span>on {current.deviceName}</> : null}
+            {editedCount ? <><span aria-hidden>·</span>{t("filesEdited", { count: editedCount })}</> : null}
+            {current.deviceName ? <><span aria-hidden>·</span>{t("onDevice", { device: current.deviceName })}</> : null}
           </p>
         </div>
         <button
           className={styles.dismiss}
           type="button"
-          aria-label="Hide where you left off"
-          title="Hide until Libera restarts"
+          aria-label={t("hideWhereYouLeftOff")}
+          title={t("hideUntilRestart")}
           onClick={() => { dismissed.add(notebook.name); setRenders((count) => count + 1); }}
         >
           <X size={15} />
@@ -176,31 +185,31 @@ export function WhereWasICard({
               {bullets.map((bullet, index) => <li key={index}>{bullet}</li>)}
             </ul>
           ) : status === "loading" ? (
-            <div className={styles.skeleton} aria-label="Summarizing your last session">
+            <div className={styles.skeleton} aria-label={t("summarizing")}>
               <span /><span /><span />
             </div>
           ) : status === "failed" ? (
             <p className={styles.notice}>
-              Couldn’t summarize your last session.
-              <button type="button" onClick={() => requestSummary(notebook.name, session.id, true)}><RotateCcw size={13} aria-hidden /> Try again</button>
+              {t("summarizeFailed")}
+              <button type="button" onClick={() => requestSummary(notebook.name, session.id, true)}><RotateCcw size={13} aria-hidden /> {tCommon("tryAgain")}</button>
             </p>
           ) : status === "off" ? (
             <p className={styles.notice}>
-              <Sparkles size={14} aria-hidden /> Turn on AI summaries in Preferences → AI → Where Was I to see a short recap here.
+              <Sparkles size={14} aria-hidden /> {t("turnOnSummaries")}
             </p>
           ) : null}
         </div>
 
         {trail.length ? (
-          <ul className={styles.trail} aria-label="Files from your last session">
+          <ul className={styles.trail} aria-label={t("filesFromLastSession")}>
             {trail.map(({ entry, file }) => (
               <li key={entry.path}>
-                <button type="button" title={cropPreview(entry)} onClick={() => onOpenFile(file)}>
+                <button type="button" title={cropPreview(entry, t)} onClick={() => onOpenFile(file)}>
                   <span className={styles.fileIcon}><FileTypeIcon fileType={file.fileType} name={file.name} /></span>
                   <span className={styles.fileName}>{file.name}</span>
                   <span className={styles.state} data-state={entry.created ? "new" : entry.edited ? entry.by ?? "you" : "viewed"}>
                     {entry.created ? <Plus size={10} aria-hidden /> : entry.edited && entry.by !== "others" ? <Pencil size={10} aria-hidden /> : null}
-                    {changeLabel(entry)}
+                    {changeLabel(entry, t)}
                   </span>
                 </button>
               </li>
@@ -213,16 +222,16 @@ export function WhereWasICard({
         <footer className={styles.away}>
           <span className={styles.awayLabel}>
             {current.shared ? <Users size={14} aria-hidden /> : <RefreshCw size={13} aria-hidden />}
-            {current.shared ? "Updated by collaborators since" : "Changed since"} you left
+            {current.shared ? t("updatedByCollaboratorsSince") : t("changedSince")}
           </span>
           <ul>
             {away.map(({ file, kind, at }) => (
               <li key={file.path}>
-                <button type="button" title={`${file.path}\n${kind === "new" ? "Added" : "Updated"} ${new Date(at).toLocaleString()}`} onClick={() => onOpenFile(file)}>
+                <button type="button" title={t("awayTitle", { path: file.path, kind: kind === "new" ? "new" : "other", time: fullDateLabel(at, locale) })} onClick={() => onOpenFile(file)}>
                   <span className={styles.fileIcon}><FileTypeIcon fileType={file.fileType} name={file.name} /></span>
                   <span className={styles.fileName}>{file.name}</span>
-                  {kind === "new" ? <span className={styles.state} data-state="new">New</span> : null}
-                  <time dateTime={at}>{relativeTime(at)}</time>
+                  {kind === "new" ? <span className={styles.state} data-state="new">{t("new")}</span> : null}
+                  <time dateTime={at}>{relativeTime(at, locale, t)}</time>
                 </button>
               </li>
             ))}

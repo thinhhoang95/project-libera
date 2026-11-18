@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Download, Layers, X } from "lucide-react";
@@ -44,6 +45,7 @@ export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, o
   /** The ink was drawn into the photo: the gallery changed. */
   onEdited: (gallery: GalleryContents) => void;
 }) {
+  const t = useTranslations("ink.photoInkLayer");
   const ink = useInkDocument({ path: photoId, chunk: "photo", frame: { unit: "px", width: 1, height: 1 }, photoId });
   const tools = useInkTools();
   const [busy, setBusy] = useState(false);
@@ -120,9 +122,9 @@ export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, o
       ) : null}
       {photo?.changed && hasInk ? (
         <div className="libera-photo-ink-notice" role="alert">
-          <span>This photo changed outside Libera since it was drawn on. The ink may no longer line up.</span>
-          <button type="button" disabled={busy} onClick={() => void resolve("keep")}>Keep ink</button>
-          <button type="button" disabled={busy} onClick={() => void resolve("discard")}>Discard ink</button>
+          <span>{t("changedOutside")}</span>
+          <button type="button" disabled={busy} onClick={() => void resolve("keep")}>{t("keepInk")}</button>
+          <button type="button" disabled={busy} onClick={() => void resolve("discard")}>{t("discardInk")}</button>
         </div>
       ) : null}
       {drawing && toolbarSlot ? createPortal(
@@ -130,32 +132,32 @@ export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, o
         <span className="libera-photo-ink-tools" onPointerDown={halt} onPointerMove={halt} onPointerUp={halt} onPointerCancel={halt} onDoubleClick={halt}>
           <InkToolbar canUndo={ink.canUndo} canRedo={ink.canRedo} onUndo={ink.undo} onRedo={ink.redo} />
           {inSharedAlbum ? (
-            <span className="px-2 text-[11px] opacity-80" title="Ink on a shared album's photo is not shared: the album's other members do not see it. Save with ink to share a copy.">
-              Only you see this ink
+            <span className="px-2 text-[11px] opacity-80" title={t("sharedAlbumTitle")}>
+              {t("onlyYouSee")}
             </span>
           ) : null}
-          <span className="libera-photo-ink-actions" role="group" aria-label="Save ink">
-            <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy} title="Save the ink, then download a copy of the photo with the ink drawn on it"
+          <span className="libera-photo-ink-actions" role="group" aria-label={t("saveInkGroup")}>
+            <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy} title={t("saveWithInkTitle")}
               onClick={() => { void ink.save().then(() => downloadImage({ name: "photo-with-ink", src: `/api/gallery/photos/ink/export?id=${encodeURIComponent(photoId)}` }), () => undefined); }}>
               <Download aria-hidden className="h-3.5 w-3.5" />
-              Save with ink
+              {t("saveWithInk")}
             </button>
             {confirmFlatten ? (
               <>
                 <button type="button" className="libera-photo-ink-action is-danger" disabled={busy} onClick={() => void flatten()}>
                   <Layers aria-hidden className="h-3.5 w-3.5" />
-                  Draw into photo
+                  {t("drawIntoPhoto")}
                 </button>
                 <button type="button" className="libera-photo-ink-action" disabled={busy} onClick={() => setConfirmFlatten(false)}>
                   <X aria-hidden className="h-3.5 w-3.5" />
-                  Cancel
+                  {t("cancel")}
                 </button>
               </>
             ) : (
-              <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy || photo?.changed} title="Draw the ink into the photo itself; Revert in Info brings back the photo without it"
+              <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy || photo?.changed} title={t("flattenTitle")}
                 onClick={() => setConfirmFlatten(true)}>
                 <Layers aria-hidden className="h-3.5 w-3.5" />
-                Flatten…
+                {t("flatten")}
               </button>
             )}
           </span>

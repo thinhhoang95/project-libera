@@ -64,6 +64,11 @@ let pseudo: Messages | undefined;
 export async function loadMessages(locale: AppLocale): Promise<Messages> {
   if (locale === "en") return en;
   if (locale === PSEUDO_LOCALE) return (pseudo ??= mapStrings(en, pseudoLocalize));
-  const translated = (await import(`../../../messages/${locale}.json`)).default as Messages;
-  return overlay(en, translated);
+  try {
+    const translated = (await import(`../../../messages/${locale}.json`)).default as Messages;
+    return overlay(en, translated);
+  } catch {
+    // A language whose file is not there yet shows English.
+    return en;
+  }
 }

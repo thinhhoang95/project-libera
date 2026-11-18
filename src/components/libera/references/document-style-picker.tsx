@@ -1,6 +1,7 @@
 "use client";
 
 import { Palette } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useId, useState } from "react";
 import {
   isDocumentStyleSetting, readDocumentStyleForPath, requestDocumentStyleChange,
@@ -32,6 +33,7 @@ function styleName(setting: string) {
 }
 
 export function DocumentStylePicker({ notebook, documentPath, draft, styleFiles = [], className }: DocumentStylePickerProps) {
+  const t = useTranslations("references.documentStylePicker");
   const { library } = useReferenceLibrary(notebook || null);
   const [problem, setProblem] = useState<string | null>(null);
   const id = useId();
@@ -44,33 +46,33 @@ export function DocumentStylePicker({ notebook, documentPath, draft, styleFiles 
     ...BUNDLED_CSL_STYLES.map((style) => ({ id: style.id as string, label: style.label as string })),
     ...styleFiles.filter((path) => !BUNDLED_CSL_STYLES.some((style) => style.id === path)).map((path) => ({ id: path, label: styleName(path) })),
   ];
-  if (written && !choices.some((choice) => choice.id === written)) choices.push({ id: written, label: valid ? styleName(written) : `${written} (not a style)` });
+  if (written && !choices.some((choice) => choice.id === written)) choices.push({ id: written, label: valid ? styleName(written) : t("notAStyle", { name: written }) });
 
   const choose = (value: string) => {
     if (!documentPath) return;
     const applied = requestDocumentStyleChange(documentPath, value || null);
-    setProblem(applied ? null : "Open this document in an editor to change its style.");
+    setProblem(applied ? null : t("openToChange"));
   };
 
   return (
     <div className={className ?? "mx-3 mb-2 flex flex-col gap-1"} data-document-style-picker="">
       <label htmlFor={id} className="flex items-center gap-2 text-[11px] text-muted-foreground">
         <Palette aria-hidden className="h-3.5 w-3.5 shrink-0" />
-        <span className="shrink-0">Document style</span>
+        <span className="shrink-0">{t("label")}</span>
         <select
           id={id}
           className="libera-panel-field libera-panel-field--compact min-w-0 flex-1 pl-2.5 pr-2"
           value={written ?? ""}
           disabled={!documentPath}
-          title={documentPath ? "This document's citation style (its front matter)" : "Save the document to give it its own style"}
+          title={documentPath ? t("titleDocument") : t("titleUnsaved")}
           onChange={(event) => choose(event.target.value)}
         >
-          <option value="">Notebook default ({styleName(notebookStyle)})</option>
+          <option value="">{t("notebookDefault", { style: styleName(notebookStyle) })}</option>
           {choices.map((choice) => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
         </select>
       </label>
       {written && !valid ? (
-        <p role="status" className="text-[11px] text-destructive">“{written}” is not a bundled style or a .csl file, so the notebook’s style is used.</p>
+        <p role="status" className="text-[11px] text-destructive">{t("notStyleNotice", { name: written })}</p>
       ) : null}
       {problem ? <p role="alert" className="text-[11px] text-destructive">{problem}</p> : null}
     </div>

@@ -65,10 +65,25 @@ export type PdfMarkdownJob = {
   current: number;
   startedAt: number;
   file?: LiberaFileNode;
+  /** Server or model text of the failure, shown as is; empty when `errorKind` describes it. */
   error: string;
+  /** Which of this app's own failures happened; the dialog shows the translated message. */
+  errorKind?: PdfMarkdownErrorKind;
   /** Pages the model gave up on (too long or repeating), for the summary. */
-  warnings: string[];
+  warnings: PdfMarkdownWarning[];
 };
+
+export type PdfMarkdownErrorKind = "canvas" | "openrouterKeyMissing" | "openPdf" | "conversion";
+export type PdfMarkdownWarning =
+  | { kind: "incomplete"; page: number }
+  | { kind: "unreadable"; page: number; message: string }
+  | { kind: "headingLevels" };
+
+class PdfMarkdownError extends Error {
+  constructor(readonly kind: PdfMarkdownErrorKind) {
+    super("");
+  }
+}
 
 const jobs = new Map<string, PdfMarkdownJob>();
 const controllers = new Map<string, AbortController>();
@@ -108,7 +123,7 @@ async function renderPage(page: PDFPageProxy, longEdge: number) {
   canvas.width = Math.max(1, Math.ceil(viewport.width));
   canvas.height = Math.max(1, Math.ceil(viewport.height));
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("Could not create a canvas to read the page.");
+  if (!context) throw new PdfMarkdownError("canvas");
   // Transparent PDFs would otherwise read as black on white.
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, canvas.width, canvas.height);
@@ -185,7 +200,7 @@ async function runJob(
     const settings = await getPdfReadingSettings(signal);
     job.engine = settings.engine;
     if (settings.engine === "openrouter" && !settings.available) {
-      throw new Error("Add an OpenRouter API key in Preferences, or choose the local model in Preferences → AI → Convert PDF to Markdown.");
+      throw new PdfMarkdownError("openrouterKeyMissing");
     }
     if (settings.engine === "local" && !(await ensureDocumentOcrModel())) {
       job.state = "cancelled";
@@ -193,7 +208,7 @@ async function runJob(
     }
 
     const response = await fetch(src, { signal });
-    if (!response.ok) throw new Error("Could not open the PDF.");
+    if (!response.ok) throw new PdfMarkdownError("openPdf");
     const bytes = new Uint8Array(await response.arrayBuffer());
     // pdf.js may hand its buffer to its worker; the OpenRouter path splits the original.
     pdf = await getDocument({ data: settings.engine === "openrouter" ? bytes.slice() : bytes }).promise;
@@ -230,7 +245,7 @@ async function runJob(
       canvas.width = 0;
 
       if (result.stopped === "loop" || result.stopped === "length") {
-        job.warnings.push(`Page ${pageNumber} may be incomplete.`);
+        job.warnings.push({ kind: "incomplete", page: pageNumber });
       }
 
       let blocks = result.blocks;
@@ -261,7 +276,8 @@ async function runJob(
       job.state = "cancelled";
     } else {
       job.state = "error";
-      job.error = error instanceof Error ? error.message : "The conversion failed.";
+      job.errorKind = error instanceof PdfMarkdownError ? error.kind : error instanceof Error && error.message ? undefined : "conversion";
+      job.error = error instanceof Error ? error.message : "";
     }
   } finally {
     if (job.state === "running") job.state = "cancelled";
@@ -334,7 +350,7 @@ async function readWithOpenRouter({ pdf, bytes, job, firstPage, lastPage, file, 
     if (mathMarkers?.blockMathMarkers) form.set("blockMathMarkers", mathMarkers.blockMathMarkers);
     const result = await apiRequest<{ markdown: string; pictures: DocumentPicture[]; incomplete: boolean }>(
       "/api/document-ocr/openrouter", { method: "POST", body: form, signal: stopped });
-    if (result.incomplete) job.warnings.push(`Page ${pageNumber} may be incomplete.`);
+    if (result.incomplete) job.warnings.push({ kind: "incomplete", page: pageNumber });
 
     let markdown = result.markdown;
     if (result.pictures.length) {
@@ -365,9 +381,9 @@ async function readWithOpenRouter({ pdf, bytes, job, firstPage, lastPage, file, 
           stop.abort();
           throw error;
         }
-        const message = error instanceof Error ? error.message : "the model failed";
-        pages[pageNumber - firstPage] = `<!-- Page ${pageNumber} could not be read: ${message.replace(/-->/g, "")} -->`;
-        job.warnings.push(`Page ${pageNumber} could not be read (${message}).`);
+        const message = error instanceof Error ? error.message : "";
+        pages[pageNumber - firstPage] = `<!-- Page ${pageNumber} could not be read: ${(message || "the model failed").replace(/-->/g, "")} -->`;
+        job.warnings.push({ kind: "unreadable", page: pageNumber, message });
       } finally {
         reading.delete(pageNumber);
       }
@@ -406,7 +422,7 @@ async function readWithOpenRouter({ pdf, bytes, job, firstPage, lastPage, file, 
       }
     } catch (error) {
       if (signal.aborted) throw error;
-      job.warnings.push("Heading levels were left as each page had them.");
+      job.warnings.push({ kind: "headingLevels" });
     }
     job.tidying = false;
   }

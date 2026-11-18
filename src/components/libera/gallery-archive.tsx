@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Lock } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { galleryText, useRegisterGalleryTranslator } from "@/components/libera/gallery-i18n";
 import { apiRequest } from "@/components/libera/api-client";
 import { applyGallery, notifyDeletedGalleryPhotos } from "@/components/libera/gallery-store";
 import type { ArchiveContents, GalleryContents, GalleryPhoto } from "@/lib/image-generation";
@@ -23,8 +25,8 @@ class ArchiveLockedError extends Error {}
 async function archiveRequest<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", "X-Libera-Gallery": "catalog", ...init?.headers } });
   const payload = (await response.json().catch(() => ({}))) as { error?: string; locked?: boolean };
-  if (response.status === 403 && payload.locked) throw new ArchiveLockedError(payload.error ?? "The Protected Archive is locked.");
-  if (!response.ok) throw new Error(payload.error ?? "Request failed.");
+  if (response.status === 403 && payload.locked) throw new ArchiveLockedError(payload.error ?? galleryText("galleryArchive.archiveLocked"));
+  if (!response.ok) throw new Error(payload.error ?? galleryText("galleryArchive.requestFailed"));
   return payload as T;
 }
 
@@ -134,6 +136,8 @@ const primary = "rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primar
 
 /** The password prompt shown in place of the archive while it is locked. */
 export function ArchiveUnlock({ onUnlock }: { onUnlock: (password: string) => Promise<void> }) {
+  const t = useTranslations("galleryArchive");
+  useRegisterGalleryTranslator();
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -145,7 +149,7 @@ export function ArchiveUnlock({ onUnlock }: { onUnlock: (password: string) => Pr
     try {
       await onUnlock(password);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not unlock the archive.");
+      setError(failure instanceof Error ? failure.message : t("couldNotUnlock"));
       setPassword("");
     } finally {
       setBusy(false);
@@ -154,13 +158,13 @@ export function ArchiveUnlock({ onUnlock }: { onUnlock: (password: string) => Pr
 
   return <form className="mx-auto mt-16 flex max-w-xs flex-col items-center text-center" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
     <span className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-muted"><Lock className="h-6 w-6 text-muted-foreground" /></span>
-    <h3 className="text-sm font-medium">Protected Archive</h3>
-    <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Enter your Libera password to see the photos kept here. The archive locks again when you leave it, or after 10 minutes without activity.</p>
-    <label className="sr-only" htmlFor="gallery-archive-password">Password</label>
-    <input id="gallery-archive-password" type="password" autoFocus autoComplete="current-password" placeholder="Password" value={password} disabled={busy}
+    <h3 className="text-sm font-medium">{t("protectedArchive")}</h3>
+    <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("unlockHelp")}</p>
+    <label className="sr-only" htmlFor="gallery-archive-password">{t("password")}</label>
+    <input id="gallery-archive-password" type="password" autoFocus autoComplete="current-password" placeholder={t("password")} value={password} disabled={busy}
       onChange={(event) => setPassword(event.target.value)}
       className="mt-4 h-10 w-full rounded-lg border border-input bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-ring" />
     {error && <p role="alert" className="mt-2 text-sm text-destructive">{error}</p>}
-    <button type="submit" className={`${primary} mt-3 w-full`} disabled={busy || !password}>{busy ? "Unlocking…" : "Unlock"}</button>
+    <button type="submit" className={`${primary} mt-3 w-full`} disabled={busy || !password}>{busy ? t("unlocking") : t("unlock")}</button>
   </form>;
 }

@@ -2,6 +2,7 @@
 
 import { ReferenceImageImport } from "./reference-image-import";
 import { ArrowLeft, FileUp, Globe, Loader2, Merge, Search, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CandidateList,
@@ -13,7 +14,7 @@ import {
   entryTitle,
   fileBaseName,
   fileTitle,
-  INPUT_KIND_LABELS,
+  inputKindLabel,
   titleMatchKey,
 } from "@/components/libera/references/reference-display";
 import { parseBibtex } from "@/lib/references/bibtex";
@@ -70,7 +71,7 @@ export function announceLibraryChange(notebook: string, revision: number) {
 }
 
 /** POST /api/references/import, with pasted text or a library file. */
-export async function importReferences(request: { notebook: string; format?: ImportFormat | "auto"; text?: string; path?: string }): Promise<ImportResult> {
+export async function importReferences(request: { notebook: string; format?: ImportFormat | "auto"; text?: string; path?: string; /** Shown when the server gives no reason (translated by the caller). */ fallbackError?: string }): Promise<ImportResult> {
   const body = request.path !== undefined
     ? { notebook: request.notebook, path: request.path }
     : { notebook: request.notebook, format: request.format ?? "auto", text: request.text ?? "" };
@@ -79,7 +80,7 @@ export async function importReferences(request: { notebook: string; format?: Imp
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(await errorMessage(response, "The references could not be imported."));
+  if (!response.ok) throw new Error(await errorMessage(response, request.fallbackError ?? "The references could not be imported."));
   const result = await response.json() as Partial<ImportResult> & { library: ReferenceLibrary };
   return {
     library: result.library,
@@ -151,11 +152,11 @@ export function requestReferenceForFile(notebook: string, path: string) {
   window.dispatchEvent(new CustomEvent<ReferencesAddRequestDetail>(REFERENCES_ADD_REQUEST_EVENT, { detail: { notebook, query: "", path } }));
 }
 
-/** "Add … to References" for the open PDF, as the first items of the macOS References menu. */
-export function activePdfMenuItems(pdf: ActiveReferencePdf | null | undefined) {
+/** "Add … to References" for the open PDF, as the first items of the macOS References menu. `t` is `useTranslations("references.addReferenceBox")`. */
+export function activePdfMenuItems(pdf: ActiveReferencePdf | null | undefined, t?: (key: "addActivePdf", values: { name: string }) => string) {
   if (!pdf) return [];
   return [
-    { id: "add-active-pdf", label: `Add “${fileBaseName(pdf.path)}” to References`, onSelect: () => requestReferenceForFile(pdf.notebook, pdf.path) },
+    { id: "add-active-pdf", label: t ? t("addActivePdf", { name: fileBaseName(pdf.path) }) : `Add “${fileBaseName(pdf.path)}” to References`, onSelect: () => requestReferenceForFile(pdf.notebook, pdf.path) },
     { type: "separator" as const },
   ];
 }
@@ -223,6 +224,9 @@ export function AddReferenceBox({
   onLookup,
   onNotice,
 }: BoxProps) {
+  const t = useTranslations("references.addReferenceBox");
+  const tc = useTranslations("common");
+  const tDisplay = useTranslations("references.referenceDisplay");
   const [text, setText] = useState(initialQuery);
   const [view, setView] = useState<View>({ kind: "input" });
   const [busy, setBusy] = useState(false);
@@ -255,7 +259,7 @@ export function AddReferenceBox({
       if (target) onReveal(target);
       onClose();
     } catch (addError) {
-      setError(addError instanceof Error ? addError.message : "The reference could not be added.");
+      setError(addError instanceof Error && addError.message ? addError.message : t("addFailed"));
     } finally {
       setBusy(false);
     }
@@ -268,8 +272,8 @@ export function AddReferenceBox({
       setError(reason);
       return;
     }
-    await commit([{ op: "add", entry }], `Add ${fileBaseName(path)}`);
-    onNotice?.({ tone: "error", text: `${fileBaseName(path)} could not be looked up (${reason.replace(/\.$/, "")}). It was added as an unresolved entry with the file attached.` });
+    await commit([{ op: "add", entry }], t("addFileLabel", { name: fileBaseName(path) }));
+    onNotice?.({ tone: "error", text: t("fileNotLookedUp", { name: fileBaseName(path), reason: reason.replace(/\.$/, "") }) });
   }
 
   async function resolve(request: { input: string } | { path: string }, label: string) {
@@ -285,7 +289,7 @@ export function AddReferenceBox({
       controllerRef.current = null;
       setLookup(null);
       if ("path" in request && !result.candidates.length && !result.updates.length) {
-        await addUnresolvedFile(request.path, result.warnings[0] ?? "nothing was found");
+        await addUnresolvedFile(request.path, result.warnings[0] ?? t("reasonNothingFound"));
         return;
       }
       setView({ kind: "candidates", result });
@@ -293,7 +297,7 @@ export function AddReferenceBox({
       if (controller.signal.aborted || isAbortError(lookupError)) return;
       controllerRef.current = null;
       setLookup(null);
-      const message = lookupError instanceof Error ? lookupError.message : "The reference could not be looked up.";
+      const message = lookupError instanceof Error && lookupError.message ? lookupError.message : t("lookupFailed");
       if ("path" in request) await addUnresolvedFile(request.path, message);
       else setError(message);
     }
@@ -304,7 +308,7 @@ export function AddReferenceBox({
     if (!initialPath) return;
     // Starting the request shows its progress line at once.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void resolve({ path: initialPath }, `Reading ${fileBaseName(initialPath)}…`);
+    void resolve({ path: initialPath }, t("readingFile", { name: fileBaseName(initialPath) }));
     // resolve() sets the controller before it awaits; unmounting (or Strict Mode's rehearsal) aborts this lookup.
     const controller = controllerRef.current;
     return () => controller?.abort();
@@ -314,8 +318,8 @@ export function AddReferenceBox({
 
   async function runImport(request: { format?: ImportFormat; text?: string; path?: string }, sourceText?: string) {
     const before = library;
-    const result = await importReferences({ notebook, ...request });
-    if (before) record(before, result.library, `Import ${result.added.length} reference${result.added.length === 1 ? "" : "s"}`, result.added);
+    const result = await importReferences({ notebook, ...request, fallbackError: t("importFailed") });
+    if (before) record(before, result.library, t("importLabel", { count: result.added.length }), result.added);
     announceLibraryChange(notebook, result.library.revision);
     const renamed = importRenames(result, request.format, sourceText);
     setView({ kind: "imported", result, renamed, existing: result.duplicates.filter((duplicate) => !result.added.includes(duplicate.entryId)).length });
@@ -326,7 +330,7 @@ export function AddReferenceBox({
     if (!input || !detected) return;
     setError("");
     if (!isFormat) {
-      const label = detected.kind === "bibliography" ? `Looking up ${splitBibliography(input).length} references…` : "Looking up…";
+      const label = detected.kind === "bibliography" ? t("lookingUpMany", { count: splitBibliography(input).length }) : t("lookingUp");
       await resolve({ input }, label);
       return;
     }
@@ -334,7 +338,7 @@ export function AddReferenceBox({
     try {
       await runImport({ format: detected.kind as ImportFormat, text: input }, input);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "That could not be added.");
+      setError(submitError instanceof Error && submitError.message ? submitError.message : t("submitFailed"));
     } finally {
       setBusy(false);
     }
@@ -347,25 +351,25 @@ export function AddReferenceBox({
       const content = await file.text();
       const kind = classifyReferenceInput(content).kind;
       const format: ImportFormat | undefined = kind === "bibtex" || kind === "ris" || kind === "csl-json" ? kind : undefined;
-      if (!format) throw new Error(`${file.name} is not BibTeX, RIS or CSL-JSON.`);
+      if (!format) throw new Error(t("notAFormat", { name: file.name }));
       await runImport({ format, text: content }, content);
     } catch (importError) {
-      setError(importError instanceof Error ? importError.message : "The file could not be imported.");
+      setError(importError instanceof Error && importError.message ? importError.message : t("fileImportFailed"));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="libera-panel-card mx-3 mb-2 space-y-2 p-2.5" role="group" aria-label="Add references">
+    <div className="libera-panel-card mx-3 mb-2 space-y-2 p-2.5" role="group" aria-label={t("title")}>
       <div className="flex items-center gap-1">
         {view.kind !== "input" ? (
-          <button type="button" className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded-md" aria-label="Back to the input" onClick={() => setView({ kind: "input" })}>
+          <button type="button" className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded-md" aria-label={t("backAria")} onClick={() => setView({ kind: "input" })}>
             <ArrowLeft aria-hidden className="h-3.5 w-3.5" />
           </button>
         ) : null}
-        <h3 className="flex-1 text-[12px] font-semibold">Add references</h3>
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded-md" aria-label="Close add box" onClick={onClose}>
+        <h3 className="flex-1 text-[12px] font-semibold">{t("title")}</h3>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded-md" aria-label={t("closeAria")} onClick={onClose}>
           <X aria-hidden className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -376,8 +380,8 @@ export function AddReferenceBox({
         <>
           <textarea
             className="libera-panel-field block max-h-48 min-h-16 w-full resize-y px-2.5 py-2 font-mono text-[11px] leading-relaxed"
-            aria-label="Reference to add"
-            placeholder="DOI, arXiv ID, ISBN, PubMed ID, URL, BibTeX, RIS, CSL-JSON, a reference or a whole bibliography"
+            aria-label={t("inputAria")}
+            placeholder={t("inputPlaceholder")}
             autoFocus
             value={text}
             onChange={(event) => {
@@ -398,35 +402,35 @@ export function AddReferenceBox({
           />
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" aria-live="polite">
-              {detected ? <>Detected: <span className="font-medium text-foreground">{INPUT_KIND_LABELS[detected.kind]}</span>{detected.value ? <span className="font-mono"> {detected.value}</span> : null}</> : "Paste or type, or drop a PDF here"}
+              {detected ? t.rich("detected", { kind: inputKindLabel(detected.kind, tDisplay), hasValue: detected.value ? "yes" : "no", value: detected.value ?? "", strong: (chunks) => <span className="font-medium text-foreground">{chunks}</span>, mono: (chunks) => <span className="font-mono">{chunks}</span> }) : t("pasteHint")}
             </span>
-            <button type="button" className="libera-panel-button h-7 px-2" title="Import a BibTeX, RIS or CSL-JSON file" onClick={() => fileInputRef.current?.click()}>
-              <FileUp aria-hidden className="h-3.5 w-3.5" /> File
+            <button type="button" className="libera-panel-button h-7 px-2" title={t("fileTitle")} onClick={() => fileInputRef.current?.click()}>
+              <FileUp aria-hidden className="h-3.5 w-3.5" /> {t("fileButton")}
             </button>
             <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={!detected || busy || Boolean(lookup)} onClick={() => void submit()}>
               {busy ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : detected && !isFormat ? <Search aria-hidden className="h-3.5 w-3.5" /> : null}
-              {!detected ? "Add" : isFormat ? "Import" : detected.kind === "bibliography" ? "Look up all" : "Look up"}
+              {!detected ? tc("add") : isFormat ? t("importButton") : detected.kind === "bibliography" ? t("lookUpAll") : t("lookUp")}
             </button>
           </div>
-          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title="Let the AI search the web when the catalogues have no match">
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title={t("webSearchTitle")}>
             <input type="checkbox" checked={webSearch} onChange={(event) => onWebSearchChange(event.target.checked)} />
             <Globe aria-hidden className="h-3 w-3 shrink-0" />
-            <span className="shrink-0">Search the web</span>
+            <span className="shrink-0">{t("webSearch")}</span>
             {!webSearchChosen ? (
-              <span className="min-w-0 truncate" aria-label="Web search default">
-                {webSearchDefault === null ? "· off: your Preferences default can't be read here" : `· ${webSearchDefault ? "on" : "off"} in Preferences`}
+              <span className="min-w-0 truncate" aria-label={t("webDefaultAria")}>
+                {t("webDefault", { state: webSearchDefault === null ? "unknown" : webSearchDefault ? "on" : "off" })}
               </span>
             ) : null}
           </label>
           <ReferenceImageImport notebook={notebook} library={library} webSearch={webSearch} busy={busy} onCommit={commit} onEdit={(candidate, extraOps) => { onEditNew(candidate, extraOps); onClose(); }} onReveal={onReveal} onLookup={onLookup} />
           {lookup ? (
-            <div className="flex items-center gap-2 text-[11px]" role="status" aria-label="Lookup progress">
+            <div className="flex items-center gap-2 text-[11px]" role="status" aria-label={t("lookupProgressAria")}>
               <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
               <span className="min-w-0 flex-1 truncate">{lookup}</span>
-              <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancelLookup}>Cancel</button>
+              <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancelLookup}>{tc("cancel")}</button>
             </div>
           ) : null}
-          <input ref={fileInputRef} type="file" hidden accept=".bib,.ris,.json,.txt" aria-label="Reference file to import" onChange={(event) => {
+          <input ref={fileInputRef} type="file" hidden accept=".bib,.ris,.json,.txt" aria-label={t("fileInputAria")} onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = "";
             if (file) void importFile(file);
@@ -448,8 +452,8 @@ export function AddReferenceBox({
           />
         ) : null
       ) : (
-        <div className="space-y-1.5 text-[12px]" aria-label="Import result">
-          <p><span className="font-semibold">{view.result.added.length}</span> added{view.existing ? <>, <span className="font-semibold">{view.existing}</span> already in the library</> : null}.</p>
+        <div className="space-y-1.5 text-[12px]" aria-label={t("importResultAria")}>
+          <p>{t.rich("importSummary", { added: view.result.added.length, existing: view.existing, strong: (chunks) => <span className="font-semibold">{chunks}</span> })}</p>
           {view.result.added.length ? (
             <ul className="max-h-28 space-y-0.5 overflow-auto">
               {view.result.added.map((id) => view.result.library.entries[id]).filter(Boolean).map((entry) => (
@@ -459,15 +463,15 @@ export function AddReferenceBox({
           ) : null}
           {view.renamed.length ? (
             <div>
-              <p className="text-[11px] font-medium">Keys changed because they were taken or invalid:</p>
-              <ul className="text-[11px] text-muted-foreground" aria-label="Renamed keys">
+              <p className="text-[11px] font-medium">{t("renamedIntro")}</p>
+              <ul className="text-[11px] text-muted-foreground" aria-label={t("renamedAria")}>
                 {view.renamed.map((rename) => <li key={rename.from}><span className="font-mono">{rename.from}</span> → <span className="font-mono">{rename.to}</span></li>)}
               </ul>
             </div>
           ) : null}
           {view.result.duplicates.length ? (
             <div>
-              <p className="text-[11px] font-medium">Possible duplicates:</p>
+              <p className="text-[11px] font-medium">{t("duplicatesIntro")}</p>
               <ul className="space-y-1">
                 {view.result.duplicates.map((duplicate) => {
                   const added = view.result.library.entries[duplicate.entryId];
@@ -476,11 +480,13 @@ export function AddReferenceBox({
                   return (
                     <li key={`${duplicate.entryId}:${duplicate.existingId}`} className="flex items-center gap-1.5 text-[11px]">
                       <span className="min-w-0 flex-1 truncate">
-                        {fuzzy ? <><span className="font-mono">{added.key}</span> looks like <span className="font-mono">{existing.key}</span></> : <>Skipped: same {duplicate.reason.toUpperCase()} as <span className="font-mono">{existing?.key ?? "an entry"}</span></>}
+                        {fuzzy
+                          ? t.rich("looksLike", { added: added.key, existing: existing.key, mono: (chunks) => <span className="font-mono">{chunks}</span> })
+                          : t.rich("skippedSame", { reason: duplicate.reason.toUpperCase(), hasKey: existing ? "yes" : "no", key: existing?.key ?? "", mono: (chunks) => <span className="font-mono">{chunks}</span> })}
                       </span>
                       {fuzzy ? (
                         <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={() => onMerge([existing.id, added.id])}>
-                          <Merge aria-hidden className="h-3 w-3" /> Merge
+                          <Merge aria-hidden className="h-3 w-3" /> {t("merge")}
                         </button>
                       ) : null}
                     </li>
@@ -491,14 +497,14 @@ export function AddReferenceBox({
           ) : null}
           {view.result.errors.length ? (
             <div role="alert">
-              <p className="text-[11px] font-medium text-destructive">{view.result.errors.length} problem{view.result.errors.length === 1 ? "" : "s"}:</p>
+              <p className="text-[11px] font-medium text-destructive">{t("problems", { count: view.result.errors.length })}</p>
               <ul className="max-h-24 overflow-auto text-[11px] text-destructive">
-                {view.result.errors.map((problem, index) => <li key={index}>Line {problem.line}: {problem.message}</li>)}
+                {view.result.errors.map((problem, index) => <li key={index}>{t("problemLine", { line: problem.line, message: problem.message })}</li>)}
               </ul>
             </div>
           ) : null}
           <div className="flex justify-end">
-            <button type="button" className="libera-panel-button h-7 px-3" onClick={() => { setText(""); setView({ kind: "input" }); onClose(); }}>Done</button>
+            <button type="button" className="libera-panel-button h-7 px-3" onClick={() => { setText(""); setView({ kind: "input" }); onClose(); }}>{tc("done")}</button>
           </div>
         </div>
       )}

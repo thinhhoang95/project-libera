@@ -1,6 +1,7 @@
 "use client";
 
 import { AudioLines, Loader2, Maximize2, Pause, Play, Square, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { recordingTabId } from "@/components/libera/recording/recording-tabs";
@@ -57,6 +58,8 @@ export type RecordingTabActions = {
  * left unfinished are offered here.
  */
 export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { children: ReactNode; tabs: RecordingTabActions; visibleTabIds: readonly string[] }) {
+  const t = useTranslations("recording.meetingRecorder");
+  const tCommon = useTranslations("common");
   const recorder = useMeetingRecorder({ onSaved: (finished, notebook, id) => tabs.saved(id, finished, notebook) });
   const [unfinished, setUnfinished] = useState<UnfinishedRecording[]>([]);
   const [recovering, setRecovering] = useState("");
@@ -119,7 +122,7 @@ export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { chi
       setUnfinished((current) => current.filter((item) => item.id !== id));
       tabs.saved(id, finished, notebook);
     } catch (failure) {
-      setRecoverError(failure instanceof Error ? failure.message : "Could not save the recording.");
+      setRecoverError(failure instanceof Error ? failure.message : t("couldNotSaveRecording"));
     } finally {
       setRecovering("");
     }
@@ -133,7 +136,7 @@ export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { chi
 
   /** Asks first; true when it was deleted. */
   async function discardUnfinished(id: string) {
-    if (!window.confirm("Delete this unfinished recording? This cannot be undone.")) return false;
+    if (!window.confirm(t("deleteUnfinishedConfirm"))) return false;
     await apiRequest(`/api/recordings/${id}`, { method: "DELETE" }).catch(() => undefined);
     setUnfinished((current) => current.filter((item) => item.id !== id));
     close(id);
@@ -148,61 +151,61 @@ export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { chi
     overlay = (
       <div role="status" className={`${card} flex items-center gap-2 p-3`}>
         <Loader2 aria-hidden className="h-4 w-4 shrink-0 animate-spin" />
-        <span className="min-w-0 flex-1">Starting the microphone…</span>
-        <button type="button" className="shrink-0 text-xs font-medium text-muted-foreground hover:text-foreground" onClick={recorder.cancelStart}>Cancel</button>
+        <span className="min-w-0 flex-1">{t("startingMic")}</span>
+        <button type="button" className="shrink-0 text-xs font-medium text-muted-foreground hover:text-foreground" onClick={recorder.cancelStart}>{tCommon("cancel")}</button>
       </div>
     );
   } else if (state === "error") {
     overlay = (
       <div role="alert" className={`${card} flex items-start gap-2 p-3`}>
         <span className="min-w-0 flex-1 text-destructive">{recorder.error}</span>
-        <button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted" aria-label="Close" onClick={recorder.close}><X aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted" aria-label={tCommon("close")} onClick={recorder.close}><X aria-hidden className="h-3.5 w-3.5" /></button>
       </div>
     );
   } else if (session && !tabVisible) {
     // Recording on while another tab is in front.
     const recording = state === "recording";
     overlay = (
-      <div role="region" aria-label="Recording" className="fixed bottom-4 left-16 z-50 flex max-w-[calc(100vw-5rem)] items-center gap-2 rounded-full border border-border bg-card py-1 pl-3 pr-1 text-sm shadow-xl">
+      <div role="region" aria-label={t("recordingRegion")} className="fixed bottom-4 left-16 z-50 flex max-w-[calc(100vw-5rem)] items-center gap-2 rounded-full border border-border bg-card py-1 pl-3 pr-1 text-sm shadow-xl">
         <span aria-hidden className={`h-2.5 w-2.5 shrink-0 rounded-full ${recording ? "animate-pulse bg-destructive" : "bg-muted-foreground"}`} />
         <span className="font-mono tabular-nums">{formatClock(recorder.seconds)}</span>
-        <span className="max-w-40 truncate text-muted-foreground">{state === "stopping" ? "Saving…" : session.name}</span>
+        <span className="max-w-40 truncate text-muted-foreground">{state === "stopping" ? t("savingState") : session.name}</span>
         {state === "paused" ? (
-          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-muted" aria-label="Resume recording" title="Resume" onClick={() => void recorder.resume()}><Play aria-hidden className="h-3.5 w-3.5" fill="currentColor" /></button>
+          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-muted" aria-label={t("resumeRecording")} title={t("resume")} onClick={() => void recorder.resume()}><Play aria-hidden className="h-3.5 w-3.5" fill="currentColor" /></button>
         ) : (
-          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-muted disabled:opacity-40" disabled={!recording} aria-label="Pause recording" title="Pause" onClick={recorder.pause}><Pause aria-hidden className="h-3.5 w-3.5" fill="currentColor" /></button>
+          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-muted disabled:opacity-40" disabled={!recording} aria-label={t("pauseRecording")} title={t("pause")} onClick={recorder.pause}><Pause aria-hidden className="h-3.5 w-3.5" fill="currentColor" /></button>
         )}
-        <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-destructive hover:bg-destructive/10 disabled:opacity-40" disabled={state === "stopping"} aria-label="Stop and save" title="Stop and save" onClick={() => void recorder.stop()}><Square aria-hidden className="h-3 w-3" fill="currentColor" /></button>
-        <button type="button" className="inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium hover:bg-muted" title="Show the recording" onClick={() => open(session.id, session.name, session.notebook)}>
-          <Maximize2 aria-hidden className="h-3.5 w-3.5" /> Show
+        <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-destructive hover:bg-destructive/10 disabled:opacity-40" disabled={state === "stopping"} aria-label={t("stopAndSave")} title={t("stopAndSave")} onClick={() => void recorder.stop()}><Square aria-hidden className="h-3 w-3" fill="currentColor" /></button>
+        <button type="button" className="inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium hover:bg-muted" title={t("showRecording")} onClick={() => open(session.id, session.name, session.notebook)}>
+          <Maximize2 aria-hidden className="h-3.5 w-3.5" /> {t("show")}
         </button>
       </div>
     );
   } else if (state === "idle" && unfinished.some((recording) => !visibleTabIds.includes(recordingTabId(recording.id)))) {
     overlay = (
-      <div role="region" aria-label="Unfinished recordings" className={`${card} p-3`}>
+      <div role="region" aria-label={t("unfinishedRegion")} className={`${card} p-3`}>
         <div className="mb-2 flex items-center gap-2 font-medium">
           <AudioLines aria-hidden className="h-4 w-4 text-accent" />
-          {unfinished.length === 1 ? "A recording was not finished" : `${unfinished.length} recordings were not finished`}
-          <button type="button" className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted" aria-label="Later" title="Later" onClick={() => setUnfinished([])}>
+          {t("unfinishedCount", { count: unfinished.length })}
+          <button type="button" className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted" aria-label={t("laterLabel")} title={t("laterLabel")} onClick={() => setUnfinished([])}>
             <X aria-hidden className="h-3.5 w-3.5" />
           </button>
         </div>
-        <p className="mb-2 text-xs text-muted-foreground">Libera closed while recording. What was recorded up to then is safe.</p>
+        <p className="mb-2 text-xs text-muted-foreground">{t("closedWhileRecording")}</p>
         <ul className="flex flex-col gap-2">
           {/* A recording whose tab is in view offers the same choices there. */}
           {unfinished.filter((recording) => !visibleTabIds.includes(recordingTabId(recording.id))).map((recording) => (
             <li key={recording.id} className="rounded-lg border border-border px-2.5 py-2">
               <div className="truncate font-medium">{recording.name}</div>
-              <div className="mb-1.5 text-xs text-muted-foreground">{formatClock(recording.savedSeconds)} in {recording.parentPath}</div>
+              <div className="mb-1.5 text-xs text-muted-foreground">{t("recordingInPath", { duration: formatClock(recording.savedSeconds), path: recording.parentPath })}</div>
               <div className="flex flex-wrap gap-1.5">
                 <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50" disabled={Boolean(recovering)} onClick={() => void saveUnfinished(recording.id, recording.notebook)}>
-                  {recovering === recording.id ? <Loader2 aria-hidden className="h-3 w-3 animate-spin" /> : null} Save
+                  {recovering === recording.id ? <Loader2 aria-hidden className="h-3 w-3 animate-spin" /> : null} {tCommon("save")}
                 </button>
                 <button type="button" className="h-7 rounded-md border border-border px-2.5 text-xs font-medium hover:bg-muted disabled:opacity-50" disabled={Boolean(recovering)} onClick={() => void recordOn(recording.id)}>
-                  Record on
+                  {t("recordOn")}
                 </button>
-                <button type="button" className="ml-auto h-7 rounded-md px-2 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={Boolean(recovering)} onClick={() => void discardUnfinished(recording.id)}>Delete</button>
+                <button type="button" className="ml-auto h-7 rounded-md px-2 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={Boolean(recovering)} onClick={() => void discardUnfinished(recording.id)}>{tCommon("delete")}</button>
               </div>
             </li>
           ))}

@@ -19,6 +19,13 @@ export const BIBLIOGRAPHY_FORMATS: Array<{ id: BibliographyFormat; label: string
   { id: "html", label: "HTML", extension: "html" },
 ];
 
+type FormatTranslator = (key: string) => string;
+
+/** The name of a formatted-list format in the interface language (pass `useTranslations("references.bibliographyActions")`). */
+export function bibliographyFormatLabel(format: BibliographyFormat, t?: FormatTranslator) {
+  return t ? t(`format.${format}`) : BIBLIOGRAPHY_FORMATS.find((item) => item.id === format)!.label;
+}
+
 /** Every format the "For this document" export offers: machine formats first, then formatted lists. */
 export type DocumentExportFormat = ExportFormat | BibliographyFormat;
 export const DOCUMENT_EXPORT_FORMATS: Array<{ id: DocumentExportFormat; label: string; extension: string }> = [
@@ -26,8 +33,16 @@ export const DOCUMENT_EXPORT_FORMATS: Array<{ id: DocumentExportFormat; label: s
   ...BIBLIOGRAPHY_FORMATS.map((format) => ({ ...format, label: `Formatted ${format.label.toLowerCase()}` })),
 ];
 
+/** The name of an export format: BibTeX, RIS… keep their names; formatted lists are translated. */
+export function documentExportFormatLabel(format: DocumentExportFormat, t?: FormatTranslator) {
+  const fallback = DOCUMENT_EXPORT_FORMATS.find((item) => item.id === format)?.label ?? format;
+  return t && BIBLIOGRAPHY_FORMATS.some((item) => item.id === format) ? t(`formatted.${format}`) : fallback;
+}
+
 export type BibliographyRequest = {
   notebook: string;
+  /** Shown when the server gives no reason for a failure (a translated message from the caller). */
+  fallbackError?: string;
   /** The active document's text: only what it cites. Omitted for the whole library. */
   documentText?: string;
   /** Names the download after the document. */
@@ -65,7 +80,7 @@ function post(url: string, body: Record<string, unknown>) {
 /** The formatted list as `format`: { text, count, unresolvedKeys }. */
 export async function fetchBibliography(request: BibliographyRequest & { format: BibliographyFormat }) {
   const response = await post("/api/references/bibliography", { notebook: request.notebook, format: request.format, ...(request.documentText !== undefined ? { documentText: request.documentText } : {}) });
-  if (!response.ok) throw new Error(await errorMessage(response, "The reference list could not be formatted."));
+  if (!response.ok) throw new Error(await errorMessage(response, request.fallbackError ?? "The reference list could not be formatted."));
   const body = await response.json() as { text?: unknown; count?: unknown; unresolvedKeys?: unknown };
   return {
     text: typeof body.text === "string" ? body.text : "",
@@ -110,15 +125,16 @@ export async function downloadBibliography(request: BibliographyRequest & { form
     ...(formatted ? { download: true } : {}),
   };
   const response = await post(formatted ? "/api/references/bibliography" : "/api/references/export", body);
-  if (!response.ok) throw new Error(await errorMessage(response, forDocument ? "The bibliography could not be exported." : "The reference list could not be exported."));
+  if (!response.ok) throw new Error(await errorMessage(response, request.fallbackError ?? (forDocument ? "The bibliography could not be exported." : "The reference list could not be exported.")));
   const extension = DOCUMENT_EXPORT_FORMATS.find((format) => format.id === request.format)?.extension ?? "txt";
   const fileName = await saveDownload(response, `${request.notebook}-${forDocument ? "bibliography" : "references"}.${extension}`);
   return { fileName, unresolvedKeys: unresolvedKeysHeader(response.headers.get("X-Libera-Unresolved-Keys")) };
 }
 
-/** " · 2 cited keys are not in the library: a, b" for a notice, or "". */
-export function unresolvedNote(keys: string[]) {
+/** " 2 cited keys are not in the library: a, b." for a notice, or "". Pass `useTranslations("references.bibliographyActions")` for the interface language. */
+export function unresolvedNote(keys: string[], t?: (key: "unresolvedNote", values: { count: number; keys: string }) => string) {
   if (!keys.length) return "";
-  const shown = keys.slice(0, 5).join(", ");
-  return ` ${keys.length === 1 ? "1 cited key is" : `${keys.length} cited keys are`} not in the library: ${shown}${keys.length > 5 ? ", …" : ""}.`;
+  const shown = keys.slice(0, 5).join(", ") + (keys.length > 5 ? ", …" : "");
+  if (t) return ` ${t("unresolvedNote", { count: keys.length, keys: shown })}`;
+  return ` ${keys.length === 1 ? "1 cited key is" : `${keys.length} cited keys are`} not in the library: ${shown}.`;
 }

@@ -26,7 +26,8 @@ const sending = new Map<string, Promise<void>>();
 let refreshing: Promise<void> | null = null;
 let loaded = false;
 let refreshAgain = false;
-let error = "";
+/** null: no problem; "" a failure with no message of its own (the interface words it). */
+let error: string | null = null;
 let unregisterPersistence: (() => void) | undefined;
 
 function notify() {
@@ -53,7 +54,7 @@ async function send(path: string, baseline: string) {
       // Keep failed reports pending. Whole-file rejection must never fall back
       // to an older server baseline after losing the user's edits in transit.
       if (!unsent.has(path)) unsent.set(path, { baseline });
-      error = cause instanceof Error ? cause.message : "Could not save the review baseline.";
+      error = cause instanceof Error ? cause.message : "";
       notify();
       throw cause;
     }
@@ -157,7 +158,7 @@ export const agentReviewStore = {
     do {
       await Promise.all(paths.map(sendNow));
     } while (paths.some((path) => unsent.has(path) || sending.has(path)));
-    if (error) { error = ""; notify(); }
+    if (error !== null) { error = null; notify(); }
   },
 
   /** Accept every change in these files. */

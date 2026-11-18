@@ -3,7 +3,7 @@
 import {
   changeSelectedHeadingLevels, getChangedTextRange, sourceClipboardContents, sourceDragKind,
   getDroppedImageFiles, SELECTION_CHANGE_DEBOUNCE_MS,
-  SOURCE_EDITOR_LABEL, SOURCE_PANE_PADDING, SOURCE_SPELLCHECK, SOURCE_TAB_SIZE, sourcePasteEdit, sourcePasteMode, sourceFormatEdit, handleSourceKey, fileLinkPopupKey, refreshSourcePopupOnKeyUp,
+  SOURCE_PANE_PADDING, SOURCE_SPELLCHECK, SOURCE_TAB_SIZE, sourcePasteEdit, sourcePasteMode, sourceFormatEdit, handleSourceKey, fileLinkPopupKey, refreshSourcePopupOnKeyUp,
   sourceFileLinkContext, sameFileLinkPopup, sourceHeadingLinkEdit, sourceCitationContext, sameCitationPopup, sourceCitationHit, sourceSelectionAfterChange,
   type FileLinkPopupContext, type CitationPopupContext, type HeadingLevelChangeDirection, type MarkdownFormat,
 } from "@/lib/markdown-source";
@@ -34,6 +34,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useTranslations } from "next-intl";
 import {
   MarkdownFileLinkPopup,
   MarkdownHeadingLinkPopup,
@@ -298,6 +299,7 @@ export function MarkdownEditor({
   onInsertImageFile,
   onSelectionChange,
 }: MarkdownEditorProps) {
+  const t = useTranslations("markdownEditor");
   const [editorValue, setEditorValue] = useState(value);
   const [initialValue] = useState(value);
   const [contextMenu, setContextMenu] = useState<SourceContextMenuState | null>(null);
@@ -1185,7 +1187,7 @@ export function MarkdownEditor({
       />
       <textarea
         ref={textareaRef}
-        aria-label={SOURCE_EDITOR_LABEL}
+        aria-label={t("sourceEditorLabel")}
         readOnly={review?.locked}
         className="markdown-editor-input relative z-10 block h-full min-h-0 w-full resize-none overflow-auto border-b border-border p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
         style={{
@@ -1238,7 +1240,7 @@ export function MarkdownEditor({
 
       {draggingImage ? (
         <div className="pointer-events-none absolute inset-3 flex items-center justify-center rounded-lg border-2 border-dashed border-input bg-white/70 text-sm font-medium text-foreground">
-          Drop image to insert
+          {t("dropImageHint")}
         </div>
       ) : null}
 
@@ -1251,7 +1253,7 @@ export function MarkdownEditor({
           onRewrite={(prompt) => { setContextMenu(null); void onAiRewriteSelection({ start: contextMenu.start, end: contextMenu.end }, prompt); }}
           onWrite={(prompt) => { setContextMenu(null); void onAiWriteAt(contextMenu.end, prompt); }}
           onImageToMarkdown={() => { if (!aiWorking && contextMenu.image) { setContextMenu(null); void onAiImageToMarkdown(contextMenu.image); } }}
-          onReadAloud={() => { speakMarkdown(editorValueRef.current.slice(contextMenu.start, contextMenu.end), { label: "Selection" }); setContextMenu(null); }}
+          onReadAloud={() => { speakMarkdown(editorValueRef.current.slice(contextMenu.start, contextMenu.end), { label: t("readAloudSelectionLabel") }); setContextMenu(null); }}
         />
       ) : null}
 

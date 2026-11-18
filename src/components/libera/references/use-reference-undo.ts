@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { applyReferenceOps } from "@/components/libera/references/use-reference-library";
 import type { ReferenceEntry, ReferenceLibrary, ReferenceLibraryOp, ReferenceLibrarySettings, ReferenceLibrarySettingsPatch } from "@/lib/references/types";
@@ -166,6 +167,7 @@ export function isReferenceUndoShortcut(event: { key: string; metaKey: boolean; 
  * client store and records their inverse; `undo()` reverts the last one.
  */
 export function useReferenceUndo(notebook: string | null, library: ReferenceLibrary | null) {
+  const t = useTranslations("references.useReferenceUndo");
   const libraryRef = useRef(library);
   useEffect(() => {
     libraryRef.current = library;
@@ -181,7 +183,7 @@ export function useReferenceUndo(notebook: string | null, library: ReferenceLibr
   const stack = useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_STACK);
 
   const apply = useCallback((ops: ReferenceLibraryOp[], label: string): Promise<ReferenceLibrary> => {
-    if (!notebook) return Promise.reject(new Error("Open a notebook to change its references."));
+    if (!notebook) return Promise.reject(new Error(t("openToChangeError")));
     const store = undoStoreFor(notebook);
     const run = store.queue.catch(() => undefined).then(async () => {
       const before = newest(libraryRef.current, store.last);
@@ -192,7 +194,7 @@ export function useReferenceUndo(notebook: string | null, library: ReferenceLibr
     });
     store.queue = run;
     return run;
-  }, [notebook]);
+  }, [notebook, t]);
 
   /** Record a change committed elsewhere (an import route) so it can be undone too. */
   const record = useCallback((before: ReferenceLibrary, after: ReferenceLibrary, label: string, touched?: Iterable<string>) => {
@@ -208,7 +210,7 @@ export function useReferenceUndo(notebook: string | null, library: ReferenceLibr
     const record = store.stack.at(-1);
     if (!record) return null;
     const current = libraryRef.current;
-    if (current && isUndoStale(record, current)) throw new Error("This change can no longer be undone: the references it touched changed since.");
+    if (current && isUndoStale(record, current)) throw new Error(t("undoStaleError"));
     setStack(notebook, store.stack.slice(0, -1));
     try {
       const after = await applyReferenceOps(notebook, record.inverse);
@@ -218,7 +220,7 @@ export function useReferenceUndo(notebook: string | null, library: ReferenceLibr
       setStack(notebook, [...undoStoreFor(notebook).stack, record]);
       throw error;
     }
-  }, [notebook]);
+  }, [notebook, t]);
 
   return {
     apply,

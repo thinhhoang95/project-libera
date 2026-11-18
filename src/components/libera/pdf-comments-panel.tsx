@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useFormatter, useTranslations } from "next-intl";
 import { Check, PencilLine, RotateCcw, Save, Search, Send, Sparkles, Trash2, X } from "lucide-react";
 import { pdfCommentPages, sortPdfCommentThreads } from "@/lib/pdf-comments";
-import { timeAgo } from "@/lib/collab/ui/wording";
 import { MentionTextarea } from "./collab/mentions/mention-textarea";
 import { CommentBody, CommentStatusFilterButton, matchesCommentStatus, useNow, type CommentStatusFilter } from "./markdown-review-ui";
 import { ShowMoreButton, usePagedList } from "./list-controls";
@@ -17,19 +17,24 @@ import type { PdfCommentMessage, PdfCommentThread } from "@/lib/types";
 // them and reply, never start a thread.
 
 function AgentChip({ title }: { title: string }) {
-  return <span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title={title}><Sparkles aria-hidden size={10} /> Agent</span>;
+  const t = useTranslations("pdfCommentsPanel");
+  return <span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title={title}><Sparkles aria-hidden size={10} /> {t("agentChip")}</span>;
 }
 
 function MessageMeta({ message, now }: { message: PdfCommentMessage; now: number }) {
+  const t = useTranslations("pdfCommentsPanel");
+  const format = useFormatter();
+  const age = now - Date.parse(message.createdAt);
   return <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-    {message.author === "agent" ? <AgentChip title="Replied by the AI agent" /> : <span>{message.own === false ? message.authorName : "You"}{message.pending ? " · pending" : ""}</span>}
-    {message.notSent && <span className="text-destructive" title={message.notSent}>· not sent: {message.notSent}</span>}
-    <span title={new Date(message.createdAt).toLocaleString()}>{timeAgo(now - Date.parse(message.createdAt))}</span>
-    {message.editedAt && <span>· edited</span>}
+    {message.author === "agent" ? <AgentChip title={t("agentChipTitle")} /> : <span>{t("messageAuthor", { name: message.authorName ?? "", own: message.own === false ? "no" : "yes", pending: message.pending ? "yes" : "no" })}</span>}
+    {message.notSent && <span className="text-destructive" title={message.notSent}>{t("notSent", { reason: message.notSent })}</span>}
+    <span title={format.dateTime(new Date(message.createdAt), { dateStyle: "medium", timeStyle: "medium" })}>{age < 45_000 ? t("justNow") : format.relativeTime(Date.parse(message.createdAt), now)}</span>
+    {message.editedAt && <span>{t("edited")}</span>}
   </span>;
 }
 
 export function PdfReviewComments({ path }: { path: string }) {
+  const t = useTranslations("pdfCommentsPanel");
   const state = usePdfComments(path);
   const now = useNow();
   const [draft, setDraft] = useState("");
@@ -60,7 +65,7 @@ export function PdfReviewComments({ path }: { path: string }) {
   const shown = threads.map((thread, index) => ({ thread, index })).filter(({ thread, index }) => {
     if (!matchesCommentStatus(thread.status, status)) return false;
     if (!terms.length) return true;
-    const haystack = [`comment ${index + 1}`, thread.status, pdfCommentPages(thread.anchor), thread.anchor.quote, ...thread.messages.map((m) => `${m.author ?? ""}\n${m.text}`)].join("\n").toLowerCase();
+    const haystack = [t("commentNumber", { number: index + 1 }), t("status", { status: thread.status }), pdfCommentPages(thread.anchor), thread.anchor.quote, ...thread.messages.map((m) => `${m.author ?? ""}\n${m.text}`)].join("\n").toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
   // The selected comment (picked on a page) stays rendered past the first page.
@@ -76,55 +81,55 @@ export function PdfReviewComments({ path }: { path: string }) {
     if (done) { setDraft(""); setMentions([]); setEditing(null); }
   }
 
-  return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
+  return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label={t("reviewComments")}>
     <header className="shrink-0 space-y-3 px-3 pb-3 pt-4">
       {/* The open count drops out first when the panel is too narrow for it. */}
       <div className="libera-notebook-heading @container flex items-center gap-1">
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Comments</h2>
-        <span className="mr-1 hidden whitespace-nowrap @[17rem]:inline text-xs tabular-nums text-muted-foreground">{openCount} open</span>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{t("commentsHeading")}</h2>
+        <span className="mr-1 hidden whitespace-nowrap @[17rem]:inline text-xs tabular-nums text-muted-foreground">{t("openCount", { count: openCount })}</span>
         {state.loaded && <CommentStatusFilterButton value={status} onChange={setStatus} open={openCount} resolved={threads.length - openCount} all={threads.length} />}
       </div>
       {threads.length > 0 && <div className="review-comment-search relative">
         <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <input type="search" aria-label="Search comments" placeholder="Search comments…" className="libera-panel-field libera-panel-field--search w-full" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
-        {query && <button type="button" className="libera-sidebar-icon-button absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md" aria-label="Clear comment search" title="Clear search" onClick={() => setQuery("")}><X aria-hidden size={12} /></button>}
+        <input type="search" aria-label={t("searchLabel")} placeholder={t("searchPlaceholder")} className="libera-panel-field libera-panel-field--search w-full" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
+        {query && <button type="button" className="libera-sidebar-icon-button absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md" aria-label={t("clearSearchLabel")} title={t("clearSearch")} onClick={() => setQuery("")}><X aria-hidden size={12} /></button>}
       </div>}
-      <p className="px-1 text-xs leading-relaxed text-muted-foreground">Select text on a page and choose Add comment. The AI agent can read these comments and reply to them.</p>
+      <p className="px-1 text-xs leading-relaxed text-muted-foreground">{t("hint")}</p>
     </header>
     <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
-      {state.error && <p role="alert" className="mt-2 text-sm text-destructive">{state.error} <button type="button" className="review-button" onClick={() => { clearPdfCommentsError(path); void loadPdfComments(path); }}>Reload comments</button></p>}
-      {!state.loaded ? <p className="px-1 py-6 text-center text-sm text-muted-foreground">Loading comments…</p>
-        : !threads.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select text on a page to add one.</p>
-        : !shown.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">{query.trim() ? `No ${status === "all" ? "" : `${status} `}comments match “${query.trim()}”.` : `No ${status} comments.`}</p>}
+      {state.error && <p role="alert" className="mt-2 text-sm text-destructive">{state.errorKind === "load" ? t("loadFailed") : state.errorKind === "save" ? t("saveFailed") : state.error} <button type="button" className="review-button" onClick={() => { clearPdfCommentsError(path); void loadPdfComments(path); }}>{t("reloadComments")}</button></p>}
+      {!state.loaded ? <p className="px-1 py-6 text-center text-sm text-muted-foreground">{t("loadingComments")}</p>
+        : !threads.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">{t("noComments")}</p>
+        : !shown.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">{query.trim() ? t("noCommentsMatch", { status, query: query.trim() }) : t("noFilteredComments", { status })}</p>}
       {page.visible.map(({ thread, index }) => {
         const selected = active?.id === thread.id;
         const replies = thread.messages.slice(1);
-        return <article key={thread.id} ref={selected ? selectedCard : undefined} data-selected={selected} data-pdf-comment-card={thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
+        return <article key={thread.id} ref={selected ? selectedCard : undefined} data-selected={selected} data-pdf-comment-card={thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={t("commentNumber", { number: index + 1 })}>
           <button type="button" className="w-full text-left" aria-expanded={selected} onClick={() => { if (selected) selectPdfComment(path, null); else focusPdfComment(path, thread.id); }}>
             <span className="flex flex-wrap items-center justify-between gap-1">
-              <span className="flex items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong><span className="text-[11px] text-muted-foreground">{pdfCommentPages(thread.anchor)}</span></span>
-              <span className="text-[11px] capitalize text-muted-foreground">{thread.status}</span>
+              <span className="flex items-center gap-1.5"><strong className="text-xs font-semibold">{t("commentNumber", { number: index + 1 })}</strong><span className="text-[11px] text-muted-foreground">{pdfCommentPages(thread.anchor)}</span></span>
+              <span className="text-[11px] text-muted-foreground">{t("status", { status: thread.status })}</span>
             </span>
             {thread.anchor.quote && <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>}
             {!selected && thread.messages[0] && <CommentBody text={thread.messages[0].text} preview />}
-            {!selected && replies.length > 0 && <span className="mt-2 block text-xs text-muted-foreground">{replies.length} {replies.length === 1 ? "reply" : "replies"}{replies.some((m) => m.author === "agent") ? " · Agent replied" : ""}</span>}
+            {!selected && replies.length > 0 && <span className="mt-2 block text-xs text-muted-foreground">{t("replySummary", { count: replies.length, agent: replies.some((m) => m.author === "agent") ? "yes" : "no" })}</span>}
           </button>
           {selected && <div className="mt-2 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <MessageMeta message={thread.messages[0]} now={now} />
-              {canEdit(thread.messages[0]) && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit comment" title="Edit comment" disabled={busy} onClick={() => { setEditing(thread.messages[0].id); setDraft(thread.messages[0].text); }}><PencilLine aria-hidden size={16} /></button>}
+              {canEdit(thread.messages[0]) && <button type="button" className="review-comment-icon" data-tone="blue" aria-label={t("editComment")} title={t("editComment")} disabled={busy} onClick={() => { setEditing(thread.messages[0].id); setDraft(thread.messages[0].text); }}><PencilLine aria-hidden size={16} /></button>}
             </div>
             <CommentBody text={thread.messages[0].text} />
             {replies.map((message) => <div key={message.id} className="space-y-1 border-l-2 border-border pl-2" data-author={message.author ?? "user"}>
               <div className="flex items-center justify-between gap-2">
                 <MessageMeta message={message} now={now} />
-                {canEdit(message) && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit reply" title="Edit reply" disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
+                {canEdit(message) && <button type="button" className="review-comment-icon" data-tone="blue" aria-label={t("editReply")} title={t("editReply")} disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
               </div>
               <CommentBody text={message.text} />
             </div>)}
             {state.readOnly ? null : <>
             {(() => {
-              const box = { "aria-label": editing ? "Edit comment" : "Reply to comment", className: "review-textarea", placeholder: editing ? "Edit your comment…" : "Write a reply…", rows: 2, onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => {
+              const box = { "aria-label": editing ? t("editComment") : t("replyToComment"), className: "review-textarea", placeholder: editing ? t("editYourComment") : t("writeReply"), rows: 2, onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(thread); }
                 if (e.key === "Escape" && editing) { e.stopPropagation(); setEditing(null); setDraft(""); }
               } };
@@ -133,9 +138,9 @@ export function PdfReviewComments({ path }: { path: string }) {
                 : <textarea {...box} value={draft} onChange={(e) => setDraft(e.target.value)} />;
             })()}
             <div className="review-comment-actions">
-              <button type="button" className="review-comment-icon" data-tone="blue" aria-label={editing ? "Save comment" : "Reply"} title={editing ? "Save comment" : "Reply"} disabled={!draft.trim() || busy} onClick={() => void send(thread)}>{editing ? <Save aria-hidden size={16} /> : <Send aria-hidden size={16} />}</button>
-              <button type="button" className="review-comment-icon" data-tone="green" aria-label={thread.status === "open" ? "Resolve" : "Reopen"} title={thread.status === "open" ? "Resolve" : "Reopen"} disabled={busy} onClick={() => void changePdfComments(path, { action: "resolve", threadId: thread.id, resolved: thread.status === "open" })}>{thread.status === "open" ? <Check aria-hidden size={16} /> : <RotateCcw aria-hidden size={16} />}</button>
-              <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label="Delete comment" title="Delete comment" disabled={busy} onClick={() => void changePdfComments(path, { action: "delete", threadId: thread.id })}><Trash2 aria-hidden size={16} /></button>
+              <button type="button" className="review-comment-icon" data-tone="blue" aria-label={editing ? t("saveComment") : t("reply")} title={editing ? t("saveComment") : t("reply")} disabled={!draft.trim() || busy} onClick={() => void send(thread)}>{editing ? <Save aria-hidden size={16} /> : <Send aria-hidden size={16} />}</button>
+              <button type="button" className="review-comment-icon" data-tone="green" aria-label={thread.status === "open" ? t("resolve") : t("reopen")} title={thread.status === "open" ? t("resolve") : t("reopen")} disabled={busy} onClick={() => void changePdfComments(path, { action: "resolve", threadId: thread.id, resolved: thread.status === "open" })}>{thread.status === "open" ? <Check aria-hidden size={16} /> : <RotateCcw aria-hidden size={16} />}</button>
+              <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label={t("deleteComment")} title={t("deleteComment")} disabled={busy} onClick={() => void changePdfComments(path, { action: "delete", threadId: thread.id })}><Trash2 aria-hidden size={16} /></button>
             </div>
             </>}
           </div>}

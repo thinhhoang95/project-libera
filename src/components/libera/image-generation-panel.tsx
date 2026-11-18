@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useFormatter, useTranslations } from "next-intl";
 import { FolderOpen, ImagePlus, Images, Loader2, RotateCcw, Sparkles, Square, X } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
 import { AiPanelGlow } from "./ai-activity-ui";
@@ -30,27 +31,28 @@ const section = "px-1 text-xs font-semibold uppercase tracking-wide text-muted-f
 
 type FolderOption = { path: string; label: string };
 type ReferencePhoto = { id: string; name: string; dataUrl: string };
+type T = ReturnType<typeof useTranslations>;
 
 /** Photos sent as-is when they are already small; larger ones are scaled down first. */
 const SEND_AS_IS_BYTES = 4 * 1024 * 1024;
 
-function readAsDataUrl(blob: Blob) {
+function readAsDataUrl(blob: Blob, t: T) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read the photo."));
+    reader.onerror = () => reject(reader.error ?? new Error(t("couldNotReadPhotoPlain")));
     reader.readAsDataURL(blob);
   });
 }
 
-async function prepareReference(blob: Blob, name: string): Promise<ReferencePhoto> {
-  if (!blob.type.startsWith("image/")) throw new Error(`“${name}” is not an image.`);
+async function prepareReference(blob: Blob, name: string, t: T): Promise<ReferencePhoto> {
+  if (!blob.type.startsWith("image/")) throw new Error(t("notAnImage", { name }));
   let bitmap: ImageBitmap;
-  try { bitmap = await createImageBitmap(blob); } catch { throw new Error(`Could not read “${name}”. Try a PNG, JPEG or WebP photo.`); }
+  try { bitmap = await createImageBitmap(blob); } catch { throw new Error(t("couldNotReadPhoto", { name })); }
   try {
     const longest = Math.max(bitmap.width, bitmap.height);
     if (REFERENCE_IMAGE_TYPES.includes(blob.type) && longest <= MAX_REFERENCE_IMAGE_EDGE && blob.size <= SEND_AS_IS_BYTES) {
-      return { id: crypto.randomUUID(), name, dataUrl: await readAsDataUrl(blob) };
+      return { id: crypto.randomUUID(), name, dataUrl: await readAsDataUrl(blob, t) };
     }
     const scale = Math.min(1, MAX_REFERENCE_IMAGE_EDGE / longest);
     const canvas = document.createElement("canvas");
@@ -108,8 +110,11 @@ function ParameterControl({ name, descriptor, value, disabled, onChange }: {
   disabled: boolean;
   onChange: (value: ImageParameterValues[string] | undefined) => void;
 }) {
+  const t = useTranslations("imageGenerationPanel");
   const id = `image-generation-${name}`;
-  const title = IMAGE_PARAMETER_LABELS[name] ?? name;
+  const title = t.has(`parameter.${name}`) ? t(`parameter.${name}`) : IMAGE_PARAMETER_LABELS[name] ?? name;
+  // Values come from the model; known words are translated, anything else (1K, png, …) is shown as given.
+  const optionLabel = (option: string) => name === "output_format" ? option.toUpperCase() : t.has(`value.${option}`) ? t(`value.${option}`) : option;
 
   if (descriptor.type === "enum" && name === "aspect_ratio") {
     return <fieldset>
@@ -117,11 +122,11 @@ function ParameterControl({ name, descriptor, value, disabled, onChange }: {
       <div className="grid grid-cols-4 gap-1.5">
         {descriptor.values.map((ratio) => {
           const selected = value === ratio;
-          return <button key={ratio} type="button" disabled={disabled} aria-pressed={selected} title={ratio === "auto" ? "Let the model decide" : ratio}
+          return <button key={ratio} type="button" disabled={disabled} aria-pressed={selected} title={ratio === "auto" ? t("letModelDecide") : ratio}
             className="libera-panel-tile flex h-12 flex-col items-center justify-center gap-1 text-[11px]"
             onClick={() => onChange(selected ? undefined : ratio)}>
             <span className="flex h-4 items-center"><RatioGlyph ratio={ratio} /></span>
-            {ratio === "auto" ? "Auto" : ratio}
+            {ratio === "auto" ? t("auto") : ratio}
           </button>;
         })}
       </div>
@@ -132,8 +137,8 @@ function ParameterControl({ name, descriptor, value, disabled, onChange }: {
     return <div>
       <label className={label} htmlFor={id}>{title}</label>
       <select id={id} className={field} disabled={disabled} value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value || undefined)}>
-        <option value="">Model default</option>
-        {descriptor.values.map((option) => <option key={option} value={option}>{option[0].toUpperCase() + option.slice(1)}</option>)}
+        <option value="">{t("modelDefault")}</option>
+        {descriptor.values.map((option) => <option key={option} value={option}>{optionLabel(option)}</option>)}
       </select>
     </div>;
   }
@@ -143,7 +148,7 @@ function ParameterControl({ name, descriptor, value, disabled, onChange }: {
     const current = typeof value === "number" ? value : undefined;
     if (name === "output_compression") {
       return <div>
-        <label className={label} htmlFor={id}>{title} <span className="font-normal">{current === undefined ? "· Model default" : `· ${current}`}</span></label>
+        <label className={label} htmlFor={id}>{title} <span className="font-normal">{current === undefined ? t("outputCompressionModelDefault") : `· ${current}`}</span></label>
         <input id={id} type="range" className="libera-panel-range w-full" disabled={disabled} min={descriptor.min} max={descriptor.max} value={current ?? descriptor.max}
           onChange={(event) => onChange(Number(event.target.value))} />
       </div>;
@@ -161,7 +166,7 @@ function ParameterControl({ name, descriptor, value, disabled, onChange }: {
   if (name === "seed") {
     return <div>
       <label className={label} htmlFor={id}>{title}</label>
-      <input id={id} type="number" inputMode="numeric" className={field} disabled={disabled} min={0} step={1} placeholder="Random" value={typeof value === "number" ? value : ""}
+      <input id={id} type="number" inputMode="numeric" className={field} disabled={disabled} min={0} step={1} placeholder={t("random")} value={typeof value === "number" ? value : ""}
         onChange={(event) => {
           const next = event.target.valueAsNumber;
           onChange(Number.isFinite(next) && next >= 0 ? Math.round(next) : undefined);
@@ -177,6 +182,9 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
   onFilesSaved: (files: LiberaFileNode[], tree: LiberaTree) => void;
   onOpenFile: (file: LiberaFileNode) => void;
 }) {
+  const t = useTranslations("imageGenerationPanel");
+  const tc = useTranslations("common");
+  const format = useFormatter();
   const gallery = useGallery();
   const [settings, setSettings] = useState<ImageGenerationSettings | null>(null);
   const [models, setModels] = useState<ImageGenerationModel[] | null>(null);
@@ -196,7 +204,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
   useLayoutEffect(() => { latestPreferences.current = { settings, prompt }; }, [settings, prompt]);
   const settingsWriter = useMemo(() => createDeferredSave(async (body) => {
     await apiRequest("/api/image-generation/settings", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
-  }, () => setError("Image generation settings could not be saved. The next save action will retry.")), []);
+  }, () => setError(t("settingsSaveFailed"))), [t]);
   const flushSettings = useCallback(() => {
     const latest = latestPreferences.current;
     storePrompt(latest.prompt);
@@ -231,8 +239,8 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     const added: ReferencePhoto[] = [];
     const failures: string[] = [];
     for (const source of sources) {
-      try { added.push(await prepareReference(await source.blob, source.name)); } catch (failure) {
-        failures.push(failure instanceof Error ? failure.message : `Could not add “${source.name}”.`);
+      try { added.push(await prepareReference(await source.blob, source.name, t)); } catch (failure) {
+        failures.push(failure instanceof Error ? failure.message : t("couldNotAddReference", { name: source.name }));
       }
     }
     setReferences((current) => [...current, ...added]);
@@ -244,10 +252,12 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     void addReferences(photos.map((photo) => ({
       name: photo.name,
       blob: fetch(photo.url).then((response) => {
-        if (!response.ok) throw new Error(`Could not load “${photo.name}”.`);
+        if (!response.ok) throw new Error(t("couldNotLoadReference", { name: photo.name }));
         return response.blob();
       }),
     })));
+    // Subscribed once; the language only changes with a restart.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);
 
   useEffect(() => subscribeReusePrompt((next) => {
@@ -322,7 +332,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
       if (response.files && response.tree) onFilesSaved(response.files, response.tree);
       if (response.photos) await refreshGallery();
     } catch (failure) {
-      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Could not generate the image.");
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : t("couldNotGenerate"));
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setGenerating(false);
@@ -338,7 +348,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
       setNewAlbum(null);
       setError("");
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not create the album.");
+      setError(failure instanceof Error ? failure.message : t("couldNotCreateAlbum"));
     }
   }
 
@@ -349,7 +359,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     <AiPanelGlow active={generating} />
     <div className="relative flex min-h-0 flex-1 flex-col pr-1.5">
       <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
-        <h2 className="min-w-0 truncate text-sm font-semibold">Create images</h2>
+        <h2 className="min-w-0 truncate text-sm font-semibold">{t("createImages")}</h2>
         <span className="inline-flex h-[29px] w-[29px] items-center justify-center text-muted-foreground"><Images aria-hidden className="h-4 w-4" /></span>
       </div>
       <form className={`min-h-0 flex-1 space-y-5 overflow-auto px-3 pb-4 pt-1 ${dragging ? "outline-2 -outline-offset-4 outline-dashed outline-[#457be6]/60" : ""}`}
@@ -372,8 +382,8 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
           void addReferences([...event.dataTransfer.files].map((file) => ({ blob: file, name: file.name })));
         }}>
         <div>
-          <label className={label} htmlFor="image-generation-prompt">Prompt</label>
-          <textarea id="image-generation-prompt" ref={promptRef} rows={5} placeholder="A quiet reading room at dusk, warm lamps, rain on tall windows…"
+          <label className={label} htmlFor="image-generation-prompt">{t("prompt")}</label>
+          <textarea id="image-generation-prompt" ref={promptRef} rows={5} placeholder={t("promptPlaceholder")}
             className="libera-panel-field w-full resize-y px-3 py-2.5 text-[13px] leading-relaxed"
             value={prompt}
             onChange={(event) => { setPrompt(event.target.value); }}
@@ -381,7 +391,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
               const images = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
               if (!images.length) return;
               event.preventDefault();
-              void addReferences(images.map((file, index) => ({ blob: file, name: file.name || `Pasted image ${index + 1}` })));
+              void addReferences(images.map((file, index) => ({ blob: file, name: file.name || t("pastedImage", { number: index + 1 }) })));
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
@@ -393,25 +403,25 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
 
         <div>
           <div className="mb-1.5 flex items-baseline justify-between gap-2">
-            <span className="px-1 text-xs font-medium text-muted-foreground" id="image-generation-references">Reference photos</span>
-            {model && referenceLimit.max > 0 && <span className={`pr-1 text-[11px] tabular-nums ${referencesFit ? "text-muted-foreground" : "text-destructive"}`}>{references.length}/{referenceLimit.max}{referenceLimit.min > 0 ? ` · needs ${referenceLimit.min}+` : ""}</span>}
+            <span className="px-1 text-xs font-medium text-muted-foreground" id="image-generation-references">{t("referencePhotos")}</span>
+            {model && referenceLimit.max > 0 && <span className={`pr-1 text-[11px] tabular-nums ${referencesFit ? "text-muted-foreground" : "text-destructive"}`}>{t("referenceCount", { count: references.length, max: referenceLimit.max, min: referenceLimit.min })}</span>}
           </div>
           <div className="grid grid-cols-4 gap-1.5" role="group" aria-labelledby="image-generation-references">
             {references.map((reference) => <div key={reference.id} className="libera-panel-tile group/reference relative aspect-square overflow-hidden" title={reference.name}>
               {/* eslint-disable-next-line @next/next/no-img-element -- local data URL preview */}
               <img src={reference.dataUrl} alt={reference.name} className="h-full w-full object-cover" />
-              <button type="button" aria-label={`Remove ${reference.name}`} disabled={generating}
+              <button type="button" aria-label={t("removeReference", { name: reference.name })} disabled={generating}
                 className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition focus-visible:opacity-100 group-hover/reference:opacity-100"
                 onClick={() => setReferences((current) => current.filter((item) => item.id !== reference.id))}>
                 <X aria-hidden className="h-3 w-3" />
               </button>
             </div>)}
             {(referenceLimit.max === 0 || references.length < referenceLimit.max) && <button type="button" disabled={generating || addingReferences || (Boolean(model) && referenceLimit.max === 0)}
-              title={model && referenceLimit.max === 0 ? `${model.name} does not take reference photos` : "Add photos (or drop or paste them here)"}
+              title={model && referenceLimit.max === 0 ? t("modelNoReferences", { model: model.name }) : t("addPhotosTitle")}
               data-dashed="true" className="libera-panel-tile flex aspect-square flex-col items-center justify-center gap-1 text-[11px]"
               onClick={() => fileInputRef.current?.click()}>
               {addingReferences ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <ImagePlus aria-hidden className="h-4 w-4" />}
-              Add
+              {tc("add")}
             </button>}
           </div>
           <input ref={fileInputRef} type="file" accept="image/*" multiple hidden
@@ -421,86 +431,86 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
               void addReferences(files.map((file) => ({ blob: file, name: file.name })));
             }} />
           <p className="mt-1.5 px-1 text-xs leading-relaxed text-muted-foreground">{model && referenceLimit.max === 0
-            ? `${model.name} works from the prompt alone. Pick another model to edit or build on photos.`
+            ? t("promptOnlyModel", { model: model.name })
             : references.length > referenceLimit.max
-              ? `This model takes up to ${referenceLimit.max}. Remove ${references.length - referenceLimit.max} to continue.`
-              : "Upload, drop, or paste photos for the model to edit or take after."}</p>
+              ? t("modelTakesUpTo", { max: referenceLimit.max, count: references.length - referenceLimit.max })
+              : t("uploadDropPaste")}</p>
         </div>
 
         <div>
-          <label className={label} htmlFor="image-generation-model">Model</label>
+          <label className={label} htmlFor="image-generation-model">{t("model")}</label>
           <select id="image-generation-model" className={field} disabled={!settings || !models?.length || generating} value={settings?.model ?? ""}
             onChange={(event) => updateSettings((current) => ({ ...current, model: event.target.value }))}>
-            {settings && models && !model && <option value={settings.model}>{models.length ? `${settings.model} (unavailable)` : settings.model}</option>}
+            {settings && models && !model && <option value={settings.model}>{models.length ? t("modelUnavailable", { model: settings.model }) : settings.model}</option>}
             {models?.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
           </select>
-          {!models && <p className="mt-1.5 px-1 text-xs text-muted-foreground">Loading models…</p>}
+          {!models && <p className="mt-1.5 px-1 text-xs text-muted-foreground">{t("loadingModels")}</p>}
           {modelsError && <p role="alert" className="mt-1.5 px-1 text-xs text-destructive">{modelsError}</p>}
           {model?.description && <p className="mt-1.5 line-clamp-2 px-1 text-xs leading-relaxed text-muted-foreground" title={model.description}>{model.description}</p>}
         </div>
 
         {parameterNames.length > 0 && <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className={section}>Settings</h3>
+            <h3 className={section}>{tc("settings")}</h3>
             {Object.keys(params).length > 0 && <button type="button" className="libera-sidebar-icon-button inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs" disabled={generating}
               onClick={() => updateSettings((current) => ({ ...current, paramsByModel: { ...current.paramsByModel, [current.model]: {} } }))}>
-              <RotateCcw aria-hidden className="h-3 w-3" />Reset
+              <RotateCcw aria-hidden className="h-3 w-3" />{tc("reset")}
             </button>}
           </div>
           {parameterNames.map((name) => <ParameterControl key={`${model?.id}-${name}`} name={name} descriptor={model!.parameters[name]} value={params[name]} disabled={generating} onChange={(value) => setParam(name, value)} />)}
         </div>}
 
         <fieldset className="space-y-2">
-          <legend className={label}>Save to</legend>
-          <div className="libera-panel-segmented" role="group" aria-label="Save destination">
+          <legend className={label}>{t("saveTo")}</legend>
+          <div className="libera-panel-segmented" role="group" aria-label={t("saveDestination")}>
             <button type="button" aria-pressed={destination.kind === "gallery"} disabled={generating}
-              onClick={() => setDestination({ kind: "gallery", album: destination.kind === "gallery" ? destination.album : "" })}>Gallery</button>
+              onClick={() => setDestination({ kind: "gallery", album: destination.kind === "gallery" ? destination.album : "" })}>{t("gallery")}</button>
             <button type="button" aria-pressed={destination.kind === "folder"} disabled={generating || !folders.length}
-              onClick={() => setDestination({ kind: "folder", path: destination.kind === "folder" ? destination.path : folders[0]?.path ?? "" })}>Notebook folder</button>
+              onClick={() => setDestination({ kind: "folder", path: destination.kind === "folder" ? destination.path : folders[0]?.path ?? "" })}>{t("notebookFolder")}</button>
           </div>
           {destination.kind === "gallery" ? <>
-            {newAlbum === null ? <select aria-label="Album" className={field} disabled={generating} value={destinationAlbum?.id ?? ""}
+            {newAlbum === null ? <select aria-label={t("album")} className={field} disabled={generating} value={destinationAlbum?.id ?? ""}
               onChange={(event) => {
                 if (event.target.value === NEW_ALBUM) setNewAlbum("");
                 else setDestination({ kind: "gallery", album: event.target.value });
               }}>
-              <option value="">Photos (no album)</option>
+              <option value="">{t("photosNoAlbum")}</option>
               {albums.map((album) => <option key={album.id} value={album.id}>{album.name}</option>)}
-              <option value={NEW_ALBUM}>New album…</option>
+              <option value={NEW_ALBUM}>{t("newAlbum")}</option>
             </select> : <div className="flex gap-1.5">
-              <input autoFocus aria-label="New album name" maxLength={120} className={field} placeholder="Album name" value={newAlbum}
+              <input autoFocus aria-label={t("newAlbumName")} maxLength={120} className={field} placeholder={t("albumName")} value={newAlbum}
                 onChange={(event) => setNewAlbum(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") { event.preventDefault(); if (newAlbum.trim()) void createAlbumForDestination(newAlbum.trim()); }
                   if (event.key === "Escape") { event.preventDefault(); setNewAlbum(null); }
                 }} />
-              <button type="button" className="libera-panel-button shrink-0 px-3" disabled={!newAlbum.trim()} onClick={() => void createAlbumForDestination(newAlbum.trim())}>Create</button>
+              <button type="button" className="libera-panel-button shrink-0 px-3" disabled={!newAlbum.trim()} onClick={() => void createAlbumForDestination(newAlbum.trim())}>{t("create")}</button>
             </div>}
-            {albumMissing && <p className="px-1 text-xs text-muted-foreground">That album was deleted, so images go to Photos.</p>}
+            {albumMissing && <p className="px-1 text-xs text-muted-foreground">{t("albumDeleted")}</p>}
           </> : <>
-            <select aria-label="Notebook folder" className={field} disabled={generating} value={folderMissing ? "" : destination.path}
+            <select aria-label={t("notebookFolder")} className={field} disabled={generating} value={folderMissing ? "" : destination.path}
               onChange={(event) => setDestination({ kind: "folder", path: event.target.value })}>
-              {folderMissing && <option value="">Choose a folder</option>}
+              {folderMissing && <option value="">{t("chooseFolder")}</option>}
               {folders.map((folder) => <option key={folder.path} value={folder.path}>{folder.label}</option>)}
             </select>
-            <p className="px-1 text-xs leading-relaxed text-muted-foreground">{folderMissing ? `“${destination.path}” is no longer available. Choose another folder.` : "Images saved here stay with the notebook and are not added to the gallery."}</p>
+            <p className="px-1 text-xs leading-relaxed text-muted-foreground">{folderMissing ? t("folderUnavailable", { path: destination.path }) : t("imagesStayInNotebook")}</p>
           </>}
         </fieldset>
 
         {error && <div role="alert" className="rounded-lg bg-destructive-muted p-3 text-xs leading-relaxed text-destructive">{error}</div>}
 
         {generating ? <button type="button" className="libera-panel-button w-full gap-2 px-4 py-2.5 text-[13px]" onClick={() => abortRef.current?.abort()}>
-          <Loader2 aria-hidden className="h-4 w-4 animate-spin" />Generating… <span className="inline-flex items-center gap-1 text-muted-foreground"><Square aria-hidden className="h-3 w-3" />Stop</span>
-        </button> : <button type="submit" disabled={!ready} className="libera-panel-primary w-full px-4 py-2.5" title="Generate (⌘↵)">
-          <Sparkles aria-hidden className="h-4 w-4" />Generate
+          <Loader2 aria-hidden className="h-4 w-4 animate-spin" />{t("generating")} <span className="inline-flex items-center gap-1 text-muted-foreground"><Square aria-hidden className="h-3 w-3" />{tc("stop")}</span>
+        </button> : <button type="submit" disabled={!ready} className="libera-panel-primary w-full px-4 py-2.5" title={t("generateTitle")}>
+          <Sparkles aria-hidden className="h-4 w-4" />{t("generate")}
         </button>}
 
         {result && <div role="status" className="libera-panel-card p-3 text-xs leading-relaxed">
-          {result.photos ? <p>{result.photos.length === 1 ? "Saved to your gallery." : `${result.photos.length} images saved to your gallery.`}</p> : null}
+          {result.photos ? <p>{t("imagesSavedToGallery", { count: result.photos.length })}</p> : null}
           {result.files?.map((file) => <button key={file.path} type="button" className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:text-[#457be6]" onClick={() => onOpenFile(file)}>
-            <FolderOpen aria-hidden className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 truncate">Open {file.name}</span>
+            <FolderOpen aria-hidden className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 truncate">{t("openFile", { name: file.name })}</span>
           </button>)}
-          {typeof result.cost === "number" && <p className="mt-1 text-muted-foreground">Cost: ${result.cost.toFixed(3)}</p>}
+          {typeof result.cost === "number" && <p className="mt-1 text-muted-foreground">{t("cost", { amount: format.number(result.cost, { style: "currency", currency: "USD", minimumFractionDigits: 3 }) })}</p>}
         </div>}
       </form>
     </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { ImageIcon, ListIndentDecrease, ListIndentIncrease, Loader2, PenLine, Sparkles, Volume2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
 import { AiEditOptions } from "../ai-edit-thread";
@@ -74,6 +75,7 @@ export function MarkdownSourceContextMenu({
   onRewrite: (prompt: string) => void;
   onWrite: (prompt: string) => void;
 }) {
+  const t = useTranslations("markdownSource.markdownSourceContextMenu");
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [writePrompt, setWritePrompt] = useState("");
   const [promptMenu, setPromptMenu] = useState(menu);
@@ -154,23 +156,23 @@ export function MarkdownSourceContextMenu({
         <>
           <button className={ITEM_CLASS} type="button" role="menuitem" onClick={onReadAloud}>
             <Volume2 aria-hidden className="h-4 w-4" />
-            Read Out Loud
+            {t("readOutLoud")}
           </button>
           <button className={ITEM_CLASS} type="button" role="menuitem" disabled={aiWorking} onClick={onFormat}>
             {formatting ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Sparkles aria-hidden className="h-4 w-4" />}
-            {formatting ? "Formatting..." : "AI Format"}
+            {formatting ? t("formatting") : t("aiFormat")}
           </button>
           <AiModelPicker task="formatting" disabled={aiWorking} className="-mt-1.5 mb-0.5 pl-[34px] pr-2" />
           <button className={ITEM_CLASS} type="button" role="menuitem" disabled={!canIndent} onClick={() => onHeadingLevels("indent")}>
             <ListIndentIncrease aria-hidden className="h-4 w-4" />
-            Indent Headings
+            {t("indentHeadings")}
           </button>
           <button className={ITEM_CLASS} type="button" role="menuitem" disabled={!canUnindent} onClick={() => onHeadingLevels("unindent")}>
             <ListIndentDecrease aria-hidden className="h-4 w-4" />
-            Unindent Headings
+            {t("unindentHeadings")}
           </button>
           <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); rewrite(); }}>
-            <label className="block text-xs font-medium text-muted-foreground" htmlFor="ai-rewrite-prompt">AI Rewrite</label>
+            <label className="block text-xs font-medium text-muted-foreground" htmlFor="ai-rewrite-prompt">{t("aiRewrite")}</label>
             <div className="mt-1 flex items-start gap-2">
               <QuickPromptInput
                 id="ai-rewrite-prompt"
@@ -181,7 +183,7 @@ export function MarkdownSourceContextMenu({
                 onSubmit={rewrite}
                 onEscape={onClose}
               />
-              <button className={SUBMIT_CLASS} type="submit" aria-label="Rewrite selected text" title="Rewrite selected text" disabled={aiWorking || !rewritePrompt.trim()}>
+              <button className={SUBMIT_CLASS} type="submit" aria-label={t("rewriteSelectedText")} title={t("rewriteSelectedText")} disabled={aiWorking || !rewritePrompt.trim()}>
                 {formatting ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Sparkles aria-hidden className="h-4 w-4" />}
               </button>
             </div>
@@ -192,20 +194,20 @@ export function MarkdownSourceContextMenu({
       <form className={`${menu.hasText ? "mt-1 border-t border-border " : ""}px-2 py-2`} onSubmit={(event) => { event.preventDefault(); write(); }}>
         <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="ai-write-prompt">
           <PenLine aria-hidden className="h-3.5 w-3.5" />
-          Write with AI
+          {t("writeWithAi")}
         </label>
         <div className="mt-1 flex items-start gap-2">
           <QuickPromptInput
             id="ai-write-prompt"
             inputRef={writeInputRef}
-            placeholder="What should AI write? Type / for prompts"
+            placeholder={t("writePlaceholder")}
             value={writePrompt}
             disabled={aiWorking}
             onChange={setWritePrompt}
             onSubmit={write}
             onEscape={onClose}
           />
-          <button className={SUBMIT_CLASS} type="submit" aria-label="Write new text with AI" title="Write new text with AI" disabled={aiWorking || !writePrompt.trim()}>
+          <button className={SUBMIT_CLASS} type="submit" aria-label={t("writeNewText")} title={t("writeNewText")} disabled={aiWorking || !writePrompt.trim()}>
             <PenLine aria-hidden className="h-4 w-4" />
           </button>
         </div>
@@ -215,7 +217,7 @@ export function MarkdownSourceContextMenu({
       {menu.image ? (
         <button className={ITEM_CLASS} type="button" role="menuitem" disabled={aiWorking} onClick={onImageToMarkdown}>
           {imageConverting ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <ImageIcon aria-hidden className="h-4 w-4" />}
-          {imageConverting ? "Converting..." : "AI Image to Markdown"}
+          {imageConverting ? t("converting") : t("aiImageToMarkdown")}
         </button>
       ) : null}
     </div>

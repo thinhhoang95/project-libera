@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, type ChatReasoningEffort } from "@/lib/document-chat";
 
 /** Pixels of horizontal drag per reasoning level. */
@@ -19,11 +20,12 @@ export function effortAfterDrag(start: ChatReasoningEffort, deltaX: number) {
  * be told from a click, so that is held back and a click opens it on release.
  */
 export function ChatReasoningSelect({ value, disabled, onChange }: { value: ChatReasoningEffort; disabled?: boolean; onChange: (effort: ChatReasoningEffort) => void }) {
+  const t = useTranslations("chatReasoningSelect");
   const drag = useRef<{ x: number; start: ChatReasoningEffort; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
   return <select
-    aria-label="Reasoning effort"
-    title="Reasoning effort: drag sideways to change it, or click to choose"
+    aria-label={t("reasoningEffort")}
+    title={t("reasoningEffortTitle")}
     data-dragging={dragging || undefined}
     className="libera-select-plain w-auto max-w-24 cursor-ew-resize touch-pan-y select-none appearance-none border-0 bg-transparent px-1 py-2 text-xs text-muted-foreground shadow-none outline-none hover:text-foreground focus-visible:underline data-[dragging]:text-foreground"
     value={value}
@@ -58,5 +60,5 @@ export function ChatReasoningSelect({ value, disabled, onChange }: { value: Chat
       drag.current = null;
       setDragging(false);
     }}
-  >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select>;
+  >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{t(`effort.${effort}`)}</option>)}</select>;
 }

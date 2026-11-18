@@ -2,6 +2,7 @@
 
 import { X } from "lucide-react";
 import { useContext, useEffect, useId, useMemo, useRef } from "react";
+import { useTranslations } from "next-intl";
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 import "../../../electron/modal-dialog.css";
@@ -37,6 +38,7 @@ export function ModalDialog({
   title,
   onClose,
 }: ModalDialogProps) {
+  const t = useTranslations("modalDialog");
   const titleId = useId();
   const descriptionId = useId();
   // A dialog opened from a panel in a detached window belongs in that window.
@@ -132,7 +134,7 @@ export function ModalDialog({
             ) : null}
           </div>
           <button
-            aria-label="Close dialog"
+            aria-label={t("closeDialog")}
             className="libera-dialog-close"
             type="button"
             onClick={onClose}

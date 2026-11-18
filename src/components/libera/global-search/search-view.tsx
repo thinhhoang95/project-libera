@@ -25,6 +25,7 @@ import {
   Upload,
   type LucideIcon,
 } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { openLocalModelDialog } from "@/components/libera/local-models/local-model-client";
@@ -63,21 +64,22 @@ import type { LiberaFileNode } from "@/lib/types";
 type KindFilter = "all" | SearchFileKind;
 
 // Each kind keeps its color in the chip and when selected.
-const KIND_FILTERS: Array<{ id: KindFilter; label: string; icon: LucideIcon; color: string }> = [
-  { id: "all", label: "All", icon: Layers, color: "#7a8299" },
-  { id: "markdown", label: "Notes", icon: FileText, color: "#5b8def" },
-  { id: "pdf", label: "PDFs", icon: FileType2, color: "#d08178" },
-  { id: "latex", label: "LaTeX", icon: Sigma, color: "#8b7fd1" },
-  { id: "text", label: "Text & code", icon: Code2, color: "#3fa7b5" },
-  { id: "image", label: "Images", icon: ImageIcon, color: "#4caa85" },
-  { id: "audio", label: "Voice memos", icon: AudioLines, color: "#e0a03c" },
-  { id: "reference", label: "References", icon: BookMarked, color: "#b07cc6" },
+const KIND_FILTERS: Array<{ id: KindFilter; icon: LucideIcon; color: string }> = [
+  { id: "all", icon: Layers, color: "#7a8299" },
+  { id: "markdown", icon: FileText, color: "#5b8def" },
+  { id: "pdf", icon: FileType2, color: "#d08178" },
+  { id: "latex", icon: Sigma, color: "#8b7fd1" },
+  { id: "text", icon: Code2, color: "#3fa7b5" },
+  { id: "image", icon: ImageIcon, color: "#4caa85" },
+  { id: "audio", icon: AudioLines, color: "#e0a03c" },
+  { id: "reference", icon: BookMarked, color: "#b07cc6" },
 ];
 
-const EXAMPLES: Array<{ text: string; label: string; icon: LucideIcon; color: string }> = [
-  { text: "how did I set up the experiment?", label: "Ask a question", icon: MessageCircleQuestion, color: "#5b8def" },
-  { text: "photos of mountains at sunset", label: "Describe a photo", icon: Images, color: "#4caa85" },
-  { text: "the proof that uses induction", label: "Recall an idea", icon: Lightbulb, color: "#8b7fd1" },
+// Their texts and labels are messages (`example.<id>.text` / `.label`): a query in the interface language.
+const EXAMPLES: Array<{ id: "question" | "photos" | "idea"; icon: LucideIcon; color: string }> = [
+  { id: "question", icon: MessageCircleQuestion, color: "#5b8def" },
+  { id: "photos", icon: Images, color: "#4caa85" },
+  { id: "idea", icon: Lightbulb, color: "#8b7fd1" },
 ];
 
 const AUTO_SEARCH_DELAY_MS = 350;
@@ -103,47 +105,74 @@ function hasImages(parts: SearchQueryPart[]) {
   return parts.some((part) => part.type === "image");
 }
 
-const relativeTime = new Intl.RelativeTimeFormat("en", { numeric: "always" });
+const relativeTimeFormats = new Map<string, Intl.RelativeTimeFormat>();
 
-/** "in 40 minutes", "in 3 hours", "in 2 days": a schedule read at a glance. */
-export function timeUntil(iso: string, now = Date.now()) {
-  const ms = Date.parse(iso) - now;
-  if (!Number.isFinite(ms) || ms < 60_000) return "in under a minute";
-  if (ms < 3_600_000) return relativeTime.format(Math.ceil(ms / 60_000), "minute");
-  if (ms < 86_400_000) return relativeTime.format(Math.max(1, Math.round(ms / 3_600_000)), "hour");
-  return relativeTime.format(Math.round(ms / 86_400_000), "day");
+function relativeTimeFormat(locale: string) {
+  let format = relativeTimeFormats.get(locale);
+  if (!format) relativeTimeFormats.set(locale, (format = new Intl.RelativeTimeFormat(locale, { numeric: "always" })));
+  return format;
 }
 
-export function statusSummary(status: SearchIndexStatus | null, now = Date.now()) {
-  if (!status) return { busy: false, text: "Checking the index…" };
-  if (status.state === "scanning") return { busy: true, text: status.total ? `Scanning ${status.done} of ${status.total} files` : "Looking for changes…" };
+/** The `globalSearch.searchView` translator; the status words below take it so they also run outside React. */
+export type SearchTranslator = ReturnType<typeof useTranslations<"globalSearch.searchView">>;
+
+/** "in 40 minutes", "in 3 hours", "in 2 days": a schedule read at a glance. */
+export function timeUntil(iso: string, now: number, t: SearchTranslator, locale: string) {
+  const ms = Date.parse(iso) - now;
+  const relative = relativeTimeFormat(locale);
+  if (!Number.isFinite(ms) || ms < 60_000) return t("inOneMinute");
+  if (ms < 3_600_000) return relative.format(Math.ceil(ms / 60_000), "minute");
+  if (ms < 86_400_000) return relative.format(Math.max(1, Math.round(ms / 3_600_000)), "hour");
+  return relative.format(Math.round(ms / 86_400_000), "day");
+}
+
+export function statusSummary(status: SearchIndexStatus | null, now: number, t: SearchTranslator, locale: string) {
+  if (!status) return { busy: false, text: t("checkingIndexStatus") };
+  if (status.state === "scanning") return { busy: true, text: status.total ? t("scanningFiles", { done: status.done, total: status.total }) : t("lookingForChanges") };
   if (status.state === "embedding") {
-    return { busy: true, text: status.model.state === "loading" ? "Loading EmbeddingGemma 2…" : `Indexing ${status.done} of ${status.total} passages` };
+    return { busy: true, text: status.model.state === "loading" ? t("loadingModel") : t("indexingPassages", { done: status.done, total: status.total }) };
   }
-  if (status.state === "paused") return { busy: false, text: "Indexing paused" };
-  if (status.state === "error") return { busy: false, text: "Indexing stopped" };
-  if (!status.exists) return { busy: false, text: "No index yet" };
-  if (status.mismatch) return { busy: false, text: `${status.files.toLocaleString()} files · vectors need re-embedding` };
-  if (status.embeddingDeferred === "battery") return { busy: false, text: "Embeddings waiting for power adapter" };
-  if (status.embeddingDeferred === "power-unknown") return { busy: false, text: "Embeddings waiting for power status" };
+  if (status.state === "paused") return { busy: false, text: t("indexingPaused") };
+  if (status.state === "error") return { busy: false, text: t("indexingStopped") };
+  if (!status.exists) return { busy: false, text: t("noIndexYet") };
+  if (status.mismatch) return { busy: false, text: t("filesVectorsNeedReembed", { files: status.files }) };
+  if (status.embeddingDeferred === "battery") return { busy: false, text: t("waitingForPowerAdapter") };
+  if (status.embeddingDeferred === "power-unknown") return { busy: false, text: t("waitingForPowerStatus") };
   if (status.embeddingDeferred === "interval") {
-    return { busy: false, text: `${status.files.toLocaleString()} files indexed · embeddings ${status.nextEmbeddingAt ? timeUntil(status.nextEmbeddingAt, now) : "scheduled"}` };
+    return {
+      busy: false,
+      text: status.nextEmbeddingAt
+        ? t("filesIndexedEmbeddings", { files: status.files, when: timeUntil(status.nextEmbeddingAt, now, t, locale) })
+        : t("filesIndexedEmbeddingsScheduled", { files: status.files }),
+    };
   }
   const pending = status.model.configured ? status.chunks - status.embeddedChunks : 0;
   return {
     busy: false,
-    text: `${status.files.toLocaleString()} files indexed${pending > 0 && status.model.state !== "error" ? ` · ${pending.toLocaleString()} waiting` : ""}`,
+    text: pending > 0 && status.model.state !== "error"
+      ? t("filesIndexedWaiting", { files: status.files, pending })
+      : t("filesIndexed", { files: status.files }),
   };
 }
 
 /** The line under the summary when nothing is running. */
-export function scheduleSummary(status: SearchIndexStatus | null, now = Date.now()) {
-  if (!status) return "Connecting…";
-  if (status.state === "paused") return "Update once or resume indexing";
-  if (status.backgroundIndexing === false) return "Updates only when requested";
-  if (status.nextKeywordUpdateAt) return `Next keyword update ${timeUntil(status.nextKeywordUpdateAt, now)}`;
-  if (status.embeddingDeferred) return "Keyword index up to date";
-  return "Up to date as files change";
+export function scheduleSummary(status: SearchIndexStatus | null, now: number, t: SearchTranslator, locale: string) {
+  if (!status) return t("connecting");
+  if (status.state === "paused") return t("updateOnceOrResume");
+  if (status.backgroundIndexing === false) return t("updatesOnlyRequested");
+  if (status.nextKeywordUpdateAt) return t("nextKeywordUpdate", { when: timeUntil(status.nextKeywordUpdateAt, now, t, locale) });
+  if (status.embeddingDeferred) return t("keywordIndexUpToDate");
+  return t("upToDateAsFilesChange");
+}
+
+/** The index status in words, for the Search page's left panel. */
+export function useIndexStatusText() {
+  const t = useTranslations("globalSearch.searchView");
+  const locale = useLocale();
+  return {
+    summary: (status: SearchIndexStatus | null, now = Date.now()) => statusSummary(status, now, t, locale),
+    schedule: (status: SearchIndexStatus | null, now = Date.now()) => scheduleSummary(status, now, t, locale),
+  };
 }
 
 export function SearchView({
@@ -165,6 +194,7 @@ export function SearchView({
   onClose: () => void;
   onOpenPreferences?: () => void;
 }) {
+  const t = useTranslations("globalSearch.searchView");
   useSearchStatusPolling();
   const { status } = useSearchStore();
   const inputRef = useRef<SearchQueryInputHandle>(null);
@@ -224,11 +254,11 @@ export function SearchView({
       resultsRef.current?.scrollTo({ top: 0 });
       if (options.remember) rememberSearch(query);
     } catch (searchError) {
-      if (id === searchSeq.current) setError(searchError instanceof Error ? searchError.message : "Search failed.");
+      if (id === searchSeq.current) setError(searchError instanceof Error ? searchError.message : t("searchFailed"));
     } finally {
       if (id === searchSeq.current) setLoading(false);
     }
-  }, [includeArchive, kind, scope]);
+  }, [includeArchive, kind, scope, t]);
 
   // Put the restored query back in the box.
   useEffect(() => {
@@ -312,7 +342,7 @@ export function SearchView({
     >
       <header className="libera-window-drag-region flex min-h-14 items-center gap-2 border-b border-border px-4 py-2">
         <ScanSearch aria-hidden className="h-4 w-4 text-accent" />
-        <h2 className="mr-auto text-sm font-semibold">Search</h2>
+        <h2 className="mr-auto text-sm font-semibold">{t("searchHeading")}</h2>
       </header>
 
       <div className="border-b border-border px-4 pb-3 pt-4">
@@ -321,7 +351,7 @@ export function SearchView({
             <Search aria-hidden className="mt-1.5 h-4 w-4 shrink-0 text-muted-foreground" />
             <SearchQueryInput
               ref={inputRef}
-              placeholder="Search notes, PDFs, LaTeX, code and images — paste or drop an image to search with it"
+              placeholder={t("searchPlaceholder")}
               onChange={handleChange}
               onSubmit={() => void runSearch(inputRef.current?.getParts() ?? parts, { remember: true })}
               onArrowDown={() => {
@@ -343,10 +373,10 @@ export function SearchView({
               <button
                 type="button"
                 className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg"
-                aria-label="Add an image to the search"
+                aria-label={t("addImageLabel")}
                 aria-haspopup="menu"
                 aria-expanded={addMenuOpen}
-                title="Search with an image"
+                title={t("searchWithImageTitle")}
                 onClick={() => setAddMenuOpen((open) => !open)}
               >
                 <ImagePlus aria-hidden className="h-4 w-4" />
@@ -356,13 +386,13 @@ export function SearchView({
                   <div className="fixed inset-0 z-40" aria-hidden onClick={() => setAddMenuOpen(false)} />
                   <div role="menu" className="absolute right-0 top-9 z-50 w-56 rounded-xl border border-border bg-card p-1 shadow-lg">
                     <button role="menuitem" type="button" className={menuItem} onClick={() => { setAddMenuOpen(false); uploadRef.current?.click(); }}>
-                      <Upload aria-hidden className="h-4 w-4 text-muted-foreground" /> From your computer…
+                      <Upload aria-hidden className="h-4 w-4 text-muted-foreground" /> {t("fromComputer")}
                     </button>
                     <button role="menuitem" type="button" className={menuItem} onClick={() => { setAddMenuOpen(false); setPicker("gallery"); }}>
-                      <Images aria-hidden className="h-4 w-4 text-muted-foreground" /> From the Image Gallery…
+                      <Images aria-hidden className="h-4 w-4 text-muted-foreground" /> {t("fromGallery")}
                     </button>
                     <button role="menuitem" type="button" className={menuItem} onClick={() => { setAddMenuOpen(false); setPicker("library"); }}>
-                      <FolderOpen aria-hidden className="h-4 w-4 text-muted-foreground" /> From your notebooks…
+                      <FolderOpen aria-hidden className="h-4 w-4 text-muted-foreground" /> {t("fromNotebooks")}
                     </button>
                   </div>
                 </>
@@ -381,7 +411,7 @@ export function SearchView({
                   try {
                     inputRef.current?.insertImage({ kind: "upload", name: file.name, dataUrl: await imageFileToDataUrl(file) });
                   } catch {
-                    setError(`Could not read ${file.name}.`);
+                    setError(t("couldNotReadNamed", { name: file.name }));
                   }
                 }
               }}
@@ -399,19 +429,19 @@ export function SearchView({
                 onClick={() => changeKind(filter.id)}
               >
                 <filter.icon aria-hidden className="h-3.5 w-3.5" style={kind === filter.id ? undefined : { color: filter.color }} />
-                {filter.label}
+                {t(`kind.${filter.id}`)}
               </button>
             ))}
             <span className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
-              {loading ? <><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> Searching…</>
+              {loading ? <><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> {t("searching")}</>
                 : response ? <>
-                  {response.results.length} {response.results.length === 1 ? "result" : "results"}
+                  {t("resultsCount", { count: response.results.length })}
                   <span aria-hidden>·</span>
-                  <span title={response.mode === "hybrid" ? "Meaning and exact words" : response.mode === "semantic" ? "By meaning" : "Exact words"}>
-                    {response.mode === "hybrid" ? "Semantic + keyword" : response.mode === "semantic" ? "Semantic" : "Keyword"}
+                  <span title={t(`mode.${response.mode}Title`)}>
+                    {t(`mode.${response.mode}`)}
                   </span>
                   <span aria-hidden>·</span>
-                  {response.tookMs} ms
+                  {t("tookMs", { ms: response.tookMs })}
                 </> : null}
             </span>
           </div>
@@ -421,9 +451,9 @@ export function SearchView({
               <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
               <span className="mr-auto">{error || response?.warning}</span>
               {modelOff ? (
-                <button type="button" className="shrink-0 font-medium underline" onClick={() => openLocalModelDialog("search")}>Download model</button>
+                <button type="button" className="shrink-0 font-medium underline" onClick={() => openLocalModelDialog("search")}>{t("downloadModel")}</button>
               ) : onOpenPreferences && visionOff ? (
-                <button type="button" className="shrink-0 font-medium underline" onClick={onOpenPreferences}>Open Preferences</button>
+                <button type="button" className="shrink-0 font-medium underline" onClick={onOpenPreferences}>{t("openPreferences")}</button>
               ) : null}
             </div>
           ) : null}
@@ -436,7 +466,7 @@ export function SearchView({
             <div
               ref={resultsRef}
               tabIndex={0}
-              aria-label="Search results; use the arrow keys to move and Enter to open"
+              aria-label={t("resultsRegionLabel")}
               className="min-h-0 overflow-y-auto px-4 pt-3 outline-none"
               onScroll={(event) => { session.scroll = event.currentTarget.scrollTop; }}
               onKeyDown={(event) => {
@@ -469,7 +499,7 @@ export function SearchView({
                 }}
               />
             </div>
-            <aside className="hidden min-h-0 border-l border-border bg-card/40 lg:flex lg:flex-col" aria-label="Preview">
+            <aside className="hidden min-h-0 border-l border-border bg-card/40 lg:flex lg:flex-col" aria-label={t("previewLabel")}>
               <SearchPreview
                 entry={selectedEntry}
                 terms={response.terms}
@@ -484,9 +514,9 @@ export function SearchView({
           </div>
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-            <p className="text-sm font-medium">Nothing found</p>
+            <p className="text-sm font-medium">{t("nothingFound")}</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              {kind !== "all" ? "Try All instead of one kind of file, or describe what you remember in other words." : "Try other words, or describe what the passage is about rather than its exact wording."}
+              {kind !== "all" ? t("tryAll") : t("tryOtherWords")}
             </p>
           </div>
         )
@@ -533,6 +563,7 @@ function SearchWelcome({
   onExample: (example: string) => void;
   onOpenPreferences?: () => void;
 }) {
+  const t = useTranslations("globalSearch.searchView");
   const mod = useSyncExternalStore(noSubscribe, platformModifier, () => "Ctrl");
   const working = status?.state === "scanning" || status?.state === "embedding";
 
@@ -543,20 +574,20 @@ function SearchWelcome({
           <span className="libera-notebook-emoji libera-search-hero-icon mx-auto flex h-14 w-14 items-center justify-center rounded-2xl text-white">
             <ScanSearch aria-hidden className="h-6 w-6" />
           </span>
-          <h3 className="mt-5 text-xl font-semibold tracking-tight">Search everything by meaning</h3>
+          <h3 className="mt-5 text-xl font-semibold tracking-tight">{t("searchEverything")}</h3>
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-            Describe what you remember in your own words. Results open right at the passage, page or line, and an image finds photos that look alike.
+            {t("searchEverythingBody")}
           </p>
         </div>
 
-        <h4 className="mb-2 mt-9 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Try asking</h4>
+        <h4 className="mb-2 mt-9 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("tryAsking")}</h4>
         <div className="grid gap-2 sm:grid-cols-3">
-          {EXAMPLES.map(({ text, label, icon: Icon, color }) => (
+          {EXAMPLES.map(({ id, icon: Icon, color }) => (
             <button
-              key={text}
+              key={id}
               type="button"
               className="libera-search-example group flex flex-col items-start gap-3 rounded-xl p-3 text-left"
-              onClick={() => onExample(text)}
+              onClick={() => onExample(t(`example.${id}.text`))}
             >
               <span className="flex w-full items-center justify-between">
                 <span className="libera-notebook-emoji flex h-7 w-7 items-center justify-center rounded-lg text-white" style={{ backgroundColor: color }}>
@@ -565,14 +596,14 @@ function SearchWelcome({
                 <ArrowUpRight aria-hidden className="h-4 w-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
               </span>
               <span>
-                <span className="block text-[11px] font-medium text-muted-foreground">{label}</span>
-                <span className="mt-0.5 block text-sm leading-snug">“{text}”</span>
+                <span className="block text-[11px] font-medium text-muted-foreground">{t(`example.${id}.label`)}</span>
+                <span className="mt-0.5 block text-sm leading-snug">{t("exampleQuote", { text: t(`example.${id}.text`) })}</span>
               </span>
             </button>
           ))}
         </div>
         <p className="mt-3 px-1 text-xs text-muted-foreground">
-          Mix words and pictures, like “photos like <span className="libera-search-inline-chip">image</span> but in winter”.
+          {t.rich("mixWordsAndPictures", { chip: (chunks) => <span className="libera-search-inline-chip">{chunks}</span> })}
         </p>
 
         {status && !status.exists && !working ? (
@@ -584,18 +615,17 @@ function SearchWelcome({
           <div className="libera-search-notice mt-8 flex gap-3 rounded-xl p-4 text-sm" data-tone="warning">
             <Sparkles aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
             <div className="min-w-0">
-              <p className="font-medium">Turn on search by meaning</p>
+              <p className="font-medium">{t("turnOnSearchByMeaning")}</p>
               <p className="mt-1 leading-relaxed text-muted-foreground">
-                Keyword search already works. Download Google’s EmbeddingGemma 2 to search by meaning and with images.
-                It runs on this computer; nothing is sent anywhere.
+                {t("turnOnSearchBody")}
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" onClick={() => openLocalModelDialog("search")}>
-                  <Download aria-hidden className="h-4 w-4" /> Download model
+                  <Download aria-hidden className="h-4 w-4" /> {t("downloadModel")}
                 </button>
                 {onOpenPreferences ? (
                   <button type="button" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-muted" onClick={onOpenPreferences}>
-                    <Settings2 aria-hidden className="h-4 w-4" /> Choose other weights
+                    <Settings2 aria-hidden className="h-4 w-4" /> {t("chooseOtherWeights")}
                   </button>
                 ) : null}
               </div>
@@ -605,7 +635,7 @@ function SearchWelcome({
           <div className="libera-search-notice mt-8 flex gap-3 rounded-xl p-4 text-sm" data-tone="error">
             <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
             <div className="min-w-0">
-              <p className="font-medium text-destructive">The embedding model could not be loaded</p>
+              <p className="font-medium text-destructive">{t("modelLoadError")}</p>
               <p className="mt-1 break-words text-muted-foreground">{status.model.error}</p>
             </div>
           </div>
@@ -615,24 +645,25 @@ function SearchWelcome({
           <p role="status" className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <span aria-hidden className="libera-search-status-dot" data-tone={working ? "busy" : status ? "ready" : "idle"} />
             {status ? (
-              <>
-                <span><strong className="font-semibold tabular-nums text-foreground">{status.files.toLocaleString()}</strong> files</span>
-                <span aria-hidden>·</span>
-                <span><strong className="font-semibold tabular-nums text-foreground">{status.chunks.toLocaleString()}</strong> passages</span>
-                <span aria-hidden>·</span>
-                <span><strong className="font-semibold tabular-nums text-foreground">{status.images.toLocaleString()}</strong> images</span>
-                <span>{working ? "indexing…" : "indexed"}</span>
-              </>
+              <span>
+                {t.rich("indexStats", {
+                  files: status.files,
+                  passages: status.chunks,
+                  images: status.images,
+                  working: working ? "yes" : "no",
+                  n: (chunks) => <strong className="font-semibold tabular-nums text-foreground">{chunks}</strong>,
+                })}
+              </span>
             ) : (
-              <span>Checking the index…</span>
+              <span>{t("checkingIndex")}</span>
             )}
           </p>
-          <ul className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-muted-foreground" aria-label="Keyboard shortcuts">
-            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">↑</kbd><kbd className="libera-kbd">↓</kbd> Move</li>
-            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">↵</kbd> Open</li>
-            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">{mod}{mod === "⌘" ? "" : "+"}↵</kbd> Open to the right</li>
-            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">Esc</kbd> Clear</li>
-            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">“ ”</kbd> Exact phrase</li>
+          <ul className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-muted-foreground" aria-label={t("keyboardShortcuts")}>
+            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">↑</kbd><kbd className="libera-kbd">↓</kbd> {t("shortcutMove")}</li>
+            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">↵</kbd> {t("shortcutOpen")}</li>
+            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">{mod}{mod === "⌘" ? "" : "+"}↵</kbd> {t("shortcutOpenRight")}</li>
+            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">Esc</kbd> {t("shortcutClear")}</li>
+            <li className="flex items-center gap-1.5"><kbd className="libera-kbd">“ ”</kbd> {t("shortcutExactPhrase")}</li>
           </ul>
         </div>
       </div>

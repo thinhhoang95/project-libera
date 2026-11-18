@@ -6,6 +6,7 @@ import { Selection, TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Placeholder } from "@tiptap/extensions";
+import { useTranslations } from "next-intl";
 import { type RefObject, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { mergeText } from "@/lib/collab/pdf/merge-text";
 import { mathMarkerPairs, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from "@/lib/math-markers";
@@ -128,6 +129,7 @@ export function PdfNoteEditor({
   onEscape,
   trust = "local",
 }: PdfNoteEditorProps) {
+  const t = useTranslations("pdfNoteEditor");
   const callbacksRef = useRef({ mathMarkers, onChange, onEscape });
   const pendingRef = useRef<number | null>(null);
   const [lengthError, setLengthError] = useState(false);
@@ -148,9 +150,9 @@ export function PdfNoteEditor({
   const extensions = useMemo(
     () => [
       ...createAnnotationMarkdownExtensions(documentPath, mathMarkers, trust),
-      Placeholder.configure({ placeholder: "Write a note… Markdown and math work" }),
+      Placeholder.configure({ placeholder: t("placeholder") }),
     ],
-    [documentPath, mathMarkers, trust],
+    [documentPath, mathMarkers, trust, t],
   );
 
   useLayoutEffect(() => {
@@ -167,7 +169,7 @@ export function PdfNoteEditor({
     shouldRerenderOnTransaction: false,
     editorProps: {
       attributes: {
-        "aria-label": "Text annotation",
+        "aria-label": t("textAnnotation"),
         "aria-multiline": "true",
         class: "pdf-note-content pdf-note-editor",
         role: "textbox",
@@ -315,5 +317,5 @@ export function PdfNoteEditor({
     };
   }, [editor, handleRef, initial, pairs, maxLength]);
 
-  return <><EditorContent className="pdf-note-editor-host" editor={editor} />{lengthError ? <span role="status">Notes are limited to {maxLength?.toLocaleString("en")} characters.</span> : null}</>;
+  return <><EditorContent className="pdf-note-editor-host" editor={editor} />{lengthError ? <span role="status">{t("limitReached", { limit: maxLength ?? 0 })}</span> : null}</>;
 }

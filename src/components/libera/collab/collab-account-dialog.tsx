@@ -12,15 +12,17 @@ import {
   Wifi,
   type LucideIcon,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import type { HostConnection, HostStatus, LocalAccount, SharedSignInOffer } from "@/lib/collab/local-api";
 import { nudgeHost } from "@/lib/collab/ui/bridge";
-import { collabClient, describeError } from "@/lib/collab/ui/client";
+import { collabClient } from "@/lib/collab/ui/client";
+import { useDescribeError } from "@/lib/collab/ui/use-describe-error";
 import { useCollabStatus } from "@/lib/collab/ui/hooks";
 import { isValidServerUrl, lastServerUrl, normalizeServerUrl, rememberServerUrl } from "@/lib/collab/ui/server-url";
-import { connectionWording, initials, readableTextColor, ROLE_LABEL } from "@/lib/collab/ui/wording";
+import { connectionWording, initials, readableTextColor, roleLabel } from "@/lib/collab/ui/wording";
 import { ReportSyncProblem } from "./diagnostics/report-sync-problem";
 import "./collab.css";
 
@@ -63,6 +65,8 @@ export interface CollabAccountDialogProps {
 
 /** Preferences → Collaboration: sign in, profile, connection state, sign out. */
 export function CollabAccountDialog({ open, onClose, onJoin }: CollabAccountDialogProps) {
+  const t = useTranslations("collab.collabAccountDialog");
+  const tCommon = useTranslations("common");
   const collab = useCollabStatus();
   const status = collab.status;
   const connection = status?.connection ?? "signed-out";
@@ -73,27 +77,27 @@ export function CollabAccountDialog({ open, onClose, onJoin }: CollabAccountDial
       open={open}
       panelClassName="max-w-xl"
       sectioned
-      title="Collaboration"
-      description="Share notebooks and edit them together. Your edits are always saved on this device first."
+      title={t("title")}
+      description={t("description")}
       onClose={onClose}
       footer={
         <button className={SECONDARY_BUTTON} type="button" onClick={onClose}>
-          Close
+          {tCommon("close")}
         </button>
       }
     >
       <div className="space-y-4">
         {collab.phase === "loading" ? (
           <p className="libera-dialog-section flex items-center gap-2 text-sm text-muted-foreground" role="status">
-            <LoaderCircle aria-hidden className="h-4 w-4 animate-spin" /> Checking the collaboration service…
+            <LoaderCircle aria-hidden className="h-4 w-4 animate-spin" /> {t("checking")}
           </p>
         ) : collab.phase === "disabled" ? (
-          <p className="libera-dialog-section text-sm text-muted-foreground">Collaboration is not enabled on this device.</p>
+          <p className="libera-dialog-section text-sm text-muted-foreground">{t("disabled")}</p>
         ) : collab.phase === "error" && !status ? (
           <div className="libera-dialog-section space-y-2 text-sm" role="alert">
             <p className="text-destructive">{collab.error}</p>
             <button className={SECONDARY_BUTTON} type="button" onClick={() => void collab.refresh()}>
-              <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Try again
+              <RefreshCw aria-hidden className="h-3.5 w-3.5" /> {tCommon("tryAgain")}
             </button>
           </div>
         ) : (
@@ -120,7 +124,7 @@ export function CollabAccountDialog({ open, onClose, onJoin }: CollabAccountDial
               </>
             ) : onJoin ? (
               <p className="px-1 text-xs text-muted-foreground">
-                Got a notebook invitation? Create an account with the server’s registration code and the invitation, or sign in and choose “Join a shared notebook”.
+                {t("gotInvitation")}
               </p>
             ) : null}
             <ReportSyncProblem />
@@ -132,11 +136,13 @@ export function CollabAccountDialog({ open, onClose, onJoin }: CollabAccountDial
 }
 
 function ConnectionSection({ status }: { status: HostStatus }) {
-  const wording = connectionWording(status.connection);
+  const t = useTranslations("collab.collabAccountDialog");
+  const tWording = useTranslations("lib.collab.ui.wording");
+  const wording = connectionWording(status.connection, tWording);
   const Icon = CONNECTION_ICON[status.connection];
   const account = status.account!;
   return (
-    <section aria-label="Connection" className="libera-dialog-section space-y-3">
+    <section aria-label={t("connection")} className="libera-dialog-section space-y-3">
       <div className="flex items-start gap-3">
         <span
           aria-hidden
@@ -160,14 +166,10 @@ function ConnectionSection({ status }: { status: HostStatus }) {
           {status.detail ? <p className="mt-1 text-xs opacity-80">{status.detail}</p> : null}
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">
-        {status.pendingCommands > 0
-          ? `${status.pendingCommands} ${status.pendingCommands === 1 ? "comment or decision is" : "comments or decisions are"} waiting on this device to be sent.`
-          : "Nothing is waiting to be sent."}
-      </p>
+      <p className="text-xs text-muted-foreground">{t("pendingCommands", { count: status.pendingCommands })}</p>
       {status.connection === "offline" || status.connection === "connecting" ? (
         <button className={SECONDARY_BUTTON} type="button" onClick={nudgeHost}>
-          <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Reconnect now
+          <RefreshCw aria-hidden className="h-3.5 w-3.5" /> {t("reconnectNow")}
         </button>
       ) : null}
       {status.connection === "update-required" ? <UpdateAction /> : null}
@@ -176,12 +178,13 @@ function ConnectionSection({ status }: { status: HostStatus }) {
 }
 
 function UpdateAction() {
+  const t = useTranslations("collab.collabAccountDialog");
   const [state, setState] = useState<"idle" | "checking" | "done" | "unsupported">(
     typeof window !== "undefined" && window.liberaUpdater ? "idle" : "unsupported",
   );
   const [message, setMessage] = useState("");
   if (state === "unsupported") {
-    return <p className="text-xs text-muted-foreground">Install the latest version of Libera, then open it again.</p>;
+    return <p className="text-xs text-muted-foreground">{t("installLatest")}</p>;
   }
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -196,20 +199,20 @@ function UpdateAction() {
             .then((next) => {
               setMessage(
                 next.status === "downloaded"
-                  ? "The update is ready. Restart Libera to install it."
+                  ? t("updateReady")
                   : next.status === "up-to-date"
-                    ? "No update is available yet. Ask the server's administrator."
-                    : "Downloading the update. Libera will offer to restart when it is ready.",
+                    ? t("noUpdate")
+                    : t("updateDownloading"),
               );
               setState("done");
             })
             .catch(() => {
-              setMessage("The update check failed. Open About Libera to try again.");
+              setMessage(t("updateCheckFailed"));
               setState("done");
             });
         }}
       >
-        {state === "checking" ? "Checking…" : "Check for updates"}
+        {state === "checking" ? t("checkingShort") : t("checkForUpdates")}
       </button>
       {message ? <p className="text-xs text-muted-foreground" role="status">{message}</p> : null}
     </div>
@@ -223,6 +226,8 @@ function UpdateAction() {
  */
 function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAccount | null; onSignedIn: (status: HostStatus | undefined) => void }) {
   const id = useId();
+  const t = useTranslations("collab.collabAccountDialog");
+  const describeError = useDescribeError();
   const [offer, setOffer] = useState<SharedSignInOffer | null>(null);
   const [masterPassword, setMasterPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -260,14 +265,14 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
       window.removeEventListener("online", checkAgain);
       window.removeEventListener("focus", checkAgain);
     };
-  }, [busy, refresh]);
+  }, [busy, refresh, describeError]);
 
   if (!offer && !discoveryError && !error) return null;
 
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!masterPassword) {
-      setError("Enter your Libera master password.");
+      setError(t("enterMasterPassword"));
       return;
     }
     setBusy(true);
@@ -280,8 +285,8 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
       if (next.state === "none") {
         const status = await collabClient.status();
         if (status.account && status.connection !== "signed-out" && status.connection !== "needs-sign-in") onSignedIn(status);
-        else setError("No usable sign-in is available from your other computer. Check again after it syncs, or sign in with your email and password.");
-      } else if (next.state === "locked") setError("Your other computer used a different master password. Sign in with your email and password instead.");
+        else setError(t("noUsableSignIn"));
+      } else if (next.state === "locked") setError(t("differentMasterPassword"));
       setOffer(next.state === "locked" ? { state: "none" } : next);
     } catch (caught) {
       setError(describeError(caught));
@@ -306,24 +311,23 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
 
   const replaces = offer?.state === "available" && account && (account.id !== offer.accountId || account.serverUrl !== offer.serverUrl);
   return (
-    <div aria-label="Sign in from your other computer" className="space-y-2 rounded-xl border border-input p-3" role="group">
+    <div aria-label={t("otherComputer")} className="space-y-2 rounded-xl border border-input p-3" role="group">
       {offer?.state === "available" ? (
         <>
-          <p className="text-sm">You are signed in to collaboration on another computer.</p>
+          <p className="text-sm">{t("signedInElsewhere")}</p>
           <button className={PRIMARY_BUTTON} disabled={busy} type="button" onClick={() => void continueAs()}>
             {busy ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <LogIn aria-hidden className="h-3.5 w-3.5" />}
-            Continue as {offer.email}
+            {t("continueAs", { email: offer.email })}
           </button>
           <p className="text-xs text-muted-foreground">
-            {offer.serverUrl}
-            {replaces ? ` · Replaces ${account.email} on this computer.` : ""} This computer will sign in automatically again.
+            {t("continueNote", { serverUrl: offer.serverUrl, replaces: replaces ? "yes" : "no", email: account?.email ?? "" })}
           </p>
         </>
       ) : offer?.state === "locked" ? (
         <form className="space-y-2" onSubmit={(event) => void unlock(event)}>
-          <p className="text-sm">Another computer shares its collaboration sign-in. Enter your Libera master password to use it here.</p>
+          <p className="text-sm">{t("lockedIntro")}</p>
           <label className={LABEL} htmlFor={`${id}-master`}>
-            Libera master password
+            {t("masterPassword")}
           </label>
           <input
             autoComplete="current-password"
@@ -334,11 +338,11 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
             onChange={(event) => setMasterPassword(event.target.value)}
           />
           <button className={SECONDARY_BUTTON} disabled={busy} type="submit">
-            {busy ? "Checking…" : "Unlock"}
+            {busy ? t("checkingShort") : t("unlock")}
           </button>
         </form>
       ) : (
-        <p className="text-sm">No sign-in from another computer is available right now.</p>
+        <p className="text-sm">{t("noOtherSignIn")}</p>
       )}
       {error || discoveryError ? (
         <p className="text-sm text-destructive" role="alert">
@@ -354,15 +358,18 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
           setRefresh((value) => value + 1);
         }}
       >
-        <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Check again
+        <RefreshCw aria-hidden className="h-3.5 w-3.5" /> {t("checkAgain")}
       </button>
-      <p className="text-xs text-muted-foreground">Or sign in with your email and password below.</p>
+      <p className="text-xs text-muted-foreground">{t("orSignInBelow")}</p>
     </div>
   );
 }
 
 function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onSignedIn: (status: HostStatus | undefined) => void }) {
   const id = useId();
+  const t = useTranslations("collab.collabAccountDialog");
+  const describeError = useDescribeError();
+
   const [mode, setMode] = useState<"sign-in" | "register">("sign-in");
   const [serverUrl, setServerUrl] = useState(() => account?.serverUrl || lastServerUrl());
   const [email, setEmail] = useState(account?.email ?? "");
@@ -378,15 +385,15 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
     event.preventDefault();
     const url = normalizeServerUrl(serverUrl);
     if (!isValidServerUrl(url)) {
-      setError("Enter the server address, for example https://collab.example.com.");
+      setError(t("enterServer"));
       return;
     }
     if (!email.trim() || !password) {
-      setError("Enter your email and password.");
+      setError(t("enterCredentials"));
       return;
     }
     if (mode === "register" && !displayName.trim()) {
-      setError("Enter the name collaborators will see.");
+      setError(t("enterName"));
       return;
     }
     setSubmitting(true);
@@ -408,9 +415,9 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
   }
 
   return (
-    <form aria-label={mode === "register" ? "Create a collaboration account" : "Sign in"} className="space-y-3" noValidate onSubmit={submit}>
+    <form aria-label={mode === "register" ? t("createAccountForm") : t("signIn")} className="space-y-3" noValidate onSubmit={submit}>
       {reauth ? null : (
-        <div aria-label="Account" className="inline-flex rounded-lg border border-input p-0.5" role="group">
+        <div aria-label={t("account")} className="inline-flex rounded-lg border border-input p-0.5" role="group">
           {(["sign-in", "register"] as const).map((value) => (
             <button
               key={value}
@@ -422,15 +429,15 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
                 setError("");
               }}
             >
-              {value === "sign-in" ? "Sign in" : "Create account"}
+              {value === "sign-in" ? t("signIn") : t("createAccount")}
             </button>
           ))}
         </div>
       )}
-      {reauth ? <p className="text-sm font-medium">Sign in again</p> : null}
+      {reauth ? <p className="text-sm font-medium">{t("signInAgain")}</p> : null}
       <div>
         <label className={LABEL} htmlFor={`${id}-server`}>
-          Server
+          {t("server")}
         </label>
         <input
           autoComplete="url"
@@ -445,20 +452,20 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
       {mode === "register" ? (
         <div>
           <label className={LABEL} htmlFor={`${id}-name`}>
-            Your name
+            {t("yourName")}
           </label>
           <input autoComplete="name" className={FIELD} id={`${id}-name`} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
         </div>
       ) : null}
       <div>
         <label className={LABEL} htmlFor={`${id}-email`}>
-          Email
+          {t("email")}
         </label>
         <input autoComplete="email" className={FIELD} id={`${id}-email`} type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
       </div>
       <div>
         <label className={LABEL} htmlFor={`${id}-password`}>
-          Password
+          {t("password")}
         </label>
         <input
           autoComplete={mode === "register" ? "new-password" : "current-password"}
@@ -472,19 +479,19 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
       {mode === "register" ? (
         <div>
           <label className={LABEL} htmlFor={`${id}-registration`}>
-            Registration code <span className="font-normal text-muted-foreground">(from the server administrator)</span>
+            {t.rich("registrationCode", { hint: (chunks) => <span className="font-normal text-muted-foreground">{chunks}</span> })}
           </label>
           <input autoComplete="off" className={FIELD} id={`${id}-registration`} spellCheck={false} value={registrationCode} onChange={(event) => setRegistrationCode(event.target.value)} />
-          <p className="mt-1 text-xs text-muted-foreground">New accounts need a code unless the server is open to everyone.</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("registrationHint")}</p>
         </div>
       ) : null}
       {mode === "register" ? (
         <div>
           <label className={LABEL} htmlFor={`${id}-invitation`}>
-            Invitation link or code <span className="font-normal text-muted-foreground">(optional)</span>
+            {t.rich("invitationOptional", { hint: (chunks) => <span className="font-normal text-muted-foreground">{chunks}</span> })}
           </label>
           <input className={FIELD} id={`${id}-invitation`} spellCheck={false} value={invitation} onChange={(event) => setInvitation(event.target.value)} />
-          <p className="mt-1 text-xs text-muted-foreground">A notebook invitation adds you to that notebook after sign-up.</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("invitationHint")}</p>
         </div>
       ) : null}
       {error ? (
@@ -494,7 +501,7 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
       ) : null}
       <button className={PRIMARY_BUTTON} disabled={submitting} type="submit">
         {submitting ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <LogIn aria-hidden className="h-3.5 w-3.5" />}
-        {submitting ? (mode === "register" ? "Creating account…" : "Signing in…") : mode === "register" ? "Create account" : "Sign in"}
+        {submitting ? (mode === "register" ? t("creatingAccount") : t("signingIn")) : mode === "register" ? t("createAccount") : t("signIn")}
       </button>
     </form>
   );
@@ -502,6 +509,10 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
 
 function ProfileSection({ account, onSaved }: { account: LocalAccount; onSaved: () => void }) {
   const id = useId();
+  const t = useTranslations("collab.collabAccountDialog");
+  const tCommon = useTranslations("common");
+  const describeError = useDescribeError();
+
   const [displayName, setDisplayName] = useState(account.displayName);
   const [color, setColor] = useState(account.color);
   const [saving, setSaving] = useState(false);
@@ -511,14 +522,14 @@ function ProfileSection({ account, onSaved }: { account: LocalAccount; onSaved: 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!displayName.trim()) {
-      setMessage({ error: true, text: "Your name cannot be empty." });
+      setMessage({ error: true, text: t("nameEmpty") });
       return;
     }
     setSaving(true);
     setMessage(null);
     try {
       await collabClient.updateAccount({ displayName: displayName.trim(), color });
-      setMessage({ error: false, text: "Saved." });
+      setMessage({ error: false, text: t("saved") });
       onSaved();
     } catch (caught) {
       setMessage({ error: true, text: describeError(caught) });
@@ -528,16 +539,16 @@ function ProfileSection({ account, onSaved }: { account: LocalAccount; onSaved: 
   }
 
   return (
-    <form aria-label="Profile" className="libera-dialog-section space-y-3" onSubmit={save}>
+    <form aria-label={t("profile")} className="libera-dialog-section space-y-3" onSubmit={save}>
       <div>
         <label className={LABEL} htmlFor={`${id}-name`}>
-          Name shown to collaborators
+          {t("nameShown")}
         </label>
         <input className={FIELD} id={`${id}-name`} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
       </div>
       <div>
         <p className={LABEL} id={`${id}-color`}>
-          Cursor colour
+          {t("cursorColour")}
         </p>
         <div aria-labelledby={`${id}-color`} className="mt-2 flex flex-wrap items-center gap-2" role="radiogroup">
           {COLLAB_COLORS.map((swatch) => {
@@ -546,7 +557,7 @@ function ProfileSection({ account, onSaved }: { account: LocalAccount; onSaved: 
               <button
                 key={swatch}
                 aria-checked={selected}
-                aria-label={`Colour ${swatch}`}
+                aria-label={t("colour", { value: swatch })}
                 className="flex h-7 w-7 items-center justify-center rounded-full border border-border focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                 role="radio"
                 style={{ backgroundColor: swatch }}
@@ -559,19 +570,19 @@ function ProfileSection({ account, onSaved }: { account: LocalAccount; onSaved: 
           })}
           <label className="ml-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
             <input
-              aria-label="Custom colour"
+              aria-label={t("customColour")}
               className="h-7 w-9 cursor-pointer rounded border border-input bg-transparent p-0.5"
               type="color"
               value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#2563eb"}
               onChange={(event) => setColor(event.target.value)}
             />
-            Custom
+            {t("custom")}
           </label>
         </div>
       </div>
       <div className="flex items-center gap-3">
         <button className={PRIMARY_BUTTON} disabled={!changed || saving} type="submit">
-          {saving ? "Saving…" : "Save profile"}
+          {saving ? tCommon("saving") : t("saveProfile")}
         </button>
         {message ? (
           <p className={`text-sm ${message.error ? "text-destructive" : "text-muted-foreground"}`} role={message.error ? "alert" : "status"}>
@@ -584,13 +595,15 @@ function ProfileSection({ account, onSaved }: { account: LocalAccount; onSaved: 
 }
 
 function ProjectsSection({ status, onJoin }: { status: HostStatus; onJoin?: () => void }) {
+  const t = useTranslations("collab.collabAccountDialog");
+  const tWording = useTranslations("lib.collab.ui.wording");
   return (
-    <section aria-label="Shared notebooks" className="libera-dialog-section space-y-2">
+    <section aria-label={t("sharedNotebooks")} className="libera-dialog-section space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-medium">Shared notebooks and albums</h3>
+        <h3 className="text-sm font-medium">{t("sharedNotebooksAndAlbums")}</h3>
         {onJoin ? (
           <button className={SECONDARY_BUTTON} type="button" onClick={onJoin}>
-            <Users aria-hidden className="h-3.5 w-3.5" /> Join with an invitation…
+            <Users aria-hidden className="h-3.5 w-3.5" /> {t("joinWithInvitation")}
           </button>
         ) : null}
       </div>
@@ -599,39 +612,42 @@ function ProjectsSection({ status, onJoin }: { status: HostStatus; onJoin?: () =
           {status.projects.map((project) => (
             <li key={project.projectId} className="flex items-center gap-2 py-1.5">
               <Users aria-hidden className={`h-3.5 w-3.5 shrink-0 ${project.revoked ? "text-destructive" : "text-muted-foreground"}`} />
-              <span className="min-w-0 flex-1 truncate">{project.kind === "album" ? <span className="text-muted-foreground">Album · </span> : null}{project.name}</span>
+              <span className="min-w-0 flex-1 truncate">{project.kind === "album" ? <span className="text-muted-foreground">{t("albumPrefix")}</span> : null}{project.name}</span>
               <span className="shrink-0 text-xs text-muted-foreground">
-                {project.revoked ? "No longer shared" : ROLE_LABEL[project.role]}
-                {project.reconcilePending > 0 ? ` · ${project.reconcilePending} to review` : ""}
+                {project.revoked ? t("noLongerShared") : roleLabel(project.role, tWording, project.kind === "album")}
+                {project.reconcilePending > 0 ? t("toReview", { count: project.reconcilePending }) : ""}
               </span>
             </li>
           ))}
         </ul>
       ) : (
-        <p className="text-xs text-muted-foreground">None yet. Share a notebook from its menu in the Library, or an album from the gallery.</p>
+        <p className="text-xs text-muted-foreground">{t("noneYet")}</p>
       )}
     </section>
   );
 }
 
 function SignOutSection({ onSignedOut }: { onSignedOut: () => void }) {
+  const t = useTranslations("collab.collabAccountDialog");
+  const tCommon = useTranslations("common");
+  const describeError = useDescribeError();
   const [confirming, setConfirming] = useState(false);
   const [everywhere, setEverywhere] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
-    <section aria-label="Sign out" className="libera-dialog-section space-y-2">
+    <section aria-label={t("signOutSection")} className="libera-dialog-section space-y-2">
       {confirming ? (
         <>
-          <p className="text-sm">Shared notebooks stay on this device but stop syncing until you sign in again.</p>
+          <p className="text-sm">{t("signOutNote")}</p>
           <p className="text-xs text-muted-foreground">
-            This computer will not sign in automatically again until you sign in here yourself.
+            {t("signOutAuto")}
           </p>
           <label className="flex items-start gap-2 text-sm">
             <input checked={everywhere} className="mt-0.5" disabled={busy} type="checkbox" onChange={(event) => setEverywhere(event.target.checked)} />
             <span>
-              Also stop automatic sign-in on my other computers
-              <span className="block text-xs text-muted-foreground">Computers that are already signed in stay signed in.</span>
+              {t("everywhere")}
+              <span className="block text-xs text-muted-foreground">{t("everywhereNote")}</span>
             </span>
           </label>
           <div className="flex gap-2">
@@ -652,16 +668,16 @@ function SignOutSection({ onSignedOut }: { onSignedOut: () => void }) {
                   .finally(() => setBusy(false));
               }}
             >
-              {busy ? "Signing out…" : "Sign out"}
+              {busy ? t("signingOut") : t("signOut")}
             </button>
             <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(false)}>
-              Cancel
+              {tCommon("cancel")}
             </button>
           </div>
         </>
       ) : (
         <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(true)}>
-          Sign out of collaboration…
+          {t("signOutOpen")}
         </button>
       )}
       {error ? (

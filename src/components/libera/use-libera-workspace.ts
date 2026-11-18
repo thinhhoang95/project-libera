@@ -115,6 +115,8 @@ import { subscribeSharedTreeChanges } from "@/lib/collab/ui/tree-changes";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
 import { rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
+import { useTranslations } from "next-intl";
+import { DEFAULT_UNTITLED_NAME, RECOVERED_REVIEW_NAME } from "./default-names";
 import { announceReferenceLibraryChange } from "@/lib/references/import";
 import { referenceMoveSummary, type ReferenceMoveNoticeState } from "./references/reference-move-notice";
 import { searchNotebookTree } from "./notebook-search";
@@ -172,7 +174,7 @@ function markdownTitleFromName(name: string) {
     name
       .replace(/\.slides\.(md|markdown)$/i, "")
       .replace(/\.(md|markdown)$/i, "")
-      .trim() || "Untitled"
+      .trim() || DEFAULT_UNTITLED_NAME
   );
 }
 
@@ -338,6 +340,10 @@ const FILE_INTERACTIONS_STORAGE_KEY = "libera.fileInteractions";
 const FOCUS_TREE_REFRESH_INTERVAL_MS = 5000;
 
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
+  const t = useTranslations("useLiberaWorkspace");
+  // Messages are read from callbacks, effects and timers that outlive a render: always through the latest translator.
+  const tRef = useRef(t);
+  useLayoutEffect(() => { tRef.current = t; });
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
   const sessionEndedRef = useRef(false);
   const sessionCleanupRef = useRef<AbortController | null>(null);
@@ -366,7 +372,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [selectedNotebookName, setSelectedNotebookName] = useState("");
   const notebookSelectionWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/preferences/last-notebook", {
     method: "PUT", body, keepalive: !window.liberaPersistence,
-  }), (error) => setWorkspaceError(error instanceof Error ? error.message : "Could not remember the last notebook.")), []);
+  }), (error) => setWorkspaceError(error instanceof Error ? error.message : tRef.current("rememberNotebookError"))), []);
   const [query, setQuery] = useState("");
   const [fileInteractions, setFileInteractions] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -431,7 +437,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const treeLoadedRef = useRef(false);
   const expansionWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/notebook-panel-expansion", {
     method: "PATCH", body, keepalive: !window.liberaPersistence,
-  }), (error) => setWorkspaceError(error instanceof Error ? error.message : "Could not save notebook panel expansion state.")), []);
+  }), (error) => setWorkspaceError(error instanceof Error ? error.message : tRef.current("savePanelExpansionError"))), []);
   useEffect(() => {
     // The session restores the selection; this fallback must not hold up closing.
     const unregister = registerStateFlusher(() => Promise.all([notebookSelectionWriter.flush().catch(() => undefined), expansionWriter.flush()]));
@@ -580,7 +586,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     // workspace can show archives independently without changing library settings.
     if (nextTree.archiveIncluded === false) {
       try { nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true"); }
-      catch (error) { setWorkspaceError(error instanceof Error ? error.message : "Could not refresh archived files."); }
+      catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshArchivedError")); }
     }
     appliedTreeRef.current = nextTree;
     setTree(nextTree);
@@ -678,7 +684,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (result.changed) await window.liberaDirectory?.notifyChanged().catch(() => undefined);
       return { result, nextTree };
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not open the folder.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("openFolderError"));
       return null;
     }
   }
@@ -689,7 +695,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       .find((candidate) => candidate.path === filePath);
 
     if (!file) {
-      setWorkspaceError("That file is hidden in its folder, so Libera cannot open it.");
+      setWorkspaceError(tRef.current("hiddenFileError"));
       return;
     }
 
@@ -757,7 +763,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId((current) => (current.startsWith(`${name}/`) ? "" : current));
       await window.liberaDirectory?.notifyChanged().catch(() => undefined);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not remove the folder.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("removeFolderError"));
     }
   }
 
@@ -766,7 +772,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       await apiRequest("/api/directory", { method: "POST", body: JSON.stringify({ action: "clear-recent" }) });
       await window.liberaDirectory?.notifyChanged();
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not clear recent folders.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("clearRecentError"));
     }
   }
 
@@ -815,7 +821,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       // The desktop app opens this user's sign-in screen at the next start.
       void window.liberaProfiles?.signedIn().catch(() => {});
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Login failed.");
+      setAuthError(error instanceof Error ? error.message : tRef.current("loginFailedError"));
     } finally {
       setBusy(false);
     }
@@ -825,7 +831,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (sessionEndedRef.current) return;
     try { await workspaceManager.checkpoint(); await flushPendingState(); }
     catch {
-      if (!sessionEndedRef.current) setWorkspaceError("Could not save your workspace. Please try signing out again.");
+      if (!sessionEndedRef.current) setWorkspaceError(tRef.current("saveWorkspaceSignOutError"));
       return;
     }
     if (sessionEndedRef.current) return;
@@ -842,7 +848,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     try { workspaceManager.checkpointLocally(); }
     catch { /* A recovery failure must not keep an expired session open. */ }
     clearSignedInWorkspace();
-    setAuthError("Your session expired. Please sign in again.");
+    setAuthError(tRef.current("sessionExpiredError"));
     // Neither native bookkeeping nor a server request may delay the lock screen.
     void window.liberaProfiles?.signedOut().catch(() => undefined);
     const cleanup = new AbortController();
@@ -920,7 +926,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (!tab || draft === undefined || draft === tab.saved) return;
     adoptPendingSharedDraft(session, draft, tab.saved, (content) => {
       createUntitledFile("", undefined, { fileName: `${tab.file.name}.recovered.md`, content });
-      setWorkspaceError("Your local draft could not be applied to the shared document. It was kept in a recovered draft tab.");
+      setWorkspaceError(tRef.current("recoveredDraftError"));
     });
   }
 
@@ -937,7 +943,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (result.applied) {
       mirrorSharedText(tabId, sharedRegistry.readTabText(tabId) ?? value);
     } else if (result.reason === "read-only" || result.reason === "not-ready") {
-      const error = result.reason === "read-only" ? "This shared document is read-only for you." : "This shared document is still opening.";
+      const error = result.reason === "read-only" ? tRef.current("readOnlyDocumentError") : tRef.current("stillOpeningError");
       updateTab(tabId, (tab) => ({ ...tab, error }));
     }
     return true;
@@ -1100,7 +1106,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       showOpenedTab(nextTab.id, placement);
       recordFileInteraction(payload.file);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not open file.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("openFileError"));
     } finally {
       openingFilePathsRef.current.delete(file.path);
       delete pendingOpenViewStateByPathRef.current[file.path];
@@ -1450,7 +1456,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   function getReviewDraft(tabId: string) {
     const tab = tabs.find((t) => t.id === tabId);
-    if (!tab) throw new Error("The review document is no longer open.");
+    if (!tab) throw new Error(tRef.current("reviewDocumentClosedError"));
     return tabId === activeTabId && textareaRef.current ? textareaRef.current.value : getTabDraft(tab);
   }
 
@@ -1813,7 +1819,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (!view || view.state.readOnly) return false;
       const citation = latexCitation(keys, command);
       if (!citation) {
-        setWorkspaceError("These citation keys cannot be inserted into LaTeX. Rename keys containing spaces, commas, braces, backslashes or percent signs first.");
+        setWorkspaceError(tRef.current("citationKeysLatexError"));
         return false;
       }
       const { from, to } = view.state.selection.main;
@@ -1985,7 +1991,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const annotation = findRememberedAnnotation(tab.file.path, id);
     const kind = annotation?.type === "highlight" ? "highlight" : annotation ? "note" : "annotation";
 
-    return { id, kind, label: annotationLinkLabel(annotation, `Selected ${kind}`) };
+    return { id, kind, label: annotationLinkLabel(annotation, tRef.current("selectedLabel", { kind })) };
   }
 
   /** "Link to the highlighted text / selected annotation in <tab>" choices for the link dialogs. */
@@ -2011,8 +2017,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         label: highlighted.label,
         tabName: tab.file.name,
         title: "kind" in highlighted
-          ? `Link to ${highlighted.kind} in ${tab.file.name}`
-          : `Link to highlighted text in ${tab.file.name}`,
+          ? tRef.current("linkToKindTitle", { kind: highlighted.kind, name: tab.file.name })
+          : tRef.current("linkToHighlightTitle", { name: tab.file.name }),
       }];
     });
   }
@@ -2225,7 +2231,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const source = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(new Error("Could not read image."));
+        reader.onerror = () => reject(new Error(tRef.current("readImageError")));
         reader.readAsDataURL(file);
       });
       return { markdown: `![${imageAltText(file.name)}](${source})` };
@@ -2268,7 +2274,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
-        error: error instanceof Error ? error.message : "Could not insert image.",
+        error: error instanceof Error ? error.message : tRef.current("insertImageError"),
       }));
     }
   }
@@ -2282,7 +2288,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       updateTab(activeTab.id, (tab) => ({
         ...tab,
         status: "error",
-        error: "Only image files can be inserted.",
+        error: tRef.current("onlyImagesError"),
       }));
       return;
     }
@@ -2335,7 +2341,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       updateTab(targetTab.id, (tab) => ({
         ...tab,
         status: "error",
-        error: "Open an image or PDF tab before using the snipping tool.",
+        error: tRef.current("openImageOrPdfError"),
       }));
       return;
     }
@@ -2487,13 +2493,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const resolved = await resolvePdfQuote(source, target && !target.untitled ? target.file.notebook : null);
       if (!resolved) return;
       if (target && insertQuoteIntoTab(target.id, resolved.markdown)) {
-        showPdfQuoteNotice(`Quoted into ${target.file.name}.`);
+        showPdfQuoteNotice(tRef.current("quotedIntoNotice", { name: target.file.name }));
         return;
       }
       await navigator.clipboard.writeText(resolved.markdown);
-      showPdfQuoteNotice("No note is open: the quote and citation were copied to the clipboard.");
+      showPdfQuoteNotice(tRef.current("noNoteQuoteNotice"));
     } catch (error) {
-      showPdfQuoteNotice(error instanceof Error ? error.message : "Could not quote the PDF.");
+      showPdfQuoteNotice(error instanceof Error ? error.message : tRef.current("quotePdfError"));
     }
   }
   const quotePdfIntoNoteRef = useRef(quotePdfIntoNote);
@@ -2542,7 +2548,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }
 
       if (controller.signal.aborted) return;
-      if (!markdown.trim()) throw new Error("No text was found in the snip.");
+      if (!markdown.trim()) throw new Error(tRef.current("noSnipTextError"));
 
       const selection = insertSnipMarkdown(session, markdown);
       returnToSnipTarget(session, selection);
@@ -2551,7 +2557,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       updateTab(session.targetTabId, (tab) => ({
         ...tab,
         status: "error",
-        error: error instanceof Error ? error.message : "Could not read the snip.",
+        error: error instanceof Error ? error.message : tRef.current("readSnipError"),
       }));
       returnToSnipTarget(session);
     } finally {
@@ -2609,7 +2615,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       updateTab(targetTab.id, (tab) => ({
         ...tab,
         status: "error",
-        error: error instanceof Error ? error.message : "Could not insert screenshot.",
+        error: error instanceof Error ? error.message : tRef.current("insertScreenshotError"),
       }));
       returnToSnipTarget(session);
     }
@@ -2667,7 +2673,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
-        error: error instanceof Error ? error.message : "AI formatting failed.",
+        error: error instanceof Error ? error.message : tRef.current("aiFormatError"),
       }));
     } finally {
       endActivity();
@@ -2740,7 +2746,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
-        error: error instanceof Error ? error.message : "AI rewrite failed.",
+        error: error instanceof Error ? error.message : tRef.current("aiRewriteError"),
       }));
     } finally {
       endActivity();
@@ -2805,7 +2811,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
-        error: error instanceof Error ? error.message : "Write with AI failed.",
+        error: error instanceof Error ? error.message : tRef.current("writeWithAiError"),
       }));
     } finally {
       endActivity();
@@ -2885,7 +2891,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
-        error: error instanceof Error ? error.message : "AI image conversion failed.",
+        error: error instanceof Error ? error.message : tRef.current("aiImageError"),
       }));
     } finally {
       endActivity();
@@ -2897,7 +2903,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (!key.startsWith("draft:")) return;
     const id = key.slice(6);
     if (tabs.some((tab) => tab.id === id)) { setActiveTabId(id); return; }
-    createUntitledFile("", undefined, { fileName: "Recovered review.md", content }, id);
+    createUntitledFile("", undefined, { fileName: RECOVERED_REVIEW_NAME, content }, id);
   }
 
   function createUntitledFile(notebook = "", parentPath?: string, initial?: { fileName: string; content: string }, restoredId?: string) {
@@ -2905,7 +2911,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const now = new Date().toISOString();
     const tab: OpenTab = {
       id, untitled: true, saveDirectory: parentPath || notebook,
-      file: { kind: "file", name: initial?.fileName ?? "Untitled.md", path: id, notebook: "",
+      file: { kind: "file", name: initial?.fileName ?? `${DEFAULT_UNTITLED_NAME}.md`, path: id, notebook: "",
         fileType: "markdown", createdAt: now, updatedAt: now, size: 0 },
       draft: initial?.content ?? "", saved: "", status: initial?.content ? "dirty" : "clean",
     };
@@ -2939,7 +2945,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }
     }
 
-    throw new Error(`Could not find a free name for ${stem}.md.`);
+    throw new Error(tRef.current("freeNameError", { stem }));
   }
 
   /** Save converted Markdown into a file that is not open for editing. */
@@ -2963,7 +2969,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (!tab || savingDraftRef.current) return;
     const requestedName = name.trim();
     if (!requestedName || /[\\/]/.test(requestedName) || requestedName === "." || requestedName === "..") {
-      setSaveDraftError("Enter a file name without slashes.");
+      setSaveDraftError(tRef.current("enterFileNameError"));
       return;
     }
     const fileName = /\.(md|markdown)$/i.test(requestedName) ? requestedName : `${requestedName}.md`;
@@ -3007,7 +3013,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }
       setSaveDraftTabId(null);
     } catch (error) {
-      setSaveDraftError(error instanceof Error ? error.message : "Save failed.");
+      setSaveDraftError(error instanceof Error ? error.message : tRef.current("saveFailedError"));
     } finally {
       savingDraftRef.current = false;
       setSaveDraftSubmitting(false);
@@ -3019,7 +3025,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     try {
       await pendingSaves.save(tab.file.path);
     } catch (error) {
-      updateTab(tab.id, (current) => ({ ...current, status: "error", error: error instanceof Error ? error.message : "Save failed." }));
+      updateTab(tab.id, (current) => ({ ...current, status: "error", error: error instanceof Error ? error.message : tRef.current("saveFailedError") }));
     }
   }
 
@@ -3056,7 +3062,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           saved: result.canceled ? tab.saved : draft,
           status: latestDraft === (result.canceled ? tab.saved : draft) ? "clean" : "dirty" }));
       } catch (error) {
-        updateTab(activeTab.id, (tab) => ({ ...tab, status: "error", error: error instanceof Error ? error.message : "Save failed." }));
+        updateTab(activeTab.id, (tab) => ({ ...tab, status: "error", error: error instanceof Error ? error.message : tRef.current("saveFailedError") }));
       } finally { savingDraftRef.current = false; }
       return;
     }
@@ -3100,7 +3106,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       updateTab(activeTab.id, (tab) => ({
         ...tab,
         status: "error",
-        error: error instanceof Error ? error.message : "Save failed.",
+        error: error instanceof Error ? error.message : tRef.current("saveFailedError"),
       }));
     }
   }
@@ -3174,7 +3180,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const nextName = values.name.trim();
 
     if (!nextName) {
-      setNotebookDialogError("Notebook name is required.");
+      setNotebookDialogError(tRef.current("notebookNameRequired"));
       return;
     }
 
@@ -3272,7 +3278,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setNotebookDialog(null);
     } catch (error) {
       setNotebookDialogError(
-        error instanceof Error ? error.message : "Could not save notebook.",
+        error instanceof Error ? error.message : tRef.current("notebookSaveError"),
       );
     } finally {
       setNotebookDialogSubmitting(false);
@@ -3287,7 +3293,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const title = values.title.trim();
 
     if (!title) {
-      setNotebookGroupDialogError("Group title is required.");
+      setNotebookGroupDialogError(tRef.current("groupTitleRequired"));
       return;
     }
 
@@ -3322,7 +3328,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
     } catch (error) {
       setNotebookGroupDialogError(
-        error instanceof Error ? error.message : "Could not save group.",
+        error instanceof Error ? error.message : tRef.current("groupSaveError"),
       );
     } finally {
       setNotebookGroupDialogSubmitting(false);
@@ -3343,7 +3349,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       );
       await applyCompleteTree(nextTree);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not delete group.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteGroupError"));
     }
   }
 
@@ -3383,7 +3389,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       await applyCompleteTree(nextTree);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not update star.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("updateStarError"));
     }
   }
 
@@ -3410,7 +3416,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       await applyCompleteTree(nextTree);
       setFileTagsDialogFile(null);
     } catch (error) {
-      setFileTagsDialogError(error instanceof Error ? error.message : "Could not save tags.");
+      setFileTagsDialogError(error instanceof Error ? error.message : tRef.current("saveTagsError"));
     } finally {
       setFileTagsDialogSubmitting(false);
     }
@@ -3449,7 +3455,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       );
       setActiveTabId((current) => (current.startsWith(`${notebook}/`) ? "" : current));
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not delete notebook.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteNotebookError"));
     }
   }
 
@@ -3491,7 +3497,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const exporter = window.liberaExport?.exportMarkdownPdf;
 
     if (!exporter) {
-      setWorkspaceError("Export to PDF is available in the Libera desktop app.");
+      setWorkspaceError(tRef.current("pdfExportUnavailable"));
       return;
     }
 
@@ -3504,7 +3510,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         title: markdownExportBaseName(tab.file.name),
       });
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "PDF export failed.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("pdfExportFailed"));
     }
   }
 
@@ -3521,7 +3527,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const [bytes, annotations, { burnPdfAnnotations }, { createPdfNoteRenderer }] = await Promise.all([
         fetch(source).then(async (response) => {
           if (!response.ok) {
-            throw new Error("Could not read the PDF.");
+            throw new Error(tRef.current("readPdfError"));
           }
 
           return response.arrayBuffer();
@@ -3546,10 +3552,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       window.setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
       if (annotations.some((annotation) => annotation.type === "space")) {
         // Until export can make pages taller (docs/create-space-plan.md, phase 2).
-        setWorkspaceError("The PDF was exported without its spaces: spaces, and the notes and ink in them, can't be exported yet.");
+        setWorkspaceError(tRef.current("pdfWithoutSpacesNotice"));
       }
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not export the annotated PDF.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("exportAnnotatedPdfError"));
     }
   }
 
@@ -3583,7 +3589,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const requestedName = values.name.trim();
 
     if (!requestedName) {
-      setNoteDialogError("Note name is required.");
+      setNoteDialogError(tRef.current("noteNameRequired"));
       return;
     }
 
@@ -3624,7 +3630,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setNoteDialog(null);
       await openFile(payload.file);
     } catch (error) {
-      setNoteDialogError(error instanceof Error ? error.message : "Could not create note.");
+      setNoteDialogError(error instanceof Error ? error.message : tRef.current("createNoteError"));
     } finally {
       setNoteDialogSubmitting(false);
     }
@@ -3652,7 +3658,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         return next;
       });
     } catch (error) {
-      throw new Error(error instanceof Error ? error.message : "Could not create folder.");
+      throw new Error(error instanceof Error ? error.message : tRef.current("createFolderError"));
     }
   }
 
@@ -3684,7 +3690,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         return next;
       });
     } catch (error) {
-      throw new Error(error instanceof Error ? error.message : "Could not copy file.");
+      throw new Error(error instanceof Error ? error.message : tRef.current("copyFileError"));
     }
   }
 
@@ -3760,7 +3766,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         if (!active) return;
         // Most shared edits change no file's metadata; an identical tree is not applied, so nothing re-renders.
         try { await latestTreeChange.current.refreshTree(undefined, { onlyIfChanged: true }); }
-        catch (error) { setWorkspaceError(error instanceof Error ? error.message : "Could not refresh the tree."); }
+        catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshTreeError")); }
       },
       (moves) => {
         movesDone = movesDone.then(async () => {
@@ -3813,7 +3819,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       reportReferenceMove(payload);
       await refreshTree(payload.file.notebook);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not move file.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("moveFileError"));
     }
   }
 
@@ -3865,7 +3871,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         return next;
       });
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not move file.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("moveFileError"));
     }
   }
 
@@ -3909,9 +3915,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           const latestDraft = getTabDraft(tab);
           updateTab(tab.id, (current) => ({ ...current, file: payload.file, saved: draft, status: latestDraft === draft ? "clean" : "dirty" }));
         } catch (error) {
-          const message = error instanceof Error ? error.message : "Save failed.";
+          const message = error instanceof Error ? error.message : tRef.current("saveFailedError");
           updateTab(tab.id, (current) => ({ ...current, status: "error", error: message }));
-          throw new Error(`Could not save ${tab.file.name}: ${message}`);
+          throw new Error(tRef.current("saveNamedFileError", { name: tab.file.name, message }));
         }
       }
       await pendingSaves.save(tab.file.path);
@@ -3962,7 +3968,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       migrationChannelRef.current?.postMessage(result);
       if (result.state === "done") await apiRequest("/api/notebooks/migrate", { method: "POST", body: JSON.stringify({ action: "acknowledge", id: result.id }) });
     } catch (error) {
-      setWorkspaceError(`The files moved, but the app could not fully update for it: ${error instanceof Error ? error.message : String(error)}. Reopen Migration to try again.`);
+      setWorkspaceError(tRef.current("movedButNotUpdatedError", { message: error instanceof Error ? error.message : String(error) }));
     }
     void agentReviewStore.refresh();
   }
@@ -4088,7 +4094,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId((current) => (current === file.path ? "" : current));
       await refreshTree(file.notebook);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not delete file.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteFileError"));
     }
   }
 
@@ -4096,7 +4102,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const openTab = tabs.find((tab) => tab.file.path === file.path);
 
     if (openTab && tabUnsaved(openTab)) {
-      setWorkspaceError("Save or close the file before archiving it.");
+      setWorkspaceError(tRef.current("archiveBeforeSaveError"));
       return;
     }
 
@@ -4115,7 +4121,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId((current) => (current === file.path ? "" : current));
       await refreshTree(file.notebook);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not archive file.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("archiveFileError"));
     }
   }
 
@@ -4195,7 +4201,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setClosedViewStates((current) => remapClosedViewStates(current, (path) =>
         withinPath(path, folder.path) ? `${nextPath}${path.slice(folder.path.length)}` : path));
     } catch (error) {
-      throw new Error(error instanceof Error ? error.message : "Could not rename folder.");
+      throw new Error(error instanceof Error ? error.message : tRef.current("renameFolderError"));
     }
   }
 
@@ -4211,7 +4217,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const name = values.name.trim();
 
         if (!name) {
-          setWorkspaceInputDialogError("Folder name is required.");
+          setWorkspaceInputDialogError(tRef.current("folderNameRequired"));
           return;
         }
 
@@ -4223,12 +4229,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const destinationName = values.destinationName.trim();
 
         if (!destinationDirectory) {
-          setWorkspaceInputDialogError("Destination path is required.");
+          setWorkspaceInputDialogError(tRef.current("destinationPathRequired"));
           return;
         }
 
         if (!destinationName) {
-          setWorkspaceInputDialogError("Copy file name is required.");
+          setWorkspaceInputDialogError(tRef.current("copyFileNameRequired"));
           return;
         }
 
@@ -4239,7 +4245,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const destinationDirectory = values.destinationDirectory.trim();
 
         if (!destinationDirectory) {
-          setWorkspaceInputDialogError("Destination path is required.");
+          setWorkspaceInputDialogError(tRef.current("destinationPathRequired"));
           return;
         }
 
@@ -4251,7 +4257,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const name = values.name.trim();
 
         if (!name) {
-          setWorkspaceInputDialogError("File name is required.");
+          setWorkspaceInputDialogError(tRef.current("fileNameRequired"));
           return;
         }
 
@@ -4264,7 +4270,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const name = values.name.trim();
 
         if (!name) {
-          setWorkspaceInputDialogError("Folder name is required.");
+          setWorkspaceInputDialogError(tRef.current("folderNameRequired"));
           return;
         }
 
@@ -4276,7 +4282,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setWorkspaceInputDialog(null);
     } catch (error) {
       setWorkspaceInputDialogError(
-        error instanceof Error ? error.message : "Could not save changes.",
+        error instanceof Error ? error.message : tRef.current("saveChangesError"),
       );
     } finally {
       setWorkspaceInputDialogSubmitting(false);
@@ -4313,7 +4319,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       );
       setActiveTabId((current) => (current.startsWith(`${folder.path}/`) ? "" : current));
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not delete folder.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteFolderError"));
     }
   }
 
@@ -4323,7 +4329,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     ).length;
 
     if (dirtyTabCount > 0) {
-      setWorkspaceError("Save or close files in the folder before archiving it.");
+      setWorkspaceError(tRef.current("archiveFolderBeforeSaveError"));
       return;
     }
 
@@ -4354,7 +4360,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       );
       setActiveTabId((current) => (isPathWithinPrefix(current, folder.path) ? "" : current));
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not archive folder.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("archiveFolderError"));
     }
   }
 
@@ -4472,7 +4478,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return payload.uploaded;
     } catch (error) {
       if (options?.throwOnError) throw error;
-      setWorkspaceError(error instanceof Error ? error.message : "Upload failed.");
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("uploadFailedError"));
       return [];
     }
   }

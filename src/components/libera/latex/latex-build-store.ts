@@ -10,6 +10,13 @@ import type { LatexEngineSetting } from "@/lib/latex/project";
  * compile per main file is in flight; requests made meanwhile coalesce into
  * one follow-up compile with the newest drafts. */
 
+/** Stands in for `requestError` when the request failed without a message; components show `latexRequestErrorText`. */
+export const LATEX_COMPILE_FAILED = "compile-failed";
+
+export function latexRequestErrorText(error: string, compileFailedText: string) {
+  return error === LATEX_COMPILE_FAILED ? compileFailedText : error;
+}
+
 export type LatexCompilePayload = { engine: LatexEngineSetting; drafts: Record<string, string> };
 
 export type LatexBuildEntry = {
@@ -96,7 +103,7 @@ async function runCompile(rootPath: string, job: QueuedCompile) {
       signal: controller.signal,
     });
     const body = (await response.json().catch(() => ({}))) as LatexBuildResult & { error?: string };
-    if (!response.ok) throw new Error(body.error ?? "Compile failed.");
+    if (!response.ok) throw new Error(body.error ?? LATEX_COMPILE_FAILED);
     result = body;
     setEntry(rootPath, (entry) => ({
       ...entry,
@@ -108,7 +115,7 @@ async function runCompile(rootPath: string, job: QueuedCompile) {
     }));
   } catch (error) {
     if (!controller.signal.aborted) {
-      setEntry(rootPath, (entry) => ({ ...entry, version: entry.version + 1, requestError: error instanceof Error ? error.message : "Compile failed." }));
+      setEntry(rootPath, (entry) => ({ ...entry, version: entry.version + 1, requestError: error instanceof Error ? error.message : LATEX_COMPILE_FAILED }));
     }
   } finally {
     if (controllers.get(rootPath) === controller) controllers.delete(rootPath);

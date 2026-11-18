@@ -4,6 +4,7 @@ import { pdfAnchorScrollTop, pdfPageAnchorAt, type PdfPageAnchor } from "@/lib/l
 import { GlobalWorkerOptions, TextLayer, getDocument } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/display/api";
 import { Download, Loader2, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PdfTextContentCache, pdfCanvasSize, retainPdfPage } from "@/components/libera/pdf-rendering";
 import { useCanvasViewStateCapture } from "../canvas-view-state";
@@ -58,12 +59,14 @@ type LatexPdfPreviewProps = {
 };
 
 export function LatexPdfPreview({ url, hidden = false, zoom, initialScrollTop, initialScrollLeft, initialScrollAnchor, highlight, busy, downloadUrl, emptyState, onZoomChange, onScrollChange, onInverseSync }: LatexPdfPreviewProps) {
+  const t = useTranslations("latex.latexPdfPreview");
+  const format = useFormatter();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [loaded, setLoaded] = useState<{ url: string; pdf: PDFDocumentProxy; sizes: PageSize[]; textCache: PdfTextContentCache } | null>(null);
   const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
   const pdf = loaded?.pdf ?? null;
   const sizes = useMemo(() => loaded?.sizes ?? [], [loaded]);
-  const error = url && failure?.url === url ? failure.message : "";
+  const error = url && failure?.url === url ? failure.message || t("pdfLoadError") : "";
   const loading = Boolean(url) && loaded?.url !== url && failure?.url !== url;
   const [containerWidth, setContainerWidth] = useState(0);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set([1, 2]));
@@ -92,7 +95,7 @@ export function LatexPdfPreview({ url, hidden = false, zoom, initialScrollTop, i
         const response = await fetch(url, { signal: controller.signal });
         if (!response.ok) {
           const body = (await response.json().catch(() => ({}))) as { error?: string };
-          throw new Error(body.error ?? "The PDF could not be loaded.");
+          throw new Error(body.error ?? "");
         }
         const data = new Uint8Array(await response.arrayBuffer());
         document = await getDocument({ data }).promise;
@@ -112,7 +115,7 @@ export function LatexPdfPreview({ url, hidden = false, zoom, initialScrollTop, i
           if (document) void document.destroy();
           return;
         }
-        setFailure({ url, message: loadError instanceof Error ? loadError.message : "The PDF could not be loaded." });
+        setFailure({ url, message: loadError instanceof Error ? loadError.message : "" });
       }
     })();
 
@@ -276,14 +279,14 @@ export function LatexPdfPreview({ url, hidden = false, zoom, initialScrollTop, i
   return (
     <div className={`libera-latex-pdf min-h-0 min-w-0 flex-col overflow-hidden ${hidden ? "hidden" : "flex"}`}>
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border bg-card px-2 text-xs text-muted-foreground">
-        <span className="tabular-nums" aria-live="polite">{sizes.length ? `Page ${currentPage} of ${sizes.length}` : "PDF"}</span>
-        {busy || loading ? <Loader2 aria-label="Updating PDF" className="ml-1 h-3.5 w-3.5 animate-spin text-accent" /> : null}
+        <span className="tabular-nums" aria-live="polite">{sizes.length ? t("pageOf", { current: currentPage, total: sizes.length }) : t("pdfLabel")}</span>
+        {busy || loading ? <Loader2 aria-label={t("updatingPdf")} className="ml-1 h-3.5 w-3.5 animate-spin text-accent" /> : null}
         <div className="ml-auto flex items-center gap-0.5">
-          <button type="button" className="libera-latex-icon-button" aria-label="Zoom out" title="Zoom out" disabled={!sizes.length} onClick={() => zoomBy(1 / 1.15)}><ZoomOut aria-hidden className="h-4 w-4" /></button>
-          <button type="button" className="min-w-12 rounded px-1 py-1 tabular-nums hover:bg-muted" title="Reset to 100%" disabled={!sizes.length} onClick={() => onZoomChange(1)}>{Math.round(scale * 100)}%</button>
-          <button type="button" className="libera-latex-icon-button" aria-label="Zoom in" title="Zoom in" disabled={!sizes.length} onClick={() => zoomBy(1.15)}><ZoomIn aria-hidden className="h-4 w-4" /></button>
-          <button type="button" className="libera-latex-icon-button" aria-label="Fit page width" title="Fit page width" aria-pressed={zoom === "width"} disabled={!sizes.length} onClick={() => onZoomChange("width")}><Maximize2 aria-hidden className="h-4 w-4" /></button>
-          {downloadUrl ? <a className="libera-latex-icon-button" aria-label="Download PDF" title="Download PDF" href={downloadUrl} download><Download aria-hidden className="h-4 w-4" /></a> : null}
+          <button type="button" className="libera-latex-icon-button" aria-label={t("zoomOut")} title={t("zoomOut")} disabled={!sizes.length} onClick={() => zoomBy(1 / 1.15)}><ZoomOut aria-hidden className="h-4 w-4" /></button>
+          <button type="button" className="min-w-12 rounded px-1 py-1 tabular-nums hover:bg-muted" title={t("resetZoom")} disabled={!sizes.length} onClick={() => onZoomChange(1)}>{format.number(Math.round(scale * 100) / 100, { style: "percent", maximumFractionDigits: 0 })}</button>
+          <button type="button" className="libera-latex-icon-button" aria-label={t("zoomIn")} title={t("zoomIn")} disabled={!sizes.length} onClick={() => zoomBy(1.15)}><ZoomIn aria-hidden className="h-4 w-4" /></button>
+          <button type="button" className="libera-latex-icon-button" aria-label={t("fitPageWidth")} title={t("fitPageWidth")} aria-pressed={zoom === "width"} disabled={!sizes.length} onClick={() => onZoomChange("width")}><Maximize2 aria-hidden className="h-4 w-4" /></button>
+          {downloadUrl ? <a className="libera-latex-icon-button" aria-label={t("downloadPdf")} title={t("downloadPdf")} href={downloadUrl} download><Download aria-hidden className="h-4 w-4" /></a> : null}
         </div>
       </div>
       <div

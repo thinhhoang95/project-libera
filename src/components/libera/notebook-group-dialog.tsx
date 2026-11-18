@@ -1,3 +1,4 @@
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { BookOpen } from "lucide-react";
@@ -38,6 +39,8 @@ export function NotebookGroupDialog({
   onClose,
   onSubmit,
 }: NotebookGroupDialogProps) {
+  const t = useTranslations("notebookGroupDialog");
+  const tCommon = useTranslations("common");
   if (!dialog) {
     return null;
   }
@@ -61,8 +64,8 @@ export function NotebookGroupDialog({
     <ModalDialog
       open
       sectioned
-      title={dialog.mode === "create" ? "Create a new group" : "Edit group"}
-      description="Bundle related notebooks into one focused workspace."
+      title={dialog.mode === "create" ? t("createGroupTitle") : t("editGroupTitle")}
+      description={t("description")}
       panelClassName="max-w-[640px]"
       onClose={onClose}
       footer={
@@ -72,7 +75,7 @@ export function NotebookGroupDialog({
             type="button"
             onClick={onClose}
           >
-            Cancel
+            {tCommon("cancel")}
           </button>
           <button
             className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -81,10 +84,10 @@ export function NotebookGroupDialog({
             disabled={submitting}
           >
             {submitting
-              ? "Saving"
+              ? t("saving")
               : dialog.mode === "create"
-                ? "Create group"
-                : "Save changes"}
+                ? t("createGroup")
+                : t("saveChanges")}
           </button>
         </>
       }
@@ -111,6 +114,7 @@ function NotebookGroupDialogForm({
   tree: LiberaTree;
   onSubmit: (values: NotebookGroupFormValues) => Promise<void>;
 }) {
+  const t = useTranslations("notebookGroupDialog");
   const [values, setValues] = useState(initialValues);
   const selectedNotebookNames = new Set(values.notebookNames);
   const notebooks = [...tree.notebooks].sort((left, right) =>
@@ -144,11 +148,11 @@ function NotebookGroupDialogForm({
       <div className="libera-dialog-section space-y-4">
       <div>
         <label className="block text-sm font-medium text-foreground" htmlFor="group-title">
-          Group name
+          {t("groupNameLabel")}
         </label>
         <input
           id="group-title"
-          placeholder="e.g. Research, Teaching, Project…"
+          placeholder={t("groupNamePlaceholder")}
           className="mt-1 h-10 w-full rounded-xl border border-input px-3 text-sm outline-none transition focus:border-ring"
           value={values.title}
           onChange={(event) =>
@@ -160,11 +164,11 @@ function NotebookGroupDialogForm({
 
       <div>
         <label className="block text-sm font-medium text-foreground" htmlFor="group-description">
-          Description
+          {t("descriptionLabel")}
         </label>
         <textarea
           id="group-description"
-          placeholder="Add a short description (optional)…"
+          placeholder={t("descriptionPlaceholder")}
           className="mt-1 min-h-20 w-full resize-y rounded-xl border border-input px-3 py-2 text-sm outline-none transition focus:border-ring"
           value={values.description}
           onChange={(event) =>
@@ -178,12 +182,12 @@ function NotebookGroupDialogForm({
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-muted text-accent"><BookOpen aria-hidden className="h-6 w-6" /></span>
           <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold tracking-tight">Choose notebooks</h3>
-            <p className="mt-1 text-xs text-muted-foreground">Select the notebooks you want in this group.</p>
+            <h3 className="text-base font-semibold tracking-tight">{t("chooseNotebooks")}</h3>
+            <p className="mt-1 text-xs text-muted-foreground">{t("chooseNotebooksHint")}</p>
           </div>
           <div className="text-right text-xs">
-            <p className="text-accent" aria-live="polite">{values.notebookNames.length} selected</p>
-            <p className="mt-1 text-muted-foreground">{notebooks.length} notebooks available</p>
+            <p className="text-accent" aria-live="polite">{t("selectedCount", { count: values.notebookNames.length })}</p>
+            <p className="mt-1 text-muted-foreground">{t("notebooksAvailable", { count: notebooks.length })}</p>
           </div>
         </div>
         {notebooks.length ? (
@@ -209,14 +213,14 @@ function NotebookGroupDialogForm({
                 </span>
                 <span className="min-w-0">
                   <span className="block truncate">{notebook.name}</span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">{counts.notes} {counts.notes === 1 ? "note" : "notes"} · {counts.files} {counts.files === 1 ? "file" : "files"}</span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">{t("noteFileCounts", counts)}</span>
                 </span>
               </label>
             ); })}
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-input px-4 py-6 text-sm text-muted-foreground">
-            No notebooks are available.
+            {t("noNotebooks")}
           </div>
         )}
       </div>

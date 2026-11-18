@@ -1,6 +1,7 @@
 "use client";
 
 import { ExternalLink, FileQuestion, Network, Search } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { apiRequest } from "@/components/libera/api-client";
@@ -21,7 +22,10 @@ export type NoteLinkGroup = {
   key: string;
   kind: "file" | "external" | "missing";
   title: string;
+  /** The folder path of a file group; empty for links outside the library (see `note`). */
   subtitle: string;
+  /** Why a non-file group has no path: a web link, a library link to a missing file, or any other link. */
+  note?: "web" | "missing" | "other";
   file?: LiberaFileNode;
   /** Opens the group's file or URL from the current note. */
   href: string;
@@ -44,9 +48,9 @@ export function forwardLinkGroups(content: string, documentPath: string, files: 
     const group: Omit<NoteLinkGroup, "items"> = file
       ? { key: `file:${file.path}`, kind: "file", title: file.name, subtitle: fileSubtitle(file), file, href: occurrence.href }
       : isExternalMarkdownLink(occurrence.href)
-        ? { key: `url:${occurrence.href}`, kind: "external", title: occurrence.href.replace(/^https?:\/\//, ""), subtitle: "Web link", href: occurrence.href }
+        ? { key: `url:${occurrence.href}`, kind: "external", title: occurrence.href.replace(/^https?:\/\//, ""), subtitle: "", note: "web", href: occurrence.href }
         : { key: `missing:${occurrence.href}`, kind: "missing", title: occurrence.href,
-            subtitle: isLikelyWorkspaceMarkdownLink(occurrence.href) ? "Not found in the library" : "Other link", href: occurrence.href };
+            subtitle: "", note: isLikelyWorkspaceMarkdownLink(occurrence.href) ? "missing" : "other", href: occurrence.href };
     const existing = groups.get(group.key) ?? { ...group, items: [] };
     existing.items.push({ ...occurrence, openHref: occurrence.href });
     groups.set(group.key, existing);
@@ -124,13 +128,14 @@ export function NoteLinksButton({
   getContent: () => string;
   onOpenLink: (href: string) => Promise<boolean> | void;
 }) {
+  const t = useTranslations("noteLinksDialog");
   const [open, setOpen] = useState(false);
   return (
     <>
       <button
         type="button"
-        aria-label="Backlinks and forward links"
-        title="Backlinks and forward links"
+        aria-label={t("linksButton")}
+        title={t("linksButton")}
         className={className}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => setOpen(true)}
@@ -167,6 +172,7 @@ export function NoteLinksDialog({
   onClose: () => void;
   onOpenLink: (href: string) => void;
 }) {
+  const t = useTranslations("noteLinksDialog");
   const [query, setQuery] = useState("");
   const [backlinkContents, setBacklinkContents] = useState<Map<string, string> | null>(null);
   const [error, setError] = useState("");
@@ -201,14 +207,14 @@ export function NoteLinksDialog({
       }
       await Promise.all(Array.from({ length: Math.min(BACKLINK_READ_CONCURRENCY, queue.length) }, worker));
       if (cancelled) return;
-      if (unreadable) setError(`${unreadable} linking ${unreadable === 1 ? "note" : "notes"} could not be read.`);
+      if (unreadable) setError(t("linkingNotesUnreadable", { count: unreadable }));
       setBacklinkContents(contents);
     }
     void readSources();
     return () => {
       cancelled = true;
     };
-  }, [sourcePaths]);
+  }, [sourcePaths, t]);
 
   const visibleBacklinks = useMemo(() => filterLinkGroups(backlinks, query), [backlinks, query]);
   const visibleForward = useMemo(() => filterLinkGroups(forward, query), [forward, query]);
@@ -238,21 +244,21 @@ export function NoteLinksDialog({
   let itemIndex = -1;
   let body: ReactNode;
   if (direction === "backlinks" && !backlinkContents) {
-    body = <p className="px-3 py-6 text-center text-sm text-muted-foreground">Reading linking notes…</p>;
+    body = <p className="px-3 py-6 text-center text-sm text-muted-foreground">{t("readingLinkingNotes")}</p>;
   } else if (!groups.length) {
     body = (
       <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-        {query ? "No links match your search."
-          : direction === "backlinks" ? "No saved notes link to this file yet." : "This note has no links yet."}
+        {query ? t("noLinksMatch")
+          : direction === "backlinks" ? t("noBacklinks") : t("noForwardLinks")}
       </p>
     );
   } else {
     body = groups.map((group) => (
       <section key={group.key} className="libera-links-group">
-        <button type="button" className="libera-links-group-header" title={group.kind === "file" ? `Open ${group.title}` : group.href} onClick={() => onOpenLink(group.href)}>
+        <button type="button" className="libera-links-group-header" title={group.kind === "file" ? t("openGroup", { title: group.title }) : group.href} onClick={() => onOpenLink(group.href)}>
           <span className="libera-tree-file-icon shrink-0" data-type={group.file?.fileType}><GroupIcon group={group} /></span>
           <span className="min-w-0 flex-1 truncate font-medium"><Highlighted text={group.title} query={query} /></span>
-          <span className="min-w-0 max-w-[45%] shrink truncate text-xs text-muted-foreground">{group.subtitle}</span>
+          <span className="min-w-0 max-w-[45%] shrink truncate text-xs text-muted-foreground">{group.note ? t(`note.${group.note}`) : group.subtitle}</span>
           <span className="libera-links-count">{group.items.length}</span>
         </button>
         <ul>
@@ -268,7 +274,7 @@ export function NoteLinksDialog({
                   onMouseMove={() => setActiveIndex(index)}
                   onClick={() => onOpenLink(item.openHref)}
                 >
-                  <span className="libera-links-line">L{item.line}</span>
+                  <span className="libera-links-line">{t("lineLabel", { line: item.line })}</span>
                   <span className="min-w-0 flex-1">
                     <Highlighted text={item.excerpt.before} query={query} />
                     <span className="libera-links-anchor"><Highlighted text={item.excerpt.text} query={query} /></span>
@@ -284,15 +290,15 @@ export function NoteLinksDialog({
   }
 
   return (
-    <ModalDialog open title="Links" description="Notes that link here, and where this note links to." panelClassName="max-w-2xl" onClose={onClose}>
+    <ModalDialog open title={t("title")} description={t("description")} panelClassName="max-w-2xl" onClose={onClose}>
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2">
           <Search aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
           <input
             autoFocus
-            aria-label="Search links"
+            aria-label={t("searchLinks")}
             className="h-9 min-w-0 flex-1 bg-transparent text-sm outline-none"
-            placeholder="Search by note, path or text around the link"
+            placeholder={t("searchPlaceholder")}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -301,8 +307,8 @@ export function NoteLinksDialog({
             onKeyDown={handleKeyDown}
           />
         </div>
-        <div role="tablist" aria-label="Link direction" className="libera-links-tabs">
-          {([["backlinks", "Backlinks", visibleBacklinks], ["forward", "Forward links", visibleForward]] as const).map(([value, label, list]) => (
+        <div role="tablist" aria-label={t("linkDirection")} className="libera-links-tabs">
+          {([["backlinks", t("backlinks"), visibleBacklinks], ["forward", t("forwardLinks"), visibleForward]] as const).map(([value, label, list]) => (
             <button
               key={value}
               type="button"
@@ -320,7 +326,7 @@ export function NoteLinksDialog({
         </div>
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         <div ref={listRef} role="tabpanel" className="libera-links-list">{body}</div>
-        <p className="text-xs text-muted-foreground">↑ ↓ to move, Enter to open, Tab to switch lists. Backlinks come from saved notes.</p>
+        <p className="text-xs text-muted-foreground">{t("keyboardHint")}</p>
       </div>
     </ModalDialog>
   );

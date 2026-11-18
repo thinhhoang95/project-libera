@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Copy, Download, ShieldAlert, TriangleAlert, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import "./collab.css";
 
@@ -64,12 +65,14 @@ export interface RejectedEditBannerProps {
  * the update (usually a role change, collaboration map §M1.8).
  */
 export function RejectedEditBanner({ rejectedText, reason, onDismiss, className = "" }: RejectedEditBannerProps) {
+  const t = useTranslations("collab.collabBanners");
+  const tCommon = useTranslations("common");
   const [copied, copy] = useCopyFeedback();
   return (
     <div className={`${BANNER} ${className}`} data-tone="warn" role="alert">
       <TriangleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
       <div className="min-w-0 flex-1">
-        <p className="font-medium">Some of your changes were not accepted (role changed).</p>
+        <p className="font-medium">{t("rejectedTitle")}</p>
         {reason ? <p className="text-xs opacity-80">{reason}</p> : null}
       </div>
       <div className="flex shrink-0 items-center gap-1">
@@ -80,10 +83,10 @@ export function RejectedEditBanner({ rejectedText, reason, onDismiss, className 
           onClick={() => void copy(rejectedText)}
         >
           {copied ? <Check aria-hidden className="h-3.5 w-3.5" /> : <Copy aria-hidden className="h-3.5 w-3.5" />}
-          {copied ? "Copied" : "Copy my unsynced text"}
+          {copied ? tCommon("copied") : t("copyUnsynced")}
         </button>
         {onDismiss ? (
-          <button aria-label="Dismiss" className="rounded-md p-1 hover:bg-current/10" type="button" onClick={onDismiss}>
+          <button aria-label={tCommon("dismiss")} className="rounded-md p-1 hover:bg-current/10" type="button" onClick={onDismiss}>
             <X aria-hidden className="h-3.5 w-3.5" />
           </button>
         ) : null}
@@ -103,13 +106,15 @@ export interface AccessChangedBannerProps {
 
 /** Shown on a document whose access was revoked or reduced; the local copy stays readable. */
 export function AccessChangedBanner({ onExport, detail, onDismiss, className = "" }: AccessChangedBannerProps) {
+  const t = useTranslations("collab.collabBanners");
+  const tCommon = useTranslations("common");
   return (
     <div className={`${BANNER} ${className}`} data-tone="danger" role="alert">
       <ShieldAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
       <div className="min-w-0 flex-1">
-        <p className="font-medium">Your access to this notebook changed.</p>
+        <p className="font-medium">{t("accessChangedTitle")}</p>
         <p className="text-xs opacity-80">
-          {detail ?? "This copy is read-only now. Your local work is kept on this device; export it to keep editing elsewhere."}
+          {detail ?? t("accessChangedDetail")}
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
@@ -119,10 +124,10 @@ export function AccessChangedBanner({ onExport, detail, onDismiss, className = "
           onClick={onExport}
         >
           <Download aria-hidden className="h-3.5 w-3.5" />
-          Export
+          {t("export")}
         </button>
         {onDismiss ? (
-          <button aria-label="Dismiss" className="rounded-md p-1 hover:bg-current/10" type="button" onClick={onDismiss}>
+          <button aria-label={tCommon("dismiss")} className="rounded-md p-1 hover:bg-current/10" type="button" onClick={onDismiss}>
             <X aria-hidden className="h-3.5 w-3.5" />
           </button>
         ) : null}

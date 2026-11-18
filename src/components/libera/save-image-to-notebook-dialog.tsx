@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
+import { useRegisterGalleryTranslator } from "@/components/libera/gallery-i18n";
 import { folderOptions } from "@/components/libera/image-generation-panel";
 import { announceImageSaved, imageFile, subscribeSaveToNotebook, type ImageSaveSource } from "@/components/libera/image-save";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -31,6 +33,9 @@ function SaveImageForm({ source, tree, onUpload, onClose }: {
   onUpload: (notebook: string, files: File[], destinationPath: string, options: { throwOnError: true }) => Promise<LiberaFileNode[]>;
   onClose: () => void;
 }) {
+  const t = useTranslations("saveImageToNotebookDialog");
+  const tCommon = useTranslations("common");
+  useRegisterGalleryTranslator();
   const folders = useMemo(() => folderOptions(tree), [tree]);
   const [name, setName] = useState(source.name);
   const [folder, setFolder] = useState(() => {
@@ -49,36 +54,36 @@ function SaveImageForm({ source, tree, onUpload, onClose }: {
     try {
       const file = await imageFile({ ...source, name: fileName });
       const uploaded = await onUpload(folder.split("/")[0], [file], folder, { throwOnError: true });
-      if (!uploaded.length) throw new Error("Could not save the image.");
+      if (!uploaded.length) throw new Error(t("saveFailed"));
       try { window.localStorage.setItem(FOLDER_STORAGE_KEY, folder); } catch { /* storage unavailable */ }
-      announceImageSaved(source.src, `Saved to ${folder.replaceAll("/", " / ")}`);
+      announceImageSaved(source.src, t("savedTo", { folder: folder.replaceAll("/", " / ") }));
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not save the image.");
+      setError(failure instanceof Error ? failure.message : t("saveFailed"));
       setSubmitting(false);
     }
   }
 
   return (
-    <ModalDialog open title="Save to notebook folder" description="Save a copy of this image into a notebook." onClose={onClose}>
+    <ModalDialog open title={t("title")} description={t("description")} onClose={onClose}>
       <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <fieldset disabled={submitting} className="space-y-4 disabled:opacity-60">
           <label className="block text-sm font-medium">
-            File name
+            {t("fileName")}
             <input autoFocus required className={fieldClass} value={name} onChange={(event) => setName(event.target.value)}
               onFocus={(event) => event.target.setSelectionRange(0, event.target.value.lastIndexOf(".") > 0 ? event.target.value.lastIndexOf(".") : event.target.value.length)} />
           </label>
           <label className="block text-sm font-medium">
-            Folder
+            {t("folder")}
             <select required className={fieldClass} value={folder} onChange={(event) => setFolder(event.target.value)}>
-              {folders.length ? null : <option value="">No notebooks yet</option>}
+              {folders.length ? null : <option value="">{t("noNotebooks")}</option>}
               {folders.map((option) => <option key={option.path} value={option.path}>{option.label}</option>)}
             </select>
           </label>
           {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
           <div className="libera-dialog-actions flex justify-end gap-2 pt-2">
-            <button type="button" className="rounded-lg border border-border px-4 py-2 text-sm" onClick={onClose}>Cancel</button>
-            <button type="submit" className="libera-dialog-primary" disabled={!folder || !name.trim()}>{submitting ? "Saving…" : "Save"}</button>
+            <button type="button" className="rounded-lg border border-border px-4 py-2 text-sm" onClick={onClose}>{tCommon("cancel")}</button>
+            <button type="submit" className="libera-dialog-primary" disabled={!folder || !name.trim()}>{submitting ? tCommon("saving") : tCommon("save")}</button>
           </div>
         </fieldset>
       </form>

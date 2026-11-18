@@ -1,3 +1,4 @@
+import { useTranslations } from "next-intl";
 import { AlertTriangle } from "lucide-react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import type { WorkspaceConfirmDialogState } from "@/components/libera/types";
@@ -9,63 +10,56 @@ type WorkspaceConfirmDialogProps = {
   onConfirm: () => Promise<void>;
 };
 
-function getDialogContent(dialog: WorkspaceConfirmDialogState) {
+function getDialogContent(dialog: WorkspaceConfirmDialogState, t: ReturnType<typeof useTranslations>) {
   switch (dialog.mode) {
     case "close-tab":
       return {
-        title: "Close unsaved note",
-        description: `${dialog.fileName} has unsaved edits.`,
-        confirmLabel: "Close without saving",
+        title: t("closeTabTitle"),
+        description: t("closeTabDescription", { fileName: dialog.fileName }),
+        confirmLabel: t("closeTabConfirm"),
         destructive: true,
       };
-    case "close-tabs": {
-      const tabLabel = dialog.tabCount === 1 ? "tab" : "tabs";
-      const dirtyTabVerb = dialog.dirtyTabCount === 1 ? "has" : "have";
-
+    case "close-tabs":
       return {
-        title: "Close other tabs",
-        description: `${dialog.dirtyTabCount} of the ${dialog.tabCount} other ${tabLabel} ${dirtyTabVerb} unsaved edits.`,
-        confirmLabel: `Close ${dialog.tabCount} ${tabLabel} without saving`,
+        title: t("closeTabsTitle"),
+        description: t("closeTabsDescription", { dirtyTabCount: dialog.dirtyTabCount, tabCount: dialog.tabCount }),
+        confirmLabel: t("closeTabsConfirm", { tabCount: dialog.tabCount }),
         destructive: true,
       };
-    }
     case "delete-file":
       return {
-        title: "Delete file",
-        description: `Delete ${dialog.file.name}?`,
-        confirmLabel: "Delete file",
+        title: t("deleteFileTitle"),
+        description: t("deleteFileDescription", { name: dialog.file.name }),
+        confirmLabel: t("deleteFileConfirm"),
         destructive: true,
       };
     case "delete-folder":
       return {
-        title: "Delete folder",
-        description: `Delete ${dialog.folder.name} and everything inside it?`,
-        confirmLabel: "Delete folder",
+        title: t("deleteFolderTitle"),
+        description: t("deleteFolderDescription", { name: dialog.folder.name }),
+        confirmLabel: t("deleteFolderConfirm"),
         destructive: true,
       };
     case "delete-notebook":
       return {
-        title: "Delete notebook",
-        description: `Delete ${dialog.notebook} and all files inside it?`,
-        confirmLabel: "Delete notebook",
+        title: t("deleteNotebookTitle"),
+        description: t("deleteNotebookDescription", { notebook: dialog.notebook }),
+        confirmLabel: t("deleteNotebookConfirm"),
         destructive: true,
       };
-    case "remove-folder": {
-      const tabLabel = dialog.dirtyTabCount === 1 ? "open tab has" : "open tabs have";
-
+    case "remove-folder":
       return {
-        title: "Remove folder from Libera",
-        description: `${dialog.dirtyTabCount} ${tabLabel} unsaved edits in ${dialog.notebook}. The folder and its files stay on disk.`,
-        confirmLabel: "Remove without saving",
+        title: t("removeFolderTitle"),
+        description: t("removeFolderDescription", { dirtyTabCount: dialog.dirtyTabCount, notebook: dialog.notebook }),
+        confirmLabel: t("removeFolderConfirm"),
         destructive: true,
       };
-    }
     case "move-file-node":
     case "move-file-folder":
       return {
-        title: "Move unsaved file",
-        description: `${dialog.file.name} has unsaved edits.`,
-        confirmLabel: "Move without saving",
+        title: t("moveFileTitle"),
+        description: t("moveFileDescription", { name: dialog.file.name }),
+        confirmLabel: t("moveFileConfirm"),
         destructive: false,
       };
   }
@@ -77,11 +71,12 @@ export function WorkspaceConfirmDialog({
   onClose,
   onConfirm,
 }: WorkspaceConfirmDialogProps) {
+  const t = useTranslations("workspaceConfirmDialog");
   if (!dialog) {
     return null;
   }
 
-  const content = getDialogContent(dialog);
+  const content = getDialogContent(dialog, t);
 
   return (
     <ModalDialog
@@ -96,7 +91,7 @@ export function WorkspaceConfirmDialog({
             type="button"
             onClick={onClose}
           >
-            Cancel
+            {t("cancel")}
           </button>
           <button
             className={`rounded-lg px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60 ${
@@ -108,14 +103,14 @@ export function WorkspaceConfirmDialog({
             disabled={submitting}
             onClick={() => void onConfirm()}
           >
-            {submitting ? "Working" : content.confirmLabel}
+            {submitting ? t("working") : content.confirmLabel}
           </button>
         </>
       }
     >
       <div className="flex gap-3 rounded-lg border border-border bg-muted px-3 py-3 text-sm text-foreground">
         <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
-        <p>This action cannot be undone automatically.</p>
+        <p>{t("cannotBeUndone")}</p>
       </div>
     </ModalDialog>
   );

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useTranslations } from "next-intl";
 import type { Editor } from "@tiptap/core";
 import { EditorView } from "@codemirror/view";
 import { closeHistory } from "@tiptap/pm/history";
@@ -64,14 +65,15 @@ function watchViewport(root: HTMLElement, measure: (top: number, bottom: number)
 
 export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | null>, apply: (text: string) => void) {
   const r = useMarkdownReview();
-  const latest = useRef({ r, apply });
-  useLayoutEffect(() => { latest.current = { r, apply }; }, [r, apply]);
+  const t = useTranslations("useEditorReview");
+  const latest = useRef({ r, apply, t });
+  useLayoutEffect(() => { latest.current = { r, apply, t }; }, [r, apply, t]);
   const register = r?.register;
   useEffect(() => {
     const input = textareaRef.current;
     if (!input || !register) return;
     let composing = false;
-    const unregister = register({ isComposing: () => composing, snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text),
+    const unregister = register({ isComposing: () => composing, snapshot: () => { if (composing) throw new Error(latest.current.t("finishComposingError")); return input.value; }, apply: (text) => latest.current.apply(text),
       selection: () => (input.selectionEnd > input.selectionStart ? { start: input.selectionStart, end: input.selectionEnd } : null), focus: (range) => {
       input.focus(); input.setSelectionRange(range.start, range.end); scrollTextareaToOffset(input, range.start);
     } });
@@ -101,8 +103,9 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
 }
 export function useCodeMirrorReview(view: EditorView | null, apply: (text: string) => void, sourceTextarea?: RefObject<HTMLTextAreaElement | null>) {
   const r = useMarkdownReview();
-  const latest = useRef({ r, apply });
-  useLayoutEffect(() => { latest.current = { r, apply }; }, [r, apply]);
+  const t = useTranslations("useEditorReview");
+  const latest = useRef({ r, apply, t });
+  useLayoutEffect(() => { latest.current = { r, apply, t }; }, [r, apply, t]);
   const register = r?.register;
   useEffect(() => {
     if (!view || !register) return;
@@ -111,7 +114,7 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     const range = () => { const { from, to } = view.state.selection.main; return { start: from, end: to }; };
     let claimed: Event | null = null;
     const composing = () => sourceTextarea ? view.compositionStarted : view.composing;
-    const unregister = register({ isComposing: composing, snapshot: () => { if (composing()) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text),
+    const unregister = register({ isComposing: composing, snapshot: () => { if (composing()) throw new Error(latest.current.t("finishComposingError")); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text),
       selection: () => { const { from, to } = view.state.selection.main; return to > from ? { start: from, end: to } : null; }, focus: (target) => {
       const length = view.state.doc.length;
       const anchor = Math.min(target.start, length), head = Math.min(target.end, length);
@@ -172,8 +175,11 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
 }
 export function useTiptapReview(editor: Editor | null, lastValue: RefObject<string>, read: () => string, replace: (markdown: string) => void) {
   const r = useMarkdownReview();
+  const t = useTranslations("useEditorReview");
   const latest = useRef(r);
   useLayoutEffect(() => { latest.current = r; }, [r]);
+  const tRef = useRef(t);
+  useLayoutEffect(() => { tRef.current = t; }, [t]);
   // The editor whose last preview dispatch carried no ranges and no changes.
   const idleEditor = useRef<Editor | null>(null);
   const register = r?.register;
@@ -181,7 +187,7 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     if (!editor || !register) return;
     const root = editor.view.dom;
     let claimed: Event | null = null;
-    const unregister = register({ isComposing: () => editor.view.composing, snapshot: () => { if (editor.view.composing) throw new Error("Finish composing text before reviewing."); return read(); }, apply: (text) => {
+    const unregister = register({ isComposing: () => editor.view.composing, snapshot: () => { if (editor.view.composing) throw new Error(tRef.current("finishComposingError")); return read(); }, apply: (text) => {
       editor.view.dispatch(closeHistory(editor.state.tr));
       replace(text);
       editor.view.dispatch(closeHistory(editor.state.tr));
@@ -261,8 +267,8 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     const suggestions = sharedDoc ? [] : r?.doc?.session?.suggestions ?? [];
     const agentSuggestions = sharedDoc ? [] : r?.doc?.agentSuggestions ?? [];
     const changes = tiptapReviewChanges(editor, source, [
-      ...suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Change ${index + 1}`, edits: s.edits }] : []),
-      ...agentSuggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Agent edit ${index + 1}`, edits: s.edits }] : []),
+      ...suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: t("changeLabel", { number: index + 1 }), edits: s.edits }] : []),
+      ...agentSuggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: t("agentEditLabel", { number: index + 1 }), edits: s.edits }] : []),
     ]);
     const decide: ChangeDecider = (ids, decision) => {
       const review = latest.current;
@@ -280,5 +286,5 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     if (empty && idleEditor.current === editor && drawn?.decide && !drawn.changes.some((change) => change.mode === "preview" && change.channel === undefined) && !highlighted?.find().length) return;
     idleEditor.current = empty ? editor : null;
     editor.view.dispatch(editor.state.tr.setMeta(tiptapReviewKey, ranges).setMeta(tiptapChangesKey, { type: "preview", changes, decide } satisfies TiptapChangesMeta));
-  }, [editor, r?.doc, r?.enabled, r?.selection, lastValue, sharedDoc, read]);
+  }, [editor, r?.doc, r?.enabled, r?.selection, lastValue, sharedDoc, read, t]);
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { ModalDialog } from "./modal-dialog";
 import { apiRequest } from "./api-client";
 import type { LiberaTree, LiberaTreeNode } from "@/lib/types";
@@ -14,6 +15,8 @@ export function DocumentChatExportDialog({ snapshot, onClose, onSaved, onSaveToN
   onSaved?: (notebook: string) => Promise<void>;
   onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>;
 }) {
+  const t = useTranslations("documentChatExportDialog");
+  const tc = useTranslations("common");
   const [name, setName] = useState(snapshot.fileName);
   const [directory, setDirectory] = useState("");
   const [directories, setDirectories] = useState<string[]>([]);
@@ -32,15 +35,15 @@ export function DocumentChatExportDialog({ snapshot, onClose, onSaved, onSaveToN
       for (const notebook of tree.notebooks) { paths.push(notebook.name); collect(notebook.children); }
       setDirectories(paths);
       setDirectory(paths[0] ?? "");
-    }).catch((cause) => { if (!disposed) setError(cause instanceof Error ? cause.message : "Could not load notebooks."); })
+    }).catch((cause) => { if (!disposed) setError(cause instanceof Error ? cause.message : t("couldNotLoadNotebooks")); })
       .finally(() => { if (!disposed) setLoading(false); });
     return () => { disposed = true; };
-  }, []);
+  }, [t]);
 
   async function save() {
     if (savingRef.current || !directory) return;
     const requestedName = name.trim();
-    if (!requestedName || /[\\/]/.test(requestedName) || requestedName === "." || requestedName === "..") { setError("Enter a file name without slashes."); return; }
+    if (!requestedName || /[\\/]/.test(requestedName) || requestedName === "." || requestedName === "..") { setError(t("fileNameNoSlashes")); return; }
     savingRef.current = true;
     setSaving(true);
     setError("");
@@ -51,20 +54,20 @@ export function DocumentChatExportDialog({ snapshot, onClose, onSaved, onSaveToN
       else await apiRequest("/api/files", { method: "POST", body: JSON.stringify({ notebook, parentPath: directory, name: fileName, content: snapshot.content }) });
       onClose();
       void onSaved?.(notebook).catch(() => undefined);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not export chat."); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : t("couldNotExport")); }
     finally { savingRef.current = false; setSaving(false); }
   }
 
   const fieldClass = "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm";
-  return <ModalDialog open title="Save chat to notebook or folder" onClose={() => { if (!savingRef.current) onClose(); }}>
+  return <ModalDialog open title={t("title")} onClose={() => { if (!savingRef.current) onClose(); }}>
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <fieldset disabled={saving || loading} className="space-y-4">
-        <label className="block text-sm">File name<input className={fieldClass} required value={name} onChange={(event) => setName(event.target.value)} /></label>
-        <label className="block text-sm">Notebook or folder<select className={fieldClass} value={directory} onChange={(event) => setDirectory(event.target.value)}>{directories.map((path) => <option key={path} value={path}>{path}</option>)}</select></label>
-        {loading && <p role="status" className="text-sm text-muted-foreground">Loading notebooks and folders…</p>}
-        {!loading && !directories.length && !error && <p className="text-sm text-muted-foreground">Create a notebook to save your chat here.</p>}
+        <label className="block text-sm">{t("fileName")}<input className={fieldClass} required value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <label className="block text-sm">{t("notebookOrFolder")}<select className={fieldClass} value={directory} onChange={(event) => setDirectory(event.target.value)}>{directories.map((path) => <option key={path} value={path}>{path}</option>)}</select></label>
+        {loading && <p role="status" className="text-sm text-muted-foreground">{t("loadingNotebooks")}</p>}
+        {!loading && !directories.length && !error && <p className="text-sm text-muted-foreground">{t("createNotebookHint")}</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-        <div className="libera-dialog-actions flex justify-end gap-2"><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="libera-dialog-primary disabled:opacity-40" disabled={!directory || !name.trim()}>{saving ? "Saving…" : "Save"}</button></div>
+        <div className="libera-dialog-actions flex justify-end gap-2"><button type="button" onClick={onClose}>{tc("cancel")}</button><button type="submit" className="libera-dialog-primary disabled:opacity-40" disabled={!directory || !name.trim()}>{saving ? tc("saving") : tc("save")}</button></div>
       </fieldset>
     </form>
   </ModalDialog>;

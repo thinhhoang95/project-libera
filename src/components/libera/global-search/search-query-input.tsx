@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
 import {
@@ -40,7 +41,8 @@ export async function imageFileToDataUrl(file: File) {
     canvas.width = Math.max(1, Math.round(bitmap.width * scale));
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
     const context = canvas.getContext("2d");
-    if (!context) throw new Error("Could not read the image.");
+    // Callers word their own error; this message is never shown.
+    if (!context) throw new Error("");
     // Transparent areas become white rather than black.
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
@@ -78,6 +80,7 @@ export function SearchQueryInput({
   onImageAdded?: () => void;
   onError?: (message: string) => void;
 }) {
+  const t = useTranslations("globalSearch.searchQueryInput");
   const editorRef = useRef<HTMLDivElement>(null);
   const imagesRef = useRef(new Map<string, SearchImageRef>());
   const [empty, setEmpty] = useState(true);
@@ -145,7 +148,7 @@ export function SearchQueryInput({
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "libera-search-chip-remove";
-    remove.setAttribute("aria-label", `Remove ${image.name} from the search`);
+    remove.setAttribute("aria-label", t("removeFromSearch", { name: image.name }));
     remove.textContent = "×";
     remove.addEventListener("mousedown", (event) => event.preventDefault());
     remove.addEventListener("click", () => {
@@ -180,7 +183,7 @@ export function SearchQueryInput({
     const editor = editorRef.current;
     if (!editor) return;
     if (imagesRef.current.size >= MAX_SEARCH_QUERY_IMAGES) {
-      callbacks.current.onError?.(`A search can include up to ${MAX_SEARCH_QUERY_IMAGES} images.`);
+      callbacks.current.onError?.(t("imageLimit", { max: MAX_SEARCH_QUERY_IMAGES }));
       return;
     }
 
@@ -242,10 +245,10 @@ export function SearchQueryInput({
     for (const file of files) {
       if (!file.type.startsWith("image/")) continue;
       try {
-        insertImage({ kind: "upload", name: file.name || "Pasted image", dataUrl: await imageFileToDataUrl(file) }, at);
+        insertImage({ kind: "upload", name: file.name || t("pastedImageName"), dataUrl: await imageFileToDataUrl(file) }, at);
         at = null;
       } catch {
-        callbacks.current.onError?.(`Could not read ${file.name || "the image"}.`);
+        callbacks.current.onError?.(t("couldNotReadNamed", { name: file.name || t("theImage") }));
       }
     }
   }
@@ -265,7 +268,7 @@ export function SearchQueryInput({
       <div
         ref={editorRef}
         role="textbox"
-        aria-label="Search your library"
+        aria-label={t("searchYourLibrary")}
         aria-multiline="false"
         aria-placeholder={placeholder}
         contentEditable

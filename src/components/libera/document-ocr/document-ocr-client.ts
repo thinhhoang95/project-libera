@@ -32,7 +32,7 @@ export async function readImageAsMarkdown(
 
 export function canvasToBlob(canvas: HTMLCanvasElement, type = "image/png") {
   return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not encode the image."))), type);
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error(""))), type);
   });
 }
 

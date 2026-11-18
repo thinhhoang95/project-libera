@@ -6,6 +6,7 @@
 // member's id through onMentionsChange, so the request carries `mentions`
 // and the server notifies them.
 
+import { useTranslations } from "next-intl";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type TextareaHTMLAttributes } from "react";
 import type { Member } from "@/lib/collab/local-api";
 import { collabClient } from "@/lib/collab/ui/client";
@@ -61,6 +62,7 @@ export type MentionTextareaProps = Omit<TextareaHTMLAttributes<HTMLTextAreaEleme
 };
 
 export function MentionTextarea({ projectId, value, onChange, onMentionsChange, selfId, members: given, onKeyDown, className, ...rest }: MentionTextareaProps) {
+  const t = useTranslations("collab.mentions.mentionTextarea");
   const listId = useId();
   const fetched = useProjectMembers(given ? null : projectId);
   const members: MentionCandidate[] = given ?? fetched;
@@ -149,7 +151,7 @@ export function MentionTextarea({ projectId, value, onChange, onMentionsChange, 
         onKeyDown={keyDown}
       />
       {open ? (
-        <ul id={listId} role="listbox" aria-label="Mention a member" className="libera-mention-list absolute left-0 right-0 z-[70] mt-1 max-h-48 overflow-auto rounded-lg border border-border bg-card p-1 text-xs shadow-lg">
+        <ul id={listId} role="listbox" aria-label={t("mentionListLabel")} className="libera-mention-list absolute left-0 right-0 z-[70] mt-1 max-h-48 overflow-auto rounded-lg border border-border bg-card p-1 text-xs shadow-lg">
           {options.map((candidate, index) => (
             <li
               key={candidate.id}

@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isActiveReferenceJob, type ReferenceJobRequest, type ReferenceJobStatus } from "@/lib/references/jobs-types";
 
@@ -48,20 +49,21 @@ async function errorMessage(response: Response, fallback: string) {
   return fallback;
 }
 
-export async function fetchReferenceJobs(notebook: string): Promise<ReferenceJobStatus[]> {
+/** `fallback` (translated by the caller) is shown when the server gives no reason; English by default. */
+export async function fetchReferenceJobs(notebook: string, fallback = "Could not read the reference jobs."): Promise<ReferenceJobStatus[]> {
   const response = await fetch(`/api/references/jobs?notebook=${encodeURIComponent(notebook)}`, { cache: "no-store" });
-  if (!response.ok) throw new Error(await errorMessage(response, "Could not read the reference jobs."));
+  if (!response.ok) throw new Error(await errorMessage(response, fallback));
   const { jobs } = await response.json() as { jobs?: ReferenceJobStatus[] };
   return Array.isArray(jobs) ? jobs : [];
 }
 
-export async function postReferenceJob(request: ReferenceJobRequest): Promise<ReferenceJobStatus> {
+export async function postReferenceJob(request: ReferenceJobRequest, fallback = "The reference job could not be started."): Promise<ReferenceJobStatus> {
   const response = await fetch("/api/references/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   });
-  if (!response.ok) throw new Error(await errorMessage(response, "The reference job could not be started."));
+  if (!response.ok) throw new Error(await errorMessage(response, fallback));
   return (await response.json() as { job: ReferenceJobStatus }).job;
 }
 
@@ -77,6 +79,7 @@ function progressSignature(job: ReferenceJobStatus) {
  * window followed it and that was not dismissed.
  */
 export function useReferenceJobs(notebook: string, onProgress: () => void) {
+  const t = useTranslations("references.useReferenceJobs");
   const [jobs, setJobs] = useState<ReferenceJobStatus[]>([]);
   const [error, setError] = useState("");
   const [, setDismissals] = useState(0);
@@ -106,18 +109,18 @@ export function useReferenceJobs(notebook: string, onProgress: () => void) {
   /** The jobs, unless this window started or cancelled one while they were being read. */
   const load = useCallback(async () => {
     const asked = generation.current;
-    const next = await fetchReferenceJobs(notebook);
+    const next = await fetchReferenceJobs(notebook, t("readJobsError"));
     if (asked === generation.current) adopt(next);
-  }, [notebook, adopt]);
+  }, [notebook, adopt, t]);
 
   const refresh = useCallback(async () => {
     try {
       await load();
       setError("");
     } catch (refreshError) {
-      setError(refreshError instanceof Error ? refreshError.message : "Could not read the reference jobs.");
+      setError(refreshError instanceof Error && refreshError.message ? refreshError.message : t("readJobsError"));
     }
-  }, [load]);
+  }, [load, t]);
 
   // Once on mount, to pick up a job started elsewhere or before this panel opened.
   useEffect(() => {
@@ -157,9 +160,9 @@ export function useReferenceJobs(notebook: string, onProgress: () => void) {
       // The runner may still finish the file in hand; one more poll settles the counts.
       void refresh();
     } catch (cancelError) {
-      setError(cancelError instanceof Error ? cancelError.message : "The job could not be cancelled.");
+      setError(cancelError instanceof Error && cancelError.message ? cancelError.message : t("cancelJobError"));
     }
-  }, [notebook, refresh]);
+  }, [notebook, refresh, t]);
 
   const dismiss = useCallback((jobId: string) => {
     dismissed.add(jobId);

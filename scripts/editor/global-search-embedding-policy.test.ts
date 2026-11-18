@@ -11,6 +11,9 @@ import { filePathFromParts } from "../../src/lib/storage/paths";
 import { readSearchLibrary } from "../../src/lib/search/library-files";
 import { normalizeSearchPreferences, searchPreferencesFromEnvironment } from "../../electron/search-preferences.cjs";
 import { scheduleSummary, statusSummary, timeUntil } from "../../src/components/libera/global-search/search-view";
+import { englishTranslator } from "./intl";
+
+const tSearch = englishTranslator("globalSearch.searchView");
 
 const vector = () => { const value = new Float32Array(128); value[0] = 1; return value; };
 const internals = (indexer: SearchIndexer) => indexer as unknown as { running: Promise<void> | null; chunkLibraryFile: (file: { name: string }) => Promise<unknown> };
@@ -90,22 +93,22 @@ test("keyword wait settings default to an hour and round custom values up", () =
 test("schedules read as relative times", () => {
   const now = Date.parse("2026-10-30T12:00:00Z");
   const at = (ms: number) => new Date(now + ms).toISOString();
-  assert.equal(timeUntil(at(20_000), now), "in under a minute");
-  assert.equal(timeUntil(at(-5_000), now), "in under a minute");
-  assert.equal(timeUntil(at(34 * 60_000 + 1), now), "in 35 minutes");
-  assert.equal(timeUntil(at(60 * 60_000), now), "in 1 hour");
-  assert.equal(timeUntil(at(160 * 60_000), now), "in 3 hours");
-  assert.equal(timeUntil(at(36 * 3_600_000), now), "in 2 days");
-  assert.equal(timeUntil(at(7 * 86_400_000), now), "in 7 days");
+  assert.equal(timeUntil(at(20_000), now, tSearch, "en"), "in under a minute");
+  assert.equal(timeUntil(at(-5_000), now, tSearch, "en"), "in under a minute");
+  assert.equal(timeUntil(at(34 * 60_000 + 1), now, tSearch, "en"), "in 35 minutes");
+  assert.equal(timeUntil(at(60 * 60_000), now, tSearch, "en"), "in 1 hour");
+  assert.equal(timeUntil(at(160 * 60_000), now, tSearch, "en"), "in 3 hours");
+  assert.equal(timeUntil(at(36 * 3_600_000), now, tSearch, "en"), "in 2 days");
+  assert.equal(timeUntil(at(7 * 86_400_000), now, tSearch, "en"), "in 7 days");
   const status = {
     state: "idle", exists: true, backgroundIndexing: true, files: 12, chunks: 4, embeddedChunks: 2,
     model: { configured: true, vision: false, state: "ready", dimensions: 128 },
     embeddingDeferred: "interval", nextEmbeddingAt: at(3 * 3_600_000), nextKeywordUpdateAt: at(40 * 60_000),
   } as unknown as Parameters<typeof statusSummary>[0];
-  assert.equal(statusSummary(status, now).text, "12 files indexed · embeddings in 3 hours");
-  assert.equal(scheduleSummary(status, now), "Next keyword update in 40 minutes");
-  assert.equal(scheduleSummary({ ...status!, nextKeywordUpdateAt: undefined }, now), "Keyword index up to date");
-  assert.equal(scheduleSummary({ ...status!, backgroundIndexing: false }, now), "Updates only when requested");
+  assert.equal(statusSummary(status, now, tSearch, "en").text, "12 files indexed · embeddings in 3 hours");
+  assert.equal(scheduleSummary(status, now, tSearch, "en"), "Next keyword update in 40 minutes");
+  assert.equal(scheduleSummary({ ...status!, nextKeywordUpdateAt: undefined }, now, tSearch, "en"), "Keyword index up to date");
+  assert.equal(scheduleSummary({ ...status!, backgroundIndexing: false }, now, tSearch, "en"), "Updates only when requested");
 });
 
 test("saves and polling wait for the keyword interval, then update together; Update index and model changes do not wait", async (t) => {

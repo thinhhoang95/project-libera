@@ -1,7 +1,8 @@
 "use client";
 
 import { AlertCircle, BadgeCheck, Check, GitMerge, Info, Loader2, Paperclip, Pencil, Plus, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { FormattedCitationHtml } from "@/components/libera/references/citation-chip";
 import { ProvenanceChip } from "@/components/libera/references/reference-card";
@@ -10,8 +11,9 @@ import {
   fileBaseName,
   formatFieldValue,
   formatPlainReference,
-  PROVENANCE_LABELS,
-  STATUS_LABELS,
+  provenanceLabel,
+  statusLabel,
+  type DisplayTranslator,
 } from "@/components/libera/references/reference-display";
 import { readCustomStyle } from "@/components/libera/references/reference-render-context";
 import { isPreprint, mergeEntryFields } from "@/lib/references/dedupe";
@@ -68,20 +70,24 @@ export function resetReferenceResolutionSession() {
   privacyNoticeShown = false;
 }
 
+/** Translates `references.referenceCandidates` messages; English without it. */
+export type CandidateTranslator = (key: string, values?: Record<string, string | number>) => string;
+
+/** English text of the privacy notice (the notice itself is translated). */
 export const PRIVACY_NOTICE_TEXT = "Libera looks up identifiers and titles on Crossref, OpenAlex, arXiv, PubMed and Open Library. With AI on, the first pages of a PDF are sent to your AI provider.";
 
 export function PrivacyNotice({ onDismiss }: { onDismiss: () => void }) {
+  const t = useTranslations("references.referenceCandidates");
   const preferences = typeof window !== "undefined" ? window.liberaPreferences : undefined;
   return (
-    <div role="note" aria-label="Online lookups" className="libera-panel-card mx-3 mb-2 flex items-start gap-2 p-2 text-[11px] leading-relaxed">
+    <div role="note" aria-label={t("privacyAria")} className="libera-panel-card mx-3 mb-2 flex items-start gap-2 p-2 text-[11px] leading-relaxed">
       <Info aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <p className="min-w-0 flex-1">
-        {PRIVACY_NOTICE_TEXT}{" "}
         {preferences
-          ? <button type="button" className="font-medium text-accent hover:underline" onClick={() => void preferences.open("ai")}>Preferences</button>
-          : <>Change this in Preferences → AI.</>}
+          ? t.rich("privacyWithLink", { link: (chunks) => <button type="button" className="font-medium text-accent hover:underline" onClick={() => void preferences.open("ai")}>{chunks}</button> })
+          : t("privacyNoLink")}
       </p>
-      <button type="button" className="shrink-0" aria-label="Dismiss notice" onClick={onDismiss}><X aria-hidden className="h-3 w-3" /></button>
+      <button type="button" className="shrink-0" aria-label={t("dismissNotice")} onClick={onDismiss}><X aria-hidden className="h-3 w-3" /></button>
     </div>
   );
 }
@@ -223,10 +229,11 @@ export function useFormattedReference(notebook: string, setting: string, entry: 
 }
 
 export function FormattedReference({ notebook, setting, entry, className }: { notebook: string; setting: string; entry: FormattableEntry; className?: string }) {
+  const t = useTranslations("references.referenceCandidates");
   const { html, text, pending } = useFormattedReference(notebook, setting, entry);
   return (
     // Long DOIs and URLs have no break points: let them wrap anywhere rather than overflow.
-    <div className={`[overflow-wrap:anywhere] ${className ?? ""}`} aria-label="Formatted reference" data-formatted={html ? "citeproc" : "plain"} aria-busy={pending || undefined}>
+    <div className={`[overflow-wrap:anywhere] ${className ?? ""}`} aria-label={t("formattedAria")} data-formatted={html ? "citeproc" : "plain"} aria-busy={pending || undefined}>
       {html ? <FormattedCitationHtml html={html} /> : text}
     </div>
   );
@@ -304,17 +311,25 @@ function pendingConflicts(candidate: Pick<ReferenceEntryInput, "conflicts">) {
  * OpenAlex, arXiv, PubMed, Open Library) with confidence ≥ 0.9, and no
  * sources may still disagree.
  */
-export function confirmBlocker(candidate: ReferenceEntryInput): string | null {
+export function confirmBlocker(candidate: ReferenceEntryInput, i18n?: { t: CandidateTranslator; tDisplay: DisplayTranslator }): string | null {
+  const t = i18n?.t;
+  const label = (field: string) => fieldLabel(field, i18n?.tDisplay);
   const fields = Object.keys(candidate.csl).filter((field) => field !== "type" && hasValue(candidate.csl[field]));
-  if (!fields.length) return "There are no fields to confirm.";
+  if (!fields.length) return t ? t("blockerNoFields") : "There are no fields to confirm.";
   const conflicts = pendingConflicts(candidate);
-  if (conflicts.length) return `Sources disagree on ${conflicts.map((field) => fieldLabel(field).toLowerCase()).join(", ")}: choose a value first.`;
+  if (conflicts.length) return t ? t("blockerConflicts", { fields: conflicts.map(label).join(", ") }) : `Sources disagree on ${conflicts.map((field) => fieldLabel(field).toLowerCase()).join(", ")}: choose a value first.`;
   for (const field of fields) {
     // The resolution server gives every field a source, identifiers copied into the item included.
     const provenance = candidate.provenance?.[field];
-    if (!provenance) return `${fieldLabel(field)} has no source.`;
-    if (!AUTHORITATIVE_SOURCES.includes(provenance.source)) return `${fieldLabel(field)} comes from ${PROVENANCE_LABELS[provenance.source] ?? provenance.source}, not an authoritative source.`;
-    if (provenance.confidence < CONFIRM_CONFIDENCE) return `${fieldLabel(field)} has confidence ${Math.round(provenance.confidence * 100)}%, below 90%.`;
+    if (!provenance) return t ? t("blockerNoSource", { field: label(field) }) : `${fieldLabel(field)} has no source.`;
+    if (!AUTHORITATIVE_SOURCES.includes(provenance.source)) {
+      const source = provenanceLabel(provenance.source, i18n?.tDisplay) ?? provenance.source;
+      return t ? t("blockerNotAuthoritative", { field: label(field), source }) : `${fieldLabel(field)} comes from ${source}, not an authoritative source.`;
+    }
+    if (provenance.confidence < CONFIRM_CONFIDENCE) {
+      const percent = Math.round(provenance.confidence * 100);
+      return t ? t("blockerLowConfidence", { field: label(field), percent }) : `${fieldLabel(field)} has confidence ${percent}%, below 90%.`;
+    }
   }
   return null;
 }
@@ -527,12 +542,12 @@ export function buildReresolveOp(entry: ReferenceEntry, candidate: ReferenceEntr
 }
 
 /** Resolve an entry again; the first candidate is the resolved version. */
-export async function reresolveEntry(notebook: string, entry: ReferenceEntry, webSearch: boolean, signal?: AbortSignal) {
+export async function reresolveEntry(notebook: string, entry: ReferenceEntry, webSearch: boolean, signal?: AbortSignal, t?: CandidateTranslator) {
   const request = reresolveRequest(entry);
-  if (!request) throw new Error(`${entry.key} has no identifier, PDF or title to look up.`);
+  if (!request) throw new Error(t ? t("noIdentifier", { key: entry.key }) : `${entry.key} has no identifier, PDF or title to look up.`);
   const result = await resolveReference({ notebook, ...request, webSearch }, signal);
   const candidate = result.candidates[0];
-  if (!candidate) throw new Error(`Nothing was found for ${entry.key}.`);
+  if (!candidate) throw new Error(t ? t("nothingFoundForKey", { key: entry.key }) : `Nothing was found for ${entry.key}.`);
   return { candidate, warnings: result.warnings, request };
 }
 
@@ -551,10 +566,13 @@ function candidateFields(candidate: ReferenceEntryInput) {
   ];
 }
 
-function updateLabel(op: ReferenceLibraryOp, library: ReferenceLibrary) {
-  const key = "id" in op ? library.entries[op.id]?.key ?? "an entry" : "the library";
-  if (op.op === "attach") return <>Attach <span className="font-medium">{op.attachment.kind === "url" ? op.attachment.url : fileBaseName(op.attachment.path)}</span> to <span className="font-mono">{key}</span></>;
-  return <>Update <span className="font-mono">{key}</span></>;
+function UpdateLabel({ op, library }: { op: ReferenceLibraryOp; library: ReferenceLibrary }) {
+  const t = useTranslations("references.referenceCandidates");
+  const mono = (chunks: ReactNode) => <span className="font-mono">{chunks}</span>;
+  if (!("id" in op)) return <>{t("updateLibrary")}</>;
+  const key = library.entries[op.id]?.key ?? t("anEntry");
+  if (op.op === "attach") return <>{t.rich("attachFileTo", { file: op.attachment.kind === "url" ? op.attachment.url : fileBaseName(op.attachment.path), key, strong: (chunks) => <span className="font-medium">{chunks}</span>, mono })}</>;
+  return <>{t.rich("updateEntry", { key, mono })}</>;
 }
 
 function updateTarget(updates: ReferenceLibraryOp[]) {
@@ -576,6 +594,7 @@ type CandidateListProps = {
 
 /** The confirmation view for /resolve results: one card per candidate, with checkboxes and "Add selected" for several. */
 export function CandidateList({ notebook, library, result, busy, onCommit, onEdit, onReveal }: CandidateListProps) {
+  const t = useTranslations("references.referenceCandidates");
   const [drafts, setDrafts] = useState(() => result.candidates.map((candidate) => structuredClone(candidate)));
   const duplicatesOf = useMemo(() => result.candidates.map((_, index) => result.duplicates
     .filter((duplicate) => duplicate.candidateIndex === index && library.entries[duplicate.entryId])
@@ -589,17 +608,17 @@ export function CandidateList({ notebook, library, result, busy, onCommit, onEdi
   const add = (entries: ReferenceEntryInput[], label: string) => onCommit([...entries.map((entry): ReferenceLibraryOp => ({ op: "add", entry })), ...updates], label);
 
   return (
-    <div className="space-y-2" aria-label="Candidates">
+    <div className="space-y-2" aria-label={t("candidatesAria")}>
       {result.warnings.length ? (
-        <ul className="space-y-0.5 rounded-lg bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground" aria-label="Lookup warnings">
+        <ul className="space-y-0.5 rounded-lg bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground" aria-label={t("warningsAria")}>
           {result.warnings.map((warning, index) => <li key={index} className="flex gap-1.5"><AlertCircle aria-hidden className="mt-0.5 h-3 w-3 shrink-0" />{warning}</li>)}
         </ul>
       ) : null}
-      {!drafts.length && !updates.length ? <p className="text-[12px] text-muted-foreground">Nothing was found for this input.</p> : null}
+      {!drafts.length && !updates.length ? <p className="text-[12px] text-muted-foreground">{t("nothingFound")}</p> : null}
       {multiple ? (
         <div className="flex items-center gap-2 text-[11px]">
-          <span className="flex-1 text-muted-foreground">{drafts.length} references found. Untick the ones you do not want.</span>
-          <button type="button" className="font-medium text-accent hover:underline" onClick={() => setSelected(drafts.map(() => !selected.every(Boolean)))}>{selected.every(Boolean) ? "Select none" : "Select all"}</button>
+          <span className="flex-1 text-muted-foreground">{t("referencesFound", { count: drafts.length })}</span>
+          <button type="button" className="font-medium text-accent hover:underline" onClick={() => setSelected(drafts.map(() => !selected.every(Boolean)))}>{selected.every(Boolean) ? t("selectNone") : t("selectAll")}</button>
         </div>
       ) : null}
       <div className="space-y-2">
@@ -616,22 +635,22 @@ export function CandidateList({ notebook, library, result, busy, onCommit, onEdi
             busy={busy}
             onSelect={(value) => setSelected((current) => current.map((item, position) => position === index ? value : item))}
             onChange={(next) => setDraft(index, next)}
-            onAdd={(confirm) => add([confirm ? { ...draft, status: "confirmed" } : draft], "Add reference")}
-            onAttach={(entry) => onCommit([...attachCandidateOps(entry, draft), ...updates], `Attach to ${entry.key}`, entry.id)}
-            onMerge={(entry, preprintPair) => onCommit([...mergeCandidateOps(entry, draft, { preprintPair }), ...updates], `Merge into ${entry.key}`, entry.id)}
+            onAdd={(confirm) => add([confirm ? { ...draft, status: "confirmed" } : draft], t("addReferenceLabel"))}
+            onAttach={(entry) => onCommit([...attachCandidateOps(entry, draft), ...updates], t("attachToLabel", { key: entry.key }), entry.id)}
+            onMerge={(entry, preprintPair) => onCommit([...mergeCandidateOps(entry, draft, { preprintPair }), ...updates], t("mergeIntoLabel", { key: entry.key }), entry.id)}
             onEdit={() => onEdit(draft, updates)}
             onReveal={onReveal}
           />
         ))}
       </div>
       {updates.length ? (
-        <div className="space-y-1 rounded-lg border border-dashed border-input p-2 text-[11px]" aria-label="Updates">
-          <p className="text-muted-foreground">{drafts.length ? "Also, after you confirm:" : "This file belongs to an entry you already have:"}</p>
-          <ul className="space-y-0.5">{updates.map((op, index) => <li key={index}>{updateLabel(op, library)}</li>)}</ul>
+        <div className="space-y-1 rounded-lg border border-dashed border-input p-2 text-[11px]" aria-label={t("updatesAria")}>
+          <p className="text-muted-foreground">{drafts.length ? t("alsoAfterConfirm") : t("belongsToEntry")}</p>
+          <ul className="space-y-0.5">{updates.map((op, index) => <li key={index}><UpdateLabel op={op} library={library} /></li>)}</ul>
           {!drafts.length ? (
             <div className="flex justify-end">
-              <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy} onClick={() => void onCommit(updates, "Attach file", updateTarget(updates))}>
-                <Paperclip aria-hidden className="h-3.5 w-3.5" /> Attach
+              <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy} onClick={() => void onCommit(updates, t("attachFileLabel"), updateTarget(updates))}>
+                <Paperclip aria-hidden className="h-3.5 w-3.5" /> {t("attach")}
               </button>
             </div>
           ) : null}
@@ -639,8 +658,8 @@ export function CandidateList({ notebook, library, result, busy, onCommit, onEdi
       ) : null}
       {multiple ? (
         <div className="flex justify-end">
-          <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy || !chosen.length} onClick={() => void add(chosen, `Add ${chosen.length} references`)}>
-            <Plus aria-hidden className="h-3.5 w-3.5" /> Add selected ({chosen.length})
+          <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy || !chosen.length} onClick={() => void add(chosen, t("addManyLabel", { count: chosen.length }))}>
+            <Plus aria-hidden className="h-3.5 w-3.5" /> {t("addSelected", { count: chosen.length })}
           </button>
         </div>
       ) : null}
@@ -667,71 +686,76 @@ type CardProps = {
 };
 
 function PreprintExplanation({ candidate, entry }: { candidate: ReferenceEntryInput; entry: ReferenceEntry }) {
+  const t = useTranslations("references.referenceCandidates");
+  const mono = (chunks: ReactNode) => <span className="font-mono">{chunks}</span>;
   return isPreprint(candidate) ? (
     <p className="text-[11px] leading-relaxed text-muted-foreground" data-preprint="candidate">
-      This is a preprint of <span className="font-mono">{entry.key}</span>, which is the published version. Libera keeps one work for both: merging links the preprint to <span className="font-mono">{entry.key}</span> and keeps its published metadata and key.
+      {t.rich("preprintOfEntry", { key: entry.key, mono })}
     </p>
   ) : (
     <p className="text-[11px] leading-relaxed text-muted-foreground" data-preprint="entry">
-      This is the published version of <span className="font-mono">{entry.key}</span>, a preprint. Libera keeps one work for both: merging updates <span className="font-mono">{entry.key}</span> with the published metadata (fields you wrote are kept and the new values offered next to them), links the preprint as a version, and keeps the key so citations still work.
+      {t.rich("publishedOfPreprint", { key: entry.key, mono })}
     </p>
   );
 }
 
 function CandidateCard({ index, notebook, styleSetting, candidate, duplicates, multiple, selected, busy, onSelect, onChange, onAdd, onAttach, onMerge, onEdit, onReveal }: CardProps) {
+  const t = useTranslations("references.referenceCandidates");
+  const tDisplay = useTranslations("references.referenceDisplay");
+  const tc = useTranslations("common");
   const fields = candidateFields(candidate);
-  const blocker = confirmBlocker(candidate);
+  const blocker = confirmBlocker(candidate, { t, tDisplay });
   const status = candidate.status ?? "needs-review";
   const formattable = { id: `candidate-${index}`, key: candidate.key || `candidate${index}`, csl: candidate.csl };
   const actionClass = "libera-panel-button h-7 px-2 text-[11px]";
   return (
-    <div className="space-y-1.5 rounded-lg border border-input p-2 text-[12px]" data-candidate={index} aria-label={`Candidate ${index + 1}`} role="group">
+    <div className="space-y-1.5 rounded-lg border border-input p-2 text-[12px]" data-candidate={index} aria-label={t("candidateAria", { number: index + 1 })} role="group">
       <div className="flex items-start gap-2">
-        {multiple ? <input type="checkbox" className="mt-0.5" checked={selected} aria-label={`Include candidate ${index + 1}`} onChange={(event) => onSelect(event.target.checked)} /> : null}
+        {multiple ? <input type="checkbox" className="mt-0.5" checked={selected} aria-label={t("includeAria", { number: index + 1 })} onChange={(event) => onSelect(event.target.checked)} /> : null}
         <FormattedReference className="min-w-0 flex-1 text-[12px] leading-relaxed" notebook={notebook} setting={styleSetting} entry={formattable} />
-        <span className="libera-reference-badge shrink-0" data-status={status}>{STATUS_LABELS[status]}</span>
+        <span className="libera-reference-badge shrink-0" data-status={status}>{statusLabel(status, tDisplay)}</span>
       </div>
 
       {duplicates.map((duplicate) => (
         <div key={duplicate.entryId} className="space-y-1 rounded-md bg-muted p-1.5" data-duplicate={duplicate.entryId}>
           <p className="flex items-center gap-1 text-[11px] text-destructive">
-            <AlertCircle aria-hidden className="h-3 w-3 shrink-0" /> Already in your library as <button type="button" className="font-mono underline" onClick={() => onReveal(duplicate.entryId)}>{duplicate.entry.key}</button>
+            <AlertCircle aria-hidden className="h-3 w-3 shrink-0" /> {t.rich("alreadyInLibrary", { key: duplicate.entry.key, link: (chunks) => <button type="button" className="font-mono underline" onClick={() => onReveal(duplicate.entryId)}>{chunks}</button> })}
           </p>
           {duplicate.preprintPair ? <PreprintExplanation candidate={candidate} entry={duplicate.entry} /> : null}
           {!multiple ? (
             <div className="flex flex-wrap justify-end gap-1">
               {newAttachments(duplicate.entry, candidate).length ? (
-                <button type="button" className={actionClass} disabled={busy} onClick={() => onAttach(duplicate.entry)}><Paperclip aria-hidden className="h-3 w-3" /> Attach to existing</button>
+                <button type="button" className={actionClass} disabled={busy} onClick={() => onAttach(duplicate.entry)}><Paperclip aria-hidden className="h-3 w-3" /> {t("attachToExisting")}</button>
               ) : null}
-              <button type="button" className={actionClass} disabled={busy} onClick={() => onMerge(duplicate.entry, Boolean(duplicate.preprintPair))}><GitMerge aria-hidden className="h-3 w-3" /> Merge into existing</button>
+              <button type="button" className={actionClass} disabled={busy} onClick={() => onMerge(duplicate.entry, Boolean(duplicate.preprintPair))}><GitMerge aria-hidden className="h-3 w-3" /> {t("mergeIntoExisting")}</button>
             </div>
           ) : null}
         </div>
       ))}
 
       {!multiple || fields.some((field) => candidate.conflicts?.[field]?.length) ? (
-        <dl className="space-y-0.5" aria-label="Candidate fields">
+        <dl className="space-y-0.5" aria-label={t("fieldsAria")}>
           {fields.filter((field) => !multiple || candidate.conflicts?.[field]?.length).map((field) => {
             const alternatives = candidate.conflicts?.[field] ?? [];
             return (
               <div key={field} className="libera-reference-field" data-field={field} data-conflict={alternatives.length ? true : undefined}>
                 <dt className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  <span className="min-w-0 flex-1 truncate">{fieldLabel(field)}</span>
+                  <span className="min-w-0 flex-1 truncate">{fieldLabel(field, tDisplay)}</span>
                   <ProvenanceChip provenance={candidate.provenance?.[field]} />
                 </dt>
                 <dd className="min-w-0 break-words text-[12px]">
                   {hasValue(candidate.csl[field]) ? formatFieldValue(field, candidate.csl[field]) : <span className="text-muted-foreground">—</span>}
                   {alternatives.length ? (
-                    <div className="mt-1 space-y-1 rounded-lg border border-dashed border-input p-1.5" role="group" aria-label={`Other values for ${fieldLabel(field)}`}>
-                      <p className="text-[11px] text-muted-foreground">Sources disagree. Keep this value or choose another before adding:</p>
+                    <div className="mt-1 space-y-1 rounded-lg border border-dashed border-input p-1.5" role="group" aria-label={t("otherValuesAria", { field: fieldLabel(field, tDisplay) })}>
+                      <p className="text-[11px] text-muted-foreground">{t("sourcesDisagree")}</p>
                       {alternatives.map((alternative, position) => (
                         <div key={position} className="flex items-center gap-1.5">
                           <span className="min-w-0 flex-1 break-words">{formatFieldValue(field, alternative.value)}</span>
                           <ProvenanceChip provenance={alternative.provenance} />
-                          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" aria-label={`Use ${formatFieldValue(field, alternative.value)} from ${PROVENANCE_LABELS[alternative.provenance.source]}`} onClick={() => onChange(chooseCandidateAlternative(candidate, field, alternative))}>Use</button>
+                          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" aria-label={t("useFromAria", { value: formatFieldValue(field, alternative.value), source: provenanceLabel(alternative.provenance.source, tDisplay) })} onClick={() => onChange(chooseCandidateAlternative(candidate, field, alternative))}>{t("use")}</button>
                         </div>
                       ))}
-                      <button type="button" className="text-[11px] font-medium text-accent hover:underline" onClick={() => onChange(keepCandidateValue(candidate, field))}>Keep this value</button>
+                      <button type="button" className="text-[11px] font-medium text-accent hover:underline" onClick={() => onChange(keepCandidateValue(candidate, field))}>{t("keepThisValue")}</button>
                     </div>
                   ) : null}
                 </dd>
@@ -742,19 +766,19 @@ function CandidateCard({ index, notebook, styleSetting, candidate, duplicates, m
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-1">
-        <button type="button" className={actionClass} disabled={busy} onClick={onEdit}><Pencil aria-hidden className="h-3 w-3" /> Edit before adding</button>
+        <button type="button" className={actionClass} disabled={busy} onClick={onEdit}><Pencil aria-hidden className="h-3 w-3" /> {t("editBeforeAdding")}</button>
         {!multiple ? (
           <>
-            <button type="button" className={actionClass} disabled={busy || Boolean(blocker)} title={blocker ?? "Add as confirmed"} onClick={() => onAdd(true)}>
-              <BadgeCheck aria-hidden className="h-3 w-3" /> Add &amp; confirm
+            <button type="button" className={actionClass} disabled={busy || Boolean(blocker)} title={blocker ?? t("addAsConfirmed")} onClick={() => onAdd(true)}>
+              <BadgeCheck aria-hidden className="h-3 w-3" /> {t("addAndConfirm")}
             </button>
             <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy} onClick={() => onAdd(false)}>
-              <Check aria-hidden className="h-3.5 w-3.5" /> {duplicates.length ? "Add anyway" : "Add"}
+              <Check aria-hidden className="h-3.5 w-3.5" /> {duplicates.length ? t("addAnyway") : tc("add")}
             </button>
           </>
         ) : null}
       </div>
-      {!multiple && blocker ? <p className="text-right text-[10px] text-muted-foreground" aria-label="Why it cannot be confirmed">{blocker}</p> : null}
+      {!multiple && blocker ? <p className="text-right text-[10px] text-muted-foreground" aria-label={t("blockerAria")}>{blocker}</p> : null}
     </div>
   );
 }
@@ -779,6 +803,9 @@ type ReresolveDialogProps = {
 
 /** Re-resolve one entry: look it up again, show current vs resolved fields, apply the chosen ones as one update. */
 export function ReresolveDialog({ notebook, entry, webSearch, onLookup, onClose, onApply }: ReresolveDialogProps) {
+  const t = useTranslations("references.referenceCandidates");
+  const tDisplay = useTranslations("references.referenceDisplay");
+  const tc = useTranslations("common");
   const [state, setState] = useState<
     | { kind: "loading" }
     | { kind: "error"; message: string }
@@ -794,26 +821,26 @@ export function ReresolveDialog({ notebook, entry, webSearch, onLookup, onClose,
   useEffect(() => {
     const controller = new AbortController();
     lookupRef.current?.();
-    reresolveEntry(notebook, entryRef.current, webSearch, controller.signal).then(({ candidate, warnings }) => {
+    reresolveEntry(notebook, entryRef.current, webSearch, controller.signal, t).then(({ candidate, warnings }) => {
       const rows = reresolveDiff(entryRef.current, candidate);
       setAccepted(new Set(rows.filter((row) => !row.userOwned).map((row) => row.field)));
       setState({ kind: "ready", candidate, rows, warnings });
     }, (lookupError: unknown) => {
       if (controller.signal.aborted) return;
-      setState({ kind: "error", message: lookupError instanceof Error ? lookupError.message : "The reference could not be looked up." });
+      setState({ kind: "error", message: lookupError instanceof Error && lookupError.message ? lookupError.message : t("lookupFailed") });
     });
     return () => controller.abort();
-  }, [notebook, webSearch]);
+  }, [notebook, webSearch, t]);
 
   async function apply() {
     if (state.kind !== "ready") return;
     setBusy(true);
     setError("");
     try {
-      await onApply(buildReresolveOp(entry, state.candidate, accepted, { confirm }), `Re-resolve ${entry.key}`);
+      await onApply(buildReresolveOp(entry, state.candidate, accepted, { confirm }), t("reresolveLabel", { key: entry.key }));
       onClose();
     } catch (applyError) {
-      setError(applyError instanceof Error ? applyError.message : "The change could not be saved.");
+      setError(applyError instanceof Error && applyError.message ? applyError.message : t("saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -823,23 +850,23 @@ export function ReresolveDialog({ notebook, entry, webSearch, onLookup, onClose,
   return (
     <ModalDialog
       open
-      title={`Re-resolve ${entry.key}`}
-      description="Look the reference up again and choose which resolved values to use."
+      title={t("reresolveTitle", { key: entry.key })}
+      description={t("reresolveDescription")}
       panelClassName="max-w-2xl"
       onClose={onClose}
       footer={
         <>
-          <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={onClose}>{state.kind === "loading" ? "Cancel" : "Close"}</button>
+          <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={onClose}>{state.kind === "loading" ? tc("cancel") : tc("close")}</button>
           {state.kind === "ready" && state.rows.length ? (
-            <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" disabled={busy} onClick={() => void apply()}>Apply</button>
+            <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" disabled={busy} onClick={() => void apply()}>{tc("apply")}</button>
           ) : null}
         </>
       }
     >
-      <div className="space-y-3 text-sm" aria-label="Re-resolve">
+      <div className="space-y-3 text-sm" aria-label={t("reresolveAria")}>
         {error ? <div role="alert" className="rounded-lg bg-destructive-muted p-2.5 text-xs text-destructive">{error}</div> : null}
         {state.kind === "loading" ? (
-          <p className="flex items-center gap-2 text-muted-foreground" role="status"><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> Looking up {entry.key}…</p>
+          <p className="flex items-center gap-2 text-muted-foreground" role="status"><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> {t("lookingUpKey", { key: entry.key })}</p>
         ) : state.kind === "error" ? (
           <div role="alert" className="rounded-lg bg-destructive-muted p-2.5 text-xs text-destructive">{state.message}</div>
         ) : (
@@ -847,27 +874,27 @@ export function ReresolveDialog({ notebook, entry, webSearch, onLookup, onClose,
             {state.warnings.length ? <ul className="text-xs text-muted-foreground">{state.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul> : null}
             {state.rows.length ? (
               <>
-                <table className="w-full text-xs" aria-label="Changes">
+                <table className="w-full text-xs" aria-label={t("changesAria")}>
                   <thead>
                     <tr className="text-left text-muted-foreground">
                       <th className="w-8" />
-                      <th className="w-28 py-1 font-medium">Field</th>
-                      <th className="py-1 font-medium">Current</th>
-                      <th className="py-1 font-medium">Resolved</th>
+                      <th className="w-28 py-1 font-medium">{t("columnField")}</th>
+                      <th className="py-1 font-medium">{t("columnCurrent")}</th>
+                      <th className="py-1 font-medium">{t("columnResolved")}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {state.rows.map((row) => (
                       <tr key={row.field} className="border-t border-border align-top" data-field={row.field} data-user={row.userOwned || undefined}>
                         <td className="py-1">
-                          <input type="checkbox" aria-label={`Use the resolved ${fieldLabel(row.field).toLowerCase()}`} checked={accepted.has(row.field)} onChange={(event) => setAccepted((current) => {
+                          <input type="checkbox" aria-label={t("useResolvedAria", { field: fieldLabel(row.field, tDisplay) })} checked={accepted.has(row.field)} onChange={(event) => setAccepted((current) => {
                             const next = new Set(current);
                             if (event.target.checked) next.add(row.field);
                             else next.delete(row.field);
                             return next;
                           })} />
                         </td>
-                        <td className="py-1 text-muted-foreground">{fieldLabel(row.field)}</td>
+                        <td className="py-1 text-muted-foreground">{fieldLabel(row.field, tDisplay)}</td>
                         <td className="break-words py-1 pr-2">
                           {diffValue(row.field, row.current)} <ProvenanceChip provenance={row.currentProvenance} />
                         </td>
@@ -878,12 +905,12 @@ export function ReresolveDialog({ notebook, entry, webSearch, onLookup, onClose,
                     ))}
                   </tbody>
                 </table>
-                {keptMine ? <p className="text-xs text-muted-foreground">{keptMine} field{keptMine === 1 ? "" : "s"} you wrote will be kept, with the resolved value offered next to {keptMine === 1 ? "it" : "them"} on the card.</p> : null}
+                {keptMine ? <p className="text-xs text-muted-foreground">{t("keptMine", { count: keptMine })}</p> : null}
                 <label className="flex items-center gap-2 text-xs">
-                  <input type="checkbox" checked={confirm} onChange={(event) => setConfirm(event.target.checked)} /> Mark as confirmed (otherwise it needs review)
+                  <input type="checkbox" checked={confirm} onChange={(event) => setConfirm(event.target.checked)} /> {t("markConfirmed")}
                 </label>
               </>
-            ) : <p className="text-muted-foreground">The sources agree with this entry. Nothing to change.</p>}
+            ) : <p className="text-muted-foreground">{t("sourcesAgree")}</p>}
           </>
         )}
       </div>

@@ -61,9 +61,17 @@ export interface PendingDecision {
 
 export type SuggestionOutcomeKind = DecisionOutcome | "reverted" | "conflict" | "failed";
 
+/** Names a translated message (`lib.collab.client.suggestions.{key}`) that replaces the English `message` in the UI. */
+export interface MessageRef {
+  key: string;
+  values?: Record<string, string>;
+}
+
 export interface SuggestionOutcome {
   kind: SuggestionOutcomeKind;
+  /** English; show `suggestionOutcomeText(outcome, t)` instead. */
   message: string;
+  ref?: MessageRef;
   decidedBy?: UserSummary;
   at: number;
 }
@@ -133,7 +141,7 @@ export interface AiSuggestionHint {
 
 export type CreateSuggestionsResult =
   | { ok: true; ids: string[]; matched: number; conflicted: number }
-  | { ok: false; reason: "read-only" | "signed-out" | "not-ready" | "empty"; message: string };
+  | { ok: false; reason: "read-only" | "signed-out" | "not-ready" | "empty"; message: string; ref?: MessageRef };
 
 export interface DecisionResult {
   commandId: string;
@@ -176,7 +184,7 @@ export function registerSuggestionReplyHandler(docId: string, handler: Suggestio
   return () => { if (replyHandlers.get(docId) === handler) replyHandlers.delete(docId); };
 }
 
-export type SuggestionReplyResult = { ok: true; threadId: string } | { ok: false; message: string };
+export type SuggestionReplyResult = { ok: true; threadId: string } | { ok: false; message: string; ref?: MessageRef };
 
 export interface SuggestionsControllerOptions {
   api?: SuggestionsApi;
@@ -195,6 +203,17 @@ export class SuggestionsOrigin {
 }
 
 /* ---- Wording ------------------------------------------------------------------------ */
+
+/** Message keys (`aiTitles.*`) for the English titles the AI features give their suggestions. */
+export const AI_TITLE_KEYS: Record<string, string> = {
+  "AI Rewrite": "rewrite",
+  "Write with AI": "write",
+  "AI Format": "format",
+  "AI Image to Markdown": "imageToMarkdown",
+  "Agentic review": "agenticReview",
+  "AI Agent": "agent",
+  "Review comments": "reviewComments",
+};
 
 const AI_TITLES: Record<AiFeature, string> = {
   rewrite: "AI Rewrite",
@@ -217,6 +236,32 @@ export function fallbackColor(userId: string): string {
 
 export function suggestionLabel(actor: Actor, author: SuggestionAuthorInfo): string {
   return actor.kind === "ai" ? `AI · on behalf of ${author.name}` : author.name;
+}
+
+/** What `useTranslations("lib.collab.client.suggestions")` returns, as far as this file needs it. */
+export type SuggestionsTranslator = (key: string, values?: Record<string, string>) => string;
+
+/** The outcome's text in the interface language (server error text stays as the server sent it). */
+export function suggestionOutcomeText(outcome: SuggestionOutcome, t: SuggestionsTranslator): string {
+  return outcome.ref ? t(outcome.ref.key, outcome.ref.values) : outcome.message;
+}
+
+/** The text of a refused create or reply result in the interface language. */
+export function suggestionResultText(result: { message: string; ref?: MessageRef }, t: SuggestionsTranslator): string {
+  return result.ref ? t(result.ref.key, result.ref.values) : result.message;
+}
+
+function outcomeRef(kind: SuggestionOutcomeKind, decision: DecisionKind | null, by?: UserSummary): MessageRef {
+  switch (kind) {
+    case "applied": return { key: "outcome.applied" };
+    case "rejected": return { key: "outcome.rejected" };
+    case "stale": return { key: "outcome.stale" };
+    case "already-decided": return by ? { key: "outcome.alreadyDecidedBy", values: { name: by.displayName } } : { key: "outcome.alreadyDecided" };
+    case "not-found": return { key: "outcome.notFound" };
+    case "reverted": return { key: "outcome.reverted" };
+    case "conflict": return { key: "outcome.conflict" };
+    case "failed": return { key: decision === "accept" ? "outcome.acceptFailed" : decision === "reject" ? "outcome.rejectFailed" : "outcome.failed" };
+  }
 }
 
 function outcomeMessage(kind: SuggestionOutcomeKind, decision: DecisionKind | null, by?: UserSummary): string {
@@ -543,7 +588,7 @@ export class SuggestionsController {
     const commandId = newSuggestionId("cmd");
     if (!this.canDecide()) {
       const outcomes = new Map<string, SuggestionOutcome>();
-      for (const id of ids) outcomes.set(id, this.setOutcome(id, "failed", decision, undefined, "Only editors can accept or reject suggestions."));
+      for (const id of ids) outcomes.set(id, this.setOutcome(id, "failed", decision, undefined, "Only editors can accept or reject suggestions.", { key: "outcome.onlyEditors" }));
       this.changed();
       return { commandId, sent: Promise.resolve({ queued: false }), settled: Promise.resolve(outcomes) };
     }
@@ -593,8 +638,8 @@ export class SuggestionsController {
     return this.decide(groupIds, decision, { checkpoint: groupIds.length > 1 });
   }
 
-  private setOutcome(id: string, kind: SuggestionOutcomeKind, decision: DecisionKind | null, decidedBy?: UserSummary, message?: string): SuggestionOutcome {
-    const outcome: SuggestionOutcome = { kind, message: message ?? outcomeMessage(kind, decision, decidedBy), ...(decidedBy ? { decidedBy } : {}), at: this.now() };
+  private setOutcome(id: string, kind: SuggestionOutcomeKind, decision: DecisionKind | null, decidedBy?: UserSummary, message?: string, ref?: MessageRef): SuggestionOutcome {
+    const outcome: SuggestionOutcome = { kind, message: message ?? outcomeMessage(kind, decision, decidedBy), ...(message === undefined ? { ref: outcomeRef(kind, decision, decidedBy) } : ref ? { ref } : {}), ...(decidedBy ? { decidedBy } : {}), at: this.now() };
     this.outcomes.set(id, outcome);
     if (decidedBy) this.learn(decidedBy.id, { name: decidedBy.displayName, color: decidedBy.color });
     return outcome;
@@ -617,7 +662,7 @@ export class SuggestionsController {
       } else {
         // Refused (forbidden, offline replay refused, …): roll back.
         const message = status.error?.message;
-        outcomes.set(id, this.setOutcome(id, "failed", command.decision, undefined, message ? `${outcomeMessage("failed", command.decision)} ${message}` : undefined));
+        outcomes.set(id, this.setOutcome(id, "failed", command.decision, undefined, message ? `${outcomeMessage("failed", command.decision)} ${message}` : undefined, message ? { key: command.decision === "accept" ? "outcome.acceptFailedDetail" : command.decision === "reject" ? "outcome.rejectFailedDetail" : "outcome.failedDetail", values: { detail: message } } : undefined));
       }
     }
     this.changed();
@@ -666,7 +711,7 @@ export class SuggestionsController {
         const decidedBy = record.decidedBy ? { id: record.decidedBy, ...this.nameOf(record.decidedBy) } : undefined;
         outcomes.set(id, this.setOutcome(id, ours ? (record.status === "accepted" ? "applied" : "rejected") : "already-decided", command.decision, decidedBy));
       } else if (record.status === "stale") outcomes.set(id, this.setOutcome(id, "stale", command.decision));
-      else outcomes.set(id, this.setOutcome(id, "failed", command.decision, undefined, "The decision could not be confirmed. Try again."));
+      else outcomes.set(id, this.setOutcome(id, "failed", command.decision, undefined, "The decision could not be confirmed. Try again.", { key: "outcome.unconfirmed" }));
     }
     this.commands.delete(commandId);
     this.changed();
@@ -743,9 +788,9 @@ export class SuggestionsController {
   }
 
   private refuseCreate(): CreateSuggestionsResult | null {
-    if (!this.replica.getSnapshot().attached) return { ok: false, reason: "not-ready", message: "This shared document is still opening." };
-    if (!this.localUserId) return { ok: false, reason: "signed-out", message: "Sign in to a collaboration account to suggest changes." };
-    if (!this.canSuggest()) return { ok: false, reason: "read-only", message: "You cannot suggest changes in this shared document." };
+    if (!this.replica.getSnapshot().attached) return { ok: false, reason: "not-ready", message: "This shared document is still opening.", ref: { key: "notAttached" } };
+    if (!this.localUserId) return { ok: false, reason: "signed-out", message: "Sign in to a collaboration account to suggest changes.", ref: { key: "signInToSuggest" } };
+    if (!this.canSuggest()) return { ok: false, reason: "read-only", message: "You cannot suggest changes in this shared document.", ref: { key: "cannotSuggest" } };
     return null;
   }
 
@@ -754,8 +799,8 @@ export class SuggestionsController {
     const refused = this.refuseCreate();
     if (refused) return refused;
     const ytext = this.replica.ytext;
-    if (start < 0 || end < start || end > ytext.length) return { ok: false, reason: "empty", message: "The selection is no longer in the document." };
-    if (ytext.toString().slice(start, end) === replacement) return { ok: false, reason: "empty", message: "The replacement is the same as the text." };
+    if (start < 0 || end < start || end > ytext.length) return { ok: false, reason: "empty", message: "The selection is no longer in the document.", ref: { key: "selectionGone" } };
+    if (ytext.toString().slice(start, end) === replacement) return { ok: false, reason: "empty", message: "The replacement is the same as the text.", ref: { key: "sameText" } };
     const record = createSuggestion(this.replica.annotations, { ytext, start, end, replacement, actor: this.userActor()! }, this.origin);
     return { ok: true, ids: [record.id], matched: 1, conflicted: 0 };
   }
@@ -771,7 +816,7 @@ export class SuggestionsController {
     const refused = this.refuseCreate();
     if (refused) return refused;
     const changes = edits.filter((edit) => edit.before !== edit.after);
-    if (!changes.length) return { ok: false, reason: "empty", message: "AI proposed no change." };
+    if (!changes.length) return { ok: false, reason: "empty", message: "AI proposed no change.", ref: { key: "noChange" } };
     const me = this.localUserId!;
     const runId = hint.runId ?? newSuggestionId("run");
     const actor: Actor = { kind: "ai", onBehalfOf: me, feature: hint.feature, ...(hint.model ? { model: hint.model } : {}), runId };
@@ -791,7 +836,7 @@ export class SuggestionsController {
       });
     }, this.origin);
     const result = created as ReturnType<typeof suggestionsFromSnapshotEdits> | null;
-    if (!result) return { ok: false, reason: "empty", message: "AI proposed no change." };
+    if (!result) return { ok: false, reason: "empty", message: "AI proposed no change.", ref: { key: "noChange" } };
     return { ok: true, ids: result.suggestions.map((record) => record.id), matched: result.matched.length, conflicted: result.conflicted.length };
   }
 
@@ -828,11 +873,11 @@ export class SuggestionsController {
    */
   async sendReply(groupId: string, body: string, mentions?: string[]): Promise<SuggestionReplyResult> {
     const group = this.group(groupId);
-    if (!group) return { ok: false, message: "This suggestion no longer exists." };
+    if (!group) return { ok: false, message: "This suggestion no longer exists.", ref: { key: "outcome.notFound" } };
     const text = body.trim();
-    if (!text) return { ok: false, message: "Enter a reply." };
+    if (!text) return { ok: false, message: "Enter a reply.", ref: { key: "enterReply" } };
     const handler = replyHandlers.get(this.docId);
-    if (!handler) return { ok: false, message: "Open the document's comments to reply." };
+    if (!handler) return { ok: false, message: "Open the document's comments to reply.", ref: { key: "openCommentsToReply" } };
     const request: SuggestionReplyRequest = {
       docId: this.docId,
       groupId,

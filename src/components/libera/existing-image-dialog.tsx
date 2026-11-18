@@ -1,6 +1,7 @@
 "use client";
 
 import { Image as ImageIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -42,6 +43,8 @@ export function ExistingImageDialog({
   onClose,
   onSelect,
 }: ExistingImageDialogProps) {
+  const t = useTranslations("existingImageDialog");
+  const tCommon = useTranslations("common");
   const images = useMemo(
     () => (notebook ? collectImageFiles(notebook.children) : []),
     [notebook],
@@ -60,11 +63,11 @@ export function ExistingImageDialog({
   return (
     <ModalDialog
       open={open}
-      title="Image from existing"
+      title={t("title")}
       description={
         notebook
-          ? `Select an image from ${notebook.name}.`
-          : `Select an image from the current ${isFolder ? "folder" : "notebook"}.`
+          ? t("descriptionNotebook", { name: notebook.name })
+          : t("descriptionCurrent", { isFolder: isFolder ? "yes" : "no" })
       }
       onClose={onClose}
       footer={
@@ -74,7 +77,7 @@ export function ExistingImageDialog({
             type="button"
             onClick={onClose}
           >
-            Cancel
+            {tCommon("cancel")}
           </button>
           <button
             className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -82,7 +85,7 @@ export function ExistingImageDialog({
             disabled={!selectedImage}
             onClick={() => void insertSelectedImage()}
           >
-            Insert image
+            {t("insertImage")}
           </button>
         </>
       }
@@ -119,7 +122,7 @@ export function ExistingImageDialog({
       ) : (
         <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-input px-4 py-8 text-sm text-muted-foreground">
           <ImageIcon aria-hidden className="h-4 w-4" />
-          No images are available in this notebook.
+          {t("noImages")}
         </div>
       )}
     </ModalDialog>

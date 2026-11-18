@@ -1,9 +1,26 @@
 import type { PdfAnnotationRect, PdfMarkupStyle, PdfTextAnnotationFont } from "@/lib/types";
 
 export type AnnotationSwatch = {
+  /** English name; the interface shows `swatchLabel()` instead. */
   label: string;
   value: `#${string}`;
+  /** Message key (under `group`) of this swatch's translated name. */
+  id?: string;
+  /** Message group in `lib.pdfAnnotationStyle` holding the name. */
+  group?: "highlightColors" | "inkColors" | "textInkColors";
 };
+
+type StyleTranslator = (key: string) => string;
+
+/** The swatch's name in the interface language (`t` is `useTranslations("lib.pdfAnnotationStyle")`). */
+export function swatchLabel(t: StyleTranslator, swatch: AnnotationSwatch): string {
+  return swatch.id && swatch.group ? t(`${swatch.group}.${swatch.id}`) : swatch.label;
+}
+
+/** A stroke width's or font's name in the interface language. */
+export function styleChoiceLabel(t: StyleTranslator, kind: "strokeWidths" | "textFonts", id: string): string {
+  return t(`${kind}.${id}`);
+}
 
 /**
  * Highlighter inks. They are painted opaque inside a multiply-blended layer,
@@ -11,22 +28,22 @@ export type AnnotationSwatch = {
  * highlighter. Values are pastel enough to keep dark text readable.
  */
 export const PDF_HIGHLIGHT_COLORS = [
-  { label: "Yellow", value: "#ffe45c" },
-  { label: "Green", value: "#b4eea0" },
-  { label: "Blue", value: "#a8d8ff" },
-  { label: "Pink", value: "#ffb8d9" },
-  { label: "Orange", value: "#ffc987" },
-  { label: "Purple", value: "#d7c6ff" },
+  { id: "yellow", group: "highlightColors", label: "Yellow", value: "#ffe45c" },
+  { id: "green", group: "highlightColors", label: "Green", value: "#b4eea0" },
+  { id: "blue", group: "highlightColors", label: "Blue", value: "#a8d8ff" },
+  { id: "pink", group: "highlightColors", label: "Pink", value: "#ffb8d9" },
+  { id: "orange", group: "highlightColors", label: "Orange", value: "#ffc987" },
+  { id: "purple", group: "highlightColors", label: "Purple", value: "#d7c6ff" },
 ] as const satisfies readonly AnnotationSwatch[];
 
 /** Pen inks for text notes. PDF pages are white paper in every app theme. */
 export const PDF_TEXT_COLORS = [
-  { label: "Blue ink", value: "#1d4ed8" },
-  { label: "Black ink", value: "#1f2328" },
-  { label: "Red ink", value: "#c62828" },
-  { label: "Green ink", value: "#17753a" },
-  { label: "Purple ink", value: "#6d28d9" },
-  { label: "Orange ink", value: "#c2410c" },
+  { id: "blue", group: "textInkColors", label: "Blue ink", value: "#1d4ed8" },
+  { id: "black", group: "textInkColors", label: "Black ink", value: "#1f2328" },
+  { id: "red", group: "textInkColors", label: "Red ink", value: "#c62828" },
+  { id: "green", group: "textInkColors", label: "Green ink", value: "#17753a" },
+  { id: "purple", group: "textInkColors", label: "Purple ink", value: "#6d28d9" },
+  { id: "orange", group: "textInkColors", label: "Orange ink", value: "#c2410c" },
 ] as const satisfies readonly AnnotationSwatch[];
 
 /**
@@ -34,19 +51,19 @@ export const PDF_TEXT_COLORS = [
  * need strong colors, so these lead with red rather than the note blue.
  */
 export const PDF_INK_COLORS = [
-  { label: "Red", value: "#d92d20" },
-  { label: "Blue", value: "#1d4ed8" },
-  { label: "Black", value: "#1f2328" },
-  { label: "Green", value: "#17753a" },
-  { label: "Purple", value: "#6d28d9" },
-  { label: "Orange", value: "#e8590c" },
+  { id: "red", group: "inkColors", label: "Red", value: "#d92d20" },
+  { id: "blue", group: "inkColors", label: "Blue", value: "#1d4ed8" },
+  { id: "black", group: "inkColors", label: "Black", value: "#1f2328" },
+  { id: "green", group: "inkColors", label: "Green", value: "#17753a" },
+  { id: "purple", group: "inkColors", label: "Purple", value: "#6d28d9" },
+  { id: "orange", group: "inkColors", label: "Orange", value: "#e8590c" },
 ] as const satisfies readonly AnnotationSwatch[];
 
 /** Stroke widths in PDF points; they scale with zoom like the page does. */
 export const PDF_STROKE_WIDTHS = [
-  { label: "Thin", value: 1 },
-  { label: "Medium", value: 2 },
-  { label: "Thick", value: 4 },
+  { id: "thin", label: "Thin", value: 1 },
+  { id: "medium", label: "Medium", value: 2 },
+  { id: "thick", label: "Thick", value: 4 },
 ] as const;
 
 export const DEFAULT_PDF_HIGHLIGHT_COLOR = PDF_HIGHLIGHT_COLORS[0].value;
@@ -61,6 +78,7 @@ export function markupPalette(markup: PdfMarkupStyle | undefined): readonly Anno
 }
 
 export const PDF_TEXT_FONTS: readonly {
+  /** English name; the interface shows `styleChoiceLabel(t, "textFonts", value)`. */
   label: string;
   stack: string;
   value: PdfTextAnnotationFont;

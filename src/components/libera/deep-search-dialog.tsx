@@ -1,4 +1,5 @@
 import { FileSearch, Search } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
@@ -19,6 +20,7 @@ export function DeepSearchDialog({
   onClose,
   onOpenFile,
 }: DeepSearchDialogProps) {
+  const t = useTranslations("deepSearchDialog");
   const [query, setQuery] = useState(initialQuery);
   const [searchedQuery, setSearchedQuery] = useState("");
   const [payload, setPayload] = useState<DeepSearchPayload | null>(null);
@@ -52,11 +54,11 @@ export function DeepSearchDialog({
       } else setPayload(response);
     } catch (searchError) {
       setPayload(null);
-      setError(searchError instanceof Error ? searchError.message : "Deep search failed.");
+      setError(searchError instanceof Error ? searchError.message : t("searchFailed"));
     } finally {
       setSearching(false);
     }
-  }, [visibleTree]);
+  }, [t, visibleTree]);
 
   useEffect(() => {
     if (!initialQuery.trim()) {
@@ -83,8 +85,8 @@ export function DeepSearchDialog({
   return (
     <ModalDialog
       open
-      title="Deep Search"
-      description="Search Markdown content, PDF text, and saved text annotations."
+      title={t("title")}
+      description={t("description")}
       panelClassName="max-w-2xl"
       onClose={onClose}
     >
@@ -97,7 +99,7 @@ export function DeepSearchDialog({
           <input
             className="h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
             value={query}
-            placeholder="Search Markdown, PDFs, and annotations"
+            placeholder={t("searchPlaceholder")}
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
@@ -107,7 +109,7 @@ export function DeepSearchDialog({
           disabled={searching || !query.trim()}
         >
           <FileSearch aria-hidden className="h-4 w-4" />
-          Search
+          {t("search")}
         </button>
       </form>
 
@@ -137,10 +139,12 @@ function DeepSearchResults({
   searching: boolean;
   onOpenResult: (result: DeepSearchResult) => void;
 }) {
+  const t = useTranslations("deepSearchDialog");
+
   if (searching) {
     return (
       <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
-        Searching content, PDFs, and annotations...
+        {t("searching")}
       </div>
     );
   }
@@ -156,7 +160,7 @@ function DeepSearchResults({
   if (!searchedQuery) {
     return (
       <div className="flex min-h-48 items-center justify-center px-4 text-center text-sm text-muted-foreground">
-        Enter a query to search Markdown files, PDFs, and saved annotations.
+        {t("enterQuery")}
       </div>
     );
   }
@@ -164,7 +168,7 @@ function DeepSearchResults({
   if (!payload?.results.length) {
     return (
       <div className="flex min-h-48 items-center justify-center px-4 text-center text-sm text-muted-foreground">
-        No deep search results for &quot;{searchedQuery}&quot;.
+        {t("noResults", { query: searchedQuery })}
       </div>
     );
   }
@@ -172,8 +176,7 @@ function DeepSearchResults({
   return (
     <div>
       <div className="border-b border-border px-3 py-2 text-xs text-muted-foreground">
-        {payload.results.length} result{payload.results.length === 1 ? "" : "s"} across{" "}
-        {payload.searchedFiles} file{payload.searchedFiles === 1 ? "" : "s"}
+        {t("resultSummary", { results: payload.results.length, files: payload.searchedFiles })}
       </div>
       <div className="max-h-[50vh] overflow-auto">
         {payload.results.map((result) => (
@@ -197,7 +200,7 @@ function DeepSearchResults({
                 {result.excerpt}
               </span>
               <span className="mt-1 block text-xs text-muted-foreground">
-                {result.matchCount} match{result.matchCount === 1 ? "" : "es"}
+                {t("matchCount", { count: result.matchCount })}
               </span>
             </span>
           </button>

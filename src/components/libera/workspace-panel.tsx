@@ -28,6 +28,8 @@ import {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
+import { useFormatter, useLocale, useTranslations } from "next-intl";
+import { expandedNoteName } from "@/components/libera/default-names";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { expandMarkdownMacros } from "@/lib/markdown-macros";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
@@ -199,15 +201,20 @@ type WorkspacePanelProps = {
   onStartScreenshotSnip: (mode?: MarkdownScreenshotSnipMode, editor?: "source" | "visual") => void;
 };
 
+function EditorLoading({ latex = false }: { latex?: boolean }) {
+  const t = useTranslations("workspacePanel");
+  return <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">{latex ? t("loadingLatexEditor") : t("loadingEditor")}</div>;
+}
+
 // CodeMirror and the PDF pane load only when a LaTeX file is opened.
 const LatexWorkspace = dynamic(
   () => import("@/components/libera/latex/latex-workspace").then((module) => module.LatexWorkspace),
-  { ssr: false, loading: () => <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">Loading LaTeX editor…</div> },
+  { ssr: false, loading: () => <EditorLoading latex /> },
 );
 
 const CodeEditor = dynamic(
   () => import("@/components/libera/code-editor").then((module) => module.CodeEditor),
-  { ssr: false, loading: () => <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">Loading editor…</div> },
+  { ssr: false, loading: () => <EditorLoading /> },
 );
 
 const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
@@ -257,22 +264,15 @@ function markdownFileDisplayName(fileName: string) {
   return fileName.replace(/\.(?:md|markdown)$/i, "");
 }
 
-function formatFileMetadataDate(value: string) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "Unknown";
-  }
-
-  return date.toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
-
 function MarkdownPreviewMetadata({ file }: { file: LiberaFileNode }) {
-  const createdDate = formatFileMetadataDate(file.createdAt);
-  const updatedDate = formatFileMetadataDate(file.updatedAt);
+  const t = useTranslations("workspacePanel");
+  const format = useFormatter();
+  const formatDate = (value: string) => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? t("unknown") : format.dateTime(date, { dateStyle: "medium", timeStyle: "short" });
+  };
+  const createdDate = formatDate(file.createdAt);
+  const updatedDate = formatDate(file.updatedAt);
 
   return (
     <div
@@ -287,14 +287,14 @@ function MarkdownPreviewMetadata({ file }: { file: LiberaFileNode }) {
         <FileText aria-hidden className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{markdownFileDisplayName(file.name)}</span>
       </div>
-      <div className="flex items-center gap-1.5" title={`Created ${createdDate}`}>
+      <div className="flex items-center gap-1.5" title={t("createdTitle", { date: createdDate })}>
         <CalendarPlus aria-hidden className="h-3.5 w-3.5 shrink-0" />
-        <span>Created</span>
+        <span>{t("created")}</span>
         <time dateTime={file.createdAt}>{createdDate}</time>
       </div>
-      <div className="flex items-center gap-1.5" title={`Last changed ${updatedDate}`}>
+      <div className="flex items-center gap-1.5" title={t("lastChangedTitle", { date: updatedDate })}>
         <History aria-hidden className="h-3.5 w-3.5 shrink-0" />
-        <span>Changed</span>
+        <span>{t("changed")}</span>
         <time dateTime={file.updatedAt}>{updatedDate}</time>
       </div>
     </div>
@@ -709,6 +709,9 @@ function WorkspacePanelContent({
   onReadMarkdownSelectionLinks,
   onStartScreenshotSnip,
 }: PanelContentProps) {
+  const t = useTranslations("workspacePanel");
+  const tRegistry = useTranslations("lib.collab.client.registry");
+  const locale = useLocale();
   const [markdownSelectedText, setMarkdownSelectedText] = useState("");
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
   const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
@@ -783,9 +786,9 @@ function WorkspacePanelContent({
     const folder = activeImageFile.path.slice(0, activeImageFile.path.lastIndexOf("/"));
     return files
       .filter((file) => file.fileType === "image" && file.path.slice(0, file.path.lastIndexOf("/")) === folder)
-      .sort((first, second) => first.name.localeCompare(second.name, undefined, { numeric: true, sensitivity: "base" }))
+      .sort((first, second) => first.name.localeCompare(second.name, locale, { numeric: true, sensitivity: "base" }))
       .map((file) => ({ path: file.path, src: `/api/files/raw/${encodeFilePath(file.path)}` }));
-  }, [activeImageFile, files]);
+  }, [activeImageFile, files, locale]);
   const imageFileByPath = useMemo(
     () => new Map(files.map((file) => [file.path, file])),
     [files],
@@ -797,8 +800,8 @@ function WorkspacePanelContent({
     const folder = activeAudioFile.path.slice(0, activeAudioFile.path.lastIndexOf("/"));
     return files
       .filter((file) => file.fileType === "audio" && file.path.slice(0, file.path.lastIndexOf("/")) === folder)
-      .sort((first, second) => first.name.localeCompare(second.name, undefined, { numeric: true, sensitivity: "base" }));
-  }, [activeAudioFile, files]);
+      .sort((first, second) => first.name.localeCompare(second.name, locale, { numeric: true, sensitivity: "base" }));
+  }, [activeAudioFile, files, locale]);
   const previewMarkdownDraft = useDebouncedPreviewContent(
     activeMarkdownDraft,
     activeTabId,
@@ -1080,8 +1083,8 @@ function WorkspacePanelContent({
     if (!tab || !open) return;
     const path = tab.file.path;
     const directory = tab.untitled ? tab.saveDirectory ?? "" : path.slice(0, Math.max(0, path.lastIndexOf("/")));
-    const stem = tab.file.name.replace(/\.(?:md|markdown)$/i, "") || "Untitled";
-    open(`${stem} (expanded).md`, expandMarkdownMacros(markdown, { mathMarkers })?.markdown ?? markdown, directory);
+    // A new file's name stays English for now (default-names.ts).
+    open(expandedNoteName(tab.file.name.replace(/\.(?:md|markdown)$/i, "")), expandMarkdownMacros(markdown, { mathMarkers })?.markdown ?? markdown, directory);
   }, []);
 
   // Citation hover cards open an entry's attachment: a PDF at the cited page
@@ -1865,9 +1868,9 @@ function WorkspacePanelContent({
     return (
       <div className="flex h-full min-h-0 items-center justify-center overflow-auto px-6">
         <div className="max-w-md text-center">
-          <h2 className="text-xl font-semibold tracking-tight">Open a file to begin</h2>
+          <h2 className="text-xl font-semibold tracking-tight">{t("openAFileToBegin")}</h2>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Create a notebook, add Markdown notes, or upload images and PDFs from the explorer.
+            {t("openAFileDescription")}
           </p>
           {firstNotebook ? (
             <div className="mt-5 flex flex-wrap justify-center gap-2">
@@ -1877,7 +1880,7 @@ function WorkspacePanelContent({
                 onClick={() => onCreateMarkdown(firstNotebook)}
               >
                 <FilePlus2 aria-hidden className="h-4 w-4" />
-                New note
+                {t("newNote")}
               </button>
               <button
                 className="inline-flex items-center gap-2 rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
@@ -1885,7 +1888,7 @@ function WorkspacePanelContent({
                 onClick={() => onCreateSlides(firstNotebook)}
               >
                 <FilePlus2 aria-hidden className="h-4 w-4" />
-                New slides
+                {t("newSlides")}
               </button>
             </div>
           ) : (
@@ -1895,7 +1898,7 @@ function WorkspacePanelContent({
               onClick={onCreateNotebook}
             >
               <BookPlus aria-hidden className="h-4 w-4" />
-              Create notebook
+              {t("createNotebook")}
             </button>
           )}
         </div>
@@ -1912,7 +1915,7 @@ function WorkspacePanelContent({
       ) : null}
       {sharedTab.state.kind === "error" && isTextTab ? (
         <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
-          This file is in a shared notebook, but its live copy could not be opened: {sharedTab.state.message}
+          {t("sharedLiveCopyError", { message: sharedTab.state.code ? tRegistry(sharedTab.state.code) : sharedTab.state.message })}
         </div>
       ) : null}
       {sharedSession && sharedAttached && isTextTab ? (
@@ -1927,7 +1930,7 @@ function WorkspacePanelContent({
 
       {sharedPending && isTextTab ? (
         <div className="flex min-h-0 flex-1 items-center justify-center bg-card text-sm text-muted-foreground" role="status">
-          Opening shared document…
+          {t("openingSharedDocument")}
         </div>
       ) : activeTab.page ? (
         <PageTabView key={activeTab.id} kind={activeTab.page.kind} />
@@ -2123,7 +2126,7 @@ function WorkspacePanelContent({
               />
               )}
               <div
-                aria-label="Resize Markdown editor and preview"
+                aria-label={t("resizeMarkdownEditorAndPreview")}
                 aria-orientation="vertical"
                 aria-valuemax={MAX_MARKDOWN_SPLIT_PERCENT}
                 aria-valuemin={MIN_MARKDOWN_SPLIT_PERCENT}
@@ -2131,7 +2134,7 @@ function WorkspacePanelContent({
                 className="markdown-split-resizer group flex cursor-row-resize items-center justify-center bg-muted outline-none hover:bg-input focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-foreground lg:cursor-col-resize"
                 role="separator"
                 tabIndex={0}
-                title="Drag to resize editor and preview"
+                title={t("dragToResizeEditorAndPreview")}
                 onKeyDown={handleMarkdownSplitKeyDown}
                 onPointerDown={handleMarkdownSplitPointerDown}
               >
@@ -2251,7 +2254,7 @@ function WorkspacePanelContent({
             filePath={isGalleryTab(activeTab) ? activeTab.file.name : activeTab.file.path}
             details={{
               createdAt: activeTab.file.createdAt,
-              location: isGalleryTab(activeTab) ? "Gallery" : activeTab.file.path,
+              location: isGalleryTab(activeTab) ? t("gallery") : activeTab.file.path,
               size: activeTab.file.size,
               updatedAt: activeTab.file.updatedAt,
             }}

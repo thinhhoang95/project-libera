@@ -1,3 +1,4 @@
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Check, Palette } from "lucide-react";
@@ -32,6 +33,8 @@ export function NotebookDialog({
   onClose,
   onSubmit,
 }: NotebookDialogProps) {
+  const t = useTranslations("notebookDialog");
+  const tCommon = useTranslations("common");
   if (!dialog) {
     return null;
   }
@@ -56,11 +59,9 @@ export function NotebookDialog({
   return (
     <ModalDialog
       open
-      title={dialog.mode === "create" ? "New notebook" : linkedFolder ? "Edit folder" : "Edit notebook"}
+      title={dialog.mode === "create" ? t("newNotebookTitle") : linkedFolder ? t("editFolderTitle") : t("editNotebookTitle")}
       description={
-        linkedFolder
-          ? "Choose how this folder appears in Libera. Renaming it here does not rename the folder on disk."
-          : "Choose a name, group, color, and emoji for this notebook."
+        linkedFolder ? t("folderDescription") : t("notebookDescription")
       }
       onClose={onClose}
       footer={
@@ -70,7 +71,7 @@ export function NotebookDialog({
             type="button"
             onClick={onClose}
           >
-            Cancel
+            {tCommon("cancel")}
           </button>
           <button
             className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -78,7 +79,7 @@ export function NotebookDialog({
             type="submit"
             disabled={submitting}
           >
-            {submitting ? "Saving" : dialog.mode === "create" ? "Create notebook" : "Save changes"}
+            {submitting ? t("saving") : dialog.mode === "create" ? t("createNotebook") : t("saveChanges")}
           </button>
         </>
       }
@@ -105,6 +106,7 @@ function NotebookDialogForm({
   initialValues: NotebookFormValues;
   onSubmit: (values: NotebookFormValues) => Promise<void>;
 }) {
+  const t = useTranslations("notebookDialog");
   const [values, setValues] = useState(initialValues);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -116,7 +118,7 @@ function NotebookDialogForm({
     <form className="space-y-4" id="notebook-dialog-form" onSubmit={handleSubmit}>
       <div>
         <label className="block text-sm font-medium text-foreground" htmlFor="notebook-name">
-          Name
+          {t("nameLabel")}
         </label>
         <input
           id="notebook-name"
@@ -131,7 +133,7 @@ function NotebookDialogForm({
 
       <div>
         <label className="block text-sm font-medium text-foreground" htmlFor="notebook-group">
-          Group
+          {t("groupLabel")}
         </label>
         <select
           id="notebook-group"
@@ -141,7 +143,7 @@ function NotebookDialogForm({
             setValues((current) => ({ ...current, groupId: event.target.value }))
           }
         >
-          <option value="">No group</option>
+          <option value="">{t("noGroup")}</option>
           {[...groups]
             .sort((left, right) => left.title.localeCompare(right.title))
             .map((group) => (
@@ -154,7 +156,7 @@ function NotebookDialogForm({
 
       <div>
         <label className="block text-sm font-medium text-foreground" htmlFor="notebook-emoji">
-          Emoji
+          {t("emojiLabel")}
         </label>
         <input
           id="notebook-emoji"
@@ -170,13 +172,13 @@ function NotebookDialogForm({
       <div>
         <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
           <Palette aria-hidden className="h-4 w-4" />
-          Color
+          {t("colorLabel")}
         </div>
         <div className="flex flex-wrap gap-2">
           {NOTEBOOK_COLORS.map((color) => (
             <button
               key={color}
-              aria-label={`Select notebook color ${color}`}
+              aria-label={t("selectColor", { color })}
               className="flex h-8 w-8 items-center justify-center rounded-full border border-border"
               style={{ backgroundColor: color }}
               type="button"

@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowLeft, ClipboardPaste, ImageUp, Loader2, ScanText } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { ensureDocumentOcrModel, readImageAsMarkdown } from "@/components/libera/document-ocr/document-ocr-client";
 import { splitBibliography } from "@/lib/references/identifiers";
@@ -35,6 +36,8 @@ export type ReferenceImageImportOptions = {
   webSearch?: boolean;
   signal?: AbortSignal;
   onProgress?: (progress: ReferenceImageProgress) => void;
+  /** Translates this file's messages (`useTranslations("references.referenceImageImport")`); English without it. */
+  t?: ImageImportTranslator;
   /** The model check (default: the app's setup prompt, ensureDocumentOcrModel). */
   ensureModel?: () => Promise<boolean>;
   /** Image → Markdown (default: the local model through /api/document-ocr/convert). */
@@ -42,6 +45,16 @@ export type ReferenceImageImportOptions = {
   /** One lookup (default: POST /api/references/resolve). */
   resolve?: (request: ResolveRequest, signal?: AbortSignal) => Promise<ResolveResponse>;
 };
+
+export type ImageImportTranslator = (key: string, values?: Record<string, string | number>) => string;
+
+/** Failures the control shows in the interface language, by `code`. */
+export class ReferenceImageError extends Error {
+  constructor(readonly code: "format" | "noReferences" | "imageUnreadable", message: string) {
+    super(message);
+    this.name = "ReferenceImageError";
+  }
+}
 
 export type ReferenceImageImport = {
   /** What the model read, as Markdown. */
@@ -54,6 +67,7 @@ export type ReferenceImageImport = {
 
 /** The model is not set up, or the user closed its setup prompt. */
 export class ReadingModelUnavailableError extends Error {
+  readonly code = "model";
   constructor() {
     super("Reading images needs the local reading model. Set it up in Preferences → Search (PDF reading model), then try again.");
     this.name = "ReadingModelUnavailableError";
@@ -102,12 +116,14 @@ export function referenceListItems(markdown: string) {
 }
 
 /** Join lookups in item order; each lookup's duplicate indexes are shifted past the earlier candidates. */
-export function mergeResolveResults(results: Array<{ item: string; result: ResolveResponse | null; error?: string }>): ResolveResponse {
+export function mergeResolveResults(results: Array<{ item: string; result: ResolveResponse | null; error?: string }>, t?: ImageImportTranslator): ResolveResponse {
   const merged: ResolveResponse = { candidates: [], duplicates: [], updates: [], warnings: [] };
   for (const { item, result, error } of results) {
     const label = item.length > 80 ? `${item.slice(0, 77)}…` : item;
     if (!result) {
-      merged.warnings.push(`Could not look up “${label}”${error ? `: ${error}` : "."}`);
+      merged.warnings.push(t
+        ? (error ? t("couldNotLookUpReason", { label, error }) : t("couldNotLookUp", { label }))
+        : `Could not look up “${label}”${error ? `: ${error}` : "."}`);
       continue;
     }
     const offset = merged.candidates.length;
@@ -115,7 +131,7 @@ export function mergeResolveResults(results: Array<{ item: string; result: Resol
     merged.duplicates.push(...result.duplicates.map((duplicate) => ({ ...duplicate, candidateIndex: duplicate.candidateIndex + offset })));
     merged.updates.push(...result.updates);
     merged.warnings.push(...result.warnings);
-    if (!result.candidates.length) merged.warnings.push(`Nothing was found for “${label}”.`);
+    if (!result.candidates.length) merged.warnings.push(t ? t("nothingFoundFor", { label }) : `Nothing was found for “${label}”.`);
   }
   return merged;
 }
@@ -142,7 +158,7 @@ async function modelImage(image: Blob) {
   canvas.height = bitmap.height;
   canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
   bitmap.close();
-  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not read the image.")), "image/png"));
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new ReferenceImageError("imageUnreadable", "Could not read the image.")), "image/png"));
 }
 
 function abortError() {
@@ -156,8 +172,8 @@ function abortError() {
  * image holds no references. Nothing is written to the library.
  */
 export async function importReferenceImage(file: Blob & { name?: string }, options: ReferenceImageImportOptions): Promise<ReferenceImageImport> {
-  const { notebook, webSearch = false, signal, onProgress } = options;
-  if (!isReferenceImage(file)) throw new Error("Use a PNG, JPEG or WebP image of the reference list.");
+  const { notebook, webSearch = false, signal, onProgress, t } = options;
+  if (!isReferenceImage(file)) throw new ReferenceImageError("format", "Use a PNG, JPEG or WebP image of the reference list.");
   onProgress?.({ phase: "model" });
   if (!await (options.ensureModel ?? ensureDocumentOcrModel)()) throw new ReadingModelUnavailableError();
   if (signal?.aborted) throw abortError();
@@ -167,7 +183,7 @@ export async function importReferenceImage(file: Blob & { name?: string }, optio
   const { markdown } = await read(options.readImage ? file : await modelImage(file), { maxEdge: READ_MAX_EDGE, signal });
   if (signal?.aborted) throw abortError();
   const items = referenceListItems(markdown);
-  if (!items.length) throw new Error("No references were found in the image.");
+  if (!items.length) throw new ReferenceImageError("noReferences", "No references were found in the image.");
 
   const lookup = options.resolve ?? resolveReference;
   let done = 0;
@@ -183,7 +199,7 @@ export async function importReferenceImage(file: Blob & { name?: string }, optio
       onProgress?.({ phase: "resolving", done: ++done, total: items.length });
     }
   });
-  return { markdown, items, result: mergeResolveResults(results) };
+  return { markdown, items, result: mergeResolveResults(results, t) };
 }
 
 // ---------------------------------------------------------------------------
@@ -211,19 +227,29 @@ type State =
   | { kind: "candidates"; imported: ReferenceImageImport }
   | { kind: "error"; message: string; model: boolean };
 
-function progressText(progress: ReferenceImageProgress) {
-  if (progress.phase === "model") return "Checking the reading model…";
-  if (progress.phase === "reading") return "Reading the image on this computer…";
-  return `Looking up ${progress.done} of ${progress.total} references…`;
-}
-
 /** Drop, paste or pick an image of a reference list; its references are looked up and confirmed as candidates. */
 export function ReferenceImageImport({ notebook, library, webSearch, busy = false, onCommit, onEdit, onReveal, onLookup, importOptions }: ReferenceImageImportProps) {
+  const t = useTranslations("references.referenceImageImport");
+  const tc = useTranslations("common");
   const [state, setState] = useState<State>({ kind: "idle" });
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
   useEffect(() => () => controllerRef.current?.abort(), []);
+
+  const progressText = (progress: ReferenceImageProgress) => {
+    if (progress.phase === "model") return t("checkingModel");
+    if (progress.phase === "reading") return t("readingImage");
+    return t("lookingUpProgress", { done: progress.done, total: progress.total });
+  };
+  const errorText = (error: unknown) => {
+    const code = error instanceof ReferenceImageError || error instanceof ReadingModelUnavailableError ? error.code : null;
+    if (code === "model") return t("modelUnavailable");
+    if (code === "format") return t("useImageFormat");
+    if (code === "noReferences") return t("noReferencesInImage");
+    if (code === "imageUnreadable") return t("couldNotReadImage");
+    return error instanceof Error && error.message ? error.message : t("imageReadFailed");
+  };
 
   const start = async (file: File | Blob) => {
     controllerRef.current?.abort();
@@ -232,7 +258,7 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
     setState({ kind: "working", progress: { phase: "model" } });
     try {
       const imported = await importReferenceImage(file, {
-        notebook, webSearch, signal: controller.signal, ...importOptions,
+        notebook, webSearch, signal: controller.signal, t, ...importOptions,
         onProgress: (progress) => {
           if (progress.phase === "resolving" && progress.done === 0) onLookup?.();
           if (!controller.signal.aborted) setState({ kind: "working", progress });
@@ -241,7 +267,7 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
       if (!controller.signal.aborted) setState({ kind: "candidates", imported });
     } catch (error) {
       if (controller.signal.aborted || isAbortError(error)) return;
-      setState({ kind: "error", message: error instanceof Error ? error.message : "The image could not be read.", model: error instanceof ReadingModelUnavailableError });
+      setState({ kind: "error", message: errorText(error), model: error instanceof ReadingModelUnavailableError });
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
     }
@@ -250,7 +276,7 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
   const take = (files: Iterable<File> | ArrayLike<File> | null | undefined) => {
     const image = Array.from(files ?? []).find(isReferenceImage);
     if (image) void start(image);
-    else setState({ kind: "error", message: "Use a PNG, JPEG or WebP image of the reference list.", model: false });
+    else setState({ kind: "error", message: t("useImageFormat"), model: false });
   };
 
   const pasteFromClipboard = async () => {
@@ -262,9 +288,9 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
           return;
         }
       }
-      setState({ kind: "error", message: "The clipboard holds no image.", model: false });
+      setState({ kind: "error", message: t("clipboardNoImage"), model: false });
     } catch {
-      setState({ kind: "error", message: "The clipboard could not be read. Click the box below and press Ctrl+V (⌘V) instead.", model: false });
+      setState({ kind: "error", message: t("clipboardUnreadable"), model: false });
     }
   };
 
@@ -276,16 +302,16 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
 
   if (state.kind === "candidates") {
     return (
-      <div className="space-y-2" aria-label="References from the image">
+      <div className="space-y-2" aria-label={t("candidatesAria")}>
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <button type="button" className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded-md" aria-label="Back to the image import" onClick={() => setState({ kind: "idle" })}>
+          <button type="button" className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded-md" aria-label={t("backAria")} onClick={() => setState({ kind: "idle" })}>
             <ArrowLeft aria-hidden className="h-3.5 w-3.5" />
           </button>
-          <span>{state.imported.items.length} reference{state.imported.items.length === 1 ? "" : "s"} read from the image.</span>
+          <span>{t("readFromImage", { count: state.imported.items.length })}</span>
         </div>
         {library ? (
           <CandidateList notebook={notebook} library={library} result={state.imported.result} busy={busy} onCommit={onCommit} onEdit={onEdit} onReveal={onReveal} />
-        ) : <p className="text-[11px] text-muted-foreground">Loading the library…</p>}
+        ) : <p className="text-[11px] text-muted-foreground">{t("loadingLibrary")}</p>}
       </div>
     );
   }
@@ -296,7 +322,7 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
       <div
         role="button"
         tabIndex={0}
-        aria-label="Reference list image: paste, drop or choose a screenshot or photo"
+        aria-label={t("dropZoneAria")}
         aria-busy={working}
         className={`flex flex-col items-stretch gap-1.5 rounded-lg border border-dashed px-2.5 py-2 text-[11px] text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring ${dragging ? "border-accent bg-muted" : "border-input"}`}
         onPaste={(event: ClipboardEvent<HTMLDivElement>) => {
@@ -329,19 +355,19 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
         <div className="flex min-w-0 items-center gap-2">
           {working ? <Loader2 aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <ScanText aria-hidden className="h-3.5 w-3.5 shrink-0" />}
           <span className="min-w-0 flex-1" role={working ? "status" : undefined}>
-            {working ? progressText(state.progress) : "Screenshot or photo of a reference list: paste or drop it here"}
+            {working ? progressText(state.progress) : t("dropHint")}
           </span>
         </div>
         <div className="flex items-center justify-end gap-2">
           {working ? (
-            <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancel}>Cancel</button>
+            <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancel}>{tc("cancel")}</button>
           ) : (
             <>
-              <button type="button" className="libera-panel-button h-6 whitespace-nowrap px-2 text-[11px]" title="Paste an image from the clipboard" onClick={() => void pasteFromClipboard()}>
-                <ClipboardPaste aria-hidden className="h-3 w-3" /> Paste
+              <button type="button" className="libera-panel-button h-6 whitespace-nowrap px-2 text-[11px]" title={t("pasteTitle")} onClick={() => void pasteFromClipboard()}>
+                <ClipboardPaste aria-hidden className="h-3 w-3" /> {t("pasteButton")}
               </button>
-              <button type="button" className="libera-panel-button h-6 whitespace-nowrap px-2 text-[11px]" title="Choose an image" onClick={() => inputRef.current?.click()}>
-                <ImageUp aria-hidden className="h-3 w-3" /> Image
+              <button type="button" className="libera-panel-button h-6 whitespace-nowrap px-2 text-[11px]" title={t("imageTitle")} onClick={() => inputRef.current?.click()}>
+                <ImageUp aria-hidden className="h-3 w-3" /> {t("imageButton")}
               </button>
             </>
           )}
@@ -352,12 +378,12 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
           <span className="min-w-0 flex-1">{state.message}</span>
           {state.model ? (
             <button type="button" className="shrink-0 font-semibold hover:underline" onClick={() => void (importOptions?.ensureModel ?? ensureDocumentOcrModel)().then((ready) => { if (ready) setState({ kind: "idle" }); })}>
-              Set up
+              {t("setUp")}
             </button>
           ) : null}
         </div>
       ) : null}
-      <input ref={inputRef} type="file" hidden accept="image/png,image/jpeg,image/webp" aria-label="Reference list image" onChange={(event) => {
+      <input ref={inputRef} type="file" hidden accept="image/png,image/jpeg,image/webp" aria-label={t("inputAria")} onChange={(event) => {
         const files = Array.from(event.target.files ?? []);
         event.target.value = "";
         take(files);

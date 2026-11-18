@@ -6,13 +6,15 @@
 // edits), the reviewers among the notebook's members, an optional note, and
 // whether agentic review should run first, as the requester.
 
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { ClipboardCheck } from "lucide-react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { useMarkdownReview } from "@/components/libera/markdown-review-context";
 import { useSharedTab } from "@/lib/collab/bindings/react-shared-tabs";
 import { can } from "@/lib/collab/protocol/roles";
-import { describeError } from "@/lib/collab/ui/client";
+import { useDescribeError } from "@/lib/collab/ui/use-describe-error";
+import { roleLabel } from "@/lib/collab/ui/wording";
 import type { ReviewRange } from "@/lib/markdown-review";
 import { useProjectMembers } from "../mentions/mention-textarea";
 import { useReviews } from "./use-reviews";
@@ -20,6 +22,7 @@ import { useReviews } from "./use-reviews";
 const AI_FIRST_PROMPT = "Review this draft before my reviewers read it: plan how to address the open comments, and point out unclear or unsupported passages.";
 
 export function RequestReviewButton({ tabId }: { tabId?: string }) {
+  const t = useTranslations("collab.reviews.requestReview");
   const shared = useSharedTab(tabId, "request-review");
   const session = shared.snapshot?.attached ? shared.session : null;
   const role = shared.snapshot?.meta?.role ?? session?.resolved.role ?? null;
@@ -30,8 +33,8 @@ export function RequestReviewButton({ tabId }: { tabId?: string }) {
     <button
       type="button"
       className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-      title="Request review…"
-      aria-label="Request review"
+      title={t("buttonTitle")}
+      aria-label={t("buttonLabel")}
       // The editor's selection is read before focus moves to the dialog.
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => setOpen({ selection: review?.editorSelection() ?? null })}
@@ -48,6 +51,10 @@ export function RequestReviewDialog({ session, selection, onClose, documentOnly 
   documentOnly?: boolean;
 }) {
   const { controller, snapshot } = useReviews(session);
+  const t = useTranslations("collab.reviews.requestReview");
+  const tCommon = useTranslations("common");
+  const tWording = useTranslations("lib.collab.ui.wording");
+  const describeError = useDescribeError();
   const review = useMarkdownReview();
   const members = useProjectMembers(session.resolved.projectId);
   const others = members.filter((member) => member.id !== snapshot?.localUserId && member.role !== "viewer");
@@ -79,29 +86,29 @@ export function RequestReviewDialog({ session, selection, onClose, documentOnly 
     }
   }
 
-  return <ModalDialog open title="Request review" description={session.resolved.path} onClose={onClose} footer={<>
-    <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={onClose}>Cancel</button>
-    <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={busy || !assignees.length || (scope === "selection" && !selection)} onClick={() => void submit()}>Request review</button>
+  return <ModalDialog open title={t("title")} description={session.resolved.path} onClose={onClose} footer={<>
+    <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={onClose}>{tCommon("cancel")}</button>
+    <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={busy || !assignees.length || (scope === "selection" && !selection)} onClick={() => void submit()}>{t("submit")}</button>
   </>}>
-    <form className="space-y-3 text-sm" aria-label="Review request" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+    <form className="space-y-3 text-sm" aria-label={t("formLabel")} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
       {documentOnly ? null : <fieldset className="space-y-1">
-        <legend className="text-xs font-semibold">What to review</legend>
-        <label className="flex items-center gap-2"><input type="radio" name="review-scope" checked={scope === "document"} onChange={() => setScope("document")} />The whole document</label>
+        <legend className="text-xs font-semibold">{t("whatToReview")}</legend>
+        <label className="flex items-center gap-2"><input type="radio" name="review-scope" checked={scope === "document"} onChange={() => setScope("document")} />{t("wholeDocument")}</label>
         <label className="flex items-start gap-2"><input type="radio" name="review-scope" disabled={!selection} checked={scope === "selection"} onChange={() => setScope("selection")} />
-          <span>The selected passage{selection ? <q className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{quote}</q> : <span className="block text-xs text-muted-foreground">Select text in the editor first.</span>}</span>
+          <span>{t("selectedPassage")}{selection ? <q className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{quote}</q> : <span className="block text-xs text-muted-foreground">{t("selectFirst")}</span>}</span>
         </label>
       </fieldset>}
       <fieldset className="space-y-1">
-        <legend className="text-xs font-semibold">Reviewers</legend>
+        <legend className="text-xs font-semibold">{t("reviewers")}</legend>
         {others.length ? others.map((member) => <label key={member.id} className="flex items-center gap-2">
           <input type="checkbox" checked={assignees.includes(member.id)} onChange={(event) => setAssignees((current) => event.target.checked ? [...current, member.id] : current.filter((id) => id !== member.id))} />
-          <span aria-hidden className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: member.color }} />{member.displayName}<span className="text-xs text-muted-foreground">{member.role}</span>
-        </label>) : <p className="text-xs text-muted-foreground">Invite someone to this notebook to ask them for a review.</p>}
+          <span aria-hidden className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: member.color }} />{member.displayName}<span className="text-xs text-muted-foreground">{roleLabel(member.role, tWording)}</span>
+        </label>) : <p className="text-xs text-muted-foreground">{t("inviteSomeone")}</p>}
       </fieldset>
-      <label className="block space-y-1"><span className="text-xs font-semibold">Note (optional)</span>
-        <textarea aria-label="Note for the reviewers" className="review-textarea" rows={3} maxLength={5000} value={note} onChange={(event) => setNote(event.target.value)} placeholder="What should they look at?" />
+      <label className="block space-y-1"><span className="text-xs font-semibold">{t("noteOptional")}</span>
+        <textarea aria-label={t("noteLabel")} className="review-textarea" rows={3} maxLength={5000} value={note} onChange={(event) => setNote(event.target.value)} placeholder={t("notePlaceholder")} />
       </label>
-      {documentOnly ? null : <label className="flex items-center gap-2"><input type="checkbox" checked={aiFirst} onChange={(event) => setAiFirst(event.target.checked)} />Run AI review first (agentic review, as you)</label>}
+      {documentOnly ? null : <label className="flex items-center gap-2"><input type="checkbox" checked={aiFirst} onChange={(event) => setAiFirst(event.target.checked)} />{t("aiFirst")}</label>}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </form>
   </ModalDialog>;

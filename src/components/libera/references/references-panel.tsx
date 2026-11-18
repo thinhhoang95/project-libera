@@ -32,6 +32,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
+import { useFormatter, useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import {
@@ -56,8 +57,10 @@ import {
 } from "@/components/libera/references/reference-candidates";
 import {
   BIBLIOGRAPHY_FORMATS,
+  bibliographyFormatLabel,
   copyBibliography,
   DOCUMENT_EXPORT_FORMATS,
+  documentExportFormatLabel,
   downloadBibliography,
   unresolvedNote,
   type BibliographyFormat,
@@ -77,9 +80,10 @@ import {
   hasTag,
   keyLookup,
   libraryTags,
-  REFERENCE_SORTS,
   searchWords,
   sortEntries,
+  sortLabel,
+  REFERENCE_SORTS,
   tagChangeText,
   type CitationCopyFormat,
   type ReferenceSort,
@@ -87,7 +91,6 @@ import {
 import { ReferenceEditForm } from "@/components/libera/references/reference-edit-form";
 import {
   citeActions,
-  CITE_UNAVAILABLE,
   MissingReferenceRow,
   REFERENCE_ROW_HEIGHT,
   ReferenceActionsMenu,
@@ -247,13 +250,13 @@ const BIBLIOGRAPHY_MARKER_LINES = /^:::bibliography[ \t]*\r?\n[ \t]*:::[ \t]*$/m
 const IMPORTABLE_FILE = /\.(bib|ris|nbib|json)$/i;
 
 /** The text of a citing document: its open draft, else the saved file. */
-async function documentText(path: string, openDrafts: OpenReferenceDraft[]) {
+async function documentText(path: string, openDrafts: OpenReferenceDraft[], unreadable: (name: string) => string) {
   const draft = openDrafts.find((item) => item.path === path);
   if (draft) return draft.text;
   const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { cache: "no-store" });
-  if (!response.ok) throw new Error(`${fileBaseName(path)} could not be read.`);
+  if (!response.ok) throw new Error(unreadable(fileBaseName(path)));
   const body = await response.json() as { content?: unknown };
-  if (typeof body.content !== "string") throw new Error(`${fileBaseName(path)} could not be read.`);
+  if (typeof body.content !== "string") throw new Error(unreadable(fileBaseName(path)));
   return body.content;
 }
 
@@ -349,13 +352,14 @@ export type ReferencesPanelProps = {
 };
 
 export function ReferencesPanel(props: ReferencesPanelProps) {
+  const t = useTranslations("references.referencesPanel");
   if (!props.notebook) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <PanelHeading title="References" />
+        <PanelHeading title={t("title")} />
         <div className="px-3 pt-2">
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
-            Select a notebook to see its references. Each notebook keeps its own library.
+            {t("selectNotebook")}
           </div>
         </div>
       </div>
@@ -433,10 +437,6 @@ export function mergeRewriteMap(keep: ReferenceEntry, merged: ReferenceEntry[]) 
   return map;
 }
 
-function referencesCount(count: number) {
-  return `${count} reference${count === 1 ? "" : "s"}`;
-}
-
 const MARKDOWN_PATH = /\.(md|markdown)$/i;
 
 /** Library paths a tree drag carries (one path; several separated by newlines). */
@@ -466,6 +466,15 @@ function ReferencesPanelBody({
   onApplyCitationRewrite,
   onRevertCitationRewrite,
 }: ReferencesPanelProps) {
+  const t = useTranslations("references.referencesPanel");
+  const tc = useTranslations("common");
+  const tFormats = useTranslations("references.bibliographyActions");
+  const tDisplay = useTranslations("references.referenceDisplay");
+  const tRow = useTranslations("references.referenceRow");
+  const tAddBox = useTranslations("references.addReferenceBox");
+  const tTether = useTranslations("references.useBibTether");
+  const locale = useLocale();
+  const format = useFormatter();
   const { library, error, reload } = useReferenceLibrary(notebook);
   const undo = useReferenceUndo(notebook, library);
   const refreshToken = useMemo(() => savedCitationToken(tree, notebook), [tree, notebook]);
@@ -665,20 +674,20 @@ function ReferencesPanelBody({
       if (message) setNotice({ tone: "info", text: message, undo: true });
       return result;
     } catch (applyError) {
-      setNotice({ tone: "error", text: applyError instanceof Error ? applyError.message : "The change could not be saved." });
+      setNotice({ tone: "error", text: applyError instanceof Error && applyError.message ? applyError.message : t("saveFailed") });
       throw applyError;
     }
-  }, [undo]);
+  }, [undo, t]);
 
   const runUndo = useCallback(async () => {
     if (!undo.canUndo) return;
     try {
       await undo.undo();
-      setNotice({ tone: "info", text: `Undid ${undo.undoLabel ?? "the last change"}.` });
+      setNotice({ tone: "info", text: undo.undoLabel ? t("undid", { label: undo.undoLabel }) : t("undidLast") });
     } catch (undoError) {
-      setNotice({ tone: "error", text: undoError instanceof Error ? undoError.message : "Could not undo." });
+      setNotice({ tone: "error", text: undoError instanceof Error && undoError.message ? undoError.message : t("undoFailed") });
     }
-  }, [undo]);
+  }, [undo, t]);
 
   // Revealing waits for the entry to be in the library (it may have just been added).
   const [revealTarget, setRevealTarget] = useState<string | null>(null);
@@ -710,13 +719,13 @@ function ReferencesPanelBody({
       // of adding a duplicate.
       const path = request.path ?? "";
       onRequestHandled?.(request.id);
-      if (!path.startsWith(`${notebook}/`)) setNotice({ tone: "error", text: `Only files in ${notebook} can be added to its references.` });
-      else void resolveFiles([path]).catch((error: unknown) => setNotice({ tone: "error", text: error instanceof Error ? error.message : "The file could not be added." }));
+      if (!path.startsWith(`${notebook}/`)) setNotice({ tone: "error", text: t("onlyFilesIn", { notebook }) });
+      else void resolveFiles([path]).catch((error: unknown) => setNotice({ tone: "error", text: error instanceof Error && error.message ? error.message : t("fileAddFailed") }));
       return;
     }
     const entry = (request.entryId ? library.entries[request.entryId] : undefined) ?? (request.key ? lookup.get(request.key.toLowerCase()) : undefined);
     if (entry) reveal(entry.id);
-    else setNotice({ tone: "error", text: `“${request.key ?? request.entryId}” is not in this notebook's library.` });
+    else setNotice({ tone: "error", text: t("notInLibrary", { key: request.key ?? request.entryId ?? "" }) });
     onRequestHandled?.(request.id);
     // resolveFiles is redefined every render; the request id keeps this from running twice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -772,7 +781,7 @@ function ReferencesPanelBody({
 
   function cite(entry: ReferenceEntry, command?: LatexCiteCommand) {
     if (!canCite) {
-      setNotice({ tone: "error", text: "Open a Markdown or LaTeX document to cite into it." });
+      setNotice({ tone: "error", text: tRow("citeUnavailable") });
       return;
     }
     onCite(entry.key, command);
@@ -794,7 +803,7 @@ function ReferencesPanelBody({
   function citeMany(group: ReferenceEntry[], command?: LatexCiteCommand) {
     if (group.length === 1) return cite(group[0], command);
     if (!canCite) {
-      setNotice({ tone: "error", text: "Open a Markdown or LaTeX document to cite into it." });
+      setNotice({ tone: "error", text: tRow("citeUnavailable") });
       return;
     }
     if (onCiteMany) onCiteMany(group.map((entry) => entry.key), command);
@@ -802,7 +811,7 @@ function ReferencesPanelBody({
   }
 
   function copyCitation(group: ReferenceEntry[], format: CitationCopyFormat) {
-    if (group.length) void copy(citationText(group.map((entry) => entry.key), format), group.length === 1 ? "Citation" : `Citation of ${group.length} references`);
+    if (group.length) void copy(citationText(group.map((entry) => entry.key), format), group.length === 1 ? { kind: "citation" } : { kind: "citations", count: group.length });
   }
 
   async function copyFormattedMany(group: ReferenceEntry[]) {
@@ -810,18 +819,18 @@ function ReferencesPanelBody({
     try {
       const parts = await Promise.all(group.map((entry) => formattedReferenceForCopy(notebook, library?.style ?? "", entry)));
       await writeRichClipboard(parts.map((part) => part.text).join("\n"), parts.map((part) => `<p>${part.html}</p>`).join(""));
-      setNotice({ tone: "info", text: `${group.length} references copied.` });
+      setNotice({ tone: "info", text: t("referencesCopied", { count: group.length }) });
     } catch {
-      setNotice({ tone: "error", text: "The references could not be copied." });
+      setNotice({ tone: "error", text: t("referencesCopyFailed") });
     }
   }
 
   function setReading(group: ReferenceEntry[], reading: ReadingState | null) {
     const changing = group.filter((entry) => (entry.reading ?? null) !== reading);
     if (!changing.length) return;
-    const what = reading === "to-read" ? "To read" : reading === "read" ? "read" : "without a reading flag";
-    const label = changing.length === 1 ? `Mark ${changing[0].key} ${what}` : `Mark ${changing.length} references ${what}`;
-    void run(changing.map((entry) => ({ op: "update", id: entry.id, reading })), label, changing.length === 1 ? undefined : `${changing.length} references marked ${what}.`).catch(() => undefined);
+    const kind = reading === "to-read" ? "toRead" : reading === "read" ? "read" : "none";
+    const label = changing.length === 1 ? t("markReadingLabel", { reading: kind, key: changing[0].key }) : t("markReadingManyLabel", { reading: kind, count: changing.length });
+    void run(changing.map((entry) => ({ op: "update", id: entry.id, reading })), label, changing.length === 1 ? undefined : t("markReadingManyNotice", { reading: kind, count: changing.length })).catch(() => undefined);
   }
 
   function toggleReading(entry: ReferenceEntry, reading: ReadingState) {
@@ -835,14 +844,14 @@ function ReferencesPanelBody({
       if (next) ops.push({ op: "update", id: entry.id, tags: next });
     }
     if (!ops.length) return;
-    const { label, message } = tagChangeText(ops.length, add, remove);
+    const { label, message } = tagChangeText(ops.length, add, remove, tDisplay);
     void run(ops, label, message).catch(() => undefined);
   }
 
   function confirmMany(group: ReferenceEntry[]) {
     const ops: ReferenceLibraryOp[] = group.filter((entry) => entry.status !== "confirmed").map((entry) => ({ op: "update", id: entry.id, status: "confirmed" }));
     if (!ops.length) return;
-    void run(ops, ops.length === 1 ? "Confirm 1 reference" : `Confirm ${ops.length} references`, `${ops.length} marked confirmed.`).catch(() => undefined);
+    void run(ops, t("confirmManyLabel", { count: ops.length }), t("confirmedNotice", { count: ops.length })).catch(() => undefined);
   }
 
   function deleteMany(group: ReferenceEntry[]) {
@@ -857,12 +866,12 @@ function ReferencesPanelBody({
     setView({ tag });
   }
 
-  async function copy(text: string, what: string) {
+  async function copy(text: string, what: { kind: "key" | "keys" | "citation" | "citations"; count?: number }) {
     try {
       await copyText(text);
-      setNotice({ tone: "info", text: `${what} copied.` });
+      setNotice({ tone: "info", text: t(`copied.${what.kind}`, { count: what.count ?? 1 }) });
     } catch {
-      setNotice({ tone: "error", text: `${what} could not be copied.` });
+      setNotice({ tone: "error", text: t(`copyFailed.${what.kind}`, { count: what.count ?? 1 }) });
     }
   }
 
@@ -870,9 +879,9 @@ function ReferencesPanelBody({
     try {
       const { text, html } = await formattedReferenceForCopy(notebook, library?.style ?? "", entry);
       await writeRichClipboard(text, html);
-      setNotice({ tone: "info", text: "Reference copied." });
+      setNotice({ tone: "info", text: t("copied.reference") });
     } catch {
-      setNotice({ tone: "error", text: "Reference could not be copied." });
+      setNotice({ tone: "error", text: t("copyFailed.reference") });
     }
   }
 
@@ -882,7 +891,7 @@ function ReferencesPanelBody({
       return;
     }
     if (openId === entry.id) setOpenId(null);
-    void run([{ op: "delete", id: entry.id }], `Delete ${entry.key}`, `Deleted ${entry.key}.`).catch(() => undefined);
+    void run([{ op: "delete", id: entry.id }], t("deleteLabel", { key: entry.key }), t("deletedNotice", { key: entry.key })).catch(() => undefined);
   }
 
   function menuAction(entry: ReferenceEntry, action: ReferenceMenuAction) {
@@ -893,7 +902,7 @@ function ReferencesPanelBody({
       case "find-in-file": return findInFile(entry);
       case "open-pdf": { const pdf = attachment("pdf"); if (pdf && pdf.kind !== "url") onOpenPath(pdf.path); return; }
       case "open-note": { const note = attachment("markdown"); if (note && note.kind !== "url") onOpenPath(note.path); return; }
-      case "copy-key": return void copy(entry.key, "Key");
+      case "copy-key": return void copy(entry.key, { kind: "key" });
       case "copy-citation": return copyCitation([entry], "pandoc");
       case "copy-latex": return copyCitation([entry], "latex");
       case "copy-formatted": return void copyFormatted(entry);
@@ -981,7 +990,7 @@ function ReferencesPanelBody({
     } else if (mod && event.key.toLowerCase() === "c" && selection.length) {
       event.preventDefault();
       if (event.shiftKey) void copyFormattedMany(selection);
-      else void copy(selection.map((entry) => entry.key).join(", "), selection.length === 1 ? "Key" : `${selection.length} keys`);
+      else void copy(selection.map((entry) => entry.key).join(", "), selection.length === 1 ? { kind: "key" } : { kind: "keys", count: selection.length });
     } else if ((event.key === "Delete" || event.key === "Backspace") && selection.length) {
       event.preventDefault();
       deleteMany(selection);
@@ -1068,7 +1077,7 @@ function ReferencesPanelBody({
     if (!openEntry) return;
     const next = nextToReview(openEntry.id);
     try {
-      if (openEntry.status !== "confirmed") await run([{ op: "update", id: openEntry.id, status: "confirmed" }], `Confirm ${openEntry.key}`);
+      if (openEntry.status !== "confirmed") await run([{ op: "update", id: openEntry.id, status: "confirmed" }], t("confirmLabel", { key: openEntry.key }));
     } catch {
       return;
     }
@@ -1077,19 +1086,19 @@ function ReferencesPanelBody({
       setOpenId(next.id);
     } else {
       closeCard();
-      setNotice({ tone: "info", text: "Every reference in this list is confirmed.", undo: true });
+      setNotice({ tone: "info", text: t("allConfirmed"), undo: true });
     }
   }
 
   /** Selects the entry's next citation in the open file, wrapping around after the last. */
   function findInFile(entry: ReferenceEntry) {
     if (!findPath || findText === null || !canFindIn(entry)) {
-      setNotice({ tone: "error", text: `The open file does not cite ${entry.key}.` });
+      setNotice({ tone: "error", text: t("findNotCited", { key: entry.key }) });
       return;
     }
     const snippets = citationSnippets(findText, [entry.key, ...entry.aliases], SNIPPET_CONTEXT, citationSyntaxForPath(findPath));
     if (!snippets.length) {
-      setNotice({ tone: "error", text: `No citation of ${entry.key} was found in ${fileBaseName(findPath)}.` });
+      setNotice({ tone: "error", text: t("findNoCitation", { key: entry.key, name: fileBaseName(findPath) }) });
       return;
     }
     const last = lastFoundRef.current;
@@ -1098,7 +1107,7 @@ function ReferencesPanelBody({
     const snippet = snippets[index];
     lastFoundRef.current = { entryId: entry.id, path: findPath, start: snippet.start };
     openCitation(findPath, snippet);
-    setNotice({ tone: "info", text: `Citation ${index + 1} of ${snippets.length} of ${entry.key} in ${fileBaseName(findPath)}.` });
+    setNotice({ tone: "info", text: t("findPosition", { index: index + 1, total: snippets.length, key: entry.key, name: fileBaseName(findPath) }) });
   }
 
   function openCitation(path: string, snippet: CitationSnippet) {
@@ -1125,13 +1134,13 @@ function ReferencesPanelBody({
     }
     if (fresh.length) {
       const before = new Set(Object.keys(library?.entries ?? {}));
-      const after = await run(fresh.map((entry) => ({ op: "add", entry })), fresh.length === 1 ? `Add ${fileBaseName(paths[0])}` : `Add ${fresh.length} files`,
-        fresh.length === 1 ? `Added an entry for ${fileBaseName(paths[0])}. Fill in its details or confirm it.` : `Added ${fresh.length} entries.`);
+      const after = await run(fresh.map((entry) => ({ op: "add", entry })), fresh.length === 1 ? tAddBox("addFileLabel", { name: fileBaseName(paths[0]) }) : t("addFilesLabel", { count: fresh.length }),
+        fresh.length === 1 ? t("addedEntryNotice", { name: fileBaseName(paths[0]) }) : t("addedEntriesNotice", { count: fresh.length }));
       const added = Object.keys(after.entries).filter((id) => !before.has(id));
       if (added.length === 1) revealId = added[0];
     }
     if (revealId) {
-      if (!fresh.length) setNotice({ tone: "info", text: "That file is already attached to this reference." });
+      if (!fresh.length) setNotice({ tone: "info", text: t("alreadyAttached") });
       reveal(revealId);
     }
   }
@@ -1160,11 +1169,11 @@ function ReferencesPanelBody({
     }
     try {
       await startJob({ action: "resolve-paths", paths: fresh });
-      setNotice({ tone: "info", text: `Reading ${fresh.length} files in the background. New entries appear as they are found.` });
+      setNotice({ tone: "info", text: t("readingInBackground", { count: fresh.length }) });
     } catch (jobError) {
       // Without the job, the files still get entries to complete later.
       await attachFiles(fresh);
-      setNotice({ tone: "error", text: `${jobError instanceof Error ? jobError.message : "The files could not be looked up."} They were added as unresolved entries.` });
+      setNotice({ tone: "error", text: t("lookupFailedUnresolved", { reason: jobError instanceof Error && jobError.message ? jobError.message : t("filesLookupFailed") }) });
     }
   }
 
@@ -1175,20 +1184,20 @@ function ReferencesPanelBody({
     try {
       if (dragged.length) {
         if (dragged.some((path) => !path.startsWith(`${notebook}/`))) {
-          setNotice({ tone: "error", text: `Only files in ${notebook} can be added to its references.` });
+          setNotice({ tone: "error", text: t("onlyFilesIn", { notebook }) });
           return;
         }
         const imports = dragged.filter(isImportablePath);
         for (const treePath of imports) {
           const before = library;
-          const result = await importReferences({ notebook, path: treePath });
-          if (before) undo.record(before, result.library, `Import ${fileBaseName(treePath)}`, result.added);
+          const result = await importReferences({ notebook, path: treePath, fallbackError: tAddBox("importFailed") });
+          if (before) undo.record(before, result.library, t("importFileLabel", { name: fileBaseName(treePath) }), result.added);
           announceLibraryChange(notebook, result.library.revision);
-          setNotice({ tone: result.errors.length ? "error" : "info", text: `Imported ${result.added.length} reference${result.added.length === 1 ? "" : "s"} from ${fileBaseName(treePath)}${result.duplicates.length ? `; ${result.duplicates.length} possible duplicate${result.duplicates.length === 1 ? "" : "s"}` : ""}${result.errors.length ? `; ${result.errors.length} problem${result.errors.length === 1 ? "" : "s"}` : ""}.` });
+          setNotice({ tone: result.errors.length ? "error" : "info", text: t("importedNotice", { added: result.added.length, name: fileBaseName(treePath), duplicates: result.duplicates.length, problems: result.errors.length }) });
         }
         const files = dragged.filter((path) => droppedFileEntry(path));
         if (files.length) await resolveFiles(files);
-        else if (!imports.length) setNotice({ tone: "error", text: "Drop a PDF or Markdown file, or a .bib, .ris or CSL-JSON file to import." });
+        else if (!imports.length) setNotice({ tone: "error", text: t("dropHintTree") });
         return;
       }
       const files = Array.from(event.dataTransfer.files ?? []);
@@ -1198,28 +1207,28 @@ function ReferencesPanelBody({
       // .bib, .ris, .nbib and CSL-JSON files are imported from their text; nothing is uploaded.
       for (const file of referenceFiles) {
         const before = library;
-        const result = await importReferences({ notebook, text: await file.text() });
-        if (before) undo.record(before, result.library, `Import ${file.name}`, result.added);
+        const result = await importReferences({ notebook, text: await file.text(), fallbackError: tAddBox("importFailed") });
+        if (before) undo.record(before, result.library, t("importFileLabel", { name: file.name }), result.added);
         announceLibraryChange(notebook, result.library.revision);
-        setNotice({ tone: result.errors.length || !result.added.length ? "error" : "info", text: `Imported ${result.added.length} reference${result.added.length === 1 ? "" : "s"} from ${file.name}${result.duplicates.length ? `; ${result.duplicates.length} possible duplicate${result.duplicates.length === 1 ? "" : "s"}` : ""}${result.errors.length ? `; ${result.errors.length} problem${result.errors.length === 1 ? "" : "s"}` : ""}.` });
+        setNotice({ tone: result.errors.length || !result.added.length ? "error" : "info", text: t("importedNotice", { added: result.added.length, name: file.name, duplicates: result.duplicates.length, problems: result.errors.length }) });
       }
       if (!pdfs.length) {
-        if (!referenceFiles.length) setNotice({ tone: "error", text: "Drop PDFs, or .bib, .ris, .nbib or CSL-JSON files." });
+        if (!referenceFiles.length) setNotice({ tone: "error", text: t("dropHintFiles") });
         return;
       }
       if (!onUploadFiles) {
-        setNotice({ tone: "error", text: "Files cannot be uploaded here." });
+        setNotice({ tone: "error", text: t("cannotUpload") });
         return;
       }
       const uploaded = await onUploadFiles(notebook, pdfs);
       const paths = (uploaded ?? []).filter((file) => file.fileType === "pdf").map((file) => file.path);
       if (!paths.length) {
-        setNotice({ tone: "error", text: "The PDF could not be uploaded." });
+        setNotice({ tone: "error", text: t("uploadFailed") });
         return;
       }
       await resolveFiles(paths);
     } catch (dropError) {
-      setNotice({ tone: "error", text: dropError instanceof Error ? dropError.message : "The drop could not be added." });
+      setNotice({ tone: "error", text: dropError instanceof Error && dropError.message ? dropError.message : t("dropFailed") });
     }
   }
 
@@ -1231,47 +1240,47 @@ function ReferencesPanelBody({
     try {
       await startJob({ action: "resolve-pdfs" });
     } catch (jobError) {
-      setNotice({ tone: "error", text: jobError instanceof Error ? jobError.message : "The PDFs could not be read." });
+      setNotice({ tone: "error", text: jobError instanceof Error && jobError.message ? jobError.message : t("pdfsReadFailed") });
     }
   }
 
   const activeIsMarkdown = Boolean(activeDocumentPath && MARKDOWN_PATH.test(activeDocumentPath) && activeMarkdownDraft !== null);
-  const factCheckBlocker = !activeIsMarkdown ? "Open a saved Markdown document to fact-check its citations." : !activeKeys.length ? "This document cites nothing yet." : null;
+  const factCheckBlocker = !activeIsMarkdown ? t("factCheckOpenDocument") : !activeKeys.length ? t("citesNothing") : null;
 
   function requestFactCheck(withWeb: boolean) {
     if (!activeDocumentPath || factCheckBlocker) return;
     setFactCheckOpen(false);
     window.dispatchEvent(new CustomEvent<FactCheckRequestDetail>(FACT_CHECK_REQUEST_EVENT, { detail: { path: activeDocumentPath, webSearch: withWeb } }));
-    setNotice({ tone: "info", text: `Fact-checking the citations of ${fileBaseName(activeDocumentPath)} in the AI panel.` });
+    setNotice({ tone: "info", text: t("factChecking", { name: fileBaseName(activeDocumentPath) }) });
   }
 
   // -------------------------------------------------------------------------
   // Formatted reference lists and document bibliographies
   // -------------------------------------------------------------------------
 
-  const documentBlocker = activeMarkdownDraft === null ? "Open a Markdown document to use what it cites." : !activeKeys.length ? "This document cites nothing yet." : null;
+  const documentBlocker = activeMarkdownDraft === null ? t("documentBlockerOpen") : !activeKeys.length ? t("citesNothing") : null;
 
   function listRequest(forDocument: boolean): BibliographyRequest {
     return forDocument ? { notebook, documentText: activeMarkdownDraft ?? "", ...(activeDocumentPath ? { documentName: activeDocumentPath } : {}) } : { notebook };
   }
 
   async function copyList(forDocument: boolean) {
-    const what = forDocument ? "Bibliography" : "Reference list";
+    const scope = forDocument ? "document" : "list";
     try {
-      const result = await copyBibliography(listRequest(forDocument));
+      const result = await copyBibliography({ ...listRequest(forDocument), fallbackError: t("listCopyFailed", { scope }) });
       // Unresolved keys stay on screen until dismissed.
-      setNotice({ tone: result.unresolvedKeys.length ? "error" : "info", text: `${what} copied (${referencesCount(result.count)}).${unresolvedNote(result.unresolvedKeys)}` });
+      setNotice({ tone: result.unresolvedKeys.length ? "error" : "info", text: t("listCopied", { scope, count: result.count, note: unresolvedNote(result.unresolvedKeys, tFormats) }) });
     } catch (copyError) {
-      setNotice({ tone: "error", text: copyError instanceof Error ? copyError.message : `${what} could not be copied.` });
+      setNotice({ tone: "error", text: copyError instanceof Error && copyError.message ? copyError.message : t("listCopyFailed", { scope }) });
     }
   }
 
   async function exportList(format: DocumentExportFormat, forDocument: boolean) {
     try {
-      const result = await downloadBibliography({ ...listRequest(forDocument), format });
-      setNotice({ tone: result.unresolvedKeys.length ? "error" : "info", text: `Exported ${result.fileName}.${unresolvedNote(result.unresolvedKeys)}` });
+      const result = await downloadBibliography({ ...listRequest(forDocument), format, fallbackError: forDocument ? tFormats("bibliographyExportFailed") : tFormats("referenceListExportFailed") });
+      setNotice({ tone: result.unresolvedKeys.length ? "error" : "info", text: t("exportedNotice", { name: result.fileName, note: unresolvedNote(result.unresolvedKeys, tFormats) }) });
     } catch (exportError) {
-      setNotice({ tone: "error", text: exportError instanceof Error ? exportError.message : "The reference list could not be exported." });
+      setNotice({ tone: "error", text: exportError instanceof Error && exportError.message ? exportError.message : tFormats("referenceListExportFailed") });
     }
   }
 
@@ -1290,34 +1299,37 @@ function ReferencesPanelBody({
   const styleFiles = useMemo(() => notebookStyleFiles(tree, notebook), [tree, notebook]);
   const currentStyle = library?.style ?? "";
   const styleLabel = BUNDLED_CSL_STYLES.find((style) => style.id === currentStyle)?.label ?? (currentStyle ? fileBaseName(currentStyle) : "");
+  const stateText = (status: TetherStatus) => tetherStateText(status, Date.now(), tTether, locale);
   const menuEntry = menu ? library?.entries[menu.entryId] : undefined;
 
   const first = windowed ? Math.max(0, Math.floor(Math.max(0, scroll.top - offset) / REFERENCE_ROW_HEIGHT) - 8) : 0;
   const last = windowed ? Math.min(listed.length, Math.ceil((scroll.top - offset + scroll.height) / REFERENCE_ROW_HEIGHT) + 8) : listed.length;
 
   const panelMenuProps: PanelMenuProps = {
+    t,
+    tFormats,
     currentStyle,
     styleFiles,
     undoLabel: undo.canUndo ? undo.undoLabel : null,
     undoStale: undo.stale,
     onClose: () => setPanelMenuOpen(false),
     onUndo: () => void runUndo(),
-    onStyle: (style) => void run([{ op: "set-style", style }], "Change citation style", `Citation style: ${BUNDLED_CSL_STYLES.find((item) => item.id === style)?.label ?? fileBaseName(style)}.`).catch(() => undefined),
-    onExport: (format) => void exportReferences({ notebook, format })
-      .then((fileName) => setNotice({ tone: "info", text: `Exported ${fileName}.` }))
+    onStyle: (style) => void run([{ op: "set-style", style }], t("changeStyleLabel"), t("styleNotice", { style: BUNDLED_CSL_STYLES.find((item) => item.id === style)?.label ?? fileBaseName(style) })).catch(() => undefined),
+    onExport: (format) => void exportReferences({ notebook, format, fallbackError: tFormats("referenceListExportFailed") })
+      .then((fileName) => setNotice({ tone: "info", text: t("exportedNotice", { name: fileName, note: "" }) }))
       .catch((exportError: Error) => setNotice({ tone: "error", text: exportError.message })),
     onImport: () => { setOpenId(null); setAddBox({ id: Date.now(), query: "" }); },
     onManage: () => setManageOpen(true),
     tether: bibTether.status,
     onTether: () => setTetherOpen(true),
     onSyncTether: () => void bibTether.run({ action: "sync" })
-      .then((status) => setNotice(status?.state === "synced" ? { tone: "info", text: `${status.fileName} is in sync.` } : { tone: "error", text: status ? `${status.fileName}: ${status.message ?? tetherStateText(status)}` : "The notebook is no longer tethered." }))
+      .then((status) => setNotice(status?.state === "synced" ? { tone: "info", text: t("inSync", { name: status.fileName }) } : { tone: "error", text: status ? t("tetherProblem", { name: status.fileName, reason: status.message ?? stateText(status) }) : t("noLongerTethered") }))
       .catch((syncError: Error) => setNotice({ tone: "error", text: syncError.message })),
     jobActive: jobs.active,
     onGenerate: () => void generateForPdfs(),
     autoCreate: library?.settings?.autoCreateForPdfs,
-    onAutoCreate: (value) => void run([{ op: "set-settings", settings: { autoCreateForPdfs: value } }], "Change automatic PDF entries",
-      value === null ? "New PDFs follow the preference." : value ? `New PDFs in ${notebook} get entries automatically.` : `New PDFs in ${notebook} do not get entries automatically.`).catch(() => undefined),
+    onAutoCreate: (value) => void run([{ op: "set-settings", settings: { autoCreateForPdfs: value } }], t("changeAutoLabel"),
+      t("autoNotice", { state: value === null ? "follow" : value ? "on" : "off", notebook })).catch(() => undefined),
     autoCreateDefault: preferences ? preferences.autoCreateForPdfs : null,
     factCheckBlocker,
     onFactCheck: () => setFactCheckOpen(true),
@@ -1327,9 +1339,9 @@ function ReferencesPanelBody({
     onCopyDocument: () => void copyList(true),
     onExportDocument: (format) => void exportList(format, true),
     bibliographyBlocker: !onInsertBibliography || activeMarkdownDraft === null || !canCite
-      ? "Open a Markdown document and place the cursor to insert its bibliography."
+      ? t("bibliographyBlockerOpen")
       : BIBLIOGRAPHY_MARKER_LINES.test(activeMarkdownDraft)
-        ? "This document already places its bibliography."
+        ? t("bibliographyBlockerPlaced")
         : null,
     onInsertBibliography: () => onInsertBibliography?.(),
   };
@@ -1358,7 +1370,7 @@ function ReferencesPanelBody({
           return;
         case "undo":
           if (undo.canUndo && !undo.stale) void runUndo();
-          else setNotice({ tone: "info", text: "Nothing to undo." });
+          else setNotice({ tone: "info", text: t("nothingToUndo") });
           return;
         case "copy-list": void copyList(false); return;
         case "export-library": panelMenuProps.onExport(command.format); return;
@@ -1393,13 +1405,13 @@ function ReferencesPanelBody({
   // The macOS References menu: the "More" menu, then the selected reference's actions.
   const menuReference = entries.find((entry) => entry.id === (selectedId ?? openId));
   useAppMenuReferences("panel", () => [
-    ...activePdfMenuItems(activePdf),
+    ...activePdfMenuItems(activePdf, tAddBox),
     ...panelMenuItems(panelMenuProps),
     ...(menuReference ? [
       { type: "separator" as const },
       {
         id: "selected",
-        label: `Selected Reference (${menuReference.key})`,
+        label: t("selectedReferenceMenu", { key: menuReference.key }),
         submenu: referenceActionsMenuItems({
           entry: menuReference,
           canCite,
@@ -1408,6 +1420,7 @@ function ReferencesPanelBody({
           citing: citingOf(menuReference),
           onAction: (action) => menuAction(menuReference, action),
           onOpenPath,
+          t: tRow,
         }),
       },
     ] : []),
@@ -1415,12 +1428,12 @@ function ReferencesPanelBody({
 
   /** Why a "More" menu item cannot run now, for one chosen from the menu bar while the panel was closed. */
   function unavailableMenuItemText(id: string) {
-    if (id === "undo") return "Nothing to undo.";
-    if (id === "generate") return "Entries are already being generated.";
+    if (id === "undo") return t("nothingToUndo");
+    if (id === "generate") return t("alreadyGenerating");
     if (id === "fact-check" && factCheckBlocker) return factCheckBlocker;
     if (id === "insert-bibliography" && panelMenuProps.bibliographyBlocker) return panelMenuProps.bibliographyBlocker;
     if ((id === "copy-document" || id.startsWith("export-document:")) && documentBlocker) return documentBlocker;
-    return "That menu item is not available right now.";
+    return t("menuItemUnavailable");
   }
 
   async function openPanelMenu(button: HTMLButtonElement) {
@@ -1437,23 +1450,23 @@ function ReferencesPanelBody({
           <div role="alert" className="mx-3 space-y-2 rounded-lg bg-destructive-muted p-3 text-xs text-destructive">
             <p>{error}</p>
             <button type="button" className="libera-panel-button h-7 px-2.5 text-foreground" onClick={() => void reload().catch(() => undefined)}>
-              <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Retry
+              <RefreshCw aria-hidden className="h-3.5 w-3.5" /> {tc("retry")}
             </button>
           </div>
         );
       }
       return (
         <div className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground" role="status">
-          <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> Loading references…
+          <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> {t("loading")}
         </div>
       );
     }
     if (!entries.length) {
       return (
-        <div className="mx-3 space-y-2 rounded-lg border border-dashed border-input p-4 text-[12px] leading-relaxed text-muted-foreground" aria-label="Empty library">
-          <p className="font-medium text-foreground">No references in {notebook} yet.</p>
-          <p><button type="button" className="font-medium text-accent hover:underline" onClick={() => setAddBox({ id: Date.now(), query: "" })}>Add one</button> by pasting a DOI, arXiv ID, ISBN, URL, BibTeX or a whole bibliography.</p>
-          <p>Drop PDFs here from the notebook or from your computer, or drop a <span className="font-mono">.bib</span> file to import it.</p>
+        <div className="mx-3 space-y-2 rounded-lg border border-dashed border-input p-4 text-[12px] leading-relaxed text-muted-foreground" aria-label={t("emptyAria")}>
+          <p className="font-medium text-foreground">{t("emptyTitle", { notebook })}</p>
+          <p>{t.rich("emptyAdd", { link: (chunks) => <button type="button" className="font-medium text-accent hover:underline" onClick={() => setAddBox({ id: Date.now(), query: "" })}>{chunks}</button> })}</p>
+          <p>{t.rich("emptyDrop", { mono: (chunks) => <span className="font-mono">{chunks}</span> })}</p>
         </div>
       );
     }
@@ -1467,7 +1480,7 @@ function ReferencesPanelBody({
     if (!listed.length && !listedMissing.length) {
       return (
         <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-          {words.length ? "No references match." : reviewFilter ? "None of the new entries are left." : view.filter === "cited" ? (activeMarkdownDraft === null && activeLatexDraft === null ? "Open a Markdown or LaTeX document to see what it cites." : "This document cites nothing yet.") : "Nothing here."}
+          {words.length ? t("noMatches") : reviewFilter ? t("noneLeft") : view.filter === "cited" ? (activeMarkdownDraft === null && activeLatexDraft === null ? t("openToSeeCited") : t("citesNothing")) : t("nothingHere")}
         </p>
       );
     }
@@ -1497,7 +1510,7 @@ function ReferencesPanelBody({
       <div
         ref={listRef}
         role="listbox"
-        aria-label="References"
+        aria-label={t("title")}
         aria-activedescendant={selectedId ? `reference-row-${selectedId}` : undefined}
         tabIndex={0}
         className="libera-reference-list grow px-1.5 pb-4 outline-none"
@@ -1531,18 +1544,18 @@ function ReferencesPanelBody({
     >
       <div ref={scrollRef} className="libera-references-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden" onScroll={windowed ? measureList : undefined}>
         <div ref={contentRef} className="relative flex min-h-full flex-col">
-          <PanelHeading title="References" subtitle={library ? `${notebook}${styleLabel ? ` · ${styleLabel}` : ""}` : notebook}>
-            <button type="button" className={iconButton} aria-label="Add references" title="Add references" aria-pressed={Boolean(addBox)} onClick={() => setAddBox((current) => current ? null : { id: Date.now(), query: "" })}>
+          <PanelHeading title={t("title")} subtitle={library ? t("subtitle", { notebook, hasStyle: styleLabel ? "yes" : "no", style: styleLabel }) : notebook}>
+            <button type="button" className={iconButton} aria-label={t("addReferences")} title={t("addReferences")} aria-pressed={Boolean(addBox)} onClick={() => setAddBox((current) => current ? null : { id: Date.now(), query: "" })}>
               <Plus aria-hidden className="h-4 w-4" />
             </button>
-            <button type="button" className={iconButton} aria-label="Generate entries for PDFs without one" title={jobs.active ? "Reading PDFs…" : "Generate entries for PDFs without one"} disabled={!library || jobs.active} onClick={() => void generateForPdfs()}>
+            <button type="button" className={iconButton} aria-label={t("generateEntries")} title={jobs.active ? t("readingPdfs") : t("generateEntries")} disabled={!library || jobs.active} onClick={() => void generateForPdfs()}>
               <FileSearch aria-hidden className="h-4 w-4" />
             </button>
-            <button type="button" className={iconButton} aria-label="Manage references" title="Manage references" disabled={!library} onClick={() => setManageOpen(true)}>
+            <button type="button" className={iconButton} aria-label={t("manage")} title={t("manage")} disabled={!library} onClick={() => setManageOpen(true)}>
               <Table2 aria-hidden className="h-4 w-4" />
             </button>
             <div className="relative">
-              <button type="button" className={iconButton} aria-label="References menu" title="Style, export and undo" aria-haspopup="menu" aria-expanded={panelMenuOpen} disabled={!library} onClick={(event) => void openPanelMenu(event.currentTarget)}>
+              <button type="button" className={iconButton} aria-label={t("menuAria")} title={t("menuTitle")} aria-haspopup="menu" aria-expanded={panelMenuOpen} disabled={!library} onClick={(event) => void openPanelMenu(event.currentTarget)}>
                 <MoreVertical aria-hidden className="h-4 w-4" />
               </button>
               {panelMenuOpen && library ? (
@@ -1557,8 +1570,8 @@ function ReferencesPanelBody({
           {notice ? (
             <div role={notice.tone === "error" ? "alert" : "status"} className={`mx-3 mb-2 flex items-start gap-2 rounded-lg p-2 text-[11px] leading-relaxed ${notice.tone === "error" ? "bg-destructive-muted text-destructive" : "libera-panel-card"}`}>
               <span className="min-w-0 flex-1">{notice.text}</span>
-              {notice.undo && undo.canUndo ? <button type="button" className="shrink-0 font-semibold text-accent hover:underline" onClick={() => { setNotice(null); void runUndo(); }}>Undo</button> : null}
-              <button type="button" className="shrink-0" aria-label="Dismiss" onClick={() => setNotice(null)}><X aria-hidden className="h-3 w-3" /></button>
+              {notice.undo && undo.canUndo ? <button type="button" className="shrink-0 font-semibold text-accent hover:underline" onClick={() => { setNotice(null); void runUndo(); }}>{tc("undo")}</button> : null}
+              <button type="button" className="shrink-0" aria-label={tc("dismiss")} onClick={() => setNotice(null)}><X aria-hidden className="h-3 w-3" /></button>
             </div>
           ) : null}
 
@@ -1633,10 +1646,10 @@ function ReferencesPanelBody({
               attachableFiles={attachableFiles}
               knownTags={knownTags}
               onTag={showTag}
-              loadDocument={(path) => documentText(path, openDrafts)}
+              loadDocument={(path) => documentText(path, openDrafts, (name) => t("documentUnreadable", { name }))}
               onOpenCitation={openCitation}
               onCite={(command) => cite(openEntry, command)}
-              onCopy={(text, what) => void copy(text, what)}
+              onCopy={(text, what) => void copy(text, { kind: what === "Key" ? "key" : "citation" })}
               onCopyFormatted={() => void copyFormatted(openEntry)}
               onReresolve={() => setReresolving(openEntry)}
               onOpenPath={onOpenPath}
@@ -1647,10 +1660,10 @@ function ReferencesPanelBody({
           ) : (
             <>
               {reviewFilter ? (
-                <div className="flex items-center gap-1.5 px-3 pb-2" aria-label="Temporary filter">
+                <div className="flex items-center gap-1.5 px-3 pb-2" aria-label={t("temporaryFilterAria")}>
                   <span className="libera-reference-tag">
-                    <ListChecks aria-hidden className="h-3 w-3" /> New from the PDF lookup ({reviewFilter.ids.size})
-                    <button type="button" aria-label="Clear the new-entries filter" onClick={() => setReviewFilter(null)}><X aria-hidden className="h-3 w-3" /></button>
+                    <ListChecks aria-hidden className="h-3 w-3" /> {t("newFromLookup", { count: reviewFilter.ids.size })}
+                    <button type="button" aria-label={t("clearNewFilterAria")} onClick={() => setReviewFilter(null)}><X aria-hidden className="h-3 w-3" /></button>
                   </span>
                 </div>
               ) : null}
@@ -1660,9 +1673,9 @@ function ReferencesPanelBody({
                     <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                     <input
                       ref={searchRef}
-                      aria-label="Search references"
+                      aria-label={t("searchAria")}
                       className="libera-panel-field libera-panel-field--search w-full"
-                      placeholder="Search references"
+                      placeholder={t("searchAria")}
                       value={view.query}
                       onChange={(event) => setView({ query: event.target.value })}
                       onKeyDown={(event) => {
@@ -1673,45 +1686,45 @@ function ReferencesPanelBody({
                       }}
                     />
                     {view.query ? (
-                      <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground" aria-label="Clear reference search" onClick={() => setView({ query: "" })}>
+                      <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground" aria-label={t("clearSearchAria")} onClick={() => setView({ query: "" })}>
                         <X aria-hidden className="h-3.5 w-3.5" />
                       </button>
                     ) : null}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     <select
-                      aria-label="Filter references"
+                      aria-label={t("filterAria")}
                       className="libera-panel-field libera-panel-field--compact min-w-32 flex-1 pl-2.5 pr-2"
                       value={view.filter}
                       onChange={(event) => setView({ filter: event.target.value as ReferenceFilter })}
                     >
-                      {REFERENCE_FILTERS.map((filter) => <option key={filter.id} value={filter.id}>{filter.label} ({counts[filter.id]})</option>)}
+                      {REFERENCE_FILTERS.map((filter) => <option key={filter.id} value={filter.id}>{t("filterOption", { label: t(`filter.${filter.id}`), count: format.number(counts[filter.id]) })}</option>)}
                     </select>
                     {tags.length ? (
                       <select
-                        aria-label="Filter by tag"
+                        aria-label={t("filterByTagAria")}
                         className="libera-panel-field libera-panel-field--compact min-w-24 flex-1 pl-2.5 pr-2"
                         value={activeTag ?? ""}
                         onChange={(event) => setView({ tag: event.target.value || null })}
                       >
-                        <option value="">All tags</option>
+                        <option value="">{t("allTags")}</option>
                         {tags.map((item) => <option key={item.tag} value={item.tag}>#{item.tag} ({item.count})</option>)}
                       </select>
                     ) : null}
                     <select
-                      aria-label="Sort references"
+                      aria-label={t("sortAria")}
                       className="libera-panel-field libera-panel-field--compact min-w-24 flex-1 pl-2.5 pr-2"
                       value={view.sort}
                       onChange={(event) => setView({ sort: event.target.value as ReferenceSort })}
                     >
-                      {REFERENCE_SORTS.map((sort) => <option key={sort.id} value={sort.id}>{sort.label}</option>)}
+                      {REFERENCE_SORTS.map((sort) => <option key={sort.id} value={sort.id}>{sortLabel(sort.id, tDisplay)}</option>)}
                     </select>
                   </div>
                   {activeTag ? (
-                    <div className="flex items-center gap-1.5" aria-label="Tag filter">
+                    <div className="flex items-center gap-1.5" aria-label={t("tagFilterAria")}>
                       <span className="libera-reference-tag">
                         <Tag aria-hidden className="h-3 w-3" /> {activeTag}
-                        <button type="button" aria-label="Clear the tag filter" onClick={() => setView({ tag: null })}><X aria-hidden className="h-3 w-3" /></button>
+                        <button type="button" aria-label={t("clearTagFilterAria")} onClick={() => setView({ tag: null })}><X aria-hidden className="h-3 w-3" /></button>
                       </span>
                     </div>
                   ) : null}
@@ -1744,7 +1757,7 @@ function ReferencesPanelBody({
 
       {dragActive ? (
         <div className="libera-reference-dropzone pointer-events-none absolute inset-2 flex items-center justify-center rounded-xl text-sm font-medium">
-          <FileUp aria-hidden className="mr-2 h-4 w-4" /> Drop to add to the references of {notebook}
+          <FileUp aria-hidden className="mr-2 h-4 w-4" /> {t("dropZone", { notebook })}
         </div>
       ) : null}
 
@@ -1771,7 +1784,7 @@ function ReferencesPanelBody({
           const before = new Set(Object.keys(library?.entries ?? {}));
           // Updates that come with a looked-up candidate (attaching a converted note) apply with it.
           const all = editing?.entry ? ops : [...ops, ...(editing?.extraOps ?? [])];
-          const after = await undo.apply(all, editing?.entry ? `Edit ${editing.entry.key}` : "Add reference");
+          const after = await undo.apply(all, editing?.entry ? t("editLabel", { key: editing.entry.key }) : t("addReferenceLabel"));
           const added = Object.keys(after.entries).filter((id) => !before.has(id));
           if (added.length === 1) reveal(added[0]);
         }}
@@ -1783,8 +1796,8 @@ function ReferencesPanelBody({
         onDelete={async (ids) => {
           if (openId && ids.includes(openId)) setOpenId(null);
           clearMulti();
-          await undo.apply(ids.map((id) => ({ op: "delete", id })), ids.length === 1 ? `Delete ${library?.entries[ids[0]]?.key ?? "reference"}` : `Delete ${ids.length} references`);
-          setNotice({ tone: "info", text: `Deleted ${ids.length === 1 ? library?.entries[ids[0]]?.key ?? "the reference" : `${ids.length} references`}.`, undo: true });
+          await undo.apply(ids.map((id) => ({ op: "delete", id })), ids.length === 1 ? t("deleteLabel", { key: library?.entries[ids[0]]?.key ?? t("referenceFallback") }) : t("deleteManyLabel", { count: ids.length }));
+          setNotice({ tone: "info", text: ids.length === 1 ? t("deletedNotice", { key: library?.entries[ids[0]]?.key ?? t("theReferenceFallback") }) : t("deletedManyNotice", { count: ids.length }), undo: true });
         }}
       />
       <MergeReferencesDialog
@@ -1793,8 +1806,8 @@ function ReferencesPanelBody({
         onMerge={async (keepId, mergeIds) => {
           const keep = library?.entries[keepId];
           const merged = mergeIds.map((id) => library?.entries[id]).filter((entry): entry is ReferenceEntry => Boolean(entry));
-          await undo.apply([{ op: "merge", keepId, mergeIds }], `Merge into ${keep?.key ?? "reference"}`);
-          setNotice({ tone: "info", text: `Merged into ${keep?.key ?? "the kept reference"}.`, undo: true });
+          await undo.apply([{ op: "merge", keepId, mergeIds }], t("mergeIntoLabel", { key: keep?.key ?? t("referenceFallback") }));
+          setNotice({ tone: "info", text: t("mergedNotice", { key: keep?.key ?? t("keptReferenceFallback") }), undo: true });
           // The merged keys are aliases now, so nothing breaks; documents citing them can be rewritten to the kept key.
           if (keep && merged.some((entry) => citingOf(entry).length)) offerRewrite(mergeRewriteMap(keep, merged), { kind: "merge", keep: keep.key });
         }}
@@ -1842,7 +1855,7 @@ function ReferencesPanelBody({
           webSearch={webSearch}
           onLookup={noteLookup}
           onClose={() => setReresolving(null)}
-          onApply={(op, label) => run([op], label, `Updated ${reresolving.key} from its sources.`)}
+          onApply={(op, label) => run([op], label, t("reresolvedNotice", { key: reresolving.key }))}
         />
       ) : null}
     </div>
@@ -1851,49 +1864,59 @@ function ReferencesPanelBody({
 
 /** The tethered .bib file under the heading: its name and state; opens the tether dialog. */
 function TetherStatusLine({ status, onOpen }: { status: TetherStatus; onOpen: () => void }) {
+  const t = useTranslations("references.referencesPanel");
+  const tTether = useTranslations("references.useBibTether");
+  const locale = useLocale();
   const attention = status.state !== "synced";
+  const state = tetherStateText(status, undefined, tTether, locale);
   return (
     <button
       type="button"
       className={`mx-3 mb-2 flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[11px] hover:bg-muted ${attention ? "bg-destructive-muted text-destructive" : "text-muted-foreground"}`}
-      title={`${status.displayPath}${status.message ? `\n${status.message}` : ""}`}
-      aria-label={`Tethered to ${status.fileName}: ${tetherStateText(status)}`}
+      title={status.message ? t("tetherTitleWithMessage", { path: status.displayPath, message: status.message }) : status.displayPath}
+      aria-label={t("tetherAria", { name: status.fileName, state })}
       onClick={onOpen}
       data-tether-state={status.state}
     >
       {attention ? <AlertCircle aria-hidden className="h-3.5 w-3.5 shrink-0" /> : <Link2 aria-hidden className="h-3.5 w-3.5 shrink-0" />}
       <span className="shrink-0 font-medium">{status.fileName}</span>
-      <span className="min-w-0 truncate">· {tetherStateText(status)}</span>
+      <span className="min-w-0 truncate">· {state}</span>
     </button>
   );
 }
 
-const AUTO_CREATE_CHOICES: Array<{ value: boolean | null; label: string }> = [
-  { value: null, label: "Follow Preferences" },
-  { value: true, label: "On for this notebook" },
-  { value: false, label: "Off for this notebook" },
+const AUTO_CREATE_CHOICES: Array<{ value: boolean | null; key: "follow" | "on" | "off" }> = [
+  { value: null, key: "follow" },
+  { value: true, key: "on" },
+  { value: false, key: "off" },
 ];
 
+/** Translates `references.referencesPanel` messages. */
+type PanelT = (key: string, values?: Record<string, string | number>) => string;
+
 /** "Reading 3 of 12 PDFs… current file" while a job runs; "N new entries · M need review · K failed" when it is done. */
-export function jobProgressText(job: ReferenceJobStatus) {
+export function jobProgressText(job: ReferenceJobStatus, t?: PanelT) {
   if (job.kind === "check-retractions") {
-    if (job.state === "queued") return "Waiting to check for retractions…";
-    if (!job.total) return "Checking for retractions…";
+    if (job.state === "queued") return t ? t("jobRetractionQueued") : "Waiting to check for retractions…";
+    if (!job.total) return t ? t("jobRetractionChecking") : "Checking for retractions…";
     const position = Math.min(job.total, job.done + job.failed + 1);
-    return `Checking ${position} of ${job.total} references for retractions…`;
+    return t ? t("jobRetractionProgress", { position, total: job.total }) : `Checking ${position} of ${job.total} references for retractions…`;
   }
   const things = job.kind === "resolve-pdfs" ? "PDFs" : "files";
-  if (job.state === "queued") return `Waiting to read ${things}…`;
-  if (!job.total) return job.kind === "resolve-pdfs" ? "Looking for PDFs without an entry…" : "Starting…";
+  const kind = job.kind === "resolve-pdfs" ? "pdfs" : "files";
+  if (job.state === "queued") return t ? t("jobReadQueued", { things: kind }) : `Waiting to read ${things}…`;
+  if (!job.total) return job.kind === "resolve-pdfs" ? (t ? t("jobLookingForPdfs") : "Looking for PDFs without an entry…") : (t ? t("jobStarting") : "Starting…");
   const position = Math.min(job.total, job.done + job.failed + 1);
+  if (t) return t("jobReadProgress", { position, total: job.total, things: kind, hasCurrent: job.current ? "yes" : "no", current: job.current ? fileBaseName(job.current) : "" });
   return `Reading ${position} of ${job.total} ${things}…${job.current ? ` ${fileBaseName(job.current)}` : ""}`;
 }
 
-export function jobSummaryText(job: ReferenceJobStatus, library: ReferenceLibrary | null) {
+export function jobSummaryText(job: ReferenceJobStatus, library: ReferenceLibrary | null, t?: PanelT) {
   if (job.kind === "check-retractions") {
     const changed = job.updatedEntryIds.map((id) => library?.entries[id]).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
     const warnings = changed.filter((entry) => retractionTone(entry.retraction) === "warning").length;
     const notes = changed.filter((entry) => retractionTone(entry.retraction) === "note").length;
+    if (t) return t("jobRetractionSummary", { prefix: job.state === "cancelled" ? "stopped" : job.state === "failed" ? "failed" : "done", flagged: warnings || notes ? "yes" : "no", warnings, notes, failed: job.failed });
     const parts = warnings || notes ? [`${warnings} retracted or flagged`, `${notes} corrected`] : ["No new notices"];
     if (job.failed) parts.push(`${job.failed} not checked`);
     const prefix = job.state === "cancelled" ? "Stopped: " : job.state === "failed" ? "The check failed: " : "Retraction check: ";
@@ -1902,6 +1925,7 @@ export function jobSummaryText(job: ReferenceJobStatus, library: ReferenceLibrar
   const ids = [...new Set([...job.createdEntryIds, ...job.updatedEntryIds])];
   const review = ids.filter((id) => library?.entries[id] && library.entries[id].status !== "confirmed").length;
   const created = job.createdEntryIds.length;
+  if (t) return t("jobSummary", { prefix: job.state === "cancelled" ? "stopped" : job.state === "failed" ? "failed" : "done", created, review, failed: job.failed });
   const parts = [`${created} new entr${created === 1 ? "y" : "ies"}`, `${review} need${review === 1 ? "s" : ""} review`, `${job.failed} failed`];
   const prefix = job.state === "cancelled" ? "Stopped: " : job.state === "failed" ? "The job failed: " : "";
   return `${prefix}${parts.join(" · ")}`;
@@ -1916,28 +1940,30 @@ function JobStatusLine({ job, library, error, reviewing, onCancel, onDismiss, on
   onDismiss: (jobId: string) => void;
   onReview: (job: ReferenceJobStatus) => void;
 }) {
+  const t = useTranslations("references.referencesPanel");
+  const tc = useTranslations("common");
   const [showErrors, setShowErrors] = useState(false);
   const active = isActiveReferenceJob(job);
   const touched = job.createdEntryIds.length + job.updatedEntryIds.length;
   return (
-    <div className="libera-panel-card mx-3 mb-2 space-y-1 p-2 text-[11px] leading-relaxed" role="status" aria-label="Background lookup" data-job-state={job.state}>
+    <div className="libera-panel-card mx-3 mb-2 space-y-1 p-2 text-[11px] leading-relaxed" role="status" aria-label={t("jobAria")} data-job-state={job.state}>
       <div className="flex items-center gap-2">
         {active ? <Loader2 aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin" /> : job.failed || job.state === "failed" ? <AlertCircle aria-hidden className="h-3.5 w-3.5 shrink-0 text-destructive" /> : <Check aria-hidden className="h-3.5 w-3.5 shrink-0 text-accent" />}
-        <span className="min-w-0 flex-1 truncate" title={job.current}>{active ? jobProgressText(job) : jobSummaryText(job, library)}</span>
+        <span className="min-w-0 flex-1 truncate" title={job.current}>{active ? jobProgressText(job, t) : jobSummaryText(job, library, t)}</span>
         {active ? (
-          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" onClick={() => onCancel(job.id)}>Cancel</button>
+          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" onClick={() => onCancel(job.id)}>{tc("cancel")}</button>
         ) : (
-          <button type="button" className="shrink-0" aria-label="Dismiss" onClick={() => onDismiss(job.id)}><X aria-hidden className="h-3 w-3" /></button>
+          <button type="button" className="shrink-0" aria-label={tc("dismiss")} onClick={() => onDismiss(job.id)}><X aria-hidden className="h-3 w-3" /></button>
         )}
       </div>
       {!active && (touched || job.errors.length) ? (
         <div className="flex flex-wrap items-center gap-2 pl-5">
-          {touched ? <button type="button" className="font-medium text-accent hover:underline disabled:opacity-50" disabled={reviewing} onClick={() => onReview(job)}>Review new entries</button> : null}
-          {job.errors.length ? <button type="button" className="font-medium text-accent hover:underline" aria-expanded={showErrors} onClick={() => setShowErrors((current) => !current)}>{showErrors ? "Hide errors" : "Show errors"}</button> : null}
+          {touched ? <button type="button" className="font-medium text-accent hover:underline disabled:opacity-50" disabled={reviewing} onClick={() => onReview(job)}>{t("reviewNewEntries")}</button> : null}
+          {job.errors.length ? <button type="button" className="font-medium text-accent hover:underline" aria-expanded={showErrors} onClick={() => setShowErrors((current) => !current)}>{showErrors ? t("hideErrors") : t("showErrors")}</button> : null}
         </div>
       ) : null}
       {showErrors && !active ? (
-        <ul className="max-h-32 space-y-0.5 overflow-auto pl-5 text-destructive" aria-label="Job errors">
+        <ul className="max-h-32 space-y-0.5 overflow-auto pl-5 text-destructive" aria-label={t("jobErrorsAria")}>
           {job.errors.map((item, index) => <li key={index}><span className="font-medium">{fileBaseName(item.path)}</span>: {item.message}</li>)}
         </ul>
       ) : null}
@@ -1953,26 +1979,31 @@ function FactCheckPopover({ path, defaultWebSearch, blocker, onCancel, onStart }
   onCancel: () => void;
   onStart: (webSearch: boolean) => void;
 }) {
+  const t = useTranslations("references.referencesPanel");
+  const tc = useTranslations("common");
   const [webSearch, setWebSearch] = useState(defaultWebSearch);
   return (
-    <div className="libera-panel-card mx-3 mb-2 space-y-2 p-2.5 text-[12px]" role="dialog" aria-label="Fact-check citations">
-      <p className="font-semibold">Fact-check citations</p>
+    <div className="libera-panel-card mx-3 mb-2 space-y-2 p-2.5 text-[12px]" role="dialog" aria-label={t("factCheckTitle")}>
+      <p className="font-semibold">{t("factCheckTitle")}</p>
       <p className="text-[11px] leading-relaxed text-muted-foreground">
-        The AI panel checks each citation in <span className="font-medium text-foreground">{fileBaseName(path)}</span> against its source and suggests corrections you can review.
+        {t.rich("factCheckIntro", { name: fileBaseName(path), strong: (chunks) => <span className="font-medium text-foreground">{chunks}</span> })}
       </p>
       {blocker ? <p role="alert" className="text-[11px] text-destructive">{blocker}</p> : null}
       <label className="flex items-center gap-1.5 text-[11px]">
-        <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} /> Let the AI search the web for sources
+        <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} /> {t("factCheckWeb")}
       </label>
       <div className="flex justify-end gap-1.5">
-        <button type="button" className="libera-panel-button h-7 px-3" onClick={onCancel}>Cancel</button>
-        <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={Boolean(blocker)} onClick={() => onStart(webSearch)}>Start fact-check</button>
+        <button type="button" className="libera-panel-button h-7 px-3" onClick={onCancel}>{tc("cancel")}</button>
+        <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={Boolean(blocker)} onClick={() => onStart(webSearch)}>{t("factCheckStart")}</button>
       </div>
     </div>
   );
 }
 
 type PanelMenuProps = {
+  t: PanelT;
+  /** `references.bibliographyActions`, for the names of the formatted-list formats. */
+  tFormats: (key: string) => string;
   currentStyle: string;
   styleFiles: string[];
   undoLabel: string | null;
@@ -2030,11 +2061,19 @@ function findPanelMenuItem(items: ReferenceMenuItem[], id: string, parentEnabled
  * the panel's live state (checkmarks, what is available). Each item shows the
  * panel for `notebook` and runs there, where unavailable ones say why.
  */
-export function closedReferencesMenuItems(notebook: string, onShowPanel: () => void, activePdf?: ActiveReferencePdf | null): ReferenceMenuItem[] {
+export function closedReferencesMenuItems(
+  notebook: string,
+  onShowPanel: () => void,
+  activePdf?: ActiveReferencePdf | null,
+  /** `t`: `useTranslations("references.referencesPanel")`; `tFormats`: `("references.bibliographyActions")`; `tAddBox`: `("references.addReferenceBox")`. */
+  i18n?: { t: PanelT; tFormats: (key: string) => string; tAddBox: (key: "addActivePdf", values: { name: string }) => string },
+): ReferenceMenuItem[] {
   if (!notebook) return [];
   const none = () => undefined;
+  const t: PanelT = i18n?.t ?? ((key) => key);
   const items = panelMenuItems({
-    currentStyle: "", styleFiles: [], undoLabel: "last change", undoStale: false, onClose: none, onUndo: none, onStyle: none,
+    t, tFormats: i18n?.tFormats ?? ((key) => key),
+    currentStyle: "", styleFiles: [], undoLabel: t("lastChange"), undoStale: false, onClose: none, onUndo: none, onStyle: none,
     onExport: none, onImport: none, onManage: none, tether: null, onTether: none, onSyncTether: none, jobActive: false,
     onGenerate: none, autoCreate: undefined, onAutoCreate: none, autoCreateDefault: null, factCheckBlocker: null, onFactCheck: none,
     onCopyList: none, onExportList: none, documentBlocker: null, onCopyDocument: none, onExportDocument: none,
@@ -2046,8 +2085,8 @@ export function closedReferencesMenuItems(notebook: string, onShowPanel: () => v
     return { id: item.id, label: item.label, onSelect: () => runReferencesCommand(notebook, { action: "menu", id: item.id }) };
   });
   return [
-    ...activePdfMenuItems(activePdf),
-    { id: "show-panel", label: "Show References Panel", onSelect: onShowPanel },
+    ...activePdfMenuItems(activePdf, i18n?.tAddBox),
+    { id: "show-panel", label: t("showPanel"), onSelect: onShowPanel },
     { type: "separator" },
     ...relay(items),
   ];
@@ -2055,49 +2094,52 @@ export function closedReferencesMenuItems(notebook: string, onShowPanel: () => v
 
 /** The panel's "More" menu, for its native menu and the macOS References menu. */
 function panelMenuItems(props: PanelMenuProps): ReferenceMenuItem[] {
+  const { t, tFormats } = props;
   const styles = [...BUNDLED_CSL_STYLES, ...props.styleFiles.map((path) => ({ id: path, label: fileBaseName(path) }))];
   return [
-    { id: "undo", label: props.undoLabel ? `Undo ${props.undoLabel}` : "Nothing to undo", enabled: Boolean(props.undoLabel) && !props.undoStale, onSelect: props.onUndo },
+    { id: "undo", label: props.undoLabel ? t("menuUndo", { label: props.undoLabel }) : t("nothingToUndo"), enabled: Boolean(props.undoLabel) && !props.undoStale, onSelect: props.onUndo },
     { type: "separator" },
-    { id: "style", label: "Citation style", submenu: styles.map((style, index) => ({
+    { id: "style", label: t("citationStyle"), submenu: styles.map((style, index) => ({
       id: `style:${index}`, label: style.label, type: "radio", checked: style.id === props.currentStyle,
       onSelect: () => { if (style.id !== props.currentStyle) props.onStyle(style.id); },
     })) },
-    { id: "export", label: "Export library", submenu: EXPORT_FORMATS.map((format) => ({
+    { id: "export", label: t("exportLibrary"), submenu: EXPORT_FORMATS.map((format) => ({
       id: `export:${format.id}`, label: `${format.label} (.${format.extension})`, onSelect: () => props.onExport(format.id),
     })) },
     ...(props.tether ? [
-      { id: "tether", label: `Tethered to ${props.tether.fileName}…`, onSelect: props.onTether },
-      { id: "tether-sync", label: "Sync the .bib file now", onSelect: props.onSyncTether },
+      { id: "tether", label: t("tetheredTo", { name: props.tether.fileName }), onSelect: props.onTether },
+      { id: "tether-sync", label: t("syncBib"), onSelect: props.onSyncTether },
     ] : [
-      { id: "tether", label: "Tether to a .bib file…", onSelect: props.onTether },
+      { id: "tether", label: t("tetherToBib"), onSelect: props.onTether },
     ]),
     { type: "separator" },
-    { id: "copy-list", label: "Copy reference list", onSelect: props.onCopyList },
-    { id: "export-list", label: "Export reference list…", submenu: BIBLIOGRAPHY_FORMATS.map((format) => ({
-      id: `export-list:${format.id}`, label: format.label, onSelect: () => props.onExportList(format.id),
+    { id: "copy-list", label: t("copyReferenceList"), onSelect: props.onCopyList },
+    { id: "export-list", label: t("exportReferenceListMenu"), submenu: BIBLIOGRAPHY_FORMATS.map((format) => ({
+      id: `export-list:${format.id}`, label: bibliographyFormatLabel(format.id, tFormats), onSelect: () => props.onExportList(format.id),
     })) },
-    { id: "insert-bibliography", label: "Insert bibliography here", enabled: !props.bibliographyBlocker, onSelect: props.onInsertBibliography },
-    { id: "copy-document", label: "Copy bibliography", enabled: !props.documentBlocker, onSelect: props.onCopyDocument },
-    { id: "export-document", label: "Export bibliography as", enabled: !props.documentBlocker, submenu: DOCUMENT_EXPORT_FORMATS.map((format) => ({
-      id: `export-document:${format.id}`, label: format.label, onSelect: () => props.onExportDocument(format.id),
+    { id: "insert-bibliography", label: t("insertBibliography"), enabled: !props.bibliographyBlocker, onSelect: props.onInsertBibliography },
+    { id: "copy-document", label: t("copyBibliography"), enabled: !props.documentBlocker, onSelect: props.onCopyDocument },
+    { id: "export-document", label: t("exportBibliographyAs"), enabled: !props.documentBlocker, submenu: DOCUMENT_EXPORT_FORMATS.map((format) => ({
+      id: `export-document:${format.id}`, label: documentExportFormatLabel(format.id, tFormats), onSelect: () => props.onExportDocument(format.id),
     })) },
     { type: "separator" },
-    { id: "generate", label: "Generate entries for PDFs without one", enabled: !props.jobActive, onSelect: props.onGenerate },
-    { id: "auto-create", label: "Create entries for new PDFs automatically", submenu: AUTO_CREATE_CHOICES.map((choice) => ({
-      id: `auto-create:${choice.value}`, label: choice.value === null && props.autoCreateDefault !== null ? `${choice.label} (${props.autoCreateDefault ? "on" : "off"})` : choice.label,
+    { id: "generate", label: t("generateEntries"), enabled: !props.jobActive, onSelect: props.onGenerate },
+    { id: "auto-create", label: t("autoCreate"), submenu: AUTO_CREATE_CHOICES.map((choice) => ({
+      id: `auto-create:${choice.value}`, label: t(choice.value === null && props.autoCreateDefault !== null ? "autoChoiceDefault" : "autoChoice", { choice: choice.key, state: props.autoCreateDefault ? "on" : "off" }),
       type: "radio", checked: (props.autoCreate ?? null) === choice.value,
       onSelect: () => { if ((props.autoCreate ?? null) !== choice.value) props.onAutoCreate(choice.value); },
     })) },
     { type: "separator" },
-    { id: "fact-check", label: "Fact-check citations…", enabled: !props.factCheckBlocker, onSelect: props.onFactCheck },
+    { id: "fact-check", label: t("factCheckMenu"), enabled: !props.factCheckBlocker, onSelect: props.onFactCheck },
     { type: "separator" },
-    { id: "import", label: "Import or paste…", onSelect: props.onImport },
-    { id: "manage", label: "Manage references…", onSelect: props.onManage },
+    { id: "import", label: t("importOrPaste"), onSelect: props.onImport },
+    { id: "manage", label: t("manageMenu"), onSelect: props.onManage },
   ];
 }
 
 function PanelMenu({
+  t,
+  tFormats,
   currentStyle,
   styleFiles,
   undoLabel,
@@ -2148,15 +2190,15 @@ function PanelMenu({
     fn();
   };
   return (
-    <div ref={menuRef} role="menu" aria-label="References menu" className="absolute right-0 top-10 z-50 max-h-[70vh] w-64 overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg">
-      <button type="button" role="menuitem" className={item} disabled={!undoLabel} title={undoStale ? "The last change was changed again elsewhere and cannot be undone" : undefined} onClick={act(onUndo)}>
+    <div ref={menuRef} role="menu" aria-label={t("menuAria")} className="absolute right-0 top-10 z-50 max-h-[70vh] w-64 overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg">
+      <button type="button" role="menuitem" className={item} disabled={!undoLabel} title={undoStale ? t("undoStale") : undefined} onClick={act(onUndo)}>
         <Undo2 aria-hidden className="h-4 w-4" />
-        <span className="min-w-0 flex-1 truncate">{undoLabel ? `Undo ${undoLabel}` : "Nothing to undo"}</span>
+        <span className="min-w-0 flex-1 truncate">{undoLabel ? t("menuUndo", { label: undoLabel }) : t("nothingToUndo")}</span>
         <span className="text-[11px] text-muted-foreground">⌘Z</span>
       </button>
       <div className="my-1 h-px bg-border" />
-      <p className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><Palette aria-hidden className="h-3.5 w-3.5" /> Citation style</p>
-      <div role="group" aria-label="Citation style">
+      <p className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><Palette aria-hidden className="h-3.5 w-3.5" /> {t("citationStyle")}</p>
+      <div role="group" aria-label={t("citationStyle")}>
         {[...BUNDLED_CSL_STYLES.map((style) => ({ id: style.id as string, label: style.label as string })), ...styleFiles.map((path) => ({ id: path, label: fileBaseName(path) }))].map((style) => (
           <button key={style.id} type="button" role="menuitemradio" aria-checked={style.id === currentStyle} className={item} title={style.id} onClick={act(() => { if (style.id !== currentStyle) onStyle(style.id); })}>
             <span className="flex w-4 justify-center">{style.id === currentStyle ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}</span>
@@ -2165,7 +2207,7 @@ function PanelMenu({
         ))}
       </div>
       <div className="my-1 h-px bg-border" />
-      <p className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><Download aria-hidden className="h-3.5 w-3.5" /> Export library</p>
+      <p className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><Download aria-hidden className="h-3.5 w-3.5" /> {t("exportLibrary")}</p>
       {EXPORT_FORMATS.map((format) => (
         <button key={format.id} type="button" role="menuitem" className={item} onClick={act(() => onExport(format.id))}>
           <span className="w-4" />
@@ -2173,67 +2215,67 @@ function PanelMenu({
           <span className="font-mono text-[11px] text-muted-foreground">.{format.extension}</span>
         </button>
       ))}
-      <button type="button" role="menuitem" className={item} title={tether ? tether.displayPath : "Keep this library and a .bib file in step, both ways"} onClick={act(onTether)}>
+      <button type="button" role="menuitem" className={item} title={tether ? tether.displayPath : t("tetherHint")} onClick={act(onTether)}>
         <Link2 aria-hidden className="h-4 w-4" />
-        <span className="min-w-0 flex-1 truncate">{tether ? `Tethered to ${tether.fileName}…` : "Tether to a .bib file…"}</span>
+        <span className="min-w-0 flex-1 truncate">{tether ? t("tetheredTo", { name: tether.fileName }) : t("tetherToBib")}</span>
       </button>
       {tether ? (
         <button type="button" role="menuitem" className={item} onClick={act(onSyncTether)}>
-          <RefreshCw aria-hidden className="h-4 w-4" /> Sync the .bib file now
+          <RefreshCw aria-hidden className="h-4 w-4" /> {t("syncBib")}
         </button>
       ) : null}
       <div className="my-1 h-px bg-border" />
-      <p className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><TextQuote aria-hidden className="h-3.5 w-3.5" /> Reference list</p>
-      <button type="button" role="menuitem" className={item} title="The whole library, formatted in the citation style" onClick={act(onCopyList)}>
-        <Copy aria-hidden className="h-4 w-4" /> Copy reference list
+      <p className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><TextQuote aria-hidden className="h-3.5 w-3.5" /> {t("referenceListHeading")}</p>
+      <button type="button" role="menuitem" className={item} title={t("copyListHint")} onClick={act(onCopyList)}>
+        <Copy aria-hidden className="h-4 w-4" /> {t("copyReferenceList")}
       </button>
-      <div className="flex flex-wrap items-center gap-1 px-2.5 py-1 text-[12px]" role="group" aria-label="Export reference list">
-        <span className="mr-1 text-muted-foreground">Export reference list…</span>
+      <div className="flex flex-wrap items-center gap-1 px-2.5 py-1 text-[12px]" role="group" aria-label={t("exportReferenceListAria")}>
+        <span className="mr-1 text-muted-foreground">{t("exportReferenceListMenu")}</span>
         {BIBLIOGRAPHY_FORMATS.map((format) => (
-          <button key={format.id} type="button" role="menuitem" className={chip} aria-label={`Export reference list as ${format.label}`} title={format.label} onClick={act(() => onExportList(format.id))}>.{format.extension}</button>
+          <button key={format.id} type="button" role="menuitem" className={chip} aria-label={t("exportReferenceListAs", { format: bibliographyFormatLabel(format.id, tFormats) })} title={bibliographyFormatLabel(format.id, tFormats)} onClick={act(() => onExportList(format.id))}>.{format.extension}</button>
         ))}
       </div>
-      <p className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">For this document</p>
-      <button type="button" role="menuitem" className={item} disabled={Boolean(bibliographyBlocker)} title={bibliographyBlocker ?? "Place the generated bibliography at the cursor instead of at the end"} onClick={act(onInsertBibliography)}>
-        <ScrollText aria-hidden className="h-4 w-4" /> Insert bibliography here
+      <p className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t("forThisDocument")}</p>
+      <button type="button" role="menuitem" className={item} disabled={Boolean(bibliographyBlocker)} title={bibliographyBlocker ?? t("insertBibliographyHint")} onClick={act(onInsertBibliography)}>
+        <ScrollText aria-hidden className="h-4 w-4" /> {t("insertBibliography")}
       </button>
-      <button type="button" role="menuitem" className={item} disabled={Boolean(documentBlocker)} title={documentBlocker ?? "What the active document cites, formatted in the citation style"} onClick={act(onCopyDocument)}>
-        <Copy aria-hidden className="h-4 w-4" /> Copy bibliography
+      <button type="button" role="menuitem" className={item} disabled={Boolean(documentBlocker)} title={documentBlocker ?? t("copyBibliographyHint")} onClick={act(onCopyDocument)}>
+        <Copy aria-hidden className="h-4 w-4" /> {t("copyBibliography")}
       </button>
-      <div className="flex flex-wrap items-center gap-1 px-2.5 py-1 text-[12px]" role="group" aria-label="Export bibliography" title={documentBlocker ?? undefined}>
-        <span className="mr-1 text-muted-foreground">Export bibliography as</span>
+      <div className="flex flex-wrap items-center gap-1 px-2.5 py-1 text-[12px]" role="group" aria-label={t("exportBibliographyAria")} title={documentBlocker ?? undefined}>
+        <span className="mr-1 text-muted-foreground">{t("exportBibliographyAs")}</span>
         {DOCUMENT_EXPORT_FORMATS.map((format) => (
-          <button key={format.id} type="button" role="menuitem" className={chip} disabled={Boolean(documentBlocker)} aria-label={`Export bibliography as ${format.label}`} title={format.label} onClick={act(() => onExportDocument(format.id))}>
+          <button key={format.id} type="button" role="menuitem" className={chip} disabled={Boolean(documentBlocker)} aria-label={t("exportBibliographyAsFormat", { format: documentExportFormatLabel(format.id, tFormats) })} title={documentExportFormatLabel(format.id, tFormats)} onClick={act(() => onExportDocument(format.id))}>
             {format.id === "bibtex" ? "BibTeX" : format.id === "biblatex" ? "BibLaTeX" : format.id === "csl-json" ? "CSL-JSON" : format.id === "ris" ? "RIS" : `.${format.extension}`}
           </button>
         ))}
       </div>
       <div className="my-1 h-px bg-border" />
-      <button type="button" role="menuitem" className={item} disabled={jobActive} title={jobActive ? "PDFs are being read" : undefined} onClick={act(onGenerate)}>
-        <FileSearch aria-hidden className="h-4 w-4" /> Generate entries for PDFs without one
+      <button type="button" role="menuitem" className={item} disabled={jobActive} title={jobActive ? t("pdfsBeingRead") : undefined} onClick={act(onGenerate)}>
+        <FileSearch aria-hidden className="h-4 w-4" /> {t("generateEntries")}
       </button>
-      <p className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Create entries for new PDFs automatically</p>
-      <div role="group" aria-label="Create entries for new PDFs automatically">
+      <p className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t("autoCreate")}</p>
+      <div role="group" aria-label={t("autoCreate")}>
         {AUTO_CREATE_CHOICES.map((choice) => {
           const checked = (autoCreate ?? null) === choice.value;
           return (
             <button key={String(choice.value)} type="button" role="menuitemradio" aria-checked={checked} className={item} onClick={act(() => { if (!checked) onAutoCreate(choice.value); })}>
               <span className="flex w-4 justify-center">{checked ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}</span>
-              <span className="min-w-0 flex-1 truncate">{choice.value === null && autoCreateDefault !== null ? `${choice.label} (${autoCreateDefault ? "on" : "off"})` : choice.label}</span>
+              <span className="min-w-0 flex-1 truncate">{t(choice.value === null && autoCreateDefault !== null ? "autoChoiceDefault" : "autoChoice", { choice: choice.key, state: autoCreateDefault ? "on" : "off" })}</span>
             </button>
           );
         })}
       </div>
       <div className="my-1 h-px bg-border" />
-      <button type="button" role="menuitem" className={item} disabled={Boolean(factCheckBlocker)} title={factCheckBlocker ?? "Check that the cited sources support each claim"} onClick={act(onFactCheck)}>
-        <ShieldCheck aria-hidden className="h-4 w-4" /> Fact-check citations…
+      <button type="button" role="menuitem" className={item} disabled={Boolean(factCheckBlocker)} title={factCheckBlocker ?? t("factCheckHint")} onClick={act(onFactCheck)}>
+        <ShieldCheck aria-hidden className="h-4 w-4" /> {t("factCheckMenu")}
       </button>
       <div className="my-1 h-px bg-border" />
       <button type="button" role="menuitem" className={item} onClick={act(onImport)}>
-        <FileUp aria-hidden className="h-4 w-4" /> Import or paste…
+        <FileUp aria-hidden className="h-4 w-4" /> {t("importOrPaste")}
       </button>
       <button type="button" role="menuitem" className={item} onClick={act(onManage)}>
-        <Table2 aria-hidden className="h-4 w-4" /> Manage references…
+        <Table2 aria-hidden className="h-4 w-4" /> {t("manageMenu")}
       </button>
     </div>
   );
@@ -2257,6 +2299,9 @@ function BulkActionsBar({ count, canCite, citeSyntax, entries, knownTags, tagsOp
   onDelete: () => void;
   onClear: () => void;
 }) {
+  const t = useTranslations("references.referencesPanel");
+  const tRow = useTranslations("references.referenceRow");
+  const tc = useTranslations("common");
   const [draft, setDraft] = useState("");
   const button = "libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg disabled:opacity-40";
   // Tags carried by any selected entry, with how many of them carry it.
@@ -2272,33 +2317,33 @@ function BulkActionsBar({ count, canCite, citeSyntax, entries, knownTags, tagsOp
   }
 
   return (
-    <div className="libera-panel-card mx-3 mb-2 space-y-1.5 p-1.5" role="toolbar" aria-label={`${count} selected references`}>
+    <div className="libera-panel-card mx-3 mb-2 space-y-1.5 p-1.5" role="toolbar" aria-label={t("bulkAria", { count })}>
       <div className="flex flex-wrap items-center gap-0.5">
-        <span className="mr-auto px-1 text-[11px] font-semibold">{count} selected</span>
-        {citeSyntax === "latex" ? citeActions("latex").map(({ command, label }) => (
-          <button key={command} type="button" className={`${button} w-auto px-1 font-mono text-[10.5px]`} aria-label={`${label.replace(" at cursor", "")} the selection at the cursor`} title={canCite ? `${label}, all as one citation (${command === "citep" ? "⌘/Ctrl+Shift+Enter" : "⌘/Ctrl+Enter"})` : CITE_UNAVAILABLE} disabled={!canCite} onClick={() => onCite(command)}>{`\\${command}`}</button>
+        <span className="mr-auto px-1 text-[11px] font-semibold">{t("selectedCount", { count })}</span>
+        {citeSyntax === "latex" ? citeActions("latex", tRow).map(({ command }) => (
+          <button key={command} type="button" className={`${button} w-auto px-1 font-mono text-[10.5px]`} aria-label={t("bulkLatexCiteAria", { command: `\\${command}` })} title={canCite ? t("bulkLatexCiteTitle", { command: `\\${command}`, shortcut: command === "citep" ? "⌘/Ctrl+Shift+Enter" : "⌘/Ctrl+Enter" }) : tRow("citeUnavailable")} disabled={!canCite} onClick={() => onCite(command)}>{`\\${command}`}</button>
         )) : (
-          <button type="button" className={button} aria-label="Cite the selection at the cursor" title={canCite ? "Cite all at the cursor as one citation (⌘/Ctrl+Enter)" : CITE_UNAVAILABLE} disabled={!canCite} onClick={() => onCite()}><Quote aria-hidden className="h-3.5 w-3.5" /></button>
+          <button type="button" className={button} aria-label={t("bulkCiteAria")} title={canCite ? t("bulkCiteTitle") : tRow("citeUnavailable")} disabled={!canCite} onClick={() => onCite()}><Quote aria-hidden className="h-3.5 w-3.5" /></button>
         )}
-        <button type="button" className={button} aria-label="Copy as one citation" title="Copy as [@a; @b]" onClick={() => onCopyCitation("pandoc")}><Copy aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={button} aria-label="Copy as a LaTeX citation" title={"Copy as \\cite{a,b}"} onClick={() => onCopyCitation("latex")}><Braces aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={button} aria-label="Copy formatted references" title="Copy formatted references (⌘/Ctrl+Shift+C)" onClick={onCopyFormatted}><ScrollText aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={button} aria-label="Edit tags of the selection" title="Add or remove tags" aria-expanded={tagsOpen} onClick={() => onTagsOpen(!tagsOpen)}><Tag aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={button} aria-label={allToRead ? "Remove from To read" : "Mark as To read"} title={allToRead ? "Remove from To read" : "Mark as To read"} aria-pressed={allToRead} onClick={() => onReading(allToRead ? null : "to-read")}><BookOpen aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={button} aria-label={allRead ? "Mark as unread" : "Mark as read"} title={allRead ? "Mark as unread" : "Mark as read"} aria-pressed={allRead} onClick={() => onReading(allRead ? null : "read")}><BookCheck aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={button} aria-label="Confirm the selection" title={unconfirmed ? `Mark ${unconfirmed} as confirmed` : "All are confirmed"} disabled={!unconfirmed} onClick={onConfirm}><Check aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={button} data-tone="destructive" aria-label="Delete the selection" title="Delete… (Delete)" onClick={onDelete}><Trash2 aria-hidden className="h-3.5 w-3.5" /></button>
-        <button type="button" className={button} aria-label="Clear the selection" title="Clear the selection (Esc)" onClick={onClear}><X aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={t("bulkCopyCitationAria")} title={t("bulkCopyCitationTitle")} onClick={() => onCopyCitation("pandoc")}><Copy aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={t("bulkCopyLatexAria")} title={t("bulkCopyLatexTitle")} onClick={() => onCopyCitation("latex")}><Braces aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={t("bulkCopyFormattedAria")} title={t("bulkCopyFormattedTitle")} onClick={onCopyFormatted}><ScrollText aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={t("bulkTagsAria")} title={t("bulkTagsTitle")} aria-expanded={tagsOpen} onClick={() => onTagsOpen(!tagsOpen)}><Tag aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={allToRead ? tRow("removeFromToRead") : tRow("markAsToRead")} title={allToRead ? tRow("removeFromToRead") : tRow("markAsToRead")} aria-pressed={allToRead} onClick={() => onReading(allToRead ? null : "to-read")}><BookOpen aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={allRead ? tRow("markAsUnread") : tRow("markAsRead")} title={allRead ? tRow("markAsUnread") : tRow("markAsRead")} aria-pressed={allRead} onClick={() => onReading(allRead ? null : "read")}><BookCheck aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={t("bulkConfirmAria")} title={unconfirmed ? t("bulkConfirmTitle", { count: unconfirmed }) : t("bulkAllConfirmed")} disabled={!unconfirmed} onClick={onConfirm}><Check aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} data-tone="destructive" aria-label={t("bulkDeleteAria")} title={t("bulkDeleteTitle")} onClick={onDelete}><Trash2 aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={t("bulkClearAria")} title={t("bulkClearTitle")} onClick={onClear}><X aria-hidden className="h-3.5 w-3.5" /></button>
       </div>
       {tagsOpen ? (
-        <div className="space-y-1.5 px-1 pb-0.5" role="group" aria-label="Tags of the selection">
+        <div className="space-y-1.5 px-1 pb-0.5" role="group" aria-label={t("bulkTagsGroupAria")}>
           {present.length ? (
             <div className="flex flex-wrap gap-1">
               {present.map((item) => (
-                <span key={item.tag} className="libera-reference-tag" title={`${item.count} of ${count} selected`}>
+                <span key={item.tag} className="libera-reference-tag" title={t("tagCarriedBy", { carried: item.count, count })}>
                   {item.tag}{item.count < count ? <span className="text-muted-foreground"> {item.count}/{count}</span> : null}
-                  {item.count < count ? <button type="button" aria-label={`Add tag ${item.tag} to all selected`} title="Add to all selected" onClick={() => onTags([item.tag], [])}>+</button> : null}
-                  <button type="button" aria-label={`Remove tag ${item.tag} from the selection`} onClick={() => onTags([], [item.tag])}><X aria-hidden className="h-3 w-3" /></button>
+                  {item.count < count ? <button type="button" aria-label={t("addTagToAllAria", { tag: item.tag })} title={t("addToAllSelected")} onClick={() => onTags([item.tag], [])}>+</button> : null}
+                  <button type="button" aria-label={t("removeTagFromSelectionAria", { tag: item.tag })} onClick={() => onTags([], [item.tag])}><X aria-hidden className="h-3 w-3" /></button>
                 </span>
               ))}
             </div>
@@ -2306,15 +2351,15 @@ function BulkActionsBar({ count, canCite, citeSyntax, entries, knownTags, tagsOp
           <form className="flex gap-1.5" onSubmit={(event) => { event.preventDefault(); addTags(); }}>
             <input
               className="libera-panel-field h-7 min-w-0 flex-1 px-2 text-[12px]"
-              aria-label="Tag to add to the selection"
-              placeholder="Add a tag to all selected"
+              aria-label={t("tagToAddAria")}
+              placeholder={t("tagToAddPlaceholder")}
               list="libera-reference-bulk-tags"
               value={draft}
               autoFocus
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onTagsOpen(false); } }}
             />
-            <button type="submit" className="libera-panel-button h-7 px-2.5" disabled={!draft.trim()}>Add</button>
+            <button type="submit" className="libera-panel-button h-7 px-2.5" disabled={!draft.trim()}>{tc("add")}</button>
           </form>
           <datalist id="libera-reference-bulk-tags">
             {knownTags.map((tag) => <option key={tag} value={tag} />)}

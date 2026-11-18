@@ -1,6 +1,7 @@
 "use client";
 
 import { Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Square, Volume1, Volume2, VolumeX, type LucideIcon } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 import { RailPanel, RailSection, RailSwitch, railStyles } from "@/components/libera/audio/rail-ui";
 import { formatClock } from "@/lib/transcription/format";
@@ -55,24 +56,27 @@ function SkipIcon({ icon: Icon }: { icon: LucideIcon }) {
  * copy, export and transcription menu (`menu`) beside the title.
  */
 export function VoiceMemoControls({ player, transcript, menu }: { player: VoiceMemoPlayer; transcript: ReactNode; menu: ReactNode }) {
+  const t = useTranslations("audio.voiceMemoControls");
+  const tCommon = useTranslations("common");
+  const format = useFormatter();
   const { playing, currentTime, duration, previous, next } = player;
   const VolumeIcon = player.muted || player.volume === 0 ? VolumeX : player.volume < 0.5 ? Volume1 : Volume2;
 
   return (
-    <RailPanel title="Voice Memo" actions={menu}>
+    <RailPanel title={t("title")} actions={menu}>
       <div className={railStyles.card}>
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
             <p className="truncate text-[13px] font-semibold" title={player.title}>{player.title}</p>
             <p className="truncate text-[11px] text-muted-foreground">{player.details}</p>
           </div>
-          <button type="button" className={`${transportButton} h-7 w-7 shrink-0`} aria-label="Stop" title="Stop: back to the start" disabled={!playing && currentTime === 0} onClick={player.stop}>
+          <button type="button" className={`${transportButton} h-7 w-7 shrink-0`} aria-label={tCommon("stop")} title={t("stopTitle")} disabled={!playing && currentTime === 0} onClick={player.stop}>
             <Square aria-hidden className="h-3 w-3" fill="currentColor" />
           </button>
         </div>
         <input
           type="range"
-          aria-label="Position"
+          aria-label={t("position")}
           min={0}
           max={Math.max(duration, 0.01)}
           step={0.1}
@@ -86,46 +90,46 @@ export function VoiceMemoControls({ player, transcript, menu }: { player: VoiceM
           <span>-{formatClock(Math.max(0, duration - currentTime))}</span>
         </div>
         <div className="mt-2 flex items-center justify-center gap-1">
-          <button type="button" className={`${transportButton} h-8 w-8`} aria-label="Previous recording" title={previous ? `Previous: ${previous.name} ([)` : "No previous recording"} disabled={!previous} onClick={() => previous && player.showSibling(previous)}>
+          <button type="button" className={`${transportButton} h-8 w-8`} aria-label={t("previousRecording")} title={previous ? t("previousTitle", { name: previous.name }) : t("noPrevious")} disabled={!previous} onClick={() => previous && player.showSibling(previous)}>
             <SkipBack aria-hidden className="h-4 w-4" />
           </button>
-          <button type="button" className={`${transportButton} h-9 w-9`} aria-label={`Back ${SKIP_SECONDS} seconds`} title={`Back ${SKIP_SECONDS} s`} onClick={() => player.skip(-SKIP_SECONDS)}>
+          <button type="button" className={`${transportButton} h-9 w-9`} aria-label={t("backAria", { seconds: SKIP_SECONDS })} title={t("backTitle", { seconds: SKIP_SECONDS })} onClick={() => player.skip(-SKIP_SECONDS)}>
             <SkipIcon icon={RotateCcw} />
           </button>
           <button
             type="button"
             className="mx-1 inline-flex h-12 w-12 items-center justify-center rounded-full bg-foreground text-background shadow-md transition hover:scale-[1.04] active:scale-95 disabled:opacity-40"
-            aria-label={playing ? "Pause" : "Play"}
-            title={playing ? "Pause (Space)" : "Play (Space)"}
+            aria-label={playing ? t("pause") : t("play")}
+            title={playing ? t("pauseSpace") : t("playSpace")}
             disabled={!player.canPlay}
             onClick={player.togglePlay}
           >
             {playing ? <Pause aria-hidden className="h-5 w-5" fill="currentColor" /> : <Play aria-hidden className="ml-0.5 h-5 w-5" fill="currentColor" />}
           </button>
-          <button type="button" className={`${transportButton} h-9 w-9`} aria-label={`Forward ${SKIP_SECONDS} seconds`} title={`Forward ${SKIP_SECONDS} s`} onClick={() => player.skip(SKIP_SECONDS)}>
+          <button type="button" className={`${transportButton} h-9 w-9`} aria-label={t("forwardAria", { seconds: SKIP_SECONDS })} title={t("forwardTitle", { seconds: SKIP_SECONDS })} onClick={() => player.skip(SKIP_SECONDS)}>
             <SkipIcon icon={RotateCw} />
           </button>
-          <button type="button" className={`${transportButton} h-8 w-8`} aria-label="Next recording" title={next ? `Next: ${next.name} (])` : "No next recording"} disabled={!next} onClick={() => next && player.showSibling(next)}>
+          <button type="button" className={`${transportButton} h-8 w-8`} aria-label={t("nextRecording")} title={next ? t("nextTitle", { name: next.name }) : t("noNext")} disabled={!next} onClick={() => next && player.showSibling(next)}>
             <SkipForward aria-hidden className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      <RailSection title="Playback">
-        <div className={railStyles.segmented} role="radiogroup" aria-label="Playback speed" title="Playback speed (< and >)">
+      <RailSection title={t("playback")}>
+        <div className={railStyles.segmented} role="radiogroup" aria-label={t("playbackSpeed")} title={t("playbackSpeedTitle")}>
           {PLAYBACK_RATES.map((rate) => (
-            <button key={rate} type="button" role="radio" aria-checked={player.rate === rate} aria-label={`${rate}× speed`} onClick={() => player.setRate(rate)}>
-              {rate}×
+            <button key={rate} type="button" role="radio" aria-checked={player.rate === rate} aria-label={t("speedAria", { rate: format.number(rate) })} onClick={() => player.setRate(rate)}>
+              {format.number(rate)}×
             </button>
           ))}
         </div>
         <div className="mt-2.5 flex items-center gap-2 px-1">
-          <button type="button" className={`${transportButton} h-7 w-7 shrink-0`} aria-label={player.muted ? "Unmute" : "Mute"} title="Mute (M)" onClick={player.toggleMute}>
+          <button type="button" className={`${transportButton} h-7 w-7 shrink-0`} aria-label={player.muted ? t("unmute") : t("mute")} title={t("muteTitle")} onClick={player.toggleMute}>
             <VolumeIcon aria-hidden className="h-4 w-4" />
           </button>
           <input
             type="range"
-            aria-label="Volume"
+            aria-label={t("volume")}
             min={0}
             max={1}
             step={0.05}
@@ -133,15 +137,15 @@ export function VoiceMemoControls({ player, transcript, menu }: { player: VoiceM
             className={railStyles.slider}
             onChange={(event) => player.setVolume(Number(event.target.value))}
           />
-          <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{Math.round((player.muted ? 0 : player.volume) * 100)}%</span>
+          <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{format.number(Math.round((player.muted ? 0 : player.volume) * 100) / 100, { style: "percent" })}</span>
         </div>
         <div className="mt-1.5">
-          <RailSwitch checked={player.boost > 1} label="Audio Boost" hint="Play louder than 100%, for quiet recordings" onChange={(on) => player.setBoost(on ? BOOST_DEFAULT : 1)} />
+          <RailSwitch checked={player.boost > 1} label={t("audioBoost")} hint={t("audioBoostHint")} onChange={(on) => player.setBoost(on ? BOOST_DEFAULT : 1)} />
           {player.boost > 1 ? (
             <div className="flex items-center gap-2 px-2.5 pb-1">
               <input
                 type="range"
-                aria-label="Audio Boost"
+                aria-label={t("audioBoost")}
                 min={1.25}
                 max={BOOST_MAX}
                 step={0.25}
@@ -149,7 +153,7 @@ export function VoiceMemoControls({ player, transcript, menu }: { player: VoiceM
                 className={railStyles.slider}
                 onChange={(event) => player.setBoost(Number(event.target.value))}
               />
-              <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{Math.round(player.boost * 100)}%</span>
+              <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{format.number(Math.round(player.boost * 100) / 100, { style: "percent" })}</span>
             </div>
           ) : null}
         </div>
@@ -157,7 +161,7 @@ export function VoiceMemoControls({ player, transcript, menu }: { player: VoiceM
 
       {transcript}
 
-      <p className={railStyles.note}>Space play · ← → 5 s · Shift+← → passage · [ ] recording · &lt; &gt; speed · ⌘F find. Click any line of the transcript to correct it; Enter starts a new line.</p>
+      <p className={railStyles.note}>{t("shortcutsNote")}</p>
     </RailPanel>
   );
 }

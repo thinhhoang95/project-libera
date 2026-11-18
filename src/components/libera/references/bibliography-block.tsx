@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCitationDocument, useReferenceRender } from "./reference-render-context";
 import { sanitizeCitationHtml } from "@/lib/references/format";
 import type { ReferenceLibrary } from "@/lib/references/types";
@@ -14,6 +15,7 @@ import { RetractionBadge, retractionTone } from "./retraction-badge";
 // reference render provider or before anything is formatted.
 
 export function BibliographyBlock(props: { [attribute: string]: unknown }) {
+  const t = useTranslations("references.bibliographyBlock");
   const render = useReferenceRender();
   const document = useCitationDocument();
   if (!render || !document) return null;
@@ -31,7 +33,7 @@ export function BibliographyBlock(props: { [attribute: string]: unknown }) {
       data-source-block={source("data-source-block")}
       data-preview-source-id={source("data-preview-source-id")}
     >
-      <h2 className="libera-bibliography-heading">References</h2>
+      <h2 className="libera-bibliography-heading">{t("heading")}</h2>
       <BibliographyEntries bibliography={bibliography} entries={document.formatting.result?.bibliographyEntries ?? {}} library={render.library} />
     </section>
   );

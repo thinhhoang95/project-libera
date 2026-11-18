@@ -1,8 +1,10 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TetherPreview, TetherStatus } from "@/lib/references/bib-tether-types";
 import type { ReferenceServerEvent } from "@/lib/references/library-events";
+import { dateTimeFormat } from "@/lib/i18n/format";
 import { REFERENCES_UPDATED_EVENT, type ReferencesUpdatedDetail } from "@/lib/references/types";
 
 // A notebook's tethered .bib file (lib/references/bib-tether.ts), for the
@@ -27,19 +29,20 @@ class TetherRequestError extends Error {
   }
 }
 
-async function post<T>(body: Record<string, unknown>): Promise<T> {
+async function post<T>(body: Record<string, unknown>, fallback = "The .bib file could not be synced."): Promise<T> {
   const response = await fetch("/api/references/bib-tether", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const result = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new TetherRequestError(result.error ?? "The .bib file could not be synced.", response.status);
+  if (!response.ok) throw new TetherRequestError(result.error ?? fallback, response.status);
   return result;
 }
 
-export function previewBibTether(notebook: string, path: string) {
-  return post<{ preview: TetherPreview }>({ notebook, action: "preview", path }).then((result) => result.preview);
+/** `fallback` (translated by the caller) is shown when the server gives no reason; English by default. */
+export function previewBibTether(notebook: string, path: string, fallback?: string) {
+  return post<{ preview: TetherPreview }>({ notebook, action: "preview", path }, fallback).then((result) => result.preview);
 }
 
 /** A sync may have changed the library on the server: windows showing an older revision reload it. */
@@ -49,6 +52,7 @@ function announceRevision(notebook: string, status: TetherStatus | null) {
 }
 
 export function useBibTether(notebook: string | null) {
+  const t = useTranslations("references.useBibTether");
   const version = useRef(0);
   const [state, setState] = useState<{ notebook: string | null; status: TetherStatus | null; loaded: boolean; error: string | null }>({ notebook: null, status: null, loaded: false, error: null });
   const status = state.notebook === notebook ? state.status : null;
@@ -63,7 +67,7 @@ export function useBibTether(notebook: string | null) {
         // No tether route (an older server, or a test without one) means no tether, not a failure to show.
         if (response.status === 404) return { tether: null };
         const result = await response.json() as { tether: TetherStatus | null; error?: string };
-        if (!response.ok) throw new Error(result.error ?? "Could not read the .bib tether status.");
+        if (!response.ok) throw new Error(result.error ?? t("readStatusFailed"));
         return result;
       })
       .then((result) => {
@@ -72,16 +76,16 @@ export function useBibTether(notebook: string | null) {
         announceRevision(notebook, result.tether);
       })
       .catch((error: unknown) => {
-        if (!cancelled && requestVersion === version.current) setState({ notebook, status: null, loaded: true, error: error instanceof Error ? error.message : "Could not read the .bib tether status." });
+        if (!cancelled && requestVersion === version.current) setState({ notebook, status: null, loaded: true, error: error instanceof Error ? error.message : t("readStatusFailed") });
       });
     return () => { cancelled = true; };
-  }, [notebook]);
+  }, [notebook, t]);
 
   const run = useCallback(async (request: BibTetherRequest) => {
-    if (!notebook) throw new Error("Open a notebook first.");
+    if (!notebook) throw new Error(t("openNotebookFirst"));
     const requestVersion = ++version.current;
     try {
-      const result = await post<{ tether: TetherStatus | null }>({ notebook, ...request });
+      const result = await post<{ tether: TetherStatus | null }>({ notebook, ...request }, t("tetherRequestFailed"));
       if (requestVersion === version.current) setState({ notebook, status: result.tether, loaded: true, error: null });
       announceRevision(notebook, result.tether);
       return result.tether;
@@ -91,10 +95,10 @@ export function useBibTether(notebook: string | null) {
         if (requestVersion === version.current) setState({ notebook, status: null, loaded: true, error: null });
         return null;
       }
-      if (requestVersion === version.current) setState((current) => ({ ...current, notebook, loaded: true, error: error instanceof Error ? error.message : "The .bib file could not be synced." }));
+      if (requestVersion === version.current) setState((current) => ({ ...current, notebook, loaded: true, error: error instanceof Error ? error.message : t("tetherRequestFailed") }));
       throw error;
     }
-  }, [notebook]);
+  }, [notebook, t]);
 
   // Opening and reconnecting the stream catches events missed before subscription.
   useEffect(() => {
@@ -142,17 +146,28 @@ export function useBibTether(notebook: string | null) {
   return { status, loaded, run, error: state.notebook === notebook ? state.error : null };
 }
 
-/** "Synced 2 min ago", "Waiting for you", … for the panel's status line. */
-export function tetherStateText(status: TetherStatus, now = Date.now()) {
+/** Translates `references.useBibTether` messages (`useTranslations("references.useBibTether")`). */
+export type TetherTranslator = (key: string, values?: Record<string, string | number>) => string;
+
+/**
+ * "Synced 2 min ago", "Waiting for you", … for the panel's status line. English unless a translator and the
+ * interface locale (`useLocale()`) are given.
+ */
+export function tetherStateText(status: TetherStatus, now = Date.now(), t?: TetherTranslator, locale = "en") {
   switch (status.state) {
-    case "paused": return `${status.pendingDeletion?.count ?? "Some"} removed from the file: waiting for you`;
-    case "missing": return "File not found: paused";
-    case "error": return "Not synced: see details";
+    case "paused": return t ? (status.pendingDeletion ? t("pausedRemoved", { count: status.pendingDeletion.count }) : t("pausedSomeRemoved")) : `${status.pendingDeletion?.count ?? "Some"} removed from the file: waiting for you`;
+    case "missing": return t ? t("missing") : "File not found: paused";
+    case "error": return t ? t("error") : "Not synced: see details";
     default: {
-      if (!status.lastSyncedAt) return "Synced";
+      if (!status.lastSyncedAt) return t ? t("synced") : "Synced";
       const minutes = Math.round((now - Date.parse(status.lastSyncedAt)) / 60_000);
-      const ago = minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : minutes < 60 * 24 ? `${Math.round(minutes / 60)} h ago` : new Date(status.lastSyncedAt).toLocaleDateString();
-      return `Synced${status.watching ? "" : " (checked on focus)"} · last change ${ago}`;
+      if (!t) {
+        const ago = minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : minutes < 60 * 24 ? `${Math.round(minutes / 60)} h ago` : new Date(status.lastSyncedAt).toLocaleDateString();
+        return `Synced${status.watching ? "" : " (checked on focus)"} · last change ${ago}`;
+      }
+      const relative = new Intl.RelativeTimeFormat(locale, { numeric: "always", style: "short" });
+      const ago = minutes < 1 ? t("justNow") : minutes < 60 ? relative.format(-minutes, "minute") : minutes < 60 * 24 ? relative.format(-Math.round(minutes / 60), "hour") : dateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(status.lastSyncedAt));
+      return t(status.watching ? "syncedWatching" : "syncedOnFocus", { ago });
     }
   }
 }

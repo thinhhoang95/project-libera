@@ -1,3 +1,4 @@
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -16,23 +17,19 @@ export function NoteDialog({
   onClose,
   onSubmit,
 }: NoteDialogProps) {
+  const t = useTranslations("noteDialog");
+  const tCommon = useTranslations("common");
   if (!dialog) {
     return null;
   }
 
+  const mode = dialog.mode === "slides" || dialog.mode === "latex" || dialog.mode === "text" ? dialog.mode : "note";
+
   return (
     <ModalDialog
       open
-      title={dialog.mode === "slides" ? "New slides" : dialog.mode === "latex" ? "New LaTeX document" : dialog.mode === "text" ? "New text file" : "New note"}
-      description={
-        dialog.mode === "slides"
-          ? `Create a Markdown slide deck in ${dialog.parentPath ?? dialog.notebook}.`
-          : dialog.mode === "latex"
-            ? `Create a LaTeX document in ${dialog.parentPath ?? dialog.notebook}. Use .bib for a bibliography.`
-            : dialog.mode === "text"
-              ? `Create a plain-text or code file in ${dialog.parentPath ?? dialog.notebook}. Give it any extension, such as .txt, .py, .json or .csv.`
-            : `Create a Markdown note in ${dialog.parentPath ?? dialog.notebook}.`
-      }
+      title={t(`title.${mode}`)}
+      description={t(`description.${mode}`, { location: dialog.parentPath ?? dialog.notebook })}
       onClose={onClose}
       footer={
         <>
@@ -41,7 +38,7 @@ export function NoteDialog({
             type="button"
             onClick={onClose}
           >
-            Cancel
+            {tCommon("cancel")}
           </button>
           <button
             className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -49,15 +46,7 @@ export function NoteDialog({
             type="submit"
             disabled={submitting}
           >
-            {submitting
-              ? "Creating"
-              : dialog.mode === "slides"
-                ? "Create slides"
-                : dialog.mode === "latex"
-                  ? "Create document"
-                  : dialog.mode === "text"
-                    ? "Create file"
-                  : "Create note"}
+            {submitting ? t("creating") : t(`create.${mode}`)}
           </button>
         </>
       }
@@ -83,6 +72,7 @@ function NoteDialogForm({
   initialValues: NoteFormValues;
   onSubmit: (values: NoteFormValues) => Promise<void>;
 }) {
+  const t = useTranslations("noteDialog");
   const [values, setValues] = useState(initialValues);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -94,7 +84,7 @@ function NoteDialogForm({
     <form className="space-y-4" id="note-dialog-form" onSubmit={handleSubmit}>
       <div>
         <label className="block text-sm font-medium text-foreground" htmlFor="note-name">
-          Name
+          {t("nameLabel")}
         </label>
         <input
           id="note-name"

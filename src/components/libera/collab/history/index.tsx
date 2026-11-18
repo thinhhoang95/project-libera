@@ -31,9 +31,9 @@ export function historyTargetForTab(tabId: string, registry: SharedDocRegistry =
   return { docId: session.docId, projectId: session.resolved.projectId, path: session.resolved.path, role: meta?.role ?? session.resolved.role };
 }
 
-/** File actions menu entries for a tab: "History…" for shared files, nothing otherwise. */
-export function historyMenuItems(tabId: string): { id: string; label: string }[] {
-  return historyTargetForTab(tabId) ? [{ id: HISTORY_MENU_ID, label: "History…" }] : [];
+/** File actions menu entries for a tab: "History…" for shared files, nothing otherwise. Pass the translated `collab.history.index.menuHistory` as `label`. */
+export function historyMenuItems(tabId: string, label = "History…"): { id: string; label: string }[] {
+  return historyTargetForTab(tabId) ? [{ id: HISTORY_MENU_ID, label }] : [];
 }
 
 /** Opens the history panel for a tab; false when the tab is not shared. */

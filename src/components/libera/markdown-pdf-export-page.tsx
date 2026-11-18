@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownSlidesPrintDocument } from "@/components/libera/markdown-slides-viewer";
@@ -117,6 +118,7 @@ export function MarkdownPdfExportPage({
   markdownPreferences,
   textFont,
 }: MarkdownPdfExportPageProps) {
+  const t = useTranslations("markdownPdfExportPage");
   const [payload, setPayload] = useState<MarkdownPdfExportPayload | null>(null);
   const pendingRendersRef = useRef<PendingRender[]>([]);
   const rootRef = useRef<HTMLElement | null>(null);
@@ -228,7 +230,7 @@ export function MarkdownPdfExportPage({
             />
           </ReferenceRenderProvider>
         ) : (
-          <p className="markdown-pdf-export-loading">Preparing export...</p>
+          <p className="markdown-pdf-export-loading">{t("preparing")}</p>
         )}
       </article>
     </main>

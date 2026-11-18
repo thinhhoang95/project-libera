@@ -1,8 +1,9 @@
 "use client";
 
 import { Loader2, Play } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { latexPdfUrl } from "./latex-build-store";
+import { LATEX_COMPILE_FAILED, latexPdfUrl } from "./latex-build-store";
 import { LatexPdfPreview, type PdfHighlightRequest, type PdfZoom } from "./latex-pdf-preview";
 import { latexPdfChannelName, type LatexPdfInverseSync, type LatexPdfWindowBuild, type LatexPdfWindowMessage } from "./latex-pdf-window";
 
@@ -20,13 +21,15 @@ function readStoredZoom(): PdfZoom {
   }
 }
 
-function formatDuration(milliseconds: number) {
-  return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
-}
-
 // The compiled PDF of a LaTeX main file, moved into its own window. The main
 // window keeps compiling and sends each new build over a BroadcastChannel.
 export function LatexPdfWindowPage({ rootPath }: { rootPath: string }) {
+  const t = useTranslations("latex.latexPdfWindowPage");
+  const tBuild = useTranslations("latex.latexBuildStore");
+  const format = useFormatter();
+  const formatDuration = (milliseconds: number) => milliseconds < 1000
+    ? format.number(milliseconds, { style: "unit", unit: "millisecond" })
+    : format.number(milliseconds / 1000, { style: "unit", unit: "second", minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const fileName = rootPath.split("/").at(-1) ?? "";
   const [build, setBuild] = useState<LatexPdfWindowBuild | null>(null);
   const [highlight, setHighlight] = useState<PdfHighlightRequest | null>(null);
@@ -34,8 +37,8 @@ export function LatexPdfWindowPage({ rootPath }: { rootPath: string }) {
   const channelRef = useRef<BroadcastChannel | null>(null);
 
   useEffect(() => {
-    document.title = fileName ? `${fileName.replace(/\.tex$/i, ".pdf")} — PDF` : "PDF";
-  }, [fileName]);
+    document.title = fileName ? t("pageTitle", { name: fileName.replace(/\.tex$/i, ".pdf") }) : t("pdfTitle");
+  }, [fileName, t]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setZoom(readStoredZoom()));
@@ -85,16 +88,16 @@ export function LatexPdfWindowPage({ rootPath }: { rootPath: string }) {
   }
 
   const status = !build
-    ? "Waiting for the main window…"
+    ? t("waitingForMainWindow")
     : build.compiling
-      ? "Compiling…"
+      ? t("compiling")
       : build.requestError
-        ? build.requestError
+        ? build.requestError === LATEX_COMPILE_FAILED ? tBuild("compileFailed") : build.requestError
         : build.status === "failure"
-          ? "Compile failed"
+          ? t("compileFailed")
           : build.status && build.durationMs !== null
-            ? `${build.status === "error" ? "Compiled with errors" : "Compiled"} in ${formatDuration(build.durationMs)}`
-            : "Not compiled yet";
+            ? t(build.status === "error" ? "compiledWithErrorsIn" : "compiledIn", { duration: formatDuration(build.durationMs) })
+            : t("notCompiledYet");
   const failed = build?.status === "failure" || Boolean(build?.requestError);
 
   return (
@@ -103,15 +106,15 @@ export function LatexPdfWindowPage({ rootPath }: { rootPath: string }) {
         <button
           type="button"
           className="libera-latex-icon-button disabled:opacity-50"
-          aria-label="Recompile"
-          title={`Recompile ${fileName} (${compileShortcut})`}
+          aria-label={t("recompile")}
+          title={t("recompileTitle", { name: fileName, shortcut: compileShortcut })}
           aria-keyshortcuts="Meta+Enter Control+Enter"
           disabled={!build || build.compiling}
           onClick={() => post({ type: "compile" })}
         >
           {build?.compiling ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Play aria-hidden className="h-4 w-4" />}
         </button>
-        <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={rootPath}>{fileName || "PDF"}</h1>
+        <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={rootPath}>{fileName || t("pdfTitle")}</h1>
         <span className={`shrink-0 truncate text-xs ${failed ? "text-destructive" : "text-muted-foreground"}`}>{status}</span>
       </header>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -123,16 +126,16 @@ export function LatexPdfWindowPage({ rootPath }: { rootPath: string }) {
             busy={build?.compiling ?? false}
             downloadUrl={build?.buildId ? latexPdfUrl(rootPath, build.buildId, true) : null}
             emptyState={!build
-              ? "Waiting for the main window. Keep the document open there to see its PDF."
+              ? t("emptyWaiting")
               : build.compiling
-                ? <span className="inline-flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />Compiling your document…</span>
-                : build.status === "failure" ? "The document did not compile. Open the log in the main window to see why." : "Recompile the document to see its PDF."}
+                ? <span className="inline-flex items-center gap-2"><Loader2 aria-hidden className="h-4 w-4 animate-spin" />{t("emptyCompiling")}</span>
+                : build.status === "failure" ? t("emptyFailed") : t("emptyIdle")}
             onZoomChange={changeZoom}
             onScrollChange={() => {}}
             onInverseSync={inverseSync}
           />
         ) : (
-          <p role="alert" className="p-6 text-sm text-destructive">No LaTeX document was given.</p>
+          <p role="alert" className="p-6 text-sm text-destructive">{t("noDocument")}</p>
         )}
       </div>
     </main>

@@ -24,6 +24,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { useLocale, useTranslations } from "next-intl";
 import { MarkdownRenderer, type MarkdownCodeBlock } from "@/components/markdown-renderer";
 import { markdownMacroScopes, mayUseMarkdownMacros, type MarkdownMacroScope } from "@/lib/markdown-macros";
 import { SlideLiveBlock, isLiveCodeBlock } from "@/components/libera/slide-live-blocks";
@@ -36,6 +37,7 @@ import {
 import {
   hasMarkdownSlideTemplate,
   renderMarkdownSlideTemplate,
+  type MarkdownSlideTemplateLabels,
   type MarkdownSlideTemplateMode,
 } from "@/components/libera/markdown-slide-templates";
 import {
@@ -171,6 +173,17 @@ export function MarkdownSlideSheet({
   slideNumber,
   step,
 }: SlideRenderOptions) {
+  const t = useTranslations("markdownSlidesViewer");
+  // A PDF export is a document: its slide labels stay as the template writes them.
+  const labels = useMemo<MarkdownSlideTemplateLabels | undefined>(
+    () => mode === "export" ? undefined : {
+      titleSlide: t("titleSlide"),
+      slide: (number) => t("slideLabel", { number }),
+      roleDescription: t("slideRoleDescription"),
+      page: (number, count) => t("pageOfCount", { number, count }),
+    },
+    [mode, t],
+  );
   const fontSize = slide.fontSize ?? deck.fontSize ?? 21;
   const theme = deck.theme;
   // ```chart, ```mermaid and ```html live blocks render as charts, diagrams and live frames.
@@ -209,6 +222,7 @@ export function MarkdownSlideSheet({
   );
 
   return renderMarkdownSlideTemplate(deck.template, {
+    labels,
     deck,
     fontFamily,
     mode,
@@ -271,15 +285,18 @@ function ScaledSlide({
 
 
 function MarkdownSlidesDiagnostics({ deck }: { deck: MarkdownSlideDeck }) {
+  const t = useTranslations("markdownSlidesViewer");
+  const tDiagnostic = useTranslations("lib.markdownSlides.diagnostics");
   const unknownTemplate =
     deck.template && !hasMarkdownSlideTemplate(deck.template)
-      ? `Unknown slide template "${deck.template}"; using default.`
+      ? t("unknownTemplate", { template: deck.template })
       : "";
   const messages = [
     unknownTemplate,
-    ...deck.diagnostics.map((diagnostic) =>
-      diagnostic.line ? `Line ${diagnostic.line}: ${diagnostic.message}` : diagnostic.message,
-    ),
+    ...deck.diagnostics.map((diagnostic) => {
+      const message = diagnostic.code ? tDiagnostic(diagnostic.code.id, diagnostic.code.params) : diagnostic.message;
+      return diagnostic.line ? t("diagnosticLine", { line: diagnostic.line, message }) : message;
+    }),
   ].filter(Boolean);
 
   if (!messages.length) {
@@ -288,7 +305,7 @@ function MarkdownSlidesDiagnostics({ deck }: { deck: MarkdownSlideDeck }) {
 
   return (
     <div className="w-full max-w-[960px] rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      <p className="font-medium">Slide deck warnings</p>
+      <p className="font-medium">{t("warningsTitle")}</p>
       <ul className="mt-2 list-disc space-y-1 pl-5">
         {Array.from(new Set(messages)).map((message) => (
           <li key={message}>{message}</li>
@@ -308,6 +325,7 @@ export function MarkdownSlidesPreview({
   onSelectSlide,
   ...rest
 }: MarkdownSlidesPreviewProps) {
+  const t = useTranslations("markdownSlidesViewer");
   const clampedActiveSlideIndex = clampSlideIndex(deck, activeSlideIndex);
   const openFileLink = useStableCallback(onOpenFileLink);
   const listRef = useRef<HTMLDivElement>(null);
@@ -345,22 +363,22 @@ export function MarkdownSlidesPreview({
                 data-markdown-slide-preview-index={index}
               >
                 <div className="mb-1.5 flex h-6 items-center gap-2 px-0.5 text-xs text-zinc-500">
-                  <span className="font-semibold tabular-nums text-zinc-700">{slide.hidden ? "Hidden" : number}</span>
-                  {slide.stepCount > 1 ? <span>{slide.stepCount} steps</span> : null}
-                  {slide.hidden ? <EyeOff aria-label="Hidden from the presentation" className="h-3.5 w-3.5" /> : null}
+                  <span className="font-semibold tabular-nums text-zinc-700">{slide.hidden ? t("hiddenLabel") : number}</span>
+                  {slide.stepCount > 1 ? <span>{t("stepCount", { count: slide.stepCount })}</span> : null}
+                  {slide.hidden ? <EyeOff aria-label={t("hiddenFromPresentation")} className="h-3.5 w-3.5" /> : null}
                   <span className="markdown-slide-overflow-badge items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-900">
                     <TriangleAlert aria-hidden className="h-3 w-3" />
-                    Too much content to fit
+                    {t("overflowBadge")}
                   </span>
                   {onPresentFrom && !slide.hidden ? (
                     <button
                       className="ml-auto inline-flex h-6 items-center gap-1 rounded px-1.5 font-medium text-zinc-600 opacity-0 transition hover:bg-zinc-200 hover:text-zinc-900 focus-visible:opacity-100 group-hover:opacity-100"
                       type="button"
-                      title={`Present from slide ${number} of ${count}`}
+                      title={t("presentFromSlideTitle", { number, count })}
                       onClick={() => onPresentFrom(index)}
                     >
                       <Play aria-hidden className="h-3 w-3" />
-                      Present from here
+                      {t("presentFromHere")}
                     </button>
                   ) : null}
                 </div>
@@ -396,7 +414,7 @@ export function MarkdownSlidesPreview({
           })
         ) : (
           <div className="flex min-h-64 w-full max-w-3xl items-center justify-center rounded-md border border-dashed border-zinc-300 bg-white px-6 text-center text-sm text-zinc-500">
-            No slides yet. Add a line containing only --- and write the first slide below it.
+            {t("emptyDeck")}
           </div>
         )}
       </div>
@@ -416,6 +434,8 @@ function formatElapsed(milliseconds: number) {
 
 /** Elapsed time and the clock; ticks on its own so the slides do not re-render. */
 function SpeakerClock({ startedAt, onReset }: { startedAt: number; onReset: () => void }) {
+  const t = useTranslations("markdownSlidesViewer");
+  const locale = useLocale();
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -428,31 +448,32 @@ function SpeakerClock({ startedAt, onReset }: { startedAt: number; onReset: () =
       <button
         className="rounded px-1 text-3xl font-semibold tabular-nums text-white hover:bg-white/10"
         type="button"
-        title="Reset timer (T)"
+        title={t("resetTimerTitle")}
         onClick={onReset}
       >
         {formatElapsed(Math.max(0, now - startedAt))}
       </button>
       <span className="text-lg tabular-nums text-zinc-400">
-        {new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+        {new Date(now).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
       </span>
     </div>
   );
 }
 
-const SHORTCUTS: Array<[string, string]> = [
-  ["→  Space  PageDown  N", "Next step or slide"],
-  ["←  PageUp  Backspace  P", "Previous step or slide"],
-  ["↓  ↑", "Next / previous slide, skipping steps"],
-  ["Home  End", "First / last slide"],
-  ["Number, then Enter", "Go to slide"],
-  ["G", "Overview of all slides"],
-  ["S", "Speaker view: notes, next slide, timer"],
-  ["T", "Reset the timer"],
-  ["B  or  .", "Black screen"],
-  ["W  or  ,", "White screen"],
-  ["?", "These shortcuts"],
-  ["Esc", "Close, or end the presentation"],
+// The key names are shown as typed on the keyboard; the actions are looked up in the messages.
+const SHORTCUTS: Array<{ keys: string; action: string }> = [
+  { keys: "→  Space  PageDown  N", action: "shortcutNext" },
+  { keys: "←  PageUp  Backspace  P", action: "shortcutPrevious" },
+  { keys: "↓  ↑", action: "shortcutNextPrevSlide" },
+  { keys: "Home  End", action: "shortcutFirstLast" },
+  { keys: "0-9, Enter", action: "shortcutGoToSlide" },
+  { keys: "G", action: "shortcutOverview" },
+  { keys: "S", action: "shortcutSpeakerView" },
+  { keys: "T", action: "shortcutResetTimer" },
+  { keys: "B  /  .", action: "shortcutBlackScreen" },
+  { keys: "W  /  ,", action: "shortcutWhiteScreen" },
+  { keys: "?", action: "shortcutHelp" },
+  { keys: "Esc", action: "shortcutExit" },
 ];
 
 export function MarkdownSlidesPresenter({
@@ -465,6 +486,7 @@ export function MarkdownSlidesPresenter({
   onSlideIndexChange,
   ...rest
 }: MarkdownSlidesPresenterProps) {
+  const t = useTranslations("markdownSlidesViewer");
   const [position, setPosition] = useState<PresenterPosition>(() => ({
     index: clampSlideIndex(deck, initialSlideIndex),
     step: 0,
@@ -752,7 +774,7 @@ export function MarkdownSlidesPresenter({
       </div>
     </ScaledSlide>
   ) : (
-    <div className="flex h-full w-full items-center justify-center text-sm text-zinc-400">No slides yet.</div>
+    <div className="flex h-full w-full items-center justify-center text-sm text-zinc-400">{t("presenterEmptyDeck")}</div>
   );
 
   // On the body, above every panel, even when full screen is refused.
@@ -763,7 +785,7 @@ export function MarkdownSlidesPresenter({
         className="fixed inset-0 z-[1000] flex min-h-0 flex-col overflow-hidden bg-black text-white outline-none"
         role="dialog"
         aria-modal="true"
-        aria-label={deck.title ? `${deck.title} presentation` : "Markdown slides presentation"}
+        aria-label={deck.title ? t("presentationLabel", { title: deck.title }) : t("defaultPresentationLabel")}
         tabIndex={-1}
         style={{ cursor: controlsVisible || overlay ? undefined : "none" } as CSSProperties}
         onMouseMove={revealControls}
@@ -773,8 +795,8 @@ export function MarkdownSlidesPresenter({
             <div className="flex min-h-0 flex-col gap-3">
               <div className="flex items-center justify-between text-sm text-zinc-400">
                 <span>
-                  Slide <span className="font-semibold tabular-nums text-white">{slideNumber}</span> of {slideCount}
-                  {activeSlide && activeSlide.stepCount > 1 ? ` · step ${step + 1} of ${activeSlide.stepCount}` : ""}
+                  {t.rich("slideOfCount", { slideNumber, slideCount, number: (chunks) => <span className="font-semibold tabular-nums text-white">{chunks}</span> })}
+                  {activeSlide && activeSlide.stepCount > 1 ? ` ${t("stepOfCount", { step: step + 1, stepCount: activeSlide.stepCount })}` : ""}
                 </span>
                 <SpeakerClock startedAt={startedAt} onReset={() => setStartedAt(Date.now())} />
               </div>
@@ -788,7 +810,7 @@ export function MarkdownSlidesPresenter({
             </div>
             <div className="flex min-h-0 flex-col gap-4">
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Next</p>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">{t("nextHeading")}</p>
                 {nextPreview ? (
                   <div className="overflow-hidden rounded">
                     <ScaledSlide deck={deck}>
@@ -804,12 +826,12 @@ export function MarkdownSlidesPresenter({
                   </div>
                 ) : (
                   <div className="flex aspect-video items-center justify-center rounded border border-zinc-800 text-sm text-zinc-500">
-                    End of presentation
+                    {t("endOfPresentation")}
                   </div>
                 )}
               </div>
               <div className="flex min-h-0 flex-1 flex-col">
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Notes</p>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">{t("notesHeading")}</p>
                 <div className="markdown-slide-notes-panel min-h-0 flex-1 overflow-auto rounded border border-zinc-800 bg-zinc-900 p-4 text-[19px] leading-relaxed text-zinc-100">
                   {activeSlide?.notes ? (
                     <MarkdownRenderer
@@ -820,7 +842,7 @@ export function MarkdownSlidesPresenter({
                       mathMarkers={mathMarkers}
                     />
                   ) : (
-                    <p className="text-base text-zinc-500">No notes for this slide. Add a line with ??? and write them below it.</p>
+                    <p className="text-base text-zinc-500">{t("noNotes")}</p>
                   )}
                 </div>
               </div>
@@ -846,34 +868,34 @@ export function MarkdownSlidesPresenter({
             controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
         >
-          <PresenterButton label="Previous (←)" onClick={goPrevious}>
+          <PresenterButton label={t("controlPrevious")} onClick={goPrevious}>
             <ChevronLeft aria-hidden className="h-4 w-4" />
           </PresenterButton>
           <span className="min-w-16 px-1 text-center text-sm tabular-nums text-zinc-200">
-            {jumpBuffer ? `Go to ${jumpBuffer}…` : `${slideCount ? slideNumber : 0} / ${slideCount}`}
+            {jumpBuffer ? t("goToNumber", { number: jumpBuffer }) : t("pageOfCount", { number: slideCount ? slideNumber : 0, count: slideCount })}
           </span>
-          <PresenterButton label="Next (→)" onClick={goNext}>
+          <PresenterButton label={t("controlNext")} onClick={goNext}>
             <ChevronRight aria-hidden className="h-4 w-4" />
           </PresenterButton>
           <span className="mx-1 h-5 w-px bg-white/15" />
           <PresenterButton
-            label="Overview (G)"
+            label={t("controlOverview")}
             pressed={overlay === "overview"}
             onClick={() => setOverlay((current) => (current === "overview" ? null : "overview"))}
           >
             <LayoutGrid aria-hidden className="h-4 w-4" />
           </PresenterButton>
-          <PresenterButton label="Speaker view (S)" pressed={speakerView} onClick={() => setSpeakerView((current) => !current)}>
+          <PresenterButton label={t("controlSpeakerView")} pressed={speakerView} onClick={() => setSpeakerView((current) => !current)}>
             <MonitorPlay aria-hidden className="h-4 w-4" />
           </PresenterButton>
           <PresenterButton
-            label="Keyboard shortcuts (?)"
+            label={t("controlShortcuts")}
             pressed={overlay === "help"}
             onClick={() => setOverlay((current) => (current === "help" ? null : "help"))}
           >
             <Keyboard aria-hidden className="h-4 w-4" />
           </PresenterButton>
-          <PresenterButton label="End presentation (Esc)" onClick={exitPresenter}>
+          <PresenterButton label={t("controlEnd")} onClick={exitPresenter}>
             <X aria-hidden className="h-4 w-4" />
           </PresenterButton>
         </div>
@@ -910,7 +932,7 @@ export function MarkdownSlidesPresenter({
                   </div>
                   <span className="mt-1.5 block truncate text-xs text-zinc-400">
                     <span className="mr-1.5 font-semibold tabular-nums text-zinc-200">{position + 1}</span>
-                    {slide.title ? plainText(slide.title) : slide.kind === "title" ? "Title slide" : ""}
+                    {slide.title ? plainText(slide.title) : slide.kind === "title" ? t("titleSlide") : ""}
                   </span>
                 </button>
               ))}
@@ -928,16 +950,16 @@ export function MarkdownSlidesPresenter({
         {overlay === "help" ? (
           <div className="absolute inset-0 flex items-center justify-center bg-black/70" onClick={() => setOverlay(null)}>
             <div className="w-[min(92vw,520px)] rounded-xl border border-white/10 bg-zinc-900 p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-              <p className="mb-4 text-base font-semibold">Presentation shortcuts</p>
+              <p className="mb-4 text-base font-semibold">{t("shortcutsTitle")}</p>
               <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
-                {SHORTCUTS.map(([keys, action]) => (
+                {SHORTCUTS.map(({ keys, action }) => (
                   <div key={keys} className="contents">
                     <dt className="font-mono text-zinc-300">{keys}</dt>
-                    <dd className="text-zinc-400">{action}</dd>
+                    <dd className="text-zinc-400">{t(action)}</dd>
                   </div>
                 ))}
               </dl>
-              <p className="mt-4 text-xs text-zinc-500">Click to advance; right-click to go back.</p>
+              <p className="mt-4 text-xs text-zinc-500">{t("clickHint")}</p>
             </div>
           </div>
         ) : null}

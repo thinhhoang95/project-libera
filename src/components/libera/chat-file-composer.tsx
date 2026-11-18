@@ -1,6 +1,7 @@
 "use client";
 
 import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useTranslations } from "next-intl";
 import { FileText, Image as ImageIcon, MessageSquareText, ScrollText, Sparkles } from "lucide-react";
 import { findFileSuggestions, indexFileSuggestions } from "@/lib/file-suggestions";
 import type { LiberaFileNode } from "@/lib/types";
@@ -20,7 +21,7 @@ export function matchingCommentTargets(targets: ChatCommentTarget[], query: stri
   return lower.startsWith("comment") || name !== lower ? targets.filter((target) => target.name.toLowerCase().includes(name)) : [];
 }
 
-export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up… Type @ for files or / for prompts", disabled, files, quickPrompts = [], commentTargets = [], composerRef, onChange, onAttachFile, onAttachComments, onSend, dictation: canDictate = true }: {
+export function ChatFileComposer({ chatId, value, placeholder, disabled, files, quickPrompts = [], commentTargets = [], composerRef, onChange, onAttachFile, onAttachComments, onSend, dictation: canDictate = true }: {
   chatId: string; value: string; placeholder?: string; disabled: boolean; files: LiberaFileNode[];
   quickPrompts?: QuickPrompt[];
   /** Offered as @Comments entries above the files; needs onAttachComments. */
@@ -31,6 +32,7 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
   composerRef: RefObject<HTMLTextAreaElement | null>; onChange: (value: string) => void;
   onAttachFile: (file: LiberaFileNode) => Promise<boolean>; onSend: () => void;
 }) {
+  const t = useTranslations("chatFileComposer");
   const [invocation, setInvocation] = useState<ComposerInvocation | null>(null);
   const [selected, setSelected] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -121,30 +123,30 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
   }
 
   return <div className="relative">
-    {invocation && <div className="absolute bottom-full z-50 mb-1 max-h-60 w-full overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg" role="listbox" id={listId} aria-label={invocation.kind === "file" ? "Notebook files" : "Quick prompts"}>
-      <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground" aria-hidden="true">{invocation.kind === "file" ? <FileText size={13} /> : <Sparkles size={13} />}{invocation.kind === "file" ? "Reference files" : "Quick prompts"}</div>
+    {invocation && <div className="absolute bottom-full z-50 mb-1 max-h-60 w-full overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg" role="listbox" id={listId} aria-label={invocation.kind === "file" ? t("notebookFiles") : t("quickPrompts")}>
+      <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground" aria-hidden="true">{invocation.kind === "file" ? <FileText size={13} /> : <Sparkles size={13} />}{invocation.kind === "file" ? t("referenceFiles") : t("quickPrompts")}</div>
       {!loading && commentMatches.map((target, i) => <button
         key={`comments:${target.path}`} id={`${listId}-${i}`} type="button" role="option" aria-selected={i === index}
         className={`flex w-full items-start gap-2 rounded-md p-2 text-left text-xs ${i === index ? "bg-muted" : "hover:bg-muted"}`}
         onMouseDown={(event) => event.preventDefault()} onClick={() => void attachComments(target)}
-      ><MessageSquareText aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" size={14} /><span className="min-w-0"><span className="block truncate font-medium">Comments{target.current ? "" : `: ${target.name}`}</span><span className="block truncate text-muted-foreground">{target.current ? `Review comments and replies on ${target.name}` : target.path}</span></span></button>)}
-      {loading ? <p role="status" className="p-2 text-xs text-muted-foreground">Attaching…</p> : invocation.kind === "file" ? fileMatches.length ? fileMatches.map((file, position) => { const i = commentMatches.length + position; return <button
+      ><MessageSquareText aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" size={14} /><span className="min-w-0"><span className="block truncate font-medium">{target.current ? t("commentsTitle") : t("commentsNamedTitle", { name: target.name })}</span><span className="block truncate text-muted-foreground">{target.current ? t("commentsCurrentDescription", { name: target.name }) : target.path}</span></span></button>)}
+      {loading ? <p role="status" className="p-2 text-xs text-muted-foreground">{t("attaching")}</p> : invocation.kind === "file" ? fileMatches.length ? fileMatches.map((file, position) => { const i = commentMatches.length + position; return <button
         key={file.path} id={`${listId}-${i}`} type="button" role="option" aria-selected={i === index}
         className={`flex w-full items-start gap-2 rounded-md p-2 text-left text-xs ${i === index ? "bg-muted" : "hover:bg-muted"}`}
         onMouseDown={(event) => event.preventDefault()} onClick={() => void attach(file)}
-      >{file.fileType === "image" ? <ImageIcon aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" size={14} /> : file.fileType === "pdf" ? <ScrollText aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" size={14} /> : <FileText aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" size={14} />}<span className="min-w-0"><span className="block truncate font-medium">{file.name}</span><span className="block truncate text-muted-foreground">{file.path}</span></span></button>; }) : !commentMatches.length && <p className="p-2 text-xs text-muted-foreground">No matching files</p>
+      >{file.fileType === "image" ? <ImageIcon aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" size={14} /> : file.fileType === "pdf" ? <ScrollText aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" size={14} /> : <FileText aria-hidden className="mt-0.5 shrink-0 text-muted-foreground" size={14} />}<span className="min-w-0"><span className="block truncate font-medium">{file.name}</span><span className="block truncate text-muted-foreground">{file.path}</span></span></button>; }) : !commentMatches.length && <p className="p-2 text-xs text-muted-foreground">{t("noMatchingFiles")}</p>
         : promptMatches.length ? promptMatches.map((quickPrompt, i) => <button
           key={quickPrompt.identifier} id={`${listId}-${i}`} type="button" role="option" aria-selected={i === index}
           className={`flex w-full items-start gap-2 rounded-md p-2 text-left text-xs ${i === index ? "bg-muted" : "hover:bg-muted"}`}
           onMouseDown={(event) => event.preventDefault()} onClick={() => applyQuickPrompt(quickPrompt)}
-        ><Sparkles aria-hidden className="mt-0.5 shrink-0 text-accent" size={14} /><span className="min-w-0"><span className="block truncate font-medium">/{quickPrompt.identifier}</span><span className="block truncate text-muted-foreground">{quickPrompt.prompt.replace(/\s+/g, " ").trim()}</span></span></button>) : <p className="p-2 text-xs text-muted-foreground">No matching quick prompts</p>}
-      {invocation.kind === "file" && suggestions?.hasMore && <p className="p-2 text-xs text-muted-foreground">Showing the first 50 matches. Keep typing to narrow the results.</p>}
+        ><Sparkles aria-hidden className="mt-0.5 shrink-0 text-accent" size={14} /><span className="min-w-0"><span className="block truncate font-medium">/{quickPrompt.identifier}</span><span className="block truncate text-muted-foreground">{quickPrompt.prompt.replace(/\s+/g, " ").trim()}</span></span></button>) : <p className="p-2 text-xs text-muted-foreground">{t("noMatchingPrompts")}</p>}
+      {invocation.kind === "file" && suggestions?.hasMore && <p className="p-2 text-xs text-muted-foreground">{t("showingFirstMatches")}</p>}
     </div>}
     {canDictate && <DictationStatus dictation={dictation} />}
     {canDictate && <span className="absolute bottom-2 right-2 z-10"><DictationButton dictation={dictation} disabled={disabled || loading} /></span>}
     {/* Grows with its content while focused; back at one row on blur, scrolled to the start of the prompt. */}
-    <textarea ref={composerRef} aria-label="Chat prompt" aria-autocomplete="list" aria-controls={invocation ? listId : undefined} aria-activedescendant={invocation && matchCount ? `${listId}-${index}` : undefined}
-      placeholder={placeholder} rows={1} className={`block max-h-60 w-full resize-none overflow-y-auto rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent focus:[field-sizing:content] ${canDictate ? "pr-10" : ""}`}
+    <textarea ref={composerRef} aria-label={t("chatPrompt")} aria-autocomplete="list" aria-controls={invocation ? listId : undefined} aria-activedescendant={invocation && matchCount ? `${listId}-${index}` : undefined}
+      placeholder={placeholder ?? t("placeholder")} rows={1} className={`block max-h-60 w-full resize-none overflow-y-auto rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent focus:[field-sizing:content] ${canDictate ? "pr-10" : ""}`}
       value={value} disabled={disabled || loading} onChange={(event) => { onChange(event.target.value); locate(event.currentTarget); }}
       onSelect={(event) => locate(event.currentTarget)} onBlur={(event) => { event.currentTarget.scrollTop = 0; setInvocation(null); }}
       onKeyDown={(event) => {

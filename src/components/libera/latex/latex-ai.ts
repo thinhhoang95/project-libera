@@ -1,6 +1,7 @@
 "use client";
 
 import type { EditorView } from "@codemirror/view";
+import type { useTranslations } from "next-intl";
 import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
 import { apiRequest } from "@/components/libera/api-client";
 import { readIncludeDocumentContext } from "@/components/libera/ai-document-context-preference";
@@ -36,7 +37,7 @@ export function cancelLatexAi(view: EditorView) {
  * of applied hunks (plan M3.4): collaborators see it, and accepting it is a
  * server decision.
  */
-export async function runLatexAi(view: EditorView, action: Exclude<AiChangeSource, "agent">, range: { from: number; to: number }, prompt: string, onError: (message: string) => void, documentPath?: string) {
+export async function runLatexAi(view: EditorView, action: Exclude<AiChangeSource, "agent">, range: { from: number; to: number }, prompt: string, onError: (message: string) => void, documentPath: string | undefined, t: ReturnType<typeof useTranslations>) {
   if (isLatexAiWorking(view)) return;
   const id = `latex-ai-${++requestCounter}`;
   const length = view.state.doc.length;
@@ -73,12 +74,12 @@ export async function runLatexAi(view: EditorView, action: Exclude<AiChangeSourc
     if (controller.signal.aborted || !view.dom.isConnected) return;
     const pending = view.state.field(pendingAiField, false);
     if (pending?.id !== id) return;
-    if (!text.trim()) throw new Error("AI returned an empty response. Please retry.");
+    if (!text.trim()) throw new Error(t("emptyResponse"));
     const shared = view.state.facet(sharedSuggester);
     // A shared document maps the result from the text the AI saw onto the
     // live text, so a concurrent edit makes it conflicted rather than lost.
     if (!shared && action !== "write" && view.state.sliceDoc(pending.from, pending.to) !== original) {
-      throw new Error("The selected text changed while AI was working. Select it again and retry.");
+      throw new Error(t("selectionChanged"));
     }
 
     let replacement = text;
@@ -100,7 +101,7 @@ export async function runLatexAi(view: EditorView, action: Exclude<AiChangeSourc
     applyAiProposal(view, pending.from, pending.to, replacement, action);
     view.focus();
   } catch (error) {
-    if (!controller.signal.aborted) onError(error instanceof Error ? error.message : "AI request failed.");
+    if (!controller.signal.aborted) onError(error instanceof Error ? error.message : t("requestFailed"));
   } finally {
     endActivity();
     if (controllers.get(view) === controller) controllers.delete(view);

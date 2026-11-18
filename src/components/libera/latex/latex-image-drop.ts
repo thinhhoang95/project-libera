@@ -8,6 +8,7 @@ import {
   sanitizeImageBaseName, uniqueImageName,
 } from "@/lib/latex/image-insert";
 import { readPreambleInfo } from "@/lib/latex/markdown-paste/context";
+import { formatEnglish } from "@/lib/latex/codemirror/visual/labels";
 
 /* Saving pasted and dropped images into the project and putting a figure
  * for each where they were pasted or dropped (image-paste.ts catches them). */
@@ -28,10 +29,24 @@ export type LatexImageInsertResult = {
 
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 
+/** The `latex.latexImageDrop` messages, as the editor's translator gives them. */
+export type LatexImageTranslator = (key: "imageNotSaved" | "pasteMoved" | "savedMainFolder" | "savedMany" | "savedOne" | "unsupportedImages", values?: Record<string, string | number>) => string;
+
+/** What is told when no translator is given (tests, headless use); mirrors messages/en.json. */
+const ENGLISH: Record<Parameters<LatexImageTranslator>[0], string> = {
+  imageNotSaved: "The image could not be saved.",
+  pasteMoved: "The place it was pasted changed meanwhile, so no figure was inserted.",
+  savedMainFolder: "Saved {count} images in the main file's folder.",
+  savedMany: "Saved {count} images in {folder}.",
+  savedOne: "Saved {path}.",
+  unsupportedImages: "LaTeX cannot include {files}: use PNG, JPEG, PDF or SVG.",
+};
+const englishImageText: LatexImageTranslator = (key, values) => formatEnglish(ENGLISH[key], values);
+
 /** A file a browser names generically (a screenshot is "image.png"): named by the time instead. */
 const GENERIC_NAME = /^(?:image|blob|clipboard|untitled)(?:\.[A-Za-z0-9]+)?$/i;
 
-export async function saveAndInsertImages(request: LatexImageRequest, rootPath: string, support: LatexImageSupport): Promise<LatexImageInsertResult> {
+export async function saveAndInsertImages(request: LatexImageRequest, rootPath: string, support: LatexImageSupport, t: LatexImageTranslator = englishImageText): Promise<LatexImageInsertResult> {
   const { range } = request;
   const view = range.view;
   const rootDirectory = rootPath.split("/").slice(0, -1).join("/");
@@ -58,13 +73,13 @@ export async function saveAndInsertImages(request: LatexImageRequest, rootPath: 
       } catch (error) {
         // Someone else's file has that name (not in the tree yet): try the next one.
         if ((error as { status?: number }).status === 409) { taken.add(relative); continue; }
-        failed.push(error instanceof Error ? error.message : "The image could not be saved.");
+        failed.push(error instanceof Error && error.message ? error.message : t("imageNotSaved"));
         break;
       }
     }
   }
   const problems = [
-    ...(skipped.length ? [`LaTeX cannot include ${skipped.join(", ")}: use PNG, JPEG, PDF or SVG.`] : []),
+    ...(skipped.length ? [t("unsupportedImages", { files: skipped.join(", ") })] : []),
     ...failed.slice(0, 1),
   ];
   if (!saved.length || !isViewAlive(view)) {
@@ -85,9 +100,9 @@ export async function saveAndInsertImages(request: LatexImageRequest, rootPath: 
   const sources = state.field(macroSourcesField, false) ?? [];
   const missing = missingImagePackages(readPreambleInfo([state.doc.toString(), ...sources.map((source) => source.text)]), saved);
   if (inserted) placeCaretInCaption(view, inserted.from, inserted.text);
-  const savedNote = `Saved ${saved.length === 1 ? saved[0] : `${saved.length} images in ${folder || "the main file's folder"}`}.`;
+  const savedNote = saved.length === 1 ? t("savedOne", { path: saved[0] }) : folder ? t("savedMany", { count: saved.length, folder }) : t("savedMainFolder", { count: saved.length });
   return {
-    message: inserted ? [savedNote, ...problems].join(" ") : `${savedNote} The place it was pasted changed meanwhile, so no figure was inserted.`,
+    message: inserted ? [savedNote, ...problems].join(" ") : `${savedNote} ${t("pasteMoved")}`,
     missing: inserted ? missing : [],
   };
 }

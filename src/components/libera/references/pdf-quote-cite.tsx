@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { entryAuthorsYear } from "@/components/libera/references/citation-popup";
@@ -35,7 +36,19 @@ import {
 // ---------------------------------------------------------------------------
 
 type AddRequest = { id: number; notebook: string; path: string; resolve: (entry: ReferenceEntry | null) => void };
-type HostState = { add: AddRequest | null; notice: { id: number; message: string } | null };
+/** `code` marks a notice whose text the host shows in the interface language (`message` is the English fallback). */
+type PdfQuoteNotice = { id: number; message: string; code?: PdfQuoteErrorCode };
+type HostState = { add: AddRequest | null; notice: PdfQuoteNotice | null };
+
+type PdfQuoteErrorCode = "quoteFailed" | "copyFailed";
+
+/** A failure the notice shows in the interface language, by `code`; the message is English. */
+export class PdfQuoteError extends Error {
+  constructor(readonly code: PdfQuoteErrorCode, message: string) {
+    super(message);
+    this.name = "PdfQuoteError";
+  }
+}
 
 let hostState: HostState = { add: null, notice: null };
 let hostsMounted = 0;
@@ -98,10 +111,10 @@ export async function copyReferenceKey(from: string, to: string, key: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ from, to, keys: [key] }),
   });
-  if (!response.ok) throw new Error(await errorText(response, "The reference could not be copied to the note's notebook."));
+  if (!response.ok) throw new PdfQuoteError("copyFailed", await errorText(response, "The reference could not be copied to the note's notebook."));
   const result = await response.json() as { keys?: Record<string, string>; destinationRevision?: number | null };
   const destinationKey = result.keys?.[key];
-  if (!destinationKey) throw new Error("The reference could not be copied to the note's notebook.");
+  if (!destinationKey) throw new PdfQuoteError("copyFailed", "The reference could not be copied to the note's notebook.");
   if (typeof result.destinationRevision === "number" && typeof window !== "undefined") {
     // Other views of that library (the References panel, chips) reload it.
     window.dispatchEvent(new CustomEvent<ReferencesUpdatedDetail>(REFERENCES_UPDATED_EVENT, { detail: { notebook: to, revision: result.destinationRevision } }));
@@ -147,7 +160,10 @@ export async function droppedQuoteMarkdown(source: PdfQuoteSource, notebook: str
   try {
     return (await resolvePdfQuote(source, notebook))?.markdown ?? null;
   } catch (error) {
-    showPdfQuoteNotice(error instanceof Error ? error.message : "Could not quote the PDF.");
+    const message = error instanceof Error ? error.message : "";
+    // The English fallbacks (not a server's reason) are shown in the interface language.
+    const code: PdfQuoteErrorCode | undefined = !message ? "quoteFailed" : error instanceof PdfQuoteError && message.startsWith("The reference could not be copied") ? error.code : undefined;
+    setHostState({ notice: { id: nextId++, message: message || "Could not quote the PDF.", code } });
     return null;
   }
 }
@@ -178,6 +194,9 @@ function addedEntry(before: ReferenceLibrary, after: ReferenceLibrary, path: str
 }
 
 function AddPdfDialog({ request, onDone }: { request: AddRequest; onDone: (entry: ReferenceEntry | null) => void }) {
+  const t = useTranslations("references.pdfQuoteCite");
+  const tc = useTranslations("common");
+  const tCard = useTranslations("references.citationPopup");
   const [phase, setPhase] = useState<AddPhase>({ kind: "resolving" });
   const controller = useRef<AbortController | null>(null);
 
@@ -193,18 +212,18 @@ function AddPdfDialog({ request, onDone }: { request: AddRequest; onDone: (entry
         if (abort.signal.aborted) return;
         const candidate = result.candidates[0];
         if (!candidate) {
-          setPhase({ kind: "preview", candidate: unresolvedPdfEntry(request.path), existing: null, warnings: result.warnings.length ? result.warnings : ["Nothing was found for this PDF. It can be added with its file name as the title and completed later."] });
+          setPhase({ kind: "preview", candidate: unresolvedPdfEntry(request.path), existing: null, warnings: result.warnings.length ? result.warnings : [t("nothingFound")] });
           return;
         }
         const duplicate = result.duplicates.find((item) => item.candidateIndex === 0);
         setPhase({ kind: "preview", candidate, existing: duplicate ? library.entries[duplicate.entryId] ?? null : null, warnings: result.warnings });
       } catch (error) {
         if (abort.signal.aborted) return;
-        setPhase({ kind: "error", message: error instanceof Error ? error.message : "The PDF could not be looked up.", candidate: unresolvedPdfEntry(request.path) });
+        setPhase({ kind: "error", message: error instanceof Error && error.message ? error.message : t("lookupFailed"), candidate: unresolvedPdfEntry(request.path) });
       }
     })();
     return () => abort.abort();
-  }, [request]);
+  }, [request, t]);
 
   const cancel = useCallback(() => {
     controller.current?.abort();
@@ -220,48 +239,48 @@ function AddPdfDialog({ request, onDone }: { request: AddRequest; onDone: (entry
         : [{ op: "add", entry: withAttachment(candidate, request.path) }];
       const after = await applyReferenceOps(request.notebook, ops);
       const entry = existing ? after.entries[existing.id] ?? null : addedEntry(before, after, request.path);
-      if (!entry) throw new Error("The reference was not added.");
+      if (!entry) throw new Error(t("notAdded"));
       onDone(entry);
     } catch (error) {
-      setPhase({ kind: "error", message: error instanceof Error ? error.message : "The reference could not be added.", candidate });
+      setPhase({ kind: "error", message: error instanceof Error && error.message ? error.message : t("addFailed"), candidate });
     }
   }
 
   const name = fileBaseName(request.path);
   const shown = phase.kind === "preview" ? phase.existing ?? phase.candidate : phase.kind === "error" ? phase.candidate : null;
   const primary = phase.kind === "preview"
-    ? { label: phase.existing ? `Attach to @${phase.existing.key} and cite` : "Add and cite", run: () => void add(phase.candidate, phase.existing) }
+    ? { label: phase.existing ? t("attachAndCite", { key: phase.existing.key }) : t("addAndCite"), run: () => void add(phase.candidate, phase.existing) }
     : phase.kind === "error"
-      ? { label: "Add with file name", run: () => void add(phase.candidate, null) }
+      ? { label: t("addWithFileName"), run: () => void add(phase.candidate, null) }
       : null;
 
   return (
     <ModalDialog
       open
-      title="Add this PDF to References"
-      description={`${name} is not in this notebook's References yet. Add it to cite the quote.`}
+      title={t("dialogTitle")}
+      description={t("dialogDescription", { name })}
       onClose={cancel}
       footer={
         <>
-          <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={cancel}>Cancel</button>
+          <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={cancel}>{tc("cancel")}</button>
           {primary ? (
             <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" onClick={primary.run}>{primary.label}</button>
           ) : null}
         </>
       }
     >
-      <div className="space-y-2 text-sm" aria-label="PDF reference" data-pdf-reference-dialog="">
+      <div className="space-y-2 text-sm" aria-label={t("dialogAria")} data-pdf-reference-dialog="">
         {phase.kind === "resolving" || phase.kind === "adding" ? (
           <p role="status" className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> {phase.kind === "resolving" ? `Looking up ${name}…` : "Adding…"}
+            <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> {phase.kind === "resolving" ? t("lookingUp", { name }) : t("adding")}
           </p>
         ) : null}
         {phase.kind === "error" ? <p role="alert" className="rounded-lg bg-destructive-muted p-2.5 text-xs text-destructive">{phase.message}</p> : null}
         {shown ? (
           <div className="libera-panel-card p-2.5">
-            <div className="font-medium text-foreground">{entryAuthorsYear(shown)}</div>
-            <div className="text-xs text-muted-foreground">{typeof shown.csl.title === "string" && shown.csl.title.trim() ? shown.csl.title : "Untitled"}</div>
-            {phase.kind === "preview" && phase.existing ? <div className="mt-1 text-xs text-muted-foreground">Already in References as <span className="font-mono">@{phase.existing.key}</span>; the PDF will be attached to it.</div> : null}
+            <div className="font-medium text-foreground">{entryAuthorsYear(shown, tCard)}</div>
+            <div className="text-xs text-muted-foreground">{typeof shown.csl.title === "string" && shown.csl.title.trim() ? shown.csl.title : t("untitled")}</div>
+            {phase.kind === "preview" && phase.existing ? <div className="mt-1 text-xs text-muted-foreground">{t.rich("alreadyInReferences", { key: phase.existing.key, mono: (chunks) => <span className="font-mono">{chunks}</span> })}</div> : null}
           </div>
         ) : null}
         {phase.kind === "preview" && phase.warnings.length ? (
@@ -276,6 +295,7 @@ const NOTICE_MS = 4_000;
 
 /** Mounted once by the app: shows the add-PDF confirmation and quote-and-cite notices. */
 export function PdfQuoteCiteHost() {
+  const t = useTranslations("references.pdfQuoteCite");
   const state = useSyncExternalStore(subscribe, () => hostState, () => hostState);
   useEffect(() => {
     hostsMounted += 1;
@@ -304,7 +324,7 @@ export function PdfQuoteCiteHost() {
       {request ? <AddPdfDialog key={request.id} request={request} onDone={done} /> : null}
       {notice ? (
         <div role="status" data-pdf-quote-notice="" className="fixed bottom-4 left-1/2 z-50 max-w-md -translate-x-1/2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground shadow-lg">
-          {notice.message}
+          {notice.code ? t(`notice.${notice.code}`) : notice.message}
         </div>
       ) : null}
     </>

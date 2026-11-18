@@ -15,6 +15,8 @@ export type RecentSearch = { parts: SearchQueryPart[]; label: string; at: number
 type SearchStoreState = {
   status: SearchIndexStatus | null;
   statusError: string;
+  /** The last status read failed (the message may be empty: the panel words it). */
+  statusFailed: boolean;
   recent: RecentSearch[];
 };
 
@@ -23,7 +25,7 @@ const MAX_RECENT = 12;
 const BUSY_POLL_MS = 1_500;
 const IDLE_POLL_MS = 10_000;
 
-let state: SearchStoreState = { status: null, statusError: "", recent: [] };
+let state: SearchStoreState = { status: null, statusError: "", statusFailed: false, recent: [] };
 let recentLoaded = false;
 const listeners = new Set<() => void>();
 
@@ -104,10 +106,10 @@ export async function refreshSearchStatus(scan = false) {
   if (scan) lastScanRequest = Date.now();
   try {
     const status = await apiRequest<SearchIndexStatus>(`/api/search/status${scan ? "?scan=1" : ""}`);
-    setState({ status, statusError: "" });
+    setState({ status, statusError: "", statusFailed: false });
     return status;
   } catch (error) {
-    setState({ statusError: error instanceof Error ? error.message : "Could not read the search index." });
+    setState({ statusError: error instanceof Error ? error.message : "", statusFailed: true });
     return null;
   }
 }
@@ -117,7 +119,7 @@ export async function searchIndexAction(action: "build" | "scan" | "background" 
     method: "POST",
     body: JSON.stringify({ action }),
   });
-  setState({ status, statusError: "" });
+  setState({ status, statusError: "", statusFailed: false });
   return status;
 }
 

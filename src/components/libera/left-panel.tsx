@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { RefObject } from "react";
+import { useTranslations } from "next-intl";
 import {
   BookMarked,
   BookOpen,
@@ -68,6 +69,7 @@ type LeftPanelRailTab = {
   label: string;
 };
 
+// `label` is only the English fallback; the rail shows `leftPanel.tab.<id>` (contextual tabs: `pageTabs.rail.<id>`).
 const TOP_PANEL_TABS: LeftPanelRailTab[] = [
   { id: "notebook", label: "Notebook", icon: BookOpen },
   { id: "outlines", label: "Outlines", icon: ListTree },
@@ -98,6 +100,7 @@ export function LeftPanel({
   mathMarkers,
   ...notebookPanelProps
 }: LeftPanelProps) {
+  const t = useTranslations("leftPanel");
   function selectPanel(panel: LeftPanelTab) {
     onPanelChange(panel);
 
@@ -210,7 +213,7 @@ export function LeftPanel({
               <SpendingPanel />
             ) : activePanel === "voice-memo" || activePanel === "recording" ? (
               // The voice memo or recording tab renders its controls here.
-              activeTab ? <RailSlot key={activeTab.id} tabId={activeTab.id} emptyText={activePanel === "recording" ? "This recording has nothing to adjust." : "Opening the voice memo…"} /> : null
+              activeTab ? <RailSlot key={activeTab.id} tabId={activeTab.id} emptyText={activePanel === "recording" ? t("recordingEmpty") : t("voiceMemoOpening")} /> : null
             ) : activePanel === "pdf-annotations" ? (
               activeTab?.file.fileType === "pdf" && !activeTab.gallery ? (
                 <PdfAnnotationsPanel key={activeTab.file.path} activeTab={activeTab} onOpenFile={notebookPanelProps.onOpenFile} />
@@ -221,8 +224,8 @@ export function LeftPanel({
               <>
                 {workspaceManager.activeWorkspace && <div className="mx-3 mt-3 flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2">
                   <Layers3 className="h-4 w-4 shrink-0" style={{ color: workspaceManager.activeWorkspace.color }} />
-                  <button className="min-w-0 flex-1 text-left" title="Manage active workspace" onClick={() => selectPanel("workspaces")}><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Workspace</span><span className="block truncate text-sm font-medium">{workspaceManager.activeWorkspace.name}</span></button>
-                  <button className="libera-sidebar-icon-button rounded-lg p-1.5" aria-label="Exit workspace" title="Exit workspace" disabled={workspaceManager.switching} onClick={() => { void workspaceManager.switchWorkspace(null).catch(() => selectPanel("workspaces")); }}><LogOut className="h-3.5 w-3.5" /></button>
+                  <button className="min-w-0 flex-1 text-left" title={t("manageWorkspace")} onClick={() => selectPanel("workspaces")}><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">{t("workspaceLabel")}</span><span className="block truncate text-sm font-medium">{workspaceManager.activeWorkspace.name}</span></button>
+                  <button className="libera-sidebar-icon-button rounded-lg p-1.5" aria-label={t("exitWorkspace")} title={t("exitWorkspace")} disabled={workspaceManager.switching} onClick={() => { void workspaceManager.switchWorkspace(null).catch(() => selectPanel("workspaces")); }}><LogOut className="h-3.5 w-3.5" /></button>
                 </div>}
                 <NotebookPanel {...notebookPanelProps} onManageWorkspace={manageWorkspace} workspaceActive={Boolean(workspaceManager.activeWorkspace)} />
               </>
@@ -316,9 +319,13 @@ function LeftPanelRail({
   onSelectPanel: (panel: LeftPanelTab) => void;
   onToggleCollapsed: () => void;
 }) {
+  const t = useTranslations("leftPanel");
+  const tPage = useTranslations("pageTabs");
   function renderTab(tab: LeftPanelRailTab) {
     const Icon = tab.icon;
-    const label = tab.label;
+    const label = tab.id === "notebook" || tab.id === "outlines" || tab.id === "comments" || tab.id === "references" || tab.id === "gallery" || tab.id === "search" || tab.id === "workspaces"
+      ? t(`tab.${tab.id}`)
+      : tPage(`rail.${tab.id}`);
     const selected = activePanel === tab.id;
 
     return (
@@ -326,7 +333,7 @@ function LeftPanelRail({
         key={tab.id}
         id={`left-panel-tab-${tab.id}`}
         aria-controls={`left-panel-${tab.id}`}
-        aria-label={`${label} tab`}
+        aria-label={t("tabAriaLabel", { label })}
         aria-selected={selected}
         className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
         role="tab"
@@ -345,8 +352,8 @@ function LeftPanelRail({
         <button
           className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
           type="button"
-          aria-label={collapsed ? "Expand left panel" : "Collapse left panel"}
-          title={collapsed ? "Expand left panel" : "Collapse left panel"}
+          aria-label={collapsed ? t("expandPanel") : t("collapsePanel")}
+          title={collapsed ? t("expandPanel") : t("collapsePanel")}
           onClick={onToggleCollapsed}
         >
           {collapsed ? (
@@ -358,7 +365,7 @@ function LeftPanelRail({
       </div>
 
       <div
-        aria-label="Left panel tabs"
+        aria-label={t("tabListLabel")}
         className="flex min-h-0 flex-1 flex-col items-center gap-1 py-2"
         role="tablist"
       >

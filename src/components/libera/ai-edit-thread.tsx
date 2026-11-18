@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { useFormatter, useTranslations } from "next-intl";
 import { DatabaseZap, FileText } from "lucide-react";
 import { MAX_AI_EDIT_TURNS } from "@/lib/ai-document-context";
 import type { TokenUsage } from "@/lib/chat-token-usage";
@@ -78,29 +79,31 @@ export function useAiEditThread(key: string | undefined) {
   return useSyncExternalStore(subscribe, () => key ? threads.get(key) : undefined, () => undefined);
 }
 
-function threadTitle(thread: AiEditThread) {
-  const requests = `${thread.turns.length} earlier request${thread.turns.length === 1 ? "" : "s"}`;
+function threadTitle(thread: AiEditThread, t: ReturnType<typeof useTranslations>, format: ReturnType<typeof useFormatter>) {
+  const requests = t("earlierRequests", { count: thread.turns.length });
   const usage = thread.usage?.cachedTokens !== undefined && thread.usage.inputTokens
-    ? ` The last request read ${thread.usage.cachedTokens.toLocaleString()} of ${thread.usage.inputTokens.toLocaleString()} input tokens from the cache.`
+    ? t("cacheUsage", { cached: format.number(thread.usage.cachedTokens), input: format.number(thread.usage.inputTokens) })
     : "";
-  return `Continuing a cached thread (${requests} on this document): instructions${thread.includeDocument ? " and the document are" : " are"} not sent again, so follow-ups cost less.${usage} Click to start fresh.`;
+  return t("threadTitle", { requests, includeDocument: thread.includeDocument ? "yes" : "no", usage: usage ? ` ${usage}` : "" });
 }
 
 /** The options row under AI Rewrite / Write with AI: the whole-document toggle and, while a thread continues, its cache indicator. */
 export function AiEditOptions({ id, documentPath }: { id: string; documentPath?: string }) {
+  const t = useTranslations("aiEditThread");
+  const format = useFormatter();
   const includeDocument = useIncludeDocumentContext();
   const thread = useAiEditThread(documentPath);
   const active = thread && thread.includeDocument === includeDocument ? thread : undefined;
   return <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-    <label htmlFor={id} title="Send the whole document as context with AI Rewrite and Write with AI" className="flex cursor-pointer items-center gap-1.5">
+    <label htmlFor={id} title={t("wholeDocumentTitle")} className="flex cursor-pointer items-center gap-1.5">
       <input id={id} type="checkbox" checked={includeDocument} onChange={(event) => saveIncludeDocumentContext(event.target.checked)} />
       <FileText aria-hidden className="h-3.5 w-3.5" />
-      Whole document
+      {t("wholeDocument")}
     </label>
     {active ? <button
       type="button"
-      title={threadTitle(active)}
-      aria-label={`Cached AI thread, ${active.turns.length} earlier request${active.turns.length === 1 ? "" : "s"}. Clear it to start fresh`}
+      title={threadTitle(active, t, format)}
+      aria-label={t("cachedThreadLabel", { requests: t("earlierRequests", { count: active.turns.length }) })}
       className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-primary hover:bg-muted"
       onClick={() => clearAiEditThread(documentPath)}
     >

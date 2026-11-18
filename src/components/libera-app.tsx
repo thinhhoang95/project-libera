@@ -1,5 +1,7 @@
 "use client";
 
+import { useTranslations } from "next-intl";
+import { useRegisterGalleryTranslator } from "@/components/libera/gallery-i18n";
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
 import { ReviewPaletteCommands, ReviewPopover } from "@/components/libera/markdown-review-ui";
 import { DefinitionsPaletteCommands } from "@/components/libera/definitions-panel";
@@ -93,18 +95,21 @@ type LiberaAppProps = {
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "libera.sidebarWidth";
 
-/** The sections of the desktop Preferences window, as palette commands. */
-const PREFERENCES_SECTIONS: Array<{ section?: string; title: string; keywords?: string }> = [
-  { title: "Open Preferences…" },
-  { section: "general", title: "Preferences: General", keywords: "theme dark mode data directory api key password" },
-  { section: "markdown", title: "Preferences: Markdown", keywords: "editor heading numbering source accent" },
-  { section: "ai", title: "Preferences: AI", keywords: "openrouter model quick prompts chat" },
-  { section: "search", title: "Preferences: Search", keywords: "index embedding images" },
-  { section: "speech", title: "Preferences: Speech", keywords: "transcription dictation voice" },
-  { section: "read-aloud", title: "Preferences: Read Aloud", keywords: "tts text to speech voice" },
-  { section: "detection", title: "Preferences: Detection and Segmentation", keywords: "objects photos models" },
-  { section: "users", title: "Preferences: Users", keywords: "profiles accounts" },
-  { section: "io", title: "Preferences: I/O", keywords: "import export backup" },
+/**
+ * The sections of the desktop Preferences window, as palette commands. The title is the `liberaApp.preferences.<key>`
+ * message; the keywords are matched against what is typed and stay English.
+ */
+const PREFERENCES_SECTIONS: Array<{ section?: string; key: string; keywords?: string }> = [
+  { key: "open" },
+  { section: "general", key: "general", keywords: "theme dark mode data directory api key password" },
+  { section: "markdown", key: "markdown", keywords: "editor heading numbering source accent" },
+  { section: "ai", key: "ai", keywords: "openrouter model quick prompts chat" },
+  { section: "search", key: "search", keywords: "index embedding images" },
+  { section: "speech", key: "speech", keywords: "transcription dictation voice" },
+  { section: "read-aloud", key: "readAloud", keywords: "tts text to speech voice" },
+  { section: "detection", key: "detection", keywords: "objects photos models" },
+  { section: "users", key: "users", keywords: "profiles accounts" },
+  { section: "io", key: "io", keywords: "import export backup" },
 ];
 const NO_QUICK_PROMPTS: QuickPrompt[] = [];
 
@@ -117,6 +122,12 @@ export function LiberaApp({
   editorThemes = NO_EDITOR_THEMES,
   notebookIllustrations = DEFAULT_NOTEBOOK_ILLUSTRATIONS,
 }: LiberaAppProps) {
+  const t = useTranslations("liberaApp");
+  const tReferencesPanel = useTranslations("references.referencesPanel");
+  const tBibliographyActions = useTranslations("references.bibliographyActions");
+  const tAddReferenceBox = useTranslations("references.addReferenceBox");
+  // Gallery helpers outside React (save menus, canvas export used by the PDF viewer) word their errors through this.
+  useRegisterGalleryTranslator();
   const aiActive = useAiActivity();
   useMarkdownAccents(markdownPreferences);
   const resolvedEditorThemes = useEditorThemes(editorThemes);
@@ -268,7 +279,7 @@ export function LiberaApp({
   // The AI panel can move to its own window; it stays mounted here and renders there.
   // Closing that window closes the panel, like its close button; it opens docked next time.
   const detachedChat = useDetachedWindow({
-    name: "libera-chat-window", title: "Libera AI", width: 480, height: 820,
+    name: "libera-chat-window", title: "Libera AI", width: 480, height: 820, // title is the product name
     onClosed: () => { setChatCollapsed(true); saveChatPanel(chatWidth, true); },
   });
   const chatDetached = !!detachedChat.container;
@@ -408,7 +419,7 @@ export function LiberaApp({
   useAppMenuReferences("fallback", () => closedReferencesMenuItems(referenceNotebook, () => {
     changeLeftPanel("references");
     setNotebooksCollapsed(false);
-  }, activeReferencePdf));
+  }, activeReferencePdf, { t: tReferencesPanel, tFormats: tBibliographyActions, tAddBox: tAddReferenceBox }));
 
   const canvas = workspace.canvas;
   // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.
@@ -524,7 +535,7 @@ export function LiberaApp({
       if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.code !== "KeyB" || event.repeat || event.isComposing) return;
       event.preventDefault();
       changeChatCollapsed(!chatCollapsed);
-      if (!chatCollapsed) document.querySelector<HTMLButtonElement>('[aria-label="Toggle document chat"]')?.focus();
+      if (!chatCollapsed) document.querySelector<HTMLButtonElement>("[data-libera-chat-toggle]")?.focus();
     }
     window.addEventListener("keydown", toggleChat, true);
     return () => window.removeEventListener("keydown", toggleChat, true);
@@ -659,35 +670,35 @@ export function LiberaApp({
 
   // App-wide commands in the command palette (⌘/Ctrl+Shift+P), beside the focused editor's tools.
   usePaletteCommands(null, () => {
-    const general = "General";
+    const general = t("generalGroup");
     const showPanel = (panel: LeftPanelTab) => () => {
       changeLeftPanel(panel);
       setNotebooksCollapsed(false);
     };
     return [
-      { id: "app:go-to-file", title: "Go to file…", group: general, icon: FileSearch, shortcut: "Ctrl/⌘+P", run: () => openCommandPalette("files") },
-      { id: "app:search", title: "Search everything", group: general, icon: ScanSearch, shortcut: "Ctrl/⌘+Shift+F", keywords: "find content global", run: showPanel("search") },
-      { id: "app:new-note", title: "New untitled note", group: general, icon: FilePlus2, keywords: "create markdown draft", run: () => workspace.createUntitledFile() },
-      { id: "app:migration", title: "Migration…", group: general, icon: FolderInput, detail: "Move files and folders to another local notebook", keywords: "migrate move transfer files folders notebook", run: () => workspace.openMigrationDialog() },
-      { id: "app:save", title: "Save", group: general, icon: Save, shortcut: "Ctrl/⌘+S", disabled: !workspace.activeTab, run: () => void workspace.saveActiveTab() },
-      { id: "app:close-tab", title: "Close tab", group: general, icon: X, shortcut: "Ctrl/⌘+W", disabled: !workspace.activeTabId, run: () => workspace.closeTab(workspace.activeTabId) },
-      { id: "app:toggle-chat", title: chatCollapsed ? "Show AI chat" : "Hide AI chat", group: general, icon: MessageSquareText, shortcut: "Ctrl/⌘+Shift+B", run: () => changeChatCollapsed(!chatCollapsed) },
-      { id: "app:toggle-sidebar", title: notebooksCollapsed ? "Show sidebar" : "Hide sidebar", group: general, icon: PanelLeft, run: () => setNotebooksCollapsed((current) => !current) },
-      { id: "app:split-right", title: "Split panel right", group: general, icon: Columns2, shortcut: "Ctrl/⌘+\\", disabled: galleryOpen, run: () => canvas.splitPane(canvas.layout.focusedPaneId, "right") },
-      { id: "app:split-down", title: "Split panel down", group: general, icon: Rows2, shortcut: "Ctrl/⌘+Shift+\\", disabled: galleryOpen, run: () => canvas.splitPane(canvas.layout.focusedPaneId, "bottom") },
-      { id: "app:panel-notebook", title: "Show notebooks", group: general, icon: BookOpen, shortcut: "Ctrl/⌘+1", run: showPanel("notebook") },
-      { id: "app:panel-outlines", title: "Show outlines", group: general, icon: ListTree, shortcut: "Ctrl/⌘+2", run: showPanel("outlines") },
-      { id: "app:panel-comments", title: "Show comments", group: general, icon: MessageSquare, shortcut: "Ctrl/⌘+3", run: showPanel("comments") },
-      { id: "app:panel-workspaces", title: "Show workspaces", group: general, icon: Layers3, shortcut: "Ctrl/⌘+4", run: showPanel("workspaces") },
-      { id: "app:panel-gallery", title: "Show image gallery", group: general, icon: Images, shortcut: "Ctrl/⌘+5", keywords: "photos", run: showPanel("gallery") },
-      { id: "app:panel-references", title: "Show references", group: general, icon: BookMarked, shortcut: "Ctrl/⌘+7", keywords: "citations bibliography", run: showPanel("references") },
-      { id: "app:page-spending", title: "Show OpenRouter spending", group: general, icon: ChartColumnStacked, detail: "Token use and cost by period, model and component", keywords: "usage cost tokens billing credits statistics money price", run: () => openPageRef.current("spending") },
-      { id: "app:logout", title: "Log out", group: general, icon: LogOut, keywords: "logout sign out switch user lock", run: () => void workspace.handleLogout() },
+      { id: "app:go-to-file", title: t("goToFile"), group: general, icon: FileSearch, shortcut: "Ctrl/⌘+P", run: () => openCommandPalette("files") },
+      { id: "app:search", title: t("searchEverything"), group: general, icon: ScanSearch, shortcut: "Ctrl/⌘+Shift+F", keywords: "find content global", run: showPanel("search") },
+      { id: "app:new-note", title: t("newUntitledNote"), group: general, icon: FilePlus2, keywords: "create markdown draft", run: () => workspace.createUntitledFile() },
+      { id: "app:migration", title: t("migration"), group: general, icon: FolderInput, detail: t("migrationDetail"), keywords: "migrate move transfer files folders notebook", run: () => workspace.openMigrationDialog() },
+      { id: "app:save", title: t("save"), group: general, icon: Save, shortcut: "Ctrl/⌘+S", disabled: !workspace.activeTab, run: () => void workspace.saveActiveTab() },
+      { id: "app:close-tab", title: t("closeTab"), group: general, icon: X, shortcut: "Ctrl/⌘+W", disabled: !workspace.activeTabId, run: () => workspace.closeTab(workspace.activeTabId) },
+      { id: "app:toggle-chat", title: chatCollapsed ? t("showAiChat") : t("hideAiChat"), group: general, icon: MessageSquareText, shortcut: "Ctrl/⌘+Shift+B", run: () => changeChatCollapsed(!chatCollapsed) },
+      { id: "app:toggle-sidebar", title: notebooksCollapsed ? t("showSidebar") : t("hideSidebar"), group: general, icon: PanelLeft, run: () => setNotebooksCollapsed((current) => !current) },
+      { id: "app:split-right", title: t("splitPanelRight"), group: general, icon: Columns2, shortcut: "Ctrl/⌘+\\", disabled: galleryOpen, run: () => canvas.splitPane(canvas.layout.focusedPaneId, "right") },
+      { id: "app:split-down", title: t("splitPanelDown"), group: general, icon: Rows2, shortcut: "Ctrl/⌘+Shift+\\", disabled: galleryOpen, run: () => canvas.splitPane(canvas.layout.focusedPaneId, "bottom") },
+      { id: "app:panel-notebook", title: t("showNotebooks"), group: general, icon: BookOpen, shortcut: "Ctrl/⌘+1", run: showPanel("notebook") },
+      { id: "app:panel-outlines", title: t("showOutlines"), group: general, icon: ListTree, shortcut: "Ctrl/⌘+2", run: showPanel("outlines") },
+      { id: "app:panel-comments", title: t("showComments"), group: general, icon: MessageSquare, shortcut: "Ctrl/⌘+3", run: showPanel("comments") },
+      { id: "app:panel-workspaces", title: t("showWorkspaces"), group: general, icon: Layers3, shortcut: "Ctrl/⌘+4", run: showPanel("workspaces") },
+      { id: "app:panel-gallery", title: t("showImageGallery"), group: general, icon: Images, shortcut: "Ctrl/⌘+5", keywords: "photos", run: showPanel("gallery") },
+      { id: "app:panel-references", title: t("showReferences"), group: general, icon: BookMarked, shortcut: "Ctrl/⌘+7", keywords: "citations bibliography", run: showPanel("references") },
+      { id: "app:page-spending", title: t("showOpenRouterSpending"), group: general, icon: ChartColumnStacked, detail: t("openRouterSpendingDetail"), keywords: "usage cost tokens billing credits statistics money price", run: () => openPageRef.current("spending") },
+      { id: "app:logout", title: t("logOut"), group: general, icon: LogOut, keywords: "logout sign out switch user lock", run: () => void workspace.handleLogout() },
       ...(window.liberaPreferences
-        ? PREFERENCES_SECTIONS.map(({ section, title, keywords }) => ({
+        ? PREFERENCES_SECTIONS.map(({ section, key, keywords }) => ({
             id: `app:preferences-${section ?? "open"}`,
-            title,
-            group: "Preferences",
+            title: t(`preferences.${key}`),
+            group: t("preferencesGroup"),
             icon: Settings,
             keywords: `settings preferences ${keywords ?? ""}`,
             run: () => void window.liberaPreferences?.open(section),
@@ -698,7 +709,7 @@ export function LiberaApp({
 
   // macOS File menu: app commands after the active tab's file actions.
   useAppMenuItems("file", 0, () => [
-    { id: "migration", label: "Migration…", onSelect: () => workspace.openMigrationDialog() },
+    { id: "migration", label: t("migration"), onSelect: () => workspace.openMigrationDialog() },
   ]);
 
   // What the left panel receives must not change identity when only a draft or
@@ -992,7 +1003,7 @@ export function LiberaApp({
 
         <DocumentChatPanel agentWorkspace={agentWorkspace} viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={chromeTabs} readOpenTabs={tabReaders.readOpenTabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={handleAttachment} quickPrompts={quickPrompts} onCreateDraft={createChatDraft} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={activeChromeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} detachedContainer={detachedChat.container} onDetachedChange={changeChatDetached} />
         {chatDocked && <div
-          role="separator" aria-label="Resize document chat" aria-orientation="vertical"
+          role="separator" aria-label={t("resizeDocumentChat")} aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
           className="absolute bottom-0 top-0 z-40 hidden w-1.5 translate-x-1/2 cursor-col-resize touch-none focus-visible:bg-accent lg:block"
           style={{ right: chatWidth }}
@@ -1034,9 +1045,9 @@ export function LiberaApp({
         ) : null}
       </div>
 
-      {workspace.workspaceManager.loadError && <div role="alert" className="border-t border-destructive/30 bg-card px-4 py-2 text-sm text-destructive">{workspace.workspaceManager.loadError} <button className="underline" onClick={workspace.workspaceManager.retry}>Retry loading workspaces</button></div>}
+      {workspace.workspaceManager.loadError && <div role="alert" className="border-t border-destructive/30 bg-card px-4 py-2 text-sm text-destructive">{workspace.workspaceManager.loadError} <button className="underline" onClick={workspace.workspaceManager.retry}>{t("retryLoadingWorkspaces")}</button></div>}
       <ReferenceMoveNotice key={workspace.referenceMoveNotice?.id} notice={workspace.referenceMoveNotice} onDismiss={workspace.dismissReferenceMoveNotice} />
-      {(workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready && !workspace.workspaceManager.loadError)) && <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-border bg-card px-5 py-2 text-sm shadow-lg">{workspace.workspaceManager.switching ? "Saving your place…" : "Opening your workspace…"}</div>}
+      {(workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready && !workspace.workspaceManager.loadError)) && <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-border bg-card px-5 py-2 text-sm shadow-lg">{workspace.workspaceManager.switching ? t("savingYourPlace") : t("openingYourWorkspace")}</div>}
       <NotebookMigrationDialog
         open={workspace.migrationDialogSource !== null}
         initialSource={workspace.migrationDialogSource ?? ""}

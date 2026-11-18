@@ -1,10 +1,19 @@
-// Every user-facing sentence about collaboration state lives here, so the
-// pill, the account dialog and the tests agree on the wording.
+// Every user-facing sentence about collaboration state lives here (and in the `lib.collab.ui.wording` messages), so
+// the pill, the account dialog and the tests agree on the wording. Functions take a translator `t` made with
+// `useTranslations("lib.collab.ui.wording")`; without one they fall back to the English messages in wording-en.json,
+// which keeps callers that have not been converted yet (and the tests) working.
 
+import { createTranslator } from "next-intl";
 import type { HostConnection, ShareProgress } from "@/lib/collab/local-api";
 import type { NotificationInfo } from "@/lib/collab/protocol/api";
 import type { SyncState, SyncStatus } from "@/lib/collab/protocol/local";
 import type { Role } from "@/lib/collab/protocol/roles";
+import english from "./wording-en.json";
+
+/** What `useTranslations("lib.collab.ui.wording")` returns, as far as this file needs it. */
+export type WordingTranslator = (key: string, values?: Record<string, string | number>) => string;
+
+const englishTranslator = createTranslator({ locale: "en", messages: english, onError: () => {} }) as unknown as WordingTranslator;
 
 /** Visual tone; components map it to colours (collab.css). */
 export type CollabTone = "neutral" | "local" | "busy" | "ok" | "warn" | "danger";
@@ -15,63 +24,41 @@ export interface ConnectionWording {
   tone: CollabTone;
 }
 
-export const CONNECTION_WORDING: Record<HostConnection, ConnectionWording> = {
-  "signed-out": {
-    label: "Not signed in",
-    detail: "Sign in to share notebooks and edit them with others.",
-    tone: "neutral",
-  },
-  connecting: {
-    label: "Connecting…",
-    detail: "Connecting to the collaboration server. You can keep editing.",
-    tone: "busy",
-  },
-  connected: {
-    label: "Connected",
-    detail: "Changes to shared notebooks sync as you type.",
-    tone: "ok",
-  },
-  offline: {
-    label: "Offline",
-    detail: "Offline — changes are saved on this device and sync when the connection returns.",
-    tone: "local",
-  },
-  "needs-sign-in": {
-    label: "Sign in again",
-    detail: "Sign in again to keep syncing; your edits are saved on this device.",
-    tone: "warn",
-  },
-  "update-required": {
-    label: "Update required",
-    detail: "The server needs a newer version of Libera. Update Libera to keep syncing; your edits are saved on this device.",
-    tone: "danger",
-  },
+const CONNECTION_KEY: Record<HostConnection, { key: string; tone: CollabTone }> = {
+  "signed-out": { key: "signedOut", tone: "neutral" },
+  connecting: { key: "connecting", tone: "busy" },
+  connected: { key: "connected", tone: "ok" },
+  offline: { key: "offline", tone: "local" },
+  "needs-sign-in": { key: "needsSignIn", tone: "warn" },
+  "update-required": { key: "updateRequired", tone: "danger" },
 };
 
-export function connectionWording(connection: HostConnection): ConnectionWording {
-  return CONNECTION_WORDING[connection];
+export function connectionWording(connection: HostConnection, t: WordingTranslator = englishTranslator): ConnectionWording {
+  const { key, tone } = CONNECTION_KEY[connection];
+  return { label: t(`connection.${key}.label`), detail: t(`connection.${key}.detail`), tone };
 }
 
+/** The English wording; kept for tests and callers that have no translator. */
+export const CONNECTION_WORDING: Record<HostConnection, ConnectionWording> = Object.fromEntries(
+  (Object.keys(CONNECTION_KEY) as HostConnection[]).map((connection) => [connection, connectionWording(connection)]),
+) as Record<HostConnection, ConnectionWording>;
+
 /** "now", "12 s", "4 min", "3 h", "2 d". */
-export function formatAge(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 1000) return "now";
+export function formatAge(ms: number, t: WordingTranslator = englishTranslator): string {
+  if (!Number.isFinite(ms) || ms < 1000) return t("age.now");
   const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 60) return t("age.seconds", { n: seconds });
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 60) return t("age.minutes", { n: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} h`;
-  return `${Math.round(hours / 24)} d`;
+  if (hours < 48) return t("age.hours", { n: hours });
+  return t("age.days", { n: Math.round(hours / 24) });
 }
 
 /** "just now", "4 min ago". */
-export function timeAgo(ms: number): string {
-  const age = formatAge(ms);
-  return age === "now" ? "just now" : `${age} ago`;
-}
-
-function changes(count: number): string {
-  return `${count} ${count === 1 ? "change" : "changes"}`;
+export function timeAgo(ms: number, t: WordingTranslator = englishTranslator): string {
+  if (!Number.isFinite(ms) || ms < 1000) return t("ago.justNow");
+  return t("ago.ago", { age: formatAge(ms, t) });
 }
 
 export interface SyncWording {
@@ -83,43 +70,42 @@ export interface SyncWording {
 }
 
 /** Pill wording for each SyncState (collaboration map §6). */
-export function syncWording(status: SyncStatus, now = Date.now()): SyncWording {
+export function syncWording(status: SyncStatus, now = Date.now(), t: WordingTranslator = englishTranslator): SyncWording {
   const { pending, oldestPendingAgeMs } = status;
-  const waiting = pending > 0 ? ` ${changes(pending)} waiting, oldest ${formatAge(oldestPendingAgeMs)}.` : "";
-  const extra = status.detail ? ` ${status.detail}` : "";
+  const join = (...parts: Array<string | false | undefined>) => parts.filter(Boolean).join(" ");
+  const waiting = pending > 0 && t("sync.waiting", { count: pending, age: formatAge(oldestPendingAgeMs, t) });
+  const extra = status.detail;
   const byState: Record<SyncState, () => SyncWording> = {
-    deleted: () => ({ label: "File deleted", detail: "This file was deleted from the shared notebook. Your local text is kept; copy or export it.", tone: "warn" }),
-    loading: () => ({ label: "Loading…", detail: `Opening the shared document.${extra}`, tone: "neutral" }),
+    deleted: () => ({ label: t("sync.deleted.label"), detail: t("sync.deleted.detail"), tone: "warn" }),
+    loading: () => ({ label: t("sync.loading.label"), detail: join(t("sync.loading.detail"), extra), tone: "neutral" }),
     "saved-local": () => ({
-      label: "Saved on this device",
-      detail: `Every edit is saved on this device but not yet in the shared workspace.${waiting}${extra}`,
+      label: t("sync.savedLocal.label"),
+      detail: join(t("sync.savedLocal.detail"), waiting, extra),
       tone: "local",
     }),
     syncing: () => ({
-      label: pending > 0 ? `Syncing ${pending}…` : "Syncing…",
-      detail: `Sending ${changes(pending)} to the shared workspace.${pending > 0 ? ` Oldest waiting ${formatAge(oldestPendingAgeMs)}.` : ""}${extra}`,
+      label: t("sync.syncing.label", { pending }),
+      detail: join(t("sync.syncing.detail", { pending }), pending > 0 && t("sync.syncing.oldest", { age: formatAge(oldestPendingAgeMs, t) }), extra),
       tone: "busy",
     }),
     "saved-remote": () => ({
-      label: "Saved to workspace",
-      detail: `Everything is saved to the shared workspace.${
-        status.lastAckAt ? ` Last confirmed ${timeAgo(now - status.lastAckAt)}.` : ""
-      }${extra}`,
+      label: t("sync.savedRemote.label"),
+      detail: join(
+        t("sync.savedRemote.detail"),
+        status.lastAckAt ? t("sync.savedRemote.confirmed", { when: timeAgo(now - status.lastAckAt, t) }) : "",
+        extra,
+      ),
       tone: "ok",
     }),
     offline: () => ({
-      label: pending > 0 ? `Offline — ${changes(pending)} on this device` : "Offline",
-      detail: `Offline — changes are saved on this device and sync when the connection returns.${waiting}${extra}`,
+      label: pending > 0 ? t("sync.offline.labelPending", { count: pending }) : t("sync.offline.label"),
+      detail: join(t("sync.offline.detail"), waiting, extra),
       tone: "local",
     }),
-    "read-only": () => ({
-      label: "Read-only — update required",
-      detail: `This document was saved by a newer version of Libera. Update Libera to edit it.${extra}`,
-      tone: "danger",
-    }),
+    "read-only": () => ({ label: t("sync.readOnly.label"), detail: join(t("sync.readOnly.detail"), extra), tone: "danger" }),
     "access-changed": () => ({
-      label: "Access changed",
-      detail: `Your access to this notebook changed. Your local work is kept; copy or export it.${waiting}${extra}`,
+      label: t("sync.accessChanged.label"),
+      detail: join(t("sync.accessChanged.detail"), waiting, extra),
       tone: "danger",
     }),
   };
@@ -128,79 +114,69 @@ export function syncWording(status: SyncStatus, now = Date.now()): SyncWording {
 
 export const INVITABLE_ROLES: ReadonlyArray<Exclude<Role, "owner">> = ["editor", "commenter", "viewer"];
 
-export const ROLE_LABEL: Record<Role, string> = {
-  owner: "Owner",
-  editor: "Editor",
-  commenter: "Commenter",
-  viewer: "Viewer",
-};
+/** A role's name; `album` uses a shared album's words (its editors are contributors). */
+export function roleLabel(role: Role, t: WordingTranslator = englishTranslator, album = false): string {
+  return t(`roles.${album ? "album" : "notebook"}.${role}.label`);
+}
 
 /** One line per role, from the permission table in collaboration map §4. */
-export const ROLE_DESCRIPTION: Record<Role, string> = {
-  owner: "Manages members and roles, and can do everything an editor can.",
-  editor: "Edits text and files, and accepts or rejects suggestions.",
-  commenter: "Reads, comments and suggests changes, but cannot edit directly.",
-  viewer: "Reads documents, comments and history.",
+export function roleDescription(role: Role, t: WordingTranslator = englishTranslator, album = false): string {
+  return t(`roles.${album ? "album" : "notebook"}.${role}.description`);
+}
+
+const ROLES: Role[] = ["owner", "editor", "commenter", "viewer"];
+const englishRoles = (album: boolean, pick: typeof roleLabel) =>
+  Object.fromEntries(ROLES.map((role) => [role, pick(role, englishTranslator, album)])) as Record<Role, string>;
+
+/** The English names and descriptions, for callers that have no translator (use roleLabel / roleDescription). */
+export const ROLE_LABEL: Record<Role, string> = englishRoles(false, roleLabel);
+export const ROLE_DESCRIPTION: Record<Role, string> = englishRoles(false, roleDescription);
+export const ALBUM_ROLE_LABEL: Record<Role, string> = englishRoles(true, roleLabel);
+export const ALBUM_ROLE_DESCRIPTION: Record<Role, string> = englishRoles(true, roleDescription);
+
+const SHARE_PHASE_KEY: Record<ShareProgress["phase"], string> = {
+  "creating-project": "creatingProject",
+  "importing-documents": "importingDocuments",
+  "uploading-files": "uploadingFiles",
+  "writing-manifest": "writingManifest",
+  done: "done",
 };
 
-/** A shared album's roles: its editors add, remove and edit photos, so they are contributors. */
-export const ALBUM_ROLE_LABEL: Record<Role, string> = {
-  owner: "Owner",
-  editor: "Contributor",
-  commenter: "Commenter",
-  viewer: "Viewer",
-};
-
-export const ALBUM_ROLE_DESCRIPTION: Record<Role, string> = {
-  owner: "Manages members, decides what the album shares, and can do everything a contributor can.",
-  editor: "Adds, removes, edits and captions photos.",
-  commenter: "Sees the photos and comments on them.",
-  viewer: "Sees the photos, captions and comments.",
-};
-
-const SHARE_PHASE_LABEL: Record<ShareProgress["phase"], string> = {
-  "creating-project": "Creating the shared notebook",
-  "importing-documents": "Importing documents",
-  "uploading-files": "Uploading files",
-  "writing-manifest": "Writing the file list",
-  done: "Done",
-};
-
-export function shareProgressLabel(progress: ShareProgress): string {
-  const label = SHARE_PHASE_LABEL[progress.phase];
-  return progress.total > 0 && progress.phase !== "done" ? `${label} (${progress.done} of ${progress.total})` : label;
+export function shareProgressLabel(progress: ShareProgress, t: WordingTranslator = englishTranslator): string {
+  const label = t(`phases.${SHARE_PHASE_KEY[progress.phase]}`);
+  return progress.total > 0 && progress.phase !== "done" ? t("phases.progress", { label, done: progress.done, total: progress.total }) : label;
 }
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function personName(value: unknown): string {
-  return value && typeof value === "object" ? text((value as { displayName?: unknown }).displayName) || "Someone" : "Someone";
+function personName(value: unknown, t: WordingTranslator): string {
+  return (value && typeof value === "object" ? text((value as { displayName?: unknown }).displayName) : "") || t("notifications.someone");
 }
 
 /** Same sentences as the server's email digest (server/src/jobs/digest.ts). */
-export function describeNotification(notification: NotificationInfo): string {
+export function describeNotification(notification: NotificationInfo, t: WordingTranslator = englishTranslator): string {
   const payload = notification.payload ?? {};
   switch (notification.kind) {
     case "mention":
-      return `${personName(payload.author)} mentioned you: ${text(payload.excerpt)}`.trim();
+      return t("notifications.mention", { name: personName(payload.author, t), excerpt: text(payload.excerpt) }).trim();
     case "reply":
-      return `${personName(payload.author)} replied: ${text(payload.excerpt)}`.trim();
+      return t("notifications.reply", { name: personName(payload.author, t), excerpt: text(payload.excerpt) }).trim();
     case "thread-resolved":
-      return `${personName(payload.resolvedBy)} resolved your comment${payload.quote ? `: “${text(payload.quote)}”` : ""}`;
+      return t("notifications.threadResolved", { name: personName(payload.resolvedBy, t), hasQuote: payload.quote ? "yes" : "no", quote: text(payload.quote) });
     case "invited":
-      return `${personName(payload.inviter)} invited you to “${text(payload.projectName) || "a notebook"}”`;
+      return t("notifications.invited", { name: personName(payload.inviter, t), project: text(payload.projectName) || t("notifications.aNotebook") });
     case "review-requested":
-      return "You were asked to review a document";
+      return t("notifications.reviewRequested");
     case "review-decided":
-      return "A review you requested was decided";
+      return t("notifications.reviewDecided");
     case "album-photos-added": {
       const count = typeof payload.count === "number" ? payload.count : 1;
-      return `${personName(payload.actor)} added ${count} ${count === 1 ? "photo" : "photos"} to “${text(payload.albumName) || "a shared album"}”`;
+      return t("notifications.albumPhotosAdded", { name: personName(payload.actor, t), count, album: text(payload.albumName) || t("notifications.aSharedAlbum") });
     }
     default:
-      return "New activity";
+      return t("notifications.other");
   }
 }
 

@@ -1,11 +1,13 @@
 "use client";
 
 import { LoaderCircle, LogIn, Users } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import type { LocalProject } from "@/lib/collab/local-api";
-import { collabClient, describeError } from "@/lib/collab/ui/client";
+import { collabClient } from "@/lib/collab/ui/client";
+import { useDescribeError } from "@/lib/collab/ui/use-describe-error";
 import { useCollabStatus } from "@/lib/collab/ui/hooks";
 import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
 
@@ -31,6 +33,9 @@ export function normalizeInvitation(input: string): string {
 /** "Join a shared notebook…": paste an invitation link or code, join, open. */
 export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitation = "" }: JoinNotebookDialogProps) {
   const id = useId();
+  const t = useTranslations("collab.joinNotebookDialog");
+  const tCommon = useTranslations("common");
+  const describeError = useDescribeError();
   const { signedIn } = useCollabStatus();
   const [invitation, setInvitation] = useState(initialInvitation);
   const [joining, setJoining] = useState(false);
@@ -40,7 +45,7 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
     event.preventDefault();
     const value = normalizeInvitation(invitation);
     if (!value) {
-      setError("Paste the invitation link or code you received.");
+      setError(t("pasteRequired"));
       return;
     }
     setJoining(true);
@@ -58,7 +63,7 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
           ? projects.find((project) => project.projectId === result.projectId) ?? result
           : undefined) ?? projects.find((project) => !before.has(project.projectId));
       if (!joined) {
-        setError("You joined, but it has not appeared yet. A notebook shows up in the Library, and an album in the gallery, once it has downloaded.");
+        setError(t("notAppeared"));
         return;
       }
       onJoined(joined);
@@ -72,13 +77,13 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
   return (
     <ModalDialog
       open
-      title="Join a shared notebook or album"
-      description="Paste the invitation link or code someone sent you. A notebook is downloaded into your Library and an album into your gallery, and both keep syncing."
+      title={t("title")}
+      description={t("description")}
       onClose={onClose}
       footer={
         <>
           <button className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" type="button" onClick={onClose}>
-            Cancel
+            {tCommon("cancel")}
           </button>
           {signedIn ? (
             <button
@@ -88,7 +93,7 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
               type="submit"
             >
               {joining ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Users aria-hidden className="h-3.5 w-3.5" />}
-              {joining ? "Joining…" : "Join"}
+              {joining ? t("joining") : t("join")}
             </button>
           ) : null}
         </>
@@ -98,14 +103,14 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
         <form className="space-y-3" id={`${id}-form`} noValidate onSubmit={join}>
           <div>
             <label className="block text-sm font-medium text-foreground" htmlFor={`${id}-invitation`}>
-              Invitation link or code
+              {t("invitationLabel")}
             </label>
             <input
               autoFocus
               className="mt-1 h-10 w-full rounded-xl border border-input px-3 font-mono text-sm outline-none transition focus:border-ring"
               disabled={joining}
               id={`${id}-invitation`}
-              placeholder="https://… or the code"
+              placeholder={t("placeholder")}
               spellCheck={false}
               value={invitation}
               onChange={(event) => setInvitation(event.target.value)}
@@ -113,7 +118,7 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
           </div>
           {joining ? (
             <p className="text-xs text-muted-foreground" role="status">
-              Downloading the notebook. Large notebooks can take a minute.
+              {t("downloading")}
             </p>
           ) : null}
           {error ? (
@@ -124,10 +129,10 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
         </form>
       ) : (
         <div className="space-y-3 text-sm">
-          <p>Sign in to your collaboration account first. If you do not have one, create it with the invitation link.</p>
+          <p>{t("signInFirst")}</p>
           {onSignIn ? (
             <button className="inline-flex items-center gap-1.5 rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" type="button" onClick={onSignIn}>
-              <LogIn aria-hidden className="h-3.5 w-3.5" /> Sign in or create account
+              <LogIn aria-hidden className="h-3.5 w-3.5" /> {t("signInOrCreate")}
             </button>
           ) : null}
         </div>

@@ -6,6 +6,7 @@
 // "Show more" button loading 40 more at a time.
 
 import { Check, ListFilter } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { useRef, useState } from "react";
 import { nativeMenuPointBelow, popupNativeMenu, type NativeMenuEntry } from "./native-menu";
 import { ToolbarMenu } from "./toolbar-menu";
@@ -37,10 +38,11 @@ export function usePagedList<T>(items: readonly T[], resetKey: string, pinIndex 
 }
 
 export function ShowMoreButton({ remaining, onClick, className = "" }: { remaining: number; onClick: () => void; className?: string }) {
+  const t = useTranslations("listControls");
   if (remaining <= 0) return null;
   const next = Math.min(LIST_MORE_PAGE, remaining);
-  return <button type="button" className={`review-button libera-show-more w-full ${className}`} title={`${remaining} not shown`} onClick={onClick}>
-    Show more ({next} more)
+  return <button type="button" className={`review-button libera-show-more w-full ${className}`} title={t("showMoreTitle", { remaining })} onClick={onClick}>
+    {t("showMore", { next })}
   </button>;
 }
 
@@ -79,11 +81,13 @@ const menuItem = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left
 
 /** An icon button opening a menu of filters (status, author…), each a set of radio choices. */
 export function ListFilterButton({ label, groups, className = "" }: { label: string; groups: readonly ListFilterGroup[]; className?: string }) {
+  const t = useTranslations("listControls");
+  const format = useFormatter();
   const [open, setOpen] = useState(false);
   const [nativeOpen, setNativeOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const active = groups.filter((group) => group.value !== group.defaultValue);
-  const summary = active.map((group) => group.options.find((option) => option.value === group.value)?.label).filter(Boolean).join(" · ");
+  const summary = format.list(active.map((group) => group.options.find((option) => option.value === group.value)?.label).filter((value): value is string => Boolean(value)), { type: "unit" });
   return <>
     <button
       ref={anchor}
@@ -93,7 +97,7 @@ export function ListFilterButton({ label, groups, className = "" }: { label: str
       aria-haspopup="menu"
       aria-expanded={open || nativeOpen}
       data-active={active.length > 0 || undefined}
-      title={summary ? `${label}: ${summary}` : label}
+      title={summary ? t("filterButtonTitle", { label, summary }) : label}
       onClick={async () => {
         const button = anchor.current;
         if (open || !button || !window.liberaMenu) { setOpen((value) => !value); return; }

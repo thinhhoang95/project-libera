@@ -17,10 +17,33 @@ export type SpeechState = {
   /** The passage being played (0-based) and how many there are. */
   index: number;
   total: number;
+  /** Why reading failed: the server's own (English) text, or an English fallback when `errorCode` is set. */
   error: string;
+  /** Set when `error` is only this player's own fallback, so the UI can word it in the interface language. */
+  errorCode: SpeechErrorCode;
+};
+export type SpeechErrorCode = "" | "synthesisFailed" | "playbackFailed" | "noText";
+
+const ERROR_FALLBACKS: Record<Exclude<SpeechErrorCode, "">, string> = {
+  synthesisFailed: "Could not read the text aloud.",
+  playbackFailed: "This audio could not be played.",
+  noText: "There is no text to read aloud.",
 };
 
-const IDLE: SpeechState = { status: "idle", sourceId: null, label: "", index: 0, total: 0, error: "" };
+class SpeechFailure extends Error {
+  constructor(readonly code: Exclude<SpeechErrorCode, "">) {
+    super(ERROR_FALLBACKS[code]);
+  }
+}
+
+/** The state to show for a failure: an error with its own message is kept as it is, anything else gets the coded fallback. */
+function failureState(error: unknown, code: Exclude<SpeechErrorCode, "">): Pick<SpeechState, "error" | "errorCode"> {
+  if (error instanceof SpeechFailure) return { error: error.message, errorCode: error.code };
+  if (error instanceof Error && error.message) return { error: error.message, errorCode: "" };
+  return { error: ERROR_FALLBACKS[code], errorCode: code };
+}
+
+const IDLE: SpeechState = { status: "idle", sourceId: null, label: "", index: 0, total: 0, error: "", errorCode: "" };
 /** Passages prepared ahead of the one playing. */
 const PREFETCH = 2;
 /** Played passages kept so going back a little is instant. */
@@ -91,7 +114,7 @@ async function synthesize(text: string, signal: AbortSignal) {
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string };
-    throw new Error(payload.error || "Could not read the text aloud.");
+    throw payload.error ? new Error(payload.error) : new SpeechFailure("synthesisFailed");
   }
   return URL.createObjectURL(await response.blob());
 }
@@ -148,7 +171,7 @@ async function play(current: Session, index: number, offset = 0, autoplay = true
   } catch (error) {
     if (stale()) return;
     stopSpeech();
-    setState({ error: error instanceof Error ? error.message : "Could not read the text aloud." });
+    setState(failureState(error, "synthesisFailed"));
     return;
   }
   if (stale()) return;
@@ -159,7 +182,7 @@ async function play(current: Session, index: number, offset = 0, autoplay = true
   audio.onerror = () => {
     if (stale()) return;
     stopSpeech();
-    setState({ error: "This audio could not be played." });
+    setState(failureState(null, "playbackFailed"));
   };
   audio.ontimeupdate = () => {
     if (!stale() && audio.duration > 0 && Number.isFinite(audio.duration)) setProgress(index + Math.min(audio.currentTime / audio.duration, 0.999));
@@ -186,7 +209,7 @@ async function play(current: Session, index: number, offset = 0, autoplay = true
   } catch (error) {
     if (stale() || (error instanceof DOMException && error.name === "AbortError")) return;
     stopSpeech();
-    setState({ error: error instanceof Error ? error.message : "This audio could not be played." });
+    setState(failureState(error, "playbackFailed"));
   }
 }
 
@@ -197,7 +220,7 @@ export function speakMarkdown(markdown: string, { sourceId = null, label = "", f
   stopSpeech();
   const chunks = speechChunks(speechText(markdown, format));
   if (!chunks.length) {
-    setState({ ...IDLE, error: "There is no text to read aloud." });
+    setState({ ...IDLE, ...failureState(null, "noText") });
     return;
   }
   const current: Session = { chunks, audio: new Map(), generation: 0 };
@@ -278,7 +301,7 @@ export function skipSpeechPassage(delta: number) {
 }
 
 export function dismissSpeechError() {
-  if (state.error) setState({ error: "" });
+  if (state.error) setState({ error: "", errorCode: "" });
 }
 
 /** Read aloud, or stop when this source is the one being read. */

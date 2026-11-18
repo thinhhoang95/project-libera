@@ -6,6 +6,7 @@
 // opens the document. The bell keeps the full list either way. A per-device
 // setting (the bell's "Desktop alerts" switch) turns them off.
 
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { NotificationInfo } from "@/lib/collab/local-api";
 import { useHostEvents } from "@/lib/collab/ui/hooks";
@@ -47,6 +48,7 @@ export function useDesktopNotificationsSetting(): [boolean, (enabled: boolean) =
   return [enabled, setDesktopNotificationsEnabled];
 }
 
+/** English titles, used when the caller passes no `text` function; the translated ones are `collab.desktopNotifications.titles.*`. */
 const TITLES: Partial<Record<NotificationInfo["kind"], string>> = {
   mention: "You were mentioned",
   reply: "New reply",
@@ -87,6 +89,7 @@ export async function showDesktopNotification(
   notification: NotificationInfo,
   onOpen: (notification: NotificationInfo & { docId: string }) => void,
   environment: DesktopNotificationEnvironment = browserEnvironment(),
+  text: (notification: NotificationInfo) => { title: string; body: string } = (item) => ({ title: TITLES[item.kind] ?? "Libera", body: describeNotification(item) }),
 ): Promise<Notification | null> {
   const Ctor = environment.Notification;
   if (!Ctor || !environment.enabled() || environment.hasFocus()) return null;
@@ -99,7 +102,8 @@ export async function showDesktopNotification(
     }
   }
   if (permission !== "granted") return null;
-  const shown = new Ctor(TITLES[notification.kind] ?? "Libera", { body: describeNotification(notification), tag: notification.id });
+  const { title, body } = text(notification);
+  const shown = new Ctor(title, { body, tag: notification.id });
   shown.onclick = () => {
     environment.focusWindow();
     if (notification.docId) onOpen({ ...notification, docId: notification.docId });
@@ -110,9 +114,15 @@ export async function showDesktopNotification(
 
 /** Mounted once per window (CollabProvider). */
 export function useDesktopNotifications(onOpen: (notification: NotificationInfo & { docId: string }) => void): void {
+  const t = useTranslations("collab.desktopNotifications");
+  const tWording = useTranslations("lib.collab.ui.wording");
   const open = useRef(onOpen);
   useEffect(() => { open.current = onOpen; });
   useHostEvents("notification", (event) => {
-    void showDesktopNotification(event.notification, (target) => open.current(target)).catch(() => undefined);
+    const text = (item: NotificationInfo) => ({
+      title: item.kind in TITLES ? t(`titles.${item.kind}`) : t("titles.default"),
+      body: describeNotification(item, tWording),
+    });
+    void showDesktopNotification(event.notification, (target) => open.current(target), undefined, text).catch(() => undefined);
   });
 }

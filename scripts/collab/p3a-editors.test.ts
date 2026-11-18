@@ -31,6 +31,7 @@ import { TiptapEditorActions } from "../../src/components/libera/tiptap-editor-a
 import type { LatexEditorHandle } from "../../src/components/libera/latex/latex-editor";
 import type { SuggestionRecord } from "../../src/lib/collab/protocol/schema";
 import { waitFor } from "./support/host-helpers";
+import { englishTranslator } from "../editor/intl";
 import { ADA, BOB, flush, mountCodeMirror, recordingApi, sharedTab } from "./support/p3a-harness";
 
 after(() => dom.window.close());
@@ -262,7 +263,7 @@ test("AI Rewrite in LaTeX on a shared tab creates an AI suggestion, and on a reg
     const view = editorRef.current!.view;
     const from = source.indexOf("This"), to = source.indexOf(".\n") + 1;
     const errors: string[] = [];
-    await act(async () => { await runLatexAi(view, "rewrite", { from, to }, "Shorter", (message) => { if (message) errors.push(message); }); });
+    await act(async () => { await runLatexAi(view, "rewrite", { from, to }, "Shorter", (message) => { if (message) errors.push(message); }, undefined, englishTranslator("latex.latexAi")); });
     assert.deepEqual(errors, []);
     assert.deepEqual(fetchStub.requests.map((request) => request.text), ["This sentence is rather long-winded."], "one rewrite request, for the selection");
     assert.equal(view.state.doc.toString(), source, "the text is unchanged until someone accepts");
@@ -282,7 +283,7 @@ test("AI Rewrite in LaTeX on a shared tab creates an AI suggestion, and on a reg
   // The same action on a regular (non-shared) tab: applied hunks, as before.
   const plain = new EditorView({ state: EditorState.create({ doc: source, extensions: [latexReviewExtension()] }), parent: document.body });
   try {
-    await runLatexAi(plain, "rewrite", { from: source.indexOf("This"), to: source.indexOf(".\n") + 1 }, "Shorter", () => {});
+    await runLatexAi(plain, "rewrite", { from: source.indexOf("This"), to: source.indexOf(".\n") + 1 }, "Shorter", () => {}, undefined, englishTranslator("latex.latexAi"));
     assert.equal(plain.state.doc.toString(), "\\section{Intro}\nThis is short.\n", "the result is applied");
     assert.ok(plain.state.field(reviewHunksField).length > 0, "as tracked hunks to accept or reject");
   } finally {

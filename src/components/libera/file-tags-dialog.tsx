@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useMemo, useState, type FormEvent, type KeyboardEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { TagChip, collectAllTags } from "@/components/libera/file-tags";
@@ -13,18 +14,20 @@ type FileTagsDialogProps = {
 };
 
 export function FileTagsDialog({ dialog, fileTags, onClose, onSubmit }: FileTagsDialogProps) {
+  const t = useTranslations("fileTagsDialog");
+  const tCommon = useTranslations("common");
   if (!dialog) return null;
 
   return (
     <ModalDialog
       open
-      title="Edit tags"
-      description={`Tags for ${dialog.file.name}. Search them on the home page with tags:name.`}
+      title={t("title")}
+      description={t("description", { name: dialog.file.name })}
       onClose={onClose}
       footer={
         <>
           <button className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" type="button" onClick={onClose}>
-            Cancel
+            {tCommon("cancel")}
           </button>
           <button
             className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -32,7 +35,7 @@ export function FileTagsDialog({ dialog, fileTags, onClose, onSubmit }: FileTags
             type="submit"
             disabled={dialog.submitting}
           >
-            {dialog.submitting ? "Saving" : "Save tags"}
+            {dialog.submitting ? t("saving") : t("saveTags")}
           </button>
         </>
       }
@@ -54,6 +57,7 @@ function FileTagsForm({ initialTags, allTags, error, onSubmit }: {
   error: string;
   onSubmit: (tags: string[]) => Promise<void>;
 }) {
+  const t = useTranslations("fileTagsDialog");
   const [tags, setTags] = useState(initialTags);
   const [draft, setDraft] = useState("");
   const has = (tag: string) => tags.some((existing) => existing.toLowerCase() === tag.toLowerCase());
@@ -89,7 +93,7 @@ function FileTagsForm({ initialTags, allTags, error, onSubmit }: {
 
   return (
     <form className="space-y-3" id="file-tags-dialog-form" onSubmit={handleSubmit}>
-      <label className="block text-sm font-medium text-foreground" htmlFor="file-tags-input">Tags</label>
+      <label className="block text-sm font-medium text-foreground" htmlFor="file-tags-input">{t("tags")}</label>
       <div className="flex min-h-10 flex-wrap items-center gap-1.5 rounded-xl border border-input px-2 py-1.5 focus-within:border-ring">
         {tags.map((tag) => (
           <TagChip key={tag} tag={tag} onRemove={() => setTags((current) => current.filter((existing) => existing !== tag))} />
@@ -97,7 +101,7 @@ function FileTagsForm({ initialTags, allTags, error, onSubmit }: {
         <input
           id="file-tags-input"
           className="min-w-24 flex-1 bg-transparent px-1 text-sm outline-none"
-          placeholder={tags.length ? "Add another tag" : "Type a tag and press Enter"}
+          placeholder={tags.length ? t("addAnotherTag") : t("typeTagPrompt")}
           value={draft}
           maxLength={40}
           onChange={(event) => setDraft(event.target.value)}
@@ -107,10 +111,10 @@ function FileTagsForm({ initialTags, allTags, error, onSubmit }: {
       </div>
       {suggestions.length ? (
         <div>
-          <p className="mb-1.5 text-xs text-muted-foreground">Existing tags</p>
+          <p className="mb-1.5 text-xs text-muted-foreground">{t("existingTags")}</p>
           <div className="flex flex-wrap gap-1.5">
             {suggestions.map((tag) => (
-              <button key={tag} type="button" className="rounded-full" onClick={() => addTag(tag)} aria-label={`Add tag ${tag}`}>
+              <button key={tag} type="button" className="rounded-full" onClick={() => addTag(tag)} aria-label={t("addTagLabel", { tag })}>
                 <TagChip tag={tag} />
               </button>
             ))}

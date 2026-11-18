@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import type { GalleryContents, GalleryPhoto } from "@/lib/image-generation";
+import { galleryText } from "@/components/libera/gallery-i18n";
 import { galleryPhotoSummary, type GalleryCatalogPage } from "@/lib/gallery-catalog";
 
 /**
@@ -124,7 +125,7 @@ export function refreshGallery() {
     while (page.cursor != null) {
       const next = await apiRequest<GalleryCatalogPage>(`/api/gallery?catalog=1&cursor=${page.cursor}&revision=${encodeURIComponent(page.revision)}`);
       if (next.reset) {
-        if (restarted) throw new Error("The gallery changed while loading. Please try again.");
+        if (restarted) throw new Error(galleryText("galleryStore.galleryChanged"));
         restarted = true; photos.length = 0;
       }
       photos.push(...next.photos); page = next;

@@ -2,10 +2,13 @@
 
 import { Check, type LucideIcon } from "lucide-react";
 import type { CSSProperties } from "react";
+import { useTranslations } from "next-intl";
 import {
   PDF_STROKE_WIDTHS,
   PDF_TEXT_COLORS,
   PDF_TEXT_FONTS,
+  styleChoiceLabel,
+  swatchLabel,
   type AnnotationSwatch,
 } from "@/lib/pdf-annotation-style";
 import type { PdfTextAnnotationFont } from "@/lib/types";
@@ -25,10 +28,13 @@ export function SwatchPicker({
   value: string;
   onChange: (color: string) => void;
 }) {
+  const tLib = useTranslations("lib.pdfAnnotationStyle");
+
   return (
     <div role="radiogroup" aria-label={label} className="annotation-swatches">
       {colors.map((color) => {
         const selected = color.value.toLowerCase() === value.toLowerCase();
+        const name = swatchLabel(tLib, color);
 
         return (
           <button
@@ -36,8 +42,8 @@ export function SwatchPicker({
             type="button"
             role="radio"
             aria-checked={selected}
-            aria-label={color.label}
-            title={color.label}
+            aria-label={name}
+            title={name}
             className="annotation-swatch"
             onClick={() => onChange(color.value)}
           >
@@ -99,16 +105,18 @@ export function StrokeWidthPicker({
   value: number;
   onChange: (width: number) => void;
 }) {
+  const t = useTranslations("annotationStyleControls");
+
   return (
-    <div role="radiogroup" aria-label="Stroke width" className="annotation-choices">
+    <div role="radiogroup" aria-label={t("strokeWidth")} className="annotation-choices">
       {PDF_STROKE_WIDTHS.map((width) => (
         <button
           key={width.value}
           type="button"
           role="radio"
           aria-checked={width.value === value}
-          aria-label={`${width.label} stroke`}
-          title={`${width.label} stroke`}
+          aria-label={t("strokeLabel", { width: width.id })}
+          title={t("strokeLabel", { width: width.id })}
           className="annotation-choice"
           onClick={() => onChange(width.value)}
         >
@@ -138,23 +146,26 @@ export function TextAnnotationStyleControls({
   onFontFamilyChange: (font: PdfTextAnnotationFont) => void;
   onFontSizeChange: (size: number) => void;
 }) {
+  const t = useTranslations("annotationStyleControls");
+  const tLib = useTranslations("lib.pdfAnnotationStyle");
+
   return (
     <div className="annotation-style-group">
       <select
-        aria-label="Note font"
-        title="Note font"
+        aria-label={t("noteFont")}
+        title={t("noteFont")}
         className="annotation-font-select"
         value={fontFamily}
         onChange={(event) => onFontFamilyChange(event.target.value as PdfTextAnnotationFont)}
       >
         {PDF_TEXT_FONTS.map((font) => (
           <option key={font.value} value={font.value} style={{ fontFamily: font.stack }}>
-            {font.label}
+            {styleChoiceLabel(tLib, "textFonts", font.value)}
           </option>
         ))}
       </select>
-      <label className="annotation-size-field" title="Note font size">
-        Size
+      <label className="annotation-size-field" title={t("noteFontSizeTitle")}>
+        {t("size")}
         <input
           min={MIN_TEXT_ANNOTATION_FONT_SIZE}
           max={MAX_TEXT_ANNOTATION_FONT_SIZE}
@@ -163,7 +174,7 @@ export function TextAnnotationStyleControls({
           onChange={(event) => onFontSizeChange(Number(event.target.value))}
         />
       </label>
-      <SwatchPicker colors={PDF_TEXT_COLORS} label="Note color" value={color} onChange={onColorChange} />
+      <SwatchPicker colors={PDF_TEXT_COLORS} label={t("noteColor")} value={color} onChange={onColorChange} />
     </div>
   );
 }

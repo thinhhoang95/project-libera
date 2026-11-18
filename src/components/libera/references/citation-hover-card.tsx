@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useEffect, useLayoutEffect, useState, type ReactNode, type Ref, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
@@ -176,35 +177,37 @@ function fileName(path: string) {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
-function plainReference(entry: ReferenceEntry) {
+function plainReference(entry: ReferenceEntry, etAl: string) {
   const csl = entry.csl;
   const author = firstAuthor(csl);
-  const others = (csl.author?.length ?? 0) > 1 ? " et al." : "";
+  const others = (csl.author?.length ?? 0) > 1 ? ` ${etAl}` : "";
   const year = entryYear(csl);
   return [author ? `${author}${others}` : "", year ? `(${year})` : "", typeof csl.title === "string" ? csl.title : ""].filter(Boolean).join(" ");
 }
 
 function PdfHighlights({ path }: { path: string }) {
+  const t = useTranslations("references.citationHoverCard");
   const count = useAsync(() => fetchHighlightCount(path), path);
   if (count === undefined || count === null) return null;
-  return <span className="citation-card-meta">{count === 1 ? "1 highlight" : `${count} highlights`}</span>;
+  return <span className="citation-card-meta">{t("highlights", { count })}</span>;
 }
 
 function AttachmentRow({ attachment, item }: { attachment: ReferenceAttachment; item: CitationItem }) {
+  const t = useTranslations("references.citationHoverCard");
   const render = useReferenceRender();
   const open = render?.onOpenAttachment;
   if (attachment.kind === "url") {
     if (!/^https?:\/\//i.test(attachment.url)) return null;
     return (
       <li className="citation-card-attachment">
-        <a href={attachment.url} target="_blank" rel="noopener noreferrer" className="citation-card-link">Open link</a>
+        <a href={attachment.url} target="_blank" rel="noopener noreferrer" className="citation-card-link">{t("openLink")}</a>
       </li>
     );
   }
   const locator = attachmentLocator(item);
   const label = attachment.kind === "pdf"
-    ? locator?.page ? `Open PDF at p. ${locator.page}` : "Open PDF"
-    : `Open ${fileName(attachment.path)}`;
+    ? locator?.page ? t("openPdfAtPage", { page: locator.page }) : t("openPdf")
+    : t("openFile", { name: fileName(attachment.path) });
   return (
     <li className="citation-card-attachment">
       <button
@@ -222,10 +225,11 @@ function AttachmentRow({ attachment, item }: { attachment: ReferenceAttachment; 
 }
 
 function CitingDocuments({ entry, notebook }: { entry: ReferenceEntry; notebook: string }) {
+  const t = useTranslations("references.citationHoverCard");
   const byKey = useAsync(() => fetchCitingDocuments(notebook), notebook);
   if (!byKey) return null;
   const paths = new Set([entry.key, ...(entry.aliases ?? [])].flatMap((key) => Array.isArray(byKey[key]) ? byKey[key] : []));
-  return <p className="citation-card-meta">{paths.size === 1 ? "Cited in 1 document" : `Cited in ${paths.size} documents`}</p>;
+  return <p className="citation-card-meta">{t("citedIn", { count: paths.size })}</p>;
 }
 
 function CardMarkdown({ label, markdown }: { label: string; markdown: string }) {
@@ -244,6 +248,8 @@ function reveal(detail: ReferencesRevealDetail) {
 }
 
 function ResolvedItem({ item, entry, document }: { item: CitationItem; entry: ReferenceEntry; document: CitationDocumentValue | null }) {
+  const t = useTranslations("references.citationHoverCard");
+  const tRetraction = useTranslations("lib.references.retraction");
   const render = useReferenceRender();
   const notebook = render?.notebook ?? null;
   const formatted = document?.formatting.result?.bibliographyEntries[entry.id];
@@ -252,16 +258,16 @@ function ResolvedItem({ item, entry, document }: { item: CitationItem; entry: Re
   const attachments = entry.attachments.filter((attachment) => attachment.kind !== "url" || /^https?:\/\//i.test(attachment.url));
   return (
     <section className="citation-card-item">
-      <div className="citation-card-reference">{formatted ? <FormattedCitationHtml html={formatted} /> : plainReference(entry)}</div>
+      <div className="citation-card-reference">{formatted ? <FormattedCitationHtml html={formatted} /> : plainReference(entry, t("etAl"))}</div>
       {retractionBadgeState(entry.retraction) ? (
         <p className="citation-card-retraction">
           <RetractionBadge status={entry.retraction} />
-          <span className="citation-card-meta">{retractionDescription(entry.retraction)}</span>
+          <span className="citation-card-meta">{retractionDescription(entry.retraction, tRetraction)}</span>
         </p>
       ) : null}
-      <p className="citation-card-key">@{entry.key}{item.key !== entry.key ? ` (cited as @${item.key})` : ""}</p>
-      {abstract ? <CardMarkdown label="Abstract" markdown={abstract} /> : null}
-      {notes ? <CardMarkdown label="Notes" markdown={notes} /> : null}
+      <p className="citation-card-key">@{entry.key}{item.key !== entry.key ? ` ${t("citedAs", { key: item.key })}` : ""}</p>
+      {abstract ? <CardMarkdown label={t("abstract")} markdown={abstract} /> : null}
+      {notes ? <CardMarkdown label={t("notes")} markdown={notes} /> : null}
       {attachments.length ? (
         <ul className="citation-card-attachments">
           {attachments.map((attachment, index) => <AttachmentRow key={index} attachment={attachment} item={item} />)}
@@ -270,7 +276,7 @@ function ResolvedItem({ item, entry, document }: { item: CitationItem; entry: Re
       {notebook ? <CitingDocuments entry={entry} notebook={notebook} /> : null}
       {notebook ? (
         <button type="button" className="citation-card-button" onClick={() => reveal({ notebook, entryId: entry.id, key: entry.key })}>
-          Show in References
+          {t("showInReferences")}
         </button>
       ) : null}
     </section>
@@ -278,23 +284,24 @@ function ResolvedItem({ item, entry, document }: { item: CitationItem; entry: Re
 }
 
 function UnresolvedItem({ item }: { item: CitationItem }) {
+  const t = useTranslations("references.citationHoverCard");
   const render = useReferenceRender();
   const notebook = render?.notebook ?? null;
   const library = render?.library ?? null;
   const matches = library ? closeReferenceMatches(item.key, Object.values(library.entries)) : [];
   return (
     <section className="citation-card-item">
-      <p className="citation-card-unresolved">Not in this notebook&apos;s references</p>
+      <p className="citation-card-unresolved">{t("notInNotebook")}</p>
       <p className="citation-card-key">@{item.key}</p>
       {matches.length ? (
         <div>
-          <p className="citation-card-label">Close matches</p>
+          <p className="citation-card-label">{t("closeMatches")}</p>
           <ul className="citation-card-matches">
             {matches.map((entry) => (
               <li key={entry.id}>
                 <button type="button" className="citation-card-match" disabled={!notebook} onClick={() => notebook && reveal({ notebook, entryId: entry.id, key: entry.key })}>
                   <span className="citation-card-match-key">@{entry.key}</span>
-                  <span className="citation-card-match-title">{plainReference(entry)}</span>
+                  <span className="citation-card-match-title">{plainReference(entry, t("etAl"))}</span>
                 </button>
               </li>
             ))}
@@ -307,7 +314,7 @@ function UnresolvedItem({ item }: { item: CitationItem }) {
           className="citation-card-button"
           onClick={() => window.dispatchEvent(new CustomEvent<ReferencesAddRequestDetail>(REFERENCES_ADD_REQUEST_EVENT, { detail: { notebook, query: item.key } }))}
         >
-          Add to library…
+          {t("addToLibrary")}
         </button>
       ) : null}
     </section>
@@ -319,6 +326,7 @@ function UnresolvedItem({ item }: { item: CitationItem }) {
  * them. The CodeMirror Source editor shows them in its own hover tooltip.
  */
 export function CitationCardItems({ citation, document: citationDocument }: { citation: Citation; document: CitationDocumentValue | null }) {
+  const t = useTranslations("references.citationHoverCard");
   const render = useReferenceRender();
   if (!render) return null;
   const seen = new Set<string>();
@@ -333,7 +341,7 @@ export function CitationCardItems({ citation, document: citationDocument }: { ci
       items.push(<UnresolvedItem key={index} item={item} />);
     }
   });
-  if (!items.length) items.push(<p key="loading" className="citation-card-meta">{render.library ? "No cited works." : "Loading references…"}</p>);
+  if (!items.length) items.push(<p key="loading" className="citation-card-meta">{render.library ? t("noCitedWorks") : t("loadingReferences")}</p>);
   return <>{items}</>;
 }
 
@@ -362,6 +370,7 @@ export function CitationHoverCard({
   onPointerEnter?: () => void;
   onPointerLeave?: () => void;
 }) {
+  const t = useTranslations("references.citationHoverCard");
   const render = useReferenceRender();
   const [card, setCard] = useState<HTMLDivElement | null>(null);
   const [position, setPosition] = useState<Position | null>(null);
@@ -434,7 +443,7 @@ export function CitationHoverCard({
       ref={setRefs}
       id={id}
       role="dialog"
-      aria-label="Citation details"
+      aria-label={t("dialogAria")}
       className="citation-hover-card"
       data-pinned={pinned ? "true" : undefined}
       style={position ? { left: position.left, top: position.top } : { left: 0, top: 0, visibility: "hidden" }}

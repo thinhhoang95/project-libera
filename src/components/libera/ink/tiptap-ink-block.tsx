@@ -1,6 +1,7 @@
 "use client";
 
 import type { NodeViewRenderer } from "@tiptap/core";
+import { useTranslations } from "next-intl";
 import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
@@ -28,6 +29,7 @@ import { useInkTools } from "./use-ink-tools";
  */
 
 function InkBlock({ node, editor, selected, documentPath }: NodeViewProps & { documentPath: string }) {
+  const t = useTranslations("ink.tiptapInkBlock");
   const src = String(node.attrs.src ?? "");
   const id = parseInkBlockSource(src)!;
   const ink = useInkDocument({ path: documentPath, chunk: inkBlockChunk(id), frame: inkBlockFrame(), rendering: src });
@@ -96,7 +98,7 @@ function InkBlock({ node, editor, selected, documentPath }: NodeViewProps & { do
       }}
     >
       {active ? <InkToolbar className="libera-ink-block-toolbar" canUndo={ink.canUndo} canRedo={ink.canRedo} onUndo={ink.undo} onRedo={ink.redo} /> : null}
-      <div ref={surfaceBox} className="libera-ink-paper" role="img" aria-label={node.attrs.alt ? String(node.attrs.alt) : "Ink drawing"} style={{ aspectRatio: `${ink.frame.width} / ${ink.frame.height}` }}>
+      <div ref={surfaceBox} className="libera-ink-paper" role="img" aria-label={node.attrs.alt ? String(node.attrs.alt) : t("inkDrawing")} style={{ aspectRatio: `${ink.frame.width} / ${ink.frame.height}` }}>
         {ink.loaded ? (
           <InkSurface
             frame={ink.frame}
@@ -109,7 +111,7 @@ function InkBlock({ node, editor, selected, documentPath }: NodeViewProps & { do
           />
         ) : null}
       </div>
-      {active ? <div className="libera-ink-grip" role="separator" aria-orientation="horizontal" aria-label="Resize ink block" title="Drag to resize" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={endResize} onPointerCancel={endResize} data-ink-ui /> : null}
+      {active ? <div className="libera-ink-grip" role="separator" aria-orientation="horizontal" aria-label={t("resizeInkBlock")} title={t("dragToResize")} onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={endResize} onPointerCancel={endResize} data-ink-ui /> : null}
       {ink.error ? <p className="libera-ink-block-error" role="status">{ink.error}</p> : null}
     </NodeViewWrapper>
   );

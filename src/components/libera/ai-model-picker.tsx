@@ -2,6 +2,7 @@
 
 import { Check, ChevronDown, Settings2 } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useTranslations } from "next-intl";
 import { apiRequest } from "./api-client";
 
 /**
@@ -19,13 +20,7 @@ type TaskChoice = { model: string; reasoningEffort: Effort; base: string };
 
 const STORAGE_KEY = "libera-ai-task-models";
 const CHANGE_EVENT = "libera-ai-task-models-change";
-const EFFORTS: { value: Effort; label: string; title: string }[] = [
-  { value: "low", label: "Low", title: "Low" },
-  { value: "medium", label: "Med", title: "Medium" },
-  { value: "high", label: "High", title: "High" },
-  { value: "xhigh", label: "XHigh", title: "Extra High" },
-  { value: "max", label: "Max", title: "Max" },
-];
+const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
 let choices: Choices | null = null;
 let unstoredChoices: Partial<Record<AiTask, TaskChoice>> = {};
@@ -109,6 +104,7 @@ function modelLabel(model: string) {
 const POPOVER_WIDTH = 248;
 
 export function AiModelPicker({ task, disabled, className = "" }: { task: AiTask; disabled?: boolean; className?: string }) {
+  const t = useTranslations("aiModelPicker");
   useSyncExternalStore(subscribe, () => choiceKey(task), () => "");
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
@@ -152,7 +148,7 @@ export function AiModelPicker({ task, disabled, className = "" }: { task: AiTask
   const fallback = current?.tasks[task];
   const overridden = !!chosen && !!fallback && (chosen.model !== fallback.model || chosen.reasoningEffort !== fallback.reasoningEffort);
   const local = !!chosen && isLocal(chosen.model);
-  const effortTitle = EFFORTS.find((effort) => effort.value === chosen?.reasoningEffort)?.title;
+  const effortTitle = chosen ? t(`effortTitle.${chosen.reasoningEffort}`) : "";
 
   function choose(next: Partial<Pick<TaskChoice, "model" | "reasoningEffort">>) {
     if (!current || !chosen) return;
@@ -188,12 +184,12 @@ export function AiModelPicker({ task, disabled, className = "" }: { task: AiTask
       className="libera-ai-model-trigger inline-flex h-5 max-w-full items-center gap-0.5 rounded text-[11px] leading-none text-muted-foreground hover:text-foreground focus-visible:text-foreground focus-visible:underline disabled:opacity-50"
       aria-haspopup="dialog"
       aria-expanded={open}
-      aria-label={chosen ? `Model for this action: ${chosen.model}${local ? "" : `, ${effortTitle} reasoning`}. Click to change.` : "Model for this action"}
-      title={chosen ? `${chosen.model}${local ? "" : ` · ${effortTitle} reasoning`}` : undefined}
+      aria-label={chosen ? local ? t("triggerLabelLocal", { model: chosen.model }) : t("triggerLabel", { model: chosen.model, effort: effortTitle }) : t("triggerLabelDefault")}
+      title={chosen ? local ? chosen.model : t("triggerTitle", { model: chosen.model, effort: effortTitle }) : undefined}
       disabled={disabled || !chosen}
       onClick={() => { setPosition(null); setOpen((value) => !value); }}
     >
-      <span className="truncate">{chosen ? modelLabel(chosen.model) : "Loading model…"}</span>
+      <span className="truncate">{chosen ? modelLabel(chosen.model) : t("loadingModel")}</span>
       {chosen && !local ? <span className="shrink-0 opacity-70">· {effortTitle}</span> : null}
       {overridden ? <span aria-hidden className="ml-0.5 h-1 w-1 shrink-0 rounded-full bg-primary" /> : null}
       <ChevronDown aria-hidden className="h-3 w-3 shrink-0" />
@@ -206,8 +202,8 @@ export function AiModelPicker({ task, disabled, className = "" }: { task: AiTask
       style={{ left: position?.left ?? 0, top: position?.top ?? 0, width: POPOVER_WIDTH, visibility: position ? "visible" : "hidden" }}
       onKeyDown={keyDown}
     >
-      <p id={titleId} className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">Model</p>
-      <div role="radiogroup" aria-label="Model" className="max-h-48 overflow-y-auto">
+      <p id={titleId} className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">{t("modelHeading")}</p>
+      <div role="radiogroup" aria-label={t("modelHeading")} className="max-h-48 overflow-y-auto">
         {current.pool.map((model) => <button
           key={model}
           type="button"
@@ -219,29 +215,29 @@ export function AiModelPicker({ task, disabled, className = "" }: { task: AiTask
         >
           <Check aria-hidden className={`h-3 w-3 shrink-0 ${model === chosen.model ? "" : "invisible"}`} />
           <span className="min-w-0 flex-1 truncate">{modelLabel(model)}</span>
-          {model === fallback?.model ? <span className="shrink-0 text-[10px] text-muted-foreground">Default</span> : null}
+          {model === fallback?.model ? <span className="shrink-0 text-[10px] text-muted-foreground">{t("defaultBadge")}</span> : null}
         </button>)}
       </div>
       <div className="mt-1 border-t border-border px-2 pb-1.5 pt-1.5">
-        <p className="pb-1 text-[11px] font-medium text-muted-foreground">Reasoning effort</p>
+        <p className="pb-1 text-[11px] font-medium text-muted-foreground">{t("reasoningEffort")}</p>
         {local
-          ? <p className="text-[11px] leading-snug text-muted-foreground">Not sent to local models.</p>
-          : <div role="radiogroup" aria-label="Reasoning effort" className="grid grid-cols-5 gap-0.5 rounded-md bg-muted p-0.5">
+          ? <p className="text-[11px] leading-snug text-muted-foreground">{t("localModelsNote")}</p>
+          : <div role="radiogroup" aria-label={t("reasoningEffort")} className="grid grid-cols-5 gap-0.5 rounded-md bg-muted p-0.5">
             {EFFORTS.map((effort) => <button
-              key={effort.value}
+              key={effort}
               type="button"
               role="radio"
-              aria-checked={effort.value === chosen.reasoningEffort}
-              aria-label={effort.title}
-              title={effort.title}
-              className={`rounded px-0.5 py-0.5 text-[10.5px] font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${effort.value === chosen.reasoningEffort ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => choose({ reasoningEffort: effort.value })}
-            >{effort.label}</button>)}
+              aria-checked={effort === chosen.reasoningEffort}
+              aria-label={t(`effortTitle.${effort}`)}
+              title={t(`effortTitle.${effort}`)}
+              className={`rounded px-0.5 py-0.5 text-[10.5px] font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${effort === chosen.reasoningEffort ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => choose({ reasoningEffort: effort })}
+            >{t(`effortLabel.${effort}`)}</button>)}
           </div>}
       </div>
       {overridden || window.liberaPreferences ? <div className="flex items-center justify-between gap-2 border-t border-border px-1 pt-1">
-        {overridden ? <button type="button" className="rounded px-1 py-1 text-[11px] text-muted-foreground hover:text-foreground focus-visible:underline focus-visible:outline-none" onClick={reset}>Use default</button> : <span />}
-        {window.liberaPreferences ? <button type="button" className="inline-flex items-center gap-1 rounded px-1 py-1 text-[11px] text-muted-foreground hover:text-foreground focus-visible:underline focus-visible:outline-none" onClick={() => { setOpen(false); void window.liberaPreferences?.open("ai"); }}><Settings2 aria-hidden className="h-3 w-3" />Manage models…</button> : null}
+        {overridden ? <button type="button" className="rounded px-1 py-1 text-[11px] text-muted-foreground hover:text-foreground focus-visible:underline focus-visible:outline-none" onClick={reset}>{t("useDefault")}</button> : <span />}
+        {window.liberaPreferences ? <button type="button" className="inline-flex items-center gap-1 rounded px-1 py-1 text-[11px] text-muted-foreground hover:text-foreground focus-visible:underline focus-visible:outline-none" onClick={() => { setOpen(false); void window.liberaPreferences?.open("ai"); }}><Settings2 aria-hidden className="h-3 w-3" />{t("manageModels")}</button> : null}
       </div> : null}
     </div> : null}
   </div>;

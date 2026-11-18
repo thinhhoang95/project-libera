@@ -1,6 +1,7 @@
 // Check messages/<locale>.json files against messages/en.json.
 //   node scripts/i18n/check-messages.mjs            -> check en, then every other locale
 //   node scripts/i18n/check-messages.mjs fr         -> check en and fr only
+//   node scripts/i18n/check-messages.mjs vi --en <snapshot.json>  -> compare against another English file
 // Every message must parse as ICU (with rich-text tags). Each translation must have the same keys as English,
 // the same arguments (name and kind), and the same rich-text tags. Exit code 1 if anything is wrong.
 import fs from "node:fs";
@@ -38,13 +39,15 @@ function load(locale) {
 
 const problems = [];
 const shapes = new Map();
-const en = load("en");
+const enIndex = process.argv.indexOf("--en");
+const enFile = enIndex > 0 ? process.argv[enIndex + 1] : null;
+const en = enFile ? flatten(JSON.parse(fs.readFileSync(path.resolve(enFile), "utf8"))) : load("en");
 for (const [key, value] of en) {
   if (typeof value !== "string") { problems.push(`en ${key}: not a string`); continue; }
   try { shapes.set(key, shape(parse(value))); } catch (e) { problems.push(`en ${key}: ${e.message} — ${JSON.stringify(value)}`); }
 }
 
-const wanted = process.argv.slice(2);
+const wanted = process.argv.slice(2).filter((arg, i, all) => arg !== "--en" && all[i - 1] !== "--en");
 const locales = wanted.length ? wanted : fs.readdirSync(dir).filter((f) => /^[a-z]{2}(-[A-Z]{2})?\.json$/.test(f) && f !== "en.json").map((f) => f.slice(0, -5));
 const summary = { en: en.size };
 for (const locale of locales) {

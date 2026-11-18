@@ -20,6 +20,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
@@ -29,8 +30,8 @@ import {
   entryVenue,
   fileBaseName,
   highlightSegments,
-  READING_LABELS,
-  STATUS_LABELS,
+  readingLabel,
+  statusLabel,
 } from "@/components/libera/references/reference-display";
 import { popupReferenceMenu, type ReferenceMenuItem } from "./native-reference-menu";
 import { RetractionBadge } from "@/components/libera/references/retraction-badge";
@@ -51,11 +52,14 @@ export const FIND_IN_FILE_UNAVAILABLE = "The open Markdown or LaTeX file does no
 export type CiteSyntax = "markdown" | "latex";
 export type { LatexCiteCommand };
 
+/** Translates `references.referenceRow` messages (`useTranslations("references.referenceRow")`); English without it. */
+export type RowTranslator = (key: string, values?: Record<string, string | number>) => string;
+
 /** The Cite at cursor actions of a syntax: one in Markdown, `\cite` and `\citep` in LaTeX. */
-export function citeActions(syntax: CiteSyntax): { command?: LatexCiteCommand; label: string }[] {
+export function citeActions(syntax: CiteSyntax, t?: RowTranslator): { command?: LatexCiteCommand; label: string }[] {
   return syntax === "latex"
-    ? [{ command: "cite", label: "\\cite at cursor" }, { command: "citep", label: "\\citep at cursor" }]
-    : [{ label: "Cite at cursor" }];
+    ? [{ command: "cite", label: t ? t("latexCiteAtCursor", { command: "\\cite" }) : "\\cite at cursor" }, { command: "citep", label: t ? t("latexCiteAtCursor", { command: "\\citep" }) : "\\citep at cursor" }]
+    : [{ label: t ? t("citeAtCursor") : "Cite at cursor" }];
 }
 
 const hoverButton = "libera-sidebar-icon-button inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md disabled:opacity-40";
@@ -72,18 +76,21 @@ export function Highlighted({ text, words }: { text: string; words: string[] }) 
 }
 
 export function StatusBadge({ status }: { status: ReferenceStatus | "duplicate" | "missing" }) {
+  const t = useTranslations("references.referenceRow");
+  const tDisplay = useTranslations("references.referenceDisplay");
   if (status === "confirmed") return null;
-  const label = status === "duplicate" ? "Duplicate" : status === "missing" ? "Missing" : STATUS_LABELS[status];
+  const label = status === "duplicate" ? t("duplicate") : status === "missing" ? t("missing") : statusLabel(status, tDisplay);
   return <span className="libera-reference-badge" data-status={status}>{label}</span>;
 }
 
 export function AttachmentIcons({ entry }: { entry: ReferenceEntry }) {
+  const t = useTranslations("references.referenceRow");
   const kinds = new Set(entry.attachments.map((attachment) => attachment.kind));
   return (
     <>
-      {kinds.has("pdf") ? <span title="PDF attached" aria-label="PDF attached" className="libera-reference-attachment" data-kind="pdf"><FileType2 aria-hidden className="h-3.5 w-3.5" /></span> : null}
-      {kinds.has("markdown") ? <span title="Markdown note attached" aria-label="Markdown note attached" className="libera-reference-attachment" data-kind="markdown"><FileText aria-hidden className="h-3.5 w-3.5" /></span> : null}
-      {kinds.has("url") ? <span title="Web link attached" aria-label="Web link attached" className="libera-reference-attachment" data-kind="url"><Globe aria-hidden className="h-3.5 w-3.5" /></span> : null}
+      {kinds.has("pdf") ? <span title={t("pdfAttached")} aria-label={t("pdfAttached")} className="libera-reference-attachment" data-kind="pdf"><FileType2 aria-hidden className="h-3.5 w-3.5" /></span> : null}
+      {kinds.has("markdown") ? <span title={t("markdownNoteAttached")} aria-label={t("markdownNoteAttached")} className="libera-reference-attachment" data-kind="markdown"><FileText aria-hidden className="h-3.5 w-3.5" /></span> : null}
+      {kinds.has("url") ? <span title={t("webLinkAttached")} aria-label={t("webLinkAttached")} className="libera-reference-attachment" data-kind="url"><Globe aria-hidden className="h-3.5 w-3.5" /></span> : null}
     </>
   );
 }
@@ -112,8 +119,9 @@ type RowProps = {
 const ROW_TAGS = 2;
 
 export function ReadingBadge({ entry }: { entry: Pick<ReferenceEntry, "reading"> }) {
+  const tDisplay = useTranslations("references.referenceDisplay");
   if (!entry.reading) return null;
-  const label = READING_LABELS[entry.reading];
+  const label = readingLabel(entry.reading, tDisplay);
   return (
     <span className="libera-reference-reading shrink-0" data-reading={entry.reading} title={label} aria-label={label}>
       {entry.reading === "to-read" ? <BookOpen aria-hidden className="h-3.5 w-3.5" /> : <BookCheck aria-hidden className="h-3.5 w-3.5" />}
@@ -122,10 +130,13 @@ export function ReadingBadge({ entry }: { entry: Pick<ReferenceEntry, "reading">
 }
 
 export function ReferenceRow({ entry, words, selected, inSelection, citedByActive, citingCount, duplicate, canCite, citeSyntax = "markdown", top, onOpen, onTag, onCite, onOpenAttachment, onMenu }: RowProps) {
+  const t = useTranslations("references.referenceRow");
+  const tDisplay = useTranslations("references.referenceDisplay");
   const pdf = entry.attachments.find((attachment) => attachment.kind === "pdf");
   const tags = entry.tags ?? [];
   const venue = entryVenue(entry.csl);
-  const countLabel = `Cited by ${citingCount} document${citingCount === 1 ? "" : "s"}`;
+  const title = entryTitle(entry, tDisplay);
+  const countLabel = t("citedByCount", { count: citingCount });
   return (
     <div
       id={`reference-row-${entry.id}`}
@@ -148,10 +159,10 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate text-[12px] font-semibold">
-          <Highlighted text={authorYearLabel(entry.csl)} words={words} />
+          <Highlighted text={authorYearLabel(entry.csl, tDisplay)} words={words} />
         </span>
         {citedByActive ? (
-          <span className="shrink-0 text-muted-foreground" title="Cited in the open document" aria-label="Cited in the open document">
+          <span className="shrink-0 text-muted-foreground" title={t("citedInOpenDocument")} aria-label={t("citedInOpenDocument")}>
             <Link2 aria-hidden className="h-3.5 w-3.5" />
           </span>
         ) : null}
@@ -161,8 +172,8 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
         {duplicate ? <StatusBadge status="duplicate" /> : null}
         {citingCount ? <span className="libera-backlink-count" title={countLabel} aria-label={countLabel}><Quote aria-hidden className="h-3 w-3" />{citingCount}</span> : null}
       </div>
-      <div className="truncate text-[12px] leading-5" title={entryTitle(entry)}>
-        <Highlighted text={entryTitle(entry)} words={words} />
+      <div className="truncate text-[12px] leading-5" title={title}>
+        <Highlighted text={title} words={words} />
       </div>
       <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
         <span className="min-w-12 shrink-[3] truncate">
@@ -170,7 +181,7 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
           <span className="font-mono"><Highlighted text={entry.key} words={words} /></span>
         </span>
         {tags.slice(0, ROW_TAGS).map((tag) => onTag ? (
-          <button key={tag} type="button" className="libera-reference-tag-link" title={`Show references tagged ${tag}`} onClick={(event) => { event.stopPropagation(); onTag(tag); }}>
+          <button key={tag} type="button" className="libera-reference-tag-link" title={t("showTaggedTitle", { tag })} onClick={(event) => { event.stopPropagation(); onTag(tag); }}>
             #<Highlighted text={tag} words={words} />
           </button>
         ) : <span key={tag} className="libera-reference-tag-link">#{tag}</span>)}
@@ -179,13 +190,13 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
           <AttachmentIcons entry={entry} />
         </span>
         <span className="libera-reference-row-actions ml-auto hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex">
-          {citeSyntax === "latex" ? citeActions("latex").map(({ command, label }) => (
+          {citeSyntax === "latex" ? citeActions("latex", t).map(({ command }) => (
             <button
               key={command}
               type="button"
               className={`${hoverButton} w-auto px-1 font-mono text-[10.5px]`}
-              aria-label={`${label.replace(" at cursor", "")} ${entry.key} at cursor`}
-              title={canCite ? `${label} (${command === "citep" ? "⌘/Ctrl+Shift+Enter" : "⌘/Ctrl+Enter"})` : CITE_UNAVAILABLE}
+              aria-label={t("latexCiteKeyAria", { command: `\\${command}`, key: entry.key })}
+              title={canCite ? t("latexCiteTitle", { command: `\\${command}`, shortcut: command === "citep" ? "⌘/Ctrl+Shift+Enter" : "⌘/Ctrl+Enter" }) : t("citeUnavailable")}
               disabled={!canCite}
               onClick={(event) => { event.stopPropagation(); onCite(command); }}
             >
@@ -195,8 +206,8 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
             <button
               type="button"
               className={hoverButton}
-              aria-label={`Cite ${entry.key} at cursor`}
-              title={canCite ? "Cite at cursor (⌘/Ctrl+Enter)" : CITE_UNAVAILABLE}
+              aria-label={t("citeKeyAria", { key: entry.key })}
+              title={canCite ? t("citeTitle") : t("citeUnavailable")}
               disabled={!canCite}
               onClick={(event) => { event.stopPropagation(); onCite(); }}
             >
@@ -204,15 +215,15 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
             </button>
           )}
           {pdf && pdf.kind === "pdf" ? (
-            <button type="button" className={hoverButton} aria-label={`Open PDF of ${entry.key}`} title={`Open ${fileBaseName(pdf.path)}`} onClick={(event) => { event.stopPropagation(); onOpenAttachment(pdf.path); }}>
+            <button type="button" className={hoverButton} aria-label={t("openPdfOf", { key: entry.key })} title={t("openFileTitle", { name: fileBaseName(pdf.path) })} onClick={(event) => { event.stopPropagation(); onOpenAttachment(pdf.path); }}>
               <FileType2 aria-hidden className="h-3.5 w-3.5" />
             </button>
           ) : null}
           <button
             type="button"
             className={hoverButton}
-            aria-label={`Actions for ${entry.key}`}
-            title="More actions"
+            aria-label={t("actionsFor", { key: entry.key })}
+            title={t("moreActions")}
             onClick={(event: ReactMouseEvent) => {
               event.stopPropagation();
               const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -229,6 +240,7 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
 
 /** A key the open document cites that no entry has, with a way to add it. */
 export function MissingReferenceRow({ citationKey, onAdd }: { citationKey: string; onAdd: () => void }) {
+  const t = useTranslations("references.referenceRow");
   return (
     <div role="option" aria-selected={false} className="libera-reference-row libera-reference-missing" data-missing-key={citationKey} style={{ height: REFERENCE_ROW_HEIGHT }}>
       <div className="flex min-w-0 items-center gap-1.5">
@@ -236,10 +248,10 @@ export function MissingReferenceRow({ citationKey, onAdd }: { citationKey: strin
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] font-semibold text-destructive">@{citationKey}</span>
         <StatusBadge status="missing" />
       </div>
-      <div className="truncate text-[12px] leading-5 text-muted-foreground">Cited in this document but not in the library</div>
+      <div className="truncate text-[12px] leading-5 text-muted-foreground">{t("notInLibrary")}</div>
       <div className="flex items-center">
         <button type="button" className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline" onClick={onAdd}>
-          <Plus aria-hidden className="h-3 w-3" /> Add to library…
+          <Plus aria-hidden className="h-3 w-3" /> {t("addToLibrary")}
         </button>
       </div>
     </div>
@@ -251,9 +263,9 @@ export type ReferenceMenuAction =
   | "to-read" | "read" | "reresolve" | "edit" | "delete";
 
 /** Menu labels of the reading actions: they toggle the flag. */
-export function readingActionLabel(entry: Pick<ReferenceEntry, "reading">, action: "to-read" | "read") {
-  if (action === "to-read") return entry.reading === "to-read" ? "Remove from To read" : "Mark as To read";
-  return entry.reading === "read" ? "Mark as unread" : "Mark as read";
+export function readingActionLabel(entry: Pick<ReferenceEntry, "reading">, action: "to-read" | "read", t?: RowTranslator) {
+  if (action === "to-read") return entry.reading === "to-read" ? (t ? t("removeFromToRead") : "Remove from To read") : (t ? t("markAsToRead") : "Mark as To read");
+  return entry.reading === "read" ? (t ? t("markAsUnread") : "Mark as unread") : (t ? t("markAsRead") : "Mark as read");
 }
 
 type MenuProps = {
@@ -267,6 +279,8 @@ type MenuProps = {
   onAction: (action: ReferenceMenuAction) => void;
   onOpenPath: (path: string) => void;
   onClose: () => void;
+  /** For the native menu, which cannot call hooks: `useTranslations("references.referenceRow")` from the caller. */
+  t?: RowTranslator;
 };
 
 export function openNativeReferenceActionsMenu({ point, ...props }: Omit<MenuProps, "onClose">) {
@@ -274,26 +288,27 @@ export function openNativeReferenceActionsMenu({ point, ...props }: Omit<MenuPro
 }
 
 /** A reference's actions, for its row's native menu and the macOS References menu. */
-export function referenceActionsMenuItems({ entry, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath }: Omit<MenuProps, "onClose" | "point">): ReferenceMenuItem[] {
+export function referenceActionsMenuItems({ entry, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath, t }: Omit<MenuProps, "onClose" | "point">): ReferenceMenuItem[] {
+  const tr = (key: string, english: string, values?: Record<string, string | number>) => t ? t(key, values) : english;
   const action = (id: ReferenceMenuAction, label: string, enabled = true): ReferenceMenuItem => ({ id, label, enabled, onSelect: () => onAction(id) });
   return [
-    ...citeActions(citeSyntax).map(({ command, label }) => action(command === "citep" ? "citep" : "cite", label, canCite)),
-    action("find-in-file", FIND_IN_FILE_LABEL, canFind),
-    ...(entry.attachments.some((attachment) => attachment.kind === "pdf") ? [action("open-pdf", "Open PDF")] : []),
-    ...(entry.attachments.some((attachment) => attachment.kind === "markdown") ? [action("open-note", "Open note")] : []),
-    action("copy-key", "Copy key"),
-    action("copy-citation", `Copy as [@${entry.key}]`),
-    action("copy-latex", `Copy as \\cite{${entry.key}}`),
-    action("copy-formatted", "Copy formatted reference"),
+    ...citeActions(citeSyntax, t).map(({ command, label }) => action(command === "citep" ? "citep" : "cite", label, canCite)),
+    action("find-in-file", tr("findInFile", FIND_IN_FILE_LABEL), canFind),
+    ...(entry.attachments.some((attachment) => attachment.kind === "pdf") ? [action("open-pdf", tr("openPdf", "Open PDF"))] : []),
+    ...(entry.attachments.some((attachment) => attachment.kind === "markdown") ? [action("open-note", tr("openNote", "Open note"))] : []),
+    action("copy-key", tr("copyKey", "Copy key")),
+    action("copy-citation", tr("copyAs", `Copy as [@${entry.key}]`, { citation: `[@${entry.key}]` })),
+    action("copy-latex", tr("copyAs", `Copy as \\cite{${entry.key}}`, { citation: `\\cite{${entry.key}}` })),
+    action("copy-formatted", tr("copyFormatted", "Copy formatted reference")),
     { type: "separator" },
-    action("to-read", readingActionLabel(entry, "to-read")),
-    action("read", readingActionLabel(entry, "read")),
-    { id: "citing", label: citing.length ? `Citing documents (${citing.length})` : "Not cited yet", enabled: citing.length > 0,
+    action("to-read", readingActionLabel(entry, "to-read", t)),
+    action("read", readingActionLabel(entry, "read", t)),
+    { id: "citing", label: citing.length ? tr("citingDocumentsCount", `Citing documents (${citing.length})`, { count: citing.length }) : tr("notCitedYet", "Not cited yet"), enabled: citing.length > 0,
       ...(citing.length ? { submenu: citing.map((path, index) => ({ id: `citing:${index}`, label: fileBaseName(path), onSelect: () => onOpenPath(path) })) } : {}) },
     { type: "separator" },
-    action("reresolve", "Re-resolve…"),
-    action("edit", "Edit…"),
-    action("delete", "Delete…"),
+    action("reresolve", tr("reresolveMenu", "Re-resolve…")),
+    action("edit", tr("editMenu", "Edit…")),
+    action("delete", tr("deleteMenu", "Delete…")),
   ];
 }
 
@@ -315,6 +330,7 @@ function MenuItem({ icon, label, onClick, disabled, title, tone }: { icon: React
 
 /** The row's actions as a popover menu (hover button or right-click). */
 export function ReferenceActionsMenu({ entry, point, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath, onClose }: MenuProps) {
+  const t = useTranslations("references.referenceRow");
   const menuRef = useRef<HTMLDivElement>(null);
   const [showCiting, setShowCiting] = useState(false);
   const pdf = entry.attachments.find((attachment) => attachment.kind === "pdf");
@@ -346,28 +362,28 @@ export function ReferenceActionsMenu({ entry, point, canCite, citeSyntax = "mark
   if (typeof document === "undefined") return null;
   // Portal to body: the panel clips/contains fixed descendants, which cut the menu off at the panel edge.
   return createPortal(
-    <div ref={menuRef} role="menu" aria-label={`Actions for ${entry.key}`} className="fixed z-50 w-56 rounded-lg border border-border bg-card p-1 shadow-lg" style={{ left, top }}>
-      {citeActions(citeSyntax).map(({ command, label }) => (
-        <MenuItem key={label} icon={<Quote aria-hidden className="h-4 w-4" />} label={label} disabled={!canCite} title={canCite ? undefined : CITE_UNAVAILABLE} onClick={act(command === "citep" ? "citep" : "cite")} />
+    <div ref={menuRef} role="menu" aria-label={t("actionsFor", { key: entry.key })} className="fixed z-50 w-56 rounded-lg border border-border bg-card p-1 shadow-lg" style={{ left, top }}>
+      {citeActions(citeSyntax, t).map(({ command, label }) => (
+        <MenuItem key={label} icon={<Quote aria-hidden className="h-4 w-4" />} label={label} disabled={!canCite} title={canCite ? undefined : t("citeUnavailable")} onClick={act(command === "citep" ? "citep" : "cite")} />
       ))}
-      <MenuItem icon={<Search aria-hidden className="h-4 w-4" />} label={FIND_IN_FILE_LABEL} disabled={!canFind} title={canFind ? undefined : FIND_IN_FILE_UNAVAILABLE} onClick={act("find-in-file")} />
-      {pdf ? <MenuItem icon={<FileType2 aria-hidden className="h-4 w-4" />} label="Open PDF" onClick={act("open-pdf")} /> : null}
-      {note ? <MenuItem icon={<NotebookPen aria-hidden className="h-4 w-4" />} label="Open note" onClick={act("open-note")} /> : null}
-      <MenuItem icon={<Copy aria-hidden className="h-4 w-4" />} label="Copy key" onClick={act("copy-key")} />
-      <MenuItem icon={<Quote aria-hidden className="h-4 w-4" />} label={`Copy as [@${entry.key}]`} onClick={act("copy-citation")} />
-      <MenuItem icon={<Braces aria-hidden className="h-4 w-4" />} label={`Copy as \\cite{${entry.key}}`} onClick={act("copy-latex")} />
-      <MenuItem icon={<ScrollText aria-hidden className="h-4 w-4" />} label="Copy formatted reference" onClick={act("copy-formatted")} />
+      <MenuItem icon={<Search aria-hidden className="h-4 w-4" />} label={t("findInFile")} disabled={!canFind} title={canFind ? undefined : t("findInFileUnavailable")} onClick={act("find-in-file")} />
+      {pdf ? <MenuItem icon={<FileType2 aria-hidden className="h-4 w-4" />} label={t("openPdf")} onClick={act("open-pdf")} /> : null}
+      {note ? <MenuItem icon={<NotebookPen aria-hidden className="h-4 w-4" />} label={t("openNote")} onClick={act("open-note")} /> : null}
+      <MenuItem icon={<Copy aria-hidden className="h-4 w-4" />} label={t("copyKey")} onClick={act("copy-key")} />
+      <MenuItem icon={<Quote aria-hidden className="h-4 w-4" />} label={t("copyAs", { citation: `[@${entry.key}]` })} onClick={act("copy-citation")} />
+      <MenuItem icon={<Braces aria-hidden className="h-4 w-4" />} label={t("copyAs", { citation: `\\cite{${entry.key}}` })} onClick={act("copy-latex")} />
+      <MenuItem icon={<ScrollText aria-hidden className="h-4 w-4" />} label={t("copyFormatted")} onClick={act("copy-formatted")} />
       <div className="my-1 h-px bg-border" />
-      <MenuItem icon={<BookOpen aria-hidden className="h-4 w-4" />} label={readingActionLabel(entry, "to-read")} onClick={act("to-read")} />
-      <MenuItem icon={<BookCheck aria-hidden className="h-4 w-4" />} label={readingActionLabel(entry, "read")} onClick={act("read")} />
+      <MenuItem icon={<BookOpen aria-hidden className="h-4 w-4" />} label={readingActionLabel(entry, "to-read", t)} onClick={act("to-read")} />
+      <MenuItem icon={<BookCheck aria-hidden className="h-4 w-4" />} label={readingActionLabel(entry, "read", t)} onClick={act("read")} />
       <MenuItem
         icon={<Link2 aria-hidden className="h-4 w-4" />}
-        label={citing.length ? `Citing documents (${citing.length})` : "Not cited yet"}
+        label={citing.length ? t("citingDocumentsCount", { count: citing.length }) : t("notCitedYet")}
         disabled={!citing.length}
         onClick={() => setShowCiting((current) => !current)}
       />
       {showCiting ? (
-        <ul className="max-h-48 overflow-auto py-1 pl-6" aria-label="Citing documents">
+        <ul className="max-h-48 overflow-auto py-1 pl-6" aria-label={t("citingDocumentsList")}>
           {citing.map((path) => (
             <li key={path}>
               <button type="button" role="menuitem" className="block w-full truncate rounded px-2 py-1 text-left text-[12px] hover:bg-muted" title={path} onClick={() => { onClose(); onOpenPath(path); }}>
@@ -378,9 +394,9 @@ export function ReferenceActionsMenu({ entry, point, canCite, citeSyntax = "mark
         </ul>
       ) : null}
       <div className="my-1 h-px bg-border" />
-      <MenuItem icon={<RotateCw aria-hidden className="h-4 w-4" />} label="Re-resolve…" onClick={act("reresolve")} />
-      <MenuItem icon={<Pencil aria-hidden className="h-4 w-4" />} label="Edit…" onClick={act("edit")} />
-      <MenuItem icon={<Trash2 aria-hidden className="h-4 w-4" />} label="Delete…" tone="destructive" onClick={act("delete")} />
+      <MenuItem icon={<RotateCw aria-hidden className="h-4 w-4" />} label={t("reresolveMenu")} onClick={act("reresolve")} />
+      <MenuItem icon={<Pencil aria-hidden className="h-4 w-4" />} label={t("editMenu")} onClick={act("edit")} />
+      <MenuItem icon={<Trash2 aria-hidden className="h-4 w-4" />} label={t("deleteMenu")} tone="destructive" onClick={act("delete")} />
     </div>,
     document.body,
   );

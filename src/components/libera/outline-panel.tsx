@@ -12,6 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { createPortal } from "react-dom";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
@@ -389,6 +390,7 @@ export function OutlinePanel({
   mathMarkers,
 }: OutlinePanelProps) {
   const { preferences: { outlineExpansionLevel }, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
+  const t = useTranslations("outlinePanel");
   const [view, setView] = useState<OutlinePanelView>(readStoredOutlineView);
 
   function chooseView(next: OutlinePanelView) {
@@ -424,11 +426,11 @@ export function OutlinePanel({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex min-h-[52px] items-center justify-between gap-2 px-3 py-3">
         <h2 className="text-sm font-semibold text-foreground">
-          Outlines
+          {t("outlines")}
         </h2>
-        <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label="Outline views">
-          {viewTab("outline", "Outline")}
-          {viewTab("definitions", "Definitions")}
+        <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label={t("outlineViews")}>
+          {viewTab("outline", t("outlineTab"))}
+          {viewTab("definitions", t("definitionsTab"))}
         </div>
       </div>
       <div id="outline-view-panel" role="tabpanel" aria-labelledby={`outline-view-tab-${view}`} className="min-h-0 flex-1 space-y-4 overflow-auto px-3 py-3">
@@ -485,9 +487,10 @@ export function OutlinePanel({
 }
 
 function EmptyOutline() {
+  const t = useTranslations("outlinePanel");
   return (
     <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-      Open a Markdown, LaTeX or PDF file to see its outline.
+      {t("emptyState")}
     </p>
   );
 }
@@ -510,6 +513,7 @@ function MarkdownOutline({
   ) => Promise<void>;
   onSetDraft: (value: string) => void;
 }) {
+  const t = useTranslations("outlinePanel");
   const outlineState = useMarkdownOutline(activeTab);
   const headings = outlineState.headings;
   const [query, setQuery] = useState("");
@@ -790,9 +794,9 @@ function MarkdownOutline({
           className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
         />
         <input
-          aria-label="Search Markdown headings"
+          aria-label={t("searchHeadingsLabel")}
           className="libera-panel-field libera-panel-field--search w-full"
-          placeholder="Search headings"
+          placeholder={t("searchHeadings")}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
@@ -807,7 +811,7 @@ function MarkdownOutline({
         />
         {query ? (
           <button
-            aria-label="Clear heading search"
+            aria-label={t("clearHeadingSearch")}
             className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
             type="button"
             onClick={() => setQuery("")}
@@ -818,10 +822,10 @@ function MarkdownOutline({
         ) : null}
       </div>
       <label className="mb-3 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
-        <span>Expand to</span>
+        <span>{t("expandTo")}</span>
         <span className="relative">
           <select
-            aria-label="Outline expansion level"
+            aria-label={t("expansionLevel")}
             className="libera-panel-field libera-panel-field--compact pl-3 pr-8"
             value={expansionLevel}
             onChange={(event) => {
@@ -830,21 +834,21 @@ function MarkdownOutline({
             }}
           >
             {[1, 2, 3, 4, 5, 6].map((level) => (
-              <option key={level} value={level}>Level {level}</option>
+              <option key={level} value={level}>{t("level", { level })}</option>
             ))}
           </select>
         </span>
       </label>
       <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         <ListTree aria-hidden className="h-3.5 w-3.5" />
-        <span className="min-w-0 flex-1 truncate">Headings</span>
+        <span className="min-w-0 flex-1 truncate">{t("headings")}</span>
       </div>
       {!activeTab ? (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          Open a Markdown file to see headings.
+          {t("openMarkdownForHeadings")}
         </p>
       ) : filteredHeadings.length ? (
-        <div className="space-y-0.5" role="tree" aria-label={`Headings of ${activeTab.file.name}`}>
+        <div className="space-y-0.5" role="tree" aria-label={t("headingsOf", { name: activeTab.file.name })}>
           {filteredHeadings.map(({ heading, hasChildren, expanded }) => {
             const activeDropPlacement =
               dropTarget?.headingId === heading.id ? dropTarget.placement : null;
@@ -863,7 +867,7 @@ function MarkdownOutline({
               >
                 {hasChildren ? (
                   <button
-                    aria-label={`${expanded ? "Collapse" : "Expand"} ${heading.text}`}
+                    aria-label={expanded ? t("collapseHeading", { heading: heading.text }) : t("expandHeading", { heading: heading.text })}
                     aria-expanded={expanded}
                     className="libera-sidebar-icon-button mt-1 inline-flex h-6 w-5 shrink-0 items-center justify-center rounded"
                     type="button"
@@ -911,7 +915,7 @@ function MarkdownOutline({
                   ) : null}
                   <span className={`min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] ${heading.level === 1 ? "font-medium" : ""}`}>{heading.text}</span>
                   <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
-                    L. {heading.line}
+                    {t("lineLabel", { line: heading.line })}
                   </span>
                 </SidebarNameTooltipButton>
               </div>
@@ -920,7 +924,7 @@ function MarkdownOutline({
         </div>
       ) : (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          {headings.length ? "No matching headings." : "No headings in this Markdown file."}
+          {headings.length ? t("noMatchingHeadings") : t("noHeadings")}
         </p>
       )}
       {contextMenu ? createPortal(
@@ -937,7 +941,7 @@ function MarkdownOutline({
             onClick={() => deleteHeadingSection(contextMenu.headingId)}
           >
             <Trash2 aria-hidden className="h-4 w-4" />
-            Delete Section
+            {t("deleteSection")}
           </button>
         </div>,
         document.body,

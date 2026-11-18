@@ -1,6 +1,7 @@
 "use client";
 
 import { Play, TriangleAlert } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
 import { useContentTrust, type MarkdownCodeBlock } from "@/components/markdown-renderer";
@@ -85,6 +86,7 @@ function ChartDataTable({ table, title }: { table: SlideChartTable; title?: stri
  * in the slide's theme. Data only, so it renders in every notebook.
  */
 export function SlideChart({ documentPath, fontFamily, mode, source, theme }: SlideBlockProps) {
+  const t = useTranslations("slideLiveBlocks");
   const parsed = useMemo(() => parseSlideChartSpec(source), [source]);
   const spec = "spec" in parsed ? parsed.spec : null;
   const inlineTable = useMemo(() => (spec ? slideChartInlineTable(spec) : null), [spec]);
@@ -93,7 +95,7 @@ export function SlideChart({ documentPath, fontFamily, mode, source, theme }: Sl
   const fileKey = dataFile && documentPath ? resolveDeckRelativePath(documentPath, dataFile) : null;
   const fileState = fileData && fileData.key === fileKey ? fileData : null;
   const table = dataFile ? fileState?.table ?? null : inlineTable;
-  const error = "error" in parsed ? parsed.error : dataFile && !documentPath ? "Save the deck to read chart data from a file." : fileState?.error;
+  const error = "error" in parsed ? parsed.error : dataFile && !documentPath ? t("saveDeckToRead") : fileState?.error;
   const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -103,7 +105,7 @@ export function SlideChart({ documentPath, fontFamily, mode, source, theme }: Sl
 
     fetch(`/api/files/raw/${encodeFilePath(fileKey)}`)
       .then(async (response) => {
-        if (!response.ok) throw new Error(`Could not read ${dataFile} (${response.status}).`);
+        if (!response.ok) throw new Error(t("couldNotReadFile", { file: dataFile ?? "", status: response.status }));
         return parseSlideChartCsv(await response.text());
       })
       .then((nextTable) => {
@@ -116,7 +118,7 @@ export function SlideChart({ documentPath, fontFamily, mode, source, theme }: Sl
     return () => {
       canceled = true;
     };
-  }, [dataFile, fileKey]);
+  }, [dataFile, fileKey, t]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -159,7 +161,7 @@ export function SlideChart({ documentPath, fontFamily, mode, source, theme }: Sl
       style={{ height: spec?.height }}
       {...{ [SLIDE_BLOCK_PENDING_ATTRIBUTE]: "true" }}
     >
-      <canvas ref={canvasRef} role="img" aria-label={spec?.title ?? "Chart"} />
+      <canvas ref={canvasRef} role="img" aria-label={spec?.title ?? t("chartDefault")} />
       {table ? <ChartDataTable table={table} title={spec?.title} /> : null}
     </div>
   );
@@ -397,6 +399,7 @@ let frameSequence = 0;
  * asks, and never with network access.
  */
 export function SlideLiveHtml({ context = "slide", documentPath, fontFamily, meta, mode, source, theme }: SlideBlockProps & { meta?: string }) {
+  const t = useTranslations("slideLiveBlocks");
   const trust = useContentTrust(documentPath);
   const [runShared, setRunShared] = useState(false);
   const [frameId] = useState(() => `slide-frame-${++frameSequence}`);
@@ -512,11 +515,11 @@ export function SlideLiveHtml({ context = "slide", documentPath, fontFamily, met
   if (!allowed) {
     return (
       <div className="markdown-slide-live-gate">
-        <p>{`This ${context === "note" ? "block" : "slide"} has interactive HTML from a shared notebook.`}</p>
+        <p>{t("gate", { context })}</p>
         {mode === "export" ? null : (
           <button type="button" onClick={() => setRunShared(true)}>
             <Play aria-hidden className="h-3.5 w-3.5" />
-            Run it (without network access)
+            {t("runIt")}
           </button>
         )}
       </div>
@@ -544,9 +547,9 @@ export function SlideLiveHtml({ context = "slide", documentPath, fontFamily, met
         srcDoc={srcDoc}
         onLoad={(event) => event.currentTarget.contentWindow?.postMessage("libera:report", "*")}
         style={{ height: fixedHeight ?? height ?? 160 }}
-        title={context === "note" ? "Interactive content" : "Interactive slide content"}
+        title={context === "note" ? t("interactiveContent") : t("interactiveSlideContent")}
       />
-      {scriptError?.doc === srcDoc && mode !== "export" ? <BlockMessage>{`Script error: ${scriptError.message}`}</BlockMessage> : null}
+      {scriptError?.doc === srcDoc && mode !== "export" ? <BlockMessage>{t("scriptError", { message: scriptError.message })}</BlockMessage> : null}
     </div>
   );
 }

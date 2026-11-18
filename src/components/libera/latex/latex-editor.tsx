@@ -11,6 +11,8 @@ import {
   EditorView, crosshairCursor, drawSelection, dropCursor, highlightActiveLine, highlightActiveLineGutter,
   highlightSpecialChars, keymap, lineNumbers, rectangularSelection,
 } from "@codemirror/view";
+import { useTranslations } from "next-intl";
+import { visualTranslator } from "@/lib/latex/codemirror/visual/labels";
 import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import {
   convertSelectionCommand, insertLatexAt, insertPlainAt, isViewAlive, latexMarkdownPaste, latexPasteContextAt, markdownPasteKeymap, pasteFromClipboard, pasteMarkdownCommand,
@@ -126,25 +128,27 @@ type LatexEditorProps = {
 
 export type LatexEditorMode = "source" | "visual";
 
+type Translate = ReturnType<typeof useTranslations>;
+
 const DRAFT_DELAY_MS = 250;
 const lineNumbersCompartment = new Compartment();
 const spellcheckCompartment = new Compartment();
 const drawingPreviewCompartment = new Compartment();
 
 /** A drawing compiled on its own for the Visual mode's preview (/api/latex/preview). */
-async function compileDrawingPreview(request: Parameters<DrawingPreviewConfig["compile"]>[0]) {
+async function compileDrawingPreview(request: Parameters<DrawingPreviewConfig["compile"]>[0], t: Translate) {
   try {
     const response = await fetch("/api/latex/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
     if (response.ok && response.headers.get("Content-Type")?.includes("application/pdf")) return { pdf: await response.arrayBuffer() };
     const payload = (await response.json().catch(() => ({}))) as { error?: string };
-    return { error: payload.error ?? "The picture could not be compiled." };
+    return { error: payload.error ?? t("pictureCompileError") };
   } catch {
-    return { error: "The preview could not be requested." };
+    return { error: t("previewRequestError") };
   }
 }
 
-function drawingPreviewExtension(rootPath: string, engine: () => string) {
-  return drawingPreviewConfig.of({ rootPath, engine, compile: compileDrawingPreview });
+function drawingPreviewExtension(rootPath: string, engine: () => string, t: () => Translate) {
+  return drawingPreviewConfig.of({ rootPath, engine, compile: (request) => compileDrawingPreview(request, t()) });
 }
 /** The Markdown paste dialog and its converter load on the first Markdown paste. */
 const LatexMarkdownPasteDialog = lazy(() => import("./latex-markdown-paste-dialog"));
@@ -155,10 +159,8 @@ type PasteDialogState = MarkdownPasteDialogRequest & { id: number; request: Mark
 type PasteNoticeState = { id: number; range: TrackedRange; inserted: InsertedLatex; markdown: string; html?: string; missing: string[]; warnings: string[] };
 
 /** Why a request's result was not put in: its range no longer holds the text it held when the request was made. */
-function staleRequestMessage(request: MarkdownPasteRequest) {
-  return request.notice
-    ? "The pasted LaTeX was edited since, so it was left as it is."
-    : "The text there changed while the paste was being converted, so nothing was replaced.";
+function staleRequestMessage(request: MarkdownPasteRequest, t: Translate) {
+  return request.notice ? t("pastedLatexEdited") : t("textChangedDuringPaste");
 }
 
 /** What a paste into a .tex file is converted with: the paste handler's, and the context menu's Paste. */
@@ -172,11 +174,11 @@ function markdownPasteConfig(onRequest: (request: MarkdownPasteRequest) => void,
  * the text it was, as an ordinary paste there would; a conversion of text
  * already in the document is left alone. True when it was settled so.
  */
-function settleLiteralTarget(request: MarkdownPasteRequest, from: number, literalAtStart: boolean, onError: (message: string) => void) {
+function settleLiteralTarget(request: MarkdownPasteRequest, from: number, literalAtStart: boolean, onError: (message: string) => void, t: Translate) {
   if (literalAtStart || !pasteStaysLiteral(request.range.view.state, from)) return false;
   if (request.origin === "selection" || request.notice) {
     request.range.release();
-    onError("That place is now inside math, a comment or verbatim, so the text was left as it is.");
+    onError(t("placeInsideMath"));
   } else insertPlainAt(request.range, request.text);
   return true;
 }
@@ -246,6 +248,19 @@ export function LatexEditor({
   onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet, collab,
   editorMode = "source", macroSources, auxData, numberingStart, numberingIncludes, rootPath, mathMarkers, engine, images,
 }: LatexEditorProps) {
+  const t = useTranslations("latex.latexEditor");
+  const tImages = useTranslations("latex.latexImageDrop");
+  const tWidgets = useTranslations("lib.latex.codemirror.visual.widgets");
+  const tTableEdit = useTranslations("lib.latex.codemirror.visual.tableEdit");
+  const tDrawingPreview = useTranslations("lib.latex.codemirror.visual.drawingPreview");
+  const tRef = useRef(t);
+  const tImagesRef = useRef(tImages);
+  const tVisualRef = useRef({ widgets: tWidgets, tableEdit: tTableEdit, drawingPreview: tDrawingPreview });
+  useLayoutEffect(() => {
+    tRef.current = t;
+    tImagesRef.current = tImages;
+    tVisualRef.current = { widgets: tWidgets, tableEdit: tTableEdit, drawingPreview: tDrawingPreview };
+  });
   const compileRoot = rootPath ?? documentPath;
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -294,9 +309,9 @@ export function LatexEditor({
         const support = imagesRef.current;
         if (!support) { request.range.release(); return; }
         // One at a time, so two pastes never pick the same free name.
-        imageQueueRef.current = imageQueueRef.current.then(() => saveAndInsertImages(request, compileRootRef.current, support)).then(
+        imageQueueRef.current = imageQueueRef.current.then(() => saveAndInsertImages(request, compileRootRef.current, support, tImagesRef.current)).then(
           (result) => { if (result.message || result.missing.length) setImageNotice({ ...result, id: Date.now() }); },
-          () => { request.range.release(); setImageNotice({ message: "The image could not be saved.", missing: [], id: Date.now() }); },
+          () => { request.range.release(); setImageNotice({ message: tRef.current("imageSaveError"), missing: [], id: Date.now() }); },
         );
       },
       onRefused: (message) => setImageNotice({ message, missing: [], id: Date.now() }),
@@ -339,10 +354,10 @@ export function LatexEditor({
       // The text there changed meanwhile (a collaborator's edit inside the selection, or the LaTeX a notice offers to redo).
       if (request.expected !== undefined && target.state.sliceDoc(at.from, at.to) !== request.expected) {
         range.release();
-        aiErrorRef.current(staleRequestMessage(request));
+        aiErrorRef.current(staleRequestMessage(request, tRef.current));
         return;
       }
-      if (settleLiteralTarget(request, at.from, literal, aiErrorRef.current)) return;
+      if (settleLiteralTarget(request, at.from, literal, aiErrorRef.current, tRef.current)) return;
       const prepared = request.html ? converter.prepareHtmlPaste(request.html) : converter.prepareMarkdownPaste(request.text, mathMarkersRef.current);
       // Nothing to convert after all: the text goes in as it was.
       if (!prepared || (request.origin === "paste" && !visualHtml && !prepared.analysis.markdown)) { insertPlainAt(range, request.text); return; }
@@ -366,7 +381,7 @@ export function LatexEditor({
       // The conversion failed: a paste still goes in, as the text it was.
       if (request.origin === "paste") insertPlainAt(range, request.text);
       else range.release();
-      aiErrorRef.current("The Markdown could not be converted to LaTeX.");
+      aiErrorRef.current(tRef.current("convertError"));
     }
   }, [pasteContext, showPasteNotice]);
   const handleMarkdownPaste = useCallback((request: MarkdownPasteRequest) => {
@@ -404,11 +419,11 @@ export function LatexEditor({
         // A collaborator edited inside the selection while the dialog was open: their edit is never overwritten.
         if (request.expected !== undefined && view.state.sliceDoc(at.from, at.to) !== request.expected) {
           request.range.release();
-          aiErrorRef.current(staleRequestMessage(request));
+          aiErrorRef.current(staleRequestMessage(request, tRef.current));
           return;
         }
         // The place became math, a comment or verbatim while the dialog was open.
-        if (settleLiteralTarget(request, at.from, current.literal, aiErrorRef.current)) return;
+        if (settleLiteralTarget(request, at.from, current.literal, aiErrorRef.current, tRef.current)) return;
         // Converted again for the document as it is now: a collaborator may have added a label or a package meanwhile.
         const converter = await import("@/lib/latex/markdown-paste");
         const context = pasteContext(view.state, at.from);
@@ -420,7 +435,7 @@ export function LatexEditor({
         if (at && (request.expected === undefined || view.state.sliceDoc(at.from, at.to) === request.expected)) insertPlainAt(request.range, request.text);
         else {
           request.range.release();
-          if (at) aiErrorRef.current(staleRequestMessage(request));
+          if (at) aiErrorRef.current(staleRequestMessage(request, tRef.current));
         }
       } else request.range.release();
       if (isViewAlive(view)) view.focus();
@@ -435,7 +450,7 @@ export function LatexEditor({
     showPasteNotice(null, true);
     // Undone first while the paste is the latest step, so one Undo afterwards goes back to before the paste.
     if (notice && !revertPasteToPlain(notice.range, notice.inserted, notice.markdown)) {
-      aiErrorRef.current("The pasted LaTeX was edited since, so it was left as it is.");
+      aiErrorRef.current(tRef.current("pastedLatexEdited"));
     }
   }, [showPasteNotice]);
 
@@ -542,7 +557,13 @@ export function LatexEditor({
         ...(isTex ? [
           // Before the Markdown paste: a clipboard holding only an image is a figure, not text.
           latexImagePaste(() => (imagesRef.current ? imageHandlerRef.current : null)),
-          drawingPreviewCompartment.of(drawingPreviewExtension(initialRef.current.compileRoot, () => engineRef.current ?? "auto")),
+          // The Visual mode's tooltips, menus and prompts (widgets are not React): keys are "<group>.<key>".
+          visualTranslator.of((key, values) => {
+            const dot = key.indexOf(".");
+            const group = key.slice(0, dot) as keyof typeof tVisualRef.current;
+            return tVisualRef.current[group](key.slice(dot + 1), values);
+          }),
+          drawingPreviewCompartment.of(drawingPreviewExtension(initialRef.current.compileRoot, () => engineRef.current ?? "auto", () => tRef.current)),
           latexMarkdownPaste(() => markdownPasteConfig((request) => { void pasteRequestRef.current(request); }, () => mathMarkersRef.current)),
           Prec.high(markdownPasteKeymap(() => (request) => { void pasteRequestRef.current(request); }, (message) => aiErrorRef.current(message))),
         ] : []),
@@ -563,7 +584,7 @@ export function LatexEditor({
         }),
         visualCompartment.of(visual ? visualExtensions(initialRef.current.documentPath, initialRef.current.compileRoot) : []),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
-        EditorView.contentAttributes.of({ "aria-label": "LaTeX source editor", autocorrect: "off", autocapitalize: "off" }),
+        EditorView.contentAttributes.of({ "aria-label": tRef.current("sourceEditorLabel"), autocorrect: "off", autocapitalize: "off" }),
         spellcheckCompartment.of(latexSpellcheck(latexSpellcheckActive(initialRef.current.spellcheck, visual))),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && binding) {
@@ -770,7 +791,7 @@ export function LatexEditor({
   }, [spellcheckOn, view]);
 
   useEffect(() => {
-    if (view && isTexFile) view.dispatch({ effects: drawingPreviewCompartment.reconfigure(drawingPreviewExtension(compileRoot, () => engineRef.current ?? "auto")) });
+    if (view && isTexFile) view.dispatch({ effects: drawingPreviewCompartment.reconfigure(drawingPreviewExtension(compileRoot, () => engineRef.current ?? "auto", () => tRef.current)) });
   }, [compileRoot, isTexFile, view]);
 
   useEffect(() => {
@@ -811,7 +832,7 @@ export function LatexEditor({
           onPaste={() => pasteFromClipboard(view, isTexFile ? markdownPasteConfig((request) => { void pasteRequestRef.current(request); }, () => mathMarkersRef.current) : null)}
           onPasteMarkdown={() => {
             pasteMarkdownCommand(view, (request) => { void pasteRequestRef.current(request); })
-              .catch(() => onAiError("The clipboard is not available here. Use Ctrl+V or ⌘V instead."));
+              .catch(() => onAiError(t("clipboardUnavailableMenu")));
           }}
           onConvertMarkdown={({ from, to }) => {
             view.dispatch({ selection: { anchor: from, head: to } });

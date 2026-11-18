@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useId, useState } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { latexSnippetNameError, normalizeLatexSnippetName } from "../../../../electron/latex-snippets.cjs";
@@ -20,6 +21,7 @@ function suggestName(body: string, snippets: LatexSnippet[]) {
 }
 
 export function LatexSnippetDialog({ request, onClose }: { request: LatexSnippetDialogRequest; onClose: () => void }) {
+  const t = useTranslations("latex.latexSnippetDialog");
   const snippets = useLatexSnippets();
   const formId = useId();
   const [name, setName] = useState(() => request.mode === "rename" ? request.snippet.name : suggestName(request.body, snippets));
@@ -42,7 +44,7 @@ export function LatexSnippetDialog({ request, onClose }: { request: LatexSnippet
       else await createLatexSnippet(normalized, body);
       onClose();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not save the snippet.");
+      setError(reason instanceof Error && reason.message ? reason.message : t("saveError"));
       setSaving(false);
     }
   }
@@ -50,14 +52,14 @@ export function LatexSnippetDialog({ request, onClose }: { request: LatexSnippet
   return (
     <ModalDialog
       open
-      title={request.mode === "rename" ? "Rename snippet" : "Add as snippet"}
+      title={request.mode === "rename" ? t("renameTitle") : t("addTitle")}
       description={request.mode === "rename"
-        ? "Type the new name after a slash in the editor to insert this snippet."
-        : "Saved snippets are kept with your preferences. Insert them from the Snippets menu, or type /name in the editor."}
+        ? t("renameDescription")
+        : t("addDescription")}
       onClose={onClose}
       footer={
         <div className="flex w-full items-center justify-end gap-2">
-          <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted" onClick={onClose}>Cancel</button>
+          <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted" onClick={onClose}>{t("cancel")}</button>
           <button
             type="submit"
             form={formId}
@@ -65,14 +67,14 @@ export function LatexSnippetDialog({ request, onClose }: { request: LatexSnippet
             disabled={saving || (touched && !!nameError)}
           >
             {saving ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null}
-            {request.mode === "rename" ? "Rename" : "Save snippet"}
+            {request.mode === "rename" ? t("rename") : t("saveSnippet")}
           </button>
         </div>
       }
     >
       <form id={formId} className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <label className="flex flex-col gap-1 text-sm font-medium text-foreground">
-          Name
+          {t("nameLabel")}
           <span className="flex items-center rounded-lg border border-border bg-card focus-within:ring-2 focus-within:ring-ring">
             <span aria-hidden className="pl-2.5 font-mono text-sm text-muted-foreground">/</span>
             <input
@@ -89,11 +91,11 @@ export function LatexSnippetDialog({ request, onClose }: { request: LatexSnippet
             />
           </span>
           <span id={`${formId}-hint`} className={`text-xs font-normal ${touched && nameError ? "text-destructive" : "text-muted-foreground"}`}>
-            {touched && nameError ? nameError : "Letters, numbers, hyphens and underscores."}
+            {touched && nameError ? nameError : t("nameHint")}
           </span>
         </label>
         <div className="flex flex-col gap-1">
-          <span className="text-sm font-medium text-foreground">LaTeX</span>
+          <span className="text-sm font-medium text-foreground">{t("latexLabel")}</span>
           <pre className="max-h-56 overflow-auto rounded-lg border border-border bg-muted/40 p-2.5 font-mono text-xs leading-relaxed text-foreground">{body}</pre>
         </div>
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}

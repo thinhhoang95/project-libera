@@ -18,6 +18,7 @@ import { setCollabStatusStore } from "../../src/lib/collab/ui/status-store";
 import { createReviewsApi } from "../../src/lib/collab/client/reviews";
 import { auditActorLabel } from "../../src/components/libera/collab/activity-log";
 import { ShareNotebookDialog } from "../../src/components/libera/collab/share-notebook-dialog";
+import { englishTranslator } from "../editor/intl";
 import { removeDataDir, startServerProcess } from "./support/server-process";
 
 after(() => dom.window.close());
@@ -116,8 +117,8 @@ test("the Activity log is for owners and lists decisions and reviews", { timeout
 
     // AI actors carry the person they acted for.
     const names = new Map([[alice.userId, "Alice"]]);
-    assert.equal(auditActorLabel({ kind: "ai", onBehalfOf: alice.userId, feature: "agent" }, names), "AI · requested by Alice");
-    assert.equal(auditActorLabel(null, names), "Libera");
+    assert.equal(auditActorLabel({ kind: "ai", onBehalfOf: alice.userId, feature: "agent" }, names, englishTranslator("collab.activityLog")), "AI · requested by Alice");
+    assert.equal(auditActorLabel(null, names, englishTranslator("collab.activityLog")), "Libera");
   } finally {
     await (mounted as Awaited<ReturnType<typeof renderDialog>> | null)?.unmount().catch(() => undefined);
     for (const window of windows) window.close();

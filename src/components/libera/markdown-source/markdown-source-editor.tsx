@@ -1,11 +1,17 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useTranslations } from "next-intl";
 import { useLayoutEffect, useState, type RefObject } from "react";
 import { CodeMirrorTextareaAdapter } from "@/lib/markdown-codemirror/textarea-adapter";
 import type { MarkdownSourceEditorProps } from "./types";
 
 export type { MarkdownSourceEditorProps } from "./types";
+
+function EditorLoading() {
+  const t = useTranslations("markdownSource.markdownSourceEditor");
+  return <div className="flex min-h-0 min-w-0 items-center justify-center border-b border-border bg-card text-sm text-muted-foreground lg:border-b-0 lg:border-r">{t("loading")}</div>;
+}
 
 // CodeMirror's Markdown grammar and code-block languages load only when a note
 // opens in this editor, as the LaTeX and code editors do.
@@ -13,7 +19,7 @@ const MarkdownCodeMirrorEditor = dynamic(
   () => import("./markdown-codemirror-editor").then((module) => module.MarkdownCodeMirrorEditor),
   {
     ssr: false,
-    loading: () => <div className="flex min-h-0 min-w-0 items-center justify-center border-b border-border bg-card text-sm text-muted-foreground lg:border-b-0 lg:border-r">Loading editor…</div>,
+    loading: () => <EditorLoading />,
   },
 );
 

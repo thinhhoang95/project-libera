@@ -1,6 +1,7 @@
 "use client";
 
 import { apiRequest } from "@/components/libera/api-client";
+import { galleryText } from "@/components/libera/gallery-i18n";
 import { applyGallery, loadedGallery } from "@/components/libera/gallery-store";
 import type { GalleryAlbum, GalleryContents } from "@/lib/image-generation";
 
@@ -30,7 +31,7 @@ export function downloadImage({ name, src }: ImageSaveSource) {
 
 export async function imageFile({ name, src }: ImageSaveSource) {
   const response = await fetch(src);
-  if (!response.ok) throw new Error("Could not load the image.");
+  if (!response.ok) throw new Error(galleryText("imageSave.loadImageFailed"));
   const blob = await response.blob();
   return new File([blob], name, { type: blob.type });
 }
@@ -77,8 +78,8 @@ export function subscribeSaveToNewAlbum(listener: (source: ImageSaveSource) => v
 /** A gallery photo's Save menu items. */
 export function notebookSaveMenuItems() {
   return [
-    { id: COMPUTER_ID, label: "Save to Computer…" },
-    { id: NOTEBOOK_ID, label: "Save to Notebook Folder…" },
+    { id: COMPUTER_ID, label: galleryText("imageSave.saveToComputer") },
+    { id: NOTEBOOK_ID, label: galleryText("imageSave.saveToNotebookFolder") },
   ];
 }
 
@@ -87,15 +88,15 @@ export async function imageSaveMenuItems(destination: ImageSaveDestination): Pro
   if (destination === "notebook") return notebookSaveMenuItems();
   const albums = (await loadedGallery())?.albums ?? [];
   return [
-    { id: COMPUTER_ID, label: "Save to Computer…" },
-    { id: GALLERY_ID, label: "Save to Gallery" },
+    { id: COMPUTER_ID, label: galleryText("imageSave.saveToComputer") },
+    { id: GALLERY_ID, label: galleryText("imageSave.saveToGallery") },
     {
       id: "save-image:albums",
-      label: "Save to Album",
+      label: galleryText("imageSave.saveToAlbum"),
       submenu: [
         ...albums.map((album) => ({ id: `${ALBUM_PREFIX}${album.id}`, label: album.name })),
         ...(albums.length ? [{ type: "separator" as const }] : []),
-        { id: NEW_ALBUM_ID, label: "New Album…" },
+        { id: NEW_ALBUM_ID, label: galleryText("imageSave.newAlbum") },
       ],
     },
   ];
@@ -117,9 +118,9 @@ export async function runImageSaveMenuAction(id: string | null, source: ImageSav
     const album = albumId ? (await loadedGallery())?.albums.find((item) => item.id === albumId) : undefined;
     try {
       await saveImageToGallery(source, albumId);
-      return album ? `Saved to “${album.name}”` : "Saved to the Gallery";
+      return album ? galleryText("imageSave.savedToAlbum", { name: album.name }) : galleryText("imageSave.savedToGallery");
     } catch (failure) {
-      return failure instanceof Error ? failure.message : "Could not save to the Gallery.";
+      return failure instanceof Error ? failure.message : galleryText("imageSave.saveToGalleryFailed");
     }
   }
   return null;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useTranslations } from "next-intl";
 import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
@@ -11,6 +12,7 @@ export function useMarkdownWindows(
   getDraft: (tab: OpenTab) => string,
   onError: (message: string) => void,
 ) {
+  const t = useTranslations("useMarkdownWindows");
   // Track authorization without keeping closed windows and their DOMs alive.
   const windows = useRef(new WeakMap<Window, { file: LiberaFileNode; tabId?: string }>());
 
@@ -31,7 +33,7 @@ export function useMarkdownWindows(
           content: payload.content ?? "", documentPath: payload.file.path, title: payload.file.name }, event.origin);
       } catch (error) {
         child.postMessage({ type: "libera-markdown-snapshot", requestId: event.data.requestId,
-          error: error instanceof Error ? error.message : "Could not refresh this document." }, event.origin);
+          error: error instanceof Error ? error.message : t("refreshDocumentError") }, event.origin);
       }
     }
     window.addEventListener("message", receive);
@@ -43,13 +45,13 @@ export function useMarkdownWindows(
       // PDFs and images load straight from the server in their own window, so
       // they need no snapshot channel; annotation edits sync via annotation-sync.
       const fileWindow = window.open(`/file-window?path=${encodeURIComponent(file.path)}`, "_blank", "popup,width=1000,height=850");
-      if (!fileWindow) onError("Could not open the file window. Please allow pop-up windows and try again.");
+      if (!fileWindow) onError(t("popupBlockedFileError"));
       return;
     }
     if (file.fileType !== "markdown") return;
     const child = window.open("/markdown-preview", "_blank", "popup,width=900,height=800");
     if (!child) {
-      onError("Could not open the Markdown window. Please allow pop-up windows and try again.");
+      onError(t("popupBlockedMarkdownError"));
       return;
     }
     windows.current.set(child, { file, tabId: tabs.find((tab) => tab.file.path === file.path)?.id });

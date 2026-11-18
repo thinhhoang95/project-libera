@@ -35,7 +35,7 @@ test("pill wording for each sync state", () => {
 });
 
 test("helpers: ages, initials and readable text colours", () => {
-  assert.deepEqual([500, 12_000, 125_000, 3 * 3_600_000, 3 * 86_400_000].map(formatAge), ["now", "12 s", "2 min", "3 h", "3 d"]);
+  assert.deepEqual([500, 12_000, 125_000, 3 * 3_600_000, 3 * 86_400_000].map((ms) => formatAge(ms)), ["now", "12 s", "2 min", "3 h", "3 d"]);
   assert.equal(initials("Minh Tran Van"), "MV");
   assert.equal(initials("ada"), "A");
   assert.equal(initials("  "), "?");

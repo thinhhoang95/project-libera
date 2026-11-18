@@ -2,6 +2,7 @@
 
 import { ChevronRight, CornerDownLeft, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useTranslations } from "next-intl";
 import { createPortal } from "react-dom";
 import { FileTypeIcon } from "@/components/libera/file-type";
 import { fuzzyMatch, searchNotebookTree } from "@/components/libera/notebook-search";
@@ -109,6 +110,8 @@ function folderOf(file: LiberaFileNode) {
  * Both are one box: a leading ">" means commands.
  */
 export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpenFile }: CommandPaletteProps) {
+  const t = useTranslations("commandPalette.commandPalette");
+  const tCommands = useTranslations("commandPalette.commands");
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -131,7 +134,10 @@ export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpen
     if (!openRef.current) {
       originRef.current = captureOrigin();
       // Read the toolbars before the palette takes focus.
-      setCommands(collectPaletteCommands(originRef.current.element));
+      setCommands(collectPaletteCommands(originRef.current.element, {
+        fallbackGroup: tCommands("toolbarGroup"),
+        choiceTitle: (control, choice) => tCommands("choiceTitle", { control, choice }),
+      }));
       setRecentCommandIds(readRecentCommands());
     }
     setValue(nextMode === "commands" ? COMMAND_PREFIX : "");
@@ -141,7 +147,7 @@ export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpen
       inputRef.current?.focus();
       inputRef.current?.setSelectionRange(inputRef.current.value.length, inputRef.current.value.length);
     });
-  }, []);
+  }, [tCommands]);
 
   const close = useCallback((restoreFocus = true) => {
     setOpen(false);
@@ -256,8 +262,8 @@ export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpen
   if (!open) return null;
 
   const emptyMessage = mode === "files"
-    ? query ? "No files match." : "No recent files yet. Type to search your notebooks."
-    : commands.length ? "No commands match." : "Nothing here has tools. Focus an editor or viewer, then try again.";
+    ? query ? t("noFileMatch") : t("noRecentFiles")
+    : commands.length ? t("noCommandMatch") : t("noTools");
 
   return createPortal(
     <div
@@ -272,7 +278,7 @@ export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpen
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={mode === "files" ? "Go to file" : "Command palette"}
+        aria-label={mode === "files" ? t("goToFile") : t("commandPalette")}
         className="flex max-h-[min(32rem,76vh)] w-full max-w-xl flex-col self-start overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-2xl"
       >
         <div className="flex items-center gap-2 border-b border-border px-3">
@@ -285,11 +291,11 @@ export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpen
             aria-expanded="true"
             aria-controls="libera-command-palette-list"
             aria-activedescendant={rows.length ? `libera-command-palette-row-${clampedIndex}` : undefined}
-            aria-label={mode === "files" ? "Search files by name" : "Search commands"}
+            aria-label={mode === "files" ? t("searchFilesByName") : t("searchCommands")}
             autoComplete="off"
             spellCheck={false}
             className="h-11 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-            placeholder={mode === "files" ? "Go to file… (type > for commands)" : "Run a command…"}
+            placeholder={mode === "files" ? t("goToFilePlaceholder") : t("runCommandPlaceholder")}
             value={value}
             onBlur={(event) => {
               if (!event.currentTarget.closest("[data-command-palette]")?.contains(event.relatedTarget as Node | null)) close(false);
@@ -302,13 +308,13 @@ export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpen
           />
           <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">Esc</kbd>
         </div>
-        <div ref={listRef} id="libera-command-palette-list" role="listbox" aria-label={mode === "files" ? "Files" : "Commands"} className="min-h-0 flex-1 overflow-y-auto p-1">
+        <div ref={listRef} id="libera-command-palette-list" role="listbox" aria-label={mode === "files" ? t("filesListLabel") : t("commandsListLabel")} className="min-h-0 flex-1 overflow-y-auto p-1">
           {rows.length ? rows.map((row, index) => {
             const active = index === clampedIndex;
             const sectionLabel = mode === "files"
-              ? index === 0 && !query ? "Recently opened" : null
+              ? index === 0 && !query ? t("recentlyOpened") : null
               : row.kind === "command" && !query && (index === 0 || (rows[index - 1].kind === "command" && (rows[index - 1] as Extract<Row, { kind: "command" }>).recent !== row.recent))
-                ? row.recent ? "Recently used" : "All commands"
+                ? row.recent ? t("recentlyUsed") : t("allCommands")
                 : null;
             return (
               <div key={row.key}>
@@ -347,7 +353,7 @@ export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpen
                       </span>
                       <span className="min-w-0 truncate">
                         <Highlighted text={row.command.title} indices={row.indices} />
-                        {row.command.checked ? <span className="ml-1.5 text-xs text-accent">● on</span> : null}
+                        {row.command.checked ? <span className="ml-1.5 text-xs text-accent">{t("checkedOn")}</span> : null}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={row.command.detail}>{row.command.detail}</span>
                       {row.command.group ? <span className="shrink-0 text-[11px] text-muted-foreground">{row.command.group}</span> : null}
@@ -363,10 +369,10 @@ export function CommandPalette({ tree, recentFiles, selectedNotebookName, onOpen
           )}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
-          <span>↑↓ to move</span>
-          <span>Enter to {mode === "files" ? "open" : "run"}</span>
-          {mode === "files" ? <span>Ctrl/⌘+Enter to open beside</span> : null}
-          <span className="ml-auto">{mode === "files" ? "> for commands · Ctrl/⌘+Shift+P" : "Delete > for files · Ctrl/⌘+P"}</span>
+          <span>{t("moveHint")}</span>
+          <span>{mode === "files" ? t("enterToOpen") : t("enterToRun")}</span>
+          {mode === "files" ? <span>{t("openBeside")}</span> : null}
+          <span className="ml-auto">{mode === "files" ? t("filesModeHint") : t("commandsModeHint")}</span>
         </div>
       </div>
     </div>,

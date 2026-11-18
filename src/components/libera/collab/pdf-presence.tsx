@@ -4,6 +4,7 @@
 // page, and where everyone is reading on a rail beside the pages. A layer per
 // page subscribes for itself, so a moving pointer never re-renders the page.
 
+import { useTranslations } from "next-intl";
 import { memo, useSyncExternalStore } from "react";
 import type { PdfAnnotation, PdfAnnotationRect } from "@/lib/types";
 import type { PdfGhost, PdfPresenceSnapshot, PdfPresenceStore, PdfRemoteUser } from "@/lib/collab/pdf/presence";
@@ -95,6 +96,7 @@ function railStyle(user: PdfRemoteUser, pageCount: number) {
 
 /** Where each collaborator is reading, beside the scrollbar. Clicking one follows them. */
 export function PdfPresenceRail({ store, pageCount, followingClientId, onFollow }: PdfPresenceRailProps) {
+  const t = useTranslations("collab.pdfPresence");
   const { users } = usePresence(store);
   const placed = users.filter((user) => user.presence);
   if (!placed.length) return null;
@@ -104,11 +106,11 @@ export function PdfPresenceRail({ store, pageCount, followingClientId, onFollow 
         <button
           key={user.clientId}
           type="button"
-          aria-label={`${user.name}, page ${user.presence?.page}${followingClientId === user.clientId ? ", following" : ""}`}
+          aria-label={t("markLabel", { name: user.name, page: user.presence?.page ?? 0, following: followingClientId === user.clientId ? "yes" : "no" })}
           aria-pressed={followingClientId === user.clientId}
           className="pdf-presence-rail-mark"
           style={railStyle(user, pageCount) ?? undefined}
-          title={`${user.name}: page ${user.presence?.page}`}
+          title={t("markTitle", { name: user.name, page: user.presence?.page ?? 0 })}
           onClick={() => onFollow(user.clientId)}
         />
       ))}

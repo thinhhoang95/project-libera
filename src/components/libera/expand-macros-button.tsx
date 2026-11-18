@@ -1,6 +1,7 @@
 "use client";
 
 import { Braces } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { mayUseMarkdownMacros } from "@/lib/markdown-macros";
 
 /**
@@ -16,11 +17,12 @@ export function ExpandMacrosButton({ className, markdown, getMarkdown, onExpand 
   getMarkdown: () => string;
   onExpand?: (markdown: string) => void;
 }) {
+  const t = useTranslations("expandMacrosButton");
   if (!onExpand) return null;
   const available = mayUseMarkdownMacros(markdown);
-  const title = available ? "Expand macros: open a copy as plain Markdown in a new tab" : "Expand macros (this document has no macros or counters)";
+  const title = available ? t("expandAvailable") : t("expandUnavailable");
   return (
-    <button type="button" aria-label="Expand macros into a new tab" title={title} className={className} disabled={!available}
+    <button type="button" aria-label={t("expandMacrosLabel")} title={title} className={className} disabled={!available}
       onMouseDown={(event) => event.preventDefault()} onClick={() => onExpand(getMarkdown())}>
       <Braces aria-hidden className="h-4 w-4" />
     </button>

@@ -29,6 +29,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { ColorPalette } from "@/components/libera/color-palette";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
@@ -102,13 +103,14 @@ export function mayHaveCitations(markdown: string) {
 
 /** Starts an Agent fact-check of the document's citations (the AI panel listens for the event). */
 export function FactCheckButton({ documentPath, markdown, className = "toolbar-button", disabled = false }: { documentPath: string; markdown: string; className?: string; disabled?: boolean }) {
+  const t = useTranslations("markdownToolbar");
   const hasCitations = useMemo(() => mayHaveCitations(markdown), [markdown]);
   const unavailable = disabled || !hasCitations;
   return (
     <button
-      aria-label="Fact-check citations"
+      aria-label={t("factCheckAriaLabel")}
       className={`${className} disabled:cursor-not-allowed disabled:opacity-40`}
-      title={disabled ? "Save the document first" : hasCitations ? "Fact-check citations: the agent checks each citation against its source" : "Fact-check citations: this document has no citations"}
+      title={disabled ? t("factCheckSaveFirstTitle") : hasCitations ? t("factCheckAgentTitle") : t("factCheckNoCitationsTitle")}
       type="button"
       disabled={unavailable}
       onMouseDown={(event) => event.preventDefault()}
@@ -136,11 +138,10 @@ function getFloatingMenuPosition(button: HTMLElement | null, width: number) {
   };
 }
 
+// The placeholder is text inserted into the document, so it stays English.
 const MARKDOWN_BLOCK_TEMPLATES = [
   {
     id: "chart",
-    title: "Insert chart",
-    menuLabel: "Chart",
     icon: ChartColumn,
     keywords: "graph plot bar line pie",
     language: "chart",
@@ -148,8 +149,6 @@ const MARKDOWN_BLOCK_TEMPLATES = [
   },
   {
     id: "diagram",
-    title: "Insert diagram",
-    menuLabel: "Diagram",
     icon: Workflow,
     keywords: "mermaid flowchart",
     language: "mermaid",
@@ -157,8 +156,6 @@ const MARKDOWN_BLOCK_TEMPLATES = [
   },
   {
     id: "macro-block",
-    title: "Insert macro block",
-    menuLabel: "Macro Block",
     icon: Braces,
     keywords: "libera-macro latex newcommand counter",
     language: "libera-macro",
@@ -190,6 +187,9 @@ export function MarkdownToolbar({
   readSelectionLinks,
   onExpandMacros,
 }: MarkdownToolbarProps) {
+  const t = useTranslations("markdownToolbar");
+  const tColor = useTranslations("lib.markdownColors.color");
+  const colorName = (color: { label: string }) => tColor(color.label.toLowerCase());
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const toolbarRootRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -290,30 +290,30 @@ export function MarkdownToolbar({
   usePaletteCommands(toolbarRootRef, () => [
     ...MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({
       id: `markdown:highlight:${color.shortcut}`,
-      title: `Highlight: ${color.label}`,
-      group: "Markdown formatting",
+      title: t("paletteHighlightTitle", { color: colorName(color) }),
+      group: t("paletteGroupMarkdownFormatting"),
       icon: Highlighter,
       run: () => insertHighlight(color),
     })),
     ...MARKDOWN_TEXT_COLORS.map((color) => ({
       id: `markdown:text-color:${color.value}`,
-      title: `Text color: ${color.label}`,
-      group: "Markdown formatting",
+      title: t("paletteTextColorTitle", { color: colorName(color) }),
+      group: t("paletteGroupMarkdownFormatting"),
       icon: Palette,
       run: () => insertTextColor(color),
     })),
     ...MARKDOWN_BLOCK_TEMPLATES.map((block) => ({
       id: `markdown:insert-${block.id}`,
-      title: block.title,
-      group: "Markdown formatting",
+      title: t(`blockTitle.${block.id}`),
+      group: t("paletteGroupMarkdownFormatting"),
       icon: block.icon,
       keywords: block.keywords,
       run: () => onInsert(`\n\`\`\`${block.language}\n`, "\n```\n", block.placeholder),
     })),
     {
       id: "markdown:enumerate-all-headings",
-      title: "Enumerate all headings",
-      group: "Markdown formatting",
+      title: t("paletteEnumerateAllHeadings"),
+      group: t("paletteGroupMarkdownFormatting"),
       icon: ListOrdered,
       keywords: "number headings",
       run: onNumberHeadings,
@@ -323,59 +323,59 @@ export function MarkdownToolbar({
   // The macOS menu bar's Format and Insert menus, for the Source editors (textarea and CodeMirror).
   useAppMenuEditor(toolbarRootRef, () => ({
     format: [
-      { id: "bold", label: "Bold", onSelect: () => onInsert("**", "**") },
-      { id: "italic", label: "Italic", onSelect: () => onInsert("_", "_") },
-      { id: "underline", label: "Underline", onSelect: () => onInsert("<u>", "</u>") },
-      { id: "strikethrough", label: "Strikethrough", onSelect: () => onInsert("~~", "~~") },
-      { id: "inline-code", label: "Inline Code", onSelect: () => onInsert("`", "`", "code") },
+      { id: "bold", label: t("menuBold"), onSelect: () => onInsert("**", "**") },
+      { id: "italic", label: t("menuItalic"), onSelect: () => onInsert("_", "_") },
+      { id: "underline", label: t("menuUnderline"), onSelect: () => onInsert("<u>", "</u>") },
+      { id: "strikethrough", label: t("menuStrikethrough"), onSelect: () => onInsert("~~", "~~") },
+      { id: "inline-code", label: t("menuInlineCode"), onSelect: () => onInsert("`", "`", "code") },
       { type: "separator" },
       {
         id: "highlight",
-        label: "Highlight",
-        submenu: MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `highlight-${color.shortcut}`, label: color.label, onSelect: () => insertHighlight(color) })),
+        label: t("menuHighlight"),
+        submenu: MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `highlight-${color.shortcut}`, label: colorName(color), onSelect: () => insertHighlight(color) })),
       },
       {
         id: "text-color",
-        label: "Text Color",
-        submenu: MARKDOWN_TEXT_COLORS.map((color) => ({ id: `text-color-${color.value}`, label: color.label, onSelect: () => insertTextColor(color) })),
+        label: t("menuTextColor"),
+        submenu: MARKDOWN_TEXT_COLORS.map((color) => ({ id: `text-color-${color.value}`, label: colorName(color), onSelect: () => insertTextColor(color) })),
       },
       { type: "separator" },
       {
         id: "heading",
-        label: "Heading",
-        submenu: [1, 2, 3].map((level) => ({ id: `heading-${level}`, label: `Heading ${level}`, onSelect: () => onInsert(`${"#".repeat(level)} `, "", "Heading") })),
+        label: t("menuHeading"),
+        submenu: [1, 2, 3].map((level) => ({ id: `heading-${level}`, label: t("menuHeadingLevel", { level }), onSelect: () => onInsert(`${"#".repeat(level)} `, "", "Heading") })),
       },
       {
         id: "list",
-        label: "List",
+        label: t("menuList"),
         submenu: [
-          { id: "bulleted", label: "Bulleted List", onSelect: () => onInsert("- ", "", "List item") },
-          { id: "numbered", label: "Numbered List", onSelect: () => onInsert("1. ", "", "List item") },
+          { id: "bulleted", label: t("menuBulletedList"), onSelect: () => onInsert("- ", "", "List item") },
+          { id: "numbered", label: t("menuNumberedList"), onSelect: () => onInsert("1. ", "", "List item") },
           ...(onShiftList ? [
             { type: "separator" as const },
-            { id: "indent", label: "Indent List Item", onSelect: () => onShiftList("indent") },
-            { id: "outdent", label: "Outdent List Item", onSelect: () => onShiftList("outdent") },
+            { id: "indent", label: t("menuIndentListItem"), onSelect: () => onShiftList("indent") },
+            { id: "outdent", label: t("menuOutdentListItem"), onSelect: () => onShiftList("outdent") },
           ] : []),
         ],
       },
-      { id: "quote", label: "Quote", onSelect: () => onInsert("> ", "", "Quote") },
+      { id: "quote", label: t("menuQuote"), onSelect: () => onInsert("> ", "", "Quote") },
       {
         id: "box",
-        label: "Box",
+        label: t("menuBox"),
         submenu: [
-          { id: "box-default", label: "Default Grey Box", onSelect: () => onInsert("> ", "", "Box text") },
-          ...MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `box-${color.shortcut}`, label: `${color.label} Box`, onSelect: () => onInsert(`${color.shortcut}> `, "", "Box text") })),
+          { id: "box-default", label: t("menuDefaultGreyBox"), onSelect: () => onInsert("> ", "", "Box text") },
+          ...MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `box-${color.shortcut}`, label: t("menuColorBox", { color: colorName(color) }), onSelect: () => onInsert(`${color.shortcut}> `, "", "Box text") })),
         ],
       },
       { type: "separator" },
       {
         id: "heading-numbers",
-        label: "Heading Numbers",
+        label: t("menuHeadingNumbers"),
         submenu: [
-          { id: "number-all", label: "Number All Headings", onSelect: onNumberHeadings },
+          { id: "number-all", label: t("menuNumberAllHeadings"), onSelect: onNumberHeadings },
           {
             id: "remove-all",
-            label: "Remove Heading Numbers",
+            label: t("menuRemoveHeadingNumbers"),
             onSelect: () => {
               saveDocumentHeadingNumbering(documentPath, false);
               onRemoveHeadingNumbers();
@@ -383,29 +383,29 @@ export function MarkdownToolbar({
           },
         ],
       },
-      { id: "fix-chatgpt-equations", label: "Fix ChatGPT Equations", onSelect: onFixChatGptEquations },
+      { id: "fix-chatgpt-equations", label: t("menuFixChatGptEquations"), onSelect: onFixChatGptEquations },
     ],
     insert: [
-      { id: "link", label: "Link…", onSelect: () => setLinkDraft({ href: "", selectionLinks: readSelectionLinks?.() }) },
+      { id: "link", label: t("menuLink"), onSelect: () => setLinkDraft({ href: "", selectionLinks: readSelectionLinks?.() }) },
       {
         id: "image",
-        label: "Image",
+        label: t("menuImage"),
         submenu: [
-          { id: "image-file", label: "From File…", onSelect: () => imageInputRef.current?.click() },
-          { id: "image-existing", label: "From This Notebook…", onSelect: onInsertExistingImage },
-          ...(onInsertFromGallery ? [{ id: "image-gallery", label: "From Gallery…", onSelect: onInsertFromGallery }] : []),
+          { id: "image-file", label: t("menuImageFromFile"), onSelect: () => imageInputRef.current?.click() },
+          { id: "image-existing", label: t("menuImageFromNotebook"), onSelect: onInsertExistingImage },
+          ...(onInsertFromGallery ? [{ id: "image-gallery", label: t("menuImageFromGallery"), onSelect: onInsertFromGallery }] : []),
           { type: "separator" },
-          { id: "snip-image", label: "Snip from Image or PDF Tab", enabled: canStartScreenshotSnip, onSelect: () => onStartScreenshotSnip("image") },
-          { id: "snip-markdown", label: "Snip as Markdown", enabled: canStartScreenshotSnip, onSelect: () => onStartScreenshotSnip("markdown") },
+          { id: "snip-image", label: t("menuSnipFromImage"), enabled: canStartScreenshotSnip, onSelect: () => onStartScreenshotSnip("image") },
+          { id: "snip-markdown", label: t("menuSnipAsMarkdown"), enabled: canStartScreenshotSnip, onSelect: () => onStartScreenshotSnip("markdown") },
         ],
       },
       tableSizeMenu(onInsertTable),
       { type: "separator" },
-      { id: "math-block", label: "Math Block", onSelect: () => onInsert("$$\n", "\n$$", "x = y") },
-      { id: "code-block", label: "Code Block", onSelect: () => onInsert("\n```\n", "\n```\n", "code") },
+      { id: "math-block", label: t("menuMathBlock"), onSelect: () => onInsert("$$\n", "\n$$", "x = y") },
+      { id: "code-block", label: t("menuCodeBlock"), onSelect: () => onInsert("\n```\n", "\n```\n", "code") },
       ...MARKDOWN_BLOCK_TEMPLATES.map((block) => ({
         id: block.id,
-        label: block.menuLabel,
+        label: t(`blockMenu.${block.id}`),
         onSelect: () => onInsert(`\n\`\`\`${block.language}\n`, "\n```\n", block.placeholder),
       })),
     ],
@@ -455,11 +455,11 @@ export function MarkdownToolbar({
 
   const fullscreenLabel = isSlideDeck
     ? previewFullscreen
-      ? "Exit presentation"
-      : "Present slides"
+      ? t("exitPresentation")
+      : t("presentSlides")
     : previewFullscreen
-      ? "Exit preview-only mode"
-      : "Preview only";
+      ? t("exitPreviewOnly")
+      : t("previewOnly");
 
   async function handleImageChange() {
     const file = imageInputRef.current?.files?.[0];
@@ -479,40 +479,40 @@ export function MarkdownToolbar({
     return (
       <>
         <button
-          aria-label="Quote"
+          aria-label={t("quote")}
           className="toolbar-button"
-          title="Quote the current or selected lines"
+          title={t("quoteTitle")}
           type="button"
           onClick={() => onInsert("> ", "", "Quote")}
         >
           <Quote aria-hidden className="h-4 w-4" />
         </button>
         <select
-          aria-label="Box color"
-          title="Apply a box to the current or selected lines"
+          aria-label={t("boxColor")}
+          title={t("boxColorTitle")}
           className="h-9 shrink-0 rounded-md border border-border bg-card px-2 text-xs"
           value=""
           onChange={(event) => onInsert(`${event.target.value === "default" ? "" : event.target.value}> `, "", "Box text")}
         >
-          <option value="" disabled>Box color</option>
-          <option value="default">Default grey box</option>
+          <option value="" disabled>{t("boxColor")}</option>
+          <option value="default">{t("defaultGreyBox")}</option>
           {MARKDOWN_HIGHLIGHT_COLORS.map((color) => (
-            <option key={color.shortcut} value={color.shortcut}>{color.label} box</option>
+            <option key={color.shortcut} value={color.shortcut}>{t("colorBox", { color: colorName(color) })}</option>
           ))}
         </select>
         <button
-          aria-label="Insert image from file"
+          aria-label={t("insertImageFromFile")}
           className="toolbar-button"
-          title="Insert image from file"
+          title={t("insertImageFromFile")}
           type="button"
           onClick={() => imageInputRef.current?.click()}
         >
           <ImagePlus aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Insert existing image"
+          aria-label={t("insertExistingImage")}
           className="toolbar-button"
-          title="Insert an image already in this notebook"
+          title={t("insertExistingImageTitle")}
           type="button"
           onClick={onInsertExistingImage}
         >
@@ -520,9 +520,9 @@ export function MarkdownToolbar({
         </button>
         {onInsertFromGallery ? (
           <button
-            aria-label="Insert image from gallery"
+            aria-label={t("insertImageFromGallery")}
             className="toolbar-button"
-            title="Insert images from the photo gallery"
+            title={t("insertImageFromGalleryTitle")}
             type="button"
             onClick={onInsertFromGallery}
           >
@@ -530,12 +530,12 @@ export function MarkdownToolbar({
           </button>
         ) : null}
         <button
-          aria-label="Snip from image or PDF tab"
+          aria-label={t("snipFromImage")}
           className="toolbar-button disabled:cursor-not-allowed disabled:opacity-40"
           title={
             canStartScreenshotSnip
-              ? "Snip from image or PDF tab"
-              : "Open an image or PDF tab to snip"
+              ? t("snipFromImage")
+              : t("snipNeedsImageTab")
           }
           type="button"
           disabled={!canStartScreenshotSnip}
@@ -544,12 +544,12 @@ export function MarkdownToolbar({
           <Scissors aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Snip as Markdown"
+          aria-label={t("snipAsMarkdown")}
           className="toolbar-button disabled:cursor-not-allowed disabled:opacity-40"
           title={
             canStartScreenshotSnip
-              ? "Snip as Markdown: read a region of an image or PDF tab into text"
-              : "Open an image or PDF tab to snip"
+              ? t("snipAsMarkdownTitle")
+              : t("snipNeedsImageTab")
           }
           type="button"
           disabled={!canStartScreenshotSnip}
@@ -558,18 +558,18 @@ export function MarkdownToolbar({
           <ScanText aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Inline code"
+          aria-label={t("inlineCode")}
           className="toolbar-button"
-          title="Inline code"
+          title={t("inlineCode")}
           type="button"
           onClick={() => onInsert("`", "`", "code")}
         >
           <Code2 aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Math block"
+          aria-label={t("mathBlock")}
           className="toolbar-button"
-          title="Math block"
+          title={t("mathBlock")}
           type="button"
           onClick={() => onInsert("$$\n", "\n$$", "x = y")}
         >
@@ -577,9 +577,9 @@ export function MarkdownToolbar({
         </button>
         <TableInsertButton className="toolbar-button" onPick={onInsertTable} />
         <button
-          aria-label="Fix ChatGPT equations"
+          aria-label={t("fixChatGptEquations")}
           className="toolbar-button"
-          title="Fix ChatGPT equations"
+          title={t("fixChatGptEquations")}
           type="button"
           onClick={onFixChatGptEquations}
         >
@@ -625,13 +625,13 @@ export function MarkdownToolbar({
 
   return (
     <div ref={toolbarRootRef} className="libera-editor-toolbar relative z-40 border-b border-border bg-card px-4 py-2">
-      <ModalDialog open={!!linkDraft} title="Insert link" onClose={() => setLinkDraft(null)} footer={
+      <ModalDialog open={!!linkDraft} title={t("insertLinkTitle")} onClose={() => setLinkDraft(null)} footer={
         <button type="button" className="rounded-md border border-border bg-card px-3 py-2 text-sm disabled:opacity-40" disabled={!linkDraft?.href.trim()} onClick={() => {
           if (!linkDraft?.href.trim()) return;
           const href = linkDraft.href.trim().replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/</g, "%3C").replace(/>/g, "%3E");
           onInsert("[", `](${href})`, (linkDraft.label ?? "link").replace(/[\[\]\\]/g, "\\$&"));
           setLinkDraft(null);
-        }}>Insert link</button>
+        }}>{t("insertLinkButton")}</button>
       }>
         <MarkdownLinkInput files={files} markdown={markdownContent} sourcePath={documentPath} value={linkDraft?.href ?? ""} selectionLinks={linkDraft?.selectionLinks} onChange={(href, label) => setLinkDraft((current) => ({ ...current, href, label }))} />
       </ModalDialog>
@@ -645,41 +645,41 @@ export function MarkdownToolbar({
       <div
         ref={scrollToolbarRef}
         role="toolbar"
-        aria-label="Markdown formatting"
+        aria-label={t("toolbarAriaLabel")}
         tabIndex={0}
         className="libera-horizontal-toolbar flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap [&>*]:shrink-0"
       >
         <button
-          aria-label="Bold"
+          aria-label={t("bold")}
           className="toolbar-button"
-          title="Bold (Ctrl/Cmd+B)"
+          title={t("boldTitle")}
           type="button"
           onClick={() => onInsert("**", "**")}
         >
           <Bold aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Italic"
+          aria-label={t("italic")}
           className="toolbar-button"
-          title="Italic (Ctrl/Cmd+I)"
+          title={t("italicTitle")}
           type="button"
           onClick={() => onInsert("_", "_")}
         >
           <Italic aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Underline"
+          aria-label={t("underline")}
           className="toolbar-button"
-          title="Underline (Ctrl/Cmd+U)"
+          title={t("underlineTitle")}
           type="button"
           onClick={() => onInsert("<u>", "</u>")}
         >
           <Underline aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Strikethrough"
+          aria-label={t("strikethrough")}
           className="toolbar-button"
-          title="Strikethrough"
+          title={t("strikethrough")}
           type="button"
           onClick={() => onInsert("~~", "~~")}
         >
@@ -689,9 +689,9 @@ export function MarkdownToolbar({
           ref={highlightButtonRef}
           aria-expanded={highlightMenuOpen}
           aria-haspopup="listbox"
-          aria-label="Highlight"
+          aria-label={t("highlight")}
           className="toolbar-button"
-          title="Highlight"
+          title={t("highlight")}
           type="button"
           onClick={toggleHighlightMenu}
         >
@@ -708,9 +708,9 @@ export function MarkdownToolbar({
             onPointerDown={(event) => event.stopPropagation()}
           >
             <ColorPalette
-              ariaLabel="Highlight colors"
+              ariaLabel={t("highlightColors")}
               colors={MARKDOWN_HIGHLIGHT_COLORS}
-              optionLabel="highlight color"
+              kind="highlight"
               onSelect={insertHighlight}
             />
           </div>
@@ -719,9 +719,9 @@ export function MarkdownToolbar({
           ref={textColorButtonRef}
           aria-expanded={textColorMenuOpen}
           aria-haspopup="listbox"
-          aria-label="Text color"
+          aria-label={t("textColor")}
           className="toolbar-button"
-          title="Text color"
+          title={t("textColor")}
           type="button"
           onClick={toggleTextColorMenu}
         >
@@ -738,35 +738,35 @@ export function MarkdownToolbar({
             onPointerDown={(event) => event.stopPropagation()}
           >
             <ColorPalette
-              ariaLabel="Text colors"
+              ariaLabel={t("textColors")}
               colors={MARKDOWN_TEXT_COLORS}
-              optionLabel="text color"
+              kind="text"
               onSelect={insertTextColor}
             />
           </div>
         ) : null}
         <button
-          aria-label="Heading 1"
+          aria-label={t("heading1")}
           className="toolbar-button"
-          title="Heading 1"
+          title={t("heading1")}
           type="button"
           onClick={() => onInsert("# ", "", "Heading")}
         >
           <Heading1 aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Heading 2"
+          aria-label={t("heading2")}
           className="toolbar-button"
-          title="Heading 2"
+          title={t("heading2")}
           type="button"
           onClick={() => onInsert("## ", "", "Heading")}
         >
           <Heading2 aria-hidden className="h-4 w-4" />
         </button>
         <button
-          aria-label="Bulleted list"
+          aria-label={t("bulletedList")}
           className="toolbar-button"
-          title="Bulleted list"
+          title={t("bulletedList")}
           type="button"
           onClick={() => onInsert("- ", "", "List item")}
         >
@@ -775,9 +775,9 @@ export function MarkdownToolbar({
         {onShiftList ? (
           <>
             <button
-              aria-label="Outdent list item"
+              aria-label={t("outdentListItem")}
               className="toolbar-button"
-              title="Outdent list item"
+              title={t("outdentListItem")}
               type="button"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => onShiftList("outdent")}
@@ -785,9 +785,9 @@ export function MarkdownToolbar({
               <ListIndentDecrease aria-hidden className="h-4 w-4" />
             </button>
             <button
-              aria-label="Indent list item"
+              aria-label={t("indentListItem")}
               className="toolbar-button"
-              title="Indent list item"
+              title={t("indentListItem")}
               type="button"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => onShiftList("indent")}
@@ -797,9 +797,9 @@ export function MarkdownToolbar({
           </>
         ) : null}
         <button
-          aria-label="Link"
+          aria-label={t("link")}
           className="toolbar-button"
-          title="Link"
+          title={t("link")}
           type="button"
           onClick={() => setLinkDraft({ href: "", selectionLinks: readSelectionLinks?.() })}
         >

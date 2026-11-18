@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { Pencil, Trash2 } from "lucide-react";
 import { ModalDialog } from "./modal-dialog";
 import type { DocumentChat } from "@/lib/document-chat";
@@ -14,6 +15,8 @@ type Props = {
 };
 
 export function DocumentChatSettingsDialog({ chats, activeId, onClose, onRename, onDelete }: Props) {
+  const t = useTranslations("documentChatSettingsDialog");
+  const tc = useTranslations("common");
   const [selected, setSelected] = useState<string[]>([]);
   const [titles, setTitles] = useState<Record<string, string>>({});
   const selectedIds = selected.filter((id) => chats.some((chat) => chat.id === id));
@@ -21,25 +24,25 @@ export function DocumentChatSettingsDialog({ chats, activeId, onClose, onRename,
 
   return <ModalDialog
     open
-    title="Chat settings"
-    description="Rename chats or select conversations to delete."
+    title={t("title")}
+    description={t("description")}
     panelClassName="max-w-xl"
     onClose={onClose}
     footer={<>
-      <button type="button" className="rounded-lg px-3 py-2 text-sm hover:bg-muted" onClick={onClose}>Done</button>
+      <button type="button" className="rounded-lg px-3 py-2 text-sm hover:bg-muted" onClick={onClose}>{tc("done")}</button>
       <button
         type="button"
         disabled={!selectedIds.length}
         className="inline-flex items-center gap-2 rounded-lg bg-destructive px-3 py-2 text-sm text-white disabled:opacity-40"
         onClick={() => { onDelete(selectedIds); setSelected([]); }}
       >
-        <Trash2 aria-hidden size={15} /> Delete selected ({selectedIds.length})
+        <Trash2 aria-hidden size={15} /> {t("deleteSelected", { count: selectedIds.length })}
       </button>
     </>}
   >
     <label className="mb-3 flex items-center gap-2 text-sm">
       <input type="checkbox" checked={allSelected} ref={(element) => { if (element) element.indeterminate = selectedIds.length > 0 && !allSelected; }} onChange={() => setSelected(allSelected ? [] : chats.map((chat) => chat.id))} />
-      Select all
+      {t("selectAll")}
     </label>
     <div className="max-h-[50vh] space-y-2 overflow-y-auto">
       {chats.map((chat) => {
@@ -48,12 +51,12 @@ export function DocumentChatSettingsDialog({ chats, activeId, onClose, onRename,
           event.preventDefault();
           if (title.trim()) onRename(chat.id, title.trim());
         }}>
-          <input type="checkbox" aria-label={`Select chat: ${chat.title}`} checked={selectedIds.includes(chat.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, chat.id] : current.filter((id) => id !== chat.id))} />
+          <input type="checkbox" aria-label={t("selectChatLabel", { title: chat.title })} checked={selectedIds.includes(chat.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, chat.id] : current.filter((id) => id !== chat.id))} />
           <div className="min-w-0 flex-1">
-            <input aria-label={`Chat name: ${chat.title}`} value={title} maxLength={120} required className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm" onChange={(event) => setTitles((current) => ({ ...current, [chat.id]: event.target.value }))} />
-            {chat.id === activeId && <span className="text-xs text-muted-foreground">Current chat</span>}
+            <input aria-label={t("chatNameLabel", { title: chat.title })} value={title} maxLength={120} required className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm" onChange={(event) => setTitles((current) => ({ ...current, [chat.id]: event.target.value }))} />
+            {chat.id === activeId && <span className="text-xs text-muted-foreground">{t("currentChat")}</span>}
           </div>
-          <button type="submit" disabled={!title.trim() || title.trim() === chat.title} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-muted disabled:opacity-40" aria-label={`Rename chat: ${chat.title}`} title="Rename chat">
+          <button type="submit" disabled={!title.trim() || title.trim() === chat.title} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-muted disabled:opacity-40" aria-label={t("renameChatLabel", { title: chat.title })} title={t("renameChat")}>
             <Pencil aria-hidden size={16} />
           </button>
         </form>;

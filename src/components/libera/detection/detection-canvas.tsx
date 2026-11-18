@@ -1,5 +1,6 @@
 "use client";
 
+import { useFormatter, useTranslations } from "next-intl";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { boundsOf, boxCorners, controlPointsFor, outlineOf, smoothStroke, type Geometry } from "@/lib/detection/geometry";
@@ -90,6 +91,8 @@ export function DetectionCanvas({
   onRequestEdit?: (id: number) => void;
   dark?: boolean;
 }) {
+  const t = useTranslations("detection.detectionCanvas");
+  const format = useFormatter();
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ width: 0, height: 0 });
@@ -340,7 +343,7 @@ export function DetectionCanvas({
           className="absolute inset-0 h-full w-full select-none"
           onLoad={(event) => onNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
         />
-        <svg className="absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${width || 1} ${height || 1}`} preserveAspectRatio="none" aria-label="Detections">
+        <svg className="absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${width || 1} ${height || 1}`} preserveAspectRatio="none" aria-label={t("detectionsLabel")}>
           {layers.density && quadrats ? quadrats.counts.map((count, index) => {
             const column = index % quadrats.columns;
             const row = Math.floor(index / quadrats.columns);
@@ -404,7 +407,7 @@ export function DetectionCanvas({
                 ) : null}
                 {layers.labels || active ? (
                   <text x={x1 + 2 * unit} y={Math.max(fontSize, y1 - 3 * unit)} fontSize={fontSize} fontWeight={600} fill="#ffffff" stroke={color} strokeWidth={3 * unit} style={{ paintOrder: "stroke" }} pointerEvents="none">
-                    {`${detection.id} ${detection.label} ${detection.origin === "manual" ? "manual" : detection.confidence.toFixed(2)}${marker ? ` ${marker}` : ""}`}
+                    {`${detection.id} ${detection.label} ${detection.origin === "manual" ? t("manualTag") : format.number(detection.confidence, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${marker ? ` ${marker}` : ""}`}
                   </text>
                 ) : null}
               </g>
@@ -430,7 +433,7 @@ export function DetectionCanvas({
                       grab(event, { kind: "handle", index: index + 1, start });
                     }}
                   >
-                    <title>Drag to add a point</title>
+                    <title>{t("dragToAddPoint")}</title>
                   </circle>
                 );
               }) : null}
@@ -446,7 +449,7 @@ export function DetectionCanvas({
                   }}
                   onDoubleClick={(event) => { event.stopPropagation(); removeHandle(index); }}
                 >
-                  <title>{editing.geometry.shape === "box" ? "Drag to resize" : "Drag to move; double-click or Delete to remove"}</title>
+                  <title>{editing.geometry.shape === "box" ? t("dragToResize") : t("dragToMoveOrRemove")}</title>
                 </circle>
               ))}
             </g>
@@ -457,7 +460,7 @@ export function DetectionCanvas({
               <g key={`e${index}`} pointerEvents="none">
                 <rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} fill="none" stroke="#ffffff" strokeWidth={3} vectorEffect="non-scaling-stroke" />
                 <rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} fill="none" stroke={example.color} strokeWidth={1.5} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
-                <text x={x1} y={y2 + fontSize + 2 * unit} fontSize={fontSize} fill="#ffffff" stroke="#000000" strokeWidth={2.5 * unit} style={{ paintOrder: "stroke" }}>{`example: ${example.label}`}</text>
+                <text x={x1} y={y2 + fontSize + 2 * unit} fontSize={fontSize} fill="#ffffff" stroke="#000000" strokeWidth={2.5 * unit} style={{ paintOrder: "stroke" }}>{t("exampleLabel", { label: example.label })}</text>
               </g>
             );
           }) : null}
@@ -483,7 +486,7 @@ export function DetectionCanvas({
               <line x1={draft.from[0]} y1={draft.from[1]} x2={draft.to[0]} y2={draft.to[1]} stroke="#000000" strokeWidth={4} vectorEffect="non-scaling-stroke" />
               <line x1={draft.from[0]} y1={draft.from[1]} x2={draft.to[0]} y2={draft.to[1]} stroke="#facc15" strokeWidth={2} vectorEffect="non-scaling-stroke" />
               <text x={draft.to[0] + 6 * unit} y={draft.to[1]} fontSize={fontSize} fill="#facc15" stroke="#000000" strokeWidth={2.5 * unit} style={{ paintOrder: "stroke" }}>
-                {`${Math.hypot(draft.to[0] - draft.from[0], draft.to[1] - draft.from[1]).toFixed(1)} px`}
+                {t("calibrationLength", { length: format.number(Math.hypot(draft.to[0] - draft.from[0], draft.to[1] - draft.from[1]), { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
               </text>
             </g>
           ) : null}
@@ -491,7 +494,7 @@ export function DetectionCanvas({
       </div>
       {transform.scale > 1 ? (
         <button type="button" className="absolute bottom-3 right-3 rounded-md bg-black/60 px-2.5 py-1 text-xs text-white hover:bg-black/80" onClick={() => setTransform(FIT)}>
-          {Math.round(transform.scale * 100)}% · Fit
+          {t("fit", { percent: format.number(Math.round(transform.scale * 100) / 100, { style: "percent" }) })}
         </button>
       ) : null}
     </div>

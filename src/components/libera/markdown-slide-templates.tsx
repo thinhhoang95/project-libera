@@ -8,7 +8,23 @@ import {
 
 export type MarkdownSlideTemplateMode = "export" | "presenter" | "preview";
 
+/** Interface-language labels for a slide's accessible name and page number; English when omitted. */
+export type MarkdownSlideTemplateLabels = {
+  titleSlide: string;
+  slide: (number: number) => string;
+  roleDescription: string;
+  page: (number: number, count: number) => string;
+};
+
+const DEFAULT_LABELS: MarkdownSlideTemplateLabels = {
+  titleSlide: "Title slide",
+  slide: (number) => `Slide ${number}`,
+  roleDescription: "slide",
+  page: (number, count) => `${number} / ${count}`,
+};
+
 export type MarkdownSlideTemplateProps = {
+  labels?: MarkdownSlideTemplateLabels;
   deck: MarkdownSlideDeck;
   fontFamily?: string;
   mode: MarkdownSlideTemplateMode;
@@ -185,6 +201,7 @@ function footerText(deck: MarkdownSlideDeck) {
 }
 
 function DefaultMarkdownSlideTemplate({
+  labels = DEFAULT_LABELS,
   deck,
   fontFamily,
   mode,
@@ -216,7 +233,7 @@ function DefaultMarkdownSlideTemplate({
       data-theme={deck.theme}
       style={style}
       aria-label={label}
-      aria-roledescription="slide"
+      aria-roledescription={labels.roleDescription}
     >
       {children}
       {showFooter ? (
@@ -224,7 +241,7 @@ function DefaultMarkdownSlideTemplate({
           <span>{footer ? renderInline(footer) : null}</span>
           {deck.paginate && slideNumber > 0 ? (
             <span className="markdown-slide-page">
-              {slideNumber} / {slideCount}
+              {labels.page(slideNumber, slideCount)}
             </span>
           ) : null}
         </footer>
@@ -259,7 +276,7 @@ function DefaultMarkdownSlideTemplate({
           </div>
         ) : null}
       </div>,
-      deck.title ?? "Title slide",
+      deck.title ?? labels.titleSlide,
     );
   }
 
@@ -276,7 +293,7 @@ function DefaultMarkdownSlideTemplate({
           <div className="markdown-slide-section-body">{body}</div>
         </FitBody>
       </div>,
-      slide.title ?? `Slide ${slideNumber}`,
+      slide.title ?? labels.slide(slideNumber),
     );
   }
 
@@ -294,7 +311,7 @@ function DefaultMarkdownSlideTemplate({
         <FitBody enabled={fit}>{body}</FitBody>
       </div>
     </>,
-    slide.title ?? `Slide ${slideNumber}`,
+    slide.title ?? labels.slide(slideNumber),
   );
 }
 

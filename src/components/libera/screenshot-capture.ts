@@ -1,3 +1,4 @@
+import { galleryText } from "@/components/libera/gallery-i18n";
 import type { PdfAnnotationRect } from "@/lib/types";
 
 export const SCREENSHOT_IMAGE_TYPE = "image/png";
@@ -9,7 +10,7 @@ export function canvasToPngBlob(canvas: HTMLCanvasElement) {
         if (blob) {
           resolve(blob);
         } else {
-          reject(new Error("Could not create screenshot image."));
+          reject(new Error(galleryText("screenshotCapture.imageCreateError")));
         }
       }, SCREENSHOT_IMAGE_TYPE);
     } catch (error) {
@@ -50,7 +51,7 @@ export async function imageElementRectToPngFile(
   filePath: string,
 ) {
   if (!image.complete || !image.naturalWidth || !image.naturalHeight) {
-    throw new Error("Image is not ready for screenshot capture.");
+    throw new Error(galleryText("screenshotCapture.imageNotReadyError"));
   }
 
   const sourceX = Math.min(
@@ -79,7 +80,7 @@ export async function imageElementRectToPngFile(
   const context = canvas.getContext("2d");
 
   if (!context) {
-    throw new Error("Could not create screenshot canvas.");
+    throw new Error(galleryText("screenshotCapture.canvasCreateError"));
   }
 
   canvas.width = sourceWidth;

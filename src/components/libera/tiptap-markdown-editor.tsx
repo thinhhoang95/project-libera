@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { sourceRangeForTiptapTextSelection, tiptapSelectionForSourceRange, TiptapReview } from "@/lib/tiptap-review";
 import { TiptapChanges } from "@/lib/tiptap-changes";
 import { TiptapChangeBar } from "./tiptap-change-bar";
@@ -218,6 +219,10 @@ function cachedListHistoryState(current: Editor, shared: boolean): ToolbarListHi
 }
 
 export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab, sharedStatus, onExpandMacros }: Props) {
+  const t = useTranslations("tiptapMarkdownEditor");
+  const tPython = useTranslations("tiptapPythonFigureView");
+  const tColor = useTranslations("lib.markdownColors.color");
+  const colorName = (color: { label: string }) => tColor(color.label.toLowerCase());
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number; markdown: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const [error, setError] = useState("");
@@ -281,7 +286,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const codeBlockNodeView = useMemo(() => createLiveCodeBlockNodeView(documentPath), [documentPath]);
   // Figures made by the note's Python get Re-run and Code (lib/python/sidecar.ts).
   // Ink blocks draw as ink surfaces; other images, Python figures included, as before.
-  const imageNodeView = useMemo(() => createInkImageNodeView(documentPath, createPythonFigureNodeView(documentPath)), [documentPath]);
+  const imageNodeView = useMemo(() => createInkImageNodeView(documentPath, createPythonFigureNodeView(documentPath, tPython)), [documentPath, tPython]);
   // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
   const referenceNotebook = useReferenceRender()?.notebook ?? null;
   const dropQuoteRef = useRef<(source: PdfQuoteSource, pos: number) => void>(() => undefined);
@@ -322,7 +327,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     immediatelyRender: false,
     shouldRerenderOnTransaction: false,
     editorProps: {
-      attributes: { class: "libera-tiptap", role: "textbox", "aria-label": "Visual Markdown editor", "aria-multiline": "true" },
+      attributes: { class: "libera-tiptap", role: "textbox", "aria-label": t("visualMarkdownEditor"), "aria-multiline": "true" },
       handleDOMEvents: {
         copy(view, event): boolean {
           if (!editor || view.state.selection.empty) return false;
@@ -744,7 +749,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   async function insertImages(files: File[], pos: number) {
     if (!editor || editor.isDestroyed) return;
     const images = files.filter(isImage);
-    if (!images.length) { setError("Choose a PNG, JPEG, GIF, or WebP image."); return; }
+    if (!images.length) { setError(t("chooseImageFormats")); return; }
     setError("");
     const upload = { pos, controller: new AbortController() };
     uploads.current.add(upload);
@@ -758,7 +763,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           ? { assetPath: await new Promise<string>((resolve, reject) => {
               const reader = new FileReader();
               reader.onload = () => resolve(String(reader.result));
-              reader.onerror = () => reject(new Error("Could not read image."));
+              reader.onerror = () => reject(new Error(t("couldNotReadImage")));
               reader.readAsDataURL(file);
             }) }
           : await apiRequest<MarkdownImageAssetPayload>("/api/markdown-assets", { method: "POST", body: formData, signal: upload.controller.signal });
@@ -768,7 +773,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         editor.chain().insertContentAt(upload.pos, { type: "image", attrs: { src: payload.assetPath, alt: file.name.replace(/\.[^.]+$/, "") } }).run();
       }
     } catch (cause) {
-      if (!upload.controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Could not insert image.");
+      if (!upload.controller.signal.aborted) setError(cause instanceof Error ? cause.message : t("couldNotInsertImage"));
     } finally {
       uploads.current.delete(upload);
       if (!editor.isDestroyed) setUploadCount((count) => count - 1);
@@ -776,13 +781,13 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   }
 
   const mathPreview = useMemo(() => {
-    if (!mathDraft?.latex.trim()) return { html: "", error: "Enter a LaTeX expression." };
+    if (!mathDraft?.latex.trim()) return { html: "", error: t("enterLatexExpression") };
     try {
       return { html: katex.renderToString(mathDraft.latex, { displayMode: mathDraft.display, throwOnError: true, trust: false }), error: "" };
     } catch (cause) {
-      return { html: "", error: cause instanceof Error ? cause.message : "Invalid equation." };
+      return { html: "", error: cause instanceof Error ? cause.message : t("invalidEquation") };
     }
-  }, [mathDraft]);
+  }, [mathDraft, t]);
 
   // The macOS menu bar's Format and Insert menus, running the toolbar's commands.
   useAppMenuEditor(rootRef, () => {
@@ -795,100 +800,100 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     };
     return {
       format: [
-        { id: "bold", label: "Bold", type: "checkbox", checked: state.bold, onSelect: () => editor.chain().focus().toggleBold().run() },
-        { id: "italic", label: "Italic", type: "checkbox", checked: state.italic, onSelect: () => editor.chain().focus().toggleItalic().run() },
-        { id: "underline", label: "Underline", type: "checkbox", checked: state.underline, onSelect: () => editor.chain().focus().toggleUnderline().run() },
-        { id: "strikethrough", label: "Strikethrough", type: "checkbox", checked: state.strike, onSelect: () => editor.chain().focus().toggleStrike().run() },
-        { id: "superscript", label: "Superscript", type: "checkbox", checked: state.superscript, onSelect: () => editor.chain().focus().toggleSuperscript().run() },
-        { id: "subscript", label: "Subscript", type: "checkbox", checked: state.subscript, onSelect: () => editor.chain().focus().toggleSubscript().run() },
+        { id: "bold", label: t("menuBold"), type: "checkbox", checked: state.bold, onSelect: () => editor.chain().focus().toggleBold().run() },
+        { id: "italic", label: t("menuItalic"), type: "checkbox", checked: state.italic, onSelect: () => editor.chain().focus().toggleItalic().run() },
+        { id: "underline", label: t("menuUnderline"), type: "checkbox", checked: state.underline, onSelect: () => editor.chain().focus().toggleUnderline().run() },
+        { id: "strikethrough", label: t("menuStrikethrough"), type: "checkbox", checked: state.strike, onSelect: () => editor.chain().focus().toggleStrike().run() },
+        { id: "superscript", label: t("menuSuperscript"), type: "checkbox", checked: state.superscript, onSelect: () => editor.chain().focus().toggleSuperscript().run() },
+        { id: "subscript", label: t("menuSubscript"), type: "checkbox", checked: state.subscript, onSelect: () => editor.chain().focus().toggleSubscript().run() },
         { type: "separator" },
-        { id: "highlight", label: "Highlight", type: "checkbox", checked: state.highlightTool.active || state.highlight, onSelect: () => editor.chain().focus().toggleHighlightTool().run() },
+        { id: "highlight", label: t("menuHighlight"), type: "checkbox", checked: state.highlightTool.active || state.highlight, onSelect: () => editor.chain().focus().toggleHighlightTool().run() },
         {
           id: "highlight-color",
-          label: "Highlight Color",
-          submenu: MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `highlight-${color.shortcut}`, label: color.label, type: "radio", checked: state.highlightTool.color === color.value, onSelect: () => editor.commands.setHighlightToolColor(color.value) })),
+          label: t("menuHighlightColor"),
+          submenu: MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `highlight-${color.shortcut}`, label: colorName(color), type: "radio", checked: state.highlightTool.color === color.value, onSelect: () => editor.commands.setHighlightToolColor(color.value) })),
         },
         {
           id: "text-color",
-          label: "Text Color",
+          label: t("menuTextColor"),
           submenu: [
-            { id: "text-color-default", label: "Default", type: "radio", checked: !state.color, onSelect: () => editor.chain().focus().unsetColor().run() },
+            { id: "text-color-default", label: t("menuDefault"), type: "radio", checked: !state.color, onSelect: () => editor.chain().focus().unsetColor().run() },
             { type: "separator" },
-            ...MARKDOWN_TEXT_COLORS.map((color) => ({ id: `text-color-${color.value}`, label: color.label, type: "radio" as const, checked: state.color === color.value, onSelect: () => editor.chain().focus().setColor(color.value).run() })),
+            ...MARKDOWN_TEXT_COLORS.map((color) => ({ id: `text-color-${color.value}`, label: colorName(color), type: "radio" as const, checked: state.color === color.value, onSelect: () => editor.chain().focus().setColor(color.value).run() })),
           ],
         },
         {
           id: "font-size",
-          label: "Font Size",
+          label: t("menuFontSize"),
           submenu: [
-            { id: "font-size-default", label: "Default", type: "radio", checked: !state.fontSize, onSelect: () => editor.chain().focus().unsetFontSize().run() },
+            { id: "font-size-default", label: t("menuDefault"), type: "radio", checked: !state.fontSize, onSelect: () => editor.chain().focus().unsetFontSize().run() },
             { type: "separator" },
-            ...[10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 96].map((size) => ({ id: `font-size-${size}`, label: `${size} px`, type: "radio" as const, checked: state.fontSize === `${size}px`, onSelect: () => editor.chain().focus().setFontSize(`${size}px`).run() })),
+            ...[10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 96].map((size) => ({ id: `font-size-${size}`, label: t("fontSizeValue", { size }), type: "radio" as const, checked: state.fontSize === `${size}px`, onSelect: () => editor.chain().focus().setFontSize(`${size}px`).run() })),
           ],
         },
         { type: "separator" },
         {
           id: "text-style",
-          label: "Text Style",
+          label: t("menuTextStyle"),
           submenu: [
-            { id: "paragraph", label: "Paragraph", type: "radio", checked: state.heading === "0", onSelect: () => editor.chain().focus().setParagraph().run() },
-            ...([1, 2, 3, 4, 5, 6] as const).map((level) => ({ id: `heading-${level}`, label: `Heading ${level}`, type: "radio" as const, checked: state.heading === String(level), onSelect: () => editor.chain().focus().setHeading({ level }).run() })),
+            { id: "paragraph", label: t("menuParagraph"), type: "radio", checked: state.heading === "0", onSelect: () => editor.chain().focus().setParagraph().run() },
+            ...([1, 2, 3, 4, 5, 6] as const).map((level) => ({ id: `heading-${level}`, label: t("headingLevel", { level }), type: "radio" as const, checked: state.heading === String(level), onSelect: () => editor.chain().focus().setHeading({ level }).run() })),
           ],
         },
         {
           id: "list",
-          label: "List",
+          label: t("menuList"),
           submenu: [
-            { id: "bulleted", label: "Bulleted List", type: "checkbox", checked: state.bulletList, onSelect: () => editor.chain().focus().toggleBulletList().run() },
-            { id: "numbered", label: "Numbered List", type: "checkbox", checked: state.orderedList, onSelect: () => editor.chain().focus().toggleOrderedList().run() },
+            { id: "bulleted", label: t("menuBulletedList"), type: "checkbox", checked: state.bulletList, onSelect: () => editor.chain().focus().toggleBulletList().run() },
+            { id: "numbered", label: t("menuNumberedList"), type: "checkbox", checked: state.orderedList, onSelect: () => editor.chain().focus().toggleOrderedList().run() },
             { type: "separator" },
-            { id: "indent", label: "Indent List Item", enabled: state.canSinkListItem, onSelect: () => editor.chain().focus().sinkListItem(listItem()).run() },
-            { id: "outdent", label: "Outdent List Item", enabled: state.canLiftListItem, onSelect: () => editor.chain().focus().liftListItem(listItem()).run() },
+            { id: "indent", label: t("menuIndentListItem"), enabled: state.canSinkListItem, onSelect: () => editor.chain().focus().sinkListItem(listItem()).run() },
+            { id: "outdent", label: t("menuOutdentListItem"), enabled: state.canLiftListItem, onSelect: () => editor.chain().focus().liftListItem(listItem()).run() },
           ],
         },
-        { id: "quote", label: "Quote", type: "checkbox", checked: state.blockquote, onSelect: () => editor.chain().focus().toggleBlockquote().run() },
+        { id: "quote", label: t("menuQuote"), type: "checkbox", checked: state.blockquote, onSelect: () => editor.chain().focus().toggleBlockquote().run() },
         {
           id: "box",
-          label: "Box",
+          label: t("menuBox"),
           submenu: [
-            { id: "box-default", label: "Default Grey Box", type: "radio", checked: state.boxColor === "default", onSelect: () => setBox(null) },
-            ...MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `box-${color.shortcut}`, label: `${color.label} Box`, type: "radio" as const, checked: state.boxColor === color.shortcut, onSelect: () => setBox(color.shortcut) })),
+            { id: "box-default", label: t("menuDefaultGreyBox"), type: "radio", checked: state.boxColor === "default", onSelect: () => setBox(null) },
+            ...MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `box-${color.shortcut}`, label: t("colorBox", { color: colorName(color) }), type: "radio" as const, checked: state.boxColor === color.shortcut, onSelect: () => setBox(color.shortcut) })),
           ],
         },
-        { id: "code-block", label: "Code Block", type: "checkbox", checked: state.codeBlock, onSelect: () => editor.chain().focus().toggleCodeBlock().run() },
+        { id: "code-block", label: t("menuCodeBlock"), type: "checkbox", checked: state.codeBlock, onSelect: () => editor.chain().focus().toggleCodeBlock().run() },
         { type: "separator" },
-        { id: "clear-formatting", label: "Clear Formatting", onSelect: () => editor.chain().focus().unsetAllMarks().clearNodes().run() },
-        { id: "fix-chatgpt-equations", label: "Fix ChatGPT Equations", onSelect: fixChatGptEquations },
+        { id: "clear-formatting", label: t("menuClearFormatting"), onSelect: () => editor.chain().focus().unsetAllMarks().clearNodes().run() },
+        { id: "fix-chatgpt-equations", label: t("menuFixChatGptEquations"), onSelect: fixChatGptEquations },
       ],
       insert: [
-        { id: "link", label: "Link…", onSelect: () => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to, markdown: readMarkdown(), selectionLinks: readSelectionLinks?.() }) },
+        { id: "link", label: t("menuLink"), onSelect: () => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to, markdown: readMarkdown(), selectionLinks: readSelectionLinks?.() }) },
         {
           id: "image",
-          label: "Image",
+          label: t("menuImage"),
           submenu: [
-            { id: "image-file", label: "From File…", onSelect: () => imageInput.current?.click() },
-            { id: "image-gallery", label: "From Gallery…", onSelect: () => setGalleryPickerOpen(true) },
+            { id: "image-file", label: t("menuFromFile"), onSelect: () => imageInput.current?.click() },
+            { id: "image-gallery", label: t("menuFromGallery"), onSelect: () => setGalleryPickerOpen(true) },
             ...(onStartScreenshotSnip ? [
               { type: "separator" as const },
-              { id: "snip-image", label: "Snip from Image or PDF Tab", enabled: canStartScreenshotSnip, onSelect: () => { captureVisualState(); onStartScreenshotSnip("image"); } },
-              { id: "snip-markdown", label: "Snip as Markdown", enabled: canStartScreenshotSnip, onSelect: () => { captureVisualState(); onStartScreenshotSnip("markdown"); } },
+              { id: "snip-image", label: t("menuSnipFromImage"), enabled: canStartScreenshotSnip, onSelect: () => { captureVisualState(); onStartScreenshotSnip("image"); } },
+              { id: "snip-markdown", label: t("menuSnipAsMarkdown"), enabled: canStartScreenshotSnip, onSelect: () => { captureVisualState(); onStartScreenshotSnip("markdown"); } },
             ] : []),
           ],
         },
         tableSizeMenu((rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()),
-        { id: "equation", label: "Equation…", onSelect: openMath },
-        { id: "footnote", label: "Footnote", onSelect: () => editor.chain().focus().insertFootnote().run() },
-        { id: "ink", label: "Ink Block", enabled: !untitled, onSelect: () => editor.chain().focus().insertContent([{ type: "image", attrs: { src: inkBlockSource(documentPath, createInkId()), alt: "Ink" } }, { type: "paragraph" }]).run() },
+        { id: "equation", label: t("menuEquation"), onSelect: openMath },
+        { id: "footnote", label: t("menuFootnote"), onSelect: () => editor.chain().focus().insertFootnote().run() },
+        { id: "ink", label: t("menuInkBlock"), enabled: !untitled, onSelect: () => editor.chain().focus().insertContent([{ type: "image", attrs: { src: inkBlockSource(documentPath, createInkId()), alt: "Ink" } }, { type: "paragraph" }]).run() },
         { type: "separator" },
-        { id: "chart", label: "Chart", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
-        { id: "diagram", label: "Diagram", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
-        { id: "macro-block", label: "Macro Block", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.macro).run() },
-        { id: "interactive-html", label: "Interactive HTML", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
+        { id: "chart", label: t("menuChart"), onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
+        { id: "diagram", label: t("menuDiagram"), onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
+        { id: "macro-block", label: t("menuMacroBlock"), onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.macro).run() },
+        { id: "interactive-html", label: t("menuInteractiveHtml"), onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
       ],
     };
   });
 
-  if (!editor || !state) return <div className="p-6 text-sm text-muted-foreground">Loading visual editor…</div>;
+  if (!editor || !state) return <div className="p-6 text-sm text-muted-foreground">{t("loadingVisualEditor")}</div>;
 
   function scrollToActiveFindMatch() {
     scrollRestoreRef.current?.cancel();
@@ -1047,20 +1052,20 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         editor.commands.setHighlightToolActive(false);
       }
     }}>
-      <div ref={toolbarRef} aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
+      <div ref={toolbarRef} aria-label={t("formattingToolbar")} role="toolbar" tabIndex={0}
         className="libera-editor-toolbar libera-horizontal-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [&>*]:shrink-0">
-        <select aria-label="Text style" className={selectClass} value={state.heading} onChange={(event) => {
+        <select aria-label={t("textStyle")} className={selectClass} value={state.heading} onChange={(event) => {
           const level = Number(event.target.value) as 1 | 2 | 3 | 4 | 5 | 6;
           if (level) editor.chain().focus().setHeading({ level }).run(); else editor.chain().focus().setParagraph().run();
         }}>
-          <option value="0">Paragraph</option>
-          {[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>Heading {level}</option>)}
+          <option value="0">{t("paragraph")}</option>
+          {[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>{t("headingLevel", { level })}</option>)}
         </select>
-        <select aria-label="Font size" className={selectClass} value={state.fontSize} onChange={(event) => event.target.value ? editor.chain().focus().setFontSize(event.target.value).run() : editor.chain().focus().unsetFontSize().run()}>
-          <option value="">Font size</option>
-          {[10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 96].map((size) => <option key={size} value={`${size}px`}>{size} px</option>)}
+        <select aria-label={t("fontSize")} className={selectClass} value={state.fontSize} onChange={(event) => event.target.value ? editor.chain().focus().setFontSize(event.target.value).run() : editor.chain().focus().unsetFontSize().run()}>
+          <option value="">{t("fontSize")}</option>
+          {[10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 96].map((size) => <option key={size} value={`${size}px`}>{t("fontSizeValue", { size })}</option>)}
         </select>
-        <select aria-label="Line spacing" className={selectClass} value={state.lineHeight} onChange={(event) => {
+        <select aria-label={t("lineSpacing")} className={selectClass} value={state.lineHeight} onChange={(event) => {
           const chain = editor.chain().focus();
           // Without a selection, format the current paragraph's text.
           if (editor.state.selection.empty) {
@@ -1069,73 +1074,73 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           }
           if (event.target.value) chain.setLineHeight(event.target.value).run(); else chain.unsetLineHeight().run();
         }}>
-          <option value="">Line spacing</option>
-          {[1, 1.15, 1.5, 1.75, 2, 2.5, 3].map((spacing) => <option key={spacing} value={spacing}>{spacing}×</option>)}
+          <option value="">{t("lineSpacing")}</option>
+          {[1, 1.15, 1.5, 1.75, 2, 2.5, 3].map((spacing) => <option key={spacing} value={spacing}>{t("lineSpacingValue", { spacing })}</option>)}
         </select>
         <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} onPaste={pasteFromMenu} shared={collab ? sharedSuggestions : undefined} />
         {[
-          { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
-          { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
-          { title: "Underline", icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
-          { title: "Strikethrough", icon: Strikethrough, active: state.strike, run: () => editor.chain().focus().toggleStrike().run() },
-          { title: "Superscript", icon: Superscript, active: state.superscript, run: () => editor.chain().focus().toggleSuperscript().run() },
-          { title: "Subscript", icon: Subscript, active: state.subscript, run: () => editor.chain().focus().toggleSubscript().run() },
-          { title: "Highlight", icon: Highlighter, active: state.highlightTool.active || state.highlight, run: () => editor.chain().focus().toggleHighlightTool().run() },
+          { title: t("bold"), icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
+          { title: t("italic"), icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
+          { title: t("underline"), icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
+          { title: t("strikethrough"), icon: Strikethrough, active: state.strike, run: () => editor.chain().focus().toggleStrike().run() },
+          { title: t("superscript"), icon: Superscript, active: state.superscript, run: () => editor.chain().focus().toggleSuperscript().run() },
+          { title: t("subscript"), icon: Subscript, active: state.subscript, run: () => editor.chain().focus().toggleSubscript().run() },
+          { title: t("highlight"), icon: Highlighter, active: state.highlightTool.active || state.highlight, run: () => editor.chain().focus().toggleHighlightTool().run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
-        <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
-          {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label} highlight</option>)}
+        <select aria-label={t("highlightColorSelect")} className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
+          {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.value} value={color.value}>{t("highlightColorOption", { color: colorName(color) })}</option>)}
         </select>
         {[
-          { title: "Bullet list", icon: List, active: state.bulletList, run: () => editor.chain().focus().toggleBulletList().run() },
-          { title: "Numbered list", icon: ListOrdered, active: state.orderedList, run: () => editor.chain().focus().toggleOrderedList().run() },
-          { title: "Outdent list item", icon: ListIndentDecrease, active: false, disabled: !state.canLiftListItem, run: () => editor.chain().focus().liftListItem(editor.isActive("taskItem") ? "taskItem" : "listItem").run() },
-          { title: "Indent list item", icon: ListIndentIncrease, active: false, disabled: !state.canSinkListItem, run: () => editor.chain().focus().sinkListItem(editor.isActive("taskItem") ? "taskItem" : "listItem").run() },
-          { title: "Code block", icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
-          { title: "Insert chart", icon: ChartColumn, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
-          { title: "Insert diagram", icon: Workflow, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
-          { title: "Insert macro block", icon: Braces, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.macro).run() },
-          { title: "Insert interactive HTML", icon: CodeXml, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
+          { title: t("bulletList"), icon: List, active: state.bulletList, run: () => editor.chain().focus().toggleBulletList().run() },
+          { title: t("numberedListTitle"), icon: ListOrdered, active: state.orderedList, run: () => editor.chain().focus().toggleOrderedList().run() },
+          { title: t("outdentListItemTitle"), icon: ListIndentDecrease, active: false, disabled: !state.canLiftListItem, run: () => editor.chain().focus().liftListItem(editor.isActive("taskItem") ? "taskItem" : "listItem").run() },
+          { title: t("indentListItemTitle"), icon: ListIndentIncrease, active: false, disabled: !state.canSinkListItem, run: () => editor.chain().focus().sinkListItem(editor.isActive("taskItem") ? "taskItem" : "listItem").run() },
+          { title: t("codeBlockLower"), icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
+          { title: t("insertChart"), icon: ChartColumn, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
+          { title: t("insertDiagram"), icon: Workflow, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
+          { title: t("insertMacroBlock"), icon: Braces, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.macro).run() },
+          { title: t("insertInteractiveHtml"), icon: CodeXml, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
         ].map(({ title, icon: Icon, active, disabled, run }: { title: string; icon: typeof List; active: boolean; disabled?: boolean; run: () => void }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} disabled={disabled} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
-        <button type="button" title="Quote" aria-label="Quote" aria-pressed={state.blockquote} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={() => editor.chain().focus().toggleBlockquote().run()}><Quote className="h-4 w-4" /></button>
-        <select aria-label="Box color" className={selectClass} value={state.boxColor} onChange={(event) => {
+        <button type="button" title={t("quote")} aria-label={t("quote")} aria-pressed={state.blockquote} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={() => editor.chain().focus().toggleBlockquote().run()}><Quote className="h-4 w-4" /></button>
+        <select aria-label={t("boxColor")} className={selectClass} value={state.boxColor} onChange={(event) => {
           const chain = editor.chain().focus();
           const color = event.target.value === "default" ? null : event.target.value;
           if (state.blockquote) chain.updateAttributes("blockquote", { color }).run();
           else chain.wrapIn("blockquote", { color }).run();
         }}>
-          <option value="" disabled>Box color</option>
-          <option value="default">Default grey box</option>
-          {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.shortcut} value={color.shortcut}>{color.label} box</option>)}
+          <option value="" disabled>{t("boxColor")}</option>
+          <option value="default">{t("defaultGreyBoxLower")}</option>
+          {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.shortcut} value={color.shortcut}>{t("colorBoxOption", { color: colorName(color) })}</option>)}
         </select>
-        <select aria-label="Text color" className={selectClass} value={state.color} onChange={(event) => event.target.value ? editor.chain().focus().setColor(event.target.value).run() : editor.chain().focus().unsetColor().run()}>
-          <option value="">Text color</option>
-          {MARKDOWN_TEXT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label}</option>)}
+        <select aria-label={t("textColorSelect")} className={selectClass} value={state.color} onChange={(event) => event.target.value ? editor.chain().focus().setColor(event.target.value).run() : editor.chain().focus().unsetColor().run()}>
+          <option value="">{t("textColorSelect")}</option>
+          {MARKDOWN_TEXT_COLORS.map((color) => <option key={color.value} value={color.value}>{colorName(color)}</option>)}
         </select>
-        <button type="button" aria-label="Insert or edit link" title="Insert or edit link" className={buttonClass} onClick={() => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to, markdown: readMarkdown(), selectionLinks: readSelectionLinks?.() })}><Link2 className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("insertOrEditLink")} title={t("insertOrEditLink")} className={buttonClass} onClick={() => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to, markdown: readMarkdown(), selectionLinks: readSelectionLinks?.() })}><Link2 className="h-4 w-4" /></button>
         <NoteLinksButton className={buttonClass} documentPath={documentPath} files={files} getContent={() => editor.getMarkdown()} onOpenLink={onOpenFileLink} />
-        <button type="button" aria-label="Insert image from file" title="Insert image from file (or drop/paste a photo)" className={buttonClass} onClick={() => imageInput.current?.click()}><ImagePlus className="h-4 w-4" /></button>
-        <button type="button" aria-label="Insert image from gallery" title="Insert images from the photo gallery" className={buttonClass} onClick={() => setGalleryPickerOpen(true)}><Images className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("insertImageFromFile")} title={t("insertImageFromFileTitle")} className={buttonClass} onClick={() => imageInput.current?.click()}><ImagePlus className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("insertImageFromGallery")} title={t("insertImagesFromGalleryTitle")} className={buttonClass} onClick={() => setGalleryPickerOpen(true)}><Images className="h-4 w-4" /></button>
         {onStartScreenshotSnip ? (
           <>
-            <button type="button" aria-label="Snip from image or PDF tab" title={canStartScreenshotSnip ? "Snip from image or PDF tab" : "Open an image or PDF tab to snip"} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("image"); }}><Scissors className="h-4 w-4" /></button>
-            <button type="button" aria-label="Snip as Markdown" title={canStartScreenshotSnip ? "Snip as Markdown: read a region of an image or PDF tab into text" : "Open an image or PDF tab to snip"} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("markdown"); }}><ScanText className="h-4 w-4" /></button>
+            <button type="button" aria-label={t("snipFromImageOrPdfTabButton")} title={canStartScreenshotSnip ? t("snipFromImageOrPdfTabButton") : t("openImageOrPdfToSnip")} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("image"); }}><Scissors className="h-4 w-4" /></button>
+            <button type="button" aria-label={t("snipAsMarkdown")} title={canStartScreenshotSnip ? t("snipAsMarkdownTitle") : t("openImageOrPdfToSnip")} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("markdown"); }}><ScanText className="h-4 w-4" /></button>
           </>
         ) : null}
-        <button type="button" aria-label="Insert ink block" title={untitled ? "Save the note to draw in it" : "Insert ink block: draw or write with a pen"} disabled={untitled} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()}
+        <button type="button" aria-label={t("insertInkBlock")} title={untitled ? t("saveNoteToDrawTitle") : t("insertInkBlockTitle")} disabled={untitled} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()}
           onClick={() => editor.chain().focus().insertContent([{ type: "image", attrs: { src: inkBlockSource(documentPath, createInkId()), alt: "Ink" } }, { type: "paragraph" }]).run()}><PenLine className="h-4 w-4" /></button>
-        <TableInsertButton className={buttonClass} disabled={state.table} title={state.table ? "Tables cannot be placed inside a table" : "Insert table"}
+        <TableInsertButton className={buttonClass} disabled={state.table} title={state.table ? t("tablesCannotNest") : undefined}
           onPick={(rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()} />
-        <button type="button" aria-label="Insert or edit equation" title="Insert or edit equation" className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>
-        <button type="button" aria-label="Insert footnote" title="Insert footnote" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={() => editor.chain().focus().insertFootnote().run()}><Asterisk className="h-4 w-4" /></button>
-        <button type="button" aria-label="Clear formatting" title="Clear formatting" className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
-        <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>
-        <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
-        <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
-        <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("insertOrEditEquation")} title={t("insertOrEditEquation")} className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("insertFootnote")} title={t("insertFootnote")} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={() => editor.chain().focus().insertFootnote().run()}><Asterisk className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("clearFormattingButton")} title={t("clearFormattingButton")} className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("undo")} title={t("undo")} disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("redo")} title={t("redo")} disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("saveDocument")} title={t("saveDocument")} className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("fixChatGptEquationsButton")} title={t("fixChatGptEquationsButton")} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
         <FactCheckButton className={buttonClass} documentPath={documentPath} markdown={value} disabled={untitled} />
         <ExpandMacrosButton className={buttonClass} markdown={value} getMarkdown={readMarkdown} onExpand={onExpandMacros} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
-        <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
+        <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label={t("chooseImages")} onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
       </div>
       <GalleryPhotoPicker open={galleryPickerOpen} onClose={() => setGalleryPickerOpen(false)} onInsert={async (photos) => {
         // Read the selection first: the photos download before they are placed.
@@ -1144,7 +1149,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         setGalleryPickerOpen(false);
         await insertImages(files, pos);
       }} />
-      {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
+      {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>{t("dismiss")}</button></div> : null}
       <MarkdownTextWidth canvasRef={scrollContainerRef} />
       <div className="relative min-h-0 flex-1">
         <div ref={scrollContainerRef} className={`libera-visual-page libera-text-width-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontFamily, fontSize: fontSizePx, lineHeight }}
@@ -1168,33 +1173,33 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
             <div className="flex min-w-0 items-center gap-1">
               <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
-              <input ref={findInputRef} aria-label="Find in note" className="h-8 min-w-24 flex-1 border-0 px-1 text-sm outline-none"
-                value={findQuery} placeholder="Find in note" onChange={(event) => updateFindQuery(event.target.value)} onKeyDown={handleFindKeyDown} />
+              <input ref={findInputRef} aria-label={t("findInNote")} className="h-8 min-w-24 flex-1 border-0 px-1 text-sm outline-none"
+                value={findQuery} placeholder={t("findInNote")} onChange={(event) => updateFindQuery(event.target.value)} onKeyDown={handleFindKeyDown} />
               <span className="min-w-16 text-center text-xs text-muted-foreground">
-                {findQuery ? `${currentFindMatchNumber}/${findMatches.length}` : "0/0"}
+                {t("findMatchCount", findQuery ? { current: currentFindMatchNumber, total: findMatches.length } : { current: 0, total: 0 })}
               </span>
-              <button type="button" aria-label="Previous match" title="Previous match" disabled={!findMatches.length}
+              <button type="button" aria-label={t("previousMatch")} title={t("previousMatch")} disabled={!findMatches.length}
                 className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => selectFindMatch((state.find?.activeMatchIndex ?? 0) - 1)}>
                 <ChevronUp aria-hidden className="h-4 w-4" />
               </button>
-              <button type="button" aria-label="Next match" title="Next match" disabled={!findMatches.length}
+              <button type="button" aria-label={t("nextMatch")} title={t("nextMatch")} disabled={!findMatches.length}
                 className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => selectFindMatch((state.find?.activeMatchIndex ?? 0) + 1)}>
                 <ChevronDown aria-hidden className="h-4 w-4" />
               </button>
-              <button type="button" aria-label="Close find" title="Close" className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted" onClick={closeFind}>
+              <button type="button" aria-label={t("closeFind")} title={t("close")} className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted" onClick={closeFind}>
                 <X aria-hidden className="h-4 w-4" />
               </button>
             </div>
             <div className="flex min-w-0 items-center gap-1 pl-7">
-              <input aria-label="Replace with" className="h-8 min-w-20 flex-1 rounded border border-border bg-background px-2 text-sm outline-none"
-                value={replaceQuery} placeholder="Replace with" onChange={(event) => setReplaceQuery(event.target.value)} onKeyDown={handleReplaceKeyDown} />
-              <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!findMatches.length} onClick={() => replaceMatches(false)}>Replace</button>
-              <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!findMatches.length} onClick={() => replaceMatches(true)}>Replace all</button>
-              <label className="flex shrink-0 items-center gap-1 px-1 text-xs text-muted-foreground" title="Use * for any text and ? for one character">
-                <input type="checkbox" aria-label="Wildcard matches" checked={wildcardMatches} onChange={(event) => updateWildcardMatches(event.target.checked)} />
-                Wildcards
+              <input aria-label={t("replaceWith")} className="h-8 min-w-20 flex-1 rounded border border-border bg-background px-2 text-sm outline-none"
+                value={replaceQuery} placeholder={t("replaceWith")} onChange={(event) => setReplaceQuery(event.target.value)} onKeyDown={handleReplaceKeyDown} />
+              <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!findMatches.length} onClick={() => replaceMatches(false)}>{t("replace")}</button>
+              <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!findMatches.length} onClick={() => replaceMatches(true)}>{t("replaceAll")}</button>
+              <label className="flex shrink-0 items-center gap-1 px-1 text-xs text-muted-foreground" title={t("wildcardsTitle")}>
+                <input type="checkbox" aria-label={t("wildcardMatches")} checked={wildcardMatches} onChange={(event) => updateWildcardMatches(event.target.checked)} />
+                {t("wildcards")}
               </label>
             </div>
           </div>
@@ -1202,8 +1207,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         <TiptapChangeBar editor={editor} />
       </div>
       <TiptapSelectionStatusBar editor={editor} content={value} uploading={uploadCount > 0} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />} collab={sharedStatus} />
-      <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding equation markers." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
-        <button type="button" className={selectClass} onClick={() => setMathDraft(null)}>Cancel</button>
+      <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? t("editEquation") : t("insertEquation")} description={t("equationDescription")} panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
+        <button type="button" className={selectClass} onClick={() => setMathDraft(null)}>{t("cancel")}</button>
         <button type="button" disabled={!!mathPreview.error} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-40" onClick={() => {
           if (!mathDraft) return;
           const type = mathDraft.display ? "blockMath" : "inlineMath";
@@ -1211,13 +1216,13 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           // The equation is where the reader clicked it: applying must not scroll to the caret.
           editor.chain().focus(undefined, { scrollIntoView: false }).insertContentAt({ from: mathDraft.from, to: mathDraft.to }, { type, attrs: { ...(original?.type.name === type ? original.attrs : {}), latex: mathDraft.latex.trim() } }).run();
           setMathDraft(null);
-        }}>Apply equation</button>
+        }}>{t("applyEquation")}</button>
       </>}>
-        <textarea autoFocus aria-label="LaTeX equation" className="min-h-28 w-full rounded-md border border-border bg-background p-3 font-mono text-sm" value={mathDraft?.latex ?? ""} onChange={(event) => setMathDraft((current) => current ? { ...current, latex: event.target.value } : null)} />
-        <label className="my-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={mathDraft?.display ?? false} onChange={(event) => setMathDraft((current) => current ? { ...current, display: event.target.checked } : null)} />Display equation on its own line</label>
-        {mathPreview.error ? <p role="status" className="text-sm text-destructive">{mathPreview.error}</p> : <div aria-label="Equation preview" className="overflow-auto rounded-md bg-muted p-4" dangerouslySetInnerHTML={{ __html: mathPreview.html }} />}
+        <textarea autoFocus aria-label={t("latexEquation")} className="min-h-28 w-full rounded-md border border-border bg-background p-3 font-mono text-sm" value={mathDraft?.latex ?? ""} onChange={(event) => setMathDraft((current) => current ? { ...current, latex: event.target.value } : null)} />
+        <label className="my-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={mathDraft?.display ?? false} onChange={(event) => setMathDraft((current) => current ? { ...current, display: event.target.checked } : null)} />{t("displayEquationOnOwnLine")}</label>
+        {mathPreview.error ? <p role="status" className="text-sm text-destructive">{mathPreview.error}</p> : <div aria-label={t("equationPreview")} className="overflow-auto rounded-md bg-muted p-4" dangerouslySetInnerHTML={{ __html: mathPreview.html }} />}
       </ModalDialog>
-      <ModalDialog open={!!linkDraft} title="Insert or edit link" onClose={() => setLinkDraft(null)} footer={<button type="button" className={selectClass} onClick={() => {
+      <ModalDialog open={!!linkDraft} title={t("insertOrEditLink")} onClose={() => setLinkDraft(null)} footer={<button type="button" className={selectClass} onClick={() => {
         if (!linkDraft) return;
         const chain = editor.chain().focus().setTextSelection({ from: linkDraft.from, to: linkDraft.to }).extendMarkRange("link");
         if (linkDraft.href.trim()) {
@@ -1225,7 +1230,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           else chain.setLink({ href: linkDraft.href.trim() }).run();
         } else chain.unsetLink().run();
         setLinkDraft(null);
-      }}>Apply link</button>}>
+      }}>{t("applyLink")}</button>}>
         <MarkdownLinkInput files={files} markdown={linkDraft?.markdown} selectionLinks={linkDraft?.selectionLinks} sourcePath={documentPath} value={linkDraft?.href ?? ""} onChange={(href, label) => setLinkDraft((current) => current ? { ...current, href, label } : null)} />
       </ModalDialog>
     </div>

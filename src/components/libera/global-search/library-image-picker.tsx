@@ -1,6 +1,7 @@
 "use client";
 
 import { Search } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -20,6 +21,7 @@ export function LibraryImagePicker({
   onClose: () => void;
   onPick: (file: LiberaFileNode) => void;
 }) {
+  const t = useTranslations("globalSearch.libraryImagePicker");
   const [filter, setFilter] = useState("");
   const images = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -29,13 +31,13 @@ export function LibraryImagePicker({
   }, [files, filter]);
 
   return (
-    <ModalDialog open={open} title="Search with an image from your notebooks" panelClassName="max-w-3xl" onClose={onClose}>
+    <ModalDialog open={open} title={t("pickerTitle")} panelClassName="max-w-3xl" onClose={onClose}>
       <div className="relative mb-3">
         <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <input
           autoFocus
           value={filter}
-          placeholder="Filter by name or folder"
+          placeholder={t("filterPlaceholder")}
           className="h-9 w-full rounded-lg border border-input bg-card pl-9 pr-3 text-sm outline-none focus:border-ring"
           onChange={(event) => setFilter(event.target.value)}
         />
@@ -57,9 +59,9 @@ export function LibraryImagePicker({
           ))}
         </div>
       ) : (
-        <p className="py-10 text-center text-sm text-muted-foreground">{filter ? "No images match." : "There are no images in your notebooks."}</p>
+        <p className="py-10 text-center text-sm text-muted-foreground">{filter ? t("noImagesMatch") : t("noImages")}</p>
       )}
-      {images.length > MAX_SHOWN ? <p className="mt-2 text-xs text-muted-foreground">Showing {MAX_SHOWN} of {images.length}. Filter to narrow the list.</p> : null}
+      {images.length > MAX_SHOWN ? <p className="mt-2 text-xs text-muted-foreground">{t("showingCount", { shown: MAX_SHOWN, total: images.length })}</p> : null}
     </ModalDialog>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import {
   REFERENCES_UPDATED_EVENT,
@@ -223,6 +224,7 @@ const noopSubscribe = () => () => undefined;
 
 /** The notebook's library, loaded on first use and kept current across windows. */
 export function useReferenceLibrary(notebook: string | null) {
+  const t = useTranslations("references.useReferenceLibrary");
   const subscribeToStore = useCallback(
     (listener: () => void) => notebook ? subscribe(notebook, listener) : noopSubscribe(),
     [notebook],
@@ -237,13 +239,13 @@ export function useReferenceLibrary(notebook: string | null) {
   }, [notebook]);
 
   const apply = useCallback((ops: ReferenceLibraryOp[]) => {
-    if (!notebook) return Promise.reject(new Error("Open a notebook to change its references."));
+    if (!notebook) return Promise.reject(new Error(t("openToChangeError")));
     return applyReferenceOps(notebook, ops);
-  }, [notebook]);
+  }, [notebook, t]);
   const reload = useCallback(() => {
-    if (!notebook) return Promise.reject(new Error("Open a notebook to load its references."));
+    if (!notebook) return Promise.reject(new Error(t("openToLoadError")));
     return fetchReferenceLibrary(notebook);
-  }, [notebook]);
+  }, [notebook, t]);
 
   return { library: state.library, loading: state.loading || Boolean(notebook && !state.library && !state.error), error: state.error, apply, reload };
 }

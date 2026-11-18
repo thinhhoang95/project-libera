@@ -2,6 +2,7 @@
 
 import { GripHorizontal, PencilLine, X } from "lucide-react";
 import type { CSSProperties, PointerEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
+import { useTranslations } from "next-intl";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ContentTrust } from "@/lib/markdown-sanitize";
 import {
@@ -89,15 +90,15 @@ type NoteHandlers = {
   updateText: (id: string, markdown: string, base?: string) => void;
 };
 
-const RESIZE_HANDLES: { handle: ResizeHandle; label: string }[] = [
-  { handle: "nw", label: "Resize text annotation from top left" },
-  { handle: "n", label: "Resize text annotation from top" },
-  { handle: "ne", label: "Resize text annotation from top right" },
-  { handle: "e", label: "Resize text annotation from right" },
-  { handle: "se", label: "Resize text annotation from bottom right" },
-  { handle: "s", label: "Resize text annotation from bottom" },
-  { handle: "sw", label: "Resize text annotation from bottom left" },
-  { handle: "w", label: "Resize text annotation from left" },
+const RESIZE_HANDLES: { handle: ResizeHandle; message: string }[] = [
+  { handle: "nw", message: "resizeTopLeft" },
+  { handle: "n", message: "resizeTop" },
+  { handle: "ne", message: "resizeTopRight" },
+  { handle: "e", message: "resizeRight" },
+  { handle: "se", message: "resizeBottomRight" },
+  { handle: "s", message: "resizeBottom" },
+  { handle: "sw", message: "resizeBottomLeft" },
+  { handle: "w", message: "resizeLeft" },
 ];
 
 export function clamp(value: number, min: number, max: number) {
@@ -308,6 +309,7 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
   selected: boolean;
   textScale: number;
 }) {
+  const t = useTranslations("textAnnotationLayer");
   const noteRef = useRef<HTMLDivElement>(null);
   const mathMarkers = useNoteMathMarkers();
   const trust = useContext(NoteContentTrust);
@@ -379,10 +381,10 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
       {selected && interactive && !readOnly ? (
         <>
           <button
-            aria-label="Move text annotation"
+            aria-label={t("moveTextAnnotation")}
             className="pdf-note-grip"
             data-pdf-annotation-ui
-            title="Drag to move"
+            title={t("dragToMove")}
             type="button"
             onPointerDown={(event) => {
               event.stopPropagation();
@@ -391,13 +393,13 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
           >
             <GripHorizontal aria-hidden className="h-3 w-3" />
           </button>
-          {RESIZE_HANDLES.map(({ handle, label }) => (
+          {RESIZE_HANDLES.map(({ handle, message }) => (
             <button
               key={handle}
-              aria-label={label}
+              aria-label={t(message)}
               className="pdf-note-handle"
               data-handle={handle}
-              title={label}
+              title={t(message)}
               type="button"
               onPointerDown={(event) => handleResizePointerDown(event, handle)}
             />
@@ -421,6 +423,7 @@ function NoteReader({
   onClose: () => void;
   onEdit: () => void;
 }) {
+  const t = useTranslations("textAnnotationLayer");
   const margin = 8;
   const left = annotation.rect.x * pageSize.width;
   const width = Math.min(
@@ -440,16 +443,16 @@ function NoteReader({
       className="pdf-note-reader"
       data-pdf-annotation-ui
       role="dialog"
-      aria-label="Text annotation"
+      aria-label={t("textAnnotation")}
       style={{ left: clampedLeft, top, width, maxHeight: Math.max(160, pageSize.height - top - margin) }}
       onPointerDown={(event) => event.stopPropagation()}
       onDoubleClick={onEdit}
     >
       <div className="pdf-note-reader-actions">
-        <button type="button" aria-label="Edit note" title="Edit note" onClick={onEdit}>
+        <button type="button" aria-label={t("editNote")} title={t("editNote")} onClick={onEdit}>
           <PencilLine aria-hidden className="h-3.5 w-3.5" />
         </button>
-        <button type="button" aria-label="Collapse note" title="Collapse (Esc)" onClick={onClose}>
+        <button type="button" aria-label={t("collapseNote")} title={t("collapseNoteTitle")} onClick={onClose}>
           <X aria-hidden className="h-3.5 w-3.5" />
         </button>
       </div>

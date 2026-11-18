@@ -1,6 +1,7 @@
 "use client";
 
 import { BookOpen, FileText, Highlighter, Loader2, Plus, Sparkles } from "lucide-react";
+import { useTranslations } from "next-intl";
 import {
   useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState,
   type ReactNode, type Ref, type RefObject,
@@ -95,19 +96,24 @@ function familyName(csl: CslItem) {
   return name ? [name["non-dropping-particle"], name.family ?? name.literal].filter(Boolean).join(" ") : "";
 }
 
+/** Translates `references.citationPopup` messages; English without it. */
+export type PopupTranslator = (key: string, values?: Record<string, string | number>) => string;
+
 /** `Smith (2020)`, `Smith & Lee (2020)`, `Smith et al. (2020)`. */
-export function entryAuthorsYear(entry: Pick<ReferenceEntry, "csl">) {
+export function entryAuthorsYear(entry: Pick<ReferenceEntry, "csl">, t?: PopupTranslator) {
   const csl = entry.csl;
   const people = csl.author?.length ? csl.author : csl.editor ?? [];
   const first = familyName(csl);
   const second = people[1] ? [people[1]["non-dropping-particle"], people[1].family ?? people[1].literal].filter(Boolean).join(" ") : "";
-  const authors = !first ? "" : people.length > 2 ? `${first} et al.` : second ? `${first} & ${second}` : first;
+  const authors = !first ? ""
+    : people.length > 2 ? (t ? t("etAl", { first }) : `${first} et al.`)
+      : second ? (t ? t("twoAuthors", { first, second }) : `${first} & ${second}`) : first;
   const year = referenceYear(csl);
-  return [authors || "Unknown author", year ? `(${year})` : ""].filter(Boolean).join(" ");
+  return [authors || (t ? t("unknownAuthor") : "Unknown author"), year ? `(${year})` : ""].filter(Boolean).join(" ");
 }
 
-function entryTitle(entry: Pick<ReferenceEntry, "csl">) {
-  return typeof entry.csl.title === "string" && entry.csl.title.trim() ? entry.csl.title : "Untitled";
+function entryTitle(entry: Pick<ReferenceEntry, "csl">, untitled: string) {
+  return typeof entry.csl.title === "string" && entry.csl.title.trim() ? entry.csl.title : untitled;
 }
 
 function Highlighted({ text, ranges }: { text: string; ranges: Array<[number, number]> }) {
@@ -132,11 +138,12 @@ function rangesIn(line: string, suggestion: ReferenceSuggestion) {
 }
 
 function StatusBadge({ status }: { status: ReferenceEntry["status"] }) {
+  const tDisplay = useTranslations("references.referenceDisplay");
   if (status === "confirmed") return null;
   const unresolved = status === "unresolved";
   return (
     <span className={`shrink-0 rounded px-1.5 py-px text-[10px] font-medium uppercase tracking-wide ${unresolved ? "bg-destructive-muted text-destructive" : "bg-muted text-muted-foreground"}`}>
-      {unresolved ? "Unresolved" : "Needs review"}
+      {unresolved ? tDisplay("status.unresolved") : tDisplay("status.needs-review")}
     </span>
   );
 }
@@ -201,11 +208,11 @@ function ReasonIcon({ reason }: { reason: SemanticMatchReason }) {
 }
 
 /** Why a semantic row matched: "p. 12 · Highlight", "Abstract", "notes.md · Methods". */
-function reasonLabel(reason: SemanticMatchReason, pageLocator?: string) {
-  if (reason.kind === "highlight") return `${pageLocator ? `p. ${pageLocator} · ` : ""}Highlight`;
-  if (reason.kind === "page") return pageLocator ? `p. ${pageLocator}` : `Page ${reason.page}`;
+function reasonLabel(reason: SemanticMatchReason, pageLocator: string | undefined, t: PopupTranslator) {
+  if (reason.kind === "highlight") return pageLocator ? t("reasonHighlightPage", { page: pageLocator }) : t("reasonHighlight");
+  if (reason.kind === "page") return pageLocator ? t("reasonPage", { page: pageLocator }) : t("reasonPageNumber", { page: reason.page });
   if (reason.kind === "passage") return [reason.path.split("/").at(-1), reason.section].filter(Boolean).join(" · ");
-  return reason.section ?? "Reference";
+  return reason.section ?? t("reasonReference");
 }
 
 type Row =
@@ -216,6 +223,7 @@ type Row =
   | { kind: "open"; id: "open" };
 
 export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput = false, narrativeAllowed = false, onInsert, onClose, ref }: CitationPopupProps) {
+  const t = useTranslations("references.citationPopup");
   const render = useReferenceRender();
   const notebook = render?.notebook ?? null;
   const library = render?.library ?? null;
@@ -280,12 +288,12 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
       const after = await apply([{ op: "add", entry }]);
       if (id !== request.current) return;
       const added = addedEntry(before, after);
-      if (!added) throw new Error("The reference was not added.");
+      if (!added) throw new Error(t("referenceNotAdded"));
       insert(added.key, locator, narrative);
     } catch (error) {
-      if (id === request.current) setAdd({ phase: "error", input: identifier?.value ?? query, message: error instanceof Error ? error.message : "Could not add the reference." });
+      if (id === request.current) setAdd({ phase: "error", input: identifier?.value ?? query, message: error instanceof Error && error.message ? error.message : t("couldNotAddReference") });
     }
-  }, [apply, identifier, insert, library, query]);
+  }, [apply, identifier, insert, library, query, t]);
 
   const resolve = useCallback(async () => {
     if (!notebook || !identifier) return;
@@ -357,15 +365,15 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
 
   const busy = add.phase === "resolving" || add.phase === "adding";
   let empty: string | null = null;
-  if (!notebook || (!library && !loading)) empty = "No library for this notebook";
-  else if (!library) empty = "Loading references…";
-  else if (!suggestions.length && !semantic?.rows.length && !semantic?.loading) empty = query.trim() ? "No matches" : "No references yet";
-  const semanticTitle = semantic?.mode === "keyword" ? "From your library (keyword matches)" : "From your library's meaning";
+  if (!notebook || (!library && !loading)) empty = t("noLibrary");
+  else if (!library) empty = t("loadingReferences");
+  else if (!suggestions.length && !semantic?.rows.length && !semantic?.loading) empty = query.trim() ? t("noMatches") : t("noReferencesYet");
+  const semanticTitle = semantic?.mode === "keyword" ? t("semanticKeyword") : t("semanticMeaning");
 
   return (
     <div
       role="listbox"
-      aria-label="Cite a reference"
+      aria-label={t("citeAria")}
       className="fixed z-40 flex max-h-96 w-96 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-xl"
       data-citation-popup=""
       style={{ left: x, top: y }}
@@ -374,9 +382,9 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
       {searchInput ? (
         <input
           ref={inputRef}
-          aria-label="Search references"
+          aria-label={t("searchAria")}
           className="m-1 h-8 shrink-0 rounded border border-border bg-background px-2 text-sm outline-none"
-          placeholder="Search references"
+          placeholder={t("searchPlaceholder")}
           value={searchQuery}
           onChange={(event) => setSearchQuery(event.target.value)}
           onKeyDown={(event) => {
@@ -391,7 +399,7 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
         {empty ? <div className="px-2.5 py-2 text-sm text-muted-foreground">{empty}</div> : null}
         {semantic?.loading ? (
           <div role="status" data-citation-semantic="loading" className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
-            <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> Searching your library…
+            <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> {t("searching")}
           </div>
         ) : null}
         {rows.map((row, index) => {
@@ -408,8 +416,8 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
           };
           if (row.kind === "entry") {
             const { suggestion } = row;
-            const authors = entryAuthorsYear(suggestion.entry);
-            const title = entryTitle(suggestion.entry);
+            const authors = entryAuthorsYear(suggestion.entry, t);
+            const title = entryTitle(suggestion.entry, t("untitled"));
             return (
               <button key={row.id} {...common} data-citation-key={suggestion.key}>
                 <span className="min-w-0 flex-1">
@@ -427,7 +435,7 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
                   </span>
                   {suggestion.matchedField === "key" && suggestion.matchedText !== suggestion.key ? (
                     <span className="block truncate font-mono text-[11px] text-muted-foreground">
-                      alias @<Highlighted text={suggestion.matchedText} ranges={suggestion.highlights} />
+                      {t("alias")} @<Highlighted text={suggestion.matchedText} ranges={suggestion.highlights} />
                     </span>
                   ) : null}
                 </span>
@@ -446,14 +454,14 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
                 <button {...common} data-citation-key={entry.key} data-citation-semantic="row" data-page-locator={row.match.pageLocator}>
                   <span className="min-w-0 flex-1">
                     <span className="flex min-w-0 items-center gap-2">
-                      <span className="min-w-0 truncate text-sm font-medium text-foreground">{entryAuthorsYear(entry)}</span>
+                      <span className="min-w-0 truncate text-sm font-medium text-foreground">{entryAuthorsYear(entry, t)}</span>
                       <StatusBadge status={entry.status} />
                       <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">@{entry.key}</span>
                     </span>
-                    <span className="block truncate text-xs text-muted-foreground">{entryTitle(entry)}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{entryTitle(entry, t("untitled"))}</span>
                     <span className="mt-0.5 flex min-w-0 items-start gap-1 text-[11px] text-muted-foreground" data-match-reason={reason.kind}>
                       <ReasonIcon reason={reason} />
-                      <span className="shrink-0 font-medium text-accent">{reasonLabel(reason, row.match.pageLocator)}</span>
+                      <span className="shrink-0 font-medium text-accent">{reasonLabel(reason, row.match.pageLocator, t)}</span>
                       <span className="min-w-0 truncate">{reason.text}</span>
                     </span>
                   </span>
@@ -467,7 +475,7 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
                 {busy ? <Loader2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" /> : <Plus aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm text-foreground">
-                    {add.phase === "resolving" ? `Looking up “${row.input}”…` : add.phase === "adding" ? `Adding “${row.input}”…` : `Add reference from “${row.input}”`}
+                    {add.phase === "resolving" ? t("lookingUpInput", { input: row.input }) : add.phase === "adding" ? t("addingInput", { input: row.input }) : t("addFromInput", { input: row.input })}
                   </span>
                   {add.phase === "error" ? <span role="alert" className="block truncate text-xs text-destructive">{add.message}</span> : null}
                 </span>
@@ -480,10 +488,10 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
               <button key={row.id} {...common} className={`${rowClass} border-t border-border`} data-citation-confirm="">
                 <Plus aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-foreground">{entryAuthorsYear(candidate)}</span>
-                  <span className="block truncate text-xs text-muted-foreground">{entryTitle(candidate)}</span>
+                  <span className="block truncate text-sm font-medium text-foreground">{entryAuthorsYear(candidate, t)}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{entryTitle(candidate, t("untitled"))}</span>
                   <span className="mt-1 inline-block rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground">
-                    {add.existing ? `Already in library: cite @${add.existing.key}` : "Add & cite"}
+                    {add.existing ? t("alreadyInLibrary", { key: add.existing.key }) : t("addAndCite")}
                   </span>
                 </span>
               </button>
@@ -492,14 +500,14 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
           return (
             <button key={row.id} {...common} className={`${rowClass} ${row.kind === "open" && !identifier ? "border-t border-border" : ""}`}>
               <BookOpen aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-sm text-foreground">Open References</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-foreground">{t("openReferences")}</span>
             </button>
           );
         })}
       </div>
       {narrativeAllowed && suggestions.length ? (
         <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[11px] text-muted-foreground" data-citation-popup-hint="">
-          <kbd className="font-sans">Enter</kbd> cites [@key] · <kbd className="font-sans">Shift+Enter</kbd> cites in the text, @key
+          {t.rich("citeHint", { kbd: (chunks) => <kbd className="font-sans">{chunks}</kbd> })}
         </div>
       ) : null}
     </div>

@@ -11,7 +11,7 @@ self.onmessage = (event: MessageEvent<MarkdownPreviewRequest>) => {
     const patch = cache.patch(prepareMarkdownPreview(markdown, mathMarkers));
     response = { id, ...patch };
   } catch (cause) {
-    response = { id, error: cause instanceof Error ? cause.message : "Could not prepare preview" };
+    response = { id, error: cause instanceof Error ? cause.message : "" };
   }
   self.postMessage(response);
 };

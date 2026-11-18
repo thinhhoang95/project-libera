@@ -1,18 +1,19 @@
 "use client";
 
 import { ArrowDown, ArrowUp, CircleCheck, Copy, Download, FileText, FileType2, Globe, Library, Loader2, Merge, RefreshCw, Tag, Trash2, Undo2, X } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import {
   authorsLabel,
+  authorYearLabel,
   changedTags,
   chooseKeptEntry,
   citingPaths,
-  CSL_TYPE_LABELS,
   dateYear,
-  DUPLICATE_GROUP_LABELS,
   duplicateGroupKind,
+  duplicateGroupLabel,
   entryTitle,
   entryVenue,
   fieldLabel,
@@ -21,8 +22,9 @@ import {
   formatFieldValue,
   fullAuthorList,
   libraryTags,
-  STATUS_LABELS,
+  statusLabel,
   tagChangeText,
+  type DisplayTranslator,
   typeLabel,
   venueField,
 } from "@/components/libera/references/reference-display";
@@ -69,14 +71,15 @@ export function contentDispositionFileName(header: string | null) {
  * like other downloads in the app: an anchor with a blob URL, which the
  * desktop app turns into its Save dialog.
  */
-export async function exportReferences(request: { notebook: string; format: ExportFormat; ids?: string[] }) {
+export async function exportReferences(request: { notebook: string; format: ExportFormat; ids?: string[]; /** Shown when the server gives no reason (translated by the caller). */ fallbackError?: string }) {
+  const { fallbackError, ...body } = request;
   const response = await fetch("/api/references/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
-    let message = "The references could not be exported.";
+    let message = fallbackError ?? "The references could not be exported.";
     try {
       const body = await response.json() as { error?: unknown };
       if (typeof body.error === "string" && body.error) message = body.error;
@@ -130,6 +133,9 @@ export function MergeReferencesDialog({ group, onClose, onMerge }: MergeDialogPr
 }
 
 function MergeDialogBody({ group, onClose, onMerge }: { group: ReferenceEntry[]; onClose: () => void; onMerge: MergeDialogProps["onMerge"] }) {
+  const t = useTranslations("references.manageReferencesDialog");
+  const tc = useTranslations("common");
+  const tDisplay = useTranslations("references.referenceDisplay");
   const [keepId, setKeepId] = useState(() => chooseKeptEntry(group).id);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -145,7 +151,7 @@ function MergeDialogBody({ group, onClose, onMerge }: { group: ReferenceEntry[];
       await onMerge(keep.id, others.map((entry) => entry.id));
       onClose();
     } catch (mergeError) {
-      setError(mergeError instanceof Error ? mergeError.message : "The references could not be merged.");
+      setError(mergeError instanceof Error && mergeError.message ? mergeError.message : t("mergeFailed"));
     } finally {
       setBusy(false);
     }
@@ -154,46 +160,46 @@ function MergeDialogBody({ group, onClose, onMerge }: { group: ReferenceEntry[];
   return (
     <ModalDialog
       open
-      title={`Merge ${group.length} references`}
-      description="One entry is kept. The others' keys become its aliases, so documents citing them keep working, and fields it lacks are filled from them."
+      title={t("mergeTitle", { count: group.length })}
+      description={t("mergeDescription")}
       panelClassName="max-w-xl"
       onClose={onClose}
       footer={
         <>
-          <button type="button" className={cancelButton} onClick={onClose}>Cancel</button>
-          <button type="button" className={primaryButton} disabled={busy} onClick={() => void merge()}><Merge aria-hidden className="h-4 w-4" /> Merge into {keep.key}</button>
+          <button type="button" className={cancelButton} onClick={onClose}>{tc("cancel")}</button>
+          <button type="button" className={primaryButton} disabled={busy} onClick={() => void merge()}><Merge aria-hidden className="h-4 w-4" /> {t("mergeInto", { key: keep.key })}</button>
         </>
       }
     >
       <div className="space-y-3 text-sm">
         {error ? <div role="alert" className="rounded-lg bg-destructive-muted p-2.5 text-xs text-destructive">{error}</div> : null}
         <fieldset className="space-y-1">
-          <legend className="mb-1 text-xs font-medium text-muted-foreground">Keep</legend>
+          <legend className="mb-1 text-xs font-medium text-muted-foreground">{t("keep")}</legend>
           {group.map((entry) => (
             <label key={entry.id} className="flex items-start gap-2 rounded-lg px-1 py-1 hover:bg-muted">
-              <input type="radio" name="merge-keep" className="mt-1" checked={entry.id === keep.id} onChange={() => setKeepId(entry.id)} aria-label={`Keep ${entry.key}`} />
+              <input type="radio" name="merge-keep" className="mt-1" checked={entry.id === keep.id} onChange={() => setKeepId(entry.id)} aria-label={t("keepAria", { key: entry.key })} />
               <span className="min-w-0">
                 <span className="font-mono text-xs">{entry.key}</span>
-                <span className="block truncate text-xs text-muted-foreground">{authorsLabel(entry.csl) || "No author"} ({dateYear(entry.csl.issued) ?? "n.d."}) · {entryTitle(entry)} · {entryVenue(entry.csl) || typeLabel(entry.csl.type)}</span>
+                <span className="block truncate text-xs text-muted-foreground">{t("mergeEntryLine", { authorYear: authorYearLabel(entry.csl, tDisplay), title: entryTitle(entry, tDisplay), venue: entryVenue(entry.csl) || typeLabel(entry.csl.type, tDisplay) })}</span>
               </span>
             </label>
           ))}
         </fieldset>
-        <div className="space-y-1" aria-label="Merge preview">
-          <p className="text-xs font-medium text-muted-foreground">Result</p>
+        <div className="space-y-1" aria-label={t("previewAria")}>
+          <p className="text-xs font-medium text-muted-foreground">{t("result")}</p>
           <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
             {fields.map((field) => (
               <div key={field} className="contents" data-filled={preview.filled.includes(field) || undefined}>
-                <dt className="text-muted-foreground">{fieldLabel(field)}</dt>
+                <dt className="text-muted-foreground">{fieldLabel(field, tDisplay)}</dt>
                 <dd className={`break-words ${preview.filled.includes(field) ? "text-accent" : ""}`}>
                   {formatFieldValue(field, preview.merged.csl[field])}
-                  {preview.filled.includes(field) ? <span className="ml-1 text-[10px]">(filled in)</span> : null}
+                  {preview.filled.includes(field) ? <span className="ml-1 text-[10px]">{t("filledIn")}</span> : null}
                 </dd>
               </div>
             ))}
-            <dt className="text-muted-foreground">Aliases</dt>
-            <dd className="font-mono" aria-label="Aliases after merge">{preview.aliases.join(", ") || "—"}</dd>
-            <dt className="text-muted-foreground">Attachments</dt>
+            <dt className="text-muted-foreground">{t("aliases")}</dt>
+            <dd className="font-mono" aria-label={t("aliasesAria")}>{preview.aliases.join(", ") || "—"}</dd>
+            <dt className="text-muted-foreground">{t("attachments")}</dt>
             <dd>{preview.merged.attachments.length ? preview.merged.attachments.map((attachment) => attachment.kind === "url" ? attachment.url : fileBaseName(attachment.path)).join(", ") : "—"}</dd>
           </dl>
         </div>
@@ -211,6 +217,8 @@ type DeleteDialogProps = {
 
 /** Confirms deleting entries, naming the documents that cite them. */
 export function DeleteReferencesDialog({ entries, citing, onClose, onDelete }: DeleteDialogProps) {
+  const t = useTranslations("references.manageReferencesDialog");
+  const tc = useTranslations("common");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   if (!entries?.length) return null;
@@ -224,7 +232,7 @@ export function DeleteReferencesDialog({ entries, citing, onClose, onDelete }: D
       await onDelete(entries.map((entry) => entry.id));
       onClose();
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "The references could not be deleted.");
+      setError(deleteError instanceof Error && deleteError.message ? deleteError.message : t("deleteFailed"));
     } finally {
       setBusy(false);
     }
@@ -233,22 +241,22 @@ export function DeleteReferencesDialog({ entries, citing, onClose, onDelete }: D
   return (
     <ModalDialog
       open
-      title={entries.length === 1 ? `Delete ${entries[0].key}?` : `Delete ${entries.length} references?`}
-      description={cited.length ? "Documents still cite these keys. Their citations will show as missing until you add the references again." : "You can undo this from the References panel."}
+      title={entries.length === 1 ? t("deleteTitleOne", { key: entries[0].key }) : t("deleteTitleMany", { count: entries.length })}
+      description={cited.length ? t("deleteDescriptionCited") : t("deleteDescriptionUndo")}
       onClose={onClose}
       footer={
         <>
-          <button type="button" className={cancelButton} onClick={onClose}>Cancel</button>
-          <button type="button" className={destructiveButton} disabled={busy} onClick={() => void remove()}><Trash2 aria-hidden className="h-4 w-4" /> Delete</button>
+          <button type="button" className={cancelButton} onClick={onClose}>{tc("cancel")}</button>
+          <button type="button" className={destructiveButton} disabled={busy} onClick={() => void remove()}><Trash2 aria-hidden className="h-4 w-4" /> {tc("delete")}</button>
         </>
       }
     >
       {error ? <div role="alert" className="mb-2 rounded-lg bg-destructive-muted p-2.5 text-xs text-destructive">{error}</div> : null}
       {cited.length ? (
-        <ul className="space-y-2 text-sm" aria-label="Cited references">
+        <ul className="space-y-2 text-sm" aria-label={t("citedReferencesAria")}>
           {cited.map(({ entry, paths }) => (
             <li key={entry.id}>
-              <span className="font-mono text-xs">{entry.key}</span> is cited in:
+              {t.rich("isCitedIn", { key: entry.key, mono: (chunks) => <span className="font-mono text-xs">{chunks}</span> })}
               <ul className="ml-4 list-disc text-xs text-muted-foreground">
                 {paths.map((path) => <li key={path}>{path}</li>)}
               </ul>
@@ -267,18 +275,20 @@ export function DeleteReferencesDialog({ entries, citing, onClose, onDelete }: D
 // ---------------------------------------------------------------------------
 
 export function DuplicateGroupsList({ groups, onMerge, onOpen }: { groups: ReferenceEntry[][]; onMerge: (group: ReferenceEntry[]) => void; onOpen?: (entry: ReferenceEntry) => void }) {
-  if (!groups.length) return <p className="px-1 py-6 text-center text-sm text-muted-foreground">No duplicates found.</p>;
+  const t = useTranslations("references.manageReferencesDialog");
+  const tDisplay = useTranslations("references.referenceDisplay");
+  if (!groups.length) return <p className="px-1 py-6 text-center text-sm text-muted-foreground">{t("noDuplicates")}</p>;
   return (
-    <ul className="space-y-2" aria-label="Duplicate groups">
+    <ul className="space-y-2" aria-label={t("duplicateGroupsAria")}>
       {groups.map((group) => {
         const kind = duplicateGroupKind(group);
         const kept = chooseKeptEntry(group);
         return (
           <li key={group.map((entry) => entry.id).join(",")} className="libera-panel-card space-y-1 p-2" data-duplicate-kind={kind}>
             <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{DUPLICATE_GROUP_LABELS[kind]}</span>
-              <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" aria-label={`Merge ${group.map((entry) => entry.key).join(", ")}`} onClick={() => onMerge(group)}>
-                <Merge aria-hidden className="h-3 w-3" /> Merge
+              <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{duplicateGroupLabel(kind, tDisplay)}</span>
+              <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" aria-label={t("mergeKeysAria", { keys: group.map((entry) => entry.key).join(", ") })} onClick={() => onMerge(group)}>
+                <Merge aria-hidden className="h-3 w-3" /> {t("merge")}
               </button>
             </div>
             <ul className="space-y-0.5">
@@ -286,8 +296,8 @@ export function DuplicateGroupsList({ groups, onMerge, onOpen }: { groups: Refer
                 <li key={entry.id}>
                   <button type="button" className="libera-notebook-row block w-full px-1.5 py-1 text-left text-[12px]" onClick={() => onOpen?.(entry)} disabled={!onOpen}>
                     <span className="font-mono text-[11px]">{entry.key}</span>
-                    {entry.id === kept.id ? <span className="ml-1.5 text-[10px] text-accent">kept</span> : null}
-                    <span className="block truncate text-muted-foreground">{authorsLabel(entry.csl) || "No author"} ({dateYear(entry.csl.issued) ?? "n.d."}) · {entryTitle(entry)}{entryVenue(entry.csl) ? ` · ${entryVenue(entry.csl)}` : ""}</span>
+                    {entry.id === kept.id ? <span className="ml-1.5 text-[10px] text-accent">{t("kept")}</span> : null}
+                    <span className="block truncate text-muted-foreground">{entryVenue(entry.csl) ? t("duplicateLineVenue", { authorYear: authorYearLabel(entry.csl, tDisplay), title: entryTitle(entry, tDisplay), venue: entryVenue(entry.csl) }) : t("duplicateLine", { authorYear: authorYearLabel(entry.csl, tDisplay), title: entryTitle(entry, tDisplay) })}</span>
                   </button>
                 </li>
               ))}
@@ -305,6 +315,7 @@ export function DuplicateGroupsList({ groups, onMerge, onOpen }: { groups: Refer
 
 export type ManageColumn = "key" | "authors" | "year" | "title" | "venue" | "type" | "status" | "cited" | "attachment" | "updated";
 
+/** `label` is the English name; the dialog shows `column.<id>` from its messages. */
 export const MANAGE_COLUMNS: Array<{ id: ManageColumn; label: string; width: string }> = [
   { id: "key", label: "Key", width: "w-36" },
   { id: "authors", label: "Authors", width: "w-40" },
@@ -323,15 +334,15 @@ const WINDOW_THRESHOLD = 300;
 
 type Row = { entry: ReferenceEntry; cited: number; text: Record<ManageColumn, string> };
 
-function cellText(entry: ReferenceEntry, column: ManageColumn, cited: number): string {
+function cellText(entry: ReferenceEntry, column: ManageColumn, cited: number, tDisplay?: DisplayTranslator): string {
   switch (column) {
     case "key": return entry.key;
     case "authors": return fullAuthorList(entry.csl);
     case "year": return String(dateYear(entry.csl.issued) ?? "");
-    case "title": return entryTitle(entry);
+    case "title": return entryTitle(entry, tDisplay);
     case "venue": return entryVenue(entry.csl);
-    case "type": return typeLabel(entry.csl.type);
-    case "status": return STATUS_LABELS[entry.status];
+    case "type": return typeLabel(entry.csl.type, tDisplay);
+    case "status": return statusLabel(entry.status, tDisplay);
     case "cited": return String(cited);
     case "attachment": return [...new Set(entry.attachments.map((attachment) => attachment.kind === "pdf" ? "PDF" : attachment.kind === "markdown" ? "Markdown" : "URL"))].join(", ");
     case "updated": return entry.updatedAt.slice(0, 10);
@@ -386,6 +397,8 @@ export async function reresolveSequentially(input: {
   current: (id: string) => ReferenceEntry | undefined;
   apply: (ops: ReferenceLibraryOp[], label: string) => Promise<unknown>;
   onProgress: (done: number, entry: ReferenceEntry) => void;
+  /** `useTranslations("references.manageReferencesDialog")` and `("references.referenceCandidates")`; English without them. */
+  t?: { manage: (key: string, values?: Record<string, string | number>) => string; candidates: (key: string, values?: Record<string, string | number>) => string };
 }) {
   const summary = { updated: 0, unchanged: 0, failed: [] as string[], cancelled: false };
   for (const [index, listed] of input.entries.entries()) {
@@ -393,18 +406,18 @@ export async function reresolveSequentially(input: {
     const entry = input.current(listed.id) ?? listed;
     input.onProgress(index, entry);
     try {
-      const { candidate } = await reresolveEntry(input.notebook, entry, input.webSearch, input.signal);
+      const { candidate } = await reresolveEntry(input.notebook, entry, input.webSearch, input.signal, input.t?.candidates);
       const latest = input.current(entry.id) ?? entry;
       const rows = reresolveDiff(latest, candidate);
       if (!rows.length) {
         summary.unchanged += 1;
         continue;
       }
-      await input.apply([buildReresolveOp(latest, candidate, rows.filter((row) => !row.userOwned).map((row) => row.field))], `Re-resolve ${entry.key}`);
+      await input.apply([buildReresolveOp(latest, candidate, rows.filter((row) => !row.userOwned).map((row) => row.field))], input.t ? input.t.manage("reresolveLabel", { key: entry.key }) : `Re-resolve ${entry.key}`);
       summary.updated += 1;
     } catch (error) {
       if (input.signal.aborted || isAbortError(error)) break;
-      summary.failed.push(`${entry.key}: ${error instanceof Error ? error.message : "could not be looked up"}`);
+      summary.failed.push(input.t ? input.t.manage("failedItem", { key: entry.key, reason: error instanceof Error && error.message ? error.message : input.t.manage("couldNotLookUp") }) : `${entry.key}: ${error instanceof Error ? error.message : "could not be looked up"}`);
     }
   }
   summary.cancelled = input.signal.aborted;
@@ -412,6 +425,11 @@ export async function reresolveSequentially(input: {
 }
 
 export function ManageReferencesDialog({ open, notebook, library, citations, duplicateGroups, apply, undo, webSearch = false, onLookup, onMerged, blocked = false, onClose }: ManageProps) {
+  const t = useTranslations("references.manageReferencesDialog");
+  const tCand = useTranslations("references.referenceCandidates");
+  const tc = useTranslations("common");
+  const tDisplay = useTranslations("references.referenceDisplay");
+  const locale = useLocale();
   const [tab, setTab] = useState<"all" | "duplicates">("all");
   const [sort, setSort] = useState<{ column: ManageColumn; direction: "asc" | "desc" }>({ column: "authors", direction: "asc" });
   const [filters, setFilters] = useState<Partial<Record<ManageColumn, string>>>({});
@@ -453,12 +471,11 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
       current: (id) => libraryRef.current.entries[id],
       apply,
       onProgress: (done, entry) => setBulk({ done, total: entries.length, key: entry.key }),
+      t: { manage: t, candidates: tCand },
     });
     if (bulkRef.current === controller) bulkRef.current = null;
     setBulk(null);
-    const parts = [`${summary.updated} updated`, `${summary.unchanged} unchanged`];
-    if (summary.failed.length) parts.push(`${summary.failed.length} failed`);
-    setNotice(`${summary.cancelled ? "Re-resolve stopped" : "Re-resolved"}: ${parts.join(", ")}.`);
+    setNotice(t("reresolveSummary", { stopped: summary.cancelled ? "yes" : "no", updated: summary.updated, unchanged: summary.unchanged, failed: summary.failed.length }));
     if (summary.failed.length) setError(summary.failed.join("\n"));
   }
 
@@ -466,9 +483,9 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
 
   const rows = useMemo<Row[]>(() => Object.values(library.entries).map((entry) => {
     const cited = citingPaths(entry, citations).length;
-    const text = Object.fromEntries(MANAGE_COLUMNS.map((column) => [column.id, cellText(entry, column.id, cited)])) as Record<ManageColumn, string>;
+    const text = Object.fromEntries(MANAGE_COLUMNS.map((column) => [column.id, cellText(entry, column.id, cited, tDisplay)])) as Record<ManageColumn, string>;
     return { entry, cited, text };
-  }), [library, citations]);
+  }), [library, citations, tDisplay]);
 
   const visibleRows = useMemo(() => {
     const active = Object.entries(filters).filter(([, value]) => value?.trim()).map(([column, value]) => [column as ManageColumn, foldSearchText(value!.trim())] as const);
@@ -489,7 +506,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
       await apply(ops, label);
       if (message) setNotice(message);
     } catch (runError) {
-      setError(runError instanceof Error ? runError.message : "The change could not be saved.");
+      setError(runError instanceof Error && runError.message ? runError.message : t("saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -502,7 +519,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
       const tags = changedTags(entry, add, remove);
       if (tags) ops.push({ op: "update", id: entry.id, tags });
     }
-    const { label, message } = tagChangeText(ops.length, add, remove);
+    const { label, message } = tagChangeText(ops.length, add, remove, tDisplay);
     return run(ops, label, message);
   }
 
@@ -532,26 +549,26 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
     if (!entry) return;
     const now = new Date().toISOString();
     if (editing.column === "title") {
-      if (value === entryTitle(entry) || value === (entry.csl.title ?? "")) return;
+      if (value === entryTitle(entry, tDisplay) || value === (entry.csl.title ?? "")) return;
       void run([value
         ? { op: "update", id: entry.id, csl: { title: value }, provenance: { title: userProvenance(now) } }
-        : { op: "update", id: entry.id, removeFields: ["title"] }], `Edit title of ${entry.key}`);
+        : { op: "update", id: entry.id, removeFields: ["title"] }], t("editTitleLabel", { key: entry.key }));
     } else if (editing.column === "year") {
       if (value === String(dateYear(entry.csl.issued) ?? "")) return;
       if (value && !/^\d{1,4}$/.test(value)) {
-        setError("The year must be a number, such as 2020.");
+        setError(t("yearInvalid"));
         return;
       }
       const rest = entry.csl.issued?.["date-parts"]?.[0]?.slice(1) ?? [];
       void run([value
         ? { op: "update", id: entry.id, csl: { issued: { "date-parts": [[Number(value), ...rest] as [number, number?, number?]] } }, provenance: { issued: userProvenance(now) } }
-        : { op: "update", id: entry.id, removeFields: ["issued"] }], `Edit year of ${entry.key}`);
+        : { op: "update", id: entry.id, removeFields: ["issued"] }], t("editYearLabel", { key: entry.key }));
     } else {
       const field = venueField(entry.csl);
       if (value === entryVenue(entry.csl)) return;
       void run([value
         ? { op: "update", id: entry.id, csl: { [field]: value }, provenance: { [field]: userProvenance(now) } }
-        : { op: "update", id: entry.id, removeFields: [field] }], `Edit venue of ${entry.key}`);
+        : { op: "update", id: entry.id, removeFields: [field] }], t("editVenueLabel", { key: entry.key }));
     }
   }
 
@@ -572,7 +589,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
       return (
         <input
           className="h-7 w-full px-1.5 text-xs"
-          aria-label={`Edit ${column} of ${row.entry.key}`}
+          aria-label={t("editCellAria", { column, key: row.entry.key })}
           autoFocus
           value={editing.value}
           onChange={(event) => setEditing({ ...editing, value: event.target.value })}
@@ -592,8 +609,8 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
       <button
         type="button"
         className="block w-full truncate rounded px-1 text-left hover:bg-muted"
-        title={`${row.text[column]}\nDouble-click to edit`}
-        aria-label={`${column} of ${row.entry.key}: ${row.text[column] || "empty"}`}
+        title={t("cellTitle", { value: row.text[column] })}
+        aria-label={t("cellAria", { column, key: row.entry.key, empty: row.text[column] ? "no" : "yes", value: row.text[column] })}
         onDoubleClick={() => setEditing({ id: row.entry.id, column, value: column === "title" ? (typeof row.entry.csl.title === "string" ? row.entry.csl.title : "") : row.text[column] })}
       >
         {row.text[column] || <span className="text-muted-foreground">—</span>}
@@ -604,20 +621,20 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
   return (
     <ModalDialog
       open={open}
-      title="Manage references"
-      description={`${Object.keys(library.entries).length} references in ${notebook}`}
+      title={t("title")}
+      description={t("description", { count: Object.keys(library.entries).length, notebook })}
       panelClassName="max-w-6xl"
       sectioned
       onClose={() => { if (!childOpen && !editing) onClose(); }}
     >
-      <div className="flex min-h-0 flex-col gap-2" onKeyDown={onKeyDown} role="group" aria-label="References table">
+      <div className="flex min-h-0 flex-col gap-2" onKeyDown={onKeyDown} role="group" aria-label={t("tableGroupAria")}>
         <div className="flex flex-wrap items-center gap-2">
           <div className="libera-links-tabs flex-1" role="tablist">
-            <button type="button" role="tab" aria-selected={tab === "all"} onClick={() => setTab("all")}><Library aria-hidden className="h-3.5 w-3.5" /> All references <span className="libera-links-count">{rows.length}</span></button>
-            <button type="button" role="tab" aria-selected={tab === "duplicates"} onClick={() => setTab("duplicates")}><Copy aria-hidden className="h-3.5 w-3.5" /> Duplicates <span className="libera-links-count">{duplicateGroups.length}</span></button>
+            <button type="button" role="tab" aria-selected={tab === "all"} onClick={() => setTab("all")}><Library aria-hidden className="h-3.5 w-3.5" /> {t("tabAll")} <span className="libera-links-count">{rows.length}</span></button>
+            <button type="button" role="tab" aria-selected={tab === "duplicates"} onClick={() => setTab("duplicates")}><Copy aria-hidden className="h-3.5 w-3.5" /> {t("tabDuplicates")} <span className="libera-links-count">{duplicateGroups.length}</span></button>
           </div>
-          <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50" disabled={!undo.canUndo || busy} title={undo.stale ? "The last change was changed again elsewhere and cannot be undone" : undo.label ? `Undo ${undo.label} (⌘/Ctrl+Z)` : "Nothing to undo"} onClick={() => void undo.run().catch((undoError: Error) => setError(undoError.message))}>
-            <Undo2 aria-hidden className="h-3.5 w-3.5" /> Undo
+          <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50" disabled={!undo.canUndo || busy} title={undo.stale ? t("undoStale") : undo.label ? t("undoLabel", { label: undo.label }) : t("nothingToUndo")} onClick={() => void undo.run().catch((undoError: Error) => setError(undoError.message))}>
+            <Undo2 aria-hidden className="h-3.5 w-3.5" /> {tc("undo")}
           </button>
         </div>
         {error ? <div role="alert" className="whitespace-pre-line rounded-lg bg-destructive-muted p-2 text-xs text-destructive">{error}</div> : null}
@@ -629,17 +646,17 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
           </div>
         ) : (
           <>
-            <div className="flex flex-wrap items-center gap-2 text-xs" aria-label="Bulk actions" role="toolbar">
-              <span className="text-muted-foreground">{selectedEntries.length} selected</span>
-              <button type="button" className={toolbarButton} disabled={selectedEntries.length < 2 || busy} onClick={() => setMergeGroup(selectedEntries)}><Merge aria-hidden className="h-3.5 w-3.5" /> Merge selected</button>
-              <button type="button" className={toolbarButton} disabled={!selectedEntries.length || busy || Boolean(bulk)} title="Look the selected references up again" onClick={() => void reresolveSelected(selectedEntries)}><RefreshCw aria-hidden className="h-3.5 w-3.5" /> Re-resolve</button>
-              <button type="button" className={toolbarButton} disabled={!selectedEntries.length || busy} onClick={() => void run(selectedEntries.filter((entry) => entry.status !== "confirmed").map((entry) => ({ op: "update", id: entry.id, status: "confirmed" })), `Confirm ${selectedEntries.length} references`, `${selectedEntries.length} marked confirmed.`)}><CircleCheck aria-hidden className="h-3.5 w-3.5" /> Mark confirmed</button>
-              <select className="h-7 px-2 text-xs" aria-label="Change type of selected" disabled={!selectedEntries.length || busy} value="" onChange={(event) => {
+            <div className="flex flex-wrap items-center gap-2 text-xs" aria-label={t("bulkAria")} role="toolbar">
+              <span className="text-muted-foreground">{t("selectedCount", { count: selectedEntries.length })}</span>
+              <button type="button" className={toolbarButton} disabled={selectedEntries.length < 2 || busy} onClick={() => setMergeGroup(selectedEntries)}><Merge aria-hidden className="h-3.5 w-3.5" /> {t("mergeSelected")}</button>
+              <button type="button" className={toolbarButton} disabled={!selectedEntries.length || busy || Boolean(bulk)} title={t("reresolveTitle")} onClick={() => void reresolveSelected(selectedEntries)}><RefreshCw aria-hidden className="h-3.5 w-3.5" /> {t("reresolve")}</button>
+              <button type="button" className={toolbarButton} disabled={!selectedEntries.length || busy} onClick={() => void run(selectedEntries.filter((entry) => entry.status !== "confirmed").map((entry) => ({ op: "update", id: entry.id, status: "confirmed" })), t("confirmLabel", { count: selectedEntries.length }), t("confirmedNotice", { count: selectedEntries.length }))}><CircleCheck aria-hidden className="h-3.5 w-3.5" /> {t("markConfirmed")}</button>
+              <select className="h-7 px-2 text-xs" aria-label={t("changeTypeAria")} disabled={!selectedEntries.length || busy} value="" onChange={(event) => {
                 const type = event.target.value as CslItemType;
-                if (type) void run(selectedEntries.filter((entry) => entry.csl.type !== type).map((entry) => ({ op: "update", id: entry.id, csl: { type } })), `Change type of ${selectedEntries.length} references`, `Type changed to ${CSL_TYPE_LABELS[type]}.`);
+                if (type) void run(selectedEntries.filter((entry) => entry.csl.type !== type).map((entry) => ({ op: "update", id: entry.id, csl: { type } })), t("changeTypeLabel", { count: selectedEntries.length }), t("typeChanged", { type: typeLabel(type, tDisplay) }));
               }}>
-                <option value="">Change type…</option>
-                {[...CSL_ITEM_TYPES].sort((a, b) => CSL_TYPE_LABELS[a].localeCompare(CSL_TYPE_LABELS[b])).map((type) => <option key={type} value={type}>{CSL_TYPE_LABELS[type]}</option>)}
+                <option value="">{t("changeTypePlaceholder")}</option>
+                {[...CSL_ITEM_TYPES].sort((a, b) => typeLabel(a, tDisplay).localeCompare(typeLabel(b, tDisplay), locale)).map((type) => <option key={type} value={type}>{typeLabel(type, tDisplay)}</option>)}
               </select>
               <form className="flex items-center gap-1" onSubmit={(event) => {
                 event.preventDefault();
@@ -648,37 +665,37 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                 setTagDraft("");
                 void tagSelected(selectedEntries, add, []);
               }}>
-                <input className="h-7 w-28 rounded-lg border border-input bg-transparent px-2 text-xs" aria-label="Tag for selected" placeholder="Tag" list="manage-references-tags" disabled={!selectedEntries.length || busy} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} />
-                <button type="submit" className={toolbarButton} disabled={!selectedEntries.length || busy || !tagDraft.trim()}><Tag aria-hidden className="h-3.5 w-3.5" /> Add tag</button>
+                <input className="h-7 w-28 rounded-lg border border-input bg-transparent px-2 text-xs" aria-label={t("tagAria")} placeholder={t("tagPlaceholder")} list="manage-references-tags" disabled={!selectedEntries.length || busy} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} />
+                <button type="submit" className={toolbarButton} disabled={!selectedEntries.length || busy || !tagDraft.trim()}><Tag aria-hidden className="h-3.5 w-3.5" /> {t("addTag")}</button>
                 <datalist id="manage-references-tags">
                   {libraryTags(Object.values(library.entries)).map((item) => <option key={item.tag} value={item.tag} />)}
                 </datalist>
               </form>
-              <select className="h-7 px-2 text-xs" aria-label="Remove tag from selected" disabled={!selectedEntries.some((entry) => entry.tags?.length) || busy} value="" onChange={(event) => {
+              <select className="h-7 px-2 text-xs" aria-label={t("removeTagAria")} disabled={!selectedEntries.some((entry) => entry.tags?.length) || busy} value="" onChange={(event) => {
                 const tag = event.target.value;
                 if (tag) void tagSelected(selectedEntries, [], [tag]);
               }}>
-                <option value="">Remove tag…</option>
+                <option value="">{t("removeTagPlaceholder")}</option>
                 {libraryTags(selectedEntries).map((item) => <option key={item.tag} value={item.tag}>{item.tag} ({item.count})</option>)}
               </select>
-              <select className="h-7 px-2 text-xs" aria-label="Export selected" disabled={!selectedEntries.length || busy} value="" onChange={(event) => {
+              <select className="h-7 px-2 text-xs" aria-label={t("exportSelectedAria")} disabled={!selectedEntries.length || busy} value="" onChange={(event) => {
                 const format = event.target.value as ExportFormat;
                 if (!format) return;
                 setError("");
-                void exportReferences({ notebook, format, ids: selectedEntries.map((entry) => entry.id) })
-                  .then((fileName) => setNotice(`Exported ${fileName}.`))
+                void exportReferences({ notebook, format, ids: selectedEntries.map((entry) => entry.id), fallbackError: t("exportFailed") })
+                  .then((fileName) => setNotice(t("exported", { name: fileName })))
                   .catch((exportError: Error) => setError(exportError.message));
               }}>
-                <option value="">Export selection…</option>
+                <option value="">{t("exportSelectionPlaceholder")}</option>
                 {EXPORT_FORMATS.map((format) => <option key={format.id} value={format.id}>{format.label}</option>)}
               </select>
-              <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2.5 py-1 font-medium text-destructive hover:bg-destructive-muted disabled:opacity-50" disabled={!selectedEntries.length || busy} onClick={() => setDeleting(selectedEntries)}><Trash2 aria-hidden className="h-3.5 w-3.5" /> Delete</button>
+              <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2.5 py-1 font-medium text-destructive hover:bg-destructive-muted disabled:opacity-50" disabled={!selectedEntries.length || busy} onClick={() => setDeleting(selectedEntries)}><Trash2 aria-hidden className="h-3.5 w-3.5" /> {tc("delete")}</button>
             </div>
             {bulk ? (
-              <div className="flex items-center gap-2 rounded-lg bg-muted p-2 text-xs" role="status" aria-label="Re-resolve progress">
+              <div className="flex items-center gap-2 rounded-lg bg-muted p-2 text-xs" role="status" aria-label={t("progressAria")}>
                 <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
-                <span className="min-w-0 flex-1 truncate">Re-resolving {bulk.done + 1} of {bulk.total}… <span className="font-mono">{bulk.key}</span></span>
-                <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2 py-0.5 font-medium hover:bg-card" onClick={() => bulkRef.current?.abort()}><X aria-hidden className="h-3 w-3" /> Cancel</button>
+                <span className="min-w-0 flex-1 truncate">{t.rich("progress", { done: bulk.done + 1, total: bulk.total, key: bulk.key, mono: (chunks) => <span className="font-mono">{chunks}</span> })}</span>
+                <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2 py-0.5 font-medium hover:bg-card" onClick={() => bulkRef.current?.abort()}><X aria-hidden className="h-3 w-3" /> {tc("cancel")}</button>
               </div>
             ) : null}
             <div
@@ -689,16 +706,16 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                 setScroll({ top: target.scrollTop, height: target.clientHeight || 600 });
               }}
             >
-              <table className="libera-reference-table w-full border-collapse text-xs" aria-label="References" aria-rowcount={visibleRows.length}>
+              <table className="libera-reference-table w-full border-collapse text-xs" aria-label={t("tableAria")} aria-rowcount={visibleRows.length}>
                 <thead className="sticky top-0 z-10 bg-card">
                   <tr>
                     <th className="w-8 px-2 py-1.5">
-                      <input type="checkbox" aria-label="Select all" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(visibleRows.map((row) => row.entry.id)))} />
+                      <input type="checkbox" aria-label={t("selectAllAria")} checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(visibleRows.map((row) => row.entry.id)))} />
                     </th>
                     {MANAGE_COLUMNS.map((column) => (
                       <th key={column.id} className={`${column.width} whitespace-nowrap px-1.5 py-1.5 text-left font-medium`} aria-sort={sort.column === column.id ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
                         <button type="button" className="inline-flex items-center gap-1 hover:text-accent" onClick={() => setSort((current) => ({ column: column.id, direction: current.column === column.id && current.direction === "asc" ? "desc" : "asc" }))}>
-                          {column.label}
+                          {t(`column.${column.id}`)}
                           {sort.column === column.id ? (sort.direction === "asc" ? <ArrowUp aria-hidden className="h-3 w-3" /> : <ArrowDown aria-hidden className="h-3 w-3" />) : null}
                         </button>
                       </th>
@@ -708,7 +725,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                     <th />
                     {MANAGE_COLUMNS.map((column) => (
                       <th key={column.id} className="px-1 pb-1.5">
-                        <input className="h-6 w-full px-1.5 text-[11px] font-normal" aria-label={`Filter ${column.label}`} placeholder="Filter" value={filters[column.id] ?? ""} onChange={(event) => setFilters((current) => ({ ...current, [column.id]: event.target.value }))} />
+                        <input className="h-6 w-full px-1.5 text-[11px] font-normal" aria-label={t("filterAria", { column: t(`column.${column.id}`) })} placeholder={t("filterPlaceholder")} value={filters[column.id] ?? ""} onChange={(event) => setFilters((current) => ({ ...current, [column.id]: event.target.value }))} />
                       </th>
                     ))}
                   </tr>
@@ -729,10 +746,10 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                       }}
                     >
                       <td className="px-2">
-                        <input type="checkbox" aria-label={`Select ${row.entry.key}`} checked={selected.has(row.entry.id)} onChange={() => undefined} onClick={(event) => { event.stopPropagation(); toggleRow(row.entry.id, event); }} />
+                        <input type="checkbox" aria-label={t("selectRowAria", { key: row.entry.key })} checked={selected.has(row.entry.id)} onChange={() => undefined} onClick={(event) => { event.stopPropagation(); toggleRow(row.entry.id, event); }} />
                       </td>
-                      <td className="truncate px-1.5 font-mono" title={row.entry.aliases.length ? `Aliases: ${row.entry.aliases.join(", ")}` : undefined}>{row.entry.key}</td>
-                      <td className="max-w-40 truncate px-1.5" title={row.text.authors}>{authorsLabel(row.entry.csl) || <span className="text-muted-foreground">—</span>}</td>
+                      <td className="truncate px-1.5 font-mono" title={row.entry.aliases.length ? t("aliasesTitle", { aliases: row.entry.aliases.join(", ") }) : undefined}>{row.entry.key}</td>
+                      <td className="max-w-40 truncate px-1.5" title={row.text.authors}>{authorsLabel(row.entry.csl, tDisplay) || <span className="text-muted-foreground">—</span>}</td>
                       <td className="px-1.5">{editableCell(row, "year")}</td>
                       <td className="max-w-80 px-1.5">{editableCell(row, "title")}</td>
                       <td className="max-w-44 px-1.5">{editableCell(row, "venue")}</td>
@@ -741,9 +758,9 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                       <td className="px-1.5 tabular-nums" title={citingOf(row.entry).join("\n") || undefined}>{row.cited}</td>
                       <td className="px-1.5">
                         <span className="flex items-center gap-1 text-muted-foreground">
-                          {row.entry.attachments.some((attachment) => attachment.kind === "pdf") ? <FileType2 aria-label="PDF" className="h-3.5 w-3.5 text-[#d08178]" /> : null}
-                          {row.entry.attachments.some((attachment) => attachment.kind === "markdown") ? <FileText aria-label="Markdown" className="h-3.5 w-3.5" /> : null}
-                          {row.entry.attachments.some((attachment) => attachment.kind === "url") ? <Globe aria-label="URL" className="h-3.5 w-3.5" /> : null}
+                          {row.entry.attachments.some((attachment) => attachment.kind === "pdf") ? <FileType2 aria-label={t("attachmentPdf")} className="h-3.5 w-3.5 text-[#d08178]" /> : null}
+                          {row.entry.attachments.some((attachment) => attachment.kind === "markdown") ? <FileText aria-label={t("attachmentMarkdown")} className="h-3.5 w-3.5" /> : null}
+                          {row.entry.attachments.some((attachment) => attachment.kind === "url") ? <Globe aria-label={t("attachmentUrl")} className="h-3.5 w-3.5" /> : null}
                         </span>
                       </td>
                       <td className="whitespace-nowrap px-1.5 tabular-nums text-muted-foreground">{row.text.updated}</td>
@@ -752,15 +769,15 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                   {windowed && last < visibleRows.length ? <tr aria-hidden style={{ height: (visibleRows.length - last) * TABLE_ROW_HEIGHT }} /> : null}
                 </tbody>
               </table>
-              {!visibleRows.length ? <p className="p-6 text-center text-sm text-muted-foreground">No references match.</p> : null}
+              {!visibleRows.length ? <p className="p-6 text-center text-sm text-muted-foreground">{t("noMatches")}</p> : null}
             </div>
-            <p className="text-[11px] text-muted-foreground">Shift-click to select a range. Double-click a title, year or venue to correct it.</p>
+            <p className="text-[11px] text-muted-foreground">{t("tableHint")}</p>
             <div className="flex justify-end">
               <button type="button" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => {
                 setError("");
-                void exportReferences({ notebook, format: "bibtex" }).then((fileName) => setNotice(`Exported ${fileName}.`)).catch((exportError: Error) => setError(exportError.message));
+                void exportReferences({ notebook, format: "bibtex", fallbackError: t("exportFailed") }).then((fileName) => setNotice(t("exported", { name: fileName }))).catch((exportError: Error) => setError(exportError.message));
               }}>
-                <Download aria-hidden className="h-3.5 w-3.5" /> Export all as BibTeX
+                <Download aria-hidden className="h-3.5 w-3.5" /> {t("exportAll")}
               </button>
             </div>
           </>
@@ -772,9 +789,9 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
         onMerge={(keepId, mergeIds) => {
           const keep = library.entries[keepId];
           const merged = mergeIds.map((id) => library.entries[id]).filter(Boolean);
-          return apply([{ op: "merge", keepId, mergeIds }], `Merge into ${keep?.key ?? "reference"}`).then(() => {
+          return apply([{ op: "merge", keepId, mergeIds }], t("mergeIntoLabel", { key: keep?.key ?? t("referenceFallback") })).then(() => {
             setSelected(new Set());
-            setNotice(`Merged ${mergeIds.length + 1} references.`);
+            setNotice(t("mergedNotice", { count: mergeIds.length + 1 }));
             if (keep) onMerged?.(keep, merged);
           });
         }}
@@ -783,9 +800,9 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
         entries={deleting}
         citing={citingOf}
         onClose={() => setDeleting(null)}
-        onDelete={(ids) => apply(ids.map((id) => ({ op: "delete", id })), `Delete ${ids.length} reference${ids.length === 1 ? "" : "s"}`).then(() => {
+        onDelete={(ids) => apply(ids.map((id) => ({ op: "delete", id })), t("deleteLabel", { count: ids.length })).then(() => {
           setSelected(new Set());
-          setNotice(`Deleted ${ids.length} reference${ids.length === 1 ? "" : "s"}.`);
+          setNotice(t("deletedNotice", { count: ids.length }));
         })}
       />
     </ModalDialog>

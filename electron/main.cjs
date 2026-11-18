@@ -55,6 +55,12 @@ const {
 const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
 const { waitForServer, stopProcessTree } = require("./server-lifecycle.cjs");
 const { createCollabHost } = require("./collab-host.cjs");
+const i18n = require("./i18n.cjs");
+
+/** A string for the main process in the interface language: messages/*.json, namespace electron.main. */
+function tm(key, values) {
+  return i18n.t(`electron.main.${key}`, values);
+}
 const {
   DEFAULT_PROFILE_ID,
   MAX_PROFILES,
@@ -88,7 +94,7 @@ const ADMIN_USER = "admin";
 const MARKDOWN_ASSETS_DIR = "_assets";
 const THEME_PREFERENCES = new Set(["light", "dark", "system"]);
 // Interface languages; keep in step with LOCALES in src/lib/i18n/locales.ts. "en-XA" is the development pseudo-locale.
-const INTERFACE_LOCALES = new Set(["en", "fr"]);
+const INTERFACE_LOCALES = new Set(["en", "fr", "vi", "zh"]);
 const NATIVE_MENU_ITEM_TYPES = new Set(["normal", "checkbox", "radio"]);
 const MAX_NATIVE_MENU_ITEMS = 64;
 const MAX_NATIVE_MENU_ID_LENGTH = 128;
@@ -242,20 +248,20 @@ async function canManageProfiles() {
 }
 
 async function assertProfileSignedIn() {
-  if (!await canManageProfiles()) throw new Error("Sign in first to manage users.");
+  if (!await canManageProfiles()) throw new Error(tm("signInFirstToManageUsers"));
 }
 
 function assertProfilePassword(id, password) {
   if (id === getRunningProfileId()) return;
   if (typeof password !== "string" || !verifyPasswordHash(password, readProfileConfig(id).passwordHash)) {
-    throw new Error("Enter that user's correct master password to rename or remove them.");
+    throw new Error(tm("enterUserMasterPassword"));
   }
 }
 
 /** Only an accepted window close commits the choice and schedules a restart. */
 async function switchToProfile(id) {
   const state = readProfileState();
-  if (!state.profiles.some((profile) => profile.id === id)) throw new Error("This user does not exist.");
+  if (!state.profiles.some((profile) => profile.id === id)) throw new Error(tm("userDoesNotExist"));
   if (id === getRunningProfileId() || pendingProfileSwitch || !mainWindow || mainWindow.isDestroyed()) return { switched: false };
   let finish;
   const closed = new Promise((resolve) => { finish = resolve; });
@@ -296,13 +302,13 @@ async function createProfile(input) {
     const password = typeof input?.password === "string" ? input.password : "";
     const openaiApiKey = typeof input?.openaiApiKey === "string" ? input.openaiApiKey.trim() : "";
 
-    if (!dataDir || !path.isAbsolute(dataDir)) throw new Error("Choose a master directory for this user.");
+    if (!dataDir || !path.isAbsolute(dataDir)) throw new Error(tm("chooseUserMasterDirectory"));
     assertProfileStorageAvailable({ dataDir }, profile.id);
-    if (password.length < 8) throw new Error("Use a master password with at least 8 characters.");
-    if (password !== input?.passwordConfirmation) throw new Error("The master password confirmation does not match.");
+    if (password.length < 8) throw new Error(tm("passwordMinLength"));
+    if (password !== input?.passwordConfirmation) throw new Error(tm("passwordConfirmMismatch"));
     // Leaving the key empty shares the running user's key with the new user.
     const apiKey = openaiApiKey || readConfig().openaiApiKey;
-    if (!apiKey) throw new Error("Enter an OPENAI_API_KEY for this user.");
+    if (!apiKey) throw new Error(tm("userApiKeyRequired"));
 
     const configPath = profileConfigPath(userData, profile.id, CONFIG_FILE_NAME);
     await fsp.mkdir(dataDir, { recursive: true });
@@ -335,13 +341,17 @@ async function removeProfileWithConfirmation(parentWindow, id, password) {
   const dataDir = readProfileConfig(id).dataDir;
   const confirmation = await showMessageBox(parentWindow, {
     type: "warning",
-    buttons: ["Remove User", "Cancel"],
+    buttons: [tm("removeUserButton"), tm("cancelButton")],
     cancelId: 1,
     defaultId: 1,
     noLink: true,
-    title: "Remove User?",
-    message: `Remove ${profile.name} from ${APP_DISPLAY_NAME}?`,
-    detail: `Their notebooks stay in their master directory${typeof dataDir === "string" && dataDir ? ` (${dataDir})` : ""}. Their preferences and collaboration sign-in are moved out of ${APP_DISPLAY_NAME}.`,
+    title: tm("removeUserTitle"),
+    message: tm("removeUserMessage", { name: profile.name, appName: APP_DISPLAY_NAME }),
+    detail: tm("removeUserDetail", {
+      hasDataDir: typeof dataDir === "string" && dataDir ? "yes" : "no",
+      dataDir: typeof dataDir === "string" ? dataDir : "",
+      appName: APP_DISPLAY_NAME,
+    }),
   });
   if (confirmation.response !== 0) return { canceled: true };
   return queueProfileMutation(async () => {
@@ -370,7 +380,7 @@ function assertProfileStorageAvailable(config, profileId = getRunningProfileId()
   const candidate = { dataDir: config.dataDir, indexFile: effectiveIndexFile(config, profileConfigPath(userData, profileId, CONFIG_FILE_NAME)) };
   const conflict = findStorageConflict(entries, profileId, candidate);
   if (conflict) {
-    throw new Error(`This master directory or search index overlaps storage used by ${conflict.name}. Choose separate folders and index files for each user.`);
+    throw new Error(tm("masterDirectoryOverlap", { name: conflict.name }));
   }
 }
 
@@ -618,10 +628,10 @@ function normalizedImportedPreferences(input) {
   const passwordHash =
     typeof input.passwordHash === "string" ? input.passwordHash.trim() : "";
 
-  if (!dataDir) throw new Error("The preferences backup does not contain a data directory.");
-  if (!openaiApiKey) throw new Error("The preferences backup does not contain an API key.");
+  if (!dataDir) throw new Error(tm("backupMissingDataDir"));
+  if (!openaiApiKey) throw new Error(tm("backupMissingApiKey"));
   if (!/^(?:scrypt:[a-f\d]{32}:[a-f\d]{128}|sha256:[a-f\d]{64})$/i.test(passwordHash)) {
-    throw new Error("The preferences backup does not contain a valid master password verifier.");
+    throw new Error(tm("backupMissingVerifier"));
   }
 
   const markdownInlineMathMarkers = normalizeMathMarkers(
@@ -642,7 +652,7 @@ function normalizedImportedPreferences(input) {
       .filter(Boolean)
       .some((line) => inlineOpeners.has(line.split(" ")[0]))
   ) {
-    throw new Error("The preferences backup uses the same opening marker for inline and display math.");
+    throw new Error(tm("backupSameMathMarker"));
   }
 
   const openRouterModel = normalizeOpenRouterModel(input.openRouterModel);
@@ -696,14 +706,14 @@ function normalizedImportedPreferences(input) {
 async function exportPreferences(parentWindow, password) {
   const config = readConfig();
   if (typeof password !== "string" || !password || !verifyPasswordHash(password, config.passwordHash)) {
-    throw new Error("The master password is incorrect.");
+    throw new Error(tm("masterPasswordIncorrect"));
   }
 
   const date = new Date().toISOString().slice(0, 10);
   const result = await dialog.showSaveDialog(parentWindow, {
-    title: "Export Libera Preferences",
+    title: tm("exportPreferencesTitle"),
     defaultPath: path.join(app.getPath("documents"), `libera-preferences-${date}.json`),
-    filters: [{ name: "JSON files", extensions: ["json"] }],
+    filters: [{ name: tm("jsonFilesFilter"), extensions: ["json"] }],
   });
 
   if (result.canceled || !result.filePath) return { canceled: true };
@@ -719,14 +729,14 @@ async function exportPreferences(parentWindow, password) {
 
 async function exportEditorThemes(parentWindow, themes) {
   const file = createEditorThemesFile(themes);
-  if (!file.themes.length) throw new Error("There are no themes to export.");
+  if (!file.themes.length) throw new Error(tm("noThemesToExport"));
   const baseName = file.themes.length === 1
     ? file.themes[0].name.replace(/[^\p{L}\p{N} _-]+/gu, "").trim() || "theme"
     : "libera-editor-themes";
   const result = await dialog.showSaveDialog(parentWindow, {
-    title: "Export Editor Themes",
+    title: tm("exportEditorThemesTitle"),
     defaultPath: path.join(app.getPath("documents"), `${baseName}.json`),
-    filters: [{ name: "JSON files", extensions: ["json"] }],
+    filters: [{ name: tm("jsonFilesFilter"), extensions: ["json"] }],
   });
 
   if (result.canceled || !result.filePath) return { canceled: true };
@@ -737,23 +747,23 @@ async function exportEditorThemes(parentWindow, themes) {
 
 async function importEditorThemes(parentWindow) {
   const result = await dialog.showOpenDialog(parentWindow, {
-    title: "Import Editor Themes",
+    title: tm("importEditorThemesTitle"),
     properties: ["openFile"],
-    filters: [{ name: "JSON files", extensions: ["json"] }],
+    filters: [{ name: tm("jsonFilesFilter"), extensions: ["json"] }],
   });
 
   if (result.canceled || !result.filePaths[0]) return { canceled: true };
 
   const filePath = result.filePaths[0];
   if ((await fsp.stat(filePath)).size > 1024 * 1024) {
-    throw new Error("The selected themes file is too large.");
+    throw new Error(tm("themesFileTooLarge"));
   }
 
   let parsed;
   try {
     parsed = JSON.parse(await fsp.readFile(filePath, "utf8"));
   } catch (error) {
-    if (error instanceof SyntaxError) throw new Error("The selected file is not valid JSON.");
+    if (error instanceof SyntaxError) throw new Error(tm("invalidJsonFile"));
     throw error;
   }
 
@@ -775,9 +785,9 @@ async function importPreferences(parentWindow, password) {
   } else {
     pendingPreferencesImport = null;
     const result = await dialog.showOpenDialog(parentWindow, {
-      title: "Load Libera Preferences",
+      title: tm("loadPreferencesTitle"),
       properties: ["openFile"],
-      filters: [{ name: "JSON files", extensions: ["json"] }],
+      filters: [{ name: tm("jsonFilesFilter"), extensions: ["json"] }],
     });
 
     if (result.canceled || !result.filePaths[0]) return { canceled: true };
@@ -785,13 +795,13 @@ async function importPreferences(parentWindow, password) {
     filePath = result.filePaths[0];
     const fileInfo = await fsp.stat(filePath);
     if (fileInfo.size > 5 * 1024 * 1024) {
-      throw new Error("The selected preferences backup is too large.");
+      throw new Error(tm("preferencesBackupTooLarge"));
     }
 
     try {
       parsed = JSON.parse(await fsp.readFile(filePath, "utf8"));
     } catch (error) {
-      if (error instanceof SyntaxError) throw new Error("The selected file is not valid JSON.");
+      if (error instanceof SyntaxError) throw new Error(tm("invalidJsonFile"));
       throw error;
     }
 
@@ -814,18 +824,17 @@ async function importPreferences(parentWindow, password) {
 
   // The backup's verifier becomes this profile's; it must accept the password that opened it.
   if (encrypted && !verifyPasswordHash(password, importedPreferences.passwordHash)) {
-    throw new Error("The backup's master password verifier does not match the password that opened it.");
+    throw new Error(tm("backupVerifierMismatch"));
   }
   const confirmation = await showMessageBox(parentWindow, {
     type: "warning",
-    buttons: ["Load Settings", "Cancel"],
+    buttons: [tm("loadBackupButton"), tm("cancelButton")],
     cancelId: 1,
     defaultId: 1,
     noLink: true,
-    title: "Load Preferences Backup?",
-    message: "Replace all saved Libera preferences with this backup?",
-    detail:
-      "This includes the notebook directory, API key, AI, Markdown and Search settings, quick prompts, LaTeX snippets, theme, and master password verifier.",
+    title: tm("loadBackupTitle"),
+    message: tm("loadBackupMessage"),
+    detail: tm("loadBackupDetail"),
   });
 
   if (confirmation.response !== 0) return { canceled: true };
@@ -962,7 +971,7 @@ function isConfigComplete(config) {
 
 async function selectDataDir(parentWindow) {
   const result = await dialog.showOpenDialog(parentWindow, {
-    title: `Select ${APP_DISPLAY_NAME} Master directory`,
+    title: tm("selectMasterDirectoryTitle", { appName: APP_DISPLAY_NAME }),
     properties: ["openDirectory", "createDirectory"],
   });
 
@@ -971,11 +980,11 @@ async function selectDataDir(parentWindow) {
 
 async function loadAiSystemPromptFile(parentWindow) {
   const result = await dialog.showOpenDialog(parentWindow, {
-    title: "Load custom system prompt",
+    title: tm("loadSystemPromptTitle"),
     properties: ["openFile"],
     filters: [
-      { name: "Text files", extensions: ["txt", "md", "markdown"] },
-      { name: "All files", extensions: ["*"] },
+      { name: tm("textFilesFilter"), extensions: ["txt", "md", "markdown"] },
+      { name: tm("allFilesFilter"), extensions: ["*"] },
     ],
   });
 
@@ -992,8 +1001,8 @@ async function loadAiSystemPromptFile(parentWindow) {
 async function selectSearchWeights(parentWindow, kind) {
   if (kind === "speech-models") {
     const result = await dialog.showOpenDialog(parentWindow, {
-      title: "Choose the speech models folder",
-      message: "Choose an empty folder for Libera to download Parakeet and the pyannote speaker models into, or a folder that already holds them.",
+      title: tm("chooseSpeechModelsFolderTitle"),
+      message: tm("chooseSpeechModelsFolderMessage"),
       properties: ["openDirectory", "createDirectory"],
     });
     return result.canceled ? "" : result.filePaths[0] ?? "";
@@ -1001,8 +1010,8 @@ async function selectSearchWeights(parentWindow, kind) {
 
   if (kind === "detection-model") {
     const result = await dialog.showOpenDialog(parentWindow, {
-      title: "Choose the detection model folder",
-      message: "Choose an empty folder for Libera to download YOLOE-26 and its Python runtime into, or a folder that already holds them.",
+      title: tm("chooseDetectionFolderTitle"),
+      message: tm("chooseDetectionFolderMessage"),
       properties: ["openDirectory", "createDirectory"],
     });
     return result.canceled ? "" : result.filePaths[0] ?? "";
@@ -1010,8 +1019,8 @@ async function selectSearchWeights(parentWindow, kind) {
 
   if (kind === "tts-model") {
     const result = await dialog.showOpenDialog(parentWindow, {
-      title: "Choose the Kokoro model folder",
-      message: "Choose the extracted sherpa-onnx Kokoro folder, with model.onnx, voices.bin, tokens.txt and espeak-ng-data.",
+      title: tm("chooseKokoroFolderTitle"),
+      message: tm("chooseKokoroFolderMessage"),
       properties: ["openDirectory"],
     });
     return result.canceled ? "" : result.filePaths[0] ?? "";
@@ -1019,18 +1028,18 @@ async function selectSearchWeights(parentWindow, kind) {
 
   if (kind === "ffmpeg") {
     const result = await dialog.showOpenDialog(parentWindow, {
-      title: "Choose ffmpeg",
-      message: "Choose the ffmpeg program, used to read voice memos in formats such as M4A and MP3.",
+      title: tm("chooseFfmpegTitle"),
+      message: tm("chooseFfmpegMessage"),
       properties: ["openFile"],
-      ...(process.platform === "win32" ? { filters: [{ name: "Programs", extensions: ["exe"] }] } : {}),
+      ...(process.platform === "win32" ? { filters: [{ name: tm("programsFilter"), extensions: ["exe"] }] } : {}),
     });
     return result.canceled ? "" : result.filePaths[0] ?? "";
   }
 
   if (kind === "reading") {
     const result = await dialog.showOpenDialog(parentWindow, {
-      title: "Choose the PDF reading model folder",
-      message: "Choose an empty folder for Libera to download granite-docling into, or a folder that already holds it.",
+      title: tm("choosePdfReadingFolderTitle"),
+      message: tm("choosePdfReadingFolderMessage"),
       properties: ["openDirectory", "createDirectory"],
     });
     return result.canceled ? "" : result.filePaths[0] ?? "";
@@ -1038,12 +1047,10 @@ async function selectSearchWeights(parentWindow, kind) {
 
   const isVision = kind === "vision";
   const result = await dialog.showOpenDialog(parentWindow, {
-    title: isVision ? "Choose the EmbeddingGemma 2 vision encoder" : "Choose the EmbeddingGemma 2 text model",
-    message: isVision
-      ? "Choose vision_encoder_*.onnx. Its .onnx_data file must be next to it."
-      : "Choose model_*.onnx. Its .onnx_data file must be next to it, and config.json and tokenizer.json next to it or one folder up.",
+    title: tm(isVision ? "embeddingGemmaVisionTitle" : "embeddingGemmaTextTitle"),
+    message: tm(isVision ? "embeddingGemmaVisionMessage" : "embeddingGemmaTextMessage"),
     properties: ["openFile"],
-    filters: [{ name: "ONNX models", extensions: ["onnx"] }],
+    filters: [{ name: tm("onnxModelsFilter"), extensions: ["onnx"] }],
   });
 
   return result.canceled ? "" : result.filePaths[0] ?? "";
@@ -1053,19 +1060,19 @@ async function selectSearchWeights(parentWindow, kind) {
 async function selectSearchIndexFile(parentWindow, mode) {
   if (mode === "new") {
     const result = await dialog.showSaveDialog(parentWindow, {
-      title: "Create the search index",
+      title: tm("createSearchIndexTitle"),
       defaultPath: path.join(app.getPath("documents"), INDEX_FILE_NAME),
-      buttonLabel: "Create Here",
-      filters: [{ name: "Libera search index", extensions: ["sqlite"] }],
+      buttonLabel: tm("createHereButton"),
+      filters: [{ name: tm("searchIndexFilter"), extensions: ["sqlite"] }],
     });
     return result.canceled ? "" : result.filePath ?? "";
   }
 
   const result = await dialog.showOpenDialog(parentWindow, {
-    title: "Use an existing search index",
-    message: "Choose a libera-search.sqlite file built by Libera, for example copied from another computer.",
+    title: tm("useExistingSearchIndexTitle"),
+    message: tm("useExistingSearchIndexMessage"),
     properties: ["openFile"],
-    filters: [{ name: "Libera search index", extensions: ["sqlite"] }],
+    filters: [{ name: tm("searchIndexFilter"), extensions: ["sqlite"] }],
   });
   return result.canceled ? "" : result.filePaths[0] ?? "";
 }
@@ -1122,7 +1129,7 @@ function validateSetupInput(input, existingConfig) {
   const markdownBlockMathMarkers = normalizeMathMarkers(input?.markdownBlockMathMarkers ?? existingConfig.markdownBlockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS);
   const inlineOpeners = new Set(markdownInlineMathMarkers.split("\n").filter(Boolean).map(line => line.split(" ")[0]));
   if (markdownBlockMathMarkers.split("\n").filter(Boolean).some(line => inlineOpeners.has(line.split(" ")[0]))) {
-    throw new Error("Inline and display math must use different opening markers.");
+    throw new Error(tm("mathMarkersMustDiffer"));
   }
   const markdownBaseFontSize = normalizeMarkdownBaseFontSize(input?.markdownBaseFontSize);
   const markdownBaseLineHeight = normalizeMarkdownBaseLineHeight(input?.markdownBaseLineHeight);
@@ -1136,11 +1143,11 @@ function validateSetupInput(input, existingConfig) {
   const quickPrompts = validateQuickPrompts(input?.quickPrompts ?? existingConfig.quickPrompts ?? []);
 
   if (!dataDir) {
-    throw new Error("Choose a data directory before continuing.");
+    throw new Error(tm("chooseDataDirectoryFirst"));
   }
 
   if (!openaiApiKey && !existingConfig.openaiApiKey) {
-    throw new Error("Enter an OPENAI_API_KEY before continuing.");
+    throw new Error(tm("enterApiKeyFirst"));
   }
 
   if (!existingConfig.passwordHash || changingPassword) {
@@ -1148,23 +1155,23 @@ function validateSetupInput(input, existingConfig) {
       existingConfig.passwordHash &&
       !verifyPasswordHash(currentPassword, existingConfig.passwordHash)
     ) {
-      throw new Error("Enter the current master password before changing it.");
+      throw new Error(tm("enterCurrentMasterPassword"));
     }
 
     if (!password) {
       throw new Error(
         existingConfig.passwordHash
-          ? "Enter a new master password before continuing."
-          : "Create a master password before continuing.",
+          ? tm("enterNewMasterPassword")
+          : tm("createMasterPasswordFirst"),
       );
     }
 
     if (password.length < 8) {
-      throw new Error("Use a master password with at least 8 characters.");
+      throw new Error(tm("passwordMinLength"));
     }
 
     if (password !== passwordConfirmation) {
-      throw new Error("The master password confirmation does not match.");
+      throw new Error(tm("passwordConfirmMismatch"));
     }
   }
 
@@ -1225,8 +1232,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       resizable: false,
       title:
         mode === "configuration"
-          ? `${APP_DISPLAY_NAME} Preferences`
-          : `Set Up ${APP_DISPLAY_NAME}`,
+          ? tm("preferencesWindowTitle", { appName: APP_DISPLAY_NAME })
+          : tm("setupWindowTitle", { appName: APP_DISPLAY_NAME }),
       webPreferences: {
         session: getProfileSession(),
         contextIsolation: true,
@@ -1369,7 +1376,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
         adminRoot: libraryAdminRoot(validated.dataDir),
         previousAdminRoot: libraryAdminRoot(existingConfig.dataDir),
         checkImage: (buffer) => {
-          if (nativeImage.createFromBuffer(buffer).isEmpty()) throw new Error("An illustration could not be opened.");
+          if (nativeImage.createFromBuffer(buffer).isEmpty()) throw new Error(tm("illustrationCouldNotOpen"));
         },
       });
 
@@ -1477,11 +1484,11 @@ function showAboutDialog() {
 
   showMessageBox(parentWindow, {
     type: "info",
-    buttons: ["OK"],
+    buttons: [tm("okButton")],
     defaultId: 0,
     message: APP_DISPLAY_NAME,
-    title: `About ${APP_DISPLAY_NAME}`,
-    detail: `Version ${app.getVersion()}\nA liberal notetaking app.`,
+    title: tm("aboutTitle", { appName: APP_DISPLAY_NAME }),
+    detail: tm("aboutDetail", { version: app.getVersion() }),
   });
 }
 
@@ -1496,11 +1503,18 @@ function sanitizePdfFileName(fileName) {
   return /\.pdf$/i.test(safeFileName) ? safeFileName : `${safeFileName}.pdf`;
 }
 
-const MARKDOWN_PDF_FOOTER_TEMPLATE = `
+// Chromium fills the page numbers in at print time, so the translated text carries placeholders for the two spans.
+function markdownPdfFooterTemplate() {
+  const text = tm("markdownPdfFooter", { appName: APP_DISPLAY_NAME, pageNumber: "\uE000", totalPages: "\uE001" })
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace("\uE000", '<span class="pageNumber"></span>')
+    .replace("\uE001", '<span class="totalPages"></span>');
+  return `
   <div style="box-sizing: border-box; color: #71717a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 9px; padding: 0 18mm; text-align: center; width: 100%;">
-    ${APP_DISPLAY_NAME} &middot; Page <span class="pageNumber"></span> of <span class="totalPages"></span>
+    ${text}
   </div>
 `;
+}
 
 function normalizeMarkdownPdfExportInput(input) {
   if (!input || typeof input !== "object") {
@@ -1566,8 +1580,8 @@ async function exportMarkdownPdf(event, input) {
   const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
   const saveResult = await dialog.showSaveDialog(parentWindow, {
     defaultPath: path.join(app.getPath("documents"), payload.fileName),
-    filters: [{ name: "PDF", extensions: ["pdf"] }],
-    title: "Export Markdown as PDF",
+    filters: [{ name: tm("pdfFilter"), extensions: ["pdf"] }],
+    title: tm("exportMarkdownPdfTitle"),
   });
 
   if (saveResult.canceled || !saveResult.filePath) {
@@ -1615,7 +1629,7 @@ async function exportMarkdownPdf(event, input) {
           }
         : {
             displayHeaderFooter: true,
-            footerTemplate: MARKDOWN_PDF_FOOTER_TEMPLATE,
+            footerTemplate: markdownPdfFooterTemplate(),
             headerTemplate: "<span></span>",
             pageSize: "A4",
             preferCSSPageSize: true,
@@ -1717,13 +1731,12 @@ async function openConfigurationWindow(section = "") {
 
     const result = await showMessageBox(mainWindow, {
       type: "info",
-      buttons: ["Restart Now", "Later"],
+      buttons: [tm("restartNowButton"), tm("laterButton")],
       cancelId: 1,
       defaultId: 0,
-      message: `Restart ${APP_DISPLAY_NAME} to apply preference changes.`,
-      detail:
-        `Theme changes apply immediately. Other General and Markdown preferences are applied when the local server starts.`,
-      title: "Preferences Saved",
+      message: tm("restartMessage", { appName: APP_DISPLAY_NAME }),
+      detail: tm("restartDetail"),
+      title: tm("preferencesSavedTitle"),
     });
 
     if (result.response === 0) {
@@ -1733,7 +1746,7 @@ async function openConfigurationWindow(section = "") {
     }
   } catch (error) {
     if (error.message !== "Setup was canceled.") {
-      dialog.showErrorBox("Unable to update preferences", error.message);
+      dialog.showErrorBox(tm("unableToUpdatePreferences"), error.message);
     }
   }
 }
@@ -1782,9 +1795,9 @@ function showOpenDialogFor(parentWindow, options) {
 
 async function showDirectoryDialog(parentWindow) {
   const result = await showOpenDialogFor(parentWindow, {
-    buttonLabel: "Open",
+    buttonLabel: tm("openButton"),
     properties: ["openDirectory", "createDirectory"],
-    title: "Open Folder",
+    title: tm("openFolderTitle"),
   });
   return result.canceled ? null : result.filePaths[0] ?? null;
 }
@@ -1792,9 +1805,9 @@ async function showDirectoryDialog(parentWindow) {
 async function showFileDialog(parentWindow) {
   const result = await showOpenDialogFor(parentWindow, {
     // The server decides which file types Libera can open.
-    buttonLabel: "Open",
+    buttonLabel: tm("openButton"),
     properties: ["openFile"],
-    title: "Open File",
+    title: tm("openFileTitle"),
   });
   return result.canceled ? null : result.filePaths[0] ?? null;
 }
@@ -1828,15 +1841,15 @@ function resolveContextItemPath(relativePath) {
 
 /** A .bib file to tether a notebook's References to: an existing one, or a new one (Save dialog). */
 async function chooseBibFile(parentWindow, mode) {
-  const filters = [{ name: "BibTeX files", extensions: ["bib"] }];
+  const filters = [{ name: tm("bibtexFilesFilter"), extensions: ["bib"] }];
   if (mode === "create") {
     const result = await (parentWindow ? dialog.showSaveDialog(parentWindow, {
-      title: "New .bib file", buttonLabel: "Create", defaultPath: path.join(app.getPath("documents"), "references.bib"), filters,
-    }) : dialog.showSaveDialog({ title: "New .bib file", buttonLabel: "Create", defaultPath: path.join(app.getPath("documents"), "references.bib"), filters }));
+      title: tm("newBibFileTitle"), buttonLabel: tm("createButton"), defaultPath: path.join(app.getPath("documents"), "references.bib"), filters,
+    }) : dialog.showSaveDialog({ title: tm("newBibFileTitle"), buttonLabel: tm("createButton"), defaultPath: path.join(app.getPath("documents"), "references.bib"), filters }));
     if (result.canceled || !result.filePath) return null;
     return path.extname(result.filePath).toLowerCase() === ".bib" ? result.filePath : `${result.filePath}.bib`;
   }
-  const result = await showOpenDialogFor(parentWindow, { title: "Tether to a .bib file", buttonLabel: "Tether", properties: ["openFile"], filters });
+  const result = await showOpenDialogFor(parentWindow, { title: tm("tetherTitle"), buttonLabel: tm("tetherButton"), properties: ["openFile"], filters });
   return result.canceled ? null : result.filePaths[0] ?? null;
 }
 
@@ -1876,31 +1889,31 @@ function installApplicationMenu() {
   const configurationMenuItem = {
     accelerator: "CmdOrCtrl+,",
     click: () => void openConfigurationWindow(),
-    label: "Preferences...",
+    label: tm("preferencesMenuItem"),
   };
   const closeTabMenuItem = {
     accelerator: "CmdOrCtrl+W",
     click: dispatchCloseTabToFocusedWindow,
-    label: "Close Tab",
+    label: tm("closeTabMenuItem"),
   };
   const aboutMenuItem = {
     click: showAboutDialog,
-    label: `About ${APP_DISPLAY_NAME}`,
+    label: tm("aboutMenuItem", { appName: APP_DISPLAY_NAME }),
   };
   const directoryState = readDirectoryModeStateFromConfig();
   const openMenuItems = [
     {
       accelerator: "CmdOrCtrl+O",
       click: () => void chooseFileAndOpen(),
-      label: "Open File...",
+      label: tm("openFileMenuItem"),
     },
     {
       accelerator: "CmdOrCtrl+Shift+O",
       click: () => void chooseDirectoryAndOpen(),
-      label: "Open Folder...",
+      label: tm("openFolderMenuItem"),
     },
     {
-      label: "Open Recent",
+      label: tm("openRecentMenuItem"),
       submenu: directoryState.recent.length
         ? [
             ...directoryState.recent.map((directoryPath) => ({
@@ -1911,13 +1924,13 @@ function installApplicationMenu() {
             { type: "separator" },
             {
               click: () => sendDirectoryCommand({ type: "clear-recent" }),
-              label: "Clear Recently Opened",
+              label: tm("clearRecentMenuItem"),
             },
           ]
-        : [{ enabled: false, label: "No Recent Folders" }],
+        : [{ enabled: false, label: tm("noRecentFoldersMenuItem") }],
     },
     {
-      label: "Remove Folder from Libera",
+      label: tm("removeFolderMenuItem"),
       enabled: directoryState.folders.length > 0,
       submenu: directoryState.folders.length
         ? directoryState.folders.map((folder) => ({
@@ -1926,14 +1939,14 @@ function installApplicationMenu() {
             label: folder.name.replace(/&/g, "&&"),
             toolTip: folder.path,
           }))
-        : [{ enabled: false, label: "No Linked Folders" }],
+        : [{ enabled: false, label: tm("noLinkedFoldersMenuItem") }],
     },
     { type: "separator" },
   ];
   const checkForUpdatesMenuItem = {
     click: () => void updaterService.check(),
     enabled: app.isPackaged,
-    label: "Check for Updates...",
+    label: tm("checkForUpdatesMenuItem"),
   };
   const template = [
     ...(isMac
@@ -1948,17 +1961,17 @@ function installApplicationMenu() {
               { type: "separator" },
               { role: "services" },
               { type: "separator" },
-              { label: `Hide ${APP_DISPLAY_NAME}`, role: "hide" },
-              { label: "Hide Others", role: "hideOthers" },
+              { label: tm("hideAppMenuItem", { appName: APP_DISPLAY_NAME }), role: "hide" },
+              { label: tm("hideOthersMenuItem"), role: "hideOthers" },
               { role: "unhide" },
               { type: "separator" },
-              { label: `Quit ${APP_DISPLAY_NAME}`, role: "quit" },
+              { label: tm("quitAppMenuItem", { appName: APP_DISPLAY_NAME }), role: "quit" },
             ],
           },
         ]
       : []),
     {
-      label: "File",
+      label: tm("fileMenu"),
       submenu: [
         ...openMenuItems,
         ...(isMac ? [] : [configurationMenuItem, { type: "separator" }]),
@@ -1968,7 +1981,7 @@ function installApplicationMenu() {
       ],
     },
     {
-      label: "Edit",
+      label: tm("editMenu"),
       submenu: [
         { role: "undo" },
         { role: "redo" },
@@ -1984,7 +1997,7 @@ function installApplicationMenu() {
     },
     ...(isMac ? rendererMenus.editor : []),
     {
-      label: "View",
+      label: tm("viewMenu"),
       submenu: [
         ...(isMac ? rendererMenus.view : []),
         { role: "reload" },
@@ -2001,13 +2014,13 @@ function installApplicationMenu() {
     ...(isMac
       ? [
           {
-            label: "Window",
+            label: tm("windowMenu"),
             submenu: [{ role: "minimize" }, { role: "zoom" }],
           },
         ]
       : [
           {
-            label: "Help",
+            label: tm("helpMenu"),
             submenu: [checkForUpdatesMenuItem, { type: "separator" }, aboutMenuItem],
           },
         ]),
@@ -2030,8 +2043,8 @@ function installExportHandlers() {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
     const result = await dialog.showSaveDialog(parentWindow, {
       defaultPath: path.join(app.getPath("documents"), path.basename(input.fileName)),
-      filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
-      title: "Save Markdown file",
+      filters: [{ name: tm("markdownFilter"), extensions: ["md", "markdown"] }],
+      title: tm("saveMarkdownFileTitle"),
     });
     if (result.canceled || !result.filePath) return { canceled: true };
     await fsp.writeFile(result.filePath, input.content, "utf8");
@@ -2051,8 +2064,8 @@ function installExportHandlers() {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
     const result = await dialog.showSaveDialog(parentWindow, {
       defaultPath: path.join(app.getPath("documents"), path.basename(input.fileName)),
-      filters: extensions.length ? [{ name: typeof input.filterName === "string" ? input.filterName.slice(0, 60) : "Text", extensions }] : [],
-      title: "Save As",
+      filters: extensions.length ? [{ name: typeof input.filterName === "string" ? input.filterName.slice(0, 60) : tm("textFilter"), extensions }] : [],
+      title: tm("saveAsTitle"),
     });
     if (result.canceled || !result.filePath) return { canceled: true };
     await fsp.writeFile(result.filePath, input.content, "utf8");
@@ -2286,7 +2299,7 @@ function installFileExplorerHandlers() {
     const stats = await fsp.stat(notebookDirectory);
 
     if (!stats.isDirectory()) {
-      throw new Error("Notebook directory was not found.");
+      throw new Error(tm("notebookDirectoryNotFound"));
     }
 
     const errorMessage = await shell.openPath(notebookDirectory);
@@ -2302,7 +2315,7 @@ function installFileExplorerHandlers() {
     const stats = await fsp.stat(targetPath);
 
     if (!stats.isFile() && !stats.isDirectory()) {
-      throw new Error("Item was not found.");
+      throw new Error(tm("itemNotFound"));
     }
 
     shell.showItemInFolder(targetPath);
@@ -2318,7 +2331,7 @@ function installFileExplorerHandlers() {
     const stats = await fsp.stat(targetPath);
 
     if (!stats.isFile()) {
-      throw new Error("File was not found.");
+      throw new Error(tm("fileNotFound"));
     }
 
     await clipboard.writeText(mode === "absolute" ? targetPath : relativePath);
@@ -2396,7 +2409,7 @@ function installWindowControlHandlers() {
   ipcMain.handle("profiles:signed-in", async (event) => {
     assertProfilesSender(event);
     const version = profileAuthVersion;
-    if (!await hasProfileSession() || version !== profileAuthVersion) throw new Error("Sign in first to manage users.");
+    if (!await hasProfileSession() || version !== profileAuthVersion) throw new Error(tm("signInFirstToManageUsers"));
     profileSignedIn = true;
     await queueProfileMutation(async () => {
       await assertProfileSignedIn();
@@ -2472,7 +2485,7 @@ function getFreePort() {
         if (address && typeof address === "object") {
           resolve(address.port);
         } else {
-          reject(new Error("Unable to choose a local port."));
+          reject(new Error(tm("unableToChooseLocalPort")));
         }
       });
     });
@@ -2621,8 +2634,8 @@ async function startNextServer(config) {
   serverProcess.on("exit", (code, signal) => {
     if (serverReady && !isQuitting) {
       dialog.showErrorBox(
-        `${APP_DISPLAY_NAME} server stopped`,
-        `The local Next.js server stopped unexpectedly (${signal ?? code}).`,
+        tm("serverStoppedTitle", { appName: APP_DISPLAY_NAME }),
+        tm("serverStoppedDetail", { exitCode: String(signal ?? code) }),
       );
       app.quit();
     }
@@ -2745,7 +2758,7 @@ async function createMainWindow(url) {
       }
     }).catch((error) => {
       closingWindow.emit("profile-close-failed");
-      dialog.showErrorBox("Could not save session", error.message);
+      dialog.showErrorBox(tm("couldNotSaveSession"), error.message);
     }).finally(() => { closeFlush = null; });
   });
   const mainContents = mainWindow.webContents;
@@ -2885,8 +2898,8 @@ async function validateStartupStorage(config) {
     return config;
   } catch (error) {
     const result = await showMessageBox(null, {
-      type: "error", title: "User folders overlap", message: "Libera cannot open this user's folders.",
-      detail: error.message, buttons: ["Open Preferences", "Quit"], defaultId: 0, cancelId: 1, noLink: true,
+      type: "error", title: tm("userFoldersOverlapTitle"), message: tm("userFoldersOverlapMessage"),
+      detail: error.message, buttons: [tm("openPreferencesButton"), tm("quitButton")], defaultId: 0, cancelId: 1, noLink: true,
     });
     if (result.response !== 0) throw new Error("Setup was canceled.");
     const repaired = await createSetupWindow({ mode: "configuration", section: "general" });
@@ -2898,24 +2911,36 @@ async function validateStartupStorage(config) {
   }
 }
 
+// Preferences (setup.html) asks for its messages synchronously, before it renders. The language is fixed for the
+// session: a change made in Preferences applies after the restart prompt, so menus and dialogs need no live rebuild.
+function installI18nHandlers() {
+  ipcMain.on("i18n:setup", (event) => {
+    event.returnValue = i18n.setupPayload();
+  });
+}
+
 async function bootstrap() {
   if (!hasInstanceLock) return;
   try {
     applyApplicationIdentity();
+    installI18nHandlers();
 
     if (process.platform === "darwin") {
       app.dock.setIcon(getIconPath());
     }
 
     let config = readConfig();
+    i18n.setLocale(resolveInterfaceLocale(config));
     if (startupProfileError) {
-      dialog.showErrorBox("Could not open user settings", `Settings for ${startupProfileError.name} could not be opened or are incomplete. Libera will open another user. The damaged user's folder has been kept unchanged.`);
+      dialog.showErrorBox(tm("couldNotOpenUserSettingsTitle"), tm("couldNotOpenUserSettingsDetail", { name: startupProfileError.name }));
     }
 
     if (!isConfigComplete(config)) {
       config = await createSetupWindow({ mode: "setup" });
     }
     config = await validateStartupStorage(config);
+    // First-run setup may have chosen a language.
+    i18n.setLocale(resolveInterfaceLocale(config));
 
     // Before Next, so the control API's URL and token are in Next's env.
     await collabHost.start(config).catch((error) => {
@@ -2939,7 +2964,7 @@ async function bootstrap() {
   } catch (error) {
     if (isQuitting) return;
     if (error.message !== "Setup was canceled.") {
-      dialog.showErrorBox(`Unable to start ${APP_DISPLAY_NAME}`, error.message);
+      dialog.showErrorBox(tm("unableToStartTitle", { appName: APP_DISPLAY_NAME }), error.message);
     }
 
     app.quit();
@@ -2998,7 +3023,7 @@ function trackChildWindow(child) {
       try { child.close(); } finally { closingAfterFlush = false; }
     }).catch((error) => {
       child.emit("profile-close-failed");
-      dialog.showErrorBox("Could not save session", error.message);
+      dialog.showErrorBox(tm("couldNotSaveSession"), error.message);
     }).finally(() => { closeFlush = null; });
   });
 }
@@ -3038,7 +3063,7 @@ app.on("before-quit", (event) => {
     return;
   }
   void prepareToQuit().then(() => app.quit()).catch((error) => {
-    dialog.showErrorBox("Could not save session", error.message);
+    dialog.showErrorBox(tm("couldNotSaveSession"), error.message);
   });
 });
 

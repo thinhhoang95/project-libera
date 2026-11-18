@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Check, Images, Star } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { galleryText, useRegisterGalleryTranslator } from "@/components/libera/gallery-i18n";
 import { refreshGallery, useGallery } from "@/components/libera/gallery-store";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { galleryRawUrl, type GalleryPhoto } from "@/lib/image-generation";
@@ -21,7 +23,7 @@ export function isInsertableGalleryPhoto(photo: Pick<GalleryPhoto, "name">) {
  */
 export async function galleryPhotoFile(photo: GalleryPhoto) {
   const response = await fetch(galleryRawUrl(photo));
-  if (!response.ok) throw new Error(`Could not read ${photo.name} from the gallery.`);
+  if (!response.ok) throw new Error(galleryText("galleryPhotoPicker.couldNotReadPhoto", { name: photo.name }));
   const blob = await response.blob();
   const type = CONTENT_TYPES[photo.name.split(".").at(-1)?.toLowerCase() ?? ""] ?? blob.type;
   return new File([blob], photo.name, { type });
@@ -33,6 +35,9 @@ export function GalleryPhotoPicker({ open, onClose, onInsert }: {
   onClose: () => void;
   onInsert: (photos: GalleryPhoto[]) => Promise<void> | void;
 }) {
+  const t = useTranslations("galleryPhotoPicker");
+  const tCommon = useTranslations("common");
+  useRegisterGalleryTranslator();
   const gallery = useGallery();
   const [view, setView] = useState<PickerView>({ kind: "photos" });
   // Selection order is insertion order.
@@ -69,38 +74,38 @@ export function GalleryPhotoPicker({ open, onClose, onInsert }: {
     try {
       await onInsert(photosToInsert);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not insert the photos.");
+      setError(cause instanceof Error ? cause.message : t("couldNotInsert"));
     } finally {
       setInserting(false);
     }
   }
 
-  const tab = (kind: "photos" | "starred" | "albums", label: string) => <button key={kind} type="button" role="tab"
+  const tab = (kind: "photos" | "starred" | "albums") => <button key={kind} type="button" role="tab"
     aria-selected={view.kind === kind || (kind === "albums" && view.kind === "album")}
     className={`inline-flex items-center gap-1 rounded-md px-3 py-1 text-xs font-medium ${view.kind === kind || (kind === "albums" && view.kind === "album") ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-    onClick={() => setView({ kind })}>{kind === "starred" && <Star className="h-3 w-3" />}{label}</button>;
+    onClick={() => setView({ kind })}>{kind === "starred" && <Star className="h-3 w-3" />}{t(`tab.${kind}`)}</button>;
 
-  return <ModalDialog open={open} title="Insert from gallery" panelClassName="max-w-3xl"
-    description="Choose one or more photos. Each is copied into the note, so it stays even if the gallery changes."
+  return <ModalDialog open={open} title={t("title")} panelClassName="max-w-3xl"
+    description={t("description")}
     onClose={() => { if (!inserting) onClose(); }}
     footer={<div className="flex items-center gap-2">
-      <span className="mr-auto text-sm text-muted-foreground">{chosen.length ? `${chosen.length} selected` : "Click photos to select them"}</span>
-      <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" disabled={inserting} onClick={onClose}>Cancel</button>
+      <span className="mr-auto text-sm text-muted-foreground">{chosen.length ? t("selectedCount", { count: chosen.length }) : t("clickToSelect")}</span>
+      <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" disabled={inserting} onClick={onClose}>{tCommon("cancel")}</button>
       <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
         disabled={!chosen.length || inserting} onClick={() => void insert(chosen)}>
-        {inserting ? "Inserting…" : chosen.length > 1 ? `Insert ${chosen.length} photos` : "Insert photo"}
+        {inserting ? t("inserting") : t("insertPhotos", { count: chosen.length })}
       </button>
     </div>}>
     <div className="mb-3 flex items-center gap-2">
-      {view.kind === "album" && <button type="button" aria-label="Back to albums" title="Back to albums" className="inline-flex h-7 w-7 items-center justify-center rounded-lg hover:bg-muted" onClick={() => setView({ kind: "albums" })}><ArrowLeft className="h-4 w-4" /></button>}
+      {view.kind === "album" && <button type="button" aria-label={t("backToAlbums")} title={t("backToAlbums")} className="inline-flex h-7 w-7 items-center justify-center rounded-lg hover:bg-muted" onClick={() => setView({ kind: "albums" })}><ArrowLeft className="h-4 w-4" /></button>}
       {view.kind === "album" ? <h3 className="mr-auto truncate text-sm font-semibold">{album?.name}</h3> : <span className="mr-auto" />}
-      <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label="Gallery sections">
-        {tab("photos", "Photos")}{tab("starred", "Starred")}{tab("albums", "Albums")}
+      <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label={t("gallerySections")}>
+        {tab("photos")}{tab("starred")}{tab("albums")}
       </div>
     </div>
     {error && <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
     <div className="h-[55vh] overflow-auto">
-      {!contents ? <p role="status" className="py-10 text-center text-sm text-muted-foreground">{gallery.error || "Opening your gallery…"}</p>
+      {!contents ? <p role="status" className="py-10 text-center text-sm text-muted-foreground">{gallery.error || t("openingGallery")}</p>
         : view.kind === "albums" ? (contents.albums.length ? <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3">
           {contents.albums.map((item) => {
             const cover = item.coverId ? photoById.get(item.coverId) : undefined;
@@ -111,14 +116,14 @@ export function GalleryPhotoPicker({ open, onClose, onInsert }: {
                   : <span className="flex h-full items-center justify-center text-muted-foreground"><Images className="h-6 w-6" /></span>}
               </span>
               <span className="mt-1.5 block truncate text-sm font-medium">{item.name}</span>
-              <span className="block text-xs text-muted-foreground">{item.count} {item.count === 1 ? "item" : "items"}</span>
+              <span className="block text-xs text-muted-foreground">{t("albumItemCount", { count: item.count })}</span>
             </button>;
           })}
-        </div> : <p className="py-10 text-center text-sm text-muted-foreground">No albums yet.</p>)
+        </div> : <p className="py-10 text-center text-sm text-muted-foreground">{t("noAlbums")}</p>)
         : photos.length ? <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-1">
           {photos.map((photo) => {
             const order = selected.indexOf(photo.id);
-            return <button key={photo.id} type="button" role="checkbox" aria-checked={order >= 0} aria-label={photo.prompt ? `${photo.name}: ${photo.prompt.slice(0, 80)}` : photo.name}
+            return <button key={photo.id} type="button" role="checkbox" aria-checked={order >= 0} aria-label={photo.prompt ? t("photoLabelWithPrompt", { name: photo.name, prompt: photo.prompt.slice(0, 80) }) : photo.name}
               title={photo.name} className={`relative aspect-square overflow-hidden ${order >= 0 ? "rounded-lg bg-primary/10" : "bg-muted"}`}
               onClick={() => toggle(photo)} onDoubleClick={() => void insert([photo])}>
               {/* eslint-disable-next-line @next/next/no-img-element -- local authenticated files */}
@@ -128,7 +133,7 @@ export function GalleryPhotoPicker({ open, onClose, onInsert }: {
               </span>
             </button>;
           })}
-        </div> : <p className="py-10 text-center text-sm text-muted-foreground">{view.kind === "starred" ? "No starred photos." : view.kind === "album" ? "This album has no photos." : "Your gallery has no photos yet."}</p>}
+        </div> : <p className="py-10 text-center text-sm text-muted-foreground">{view.kind === "starred" ? t("noStarredPhotos") : view.kind === "album" ? t("emptyAlbum") : t("emptyGallery")}</p>}
     </div>
   </ModalDialog>;
 }

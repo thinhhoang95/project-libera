@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useTranslations } from "next-intl";
 import { encodeFilePath } from "@/components/libera/api-client";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
@@ -20,6 +21,7 @@ export function FileWindowPage({
   fileType: "pdf" | "image" | null;
   mathMarkers: MathMarkerSettings;
 }) {
+  const t = useTranslations("fileWindowPage");
   const fileName = filePath.split("/").at(-1) ?? "";
   const src = `/api/files/raw/${encodeFilePath(filePath)}`;
 
@@ -33,7 +35,7 @@ export function FileWindowPage({
     <main className="libera-workspace-region flex h-full min-h-0 flex-col bg-background text-foreground">
       <header className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-3">
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={filePath}>
-          {fileName || "File"}
+          {fileName || t("fallbackTitle")}
         </h1>
       </header>
       <div className="libera-document-workspace flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -44,7 +46,7 @@ export function FileWindowPage({
             <><ImageViewer src={src} alt={fileName} filePath={filePath} saveDestination="gallery" /><SaveImageToNewAlbumDialog /></>
           ) : (
             <p role="alert" className="p-6 text-sm text-destructive">
-              This file can&apos;t be opened in its own window.
+              {t("cannotOpen")}
             </p>
           )}
         </NoteMathMarkersProvider>

@@ -2,18 +2,20 @@
 
 import { AudioLines, Pause, PanelLeft, Play } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useFormatter, useLocale, useTranslations } from "next-intl";
 import { createPortal } from "react-dom";
 import { useSegmentDraft } from "@/components/libera/audio/editable-lines";
 import { speakerColor } from "@/components/libera/audio/speaker-colors";
 import { TranscriptControls, TranscriptDocument, TranscriptMenu, type TranscriptNoteActions } from "@/components/libera/audio/transcript-panel";
 import { isJobActive, useAudioPeaks, useTranscript } from "@/components/libera/audio/use-voice-memo";
 import { PLAYBACK_RATES, SKIP_SECONDS, VoiceMemoControls, type VoiceMemoPlayer } from "@/components/libera/audio/voice-memo-controls";
+import { formatBytesIn, formatDurationIn } from "@/components/libera/audio/media-format";
 import { Waveform } from "@/components/libera/audio/waveform";
 import { requestRailTab } from "@/components/libera/page-tabs";
 import { useRailSlot } from "@/components/libera/rail-slot";
 import type { AudioTabViewState } from "@/components/libera/types";
 import { findTermRanges } from "@/lib/global-search";
-import { formatClock, formatDuration, segmentIndexAt, speakerName } from "@/lib/transcription/format";
+import { formatClock, segmentIndexAt, speakerName } from "@/lib/transcription/format";
 import type { Transcript, TranscriptSegment } from "@/lib/transcription/types";
 import type { LiberaFileNode } from "@/lib/types";
 
@@ -22,12 +24,6 @@ const NO_SEGMENTS: TranscriptSegment[] = [];
 function isTyping(target: EventTarget | null) {
   const element = target as HTMLElement | null;
   return Boolean(element?.isContentEditable || element?.closest("input, textarea, select"));
-}
-
-function formatSize(bytes: number) {
-  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
-  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
 }
 
 /**
@@ -57,6 +53,9 @@ export function VoiceMemoViewer({
   /** Saving the transcript as a note. */
   notes?: TranscriptNoteActions;
 }) {
+  const t = useTranslations("audio.voiceMemoViewer");
+  const locale = useLocale();
+  const format = useFormatter();
   const audioRef = useRef<HTMLAudioElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -234,9 +233,9 @@ export function VoiceMemoViewer({
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (audio.paused) void audio.play().catch((error: unknown) => setLoadError(error instanceof Error ? error.message : "This recording cannot be played."));
+    if (audio.paused) void audio.play().catch((error: unknown) => setLoadError(error instanceof Error ? error.message : t("cannotPlay")));
     else audio.pause();
-  }, []);
+  }, [t]);
 
   const stop = useCallback(() => {
     const audio = audioRef.current;
@@ -340,7 +339,12 @@ export function VoiceMemoViewer({
   const title = file.name.replace(/\.[^.]+$/, "");
   const extension = file.name.match(/\.([a-z0-9]+)$/i)?.[1]?.toUpperCase();
   const created = new Date(file.createdAt);
-  const details = [extension, knownDuration ? formatDuration(knownDuration) : null, formatSize(file.size), Number.isNaN(created.getTime()) ? null : created.toLocaleDateString(undefined, { dateStyle: "medium" })].filter(Boolean).join(" · ");
+  const details = t("details", {
+    extension: extension ?? "none",
+    duration: knownDuration ? formatDurationIn(locale, knownDuration) : "none",
+    size: formatBytesIn(locale, file.size, { gb: 2, mb: 1, kb: true }),
+    date: Number.isNaN(created.getTime()) ? "none" : format.dateTime(created, { dateStyle: "medium" }),
+  });
   const activeName = activeSegment && transcript ? speakerName(transcript, activeSegment.speaker) : "";
   const canPlay = Boolean(src) && !loadError;
 
@@ -401,7 +405,7 @@ export function VoiceMemoViewer({
         }}
         onEnded={() => setPlaying(false)}
         onSeeked={(event) => setCurrentTime(event.currentTarget.currentTime)}
-        onError={() => setLoadError("This recording cannot be played here. Its format may not be supported.")}
+        onError={() => setLoadError(t("cannotPlayFormat"))}
       />
 
       <div className="libera-viewer-toolbar flex shrink-0 items-center gap-3 border-b border-input bg-card px-4 py-2">
@@ -409,12 +413,12 @@ export function VoiceMemoViewer({
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{details}</span>
         {isJobActive(job) ? (
           <span className="inline-flex h-7 items-center gap-1.5 rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" /> Transcribing {Math.round((job?.progress ?? 0) * 100)}%
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" /> {t("transcribingPercent", { percent: format.number(job?.progress ?? 0, { style: "percent" }) })}
           </span>
         ) : null}
         {!railSlot ? (
-          <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-2.5 text-sm font-medium transition hover:bg-muted" title="Show the player and transcript controls in the left panel" onClick={showControls}>
-            <PanelLeft aria-hidden className="h-4 w-4" /> Controls
+          <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-2.5 text-sm font-medium transition hover:bg-muted" title={t("showControlsTitle")} onClick={showControls}>
+            <PanelLeft aria-hidden className="h-4 w-4" /> {t("controls")}
           </button>
         ) : null}
       </div>
@@ -431,8 +435,8 @@ export function VoiceMemoViewer({
             ) : (
               <p className="text-sm text-muted-foreground">
                 {transcript
-                  ? transcript.diarization ? `${transcript.speakers.length === 1 ? "1 speaker" : `${transcript.speakers.length} speakers`} · ${segments.length} passages` : `${segments.length} passages`
-                  : isJobActive(job) ? "Transcribing…" : "No transcript yet"}
+                  ? transcript.diarization ? t("speakerPassages", { speakers: transcript.speakers.length, passages: segments.length }) : t("passages", { passages: segments.length })
+                  : isJobActive(job) ? t("transcribingEllipsis") : t("noTranscriptYet")}
               </p>
             )}
           </div>
@@ -442,8 +446,8 @@ export function VoiceMemoViewer({
           <button
             type="button"
             className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-foreground text-background shadow-md transition hover:scale-[1.04] active:scale-95 disabled:opacity-40"
-            aria-label={playing ? "Pause" : "Play"}
-            title={playing ? "Pause (Space)" : "Play (Space)"}
+            aria-label={playing ? t("pause") : t("play")}
+            title={playing ? t("pauseSpace") : t("playSpace")}
             disabled={!canPlay}
             onClick={togglePlay}
           >

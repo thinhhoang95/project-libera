@@ -1,10 +1,11 @@
 "use client";
 
 import { CalendarDays, Check, Plus, TextCursorInput, X } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { cleanNameList, NameListEditor } from "@/components/libera/references/name-list-editor";
-import { CSL_TYPE_LABELS, fieldLabel } from "@/components/libera/references/reference-display";
+import { fieldLabel, typeLabel } from "@/components/libera/references/reference-display";
 import { normalizeDoi, normalizeIsbn, normalizeIssn, normalizePmid } from "@/lib/references/identifiers";
 import { identifiersFromCsl } from "@/lib/references/normalize";
 import {
@@ -138,14 +139,21 @@ export function buildEditOp(entry: ReferenceEntry, next: CslItem, now = new Date
   return op;
 }
 
-/** Messages for invalid values, by field. */
-export function validateReferenceFields(csl: CslItem, options: { requireTitle?: boolean; date?: DateDraft; otherFields?: OtherField[] } = {}) {
+/**
+ * Messages for invalid values, by field. English unless `t` (`useTranslations("references.referenceEditForm")`) is given.
+ */
+export function validateReferenceFields(
+  csl: CslItem,
+  options: { requireTitle?: boolean; date?: DateDraft; otherFields?: OtherField[] } = {},
+  t?: (key: string, values?: Record<string, string>) => string,
+) {
   const errors: Record<string, string> = {};
-  if (options.requireTitle && isEmpty(csl.title)) errors.title = "A title is needed.";
+  const m = (key: string, english: string, values?: Record<string, string>) => t ? t(key, values) : english;
+  if (options.requireTitle && isEmpty(csl.title)) errors.title = m("errorTitleNeeded", "A title is needed.");
   for (const field of ["author", "editor"] as const) {
     const names = csl[field];
     if (Array.isArray(names) && names.some((name) => !name.family && !name.literal)) {
-      errors[field] = "Each name needs a family name, or switch it to an institution.";
+      errors[field] = m("errorNameFamily", "Each name needs a family name, or switch it to an institution.");
     }
   }
   const date = options.date;
@@ -153,30 +161,30 @@ export function validateReferenceFields(csl: CslItem, options: { requireTitle?: 
     const year = Number(date.year);
     const month = Number(date.month || "1");
     const day = Number(date.day || "1");
-    if (!/^-?\d{1,4}$/.test(date.year.trim()) || year < -9999 || year > 9999) errors.issued = "The year must be a number, such as 2020.";
-    else if (date.month && (!Number.isInteger(month) || month < 1 || month > 12)) errors.issued = "The month must be between 1 and 12.";
-    else if (date.day && !date.month) errors.issued = "Add the month before the day.";
-    else if (date.day && (!Number.isInteger(day) || day < 1 || day > 31)) errors.issued = "The day must be between 1 and 31.";
+    if (!/^-?\d{1,4}$/.test(date.year.trim()) || year < -9999 || year > 9999) errors.issued = m("errorYear", "The year must be a number, such as 2020.");
+    else if (date.month && (!Number.isInteger(month) || month < 1 || month > 12)) errors.issued = m("errorMonth", "The month must be between 1 and 12.");
+    else if (date.day && !date.month) errors.issued = m("errorDayNeedsMonth", "Add the month before the day.");
+    else if (date.day && (!Number.isInteger(day) || day < 1 || day > 31)) errors.issued = m("errorDay", "The day must be between 1 and 31.");
   }
-  if (typeof csl.DOI === "string" && csl.DOI.trim() && !normalizeDoi(csl.DOI)) errors.DOI = "This is not a DOI. DOIs look like 10.1234/abcd.";
-  if (typeof csl.URL === "string" && csl.URL.trim() && !/^https?:\/\/\S+$/i.test(csl.URL.trim())) errors.URL = "Web addresses start with http:// or https://.";
+  if (typeof csl.DOI === "string" && csl.DOI.trim() && !normalizeDoi(csl.DOI)) errors.DOI = m("errorDoi", "This is not a DOI. DOIs look like 10.1234/abcd.");
+  if (typeof csl.URL === "string" && csl.URL.trim() && !/^https?:\/\/\S+$/i.test(csl.URL.trim())) errors.URL = m("errorUrl", "Web addresses start with http:// or https://.");
   if (typeof csl.ISBN === "string" && csl.ISBN.trim() && csl.ISBN.split(/[,;]\s*|\s+(?=97[89]|\d{9}[\dX])/i).some((value) => value.trim() && !normalizeIsbn(value))) {
-    errors.ISBN = "The ISBN's check digit does not match.";
+    errors.ISBN = m("errorIsbn", "The ISBN's check digit does not match.");
   }
-  if (typeof csl.ISSN === "string" && csl.ISSN.trim() && csl.ISSN.split(/[,;\s]+/).some((value) => value && !normalizeIssn(value))) errors.ISSN = "ISSNs look like 1234-5679.";
-  if (csl.PMID !== undefined && String(csl.PMID).trim() && !normalizePmid(String(csl.PMID))) errors.PMID = "A PubMed ID is a number.";
+  if (typeof csl.ISSN === "string" && csl.ISSN.trim() && csl.ISSN.split(/[,;\s]+/).some((value) => value && !normalizeIssn(value))) errors.ISSN = m("errorIssn", "ISSNs look like 1234-5679.");
+  if (csl.PMID !== undefined && String(csl.PMID).trim() && !normalizePmid(String(csl.PMID))) errors.PMID = m("errorPmid", "A PubMed ID is a number.");
   const seen = new Set<string>();
   for (const other of options.otherFields ?? []) {
     const name = other.name.trim();
     if (!name && !other.value.trim()) continue;
-    if (!name) errors[`other:${seen.size}`] = "Name the field.";
-    else if ((MAIN_FIELDS as readonly string[]).includes(name) || name === "type") errors[`other:${name}`] = `“${name}” has its own field above.`;
-    else if (seen.has(name)) errors[`other:${name}`] = `“${name}” is listed twice.`;
+    if (!name) errors[`other:${seen.size}`] = m("errorNameField", "Name the field.");
+    else if ((MAIN_FIELDS as readonly string[]).includes(name) || name === "type") errors[`other:${name}`] = m("errorOwnField", `“${name}” has its own field above.`, { name });
+    else if (seen.has(name)) errors[`other:${name}`] = m("errorDuplicateField", `“${name}” is listed twice.`, { name });
     else if (other.json && other.value.trim()) {
       try {
         JSON.parse(other.value);
       } catch {
-        errors[`other:${name}`] = "This value must be valid JSON.";
+        errors[`other:${name}`] = m("errorJson", "This value must be valid JSON.");
       }
     }
     seen.add(name);
@@ -210,6 +218,10 @@ export function ReferenceEditForm(props: FormProps) {
 }
 
 function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: FormProps) {
+  const t = useTranslations("references.referenceEditForm");
+  const tDisplay = useTranslations("references.referenceDisplay");
+  const tc = useTranslations("common");
+  const locale = useLocale();
   const start = useMemo<CslItem>(() => structuredClone(entry?.csl ?? initial?.csl ?? { type: "article-journal" }), [entry, initial]);
   const [type, setType] = useState<CslItemType>(start.type);
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(
@@ -258,7 +270,7 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
   async function submit() {
     const draftCsl: CslItem = { type, author: names.author, editor: names.editor };
     for (const field of MAIN_FIELDS) if (!NAME_FIELDS.has(field) && field !== "issued") (draftCsl as Record<string, unknown>)[field] = values[field];
-    const nextErrors = validateReferenceFields(draftCsl, { requireTitle: !entry, date, otherFields });
+    const nextErrors = validateReferenceFields(draftCsl, { requireTitle: !entry, date, otherFields }, t);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
     const csl = buildCsl();
@@ -294,7 +306,7 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
       await onSubmit(ops);
       onClose();
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "The reference could not be saved.");
+      setSubmitError(error instanceof Error && error.message ? error.message : t("saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -306,7 +318,7 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
     const error = errors[field];
     return (
       <label key={field} className={`block space-y-1 ${options.className ?? ""}`} htmlFor={id}>
-        <span className="block text-xs font-medium text-muted-foreground">{fieldLabel(field)}</span>
+        <span className="block text-xs font-medium text-muted-foreground">{fieldLabel(field, tDisplay)}</span>
         {options.multiline ? (
           <textarea id={id} className="min-h-20 w-full px-2.5 py-1.5 text-sm" value={values[field] ?? ""} aria-invalid={Boolean(error)} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />
         ) : (
@@ -320,55 +332,55 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
   return (
     <ModalDialog
       open={open}
-      title={entry ? `Edit ${entry.key}` : "New reference"}
-      description={entry ? "Changed fields are marked as yours. Clear a field to remove it." : "Fill in what you know. The pasted text is kept in the note."}
+      title={entry ? t("dialogTitleEdit", { key: entry.key }) : t("dialogTitleNew")}
+      description={entry ? t("descriptionEdit") : t("descriptionNew")}
       panelClassName="max-w-2xl"
       onClose={onClose}
       footer={
         <>
-          <button type="button" className="inline-flex items-center gap-1.5 rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={onClose}><X aria-hidden className="h-4 w-4" /> Cancel</button>
+          <button type="button" className="inline-flex items-center gap-1.5 rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={onClose}><X aria-hidden className="h-4 w-4" /> {tc("cancel")}</button>
           <button type="button" className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" disabled={submitting} onClick={() => void submit()}>
             {entry ? <Check aria-hidden className="h-4 w-4" /> : <Plus aria-hidden className="h-4 w-4" />}
-            {entry ? "Save" : "Add reference"}
+            {entry ? tc("save") : t("addReference")}
           </button>
         </>
       }
     >
-      <form className="space-y-4" aria-label={entry ? "Edit reference" : "New reference"} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      <form className="space-y-4" aria-label={entry ? t("formAriaEdit") : t("formAriaNew")} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         {submitError ? <div role="alert" className="rounded-lg bg-destructive-muted p-3 text-xs text-destructive">{submitError}</div> : null}
         <label className="block space-y-1" htmlFor="reference-field-type">
-          <span className="block text-xs font-medium text-muted-foreground">Type</span>
+          <span className="block text-xs font-medium text-muted-foreground">{t("typeLabel")}</span>
           <select id="reference-field-type" className="h-8 w-full px-2 text-sm" value={type} onChange={(event) => setType(event.target.value as CslItemType)}>
-            {[...CSL_ITEM_TYPES].sort((a, b) => CSL_TYPE_LABELS[a].localeCompare(CSL_TYPE_LABELS[b])).map((item) => (
-              <option key={item} value={item}>{CSL_TYPE_LABELS[item]}</option>
+            {[...CSL_ITEM_TYPES].sort((a, b) => typeLabel(a, tDisplay).localeCompare(typeLabel(b, tDisplay), locale)).map((item) => (
+              <option key={item} value={item}>{typeLabel(item, tDisplay)}</option>
             ))}
           </select>
         </label>
         {textField("title", { multiline: false })}
-        <NameListEditor label="Authors" names={names.author} onChange={(author) => setNames((current) => ({ ...current, author }))} />
+        <NameListEditor label={t("authors")} addLabel={t("addAuthor")} names={names.author} onChange={(author) => setNames((current) => ({ ...current, author }))} />
         {errors.author ? <p role="alert" className="text-xs text-destructive">{errors.author}</p> : null}
         {shown("editor") ? (
           <>
-            <NameListEditor label="Editors" names={names.editor} onChange={(editor) => setNames((current) => ({ ...current, editor }))} />
+            <NameListEditor label={t("editors")} addLabel={t("addEditor")} names={names.editor} onChange={(editor) => setNames((current) => ({ ...current, editor }))} />
             {errors.editor ? <p role="alert" className="text-xs text-destructive">{errors.editor}</p> : null}
           </>
         ) : null}
         <fieldset className="space-y-1">
           <legend className="mb-1 flex w-full items-center justify-between text-xs font-medium text-muted-foreground">
-            <span>Date</span>
+            <span>{t("dateLegend")}</span>
             <button type="button" className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline" onClick={() => setDate((current) => ({ ...current, mode: current.mode === "parts" ? "literal" : "parts" }))}>
               {date.mode === "parts" ? <TextCursorInput aria-hidden className="h-3.5 w-3.5" /> : <CalendarDays aria-hidden className="h-3.5 w-3.5" />}
-              {date.mode === "parts" ? "Enter as text" : "Enter year, month, day"}
+              {date.mode === "parts" ? t("enterAsText") : t("enterParts")}
             </button>
           </legend>
           {date.mode === "parts" ? (
             <div className="flex gap-2">
-              <input className="h-8 w-24 px-2.5 text-sm" aria-label="Year" placeholder="Year" inputMode="numeric" value={date.year} onChange={(event) => setDate((current) => ({ ...current, year: event.target.value }))} />
-              <input className="h-8 w-20 px-2.5 text-sm" aria-label="Month" placeholder="Month" inputMode="numeric" value={date.month} onChange={(event) => setDate((current) => ({ ...current, month: event.target.value }))} />
-              <input className="h-8 w-20 px-2.5 text-sm" aria-label="Day" placeholder="Day" inputMode="numeric" value={date.day} onChange={(event) => setDate((current) => ({ ...current, day: event.target.value }))} />
+              <input className="h-8 w-24 px-2.5 text-sm" aria-label={t("yearAria")} placeholder={t("yearPlaceholder")} inputMode="numeric" value={date.year} onChange={(event) => setDate((current) => ({ ...current, year: event.target.value }))} />
+              <input className="h-8 w-20 px-2.5 text-sm" aria-label={t("monthAria")} placeholder={t("monthPlaceholder")} inputMode="numeric" value={date.month} onChange={(event) => setDate((current) => ({ ...current, month: event.target.value }))} />
+              <input className="h-8 w-20 px-2.5 text-sm" aria-label={t("dayAria")} placeholder={t("dayPlaceholder")} inputMode="numeric" value={date.day} onChange={(event) => setDate((current) => ({ ...current, day: event.target.value }))} />
             </div>
           ) : (
-            <input className="h-8 w-full px-2.5 text-sm" aria-label="Date as text" placeholder="Spring 2020, forthcoming…" value={date.literal} onChange={(event) => setDate((current) => ({ ...current, literal: event.target.value }))} />
+            <input className="h-8 w-full px-2.5 text-sm" aria-label={t("dateTextAria")} placeholder={t("dateTextPlaceholder")} value={date.literal} onChange={(event) => setDate((current) => ({ ...current, literal: event.target.value }))} />
           )}
           {errors.issued ? <p role="alert" className="text-xs text-destructive">{errors.issued}</p> : null}
         </fieldset>
@@ -390,15 +402,15 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
         {textField("abstract", { multiline: true })}
         {textField("note", { multiline: true })}
         <fieldset className="space-y-1.5">
-          <legend className="mb-1 text-xs font-medium text-muted-foreground">Other fields</legend>
+          <legend className="mb-1 text-xs font-medium text-muted-foreground">{t("otherFields")}</legend>
           {otherFields.map((other, index) => {
             const error = errors[`other:${other.name.trim()}`] ?? (!other.name.trim() ? errors[`other:${index}`] : undefined);
             return (
               <div key={index} className="space-y-1">
                 <div className="flex items-center gap-2">
-                  <input className="h-8 w-40 px-2.5 font-mono text-xs" aria-label={`Other field ${index + 1} name`} placeholder="CSL variable" value={other.name} onChange={(event) => setOtherFields((current) => current.map((item, position) => position === index ? { ...item, name: event.target.value } : item))} />
-                  <input className={`h-8 min-w-0 flex-1 px-2.5 text-sm ${other.json ? "font-mono text-xs" : ""}`} aria-label={`Other field ${index + 1} value`} placeholder="Value" value={other.value} onChange={(event) => setOtherFields((current) => current.map((item, position) => position === index ? { ...item, value: event.target.value } : item))} />
-                  <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg" aria-label={`Remove other field ${index + 1}`} onClick={() => setOtherFields((current) => current.filter((_, position) => position !== index))}>
+                  <input className="h-8 w-40 px-2.5 font-mono text-xs" aria-label={t("otherFieldNameAria", { number: index + 1 })} placeholder={t("otherFieldNamePlaceholder")} value={other.name} onChange={(event) => setOtherFields((current) => current.map((item, position) => position === index ? { ...item, name: event.target.value } : item))} />
+                  <input className={`h-8 min-w-0 flex-1 px-2.5 text-sm ${other.json ? "font-mono text-xs" : ""}`} aria-label={t("otherFieldValueAria", { number: index + 1 })} placeholder={t("otherFieldValuePlaceholder")} value={other.value} onChange={(event) => setOtherFields((current) => current.map((item, position) => position === index ? { ...item, value: event.target.value } : item))} />
+                  <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg" aria-label={t("removeOtherAria", { number: index + 1 })} onClick={() => setOtherFields((current) => current.filter((_, position) => position !== index))}>
                     <X aria-hidden className="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -407,7 +419,7 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
             );
           })}
           <button type="button" className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline" onClick={() => setOtherFields((current) => [...current, { name: "", value: "", json: false }])}>
-            <Plus aria-hidden className="h-3.5 w-3.5" /> Add field
+            <Plus aria-hidden className="h-3.5 w-3.5" /> {t("addField")}
           </button>
         </fieldset>
       </form>

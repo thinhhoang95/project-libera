@@ -16,7 +16,8 @@ const requiredPackages = new Map([
   ["source-map-js", path.join(projectRoot, "node_modules", "source-map-js")],
   ["tslib", path.join(projectRoot, "node_modules", "tslib")],
 ]);
-const electronRuntimePackages = ["electron-log", "electron-updater"];
+// intl-messageformat formats the translated menus and dialogs in electron/i18n.cjs (the main process is not traced by Next).
+const electronRuntimePackages = ["electron-log", "electron-updater", "intl-messageformat"];
 
 /**
  * onnxruntime-node ships binaries for every platform (hundreds of MB). Skip the
@@ -294,6 +295,15 @@ function checkSearchRuntime() {
   console.log("Packaged search runtime loaded successfully.");
 }
 
+/** Load the main process translations from the staged app, so a missing messages folder or formatter fails here, not for users. */
+function checkMainProcessMessages() {
+  const staged = require(path.join(distAppRoot, "electron", "i18n.cjs"));
+  staged.setLocale("fr");
+  const title = staged.t("electron.main.restartMessage", { appName: "Libera" });
+  if (!title || title.startsWith("electron.main.")) throw new Error("The staged app could not load messages/*.json for the main process.");
+  console.log("Packaged main-process messages loaded successfully.");
+}
+
 async function readPackageVersion(nodeModulesRoot, packageName) {
   try {
     const packageJson = JSON.parse(
@@ -342,6 +352,8 @@ async function main() {
   }
   await copy(path.join(projectRoot, "electron"), path.join(distAppRoot, "electron"), isShippedElectronEntry);
   await copy(path.join(projectRoot, "assets"), path.join(distAppRoot, "assets"));
+  // electron/i18n.cjs reads ../messages/<locale>.json: <app>/electron/ and <app>/messages/ are siblings.
+  await copy(path.join(projectRoot, "messages"), path.join(distAppRoot, "messages"));
   await moveStandalone(
     path.join(projectRoot, ".next", "standalone"),
     path.join(distAppRoot, ".next", "standalone"),
@@ -370,6 +382,7 @@ async function main() {
     sharp: await readPackageVersion(distNodeModulesRoot, "sharp"),
     "electron-log": await readPackageVersion(distNodeModulesRoot, "electron-log"),
     "electron-updater": await readPackageVersion(distNodeModulesRoot, "electron-updater"),
+    "intl-messageformat": await readPackageVersion(distNodeModulesRoot, "intl-messageformat"),
     next: await readPackageVersion(distNodeModulesRoot, "next"),
     "pdfjs-dist": await readPackageVersion(distNodeModulesRoot, "pdfjs-dist"),
     react: await readPackageVersion(distNodeModulesRoot, "react"),
@@ -411,6 +424,7 @@ async function main() {
   require(path.join(distAppRoot, ".next", "standalone", ".next", "server", "app", "api", "latex-export", "route.js"));
   console.log("Packaged LaTeX endpoint loaded successfully.");
   checkSearchRuntime();
+  checkMainProcessMessages();
 }
 
 main().catch((error) => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertTriangle, BookA, Loader2, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { usePaletteCommands } from "@/components/libera/command-palette/commands";
@@ -11,7 +12,6 @@ import { normalizeChatResponseMarkdown } from "@/lib/document-chat";
 import { combinedMacroScope, macroScopeKey, type MarkdownMacroScope } from "@/lib/markdown-macros";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
-  DEFINITION_KIND_LABELS,
   DEFINITION_KINDS,
   DEFINITIONS_FILE_TYPES,
   DEFINITIONS_REQUEST_EVENT,
@@ -94,8 +94,9 @@ export function supportsDefinitions(tab?: OpenTab | null) {
  * opens the Outlines panel, which is then switched to its Definitions view.
  */
 export function DefinitionsPaletteCommands({ activeTab, onShow }: { activeTab?: OpenTab | null; onShow: () => void }) {
+  const t = useTranslations("definitionsPanel");
   usePaletteCommands(null, () => {
-    const group = "Definitions";
+    const group = t("definitions");
     const show = () => {
       onShow();
       showOutlineView("definitions");
@@ -105,15 +106,15 @@ export function DefinitionsPaletteCommands({ activeTab, onShow }: { activeTab?: 
     const running = Boolean(path && runningRequests.has(path));
     const hasCards = Boolean(path && knownCardCounts.get(path));
     const unavailable = activeTab?.untitled
-      ? "Save this document to a notebook first"
-      : "Open a Markdown, LaTeX or PDF document";
+      ? t("unavailableSave")
+      : t("unavailableOpen");
     return [
       {
         id: "definitions:generate",
-        title: running ? "Generating definitions…" : hasCards ? "Regenerate definitions" : "Generate definitions",
+        title: running ? t("generatingDefinitions") : hasCards ? t("regenerateDefinitions") : t("generateDefinitions"),
         group,
         icon: hasCards ? RefreshCw : Sparkles,
-        detail: !supported ? unavailable : `The AI Agent reads ${activeTab?.file.name} and saves its definitions, notation and conventions as cards${hasCards ? ", replacing the current ones" : ""}`,
+        detail: !supported ? unavailable : t("generateDetail", { name: activeTab?.file.name ?? "", hasCards: hasCards ? "yes" : "no" }),
         keywords: "ai agent extract notation symbols glossary conventions create cards outline",
         disabled: !supported || running,
         run: () => {
@@ -123,7 +124,7 @@ export function DefinitionsPaletteCommands({ activeTab, onShow }: { activeTab?: 
       },
       {
         id: "definitions:show",
-        title: "Show definitions",
+        title: t("showDefinitions"),
         group,
         icon: BookA,
         detail: supported ? undefined : unavailable,
@@ -136,12 +137,13 @@ export function DefinitionsPaletteCommands({ activeTab, onShow }: { activeTab?: 
 }
 
 export function DefinitionsPanel({ activeTab, mathMarkers, onOpenFile }: DefinitionsPanelProps) {
+  const t = useTranslations("definitionsPanel");
   if (!activeTab || !supportsDefinitions(activeTab)) {
     return (
       <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
         {activeTab?.untitled
-          ? "Save this document to a notebook to collect its definitions."
-          : "Open a Markdown, LaTeX or PDF document to see its definitions and notation."}
+          ? t("emptySave")
+          : t("emptyOpen")}
       </p>
     );
   }
@@ -150,6 +152,8 @@ export function DefinitionsPanel({ activeTab, mathMarkers, onOpenFile }: Definit
 }
 
 function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: DefinitionsPanelProps & { activeTab: OpenTab }) {
+  const t = useTranslations("definitionsPanel");
+  const format = useFormatter();
   const path = activeTab.file.path;
   const [payload, setPayload] = useState<DefinitionsPayload | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -175,10 +179,10 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
-        setLoadError(error instanceof Error ? error.message : "Could not load the definitions.");
+        setLoadError(error instanceof Error ? error.message : t("loadFailed"));
       });
     return () => controller.abort();
-  }, [path, refreshKey, running]);
+  }, [path, refreshKey, running, t]);
 
   useEffect(() => {
     function handleUpdated(event: Event) {
@@ -210,7 +214,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
       knownCardCounts.set(path, 0);
       setLoadError("");
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Could not delete the definitions.");
+      setLoadError(error instanceof Error ? error.message : t("deleteFailed"));
     } finally {
       setDeleting(false);
       setConfirmingDelete(false);
@@ -252,9 +256,9 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
           <div className="relative mb-3">
             <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
-              aria-label="Search definitions and notation"
+              aria-label={t("searchLabel")}
               className="libera-panel-field libera-panel-field--search w-full"
-              placeholder="Search definitions"
+              placeholder={t("searchPlaceholder")}
               value={query}
               onChange={(event) => { setQuery(event.target.value); setLimit(PAGE_SIZE); }}
               onKeyDown={(event) => {
@@ -268,7 +272,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
             />
             {query ? (
               <button
-                aria-label="Clear definition search"
+                aria-label={t("clearSearch")}
                 className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
                 type="button"
                 onClick={() => setQuery("")}
@@ -279,17 +283,17 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
             ) : null}
           </div>
           <label className="mb-3 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
-            <span>Show</span>
+            <span>{t("show")}</span>
             <span className="relative">
               <select
-                aria-label="Definition kind"
+                aria-label={t("definitionKindLabel")}
                 className="libera-panel-field libera-panel-field--compact pl-3 pr-8"
                 value={kind}
                 onChange={(event) => { setKind(event.target.value as DefinitionKind | "all"); setLimit(PAGE_SIZE); }}
               >
-                <option value="all">All ({entries.length})</option>
+                <option value="all">{t("optionAll", { count: entries.length })}</option>
                 {DEFINITION_KINDS.map((option) => (
-                  <option key={option} value={option} disabled={!counts[option]}>{DEFINITION_KIND_LABELS[option]} ({counts[option]})</option>
+                  <option key={option} value={option} disabled={!counts[option]}>{t(`kind.${option}`)} ({counts[option]})</option>
                 ))}
               </select>
             </span>
@@ -299,21 +303,21 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
 
       <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         <BookA aria-hidden className="h-3.5 w-3.5" />
-        <span className="min-w-0 flex-1 truncate">Definitions</span>
+        <span className="min-w-0 flex-1 truncate">{t("definitions")}</span>
         {hasCards && !running ? (
           confirmingDelete ? (
             <span className="flex items-center gap-1 normal-case tracking-normal">
               <button type="button" className="rounded px-1.5 py-0.5 font-medium text-destructive hover:bg-destructive-muted" disabled={deleting} onClick={() => void deleteCards()}>
-                {deleting ? "Deleting…" : "Delete cards"}
+                {deleting ? t("deleting") : t("deleteCards")}
               </button>
-              <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => setConfirmingDelete(false)}>Cancel</button>
+              <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => setConfirmingDelete(false)}>{t("cancel")}</button>
             </span>
           ) : (
             <>
               <button
                 type="button"
-                aria-label="Regenerate definitions"
-                title="Regenerate with the AI Agent"
+                aria-label={t("regenerateDefinitions")}
+                title={t("regenerateWithAgent")}
                 className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded"
                 onClick={() => requestDefinitions(path)}
               >
@@ -321,8 +325,8 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
               </button>
               <button
                 type="button"
-                aria-label="Delete definitions"
-                title="Delete the definitions file"
+                aria-label={t("deleteDefinitionsAria")}
+                title={t("deleteDefinitionsFile")}
                 className="libera-sidebar-icon-button inline-flex h-6 w-6 items-center justify-center rounded"
                 onClick={() => setConfirmingDelete(true)}
               >
@@ -336,7 +340,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
       {running ? (
         <p role="status" className="mb-3 flex items-start gap-2 rounded-lg border border-input bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
           <Loader2 aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
-          <span>The AI Agent is reading the document. Cards appear here as they are saved; follow along in the AI panel.</span>
+          <span>{t("runningNotice")}</span>
         </p>
       ) : null}
       {runError ? (
@@ -349,28 +353,28 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
         <div className="mb-3 flex items-start gap-2 rounded-lg border border-input px-3 py-2.5 text-xs text-muted-foreground">
           <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
-            The document changed since these cards were generated.{" "}
-            <button type="button" className="font-medium text-foreground underline-offset-2 hover:underline" onClick={() => requestDefinitions(path)}>Regenerate</button>
+            {t("staleNotice")}{" "}
+            <button type="button" className="font-medium text-foreground underline-offset-2 hover:underline" onClick={() => requestDefinitions(path)}>{t("regenerate")}</button>
           </span>
         </div>
       ) : null}
 
       {!payload && !loadError ? (
-        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">Loading definitions.</p>
+        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">{t("loadingDefinitions")}</p>
       ) : !hasCards ? (
         running ? null : (
           <div className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
             {finished && !runError ? (
-              <p className="mb-2 font-medium text-foreground">The AI Agent finished without saving any cards. Its reply in the AI panel says why.</p>
+              <p className="mb-2 font-medium text-foreground">{t("finishedNoCards")}</p>
             ) : null}
-            <p>Collect the definitions, notation and conventions of this document as searchable cards. The AI Agent reads the whole document; the cards are saved beside it, and you can delete or regenerate them at any time.</p>
+            <p>{t("emptyIntro")}</p>
             <button
               type="button"
               className="mt-3 inline-flex items-center gap-2 rounded-lg border border-input bg-card px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted"
               onClick={() => requestDefinitions(path)}
             >
               <Sparkles aria-hidden className="h-4 w-4" />
-              Generate definitions
+              {t("generateDefinitions")}
             </button>
           </div>
         )
@@ -390,17 +394,19 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
           ))}
           {filtered.length > limit ? (
             <button type="button" className="w-full rounded-lg px-3 py-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setLimit((current) => current + PAGE_SIZE)}>
-              Show {Math.min(PAGE_SIZE, filtered.length - limit)} more of {filtered.length - limit}
+              {t("showMore", { shown: Math.min(PAGE_SIZE, filtered.length - limit), remaining: filtered.length - limit })}
             </button>
           ) : null}
           {generatedAt ? (
             <p className="px-1 pt-1 text-[11px] text-muted-foreground">
-              Generated {new Date(generatedAt).toLocaleString()}{payload?.definitions?.model ? ` with ${payload.definitions.model}` : ""}
+              {payload?.definitions?.model
+                ? t("generatedWithModel", { date: format.dateTime(new Date(generatedAt), { dateStyle: "medium", timeStyle: "short" }), model: payload.definitions.model })
+                : t("generatedAt", { date: format.dateTime(new Date(generatedAt), { dateStyle: "medium", timeStyle: "short" }) })}
             </p>
           ) : null}
         </div>
       ) : (
-        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">No matching definitions.</p>
+        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">{t("noMatchingDefinitions")}</p>
       )}
     </section>
   );
@@ -416,29 +422,30 @@ const DefinitionCard = memo(function DefinitionCard({ entry, mathMarkers, macroS
   canReveal: boolean;
   onSelect: (entry: DefinitionEntry) => void;
 }) {
+  const t = useTranslations("definitionsPanel");
   const term = useMemo(() => normalizeChatResponseMarkdown(entry.term, false, mathMarkers), [entry.term, mathMarkers]);
   const meaning = useMemo(() => normalizeChatResponseMarkdown(entry.meaning, false, mathMarkers), [entry.meaning, mathMarkers]);
-  const where = entry.location ?? (entry.page ? `p. ${entry.page}` : entry.line ? `line ${entry.line}` : "");
+  const where = entry.location ?? (entry.page ? t("pageRef", { page: entry.page }) : entry.line ? t("lineRef", { line: entry.line }) : "");
   const markdown = { documentPath, mathMarkers, macroScope, renderImages: false, baseFontSize: 13, baseLineHeight: 1.5 } as const;
 
   return (
     <article
       data-selected={selected}
       className="review-comment-card libera-panel-card p-3 text-[13px] transition"
-      aria-label={`${DEFINITION_KIND_LABELS[entry.kind]}: ${entry.term}`}
+      aria-label={t("cardLabel", { kind: t(`kind.${entry.kind}`), term: entry.term })}
     >
       <button
         type="button"
         className="w-full text-left"
         aria-pressed={selected}
-        title={canReveal ? "Show where it is introduced" : undefined}
+        title={canReveal ? t("showWhereIntroduced") : undefined}
         onClick={() => onSelect(entry)}
       >
         <span className="flex flex-wrap items-center justify-between gap-1">
           <span className="flex min-w-0 items-center gap-1.5">
             <MarkdownRenderer {...markdown} content={term} className="review-comment-body min-w-0 break-words font-semibold text-foreground" />
             <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground">
-              {DEFINITION_KIND_LABELS[entry.kind]}
+              {t(`kind.${entry.kind}`)}
             </span>
           </span>
           {where ? <span className="text-[11px] text-muted-foreground">{where}</span> : null}

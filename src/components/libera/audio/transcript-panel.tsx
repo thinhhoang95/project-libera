@@ -27,10 +27,12 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { useFormatter, useLocale, useTranslations } from "next-intl";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { EditableLine, useFlushWhenEditingEnds, type LineFocus, type SegmentDraft } from "@/components/libera/audio/editable-lines";
 import { RailSection, RailSwitch, railIconButton, railStyles } from "@/components/libera/audio/rail-ui";
 import { speakerColor, speakerInitials } from "@/components/libera/audio/speaker-colors";
+import { formatBytesIn, formatDurationIn } from "@/components/libera/audio/media-format";
 import { transcriptionLanguageChoices } from "@/lib/transcription/languages";
 import { isJobActive, useTranscriptionSetup, type StartTranscriptionOptions, type useTranscript } from "@/components/libera/audio/use-voice-memo";
 import { encodeFilePath } from "@/components/libera/api-client";
@@ -38,7 +40,6 @@ import { CHAT_QUOTE_EVENT, type ChatQuoteDetail } from "@/lib/document-chat";
 import { findTermRanges } from "@/lib/global-search";
 import {
   formatClock,
-  formatDuration,
   parseTranscriptQuery,
   segmentIndexAt,
   speakerName,
@@ -61,24 +62,10 @@ export type TranscriptState = ReturnType<typeof useTranscript>;
 const FOLLOW_PAUSE_MS = 5000;
 const NO_RANGES: Array<[number, number]> = [];
 
-const STAGE_LABELS: Record<TranscriptionJob["state"], string> = {
-  queued: "Waiting for another recording to finish",
-  decoding: "Reading the audio",
-  diarizing: "Telling the speakers apart",
-  transcribing: "Transcribing",
-  saving: "Saving the transcript",
-  done: "Done",
-  error: "Transcription failed",
-  cancelled: "Cancelled",
-};
+type Translate = ReturnType<typeof useTranslations>;
 
-function jobLabel(job: TranscriptionJob) {
-  return job.state === "transcribing" && job.total ? `${STAGE_LABELS.transcribing} · part ${Math.min(job.done + 1, job.total)} of ${job.total}` : STAGE_LABELS[job.state];
-}
-
-function formatBytes(bytes: number) {
-  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
-  return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+function jobLabel(job: TranscriptionJob, t: Translate) {
+  return job.state === "transcribing" && job.total ? t("transcribingPart", { current: Math.min(job.done + 1, job.total), total: job.total }) : t(`stage.${job.state}`);
 }
 
 export function openSpeechPreferences() {
@@ -86,16 +73,16 @@ export function openSpeechPreferences() {
 }
 
 const SAVE_FORMATS = {
-  md: { label: "Markdown", filterName: "Markdown", type: "text/markdown" },
-  txt: { label: "Plain text", filterName: "Text", type: "text/plain" },
-  srt: { label: "Subtitles (SRT)", filterName: "SubRip subtitles", type: "application/x-subrip" },
-  vtt: { label: "Subtitles (WebVTT)", filterName: "WebVTT subtitles", type: "text/vtt" },
+  md: { type: "text/markdown" },
+  txt: { type: "text/plain" },
+  srt: { type: "application/x-subrip" },
+  vtt: { type: "text/vtt" },
 } as const;
 type SaveFormat = keyof typeof SAVE_FORMATS;
 
 /** A Save dialog in the desktop app; a download in a browser. */
-async function saveText(name: string, text: string, format: SaveFormat) {
-  const { filterName, type } = SAVE_FORMATS[format];
+async function saveText(name: string, text: string, format: SaveFormat, filterName: string) {
+  const { type } = SAVE_FORMATS[format];
   const save = window.liberaExport?.saveTextFile;
   if (save) {
     await save({ content: text, fileName: name, filterName, extensions: [format] });
@@ -183,6 +170,7 @@ const SegmentRow = memo(function SegmentRow({
   onQuote: (index: number) => void;
   onCopyLink: (index: number) => void;
 }) {
+  const t = useTranslations("audio.transcriptPanel");
   const color = speakerColor(segment.speaker);
   return (
     <div
@@ -203,24 +191,24 @@ const SegmentRow = memo(function SegmentRow({
           <button
             type="button"
             className={`rounded px-1 font-mono text-[11px] tabular-nums transition-colors ${active ? "text-accent" : "text-muted-foreground hover:text-foreground"}`}
-            title="Play from here"
+            title={t("playFromHere")}
             onClick={() => onSeek(segment.start, true)}
           >
             {formatClock(segment.start)}
           </button>
           <span className="hidden items-center gap-0.5 group-hover:flex">
-            <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Quote in AI Chat" title="Quote in AI Chat" onClick={() => onQuote(index)}>
+            <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("quoteInChat")} title={t("quoteInChat")} onClick={() => onQuote(index)}>
               <MessageSquareQuote aria-hidden className="h-3 w-3" />
             </button>
-            <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Copy link to this moment" title="Copy a link to this moment, for a note" onClick={() => onCopyLink(index)}>
+            <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("copyLinkLabel")} title={t("copyLinkTitle")} onClick={() => onCopyLink(index)}>
               <Link2 aria-hidden className="h-3 w-3" />
             </button>
           </span>
         </div>
         <EditableLine
           text={segment.text}
-          label={`Passage at ${formatClock(segment.start)}`}
-          placeholder="Type here…"
+          label={t("passageAt", { time: formatClock(segment.start) })}
+          placeholder={t("typeHere")}
           className={`flex-1 py-px text-[15px] leading-[1.65] ${active ? "text-foreground" : "text-foreground/85"}`}
           focus={focus}
           onType={(text) => lines.type(index, text)}
@@ -291,6 +279,8 @@ export function TranscriptDocument({
   /** Opens the Voice Memo rail tab, where transcribing starts. */
   onShowControls: () => void;
 }) {
+  const t = useTranslations("audio.transcriptPanel");
+  const format = useFormatter();
   const { payload } = state;
   const transcript = payload?.transcript ?? null;
   const job = payload?.job ?? null;
@@ -361,8 +351,8 @@ export function TranscriptDocument({
   const quote = useCallback((text: string) => {
     if (!text.trim()) return;
     window.dispatchEvent(new CustomEvent<ChatQuoteDetail>(CHAT_QUOTE_EVENT, { detail: { path, name: fileName, text } }));
-    flash("Quoted in AI Chat");
-  }, [fileName, flash, path]);
+    flash(t("quotedInChat"));
+  }, [fileName, flash, path, t]);
 
   const quoteSegment = useCallback((index: number) => {
     const segment = segments[index];
@@ -386,8 +376,8 @@ export function TranscriptDocument({
     const title = fileName.replace(/\.[^.]+$/, "");
     // A library path: it resolves from any note, and `#t=` opens the recording at that moment.
     await navigator.clipboard.writeText(`[${title} · ${formatClock(segment.start)}](${encodeFilePath(path)}#t=${Math.floor(segment.start)})`);
-    flash("Link copied. Paste it into a note.");
-  }, [fileName, flash, path, segments]);
+    flash(t("linkCopied"));
+  }, [fileName, flash, path, segments, t]);
 
   const copyLinkAt = useCallback((index: number) => void copyLink(index), [copyLink]);
 
@@ -469,16 +459,16 @@ export function TranscriptDocument({
   };
 
   if (!payload) {
-    return <div className="flex flex-1 items-center justify-center gap-2 p-8 text-sm text-muted-foreground"><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> Loading the transcript…</div>;
+    return <div className="flex flex-1 items-center justify-center gap-2 p-8 text-sm text-muted-foreground"><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> {t("loadingTranscript")}</div>;
   }
 
   if (active && job) {
     return (
       <div className="flex flex-1 items-start justify-center px-6 pt-10">
         <div className="w-full max-w-sm space-y-2.5 text-center">
-          <p className="text-sm font-medium">{jobLabel(job)}…</p>
+          <p className="text-sm font-medium">{t("jobLabelEllipsis", { label: jobLabel(job, t) })}</p>
           <ProgressBar value={job.progress} indeterminate={job.state === "queued"} />
-          <p className="text-xs text-muted-foreground">{Math.round(job.progress * 100)}% · The transcript appears here when it is done; you can keep working meanwhile.</p>
+          <p className="text-xs text-muted-foreground">{t("jobProgress", { percent: format.number(job.progress, { style: "percent", maximumFractionDigits: 0 }) })}</p>
         </div>
       </div>
     );
@@ -490,13 +480,13 @@ export function TranscriptDocument({
         <div className="flex w-full max-w-sm flex-col items-center gap-3 text-center">
           <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-accent"><AudioLines aria-hidden className="h-5 w-5" /></span>
           <div>
-            <p className="text-sm font-medium">{job?.state === "error" ? "The transcription failed" : "No transcript yet"}</p>
+            <p className="text-sm font-medium">{job?.state === "error" ? t("transcriptionFailed") : t("noTranscriptYet")}</p>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              {job?.state === "error" ? job.error : "A timestamped transcript, with who said what, that you can read along and correct."}
+              {job?.state === "error" ? job.error : t("transcriptDescription")}
             </p>
           </div>
           <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90" onClick={onShowControls}>
-            <AudioLines aria-hidden className="h-4 w-4" /> Transcribe…
+            <AudioLines aria-hidden className="h-4 w-4" /> {t("transcribeEllipsis")}
           </button>
         </div>
       </div>
@@ -512,15 +502,15 @@ export function TranscriptDocument({
             <input
               ref={searchRef}
               type="search"
-              aria-label="Find in transcript"
-              placeholder="Find in transcript, or speaker:Name"
+              aria-label={t("findLabel")}
+              placeholder={t("findPlaceholder")}
               className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
               value={query}
               onChange={(event) => {
                 setQuery(event.target.value);
                 setMatchIndex(0);
               }}
-              title="Find words; speaker:Name shows one speaker (speaker:2, speaker:&quot;Two words&quot;)"
+              title={t("findTitle")}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === "ArrowDown" || event.key === "ArrowUp") {
                   event.preventDefault();
@@ -534,21 +524,21 @@ export function TranscriptDocument({
             />
             {query ? (
               <>
-                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{search.matches.length ? `${Math.min(matchIndex, search.matches.length - 1) + 1} of ${search.matches.length}` : parsed.unknown.length ? "No such speaker" : "No matches"}</span>
-                <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-muted disabled:opacity-40" aria-label="Previous match" disabled={!search.matches.length} onClick={() => stepMatch(-1)}><ArrowUp aria-hidden className="h-3 w-3" /></button>
-                <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-muted disabled:opacity-40" aria-label="Next match" disabled={!search.matches.length} onClick={() => stepMatch(1)}><ArrowDown aria-hidden className="h-3 w-3" /></button>
-                <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-muted" aria-label="Clear" onClick={() => { setQuery(""); setMatchIndex(0); }}><X aria-hidden className="h-3 w-3" /></button>
+                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{search.matches.length ? t("matchPosition", { current: Math.min(matchIndex, search.matches.length - 1) + 1, total: search.matches.length }) : parsed.unknown.length ? t("noSuchSpeaker") : t("noMatches")}</span>
+                <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-muted disabled:opacity-40" aria-label={t("previousMatch")} disabled={!search.matches.length} onClick={() => stepMatch(-1)}><ArrowUp aria-hidden className="h-3 w-3" /></button>
+                <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-muted disabled:opacity-40" aria-label={t("nextMatch")} disabled={!search.matches.length} onClick={() => stepMatch(1)}><ArrowDown aria-hidden className="h-3 w-3" /></button>
+                <button type="button" className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-muted" aria-label={t("clear")} onClick={() => { setQuery(""); setMatchIndex(0); }}><X aria-hidden className="h-3 w-3" /></button>
               </>
             ) : null}
           </div>
           <span className="hidden shrink-0 items-center gap-1 text-[11px] text-muted-foreground sm:inline-flex" aria-live="polite">
             <Pencil aria-hidden className="h-3 w-3" />
-            {draft.edited ? "Editing · saved when you leave the text" : "Click any line to correct it"}
+            {draft.edited ? t("editingSaved") : t("clickToCorrect")}
           </span>
         </div>
         {speakerSuggestion ? (
           <div className="flex flex-wrap items-center gap-1 text-[11px]">
-            <span className="text-muted-foreground">Speaker:</span>
+            <span className="text-muted-foreground">{t("speakerLabel")}</span>
             {speakerSuggestion.names.map((name) => (
               <button
                 key={name}
@@ -579,7 +569,7 @@ export function TranscriptDocument({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => quoteSelection()}
             >
-              <MessageSquareQuote aria-hidden className="h-3.5 w-3.5" /> Quote in chat
+              <MessageSquareQuote aria-hidden className="h-3.5 w-3.5" /> {t("quoteInChatButton")}
             </button>
           ) : null}
           <div className="mx-auto max-w-3xl px-2 pb-24 pt-1 sm:px-6" onBlur={onLeaveLines}>
@@ -606,7 +596,7 @@ export function TranscriptDocument({
                 />
               );
             }) : (
-              <p className="px-3 py-6 text-center text-sm text-muted-foreground">{segments.length ? "Nothing said by this speaker." : "No speech was found in this recording."}</p>
+              <p className="px-3 py-6 text-center text-sm text-muted-foreground">{segments.length ? t("nothingBySpeaker") : t("noSpeech")}</p>
             )}
           </div>
         </div>
@@ -624,7 +614,7 @@ export function TranscriptDocument({
               scrollToSegment(activeIndex);
             }}
           >
-            <ChevronsDown aria-hidden className="h-3.5 w-3.5" /> Back to now playing
+            <ChevronsDown aria-hidden className="h-3.5 w-3.5" /> {t("backToNowPlaying")}
           </button>
         ) : null}
       </div>
@@ -639,6 +629,8 @@ function SpeakerChip({ index, transcript, filtered, onToggle, onRename }: {
   onToggle: () => void;
   onRename: (name: string) => void;
 }) {
+  const t = useTranslations("audio.transcriptPanel");
+  const format = useFormatter();
   const speaker = transcript.speakers[index];
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(speaker.name);
@@ -658,7 +650,7 @@ function SpeakerChip({ index, transcript, filtered, onToggle, onRename }: {
         <input
           autoFocus
           onFocus={(event) => event.currentTarget.select()}
-          aria-label={`Name for ${speaker.name}`}
+          aria-label={t("nameFor", { name: speaker.name })}
           className="w-28 bg-transparent text-xs outline-none"
           value={draft}
           maxLength={80}
@@ -666,19 +658,19 @@ function SpeakerChip({ index, transcript, filtered, onToggle, onRename }: {
           onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setEditing(false); setDraft(speaker.name); } }}
           onBlur={() => { setEditing(false); if (draft.trim() && draft.trim() !== speaker.name) onRename(draft); }}
         />
-        <button type="submit" aria-label="Save name" className="inline-flex h-5 w-5 items-center justify-center rounded-full hover:bg-muted"><Check aria-hidden className="h-3 w-3" /></button>
+        <button type="submit" aria-label={t("saveName")} className="inline-flex h-5 w-5 items-center justify-center rounded-full hover:bg-muted"><Check aria-hidden className="h-3 w-3" /></button>
       </form>
     );
   }
 
   return (
     <span className={`group inline-flex h-7 max-w-full items-center rounded-full border text-xs transition-colors ${filtered ? "border-transparent bg-foreground text-background" : "border-input bg-card hover:bg-muted"}`}>
-      <button type="button" className="inline-flex h-full min-w-0 items-center gap-1.5 pl-2.5 pr-1.5" aria-pressed={filtered} title={filtered ? "Show everyone" : `Show only ${speaker.name}`} onClick={onToggle}>
+      <button type="button" className="inline-flex h-full min-w-0 items-center gap-1.5 pl-2.5 pr-1.5" aria-pressed={filtered} title={filtered ? t("showEveryone") : t("showOnly", { name: speaker.name })} onClick={onToggle}>
         <span aria-hidden className="h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
         <span className="truncate font-medium">{speaker.name}</span>
-        <span className={`tabular-nums ${filtered ? "text-background/70" : "text-muted-foreground"}`}>{Math.round(speaker.share * 100)}%</span>
+        <span className={`tabular-nums ${filtered ? "text-background/70" : "text-muted-foreground"}`}>{format.number(speaker.share, { style: "percent", maximumFractionDigits: 0 })}</span>
       </button>
-      <button type="button" className="mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full opacity-60 hover:opacity-100" aria-label={`Rename ${speaker.name}`} title="Rename" onClick={() => { setDraft(speaker.name); setEditing(true); }}>
+      <button type="button" className="mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full opacity-60 hover:opacity-100" aria-label={t("renameName", { name: speaker.name })} title={t("rename")} onClick={() => { setDraft(speaker.name); setEditing(true); }}>
         <Pencil aria-hidden className="h-3 w-3" />
       </button>
     </span>
@@ -695,6 +687,16 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
   onCancelDownload: () => void;
   again?: boolean;
 }) {
+  const t = useTranslations("audio.transcriptPanel");
+  const tCommon = useTranslations("common");
+  const locale = useLocale();
+  const languageNames = useMemo(() => {
+    try {
+      return new Intl.DisplayNames(locale, { type: "language" });
+    } catch {
+      return null;
+    }
+  }, [locale]);
   const status: TranscriptionSetupStatus | null = setup.status;
   const [engine, setEngine] = useState<"local" | "openrouter" | null>(null);
   const [speakers, setSpeakers] = useState(0);
@@ -706,7 +708,7 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
   const chosenLanguage = language ?? status?.language ?? "";
 
   if (!status) {
-    return <div className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> Checking the speech models…</div>;
+    return <div className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> {t("checkingSpeechModels")}</div>;
   }
 
   const localReady = Boolean(models?.asr);
@@ -715,10 +717,10 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
 
   return (
     <div className={railStyles.card}>
-      <p className="mb-2.5 text-xs text-muted-foreground">{again ? "Transcribe again, replacing the transcript and its corrections." : "A timestamped transcript, with who said what."}</p>
-      <div role="radiogroup" aria-label="Transcribe with" className="mb-2.5 grid grid-cols-1 gap-1 rounded-lg bg-muted p-1">
+      <p className="mb-2.5 text-xs text-muted-foreground">{again ? t("transcribeAgainDesc") : t("transcribeDesc")}</p>
+      <div role="radiogroup" aria-label={t("transcribeWith")} className="mb-2.5 grid grid-cols-1 gap-1 rounded-lg bg-muted p-1">
         {([
-          { id: "local", icon: Cpu, title: "On this computer", detail: "Parakeet TDT v3" },
+          { id: "local", icon: Cpu, title: t("onThisComputer"), detail: "Parakeet TDT v3" },
           { id: "openrouter", icon: Globe, title: "OpenRouter", detail: status.openRouterModel.split("/").pop() ?? status.openRouterModel },
         ] as const).map((option) => (
           <button
@@ -740,57 +742,57 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
 
       {chosen === "openrouter" ? (
         <label className="mb-2.5 flex items-center justify-between gap-3 text-xs">
-          <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Languages aria-hidden className="h-3.5 w-3.5" /> Language</span>
+          <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Languages aria-hidden className="h-3.5 w-3.5" /> {t("language")}</span>
           <select
             className="libera-panel-field libera-panel-field--compact min-w-0 pl-2.5 pr-2"
             value={chosenLanguage}
             onChange={(event) => setLanguage(event.target.value)}
           >
-            <option value="">Detect automatically</option>
-            {transcriptionLanguageChoices(status.language).map(({ code, name }) => <option key={code} value={code}>{name}</option>)}
+            <option value="">{t("detectAutomatically")}</option>
+            {transcriptionLanguageChoices(status.language).map(({ code, name }) => <option key={code} value={code}>{languageNames?.of(code) ?? name}</option>)}
           </select>
         </label>
       ) : null}
 
       <label className="mb-2.5 flex items-center justify-between gap-3 text-xs">
-        <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Users aria-hidden className="h-3.5 w-3.5" /> Speakers</span>
+        <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Users aria-hidden className="h-3.5 w-3.5" /> {t("speakers")}</span>
         <select
           className="libera-panel-field libera-panel-field--compact min-w-0 pl-2.5 pr-2"
           value={speakers}
           disabled={!status.diarization}
           onChange={(event) => setSpeakers(Number(event.target.value))}
         >
-          <option value={0}>Detect automatically</option>
-          {Array.from({ length: 8 }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{count === 1 ? "1 person" : `${count} people`}</option>)}
+          <option value={0}>{t("detectAutomatically")}</option>
+          {Array.from({ length: 8 }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{t("personCount", { count })}</option>)}
         </select>
       </label>
 
       <div className="space-y-2">
         {chosen === "local" && !localReady ? (
           downloading ? null : (
-            <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onDownload()}>Download ({formatBytes(models?.totalBytes ?? 0)})</button>}>
-              Parakeet and the pyannote speaker models are not downloaded yet. They run on this computer, outside your notes.
+            <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onDownload()}>{t("downloadSize", { size: formatBytesIn(locale, models?.totalBytes ?? 0) })}</button>}>
+              {t("speakersNotDownloaded")}
             </Notice>
           )
         ) : null}
         {status.diarization && !speakersReady && (chosen === "openrouter" || localReady) && !downloading ? (
-          <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onDownload("diarization")}>Download (34 MB)</button>}>Speakers are told apart on this computer with pyannote.</Notice>
+          <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onDownload("diarization")}>{t("downloadDiarization")}</button>}>{t("speakersTold")}</Notice>
         ) : null}
         {downloading && models ? (
           <div className="space-y-1.5 rounded-lg bg-muted/70 px-3 py-2 text-xs">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">Downloading… {formatBytes(models.downloadedBytes)} of {formatBytes(models.totalBytes)}</span>
-              <button type="button" className="font-medium text-muted-foreground hover:text-foreground" onClick={onCancelDownload}>Stop</button>
+              <span className="text-muted-foreground">{t("downloadingProgress", { done: formatBytesIn(locale, models.downloadedBytes), total: formatBytesIn(locale, models.totalBytes) })}</span>
+              <button type="button" className="font-medium text-muted-foreground hover:text-foreground" onClick={onCancelDownload}>{tCommon("stop")}</button>
             </div>
             <ProgressBar value={models.totalBytes ? models.downloadedBytes / models.totalBytes : 0} />
           </div>
         ) : null}
         {models?.state === "error" ? <Notice tone="error">{models.error}</Notice> : null}
-        {chosen === "openrouter" && !status.hasApiKey ? <Notice>Add an OpenRouter API key in <button type="button" className="font-medium text-accent hover:underline" onClick={openSpeechPreferences}>Preferences</button>.</Notice> : null}
+        {chosen === "openrouter" && !status.hasApiKey ? <Notice>{t.rich("addOpenRouterKey", { link: (chunks) => <button type="button" className="font-medium text-accent hover:underline" onClick={openSpeechPreferences}>{chunks}</button> })}</Notice> : null}
         {!status.decoder.available && !isWav ? (
-          <Notice>Reading this format needs <span className="font-medium">ffmpeg</span>. Install it, or choose it in <button type="button" className="font-medium text-accent hover:underline" onClick={openSpeechPreferences}>Preferences → Speech</button>.</Notice>
+          <Notice>{t.rich("ffmpegNeeded", { strong: (chunks) => <span className="font-medium">{chunks}</span>, link: (chunks) => <button type="button" className="font-medium text-accent hover:underline" onClick={openSpeechPreferences}>{chunks}</button> })}</Notice>
         ) : null}
-        {chosen === "openrouter" ? <p className="text-[11px] leading-4 text-muted-foreground">The audio is sent to OpenRouter in pieces of a few minutes. Speakers are still told apart on this computer.</p> : null}
+        {chosen === "openrouter" ? <p className="text-[11px] leading-4 text-muted-foreground">{t("openRouterAudioNote")}</p> : null}
         {error || setup.error ? <Notice tone="error">{error || setup.error}</Notice> : null}
       </div>
 
@@ -800,24 +802,28 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
         disabled={blocked}
         onClick={() => onStart({ engine: chosen, speakers: speakers || undefined, language: chosen === "openrouter" ? chosenLanguage : undefined })}
       >
-        <AudioLines aria-hidden className="h-4 w-4" /> Transcribe
+        <AudioLines aria-hidden className="h-4 w-4" /> {t("transcribe")}
       </button>
     </div>
   );
 }
 
 function JobCard({ job, onCancel }: { job: TranscriptionJob; onCancel: () => void }) {
+  const t = useTranslations("audio.transcriptPanel");
+  const tCommon = useTranslations("common");
+  const format = useFormatter();
+  const locale = useLocale();
   return (
     <div className={railStyles.card}>
       <div className="mb-2 flex items-center gap-2">
         <Loader2 aria-hidden className="h-4 w-4 shrink-0 animate-spin text-accent" />
-        <span className="min-w-0 flex-1 truncate text-xs font-medium">{jobLabel(job)}</span>
-        <span className="text-xs tabular-nums text-muted-foreground">{Math.round(job.progress * 100)}%</span>
+        <span className="min-w-0 flex-1 truncate text-xs font-medium">{jobLabel(job, t)}</span>
+        <span className="text-xs tabular-nums text-muted-foreground">{format.number(job.progress, { style: "percent", maximumFractionDigits: 0 })}</span>
       </div>
       <ProgressBar value={job.progress} indeterminate={job.state === "queued"} />
       <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-        <span className="truncate">{job.engine === "local" ? "On this computer" : "With OpenRouter"}{job.duration ? ` · ${formatDuration(job.duration)} of audio` : ""}</span>
-        <button type="button" className="font-medium hover:text-foreground" onClick={onCancel}>Cancel</button>
+        <span className="truncate">{t("jobMeta", { engine: job.engine === "local" ? "local" : "openrouter", duration: job.duration ? formatDurationIn(locale, job.duration) : "none" })}</span>
+        <button type="button" className="font-medium hover:text-foreground" onClick={onCancel}>{tCommon("cancel")}</button>
       </div>
     </div>
   );
@@ -856,6 +862,9 @@ export function TranscriptControls({
   follow: boolean;
   onFollowChange: (follow: boolean) => void;
 }) {
+  const t = useTranslations("audio.transcriptPanel");
+  const format = useFormatter();
+  const locale = useLocale();
   const { payload } = state;
   const job = payload?.job ?? null;
   const active = isJobActive(job);
@@ -863,16 +872,16 @@ export function TranscriptControls({
   const setup = useTranscriptionSetup(needsSetup);
   const [speakersOpenChoice, setSpeakersOpenChoice] = useState<boolean | null>(null);
   if (!payload) {
-    return <RailSection title="Transcript"><p className={railStyles.note}><Loader2 aria-hidden className="mr-1.5 inline h-3 w-3 animate-spin" />Loading…</p></RailSection>;
+    return <RailSection title={t("transcript")}><p className={railStyles.note}><Loader2 aria-hidden className="mr-1.5 inline h-3 w-3 animate-spin" />{t("loading")}</p></RailSection>;
   }
 
   if (active && job) {
-    return <RailSection title="Transcript"><JobCard job={job} onCancel={() => void state.cancel()} /></RailSection>;
+    return <RailSection title={t("transcript")}><JobCard job={job} onCancel={() => void state.cancel()} /></RailSection>;
   }
 
   if (needsSetup) {
     return (
-      <RailSection title={again ? "Transcribe again" : "Transcribe"}>
+      <RailSection title={again ? t("transcribeAgain") : t("transcribe")}>
         {job?.state === "error" ? <div className="mb-2"><Notice tone="error">{job.error}</Notice></div> : null}
         <TranscribeCard
           fileName={fileName}
@@ -886,7 +895,7 @@ export function TranscriptControls({
           onDownload={(only) => void setup.download(only)}
           onCancelDownload={() => void setup.cancelDownload()}
         />
-        {again ? <button type="button" className="mt-2 px-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => onAgainChange(false)}>Keep the current transcript</button> : null}
+        {again ? <button type="button" className="mt-2 px-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => onAgainChange(false)}>{t("keepCurrentTranscript")}</button> : null}
       </RailSection>
     );
   }
@@ -896,42 +905,42 @@ export function TranscriptControls({
 
   return (
     <>
-      <RailSection title="Transcript">
+      <RailSection title={t("transcript")}>
         <dl className={railStyles.facts}>
-          <dt>Engine</dt>
-          <dd title={transcript.engine.kind === "local" ? "Transcribed on this computer" : "Transcribed with OpenRouter"}>{transcript.engine.model || (transcript.engine.kind === "local" ? "On this computer" : "OpenRouter")}</dd>
-          {transcript.language ? <><dt>Language</dt><dd className="uppercase">{transcript.language}</dd></> : null}
-          <dt>Words</dt>
-          <dd>{transcript.stats.words.toLocaleString()}</dd>
-          <dt>Passages</dt>
-          <dd>{transcript.segments.length.toLocaleString()}</dd>
-          {transcript.diarization?.overlapSeconds && transcript.diarization.overlapSeconds >= 1 ? <><dt>Overlap</dt><dd>{formatDuration(transcript.diarization.overlapSeconds)}</dd></> : null}
-          {payload.shared ? <><dt>Shared</dt><dd title="Everyone in this shared notebook sees this transcript, its corrections and its speaker names.">With the notebook</dd></> : null}
+          <dt>{t("engine")}</dt>
+          <dd title={transcript.engine.kind === "local" ? t("engineTitleOnComputer") : t("engineTitleOpenRouter")}>{transcript.engine.model || (transcript.engine.kind === "local" ? t("onThisComputer") : "OpenRouter")}</dd>
+          {transcript.language ? <><dt>{t("language")}</dt><dd className="uppercase">{transcript.language}</dd></> : null}
+          <dt>{t("words")}</dt>
+          <dd>{format.number(transcript.stats.words)}</dd>
+          <dt>{t("passages")}</dt>
+          <dd>{format.number(transcript.segments.length)}</dd>
+          {transcript.diarization?.overlapSeconds && transcript.diarization.overlapSeconds >= 1 ? <><dt>{t("overlap")}</dt><dd>{formatDurationIn(locale, transcript.diarization.overlapSeconds)}</dd></> : null}
+          {payload.shared ? <><dt>{t("shared")}</dt><dd title={t("sharedTitle")}>{t("withNotebook")}</dd></> : null}
         </dl>
-        {job?.state === "error" ? <div className="mt-2"><Notice tone="error">Transcribing again failed, so this transcript was kept. {job.error}</Notice></div> : null}
+        {job?.state === "error" ? <div className="mt-2"><Notice tone="error">{t("transcribingAgainFailed", { error: job.error ?? "" })}</Notice></div> : null}
         {payload.stale ? (
           <div className="mt-2">
-            <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onAgainChange(true)}>Transcribe again</button>}>The recording changed after it was transcribed.</Notice>
+            <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onAgainChange(true)}>{t("transcribeAgain")}</button>}>{t("recordingChanged")}</Notice>
           </div>
         ) : null}
         <div className="mt-2">
-          <RailSwitch checked={follow} label="Follow playback" hint="Keep the passage being played in view" onChange={onFollowChange} />
+          <RailSwitch checked={follow} label={t("followPlayback")} hint={t("followHint")} onChange={onFollowChange} />
         </div>
         <button
           type="button"
           className="mt-2 inline-flex h-8 w-full items-center justify-center gap-2 rounded-lg border border-input bg-card text-xs font-medium text-foreground transition hover:bg-muted"
           onClick={() => onAgainChange(true)}
         >
-          <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Transcribe again…
+          <RefreshCw aria-hidden className="h-3.5 w-3.5" /> {t("transcribeAgainEllipsis")}
         </button>
       </RailSection>
 
       {transcript.speakers.length ? (
         <RailSection
-          title={`${transcript.speakers.length} ${transcript.speakers.length === 1 ? "speaker" : "speakers"}`}
+          title={t("speakersCount", { count: transcript.speakers.length })}
           aside={(
             <button type="button" className="inline-flex items-center gap-0.5 normal-case tracking-normal hover:text-foreground" aria-expanded={speakersOpen} onClick={() => setSpeakersOpenChoice(!speakersOpen)}>
-              <ChevronRight aria-hidden className={`h-3 w-3 transition-transform ${speakersOpen ? "rotate-90" : ""}`} />{speakersOpen ? "Hide" : "Show"}
+              <ChevronRight aria-hidden className={`h-3 w-3 transition-transform ${speakersOpen ? "rotate-90" : ""}`} />{speakersOpen ? t("hide") : t("show")}
             </button>
           )}
         >
@@ -949,7 +958,7 @@ export function TranscriptControls({
                   />
                 ))}
               </div>
-              <p className={`${railStyles.note} mt-2`}>Choose a speaker to show only what they said; the pencil renames them.</p>
+              <p className={`${railStyles.note} mt-2`}>{t("chooseSpeaker")}</p>
             </>
           ) : null}
         </RailSection>
@@ -973,6 +982,7 @@ export function TranscriptMenu({ fileName, notes, state, transcript, onTranscrib
   transcript: Transcript | null;
   onTranscribeAgain: () => void;
 }) {
+  const t = useTranslations("audio.transcriptPanel");
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1019,15 +1029,15 @@ export function TranscriptMenu({ fileName, notes, state, transcript, onTranscrib
   const none = !transcript;
 
   const actions: Record<string, () => void> = {
-    "copy-md": () => void navigator.clipboard.writeText(exportAs("md")).then(() => flash("Copied as Markdown")),
-    "copy-txt": () => void navigator.clipboard.writeText(exportAs("txt")).then(() => flash("Copied as plain text")),
+    "copy-md": () => void navigator.clipboard.writeText(exportAs("md")).then(() => flash(t("resultCopiedMarkdown"))),
+    "copy-txt": () => void navigator.clipboard.writeText(exportAs("txt")).then(() => flash(t("resultCopiedPlainText"))),
     "open-note": () => notes?.openUnsaved(`${baseName} transcript.md`, exportAs("md")),
-    "save-beside": () => void notes?.saveBeside(exportAs("md")).then(() => flash("Saved as a note beside the recording"), (error: unknown) => flash(error instanceof Error ? error.message : "Could not save the note.")),
-    ...Object.fromEntries((Object.keys(SAVE_FORMATS) as SaveFormat[]).map((format) => [`save-${format}`, () => void saveText(`${baseName}.${format}`, exportAs(format), format)])),
+    "save-beside": () => void notes?.saveBeside(exportAs("md")).then(() => flash(t("savedBesideNote")), (error: unknown) => flash(error instanceof Error ? error.message : t("couldNotSaveNote"))),
+    ...Object.fromEntries((Object.keys(SAVE_FORMATS) as SaveFormat[]).map((format) => [`save-${format}`, () => void saveText(`${baseName}.${format}`, exportAs(format), format, t(`filter.${format}`))])),
     again: onTranscribeAgain,
     settings: openSpeechPreferences,
     delete: () => {
-      if (window.confirm("Delete this transcript, with its corrections and speaker names? The recording stays.")) void state.remove();
+      if (window.confirm(t("deleteTranscriptConfirm"))) void state.remove();
     },
   };
 
@@ -1044,24 +1054,24 @@ export function TranscriptMenu({ fileName, notes, state, transcript, onTranscrib
       x: Math.round(rect.left),
       y: Math.round(rect.bottom),
       items: [
-        { id: "copy-md", label: "Copy as Markdown", enabled: !none },
-        { id: "copy-txt", label: "Copy as Plain Text", enabled: !none },
+        { id: "copy-md", label: t("copyMarkdown"), enabled: !none },
+        { id: "copy-txt", label: t("copyPlainTextNative"), enabled: !none },
         ...(notes ? [
-          { id: "open-note", label: "Open as a New Note", enabled: !none },
-          { id: "save-beside", label: "Save as a Note Beside the Recording", enabled: !none },
+          { id: "open-note", label: t("openNoteNative"), enabled: !none },
+          { id: "save-beside", label: t("saveBesideNative"), enabled: !none },
         ] : []),
         { type: "separator" as const },
         {
           id: "save",
-          label: "Save to This Computer",
+          label: t("saveToComputerNative"),
           enabled: !none,
-          submenu: (Object.keys(SAVE_FORMATS) as SaveFormat[]).map((format) => ({ id: `save-${format}`, label: `${SAVE_FORMATS[format].label} (.${format})…` })),
+          submenu: (Object.keys(SAVE_FORMATS) as SaveFormat[]).map((format) => ({ id: `save-${format}`, label: t("saveFormatItem", { label: t(`format.${format}`), extension: format }) })),
         },
         { type: "separator" as const },
-        { id: "again", label: "Transcribe Again…", enabled: !none && !busy },
-        ...(hasPreferences ? [{ id: "settings", label: "Speech Settings…" }] : []),
+        { id: "again", label: t("transcribeAgainNative"), enabled: !none && !busy },
+        ...(hasPreferences ? [{ id: "settings", label: t("speechSettingsNative") }] : []),
         { type: "separator" as const },
-        { id: "delete", label: "Delete Transcript…", enabled: !none && !busy },
+        { id: "delete", label: t("deleteTranscriptNative"), enabled: !none && !busy },
       ],
     }).catch(() => null);
     setNativeOpen(false);
@@ -1070,44 +1080,44 @@ export function TranscriptMenu({ fileName, notes, state, transcript, onTranscrib
 
   return (
     <div ref={rootRef} className="relative">
-      <button type="button" className={railIconButton} aria-label="Voice memo menu" title="Copy, export and transcription" aria-haspopup="menu" aria-expanded={open || nativeOpen} onClick={(event) => void openMenu(event.currentTarget)}>
+      <button type="button" className={railIconButton} aria-label={t("menuLabel")} title={t("menuTitle")} aria-haspopup="menu" aria-expanded={open || nativeOpen} onClick={(event) => void openMenu(event.currentTarget)}>
         <MoreVertical aria-hidden className="h-4 w-4" />
       </button>
       {open ? (
-        <div role="menu" aria-label="Voice memo menu" className="absolute right-0 top-9 z-50 max-h-[70vh] w-64 overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg">
-          <p className={heading}><Copy aria-hidden className="h-3.5 w-3.5" /> Transcript</p>
+        <div role="menu" aria-label={t("menuLabel")} className="absolute right-0 top-9 z-50 max-h-[70vh] w-64 overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg">
+          <p className={heading}><Copy aria-hidden className="h-3.5 w-3.5" /> {t("transcript")}</p>
           <button type="button" role="menuitem" className={item} disabled={none} onClick={act(actions["copy-md"])}>
-            <span className="w-4" /> Copy as Markdown
+            <span className="w-4" /> {t("copyMarkdown")}
           </button>
           <button type="button" role="menuitem" className={item} disabled={none} onClick={act(actions["copy-txt"])}>
-            <span className="w-4" /> Copy as plain text
+            <span className="w-4" /> {t("copyPlainText")}
           </button>
           {notes ? (
             <>
               <button type="button" role="menuitem" className={item} disabled={none} onClick={act(actions["open-note"])}>
-                <FilePlus2 aria-hidden className="h-4 w-4" /> Open as a new note
+                <FilePlus2 aria-hidden className="h-4 w-4" /> {t("openNote")}
               </button>
               <button type="button" role="menuitem" className={item} disabled={none} onClick={act(actions["save-beside"])}>
-                <FileText aria-hidden className="h-4 w-4" /> Save as a note beside the recording
+                <FileText aria-hidden className="h-4 w-4" /> {t("saveBeside")}
               </button>
             </>
           ) : null}
           <div className="my-1 h-px bg-border" />
-          <p className={heading}><Download aria-hidden className="h-3.5 w-3.5" /> Save to this computer</p>
+          <p className={heading}><Download aria-hidden className="h-3.5 w-3.5" /> {t("saveToComputer")}</p>
           {(Object.keys(SAVE_FORMATS) as SaveFormat[]).map((format) => (
             <button key={format} type="button" role="menuitem" className={item} disabled={none} onClick={act(actions[`save-${format}`])}>
               <span className="w-4" />
-              <span className="min-w-0 flex-1 truncate">{SAVE_FORMATS[format].label}…</span>
+              <span className="min-w-0 flex-1 truncate">{t(`format.${format}`)}…</span>
               <span className="font-mono text-[11px] text-muted-foreground">.{format}</span>
             </button>
           ))}
           <div className="my-1 h-px bg-border" />
           <button type="button" role="menuitem" className={item} disabled={none || busy} onClick={act(actions.again)}>
-            <RefreshCw aria-hidden className="h-4 w-4" /> Transcribe again…
+            <RefreshCw aria-hidden className="h-4 w-4" /> {t("transcribeAgainEllipsis")}
           </button>
           {hasPreferences ? (
             <button type="button" role="menuitem" className={item} onClick={act(actions.settings)}>
-              <Settings2 aria-hidden className="h-4 w-4" /> Speech settings…
+              <Settings2 aria-hidden className="h-4 w-4" /> {t("speechSettings")}
             </button>
           ) : null}
           <button
@@ -1117,7 +1127,7 @@ export function TranscriptMenu({ fileName, notes, state, transcript, onTranscrib
             disabled={none || busy}
             onClick={act(actions.delete)}
           >
-            <Trash2 aria-hidden className="h-4 w-4" /> Delete transcript
+            <Trash2 aria-hidden className="h-4 w-4" /> {t("deleteTranscript")}
           </button>
         </div>
       ) : null}

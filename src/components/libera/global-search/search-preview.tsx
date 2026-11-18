@@ -1,17 +1,16 @@
 "use client";
 
 import { ArrowUpRight, Images, Loader2, PanelRight } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { GlobalWorkerOptions, Util, getDocument } from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import { apiRequest, encodeFilePath } from "@/components/libera/api-client";
-import { Highlighted, ResultKindIcon, resultImageRef, resultThumbnail, resultWhere, type SearchEntry } from "@/components/libera/global-search/search-results";
+import { Highlighted, ResultKindIcon, resultImageRef, resultThumbnail, useResultLabels, type SearchEntry } from "@/components/libera/global-search/search-results";
 import { buildPdfSearchPage } from "@/components/libera/pdf-find";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import {
   findTermRanges,
-  searchKindLabel,
-  searchLocationLabel,
   type SearchHit,
   type SearchImageRef,
   type SearchResultFile,
@@ -68,7 +67,7 @@ function useAsync<T>(load: (() => Promise<T>) | null, key: string) {
     let active = true;
     load().then(
       (value) => { if (active) setState({ key, value }); },
-      (error: unknown) => { if (active) setState({ key, error: error instanceof Error ? error.message : "Could not load the preview." }); },
+      (error: unknown) => { if (active) setState({ key, error: error instanceof Error ? error.message : "" }); },
     );
     return () => { active = false; };
     // `key` identifies the request; `load` is recreated each render.
@@ -122,10 +121,12 @@ function blockBoundaryAfter(content: string, offset: number) {
 }
 
 function StaleNotice() {
-  return <p className="mb-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">This file changed after it was indexed. The passage below is from the index; it will be updated shortly.</p>;
+  const t = useTranslations("globalSearch.searchPreview");
+  return <p className="mb-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">{t("staleNotice")}</p>;
 }
 
 function MarkdownPassage({ result, hit, mathMarkers, terms }: { result: SearchResultFile; hit: SearchHit; mathMarkers?: MathMarkerSettings; terms: string[] }) {
+  const t = useTranslations("globalSearch.searchPreview");
   const content = useAsync(() => loadContent(result.path), result.path);
   const containerRef = useRef<HTMLDivElement>(null);
   const passage = content.value !== undefined ? locatePassage(content.value, hit) : null;
@@ -135,7 +136,7 @@ function MarkdownPassage({ result, hit, mathMarkers, terms }: { result: SearchRe
     containerRef.current?.querySelector("[data-search-passage]")?.scrollIntoView({ block: "center" });
   }, [hit.chunkId, content.value]);
 
-  if (content.error) return <p className="text-sm text-destructive">{content.error}</p>;
+  if (content.error !== undefined) return <p className="text-sm text-destructive">{content.error || t("loadPreviewError")}</p>;
   if (content.value === undefined) return <PreviewLoading />;
 
   const source = content.value;
@@ -159,6 +160,7 @@ function MarkdownPassage({ result, hit, mathMarkers, terms }: { result: SearchRe
 }
 
 function SourcePassage({ result, hit, terms }: { result: SearchResultFile; hit: SearchHit; terms: string[] }) {
+  const t = useTranslations("globalSearch.searchPreview");
   const content = useAsync(() => loadContent(result.path), result.path);
   const containerRef = useRef<HTMLDivElement>(null);
   useTermHighlights(containerRef, terms, `${result.key}:${hit.chunkId}:${content.value !== undefined}`);
@@ -178,7 +180,7 @@ function SourcePassage({ result, hit, terms }: { result: SearchResultFile; hit: 
     containerRef.current?.querySelector("[data-search-passage]")?.scrollIntoView({ block: "center" });
   }, [view]);
 
-  if (content.error) return <p className="text-sm text-destructive">{content.error}</p>;
+  if (content.error !== undefined) return <p className="text-sm text-destructive">{content.error || t("loadPreviewError")}</p>;
   if (!view) return <PreviewLoading />;
 
   return (
@@ -215,6 +217,7 @@ function squash(text: string) {
 type PdfRect = { left: number; top: number; width: number; height: number };
 
 function PdfPassage({ result, hit, terms }: { result: SearchResultFile; hit: SearchHit; terms: string[] }) {
+  const t = useTranslations("globalSearch.searchPreview");
   const pageNumber = hit.location.page ?? 1;
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -282,7 +285,7 @@ function PdfPassage({ result, hit, terms }: { result: SearchResultFile; hit: Sea
         if (active) setRendered({ key: renderKey, height: viewport.height, rects });
       } catch (error) {
         if (active && !(error instanceof Error && error.name === "RenderingCancelledException")) {
-          setRendered({ key: renderKey, height: 0, rects: [], error: error instanceof Error ? error.message : "Could not show this page." });
+          setRendered({ key: renderKey, height: 0, rects: [], error: error instanceof Error ? error.message : "" });
         }
       }
     })();
@@ -307,10 +310,10 @@ function PdfPassage({ result, hit, terms }: { result: SearchResultFile; hit: Sea
           <div key={index} data-search-passage={index === 0 ? "" : undefined} className="libera-search-pdf-rect pointer-events-none absolute" style={rect} />
         ))}
         {!current ? <div className="absolute inset-0 flex items-center justify-center"><PreviewLoading /></div> : null}
-        {current?.error ? <p className="absolute inset-x-0 top-1/2 text-center text-sm text-destructive">{current.error}</p> : null}
+        {current?.error !== undefined ? <p className="absolute inset-x-0 top-1/2 text-center text-sm text-destructive">{current.error || t("showPageError")}</p> : null}
       </div>
       <div ref={textRef} className="rounded-lg bg-muted/60 px-3 py-2 text-[13px] leading-5 text-foreground/85">
-        <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Passage on page {pageNumber}</div>
+        <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("passageOnPage", { page: pageNumber })}</div>
         {hit.text.replace(/\s+/g, " ").trim()}
       </div>
     </div>
@@ -318,6 +321,7 @@ function PdfPassage({ result, hit, terms }: { result: SearchResultFile; hit: Sea
 }
 
 function ImagePassage({ result, onFindSimilar }: { result: SearchResultFile; onFindSimilar: (image: SearchImageRef) => void }) {
+  const t = useTranslations("globalSearch.searchPreview");
   const image = resultImageRef(result);
   const source = result.source === "gallery" && result.photo
     ? `/api/gallery/raw/${result.photo.path.split("/").map(encodeURIComponent).join("/")}?v=${encodeURIComponent(`${result.photo.updatedAt}-${result.photo.size}`)}`
@@ -330,13 +334,13 @@ function ImagePassage({ result, onFindSimilar }: { result: SearchResultFile; onF
       </div>
       {result.photo?.prompt ? (
         <div className="rounded-lg bg-muted/60 px-3 py-2 text-[13px] leading-5">
-          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Prompt</div>
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("prompt")}</div>
           {result.photo.prompt}
         </div>
       ) : null}
       {image ? (
         <button type="button" className="inline-flex items-center gap-1.5 self-start rounded-lg border border-border px-2.5 py-1.5 text-sm hover:bg-muted" onClick={() => onFindSimilar(image)}>
-          <Images aria-hidden className="h-4 w-4" /> Find similar images
+          <Images aria-hidden className="h-4 w-4" /> {t("findSimilarImages")}
         </button>
       ) : null}
     </div>
@@ -348,6 +352,7 @@ function ImagePassage({ result, onFindSimilar }: { result: SearchResultFile; onF
  * player that starts where the passage does.
  */
 function AudioPassage({ result, hit, terms }: { result: SearchResultFile; hit: SearchHit; terms: string[] }) {
+  const t = useTranslations("globalSearch.searchPreview");
   const seconds = (hit.location.start ?? 0) / 1000;
   return (
     <div className="space-y-3">
@@ -369,24 +374,26 @@ function AudioPassage({ result, hit, terms }: { result: SearchResultFile; hit: S
           );
         })}
       </div>
-      <p className="text-[11px] text-muted-foreground">Open plays the memo from here, with its transcript beside it.</p>
+      <p className="text-[11px] text-muted-foreground">{t("memoOpenHint")}</p>
     </div>
   );
 }
 
 /** A References entry's passage: its description, abstract or notes, as stored. */
 function ReferencePassage({ hit, terms }: { hit: SearchHit; terms: string[] }) {
+  const t = useTranslations("globalSearch.searchPreview");
   return (
     <div className="rounded-lg bg-muted/60 px-3 py-2 text-[13px] leading-5 text-foreground/85">
-      <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{hit.location.section ?? "Reference"}</div>
+      <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{hit.location.section ?? t("referenceFallback")}</div>
       <p className="whitespace-pre-wrap"><Highlighted text={hit.text.trim()} terms={terms} /></p>
-      <p className="mt-2 text-[11px] text-muted-foreground">Open shows the entry in References.</p>
+      <p className="mt-2 text-[11px] text-muted-foreground">{t("referenceOpenHint")}</p>
     </div>
   );
 }
 
 function PreviewLoading() {
-  return <div role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> Loading preview…</div>;
+  const t = useTranslations("globalSearch.searchPreview");
+  return <div role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> {t("loadingPreview")}</div>;
 }
 
 export function SearchPreview({
@@ -402,14 +409,16 @@ export function SearchPreview({
   onOpen: (entry: SearchEntry, placement: "tab" | "right") => void;
   onFindSimilar: (image: SearchImageRef) => void;
 }) {
+  const t = useTranslations("globalSearch.searchPreview");
+  const labels = useResultLabels();
   if (!entry) {
-    return <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">Select a result to preview it here.</div>;
+    return <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">{t("selectResult")}</div>;
   }
 
   const { result } = entry;
   const hit = result.hits[entry.hit] ?? result.hits[0];
-  const location = searchLocationLabel(result.kind, hit.location);
-  const where = resultWhere(result);
+  const location = labels.location(result.kind, hit.location);
+  const where = labels.where(result);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -418,13 +427,13 @@ export function SearchPreview({
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-semibold">{result.name}</h3>
           <p className="truncate text-xs text-muted-foreground">
-            {[where, searchKindLabel(result.kind), location].filter(Boolean).join(" · ")}
+            {[where, labels.kind(result.kind), location].filter(Boolean).join(" · ")}
           </p>
         </div>
-        <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" title="Open at this passage (Enter)" onClick={() => onOpen(entry, "tab")}>
-          Open <ArrowUpRight aria-hidden className="h-4 w-4" />
+        <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" title={t("openAtPassageTitle")} onClick={() => onOpen(entry, "tab")}>
+          {t("open")} <ArrowUpRight aria-hidden className="h-4 w-4" />
         </button>
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg" aria-label="Open to the right" title="Open to the right (⌘/Ctrl+Enter)" onClick={() => onOpen(entry, "right")}>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg" aria-label={t("openToTheRight")} title={t("openToTheRightTitle")} onClick={() => onOpen(entry, "right")}>
           <PanelRight aria-hidden className="h-4 w-4" />
         </button>
       </header>

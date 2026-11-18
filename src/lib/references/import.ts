@@ -369,14 +369,19 @@ export function referenceImportOutcome(
 // Client helpers
 // ---------------------------------------------------------------------------
 
-/** "Added 3 references · 1 duplicate skipped · 1 key renamed". */
-export function referenceImportSummary(result: Pick<ReferenceImportResult, "added" | "duplicates" | "renamedKeys" | "errors">) {
-  const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+/** "Added 3 references · 1 duplicate skipped · 1 key renamed". Pass `useTranslations("lib.references.import")` to get the interface language. */
+export function referenceImportSummary(
+  result: Pick<ReferenceImportResult, "added" | "duplicates" | "renamedKeys" | "errors">,
+  t?: (key: "summary", values: { added: number; skipped: number; renamed: number; errors: number }) => string,
+) {
   const skipped = result.duplicates.filter((duplicate) => duplicate.skipped).length;
-  const parts = [`Added ${plural(result.added.length, "reference", "references")}`];
+  const values = { added: result.added.length, skipped, renamed: result.renamedKeys.length, errors: result.errors.length };
+  if (t) return t("summary", values);
+  const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+  const parts = [`Added ${plural(values.added, "reference", "references")}`];
   if (skipped) parts.push(`${plural(skipped, "duplicate", "duplicates")} skipped`);
-  if (result.renamedKeys.length) parts.push(`${plural(result.renamedKeys.length, "key", "keys")} renamed`);
-  if (result.errors.length) parts.push(plural(result.errors.length, "parse error", "parse errors"));
+  if (values.renamed) parts.push(`${plural(values.renamed, "key", "keys")} renamed`);
+  if (values.errors) parts.push(plural(values.errors, "parse error", "parse errors"));
   return parts.join(" · ");
 }
 

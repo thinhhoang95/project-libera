@@ -2,6 +2,7 @@
 
 import { ReviewToggle } from "./markdown-review-ui";
 import { memo, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import type { MouseEvent } from "react";
 import { Code, Download, Eye, FolderInput, MoreHorizontal, Plus, Sparkles, TextCursorInput, X } from "lucide-react";
 import { usePaletteCommands } from "./command-palette/commands";
@@ -12,6 +13,7 @@ import { FileTypeIcon } from "./file-type";
 import { chromeTabKind, type ChromeTab } from "./tab-chrome";
 import { announceImageSaved, imageSaveMenuItems, runImageSaveMenuAction } from "./image-save";
 import { PAGES } from "./page-tabs";
+import { useTabName } from "./use-tab-name";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { isCompilableLatexPath } from "@/lib/latex/project";
@@ -64,12 +66,15 @@ type TabStripProps = {
 
 type CanvasSplitZone = "right" | "bottom" | "left" | "top";
 
+/** A message translator from `useTranslations("tabStrip")`, for the menu builders outside components. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
+
 /** The sides a panel can open on, for the macOS View menu. */
-const SPLIT_SIDES: Array<{ zone: CanvasSplitZone; label: string }> = [
-  { zone: "right", label: "To the Right" },
-  { zone: "left", label: "To the Left" },
-  { zone: "top", label: "Above" },
-  { zone: "bottom", label: "Below" },
+const SPLIT_SIDES: Array<{ zone: CanvasSplitZone; labelKey: string }> = [
+  { zone: "right", labelKey: "sideRight" },
+  { zone: "left", labelKey: "sideLeft" },
+  { zone: "top", labelKey: "sideAbove" },
+  { zone: "bottom", labelKey: "sideBelow" },
 ];
 type NativeMenuItems = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0]["items"];
 const { gallery: isGalleryTab, recording: isRecordingTab, page: isPageTab } = chromeTabKind;
@@ -96,6 +101,7 @@ type ActiveFileActionsProps = Pick<
 >;
 
 function canvasMenuItems(
+  t: Translator,
   panelCount: number,
   { onSplitCanvas, onCloseCanvasPanel, onCloseOtherCanvasPanels }: Pick<ActiveFileActionsProps, "onSplitCanvas" | "onCloseCanvasPanel" | "onCloseOtherCanvasPanels">,
 ): NativeMenuItems {
@@ -104,10 +110,10 @@ function canvasMenuItems(
   }
 
   return [
-    { id: "split-right", label: "Split Right" },
-    { id: "split-down", label: "Split Down" },
-    ...(onCloseCanvasPanel ? [{ id: "close-panel", label: "Close Panel", enabled: panelCount > 1 }] : []),
-    ...(onCloseOtherCanvasPanels ? [{ id: "close-other-panels", label: "Close Other Panels", enabled: panelCount > 1 }] : []),
+    { id: "split-right", label: t("splitRight") },
+    { id: "split-down", label: t("splitDown") },
+    ...(onCloseCanvasPanel ? [{ id: "close-panel", label: t("closePanel"), enabled: panelCount > 1 }] : []),
+    ...(onCloseOtherCanvasPanels ? [{ id: "close-other-panels", label: t("closeOtherPanels"), enabled: panelCount > 1 }] : []),
   ];
 }
 
@@ -179,6 +185,8 @@ export const TabStrip = memo(function TabStrip({
   onCloseOtherCanvasPanels,
 }: TabStripProps) {
   usePendingSavesVersion();
+  const t = useTranslations("tabStrip");
+  const tabName = useTabName();
   const [draggingTabId, setDraggingTabId] = useState("");
   const [dragOverTabId, setDragOverTabId] = useState("");
 
@@ -191,20 +199,20 @@ export const TabStrip = memo(function TabStrip({
   function tabMenuItems(tab: ChromeTab, splitItems = true): NativeMenuItems {
     return [
       // A recording in progress has no file for AI Chat or another window to open.
-      ...(isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "add-to-ai-chat", label: "Add to AI Chat" }, { type: "separator" as const }]),
+      ...(isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "add-to-ai-chat", label: t("addToAiChat") }, { type: "separator" as const }]),
       ...(onOpenTabInSplit && splitItems
         ? [
-            { id: "open-split-right", label: "Open to the Right" },
-            { id: "open-split-down", label: "Open Below" },
+            { id: "open-split-right", label: t("openToTheRight") },
+            { id: "open-split-down", label: t("openBelow") },
             { type: "separator" as const },
           ]
         : []),
       // Gallery photos have no notebook file for another window to open.
-      ...(isGalleryTab(tab) || isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
-      { id: "close-tab", label: "Close Tab" },
+      ...(isGalleryTab(tab) || isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "duplicate-markdown", label: t("duplicateTabInNewWindow") }]),
+      { id: "close-tab", label: t("closeTab") },
       {
         id: "close-others",
-        label: "Close Others",
+        label: t("closeOthers"),
         enabled: tabs.length > 1,
       },
     ];
@@ -254,15 +262,15 @@ export const TabStrip = memo(function TabStrip({
 
   // The macOS Tab menu: new and switch tabs, then the active tab's context menu.
   useAppMenuItems("tab", 0, () => [
-    { id: "new", label: "New Untitled Note", onSelect: onCreateUntitled },
+    { id: "new", label: t("newUntitledNote"), onSelect: onCreateUntitled },
     { type: "separator" },
-    { id: "previous", label: "Show Previous Tab", enabled: tabs.length > 1, onSelect: () => showTabAt(-1) },
-    { id: "next", label: "Show Next Tab", enabled: tabs.length > 1, onSelect: () => showTabAt(1) },
+    { id: "previous", label: t("showPreviousTab"), enabled: tabs.length > 1, onSelect: () => showTabAt(-1) },
+    { id: "next", label: t("showNextTab"), enabled: tabs.length > 1, onSelect: () => showTabAt(1) },
     {
       id: "go-to",
-      label: "Go to Tab",
+      label: t("goToTab"),
       enabled: tabs.length > 0,
-      submenu: tabs.map((tab, index) => ({ id: `go-to:${index}`, label: tab.file.name, type: "radio", checked: tab.id === activeTabId, onSelect: () => onActivateTab(tab.id) })),
+      submenu: tabs.map((tab, index) => ({ id: `go-to:${index}`, label: tabName(tab), type: "radio", checked: tab.id === activeTabId, onSelect: () => onActivateTab(tab.id) })),
     },
     ...(activeTab ? [{ type: "separator" as const }, ...withMenuActions(tabMenuItems(activeTab, false), (id) => runTabMenuAction(activeTab, id))] : []),
   ]);
@@ -272,27 +280,27 @@ export const TabStrip = memo(function TabStrip({
   useAppMenuItems("view", 0, () => onSplitCanvas ? [
     {
       id: "split",
-      label: "Split Panel",
-      submenu: SPLIT_SIDES.map(({ zone, label }) => ({ id: `split:${zone}`, label, onSelect: () => onSplitCanvas(zone) })),
+      label: t("splitPanel"),
+      submenu: SPLIT_SIDES.map(({ zone, labelKey }) => ({ id: `split:${zone}`, label: t(labelKey), onSelect: () => onSplitCanvas(zone) })),
     },
     ...(onOpenTabInSplit ? [{
       id: "open-in-panel",
-      label: "Open Tab in New Panel",
+      label: t("openTabInNewPanel"),
       enabled: otherTabs.length > 0,
       submenu: otherTabs.map((tab, index) => ({
         id: `open:${index}`,
-        label: tab.file.name,
-        submenu: SPLIT_SIDES.map(({ zone, label }) => ({ id: `open:${index}:${zone}`, label, onSelect: () => onOpenTabInSplit(tab.id, zone) })),
+        label: tabName(tab),
+        submenu: SPLIT_SIDES.map(({ zone, labelKey }) => ({ id: `open:${index}:${zone}`, label: t(labelKey), onSelect: () => onOpenTabInSplit(tab.id, zone) })),
       })),
     }] : []),
-    ...(onCloseCanvasPanel ? [{ id: "close-panel", label: "Close Panel", enabled: canvasPanelCount > 1, onSelect: onCloseCanvasPanel }] : []),
-    ...(onCloseOtherCanvasPanels ? [{ id: "close-other-panels", label: "Close Other Panels", enabled: canvasPanelCount > 1, onSelect: onCloseOtherCanvasPanels }] : []),
+    ...(onCloseCanvasPanel ? [{ id: "close-panel", label: t("closePanel"), enabled: canvasPanelCount > 1, onSelect: onCloseCanvasPanel }] : []),
+    ...(onCloseOtherCanvasPanels ? [{ id: "close-other-panels", label: t("closeOtherPanels"), enabled: canvasPanelCount > 1, onSelect: onCloseOtherCanvasPanels }] : []),
   ] : []);
 
   return (
     <div className="libera-tab-strip libera-window-drag-region border-b border-border bg-card">
       <div className="flex min-h-12 items-center gap-2 px-3 py-2">
-        <button type="button" aria-label="New untitled file" title="New untitled file" onClick={onCreateUntitled} className="libera-window-no-drag-region rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><Plus aria-hidden className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("newUntitledFile")} title={t("newUntitledFile")} onClick={onCreateUntitled} className="libera-window-no-drag-region rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><Plus aria-hidden className="h-4 w-4" /></button>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const isActive = activeTabId === tab.id;
@@ -315,8 +323,8 @@ export const TabStrip = memo(function TabStrip({
                 draggable
                 data-tab-id={tab.id}
                 data-canvas-visible={isOnCanvas ? "true" : undefined}
-                title={isOnCanvas && !isActive ? `${tab.file.name} — shown in another panel` : undefined}
-                aria-label={`Open ${tab.file.name}`}
+                title={isOnCanvas && !isActive ? t("shownInAnotherPanel", { name: tabName(tab) }) : undefined}
+                aria-label={t("openTab", { name: tabName(tab) })}
                 aria-current={isActive ? "page" : undefined}
                 aria-describedby={isDragTarget ? `${tab.id}-drop-target` : undefined}
                 onDragStart={(event) => {
@@ -370,16 +378,16 @@ export const TabStrip = memo(function TabStrip({
                 <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
                   {tab.page ? <PageTabIcon kind={tab.page.kind} /> : <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />}
                 </span>
-                <span className="truncate">{tab.file.name}</span>
+                <span className="truncate">{tabName(tab)}</span>
                 {isDragTarget ? (
                   <span id={`${tab.id}-drop-target`} className="sr-only">
-                    Drop to swap tabs
+                    {t("dropToSwapTabs")}
                   </span>
                 ) : null}
                 <span className="ml-0.5 flex shrink-0 items-center gap-2">
                   {isDirty ? (
                     <span
-                      aria-label="Unsaved"
+                      aria-label={t("unsaved")}
                       className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70"
                     />
                   ) : null}
@@ -389,7 +397,7 @@ export const TabStrip = memo(function TabStrip({
                     } group-hover:opacity-100`}
                     role="button"
                     tabIndex={0}
-                    aria-label={`Close ${tab.file.name}`}
+                    aria-label={t("closeNamed", { name: tabName(tab) })}
                     onClick={(event) => {
                       event.stopPropagation();
                       onCloseTab(tab.id);
@@ -430,11 +438,12 @@ export const TabStrip = memo(function TabStrip({
         />
         <button
           type="button"
-          aria-label="Toggle document chat"
+          aria-label={t("toggleDocumentChat")}
           aria-expanded={chatOpen}
           aria-controls="document-chat-panel"
+          data-libera-chat-toggle=""
           aria-keyshortcuts="Meta+Shift+B Control+Shift+B"
-          title="Toggle document chat (⌘/Ctrl+Shift+B)"
+          title={t("toggleDocumentChatTitle")}
           onClick={onToggleChat}
           className={`libera-window-no-drag shrink-0 rounded-lg p-2 hover:bg-muted hover:text-foreground ${chatOpen ? "bg-muted text-foreground" : "text-muted-foreground"}`}
         >
@@ -465,9 +474,11 @@ function ActiveFileActions({
   onCloseCanvasPanel,
   onCloseOtherCanvasPanels,
 }: ActiveFileActionsProps) {
+  const t = useTranslations("tabStrip");
+  const tHistory = useTranslations("collab.history.index");
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const canvasActions = { onSplitCanvas, onCloseCanvasPanel, onCloseOtherCanvasPanels };
-  const canvasItems = canvasMenuItems(canvasPanelCount, canvasActions);
+  const canvasItems = canvasMenuItems(t, canvasPanelCount, canvasActions);
   const fileTab = activeTab && !isRecordingTab(activeTab) && !isPageTab(activeTab) ? activeTab : undefined;
   const isMarkdown = fileTab?.file.fileType === "markdown";
   const isLatex = fileTab?.file.fileType === "latex";
@@ -493,20 +504,20 @@ function ActiveFileActions({
   // The same actions in the command palette (⌘/Ctrl+Shift+P), for the active file.
   usePaletteCommands(null, () => {
     if (!fileTab) return [];
-    const group = "File";
+    const group = t("fileGroup");
     const run = (id: string) => () => void runAction(fileTab, id);
     const downloads: Array<[id: string, title: string]> = isMarkdown
-      ? [["download-markdown", "Download as Markdown file"], ["download-pdf", "Download as PDF file"]]
+      ? [["download-markdown", t("downloadAsMarkdownFile")], ["download-pdf", t("downloadAsPdfFile")]]
       : isLatex || isText
-        ? [["download-markdown", "Download"]]
+        ? [["download-markdown", t("download")]]
         : isPdf
-          ? [["download-pdf-annotated", "Download PDF with annotations"], ["download-original", "Download original PDF"]]
-          : isImage ? [] : [["download-original", "Download"]];
+          ? [["download-pdf-annotated", t("downloadPdfWithAnnotations")], ["download-original", t("downloadOriginalPdf")]]
+          : isImage ? [] : [["download-original", t("download")]];
     return [
       ...(editorMode
         ? (["visual", "source"] as const).map((mode) => ({
             id: `file:editor-${mode}`,
-            title: `Switch to ${mode === "visual" ? "Visual" : "Source"} editor`,
+            title: mode === "visual" ? t("switchToVisualEditor") : t("switchToSourceEditor"),
             group,
             icon: mode === "visual" ? Eye : Code,
             shortcut: EDITOR_MODE_SHORTCUT,
@@ -518,8 +529,8 @@ function ActiveFileActions({
       ...downloads.map(([id, title]) => ({ id: `file:${id}`, title, group, icon: Download, keywords: "export save copy", run: run(id) })),
       ...(canRenameOrMove
         ? [
-            { id: "file:rename", title: "Rename file…", group, icon: TextCursorInput, shortcut: "F2", run: run("rename") },
-            { id: "file:move", title: "Move file…", group, icon: FolderInput, keywords: "notebook folder relocate", run: run("move") },
+            { id: "file:rename", title: t("renameFile"), group, icon: TextCursorInput, shortcut: "F2", run: run("rename") },
+            { id: "file:move", title: t("moveFile"), group, icon: FolderInput, keywords: "notebook folder relocate", run: run("move") },
           ]
         : []),
     ];
@@ -575,11 +586,11 @@ function ActiveFileActions({
   /** The file actions of `tab`, the active tab, then the canvas layout. */
   async function actionMenuItems(tab: ChromeTab): Promise<NativeMenuItems> {
     // Shared files have a version history.
-    const historyItems = historyMenuItems(tab.id);
+    const historyItems = historyMenuItems(tab.id, tHistory("menuHistory"));
     // PDFs and images: their unsaved annotations and ink (pending-saves.ts).
     const viewerSaveItem = {
       id: "save",
-      label: "Save",
+      label: t("save"),
       enabled: tab.status !== "saving" && pendingSaves.isDirty(tab.file.path),
     };
 
@@ -590,17 +601,17 @@ function ActiveFileActions({
               ? [
                   {
                     id: "editor-mode",
-                    label: "Editor Mode",
+                    label: t("editorMode"),
                     submenu: [
                       {
                         id: "editor-visual",
-                        label: "Visual",
+                        label: t("visual"),
                         type: "radio" as const,
                         checked: markdownEditorMode === "visual",
                       },
                       {
                         id: "editor-source",
-                        label: "Source",
+                        label: t("source"),
                         type: "radio" as const,
                         checked: markdownEditorMode === "source",
                       },
@@ -611,17 +622,17 @@ function ActiveFileActions({
               : []),
             {
               id: "save",
-              label: "Save",
+              label: t("save"),
               enabled:
                 tab.status !== "saving" &&
                 (tab.untitled || tab.status !== "clean"),
             },
             {
               id: "download",
-              label: "Download",
+              label: t("download"),
               submenu: [
-                { id: "download-markdown", label: "Markdown file" },
-                { id: "download-pdf", label: "PDF file" },
+                { id: "download-markdown", label: t("markdownFile") },
+                { id: "download-pdf", label: t("pdfFile") },
               ],
             },
           ]
@@ -631,10 +642,10 @@ function ActiveFileActions({
                 ? [
                     {
                       id: "latex-editor-mode",
-                      label: "Editor Mode",
+                      label: t("editorMode"),
                       submenu: [
-                        { id: "latex-editor-visual", label: "Visual", type: "radio" as const, checked: latexEditorMode === "visual" },
-                        { id: "latex-editor-source", label: "Source", type: "radio" as const, checked: latexEditorMode === "source" },
+                        { id: "latex-editor-visual", label: t("visual"), type: "radio" as const, checked: latexEditorMode === "visual" },
+                        { id: "latex-editor-source", label: t("source"), type: "radio" as const, checked: latexEditorMode === "source" },
                       ],
                     },
                     { type: "separator" as const },
@@ -642,36 +653,36 @@ function ActiveFileActions({
                 : []),
               {
                 id: "save",
-                label: "Save",
+                label: t("save"),
                 enabled: tab.status !== "saving" && tab.status !== "clean",
               },
-              { id: "download-markdown", label: "Download" },
+              { id: "download-markdown", label: t("download") },
             ]
           : isPdf
             ? [
                 viewerSaveItem,
                 {
                   id: "download",
-                  label: "Download",
+                  label: t("download"),
                   submenu: [
-                    { id: "download-pdf-annotated", label: "PDF with Annotations" },
-                    { id: "download-original", label: "Original PDF" },
+                    { id: "download-pdf-annotated", label: t("pdfWithAnnotations") },
+                    { id: "download-original", label: t("originalPdf") },
                   ],
                 },
               ]
             : isImage
-              ? [viewerSaveItem, { id: "save-image", label: "Save a Copy", submenu: await imageSaveMenuItems(isGalleryPhoto ? "notebook" : "gallery") }]
-              : [{ id: "download-original", label: "Download" }]),
+              ? [viewerSaveItem, { id: "save-image", label: t("saveACopy"), submenu: await imageSaveMenuItems(isGalleryPhoto ? "notebook" : "gallery") }]
+              : [{ id: "download-original", label: t("download") }]),
       ...(isGalleryPhoto
         ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])
         : [
             { type: "separator" as const },
             ...(historyItems.length ? [...historyItems, { type: "separator" as const }] : []),
             ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
-            { id: "rename", label: "Rename" },
-            { id: "move", label: "Move" },
+            { id: "rename", label: t("rename") },
+            { id: "move", label: t("move") },
             { type: "separator" as const },
-            { id: "delete", label: "Delete" },
+            { id: "delete", label: t("delete") },
           ]),
     ];
   }
@@ -753,13 +764,14 @@ function FileActionsMenuButton({
   onClick: (event: MouseEvent<HTMLButtonElement>) => Promise<void>;
   bare?: boolean;
 }) {
+  const t = useTranslations("tabStrip");
   const button = (
     <button
       aria-expanded={open}
       aria-haspopup="menu"
-      aria-label="File actions"
+      aria-label={t("fileActions")}
       className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-      title="File actions"
+      title={t("fileActions")}
       type="button"
       onClick={(event) => void onClick(event)}
     >

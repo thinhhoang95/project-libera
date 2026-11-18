@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2, ScanText } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import {
@@ -11,18 +12,13 @@ import {
   startPdfMarkdownJob,
   subscribePdfMarkdownJobs,
   type PdfMarkdownConversion,
+  type PdfMarkdownWarning,
   type PdfReadingSettings,
 } from "@/components/libera/document-ocr/pdf-markdown-jobs";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 
 const EMPTY_JOBS = new Map();
 
-function duration(milliseconds: number) {
-  const seconds = Math.max(0, Math.round(milliseconds / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return minutes < 60 ? `${minutes} min ${seconds % 60}s` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
-}
 
 /** The PDF toolbar's Convert to Markdown button, with its setup and progress dialog. */
 export function PdfMarkdownButton({
@@ -40,6 +36,18 @@ export function PdfMarkdownButton({
   mathMarkers?: MathMarkerSettings;
   conversion: PdfMarkdownConversion;
 }) {
+  const t = useTranslations("documentOcr.pdfMarkdownButton");
+  const duration = (milliseconds: number) => {
+    const seconds = Math.max(0, Math.round(milliseconds / 1000));
+    if (seconds < 60) return t("durationSeconds", { seconds });
+    const minutes = Math.floor(seconds / 60);
+    return minutes < 60 ? t("durationMinutes", { minutes, seconds: seconds % 60 }) : t("durationHours", { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
+  };
+  const warningText = (warning: PdfMarkdownWarning) => {
+    if (warning.kind === "headingLevels") return t("warningHeadingLevels");
+    if (warning.kind === "incomplete") return t("warningIncomplete", { page: warning.page });
+    return warning.message ? t("warningUnreadable", { page: warning.page, message: warning.message }) : t("warningUnreadableNoReason", { page: warning.page });
+  };
   const jobs = useSyncExternalStore(subscribePdfMarkdownJobs, getPdfMarkdownJobs, () => EMPTY_JOBS);
   const job = jobs.get(pdfPath);
   const [open, setOpen] = useState(false);
@@ -85,19 +93,19 @@ export function PdfMarkdownButton({
 
   let footer;
   if (running) {
-    footer = <button type="button" className={secondaryClass} onClick={() => cancelPdfMarkdownJob(pdfPath)}>Stop</button>;
+    footer = <button type="button" className={secondaryClass} onClick={() => cancelPdfMarkdownJob(pdfPath)}>{t("stop")}</button>;
   } else if (job?.state === "done" && job.file) {
-    footer = <button type="button" className={primaryClass} onClick={() => { conversion.openFile(job.file!); close(); }}>Open {job.file.name}</button>;
+    footer = <button type="button" className={primaryClass} onClick={() => { conversion.openFile(job.file!); close(); }}>{t("openFile", { name: job.file.name })}</button>;
   } else {
-    footer = <button type="button" className={primaryClass} disabled={!pageCount} onClick={start}>{job ? "Convert again" : "Convert"}</button>;
+    footer = <button type="button" className={primaryClass} disabled={!pageCount} onClick={start}>{job ? t("convertAgain") : t("convert")}</button>;
   }
 
   return (
     <>
       <button
         type="button"
-        aria-label="Convert PDF to Markdown"
-        title={running ? (job.engine === "openrouter" ? `Read ${job.done} of ${total} pages…` : `Reading page ${job.current} of ${job.lastPage}…`) : "Convert PDF to Markdown"}
+        aria-label={t("convertTitle")}
+        title={running ? (job.engine === "openrouter" ? t("readingPagesRunning", { done: job.done, total }) : t("readingPageRunning", { current: job.current, lastPage: job.lastPage })) : t("convertTitle")}
         className={className}
         onClick={() => setOpen(true)}
       >
@@ -106,10 +114,10 @@ export function PdfMarkdownButton({
       </button>
       <ModalDialog
         open={open}
-        title="Convert PDF to Markdown"
+        title={t("convertTitle")}
         description={engine === "openrouter"
-          ? `Sends each page to ${settings?.model ?? "the OpenRouter model"} and writes a Markdown file next to the PDF.`
-          : "Reads each page on this computer and writes a Markdown file next to the PDF."}
+          ? t("sendsEachPage", { model: settings?.model ?? t("openRouterModelFallback") })
+          : t("readsLocally")}
         onClose={close}
         footer={footer}
       >
@@ -117,23 +125,22 @@ export function PdfMarkdownButton({
           {!job || (!running && job.state !== "done" && job.state !== "error") ? (
             <>
               <div className="flex items-center gap-2">
-                <label htmlFor="pdf-markdown-from">Pages</label>
+                <label htmlFor="pdf-markdown-from">{t("pagesLabel")}</label>
                 <input id="pdf-markdown-from" className="w-20 rounded-md border border-input bg-card px-2 py-1" inputMode="numeric" value={from} onChange={(event) => setRange({ from: event.target.value, to })} />
-                <span>to</span>
-                <input aria-label="Last page" className="w-20 rounded-md border border-input bg-card px-2 py-1" inputMode="numeric" value={to} onChange={(event) => setRange({ from, to: event.target.value })} />
-                <span className="text-muted-foreground">of {pageCount}</span>
+                <span>{t("to")}</span>
+                <input aria-label={t("lastPageLabel")} className="w-20 rounded-md border border-input bg-card px-2 py-1" inputMode="numeric" value={to} onChange={(event) => setRange({ from, to: event.target.value })} />
+                <span className="text-muted-foreground">{t("ofCount", { count: pageCount })}</span>
               </div>
               <p className="text-xs text-muted-foreground">
                 {engine === "openrouter"
-                  ? `Reads ${settings?.concurrency ?? "several"} pages at once with your OpenRouter key${settings?.cleanup ? ", then makes the heading levels consistent" : ""}.`
-                  : "Expect one to three minutes per page on the CPU."}{" "}
-                Pages are saved as they finish, so you can stop at any time and keep what was read. Works on scanned PDFs too.
-                Choose the model in Preferences → AI.
+                  ? t(settings?.cleanup ? "readsPagesAtOnce" : "readsPagesAtOncePlain", { count: settings?.concurrency ?? t("several") })
+                  : t("expectMinutes")}{" "}
+                {t("savedAsFinish")} {t("chooseModel")}
               </p>
               {engine === "openrouter" && settings && !settings.available ? (
-                <p role="alert" className="text-xs text-destructive">Add an OpenRouter API key in Preferences first.</p>
+                <p role="alert" className="text-xs text-destructive">{t("addKeyFirst")}</p>
               ) : null}
-              {job?.state === "cancelled" && job.file ? <p className="text-xs">Stopped after {job.done} of {total} pages; they are saved in {job.file.name}.</p> : null}
+              {job?.state === "cancelled" && job.file ? <p className="text-xs">{t("stoppedAfter", { done: job.done, total, file: job.file.name })}</p> : null}
             </>
           ) : null}
           {running ? (
@@ -142,16 +149,17 @@ export function PdfMarkdownButton({
                 <div className="h-full bg-primary transition-[width]" style={{ width: `${total ? (job.done / total) * 100 : 0}%` }} />
               </div>
               <p className="text-xs text-muted-foreground">
-                {job.tidying ? "Making heading levels consistent. " : job.engine === "openrouter" ? `Reading pages from ${job.current}. ` : `Reading page ${job.current} of ${job.lastPage}. `}
-                {job.done} done in {duration(elapsed)}
-                {job.done ? `, about ${duration(remaining)} left` : ""}. You can close this dialog and keep working.
+                {job.tidying ? t("tidying") : job.engine === "openrouter" ? t("readingPagesFrom", { current: job.current }) : t("readingPage", { current: job.current, lastPage: job.lastPage })}{" "}
+                {job.done
+                  ? t("progressRemaining", { done: job.done, elapsed: duration(elapsed), remaining: duration(remaining) })
+                  : t("progressNoRemaining", { done: job.done, elapsed: duration(elapsed) })}
               </p>
             </div>
           ) : null}
-          {job?.state === "done" ? <p>Converted {job.done} pages into {job.file?.name}.</p> : null}
-          {job?.state === "error" ? <p role="alert" className="text-destructive">{job.error}</p> : null}
+          {job?.state === "done" ? <p>{t("convertedPages", { count: job.done, file: job.file?.name ?? "" })}</p> : null}
+          {job?.state === "error" ? <p role="alert" className="text-destructive">{job.errorKind ? t(`error.${job.errorKind}`) : job.error}</p> : null}
           {job?.warnings.length ? (
-            <p className="text-xs text-muted-foreground">{job.warnings.join(" ")} Check those pages against the PDF.</p>
+            <p className="text-xs text-muted-foreground">{t("warningsSuffix", { warnings: job.warnings.map(warningText).join(" ") })}</p>
           ) : null}
         </div>
       </ModalDialog>

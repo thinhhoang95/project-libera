@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { FileAudio, FileText, Hash, Image as ImageIcon, PanelTop, ScrollText } from "lucide-react";
 import type {
   MarkdownFileLinkSelection,
@@ -12,18 +13,26 @@ import type { MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
 import { isMarkdownSourceRange, markdownLinkQuoteLabel } from "@/lib/markdown-selection-links";
 import { annotationLinkLabel, findRememberedAnnotation } from "@/lib/annotation-links";
 
+/** A description of an open tab's current view, shown in the interface language by the popup. */
+export type MarkdownFileLinkViewSubtitle = {
+  key: "pdfViewSubtitle" | "imageViewSubtitle" | "audioPositionSubtitle" | "annotationSubtitle" | "highlightedTextSubtitle" | "markdownLineSubtitle" | "markdownViewSubtitle";
+  values?: Record<string, string | number>;
+};
+
 export type MarkdownFileLinkPopupOption = {
   file: LiberaFileNode;
   id: string;
   source: "file" | "tab";
+  /** The file's path (files only; tabs describe their view in `view`). */
   subtitle: string;
+  view?: MarkdownFileLinkViewSubtitle;
   title: string;
   viewState?: OpenTabViewState;
 };
 
 export type MarkdownFileLinkPopupSection = {
   options: MarkdownFileLinkPopupOption[];
-  title: string;
+  kind: "recent" | "files" | "tabs";
 };
 
 type MarkdownFileLinkPopupProps = {
@@ -104,7 +113,8 @@ export function buildMarkdownFileLinkSections({
       file: tab.file,
       id: `tab:${tab.id}`,
       source: "tab" as const,
-      subtitle: currentViewSubtitle(tab),
+      subtitle: "",
+      view: currentViewSubtitle(tab),
       title: tab.file.name,
       viewState: tab.viewState,
     }));
@@ -112,14 +122,14 @@ export function buildMarkdownFileLinkSections({
 
   if (primaryOptions.length) {
     sections.push({
-      title: normalizedQuery ? "Files" : "Recent files",
+      kind: normalizedQuery ? "files" : "recent",
       options: primaryOptions,
     });
   }
 
   if (tabOptions.length) {
     sections.push({
-      title: "Open tabs",
+      kind: "tabs",
       options: tabOptions,
     });
   }
@@ -147,45 +157,44 @@ function scoreFile(file: LiberaFileNode, query: string) {
   return score;
 }
 
-function currentViewSubtitle(tab: OpenTab) {
+function currentViewSubtitle(tab: OpenTab): MarkdownFileLinkViewSubtitle {
   const annotationId = tab.file.fileType === "pdf"
     ? tab.viewState?.pdf?.selectedAnnotationId
     : tab.file.fileType === "image" ? tab.viewState?.image?.selectedAnnotationId : undefined;
 
   if (annotationId) {
     const annotation = findRememberedAnnotation(tab.file.path, annotationId);
-    const kind = annotation?.type === "highlight" ? "Highlight" : "Note";
-    return `${kind} · “${annotationLinkLabel(annotation, "selected")}”`;
+    return { key: "annotationSubtitle", values: { kind: annotation?.type === "highlight" ? "highlight" : "note", label: annotationLinkLabel(annotation, "") } };
   }
 
   if (tab.file.fileType === "pdf") {
     const scrollTop = Math.round(tab.viewState?.pdf?.scrollTop ?? 0);
     const zoom = Math.round((tab.viewState?.pdf?.zoom ?? 1) * 100);
 
-    return `Current PDF view · ${zoom}% · y ${scrollTop}`;
+    return { key: "pdfViewSubtitle", values: { zoom: zoom / 100, scrollTop } };
   }
 
   if (tab.file.fileType === "image") {
     const zoom = Math.round((tab.viewState?.image?.zoom ?? 1) * 100);
 
-    return `Current image view · ${zoom}%`;
+    return { key: "imageViewSubtitle", values: { zoom: zoom / 100 } };
   }
 
   if (tab.file.fileType === "audio") {
-    return `Current position · ${formatClock(tab.viewState?.audio?.currentTime ?? 0)}`;
+    return { key: "audioPositionSubtitle", values: { time: formatClock(tab.viewState?.audio?.currentTime ?? 0) } };
   }
 
   const highlighted = tab.viewState?.markdown?.linkSelection;
 
   if (isMarkdownSourceRange(highlighted, tab.draft)) {
-    return `Highlighted text · “${markdownLinkQuoteLabel(tab.draft.slice(highlighted.start, highlighted.end))}”`;
+    return { key: "highlightedTextSubtitle", values: { quote: markdownLinkQuoteLabel(tab.draft.slice(highlighted.start, highlighted.end)) } };
   }
 
   const line = tab.viewState?.markdown?.line;
 
   return typeof line === "number"
-    ? `Current Markdown view · line ${line}`
-    : "Current Markdown view";
+    ? { key: "markdownLineSubtitle", values: { line } }
+    : { key: "markdownViewSubtitle" };
 }
 
 export function flattenMarkdownFileLinkSections(
@@ -201,6 +210,13 @@ export function MarkdownFileLinkPopup({
   y,
   onSelect,
 }: MarkdownFileLinkPopupProps) {
+  const t = useTranslations("markdownFileLinkPopup");
+  const subtitleOf = (option: MarkdownFileLinkPopupOption) => {
+    const view = option.view;
+    if (!view) return option.subtitle;
+    const values = view.key === "annotationSubtitle" && !view.values?.label ? { ...view.values, label: t("selectedFallback") } : view.values;
+    return t(view.key, values);
+  };
   const indexedSections = sections.map((section, sectionIndex) => {
     const offset = sections
       .slice(0, sectionIndex)
@@ -221,7 +237,7 @@ export function MarkdownFileLinkPopup({
         className="fixed z-40 w-80 rounded-lg border border-border bg-card p-3 text-sm text-muted-foreground shadow-xl"
         style={{ left: x, top: y }}
       >
-        No matching files
+        {t("noMatchingFiles")}
       </div>
     );
   }
@@ -233,9 +249,9 @@ export function MarkdownFileLinkPopup({
       onMouseDown={(event) => event.preventDefault()}
     >
       {indexedSections.map((section) => (
-        <div key={section.title} className="py-1">
+        <div key={section.kind} className="py-1">
           <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            {section.title}
+            {t(`${section.kind}Section`)}
           </div>
           {section.options.map(({ option, optionIndex }) => {
             const selected = optionIndex === activeIndex;
@@ -255,7 +271,7 @@ export function MarkdownFileLinkPopup({
                     {option.title}
                   </span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {option.subtitle}
+                    {subtitleOf(option)}
                   </span>
                 </span>
                 {option.source === "tab" ? (
@@ -283,13 +299,14 @@ export function MarkdownHeadingLinkPopup({
   y: number;
   onSelect: (heading: MarkdownHeadingAnchor) => void;
 }) {
+  const t = useTranslations("markdownFileLinkPopup");
   if (!headings.length) {
     return (
       <div
         className="fixed z-40 w-80 rounded-lg border border-border bg-card p-3 text-sm text-muted-foreground shadow-xl"
         style={{ left: x, top: y }}
       >
-        No matching headings
+        {t("noMatchingHeadings")}
       </div>
     );
   }
@@ -302,7 +319,7 @@ export function MarkdownHeadingLinkPopup({
     >
       <div className="py-1">
         <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Headings in this document
+          {t("headingsSection")}
         </div>
         {headings.map((heading, index) => (
           <button
@@ -320,7 +337,7 @@ export function MarkdownHeadingLinkPopup({
                 {heading.text}
               </span>
               <span className="block truncate text-xs text-muted-foreground">
-                H{heading.level} · line {heading.line} · #{heading.slug}
+                {t("headingSubtitle", { level: heading.level, line: heading.line, slug: heading.slug })}
               </span>
             </span>
           </button>

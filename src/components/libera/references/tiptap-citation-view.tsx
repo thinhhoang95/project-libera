@@ -5,6 +5,7 @@ import { closeHistory } from "@tiptap/pm/history";
 import { NodeSelection } from "@tiptap/pm/state";
 import { NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
 import { Plus, Replace, Trash2, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import {
   createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode,
@@ -224,6 +225,7 @@ function resolvedList(list: DocumentCitationList, resolves: ((key: string) => bo
 // ---------------------------------------------------------------------------
 
 function CitationNodeView({ node, getPos, editor, selected }: ReactNodeViewProps) {
+  const t = useTranslations("references.tiptapCitationView");
   const render = useReferenceRender();
   const document = useCitationDocument();
   const context = useContext(CitationEditorContext);
@@ -265,7 +267,7 @@ function CitationNodeView({ node, getPos, editor, selected }: ReactNodeViewProps
         className={`libera-citation-text${selected ? " libera-citation-selected" : ""}`}
         data-libera-citation={raw}
         data-libera-narrative=""
-        title={editor.isEditable ? "Not in this notebook's references. Click to edit; Backspace edits it as text." : undefined}
+        title={editor.isEditable ? t("plainTextTitle") : undefined}
         onMouseDown={(event: ReactMouseEvent) => {
           if (event.button === 0) event.preventDefault();
         }}
@@ -332,8 +334,6 @@ function CitationNodeView({ node, getPos, editor, selected }: ReactNodeViewProps
 // Popover: edit a citation's items
 // ---------------------------------------------------------------------------
 
-const LABEL_NAMES: Partial<Record<CitationLocatorLabel, string>> = { "sub-verbo": "sub verbo", "article-locator": "article", "title-locator": "title" };
-
 function nodeRect(editor: Editor, pos: number) {
   const dom = editor.view.nodeDOM(pos);
   return dom instanceof HTMLElement ? dom.getBoundingClientRect() : null;
@@ -372,6 +372,8 @@ export function CitationEditPopover({ editor, pos, focusLocator, onClose, onSear
   /** Open the search popup to add an item or swap one item's work (after the draft was applied). */
   onSearch: (search: SearchState) => void;
 }) {
+  const t = useTranslations("references.tiptapCitationView");
+  const tc = useTranslations("common");
   const node = editor.state.doc.nodeAt(pos);
   const [items, setItems] = useState<CitationItem[]>(() => node && node.type.name === CITATION_NODE_NAME ? citationOfNode(node).items.map((item) => ({ ...item })) : []);
   const [narrative, setNarrative] = useState(() => Boolean(node?.attrs.narrative));
@@ -448,7 +450,7 @@ export function CitationEditPopover({ editor, pos, focusLocator, onClose, onSear
     <div
       ref={setElement}
       role="dialog"
-      aria-label="Edit citation"
+      aria-label={t("editCitationAria")}
       aria-describedby={`${id}-help`}
       data-citation-popover=""
       className="fixed z-40 flex max-h-[min(32rem,calc(100vh-16px))] w-[min(26rem,calc(100vw-16px))] flex-col gap-2 overflow-auto rounded-lg border border-border bg-card p-3 text-sm shadow-xl"
@@ -464,43 +466,43 @@ export function CitationEditPopover({ editor, pos, focusLocator, onClose, onSear
         }
       }}
     >
-      <p id={`${id}-help`} className="sr-only">Enter saves, Escape cancels.</p>
+      <p id={`${id}-help`} className="sr-only">{t("helpSrOnly")}</p>
       {items.map((item, index) => (
         <fieldset key={index} className="flex flex-col gap-1.5 rounded-md border border-border p-2" data-citation-item={index}>
           <legend className="px-1 font-mono text-xs text-muted-foreground">@{item.key}</legend>
           <div className="flex items-center gap-1.5">
             <select
-              aria-label={`Locator type for @${item.key}`}
+              aria-label={t("locatorTypeAria", { key: item.key })}
               className="rounded-md border border-border bg-card px-1.5 py-1 text-xs"
               value={item.label ?? "page"}
               onChange={(event) => change(index, { label: event.target.value as CitationLocatorLabel })}
             >
-              {CITATION_LOCATOR_LABELS.map((label) => <option key={label} value={label}>{LABEL_NAMES[label] ?? label}</option>)}
+              {CITATION_LOCATOR_LABELS.map((label) => <option key={label} value={label}>{t(`locator.${label}`)}</option>)}
             </select>
             <input
-              aria-label={`Locator for @${item.key}`}
+              aria-label={t("locatorAria", { key: item.key })}
               data-field={index === items.length - 1 ? "locator" : undefined}
               className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
-              placeholder="e.g. 12-14"
+              placeholder={t("locatorPlaceholder")}
               value={item.locator ?? ""}
               onChange={(event) => change(index, { locator: event.target.value, label: item.label ?? "page" })}
             />
           </div>
           <div className="flex items-center gap-1.5">
-            <input aria-label={`Prefix for @${item.key}`} className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs" placeholder="Prefix (see)" value={item.prefix ?? ""} onChange={(event) => change(index, { prefix: event.target.value })} />
-            <input aria-label={`Suffix for @${item.key}`} className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs" placeholder="Suffix" value={item.suffix ?? ""} onChange={(event) => change(index, { suffix: event.target.value })} />
+            <input aria-label={t("prefixAria", { key: item.key })} className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs" placeholder={t("prefixPlaceholder")} value={item.prefix ?? ""} onChange={(event) => change(index, { prefix: event.target.value })} />
+            <input aria-label={t("suffixAria", { key: item.key })} className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs" placeholder={t("suffixPlaceholder")} value={item.suffix ?? ""} onChange={(event) => change(index, { suffix: event.target.value })} />
           </div>
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <input type="checkbox" checked={Boolean(item.suppressAuthor)} onChange={(event) => change(index, { suppressAuthor: event.target.checked })} />
-              Suppress author
+              {t("suppressAuthor")}
             </label>
             <button type="button" className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs hover:bg-muted" onClick={() => search({ pos, mode: "swap", item: index })}>
-              <Replace aria-hidden className="h-3.5 w-3.5" /> Swap work
+              <Replace aria-hidden className="h-3.5 w-3.5" /> {t("swapWork")}
             </button>
             <button
               type="button"
-              aria-label={`Remove @${item.key}`}
+              aria-label={t("removeAria", { key: item.key })}
               className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-destructive hover:bg-destructive-muted"
               onClick={() => {
                 const next = items.filter((_, at) => at !== index);
@@ -509,13 +511,13 @@ export function CitationEditPopover({ editor, pos, focusLocator, onClose, onSear
                 if (!next.length) finish(true);
               }}
             >
-              <Trash2 aria-hidden className="h-3.5 w-3.5" /> Remove
+              <Trash2 aria-hidden className="h-3.5 w-3.5" /> {t("remove")}
             </button>
           </div>
         </fieldset>
       ))}
       <div className="flex flex-col gap-1.5 rounded-md border border-border p-2">
-        <label className="flex items-center gap-1.5 text-xs text-muted-foreground" title={narrativePossible ? undefined : "A narrative citation has one work, no prefix and no suppressed author."}>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground" title={narrativePossible ? undefined : t("narrativeTitle")}>
           <input
             type="checkbox"
             data-field="narrative"
@@ -523,18 +525,18 @@ export function CitationEditPopover({ editor, pos, focusLocator, onClose, onSear
             disabled={!narrativePossible}
             onChange={(event) => setNarrative(event.target.checked)}
           />
-          Narrative: in the text, Smith (2020)
+          {t("narrative")}
         </label>
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          Document style
+          {t("documentStyle")}
           <select
-            aria-label="Document citation style"
+            aria-label={t("documentStyleAria")}
             data-field="document-style"
             className="min-w-0 flex-1 rounded-md border border-border bg-card px-1.5 py-1 text-xs text-foreground"
             value={documentStyle ?? ""}
             onChange={(event) => chooseStyle(event.target.value)}
           >
-            <option value="">Notebook default</option>
+            <option value="">{t("notebookDefault")}</option>
             {BUNDLED_CSL_STYLES.map((style) => <option key={style.id} value={style.id}>{style.label}</option>)}
             {documentStyle && !BUNDLED_CSL_STYLES.some((style) => style.id === documentStyle) ? <option value={documentStyle}>{documentStyle}</option> : null}
           </select>
@@ -542,17 +544,17 @@ export function CitationEditPopover({ editor, pos, focusLocator, onClose, onSear
       </div>
       <div className="flex items-center gap-2">
         <button type="button" className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted" onClick={() => search({ pos, mode: "add" })}>
-          <Plus aria-hidden className="h-3.5 w-3.5" /> Add item
+          <Plus aria-hidden className="h-3.5 w-3.5" /> {t("addItem")}
         </button>
         {node.attrs.narrative ? (
           <button type="button" data-field="edit-as-text" className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs hover:bg-muted" onClick={editAsText}>
-            Edit as text
+            {t("editAsText")}
           </button>
         ) : null}
         <button type="button" className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs hover:bg-muted" onClick={() => finish(false)}>
-          <X aria-hidden className="h-3.5 w-3.5" /> Cancel
+          <X aria-hidden className="h-3.5 w-3.5" /> {tc("cancel")}
         </button>
-        <button type="button" className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground" onClick={() => finish(true)}>Done</button>
+        <button type="button" className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground" onClick={() => finish(true)}>{tc("done")}</button>
       </div>
     </div>,
     window.document.body,

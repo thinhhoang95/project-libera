@@ -2,6 +2,7 @@ import { syntaxTree } from "@codemirror/language";
 import { MapMode, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { dispatchAsOneStep as dispatchWidgetEdit } from "../../../collab/undo-boundary";
+import { visualText } from "./labels";
 import { visualConfig, visualDefinitions } from "./model";
 import { fragmentContext, setTableHooks, type TableElement } from "./widgets";import { renderLatexFragment } from "./render-fragment";
 import { isTabular, rowMacroNames } from "./walk";
@@ -179,8 +180,8 @@ function editCell(view: EditorView, td: HTMLElement, tableStart: () => number | 
     if (save && session.typed && text !== original) {
       if (!found || !canEdit(view)) {
         showCurrent(now);
-        window.alert(`The table changed while you were editing this cell, so your text was not saved:\n\n${text}`);
-      } else if (now === original || window.confirm("A co-author changed this cell while you were editing it. Replace their text with yours?")) {
+        window.alert(visualText(view.state)("tableEdit.changedWhileEditing", { text }));
+      } else if (now === original || window.confirm(visualText(view.state)("tableEdit.coAuthorChanged"))) {
         // A comment typed at the end must not hide the `&` or `\\` after the cell.
         const end = cellRange(found.cell).to;
         text = safeCellText(text, view.state.sliceDoc(end, view.state.doc.lineAt(end).to));
@@ -243,6 +244,7 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
   const clickedRange = cellRange(clicked);
   const session: TableSession = { view, start, cellFrom: clickedRange.from, cellTo: clickedRange.to };
   sessions.add(session);
+  const text = visualText(view.state);
   type Plan = (model: TableModel, source: string, from: number, row: number, column: number, cellIndex: number) => TableChange[] | null;
   /** A plan that adds or removes cells in rows: not for a table with rows its macros write (their cells are in the macro). */
   const everyRow = (plan: Plan): Plan => (model, source, from, r, column, cellIndex) => (hasMacroRows(view, model, source, from) ? null : plan(model, source, from, r, column, cellIndex));
@@ -257,31 +259,31 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
   const block = selectedBlock && row >= selectedBlock.r1 && row <= selectedBlock.r2 && clickedColumn >= selectedBlock.c1 && clickedColumn <= selectedBlock.c2 ? selectedBlock : null;
   const inBlock = !!block;
   const items: Array<[string, Plan] | "-"> = [
-    ["Insert row above", (model, source, from, r) => insertRow(model, source, from, r - 1)],
-    ["Insert row below", (model, source, from, r) => insertRow(model, source, from, r)],
-    ["Delete row", (model, source, from, r) => deleteRow(model, source, from, r)],
-    ["Move row up", (model, source, from, r) => moveRow(model, source, from, r, -1)],
-    ["Move row down", (model, source, from, r) => moveRow(model, source, from, r, 1)],
+    [text("tableEdit.insertRowAbove"), (model, source, from, r) => insertRow(model, source, from, r - 1)],
+    [text("tableEdit.insertRowBelow"), (model, source, from, r) => insertRow(model, source, from, r)],
+    [text("tableEdit.deleteRow"), (model, source, from, r) => deleteRow(model, source, from, r)],
+    [text("tableEdit.moveRowUp"), (model, source, from, r) => moveRow(model, source, from, r, -1)],
+    [text("tableEdit.moveRowDown"), (model, source, from, r) => moveRow(model, source, from, r, 1)],
     "-",
-    ["Insert column left", everyRow((model, _source, _from, _r, column) => insertColumn(model, column - 1))],
-    ["Insert column right", everyRow((model, _source, _from, _r, column) => insertColumn(model, column))],
-    ["Delete column", everyRow((model, _source, _from, _r, column) => deleteColumn(model, column))],
-    ["Move column left", everyRow((model, source, from, _r, column) => moveColumn(model, source, from, column, -1))],
-    ["Move column right", everyRow((model, source, from, _r, column) => moveColumn(model, source, from, column, 1))],
-    ["Align column left", (model, _source, _from, _r, column) => setColumnAlignment(model, column, "l")],
-    ["Align column center", (model, _source, _from, _r, column) => setColumnAlignment(model, column, "c")],
-    ["Align column right", (model, _source, _from, _r, column) => setColumnAlignment(model, column, "r")],
+    [text("tableEdit.insertColumnLeft"), everyRow((model, _source, _from, _r, column) => insertColumn(model, column - 1))],
+    [text("tableEdit.insertColumnRight"), everyRow((model, _source, _from, _r, column) => insertColumn(model, column))],
+    [text("tableEdit.deleteColumn"), everyRow((model, _source, _from, _r, column) => deleteColumn(model, column))],
+    [text("tableEdit.moveColumnLeft"), everyRow((model, source, from, _r, column) => moveColumn(model, source, from, column, -1))],
+    [text("tableEdit.moveColumnRight"), everyRow((model, source, from, _r, column) => moveColumn(model, source, from, column, 1))],
+    [text("tableEdit.alignColumnLeft"), (model, _source, _from, _r, column) => setColumnAlignment(model, column, "l")],
+    [text("tableEdit.alignColumnCenter"), (model, _source, _from, _r, column) => setColumnAlignment(model, column, "c")],
+    [text("tableEdit.alignColumnRight"), (model, _source, _from, _r, column) => setColumnAlignment(model, column, "r")],
     "-",
     inBlock && block
-      ? ["Merge selected cells", everyRow((model, source, from) => mergeCells(model, source, from, block.r1, block.r2, block.c1, block.c2))]
-      : ["Merge with cell right", everyRow((model, source, from, r, column, c) => mergeCells(model, source, from, r, r, column, column + (model.rows[r]?.cells[c]?.span ?? 1)))],
-    ["Merge with cell below", everyRow((model, source, from, r, column, c) => mergeCells(model, source, from, r, r + 1, column, column + (model.rows[r]?.cells[c]?.span ?? 1) - 1))],
-    ["Split cell", (model, source, from, r, _column, c) => splitCell(model, source, from, r, c)],
+      ? [text("tableEdit.mergeSelectedCells"), everyRow((model, source, from) => mergeCells(model, source, from, block.r1, block.r2, block.c1, block.c2))]
+      : [text("tableEdit.mergeWithCellRight"), everyRow((model, source, from, r, column, c) => mergeCells(model, source, from, r, r, column, column + (model.rows[r]?.cells[c]?.span ?? 1)))],
+    [text("tableEdit.mergeWithCellBelow"), everyRow((model, source, from, r, column, c) => mergeCells(model, source, from, r, r + 1, column, column + (model.rows[r]?.cells[c]?.span ?? 1) - 1))],
+    [text("tableEdit.splitCell"), (model, source, from, r, _column, c) => splitCell(model, source, from, r, c)],
     "-",
-    ["Add rule above", (model, source, from, r) => addRule(model, source, from, r)],
-    ["Add rule below", (model, source, from, r) => addRule(model, source, from, r, true)],
-    ["Remove rules above", (model, source, from, r) => removeRules(model, source, from, r)],
-    ["Remove rules below", (model, source, from, r) => removeRules(model, source, from, r, true)],
+    [text("tableEdit.addRuleAbove"), (model, source, from, r) => addRule(model, source, from, r)],
+    [text("tableEdit.addRuleBelow"), (model, source, from, r) => addRule(model, source, from, r, true)],
+    [text("tableEdit.removeRulesAbove"), (model, source, from, r) => removeRules(model, source, from, r)],
+    [text("tableEdit.removeRulesBelow"), (model, source, from, r) => removeRules(model, source, from, r, true)],
   ];
   const planNow = (plan: Plan) => {
     const found = resolveSession(view, session);
@@ -292,7 +294,7 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
   const menu = document.createElement("div");
   menu.className = "cm-vis-table-menu";
   menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "Table");
+  menu.setAttribute("aria-label", text("tableEdit.menuLabel"));
   menu.style.left = `${Math.min(event.clientX, window.innerWidth - 200)}px`;
   menu.style.top = `${Math.min(event.clientY, window.innerHeight - 220)}px`;
   const returnFocus = document.activeElement as HTMLElement | null;
@@ -321,7 +323,7 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
     const planned = planNow(plan);
     if (!planned || !planned.length) {
       button.disabled = true;
-      button.title = "Not possible here (a \\multicolumn or \\multirow is in the way, the column specification repeats, or rows are written through macros)";
+      button.title = text("tableEdit.notPossibleHere");
     }
     // Pressing keeps the focus where it is; the click (also from Enter or Space) acts.
     button.addEventListener("mousedown", (down) => down.preventDefault());
@@ -331,7 +333,7 @@ function tableMenu(view: EditorView, event: MouseEvent, tableStart: () => number
       close();
       if (view.dom.isConnected) view.focus();
       if (changes?.length) dispatchAsOneStep(view, changes, "input.visual.table");
-      else if (planned?.length && canEdit(view)) window.alert("The table changed while this menu was open; nothing was changed. Try again.");
+      else if (planned?.length && canEdit(view)) window.alert(text("tableEdit.changedWhileMenuOpen"));
     });
     buttons.push(button);
     menu.append(button);

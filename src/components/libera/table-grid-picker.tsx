@@ -1,6 +1,7 @@
 "use client";
 
 import { Table } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useCallback, useRef, useState } from "react";
 import { ToolbarMenu } from "./toolbar-menu";
 
@@ -9,6 +10,7 @@ export const TABLE_GRID_MENU_WIDTH = TABLE_GRID * 22 + 26;
 
 /** A grid of cells to hover or arrow through, picking a table's size. */
 export function TableGridPicker({ onPick }: { onPick: (rows: number, columns: number) => void }) {
+  const t = useTranslations("tableGridPicker");
   const [size, setSize] = useState({ rows: 3, columns: 3 });
   return (
     <div className="p-1.5">
@@ -22,7 +24,7 @@ export function TableGridPicker({ onPick }: { onPick: (rows: number, columns: nu
               key={index}
               type="button"
               role="menuitem"
-              aria-label={`${rows} by ${columns} table`}
+              aria-label={t("cellLabel", { rows, columns })}
               data-autofocus={rows === 3 && columns === 3 ? "" : undefined}
               className={`h-5 w-5 rounded-sm border focus-visible:outline-none ${active ? "border-accent bg-accent/25" : "border-border bg-card"}`}
               onMouseEnter={() => setSize({ rows, columns })}
@@ -32,18 +34,19 @@ export function TableGridPicker({ onPick }: { onPick: (rows: number, columns: nu
           );
         })}
       </div>
-      <p className="pt-1.5 text-center text-xs text-muted-foreground">{size.rows} × {size.columns} (first row is the header)</p>
+      <p className="pt-1.5 text-center text-xs text-muted-foreground">{t("sizeLabel", { rows: size.rows, columns: size.columns })}</p>
     </div>
   );
 }
 
 /** A toolbar button that opens the table size grid. */
-export function TableInsertButton({ className, disabled, title = "Insert table", onPick }: {
+export function TableInsertButton({ className, disabled, title, onPick }: {
   className: string;
   disabled?: boolean;
   title?: string;
   onPick: (rows: number, columns: number) => void;
 }) {
+  const t = useTranslations("tableGridPicker");
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setOpen(false), []);
@@ -53,8 +56,8 @@ export function TableInsertButton({ className, disabled, title = "Insert table",
         ref={buttonRef}
         type="button"
         className={className}
-        aria-label="Insert table"
-        title={title}
+        aria-label={t("insertTable")}
+        title={title ?? t("insertTable")}
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
@@ -65,7 +68,7 @@ export function TableInsertButton({ className, disabled, title = "Insert table",
         <Table aria-hidden className="h-4 w-4" />
       </button>
       {open ? (
-        <ToolbarMenu anchorRef={buttonRef} label="Insert table" width={TABLE_GRID_MENU_WIDTH} onClose={close}>
+        <ToolbarMenu anchorRef={buttonRef} label={t("insertTable")} width={TABLE_GRID_MENU_WIDTH} onClose={close}>
           <TableGridPicker onPick={(rows, columns) => { close(); onPick(rows, columns); }} />
         </ToolbarMenu>
       ) : null}

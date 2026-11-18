@@ -48,6 +48,7 @@ import {
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { useFormatter, useTranslations } from "next-intl";
 import { GlobalWorkerOptions, TextLayer, getDocument } from "pdfjs-dist";
 import type {
   PDFDocumentProxy,
@@ -142,6 +143,8 @@ import {
   PDF_STROKE_WIDTHS,
   PDF_TEXT_COLORS,
   PDF_TEXT_FONTS,
+  styleChoiceLabel,
+  swatchLabel,
   isHexColor,
   markupPalette,
   mergeHighlightRects,
@@ -226,19 +229,33 @@ type HistoryEntry = { annotations: PdfAnnotation[]; key?: string; time: number }
 const MAX_UNDO_STEPS = 100;
 const HISTORY_COALESCE_MS = 1500;
 
-const MARKUP_CHOICES: readonly (IconChoice<PdfMarkupStyle> & { tool: string })[] = [
-  { value: "highlight", label: "Highlight", icon: Highlighter, tool: "Highlight" },
-  { value: "underline", label: "Underline", icon: Underline, tool: "Underline" },
-  { value: "strikethrough", label: "Strikethrough", icon: Strikethrough, tool: "Strike" },
-  { value: "squiggly", label: "Squiggly underline", icon: Waves, tool: "Squiggly" },
+// The `label` fields are blank: the interface names come from the `markup.*`,
+// `markupTool.*` and `shape.*` messages (see `localizedChoices`).
+const MARKUP_CHOICES: readonly IconChoice<PdfMarkupStyle>[] = [
+  { value: "highlight", label: "", icon: Highlighter },
+  { value: "underline", label: "", icon: Underline },
+  { value: "strikethrough", label: "", icon: Strikethrough },
+  { value: "squiggly", label: "", icon: Waves },
 ];
 
 const SHAPE_CHOICES: readonly IconChoice<PdfShapeKind>[] = [
-  { value: "rectangle", label: "Rectangle", icon: Square },
-  { value: "ellipse", label: "Ellipse", icon: Circle },
-  { value: "line", label: "Line", icon: Minus },
-  { value: "arrow", label: "Arrow", icon: MoveUpRight },
+  { value: "rectangle", label: "", icon: Square },
+  { value: "ellipse", label: "", icon: Circle },
+  { value: "line", label: "", icon: Minus },
+  { value: "arrow", label: "", icon: MoveUpRight },
 ];
+
+type ViewerTranslator = ReturnType<typeof useTranslations>;
+
+/** The choices with their names in the interface language. */
+function localizedChoices<T extends string>(t: ViewerTranslator, group: "markup" | "shape", choices: readonly IconChoice<T>[]): IconChoice<T>[] {
+  return choices.map((choice) => ({ ...choice, label: t(`${group}.${choice.value as string}`) }));
+}
+
+/** The error text of a comment store failure: the server's words, or the store's own failure, translated. */
+function commentsErrorText(t: ViewerTranslator, comments: { error: string; errorKind: string }) {
+  return comments.errorKind === "load" ? t("couldNotLoadComments") : comments.errorKind === "save" ? t("couldNotSaveComment") : comments.error;
+}
 
 const MARKUP_STYLES = MARKUP_CHOICES.map((choice) => choice.value);
 const SHAPE_KINDS = SHAPE_CHOICES.map((choice) => choice.value);
@@ -685,6 +702,16 @@ export function PdfViewer({
   mathMarkers,
   markdownConversion,
 }: PdfViewerProps) {
+  const t = useTranslations("pdfViewer");
+  const tLib = useTranslations("lib.pdfAnnotationStyle");
+  const format = useFormatter();
+  // Effects and callbacks word their errors with the latest translator, without re-running.
+  const tRef = useRef(t);
+  useLayoutEffect(() => {
+    tRef.current = t;
+  });
+  const markupChoices = useMemo(() => localizedChoices(t, "markup", MARKUP_CHOICES), [t]);
+  const shapeChoices = useMemo(() => localizedChoices(t, "shape", SHAPE_CHOICES), [t]);
   const paneFocused = useCanvasPaneFocused();
   // In a notebook with live PDFs the marks come from the shared document and
   // there is no Save; everything else in this file works on the same lists.
@@ -1213,7 +1240,7 @@ export function PdfViewer({
       pageElementRefs.current.clear();
 
       if (!src) {
-        setError("PDF preview is unavailable.");
+        setError(tRef.current("pdfPreviewUnavailable"));
         setLoading(false);
         return;
       }
@@ -1230,7 +1257,7 @@ export function PdfViewer({
         const [pdfResponse, annotationsPayload] = await Promise.all([
           fetch(src, { signal: controller.signal }).then(async (response) => {
             if (!response.ok) {
-              throw new Error("Could not load PDF file.");
+              throw new Error(tRef.current("couldNotLoadPdfFile"));
             }
 
             return response.arrayBuffer();
@@ -1277,7 +1304,7 @@ export function PdfViewer({
         controller.abort();
         destroyLoadingTask();
         if (active) {
-          setError(loadError instanceof Error ? loadError.message : "Could not load PDF.");
+          setError(loadError instanceof Error ? loadError.message : tRef.current("couldNotLoadPdf"));
         }
       } finally {
         if (active) {
@@ -1578,7 +1605,7 @@ export function PdfViewer({
     setAnnotations(savedAnnotations);
     dispatchPdfAnnotationsUpdated({ path: filePath, annotations: savedAnnotations });
   }, (saveError) => {
-    setError(saveError instanceof Error ? saveError.message : "Could not save PDF annotations.");
+    setError(saveError instanceof Error ? saveError.message : tRef.current("couldNotSaveAnnotations"));
   }, sharedKind === "local");
   useEffect(() => {
     if (sharedKind !== "shared") return;
@@ -1598,7 +1625,7 @@ export function PdfViewer({
         try {
           store.commit(nextAnnotations, undefined, { history: false, sourceHash: blobHashRef.current });
         } catch (commitError) {
-          setError(commitError instanceof Error ? commitError.message : "Could not change this annotation.");
+          setError(commitError instanceof Error ? commitError.message : tRef.current("couldNotChangeAnnotation"));
         }
         return;
       }
@@ -1675,7 +1702,7 @@ export function PdfViewer({
       const sourceContext = sourceCanvas.getContext("2d");
 
       if (!sourceContext) {
-        throw new Error("Could not create screenshot canvas.");
+        throw new Error(tRef.current("couldNotCreateScreenshotCanvas"));
       }
 
       sourceCanvas.width = Math.max(1, Math.ceil(viewport.width));
@@ -1709,7 +1736,7 @@ export function PdfViewer({
       const outputContext = outputCanvas.getContext("2d");
 
       if (!outputContext) {
-        throw new Error("Could not create screenshot canvas.");
+        throw new Error(tRef.current("couldNotCreateScreenshotCanvas"));
       }
 
       outputCanvas.width = cropWidth;
@@ -1737,7 +1764,7 @@ export function PdfViewer({
       setError(
         captureError instanceof Error
           ? captureError.message
-          : "Could not capture PDF screenshot.",
+          : tRef.current("couldNotCaptureScreenshot"),
       );
     }
   }, [filePath, pdfDocument]);
@@ -1764,7 +1791,7 @@ export function PdfViewer({
       try {
         store.commit(next, historyKey, { sourceHash: blobHashRef.current });
       } catch (commitError) {
-        setError(commitError instanceof Error ? commitError.message : "Could not change this annotation.");
+        setError(commitError instanceof Error ? commitError.message : tRef.current("couldNotChangeAnnotation"));
       }
       return;
     }
@@ -2414,7 +2441,7 @@ export function PdfViewer({
     const inViewer = !!viewer && !!selection && !selection.isCollapsed && !!selection.rangeCount && viewer.contains(selection.getRangeAt(0).commonAncestorContainer);
     const text = inViewer ? selectionMarkdown() || normalizePdfHighlightQuote(selection!.toString()) : "";
     setSelectionMenu(null);
-    if (text.trim()) speakMarkdown(text, { label: "PDF selection" });
+    if (text.trim()) speakMarkdown(text, { label: t("readAloudLabel") });
   }
 
   function quoteSelection() {
@@ -2514,62 +2541,62 @@ export function PdfViewer({
     ? { color: selectedDrawing.color, strokeWidth: selectedDrawing.strokeWidth }
     : { color: inkColor, strokeWidth };
   const shownShapeKind = selectedDrawing?.type === "shape" ? selectedDrawing.shape : shapeKind;
-  const markupChoice = MARKUP_CHOICES.find((choice) => choice.value === markupStyle) ?? MARKUP_CHOICES[0];
-  const shapeChoice = SHAPE_CHOICES.find((choice) => choice.value === shapeKind) ?? SHAPE_CHOICES[0];
+  const markupChoice = markupChoices.find((choice) => choice.value === markupStyle) ?? markupChoices[0];
+  const shapeChoice = shapeChoices.find((choice) => choice.value === shapeKind) ?? shapeChoices[0];
 
   // Annotation styles and page moves for the command palette. The toolbar's
   // buttons are read from the page, but its style pickers show only for the
   // tool or annotation in use; these use the same names, so they replace the
   // pickers' entries and are there whatever is selected.
   usePaletteCommands(viewerRef, () => {
-    const group = "PDF";
+    const group = t("paletteGroup");
     const pageCount = pageLayouts.length;
     const page = Math.min(currentPage, pageCount);
     const goToPage = (target: number) => pageElementRefs.current.get(clamp(target, 1, pageCount))?.scrollIntoView({ block: "start", inline: "nearest" });
     const highlightSelected = selectedHighlight && markupStyleOf(selectedHighlight) === "highlight";
     const otherMarkupSelected = selectedHighlight && !highlightSelected;
     return [
-      ...MARKUP_CHOICES.map((choice) => ({
-        id: `pdf:markup:${choice.value}`, title: `Markup style: ${choice.label}`, group, icon: choice.icon, keywords: "annotate text highlighter",
+      ...markupChoices.map((choice) => ({
+        id: `pdf:markup:${choice.value}`, title: t("paletteMarkupStyle", { label: choice.label }), group, icon: choice.icon, keywords: "annotate text highlighter",
         checked: showMarkupStyle && shownMarkupStyle === choice.value, run: () => chooseMarkupStyle(choice.value),
       })),
       ...PDF_HIGHLIGHT_COLORS.map((color) => ({
-        id: `pdf:highlight-color:${color.value}`, title: `Highlight color: ${color.label}`, group, icon: Highlighter, keywords: "annotate markup",
+        id: `pdf:highlight-color:${color.value}`, title: t("paletteHighlightColor", { label: swatchLabel(tLib, color) }), group, icon: Highlighter, keywords: "annotate markup",
         checked: (highlightSelected ? selectedHighlight.color : highlightColor).toLowerCase() === color.value.toLowerCase(),
         run: () => { if (highlightSelected) applyMarkupColor(color.value); else updateHighlightColor(color.value); },
       })),
       ...markupPalette("underline").map((color) => ({
-        id: `pdf:markup-color:${color.value}`, title: `Markup color: ${color.label}`, group, icon: Underline, keywords: "annotate underline strikethrough squiggly",
+        id: `pdf:markup-color:${color.value}`, title: t("paletteMarkupColor", { label: swatchLabel(tLib, color) }), group, icon: Underline, keywords: "annotate underline strikethrough squiggly",
         checked: (otherMarkupSelected ? selectedHighlight.color : markupColor).toLowerCase() === color.value.toLowerCase(),
         run: () => { if (otherMarkupSelected) applyMarkupColor(color.value); else updateMarkupColor(color.value); },
       })),
-      ...SHAPE_CHOICES.map((choice) => ({
-        id: `pdf:shape:${choice.value}`, title: `Shape: ${choice.label}`, group, icon: choice.icon, keywords: "draw annotate",
+      ...shapeChoices.map((choice) => ({
+        id: `pdf:shape:${choice.value}`, title: t("paletteShape", { label: choice.label }), group, icon: choice.icon, keywords: "draw annotate",
         checked: (tool === "shape" || selectedDrawing?.type === "shape") && shownShapeKind === choice.value, run: () => chooseShapeKind(choice.value),
       })),
       ...PDF_INK_COLORS.map((color) => ({
-        id: `pdf:ink-color:${color.value}`, title: `Ink color: ${color.label}`, group, icon: PenLine, keywords: "pen shape draw annotate",
+        id: `pdf:ink-color:${color.value}`, title: t("paletteInkColor", { label: swatchLabel(tLib, color) }), group, icon: PenLine, keywords: "pen shape draw annotate",
         checked: drawingStyleValues.color.toLowerCase() === color.value.toLowerCase(), run: () => applyInkColor(color.value),
       })),
       ...PDF_STROKE_WIDTHS.map((width) => ({
-        id: `pdf:stroke-width:${width.value}`, title: `Stroke width: ${width.label} stroke`, group, icon: PenLine, keywords: "pen shape line thickness",
+        id: `pdf:stroke-width:${width.value}`, title: t("paletteStrokeWidth", { label: styleChoiceLabel(tLib, "strokeWidths", width.id) }), group, icon: PenLine, keywords: "pen shape line thickness",
         checked: drawingStyleValues.strokeWidth === width.value, run: () => applyStrokeWidth(width.value),
       })),
       ...PDF_TEXT_COLORS.map((color) => ({
-        id: `pdf:note-color:${color.value}`, title: `Note color: ${color.label}`, group, icon: Type, keywords: "text annotation",
+        id: `pdf:note-color:${color.value}`, title: t("paletteNoteColor", { label: swatchLabel(tLib, color) }), group, icon: Type, keywords: "text annotation",
         checked: textStyleValues.color.toLowerCase() === color.value.toLowerCase(), run: () => updateTextColor(color.value),
       })),
       ...PDF_TEXT_FONTS.map((font) => ({
-        id: `pdf:note-font:${font.value}`, title: `Note font: ${font.label}`, group, icon: Type, keywords: "text annotation typeface",
+        id: `pdf:note-font:${font.value}`, title: t("paletteNoteFont", { label: styleChoiceLabel(tLib, "textFonts", font.value) }), group, icon: Type, keywords: "text annotation typeface",
         checked: textStyleValues.fontFamily === font.value, run: () => updateFontFamily(font.value),
       })),
-      { id: "pdf:note-font-larger", title: "Note font size: larger", group, icon: Type, keywords: "text annotation bigger increase", disabled: fontSize >= MAX_TEXT_ANNOTATION_FONT_SIZE, run: () => updateFontSize(fontSize + 2) },
-      { id: "pdf:note-font-smaller", title: "Note font size: smaller", group, icon: Type, keywords: "text annotation decrease", disabled: fontSize <= MIN_TEXT_ANNOTATION_FONT_SIZE, run: () => updateFontSize(fontSize - 2) },
-      { id: "pdf:add-comment", title: "Add comment", group, icon: MessageSquarePlus, shortcut: "Ctrl/Cmd+Alt+M", keywords: "review selected text", run: () => { startCommentRef.current(); } },
-      { id: "pdf:next-page", title: "Next page", group, icon: ChevronDown, disabled: !pageCount || page >= pageCount, run: () => goToPage(page + 1) },
-      { id: "pdf:previous-page", title: "Previous page", group, icon: ChevronUp, disabled: !pageCount || page <= 1, run: () => goToPage(page - 1) },
-      { id: "pdf:first-page", title: "First page", group, icon: ChevronsUp, keywords: "top start", disabled: !pageCount || page <= 1, run: () => goToPage(1) },
-      { id: "pdf:last-page", title: "Last page", group, icon: ChevronsDown, keywords: "bottom end", disabled: !pageCount || page >= pageCount, run: () => goToPage(pageCount) },
+      { id: "pdf:note-font-larger", title: t("paletteNoteFontLarger"), group, icon: Type, keywords: "text annotation bigger increase", disabled: fontSize >= MAX_TEXT_ANNOTATION_FONT_SIZE, run: () => updateFontSize(fontSize + 2) },
+      { id: "pdf:note-font-smaller", title: t("paletteNoteFontSmaller"), group, icon: Type, keywords: "text annotation decrease", disabled: fontSize <= MIN_TEXT_ANNOTATION_FONT_SIZE, run: () => updateFontSize(fontSize - 2) },
+      { id: "pdf:add-comment", title: t("paletteAddComment"), group, icon: MessageSquarePlus, shortcut: "Ctrl/Cmd+Alt+M", keywords: "review selected text", run: () => { startCommentRef.current(); } },
+      { id: "pdf:next-page", title: t("paletteNextPage"), group, icon: ChevronDown, disabled: !pageCount || page >= pageCount, run: () => goToPage(page + 1) },
+      { id: "pdf:previous-page", title: t("palettePreviousPage"), group, icon: ChevronUp, disabled: !pageCount || page <= 1, run: () => goToPage(page - 1) },
+      { id: "pdf:first-page", title: t("paletteFirstPage"), group, icon: ChevronsUp, keywords: "top start", disabled: !pageCount || page <= 1, run: () => goToPage(1) },
+      { id: "pdf:last-page", title: t("paletteLastPage"), group, icon: ChevronsDown, keywords: "bottom end", disabled: !pageCount || page >= pageCount, run: () => goToPage(pageCount) },
     ];
   });
   const drawingMode: PdfDrawingMode = screenshotSnipping
@@ -2596,7 +2623,7 @@ export function PdfViewer({
         }
       }}>
       {privateRecovery?.path === filePath && sharedKind === "shared" ? <div role="status" className="flex items-center gap-2 border-b border-input bg-card px-4 py-1 text-xs">
-        <span className="min-w-0 flex-1">Unsaved local annotations are kept in a private recovery copy.</span>
+        <span className="min-w-0 flex-1">{t("recoveryNotice")}</span>
         <button type="button" className="shrink-0 rounded-md border border-input px-2 py-0.5 font-medium hover:bg-muted" onClick={() => {
           const url = URL.createObjectURL(new Blob([JSON.stringify({ annotations: privateRecovery.annotations }, null, 2)], { type: "application/json" }));
           const link = document.createElement("a");
@@ -2604,7 +2631,7 @@ export function PdfViewer({
           link.download = `${filePath.split("/").pop()}.recovery.json`;
           link.click();
           setTimeout(() => URL.revokeObjectURL(url), 0);
-        }}>Download recovery</button>
+        }}>{t("downloadRecovery")}</button>
       </div> : null}
       <PdfCollabChrome
         deletedMark={deletedNote}
@@ -2627,15 +2654,15 @@ export function PdfViewer({
           setDeletedNote(null);
         }}
       />
-      <div className="libera-viewer-toolbar sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-input bg-card px-4 py-2" data-command-toolbar="PDF">
+      <div className="libera-viewer-toolbar sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-input bg-card px-4 py-2" data-command-toolbar={t("paletteGroup")}>
         {/* Contextual style controls scroll sideways instead of wrapping, so
             selecting an annotation never shifts the page under the pointer. */}
         <div className="libera-annotation-toolbar flex min-w-0 flex-1 items-center gap-1" data-pdf-annotation-ui data-pdf-read-only={canAnnotate ? undefined : ""} onMouseDown={keepEditorFocus}>
           <PdfToolButton
             active={tool === "select"}
             icon={MousePointer2}
-            label="Select"
-            title="Select"
+            label={t("toolSelect")}
+            title={t("toolSelect")}
             tool="select"
             onSelect={selectTool}
           />
@@ -2643,49 +2670,49 @@ export function PdfViewer({
             active={tool === "highlight"}
             className={tool === "highlight" && markupStyle === "highlight" ? "pdf-highlight-tool-active" : undefined}
             icon={markupChoice.icon}
-            label={markupChoice.tool}
+            label={t(`markupTool.${markupChoice.value}`)}
             markup={markupStyle}
-            title={`${markupChoice.label}: select text to mark it`}
+            title={t("toolMarkupTitle", { markup: markupChoice.value })}
             tool="highlight"
             onSelect={selectTool}
           />
           <PdfToolButton
             active={tool === "text"}
             icon={Type}
-            label="Text"
-            title="Text note: click to place, or drag to draw a box"
+            label={t("toolText")}
+            title={t("toolTextTitle")}
             tool="text"
             onSelect={selectTool}
           />
           <PdfToolButton
             active={tool === "draw"}
             icon={PenLine}
-            label="Pen"
-            title="Pen: draw freehand"
+            label={t("toolPen")}
+            title={t("toolPenTitle")}
             tool="draw"
             onSelect={selectTool}
           />
           <PdfToolButton
             active={tool === "shape"}
             icon={shapeChoice.icon}
-            label="Shape"
-            title={`${shapeChoice.label}: drag to draw, Shift to constrain`}
+            label={t("toolShape")}
+            title={t("toolShapeTitle", { shape: shapeChoice.value })}
             tool="shape"
             onSelect={selectTool}
           />
           <PdfToolButton
             active={tool === "eraser"}
             icon={Eraser}
-            label="Erase"
-            title="Eraser: drag across pen strokes, shapes and markup"
+            label={t("toolErase")}
+            title={t("toolEraseTitle")}
             tool="eraser"
             onSelect={selectTool}
           />
           <PdfToolButton
             active={tool === "space"}
             icon={UnfoldVertical}
-            label="Space"
-            title="Create space: drag down at a line to open room for notes and ink"
+            label={t("toolSpace")}
+            title={t("toolSpaceTitle")}
             tool="space"
             onSelect={selectTool}
           />
@@ -2693,14 +2720,14 @@ export function PdfViewer({
           {showMarkupStyle ? (
             <div className="annotation-style-group">
               <IconChoiceGroup
-                choices={MARKUP_CHOICES}
-                label="Markup style"
+                choices={markupChoices}
+                label={t("markupStyleGroup")}
                 value={shownMarkupStyle}
                 onChange={chooseMarkupStyle}
               />
               <SwatchPicker
                 colors={markupPalette(shownMarkupStyle)}
-                label={shownMarkupStyle === "highlight" ? "Highlight color" : "Markup color"}
+                label={shownMarkupStyle === "highlight" ? t("highlightColor") : t("markupColor")}
                 value={selectedHighlight?.color ?? markupInk}
                 onChange={applyMarkupColor}
               />
@@ -2722,15 +2749,15 @@ export function PdfViewer({
             <div className="annotation-style-group">
               {tool === "shape" || selectedDrawing?.type === "shape" ? (
                 <IconChoiceGroup
-                  choices={SHAPE_CHOICES}
-                  label="Shape"
+                  choices={shapeChoices}
+                  label={t("toolShape")}
                   value={shownShapeKind}
                   onChange={chooseShapeKind}
                 />
               ) : null}
               <SwatchPicker
                 colors={PDF_INK_COLORS}
-                label="Ink color"
+                label={t("inkColor")}
                 value={drawingStyleValues.color}
                 onChange={applyInkColor}
               />
@@ -2746,8 +2773,8 @@ export function PdfViewer({
             <button
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               type="button"
-              aria-label="Undo"
-              title="Undo (Ctrl/Cmd+Z)"
+              aria-label={t("undo")}
+              title={t("undoTitle")}
               disabled={sharedStore ? !sharedHistory.canUndo : !history.undo.length}
               onClick={() => stepHistory("undo")}
             >
@@ -2756,8 +2783,8 @@ export function PdfViewer({
             <button
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               type="button"
-              aria-label="Redo"
-              title="Redo (Ctrl/Cmd+Shift+Z)"
+              aria-label={t("redo")}
+              title={t("redoTitle")}
               disabled={sharedStore ? !sharedHistory.canRedo : !history.redo.length}
               onClick={() => stepHistory("redo")}
             >
@@ -2766,8 +2793,8 @@ export function PdfViewer({
             <button
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 text-destructive hover:bg-destructive-muted disabled:cursor-not-allowed disabled:opacity-50"
               type="button"
-              aria-label="Delete selected annotation"
-              title="Delete selected annotation"
+              aria-label={t("deleteSelected")}
+              title={t("deleteSelected")}
               disabled={!activeSelectedAnnotationId}
               onClick={deleteSelectedAnnotation}
             >
@@ -2777,13 +2804,13 @@ export function PdfViewer({
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          <button type="button" aria-label={openCommentCount ? `Comments, ${openCommentCount} open` : "Comments"} title="Comments: select text and choose Add comment"
+          <button type="button" aria-label={openCommentCount ? t("commentsOpen", { count: openCommentCount }) : t("comments")} title={t("commentsTitle")}
             className="relative inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border border-input px-1.5 hover:bg-muted"
             onClick={() => review?.showComments()}>
             <MessageSquare aria-hidden className="h-4 w-4" />
             {openCommentCount ? <span className="text-xs tabular-nums">{openCommentCount}</span> : null}
           </button>
-          <button type="button" aria-label="Find in PDF" title="Find in PDF (Ctrl/Cmd+F)"
+          <button type="button" aria-label={t("findInPdf")} title={t("findInPdfTitle")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted"
             onClick={pdfFind.openFind}>
             <Search aria-hidden className="h-4 w-4" />
@@ -2800,40 +2827,40 @@ export function PdfViewer({
           ) : null}
           {pageLayouts.length > 0 ? (
             <span className="mr-2 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
-              Page {Math.min(currentPage, pageLayouts.length)}/{pageLayouts.length}
+              {t("pageIndicator", { current: Math.min(currentPage, pageLayouts.length), total: pageLayouts.length })}
             </span>
           ) : null}
           <button
-            aria-label="Zoom out"
+            aria-label={t("zoomOut")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
             disabled={zoom <= MIN_ZOOM}
             onClick={() => changeZoom(-ZOOM_STEP)}
-            title="Zoom out"
+            title={t("zoomOut")}
           >
             <ZoomOut aria-hidden className="h-4 w-4" />
           </button>
           <span className="min-w-14 text-center text-sm font-medium text-foreground">
-            {Math.round(zoom * 100)}%
+            {format.number(zoom, { style: "percent", maximumFractionDigits: 0 })}
           </span>
           <button
-            aria-label="Zoom in"
+            aria-label={t("zoomIn")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
             disabled={zoom >= MAX_ZOOM}
             onClick={() => changeZoom(ZOOM_STEP)}
-            title="Zoom in"
+            title={t("zoomIn")}
           >
             <ZoomIn aria-hidden className="h-4 w-4" />
           </button>
           <button
-            aria-label="Reset zoom"
+            aria-label={t("resetZoom")}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted"
             type="button"
             onClick={() => {
               applyZoom(1);
             }}
-            title="Reset zoom"
+            title={t("resetZoom")}
           >
             <RotateCcw aria-hidden className="h-4 w-4" />
           </button>
@@ -2878,7 +2905,7 @@ export function PdfViewer({
             className="pdf-selection-menu"
             data-pdf-annotation-ui
             role="toolbar"
-            aria-label="Selection actions"
+            aria-label={t("selectionActions")}
             style={{ left: selectionMenu.left, top: selectionMenu.top }}
             // Keep the text selection alive while a menu button is pressed.
             onMouseDown={(event) => event.preventDefault()}
@@ -2888,8 +2915,8 @@ export function PdfViewer({
                 key={color.value}
                 type="button"
                 className="pdf-selection-menu-swatch"
-                aria-label={`Highlight ${color.label.toLowerCase()}`}
-                title={`Highlight ${color.label.toLowerCase()}`}
+                aria-label={t("highlightSwatch", { color: color.id })}
+                title={t("highlightSwatch", { color: color.id })}
                 data-active={color.value === highlightColor || undefined}
                 style={{ "--swatch": color.value } as React.CSSProperties}
                 onClick={() => {
@@ -2899,7 +2926,7 @@ export function PdfViewer({
               />
             ))}
             <span aria-hidden className="pdf-selection-menu-divider" />
-            {MARKUP_CHOICES.filter((choice) => choice.value !== "highlight").map(({ icon: Icon, label, value }) => (
+            {markupChoices.filter((choice) => choice.value !== "highlight").map(({ icon: Icon, label, value }) => (
               <button
                 key={value}
                 type="button"
@@ -2913,16 +2940,16 @@ export function PdfViewer({
               </button>
             ))}
             <span aria-hidden className="pdf-selection-menu-divider" />
-            <button type="button" className="pdf-selection-menu-action" aria-label="Add comment" title="Add comment (Ctrl/Cmd+Alt+M)" disabled={!canAnnotate} onClick={() => startComment()}>
+            <button type="button" className="pdf-selection-menu-action" aria-label={t("addComment")} title={t("addCommentTitle")} disabled={!canAnnotate} onClick={() => startComment()}>
               <MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />
             </button>
-            <button type="button" className="pdf-selection-menu-action" aria-label="Copy selection" title="Copy" onClick={copySelection}>
+            <button type="button" className="pdf-selection-menu-action" aria-label={t("copySelection")} title={t("copy")} onClick={copySelection}>
               <Copy aria-hidden className="h-3.5 w-3.5" />
             </button>
-            <button type="button" className="pdf-selection-menu-action" aria-label="Quote and cite" title="Quote and cite in the note" onClick={quoteSelection}>
+            <button type="button" className="pdf-selection-menu-action" aria-label={t("quoteAndCite")} title={t("quoteAndCiteTitle")} onClick={quoteSelection}>
               <Quote aria-hidden className="h-3.5 w-3.5" />
             </button>
-            <button type="button" className="pdf-selection-menu-action" aria-label="Read out loud" title="Read out loud" onClick={readSelectionAloud}>
+            <button type="button" className="pdf-selection-menu-action" aria-label={t("readOutLoud")} title={t("readOutLoud")} onClick={readSelectionAloud}>
               <Volume2 aria-hidden className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -2933,7 +2960,7 @@ export function PdfViewer({
             className="pdf-comment-composer"
             data-pdf-annotation-ui
             role="dialog"
-            aria-label="New comment"
+            aria-label={t("newComment")}
             style={{ left: commentDraft.left, top: commentDraft.top, width: COMMENT_BOX_WIDTH }}
             onSubmit={(event) => {
               event.preventDefault();
@@ -2946,9 +2973,9 @@ export function PdfViewer({
             {(() => {
               const box = {
                 autoFocus: true,
-                "aria-label": "New review comment",
+                "aria-label": t("newReviewComment"),
                 className: "review-textarea",
-                placeholder: "Comment on this passage…",
+                placeholder: t("commentPlaceholder"),
                 rows: 3,
                 onKeyDown: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
                   if (event.key === "Escape") {
@@ -2965,11 +2992,11 @@ export function PdfViewer({
                 ? <MentionTextarea {...box} projectId={comments.live.projectId} selfId={comments.live.accountId} value={commentText} onChange={setCommentText} onMentionsChange={setCommentMentions} />
                 : <textarea {...box} value={commentText} onChange={(event) => setCommentText(event.target.value)} />;
             })()}
-            {comments.error && comments.busy === "" ? <p role="alert" className="text-xs text-destructive">{comments.error}</p> : null}
+            {comments.error && comments.busy === "" ? <p role="alert" className="text-xs text-destructive">{commentsErrorText(t, comments)}</p> : null}
             <div className="flex justify-end gap-1">
-              <button type="button" className="review-button" onClick={cancelComment}>Cancel</button>
+              <button type="button" className="review-button" onClick={cancelComment}>{t("cancel")}</button>
               <button type="submit" className="review-button" disabled={!commentText.trim() || Boolean(comments.busy)}>
-                <MessageSquarePlus aria-hidden size={14} /> Comment
+                <MessageSquarePlus aria-hidden size={14} /> {t("submitComment")}
               </button>
             </div>
           </form>
@@ -2978,7 +3005,7 @@ export function PdfViewer({
         {loading ? (
           <div className="flex min-h-80 items-center justify-center text-sm text-foreground">
             <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />
-            Loading PDF
+            {t("loading")}
           </div>
         ) : null}
 
@@ -3168,6 +3195,7 @@ function PdfPageContent({
   onSelectComment,
   onUpdateAnnotation,
 }: PdfPageContentProps) {
+  const t = useTranslations("pdfViewer");
   const pageNumber = pageLayout.pageNumber;
   const spaced = geometry !== IDENTITY_PAGE_GEOMETRY;
   // The original page, in CSS pixels; the sheet is taller by its spaces.
@@ -3546,8 +3574,8 @@ function PdfPageContent({
               className="pdf-comment-badge"
               data-pdf-annotation-ui
               data-selected={mark.selected || undefined}
-              aria-label={`Comment ${mark.number}`}
-              title={`Comment ${mark.number}`}
+              aria-label={t("commentBadge", { number: mark.number })}
+              title={t("commentBadge", { number: mark.number })}
               style={{ left: Math.min(pageLayout.width - 22, (first.x + first.width) * pageLayout.width + 2), top: Math.max(0, first.y * pageLayout.height - 14) }}
               onClick={(event) => {
                 event.stopPropagation();
@@ -3636,7 +3664,7 @@ function PdfPageContent({
       {rendering ? (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-white/60 text-xs text-muted-foreground">
           <Loader2 aria-hidden className="mr-2 h-3.5 w-3.5 animate-spin" />
-          Rendering
+          {t("rendering")}
         </div>
       ) : null}
     </div>
@@ -3733,6 +3761,7 @@ const PdfHighlightControl = memo(function PdfHighlightControl({
   selected: boolean;
   onSelect: (annotation: PdfAnnotation) => void;
 }) {
+  const t = useTranslations("pdfViewer");
   const bands = useHighlightBands(annotation, pageSize);
   const first = bands[0];
 
@@ -3746,7 +3775,7 @@ const PdfHighlightControl = memo(function PdfHighlightControl({
       <button
         className="pdf-highlight-hit"
         type="button"
-        aria-label={`Select ${MARKUP_CHOICES.find((choice) => choice.value === markupStyleOf(annotation))?.label.toLowerCase() ?? "highlight"}`}
+        aria-label={t("selectMarkup", { markup: markupStyleOf(annotation) })}
         aria-pressed={selected}
         data-pdf-annotation-id={annotation.id}
         data-selected={selected || undefined}
@@ -3784,6 +3813,8 @@ function PdfHighlightChip({
   onDelete: (id: string) => void;
   onUpdate: (id: string, patch: Partial<PdfAnnotation>) => void;
 }) {
+  const t = useTranslations("pdfViewer");
+  const tLib = useTranslations("lib.pdfAnnotationStyle");
   const bands = useHighlightBands(annotation, pageSize);
   const first = bands[0];
   const last = bands.at(-1);
@@ -3805,7 +3836,7 @@ function PdfHighlightChip({
       className="pdf-selection-menu"
       data-pdf-annotation-ui
       role="toolbar"
-      aria-label="Highlight actions"
+      aria-label={t("highlightActions")}
       style={{ left, top }}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
@@ -3815,22 +3846,22 @@ function PdfHighlightChip({
           key={color.value}
           type="button"
           className="pdf-selection-menu-swatch"
-          aria-label={`Change to ${color.label.toLowerCase()}`}
-          title={color.label}
+          aria-label={t("changeToColor", { color: color.id ?? "" })}
+          title={swatchLabel(tLib, color)}
           data-active={color.value.toLowerCase() === annotation.color.toLowerCase() || undefined}
           style={{ "--swatch": color.value } as React.CSSProperties}
           onClick={() => onUpdate(annotation.id, { color: color.value })}
         />
       ))}
       <span aria-hidden className="pdf-selection-menu-divider" />
-      {MARKUP_CHOICES.map(({ icon: Icon, label, value }) => (
+      {MARKUP_CHOICES.map(({ icon: Icon, value }) => (
         <button
           key={value}
           type="button"
           className="pdf-selection-menu-action"
-          aria-label={`Change to ${label.toLowerCase()}`}
+          aria-label={t("changeToMarkup", { markup: value })}
           aria-pressed={value === style}
-          title={label}
+          title={t(`markup.${value}`)}
           onClick={() =>
             onUpdate(
               annotation.id,
@@ -3846,8 +3877,8 @@ function PdfHighlightChip({
         <button
           type="button"
           className="pdf-selection-menu-action"
-          aria-label="Quote and cite"
-          title="Quote and cite in the note"
+          aria-label={t("quoteAndCite")}
+          title={t("quoteAndCiteTitle")}
           onClick={() => window.dispatchEvent(new CustomEvent<PdfQuoteCiteDetail>(PDF_QUOTE_CITE_EVENT, {
             detail: { quote, path: documentPath, page: annotation.pageNumber },
           }))}
@@ -3858,8 +3889,8 @@ function PdfHighlightChip({
       <button
         type="button"
         className="pdf-selection-menu-action"
-        aria-label={style === "highlight" ? "Remove highlight" : "Remove markup"}
-        title={style === "highlight" ? "Remove highlight" : "Remove markup"}
+        aria-label={style === "highlight" ? t("removeHighlight") : t("removeMarkup")}
+        title={style === "highlight" ? t("removeHighlight") : t("removeMarkup")}
         onClick={() => onDelete(annotation.id)}
       >
         <Trash2 aria-hidden className="h-3.5 w-3.5" />

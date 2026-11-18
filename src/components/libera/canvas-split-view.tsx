@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import type {
   CSSProperties,
   DragEvent as ReactDragEvent,
@@ -22,6 +23,7 @@ import {
 import { CanvasPaneFocusContext } from "./canvas-pane-context";
 import { FileTypeIcon } from "./file-type";
 import type { OpenTab } from "./types";
+import { useTabName } from "./use-tab-name";
 
 const EDGE_ZONE = 0.28;
 const KEYBOARD_RESIZE_STEP = 0.02;
@@ -62,14 +64,6 @@ function dropZoneAt(event: ReactDragEvent<HTMLElement>): CanvasDropZone {
   return distance < EDGE_ZONE ? zone : "center";
 }
 
-const DROP_ZONE_LABEL: Record<CanvasDropZone, string> = {
-  center: "Show here",
-  left: "Split left",
-  right: "Split right",
-  top: "Split up",
-  bottom: "Split down",
-};
-
 // Memoised so resizing a split or hovering a drop zone re-lays out the panes
 // without re-rendering the editors and viewers inside them.
 const PaneContent = memo(function PaneContent({
@@ -99,6 +93,8 @@ export function CanvasSplitView({
   onDropTab,
   onResizeSplit,
 }: CanvasSplitViewProps) {
+  const t = useTranslations("canvasSplitView");
+  const tabName = useTabName();
   const containerRef = useRef<HTMLDivElement>(null);
   const [resizeDrag, setResizeDrag] = useState<ResizeDrag | null>(null);
   const [tabDragActive, setTabDragActive] = useState(false);
@@ -218,7 +214,7 @@ export function CanvasSplitView({
         return (
           <section
             key={pane.id}
-            aria-label={split ? `Panel: ${tab?.file.name ?? "Empty"}` : undefined}
+            aria-label={split ? (tab ? t("panelLabel", { name: tabName(tab) }) : t("panelLabelEmpty")) : undefined}
             className="libera-canvas-pane absolute flex min-h-0 min-w-0 flex-col overflow-hidden"
             data-canvas-pane-focused={focused ? "true" : "false"}
             // The command palette reads the focused panel's toolbars.
@@ -231,7 +227,7 @@ export function CanvasSplitView({
               <header
                 className="libera-canvas-pane-header flex h-8 shrink-0 items-center gap-2 border-b border-border pl-3 pr-1 text-xs"
                 draggable={Boolean(tab)}
-                title={tab ? "Drag to move this panel" : undefined}
+                title={tab ? t("dragPanel") : undefined}
                 onDragStart={(event) => {
                   if (!tab) return;
                   event.dataTransfer.effectAllowed = "move";
@@ -243,22 +239,22 @@ export function CanvasSplitView({
                     <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
                       <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />
                     </span>
-                    <span className="min-w-0 flex-1 truncate font-medium">{tab.file.name}</span>
+                    <span className="min-w-0 flex-1 truncate font-medium">{tabName(tab)}</span>
                     {tab.status === "dirty" ? (
-                      <span aria-label="Unsaved" className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" />
+                      <span aria-label={t("unsaved")} className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" />
                     ) : null}
                   </>
                 ) : (
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">Empty panel</span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">{t("emptyPanel")}</span>
                 )}
                 <span className="libera-canvas-pane-actions flex shrink-0 items-center">
-                  <PaneButton label="Split right" onClick={() => onSplitPane(pane.id, "right")}>
+                  <PaneButton label={t("splitRight")} onClick={() => onSplitPane(pane.id, "right")}>
                     <Columns2 aria-hidden className="h-3.5 w-3.5" />
                   </PaneButton>
-                  <PaneButton label="Split down" onClick={() => onSplitPane(pane.id, "bottom")}>
+                  <PaneButton label={t("splitDown")} onClick={() => onSplitPane(pane.id, "bottom")}>
                     <Rows2 aria-hidden className="h-3.5 w-3.5" />
                   </PaneButton>
-                  <PaneButton label="Close panel (the tab stays open)" onClick={() => onClosePane(pane.id)}>
+                  <PaneButton label={t("closePanel")} onClick={() => onClosePane(pane.id)}>
                     <X aria-hidden className="h-3.5 w-3.5" />
                   </PaneButton>
                 </span>
@@ -283,7 +279,7 @@ export function CanvasSplitView({
               >
                 {target ? (
                   <div className="libera-canvas-drop-preview" data-zone={target}>
-                    <span>{DROP_ZONE_LABEL[target]}</span>
+                    <span>{t(`dropZone.${target}`)}</span>
                   </div>
                 ) : null}
               </div>
@@ -303,12 +299,12 @@ export function CanvasSplitView({
             key={splitNode.id}
             role="separator"
             aria-orientation={row ? "vertical" : "horizontal"}
-            aria-label={row ? "Resize panels side by side" : "Resize stacked panels"}
+            aria-label={row ? t("resizeSideBySide") : t("resizeStacked")}
             aria-valuemin={12}
             aria-valuemax={88}
             aria-valuenow={Math.round(splitNode.ratio * 100)}
             tabIndex={0}
-            title="Drag to resize · double-click to even out"
+            title={t("resizeTitle")}
             className="libera-canvas-split-handle absolute z-30 touch-none"
             data-direction={splitNode.direction}
             data-active={resizeDrag?.split.id === splitNode.id ? "true" : undefined}
@@ -353,12 +349,14 @@ function EmptyPanePicker({
   onPick: (tabId: string) => void;
   onClose: () => void;
 }) {
+  const t = useTranslations("canvasSplitView");
+  const tabName = useTabName();
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
       <div className="w-full max-w-sm">
-        <h2 className="text-sm font-semibold text-foreground">Choose what to show here</h2>
+        <h2 className="text-sm font-semibold text-foreground">{t("chooseWhatToShow")}</h2>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          Pick an open tab, click a tab in the tab bar, open a file from the sidebar, or drag a tab onto this panel.
+          {t("emptyPickerHelp")}
         </p>
         {hiddenTabs.length ? (
           <ul className="mt-4 max-h-72 space-y-1 overflow-auto">
@@ -372,9 +370,9 @@ function EmptyPanePicker({
                   <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
                     <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />
                   </span>
-                  <span className="min-w-0 flex-1 truncate">{tab.file.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{tabName(tab)}</span>
                   {tab.status === "dirty" ? (
-                    <span aria-label="Unsaved" className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" />
+                    <span aria-label={t("unsaved")} className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" />
                   ) : null}
                 </button>
               </li>
@@ -382,7 +380,7 @@ function EmptyPanePicker({
           </ul>
         ) : (
           <p className="mt-4 rounded-lg border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">
-            Every open tab is already on screen.
+            {t("allTabsVisible")}
           </p>
         )}
         <button
@@ -390,7 +388,7 @@ function EmptyPanePicker({
           className="mt-4 text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
           onClick={onClose}
         >
-          Close this panel
+          {t("closeThisPanel")}
         </button>
       </div>
     </div>

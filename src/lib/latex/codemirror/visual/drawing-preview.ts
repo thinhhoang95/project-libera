@@ -1,6 +1,7 @@
 import { Facet, type EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { cropBox, documentPreamble, drawingSource, previewHash } from "../../drawing-preview";
+import { visualText, type VisualTranslator } from "./labels";
 import { macroSourcesField } from "./model";
 
 /* The "Preview" action of a drawing placeholder (TikZ and friends, "Drawn in
@@ -44,7 +45,7 @@ export function previewPreamble(state: EditorState) {
 }
 
 /** The PDF's first page as a PNG cropped to its ink, at about twice the page's size. */
-async function renderCropped(pdfData: ArrayBuffer): Promise<Result> {
+async function renderCropped(pdfData: ArrayBuffer, text: VisualTranslator): Promise<Result> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc ||= new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(pdfData) }).promise;
@@ -57,12 +58,12 @@ async function renderCropped(pdfData: ArrayBuffer): Promise<Result> {
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return { error: "The preview could not be drawn." };
+    if (!context) return { error: text("drawingPreview.drawFailed") };
     context.fillStyle = "#fff";
     context.fillRect(0, 0, canvas.width, canvas.height);
     await page.render({ canvasContext: context, viewport }).promise;
     const box = cropBox(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height, { margin: Math.round(6 * scale) });
-    if (!box) return { error: "The picture compiled to an empty page." };
+    if (!box) return { error: text("drawingPreview.emptyPage") };
     const cropped = document.createElement("canvas");
     cropped.width = box.width;
     cropped.height = box.height;
@@ -78,13 +79,14 @@ async function renderCropped(pdfData: ArrayBuffer): Promise<Result> {
 export function attachDrawingPreview(view: EditorView, placeholder: HTMLElement, drawing: string, floatSource: () => string | null) {
   const config = view.state.facet(drawingPreviewConfig);
   if (!config) return;
+  const text = visualText(view.state);
   placeholder.dataset.drawing = drawing;
   placeholder.spellcheck = false;
   const button = document.createElement("button");
   button.type = "button";
   button.className = "cm-vis-drawing-preview-button";
-  button.textContent = "Preview";
-  button.title = "Compile this picture on its own with the document's preamble";
+  button.textContent = text("drawingPreview.preview");
+  button.title = text("drawingPreview.previewTitle");
   button.style.cssText = "margin-top:0.25em;font:inherit;font-size:0.8em;padding:0.1em 0.6em;border:1px solid currentColor;border-radius:0.4em;opacity:0.75;cursor:pointer;background:none;color:inherit";
   const output = document.createElement("span");
   output.className = "cm-vis-drawing-preview";
@@ -94,12 +96,12 @@ export function attachDrawingPreview(view: EditorView, placeholder: HTMLElement,
   /** What to compile, read from the document as it is now. */
   const request = (): { error: string } | { preamble: string; picture: string; engine: string; hash: string } => {
     const preamble = previewPreamble(view.state);
-    if (preamble === null) return { error: "No preamble found to compile the picture with." };
+    if (preamble === null) return { error: text("drawingPreview.noPreamble") };
     const figure = placeholder.closest(".cm-vis-figure");
     const same = figure ? Array.from(figure.querySelectorAll<HTMLElement>(".cm-vis-figure-drawing")).filter((other) => other.dataset.drawing === drawing) : [placeholder];
     const source = floatSource();
     const picture = source === null ? null : drawingSource(source, drawing, Math.max(0, same.indexOf(placeholder)));
-    if (!picture) return { error: "The picture's source could not be found." };
+    if (!picture) return { error: text("drawingPreview.noPicture") };
     const engine = config.engine();
     return { preamble, picture, engine, hash: previewHash(engine, config.rootPath, preamble, picture) };
   };
@@ -111,16 +113,16 @@ export function attachDrawingPreview(view: EditorView, placeholder: HTMLElement,
       message.style.cssText = "display:block;font-size:0.8em;opacity:0.8;white-space:normal";
       message.textContent = result.error;
       output.replaceChildren(message);
-      button.textContent = "Retry";
+      button.textContent = text("drawingPreview.retry");
       return;
     }
     const image = document.createElement("img");
     image.src = result.image;
-    image.alt = "Preview of the picture";
+    image.alt = text("drawingPreview.previewAlt");
     image.style.cssText = `display:block;max-width:100%;width:${result.width}px;height:auto;margin:0.4em auto 0;background:#fff`;
     output.replaceChildren(image);
-    button.textContent = "Refresh preview";
-    button.title = "Compile again if the picture or the preamble changed";
+    button.textContent = text("drawingPreview.refresh");
+    button.title = text("drawingPreview.refreshTitle");
   };
 
   // A placeholder redrawn after an edit shows its picture again if it was compiled before (no compile here).
@@ -141,14 +143,14 @@ export function attachDrawingPreview(view: EditorView, placeholder: HTMLElement,
     const known = results.get(current.hash);
     if (known && !("error" in known)) { show(known); return; }
     button.disabled = true;
-    button.textContent = "Compiling…";
+    button.textContent = text("drawingPreview.compiling");
     let job = pending.get(current.hash);
     if (!job) {
       job = (async (): Promise<Result> => {
         const compiled = await config.compile({ rootPath: config.rootPath, engine: current.engine, preamble: current.preamble, picture: current.picture });
         if ("error" in compiled) return { error: compiled.error };
-        return renderCropped(compiled.pdf);
-      })().catch((): Result => ({ error: "The preview could not be made." }));
+        return renderCropped(compiled.pdf, text);
+      })().catch((): Result => ({ error: text("drawingPreview.previewFailed") }));
       pending.set(current.hash, job);
       void job.then((result) => { pending.delete(current.hash); if (!("error" in result)) remember(current.hash, result); });
     }

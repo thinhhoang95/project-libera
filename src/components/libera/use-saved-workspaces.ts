@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { useTranslations } from "next-intl";
 import { captureCanvasViewState } from "./canvas-view-state";
 import { apiRequest, encodeFilePath } from "./api-client";
 import type { OpenTab } from "./types";
@@ -37,6 +38,10 @@ type Options = {
 };
 
 export function useSavedWorkspaces(options: Options) {
+  const t = useTranslations("useSavedWorkspaces");
+  // The messages are read from callbacks, effects and timers that outlive a render: always the latest translator.
+  const tRef = useRef(t);
+  useLayoutEffect(() => { tRef.current = t; });
   const [library, setLibrary] = useState(emptyWorkspaceLibrary);
   const [ready, setReady] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -77,21 +82,21 @@ export function useSavedWorkspaces(options: Options) {
   function journal(next: WorkspaceLibrary, closing = false) {
     if (closing && window.liberaWorkspaces) {
       const result = window.liberaWorkspaces.checkpoint(JSON.stringify(next), current.current.tree.root);
-      if (!result.saved) throw new Error(result.error ?? "Could not save workspace before closing.");
+      if (!result.saved) throw new Error(result.error ?? tRef.current("saveBeforeClosingError"));
     }
     const token = JSON.stringify({ ...next, updatedAt: 0 });
     if (token === lastJournal.current) return;
     if (window.liberaWorkspaces?.remember) {
       const result = window.liberaWorkspaces.remember(JSON.stringify(next), current.current.tree.root);
       if (!result.saved) {
-        current.current.onError(result.error ?? "Could not save local workspace recovery.");
+        current.current.onError(result.error ?? tRef.current("saveRecoveryError"));
         return;
       }
       lastJournal.current = token;
       return;
     }
     try { window.localStorage.setItem(journalKey, JSON.stringify(next)); lastJournal.current = token; }
-    catch { current.current.onError("Local recovery storage is full. Keep Libera open until your workspace is saved."); }
+    catch { current.current.onError(tRef.current("recoveryStorageFullError")); }
   }
   function cancelStructureSave() {
     window.clearTimeout(structureSaveTimer.current);
@@ -188,7 +193,7 @@ export function useSavedWorkspaces(options: Options) {
       } catch (error) {
         if (cancelled) return;
         locked.current = false;
-        setLoadError(error instanceof Error ? error.message : "Could not load workspaces.");
+        setLoadError(error instanceof Error ? error.message : tRef.current("loadWorkspacesError"));
       }
     }
     void load();
@@ -250,7 +255,7 @@ export function useSavedWorkspaces(options: Options) {
       const next = locked.current ? pendingSnapshot.current : snapshot();
       if (!next) return;
       try { journal(next, true); }
-      catch (error) { current.current.onError(error instanceof Error ? error.message : "Could not save workspace."); throw error; }
+      catch (error) { current.current.onError(error instanceof Error ? error.message : tRef.current("saveWorkspaceError")); throw error; }
       if (!window.liberaWorkspaces) return persist(next);
       // Electron's recovery file is sufficient even after the server stops, so
       // a waiting save may fail here. Without one, leave the synced file alone.
@@ -279,7 +284,7 @@ export function useSavedWorkspaces(options: Options) {
       const next = snapshot();
       libraryRef.current = next;
       void persist(next).catch((error: Error) => {
-        current.current.onError(`Could not save workspace: ${error.message}`);
+        current.current.onError(tRef.current("saveWorkspaceFailedError", { message: error.message }));
       });
     }, STRUCTURE_SAVE_DELAY_MS);
     // Later changes join this wait rather than restart it, so steady tab
@@ -288,7 +293,7 @@ export function useSavedWorkspaces(options: Options) {
   }, [ready, options.authenticated, structure, journalKey]);
 
   async function commit(change: (library: WorkspaceLibrary) => WorkspaceLibrary, switchTo?: string | null) {
-    if (locked.current || !readyRef.current) throw new Error("Please wait for your workspace to finish loading.");
+    if (locked.current || !readyRef.current) throw new Error(tRef.current("workspaceLoadingError"));
     locked.current = true;
     setSwitching(true);
     epoch.current += 1;
@@ -309,7 +314,7 @@ export function useSavedWorkspaces(options: Options) {
       publish(next);
       if (restored) current.current.applySession(restored);
     } catch (error) {
-      current.current.onError(error instanceof Error ? error.message : "Could not update workspace.");
+      current.current.onError(error instanceof Error ? error.message : tRef.current("updateWorkspaceError"));
       throw error;
     } finally {
       locked.current = false;
@@ -331,16 +336,16 @@ export function useSavedWorkspaces(options: Options) {
   const organizedTree = useMemo(() => applyWorkspaceView(options.tree, activeWorkspace?.view), [options.tree, activeWorkspace?.view]);
   const visibleTree = useMemo(() => filterWorkspaceTree(options.tree, activeWorkspace?.scope, activeWorkspace?.view), [options.tree, activeWorkspace?.scope, activeWorkspace?.view]);
   function updateView(change: (view: WorkspaceView) => WorkspaceView) {
-    if (locked.current || !readyRef.current) throw new Error("Please wait for your workspace to finish loading.");
+    if (locked.current || !readyRef.current) throw new Error(tRef.current("workspaceLoadingError"));
     const workspaceId = libraryRef.current.activeWorkspaceId;
-    if (!workspaceId) throw new Error("No workspace is active.");
+    if (!workspaceId) throw new Error(tRef.current("noActiveWorkspaceError"));
     const previous = snapshot();
     const next = { ...previous, workspaces: previous.workspaces.map((workspace) => workspace.id === workspaceId ? { ...workspace, view: change(workspace.view ?? initialView()) } : workspace) };
     publish(next);
     // Keep failed writes in the recovery journal and let normal checkpoints retry.
     const task = persist(next).then(() => undefined).catch((error: Error) => {
       lastSaved.current = "";
-      current.current.onError(`Could not save workspace settings: ${error.message}`);
+      current.current.onError(tRef.current("saveSettingsError", { message: error.message }));
     });
     fileChanges.current.add(task);
     void task.finally(() => fileChanges.current.delete(task));
@@ -357,7 +362,7 @@ export function useSavedWorkspaces(options: Options) {
     visibleTree, organizedTree, updateView: stableUpdateView,
     organizeTree: (tree: LiberaTree) => applyWorkspaceView(tree, libraryRef.current.workspaces.find((workspace) => workspace.id === libraryRef.current.activeWorkspaceId)?.view),
     runFileChange: async <T,>(operation: () => Promise<T>, describe: (result: T) => WorkspaceFileChange): Promise<T> => {
-      if (locked.current || !readyRef.current) throw new Error("Please wait for your workspace to finish loading.");
+      if (locked.current || !readyRef.current) throw new Error(tRef.current("workspaceLoadingError"));
       const workspaceId = libraryRef.current.activeWorkspaceId;
       const task = (async () => {
         const result = await operation();
@@ -367,7 +372,7 @@ export function useSavedWorkspaces(options: Options) {
         // retry that creates a duplicate. Keep the journal and retry checkpoints.
         await persist(next).catch((error: Error) => {
           lastSaved.current = "";
-          current.current.onError(`File changed, but workspace could not be saved: ${error.message}`);
+          current.current.onError(tRef.current("fileChangedNotSavedError", { message: error.message }));
         });
         return result;
       })();

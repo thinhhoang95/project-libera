@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { DEFAULT_LATEX_OPTIONS, MAX_LATEX_CUSTOM_INSTRUCTIONS_LENGTH, latexToday, parseLatexOptions, type LatexOptions } from "@/lib/latex-options";
@@ -7,6 +8,7 @@ import { apiRequest } from "./api-client";
 import { ModalDialog } from "./modal-dialog";
 
 export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: () => string; documentPath: string }) {
+  const t = useTranslations("latexExportButton");
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -35,7 +37,7 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
     try {
       saved = parseLatexOptions(await apiRequest<LatexOptions>("/api/preferences/latex", { cache: "no-store" }));
     } catch (failure) {
-      setSettingsError(failure instanceof Error ? failure.message : "Could not load saved settings.");
+      setSettingsError(failure instanceof Error ? failure.message : t("couldNotLoadSettings"));
     } finally {
       setOptions({ ...saved, date: saved.date || latexToday() });
       setHeaderMode(saved.header ? "custom" : "none");
@@ -50,7 +52,7 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
     const controller = new AbortController();
     request.current = controller;
     setOpen(true); setBusy(true); setError(""); setResult(null); releaseUrls();
-    setStatus("Starting LaTeX export…");
+    setStatus(t("startingExport"));
     try {
       const response = await fetch("/api/latex-export", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -58,9 +60,9 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error || `Could not start LaTeX export (HTTP ${response.status}). The server failed before generation began; in a desktop build this can indicate a missing packaged dependency.`);
+        throw new Error(payload?.error || t("couldNotStartExport", { status: response.status }));
       }
-      if (!response.body) throw new Error("The export response is empty.");
+      if (!response.body) throw new Error(t("exportEmpty"));
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let pending = "";
@@ -87,9 +89,9 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
         }
         if (done) break;
       }
-      if (!received) throw new Error("The connection ended before the PDF was ready. Please retry.");
+      if (!received) throw new Error(t("connectionEnded"));
     } catch (failure) {
-      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "LaTeX export failed.");
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : t("exportFailed"));
     } finally {
       if (request.current === controller) { request.current = null; setBusy(false); }
     }
@@ -101,14 +103,14 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
   }
 
   return <>
-    <button type="button" aria-busy={busy || loadingSettings} disabled={loadingSettings} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40" title="Export PDF with LaTeX" onClick={() => { if (busy) setOpen(true); else void openSettings(); }}>
+    <button type="button" aria-busy={busy || loadingSettings} disabled={loadingSettings} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40" title={t("exportButtonTitle")} onClick={() => { if (busy) setOpen(true); else void openSettings(); }}>
       {(busy || loadingSettings) && <LoaderCircle aria-hidden="true" className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />}
-      LATEX
+      {t("latexButton")}
     </button>
-    <ModalDialog open={settingsOpen} title="LaTeX options" description="Choose the page layout and add custom instructions for your PDF." panelClassName="max-w-xl" onClose={() => { if (!savingSettings) setSettingsOpen(false); }}
+    <ModalDialog open={settingsOpen} title={t("latexOptions")} description={t("latexOptionsDescription")} panelClassName="max-w-xl" onClose={() => { if (!savingSettings) setSettingsOpen(false); }}
       footer={<>
-        <button type="button" disabled={savingSettings} onClick={() => setSettingsOpen(false)}>Cancel</button>
-        <button type="submit" form="latex-options-form" disabled={savingSettings} className="libera-dialog-primary">{savingSettings ? "Saving settings…" : "Generate PDF"}</button>
+        <button type="button" disabled={savingSettings} onClick={() => setSettingsOpen(false)}>{t("cancel")}</button>
+        <button type="submit" form="latex-options-form" disabled={savingSettings} className="libera-dialog-primary">{savingSettings ? t("savingSettings") : t("generatePdf")}</button>
       </>}>
 
       <form id="latex-options-form" className="space-y-5" onSubmit={async (event) => {
@@ -133,91 +135,91 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
           await apiRequest<LatexOptions>("/api/preferences/latex", { method: "PUT", body: JSON.stringify(selected) });
           setOptions(selected); setSettingsOpen(false);
           void start(selected);
-        } catch (failure) { setSettingsError(failure instanceof Error ? failure.message : "Check your options."); }
+        } catch (failure) { setSettingsError(failure instanceof Error ? failure.message : t("checkOptions")); }
         finally { setSavingSettings(false); }
       }}>
         <label className="block space-y-1 text-sm">
-          <span>Author</span>
-          <input name="author" type="text" maxLength={500} defaultValue={options.author} placeholder="Author name (optional)" className="block w-full rounded-md border border-border bg-card px-3 py-2" />
+          <span>{t("author")}</span>
+          <input name="author" type="text" maxLength={500} defaultValue={options.author} placeholder={t("authorPlaceholder")} className="block w-full rounded-md border border-border bg-card px-3 py-2" />
         </label>
         <label className="block space-y-1 text-sm">
-          <span>Date</span>
+          <span>{t("date")}</span>
           <input name="date" type="date" required min="1000-01-01" max="9999-12-31" defaultValue={options.date || latexToday()} className="block w-full rounded-md border border-border bg-card px-3 py-2" />
         </label>
         <label className="block space-y-1 text-sm">
-          <span>Paper size</span>
+          <span>{t("paperSize")}</span>
           <select name="paperSize" defaultValue={options.paperSize} className="block w-full rounded-md border border-border bg-card px-3 py-2">
-            <option value="a4">A4</option><option value="letter">Letter</option><option value="a5">A5</option>
+            <option value="a4">{t("paperA4")}</option><option value="letter">{t("paperLetter")}</option><option value="a5">{t("paperA5")}</option>
           </select>
         </label>
         <label className="block space-y-1 text-sm">
-          <span>Font size</span>
+          <span>{t("fontSize")}</span>
           <select name="fontSize" defaultValue={options.fontSize} className="block w-full rounded-md border border-border bg-card px-3 py-2">
-            <option value="10">10pt</option><option value="11">11pt</option><option value="12">12pt</option>
+            <option value="10">{t("fontSize10")}</option><option value="11">{t("fontSize11")}</option><option value="12">{t("fontSize12")}</option>
           </select>
         </label>
         <label className="block space-y-1 text-sm">
-          <span>Image width (fraction of text width)</span>
+          <span>{t("imageWidth")}</span>
           <input name="imageWidth" type="number" required min="0.01" max="1" step="any" defaultValue={options.imageWidth} className="block w-full rounded-md border border-border bg-card px-3 py-2" />
-          <span className="block text-xs text-muted-foreground">0.75 means 75% of the text width.</span>
+          <span className="block text-xs text-muted-foreground">{t("imageWidthHelp")}</span>
         </label>
         <fieldset className="space-y-2">
-          <legend className="text-sm font-medium">Margins (inches)</legend>
-          <p className="text-xs text-muted-foreground">Adjust each margin independently.</p>
+          <legend className="text-sm font-medium">{t("margins")}</legend>
+          <p className="text-xs text-muted-foreground">{t("marginsHelp")}</p>
           <div className="grid grid-cols-2 gap-3">
             {(["left", "right", "top", "bottom"] as const).map((side) => <label key={side} className="block space-y-1 text-sm">
-              <span className="capitalize">{side}</span>
+              <span>{t(`side.${side}`)}</span>
               <input name={side} type="number" required min="0" step="any" defaultValue={options.margins[side]} className="block w-full rounded-md border border-border bg-card px-3 py-2" />
             </label>)}
           </div>
         </fieldset>
         <label className="block space-y-1 text-sm">
-          <span>Header</span>
+          <span>{t("header")}</span>
           <select value={headerMode} onChange={(event) => setHeaderMode(event.target.value)} className="block w-full rounded-md border border-border bg-card px-3 py-2">
-            <option value="none">No text</option><option value="custom">Custom text</option>
+            <option value="none">{t("noText")}</option><option value="custom">{t("customText")}</option>
           </select>
         </label>
-        {headerMode === "custom" && <label className="block space-y-1 text-sm"><span>Header text (centered)</span><input name="header" type="text" maxLength={500} defaultValue={options.header} className="block w-full rounded-md border border-border bg-card px-3 py-2" /></label>}
+        {headerMode === "custom" && <label className="block space-y-1 text-sm"><span>{t("headerTextCentered")}</span><input name="header" type="text" maxLength={500} defaultValue={options.header} className="block w-full rounded-md border border-border bg-card px-3 py-2" /></label>}
         <label className="block space-y-1 text-sm">
-          <span>Footer</span>
+          <span>{t("footer")}</span>
           <select value={footerMode} onChange={(event) => setFooterMode(event.target.value)} className="block w-full rounded-md border border-border bg-card px-3 py-2">
-            <option value="none">Page number / total pages</option><option value="custom">Custom text</option>
+            <option value="none">{t("pageNumberTotal")}</option><option value="custom">{t("customText")}</option>
           </select>
         </label>
-        {footerMode === "custom" && <label className="block space-y-1 text-sm"><span>Footer text ({showAppName ? "centered" : "left-aligned"})</span><input name="footer" type="text" maxLength={500} defaultValue={options.footer} className="block w-full rounded-md border border-border bg-card px-3 py-2" /></label>}
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={showAppName} onChange={(event) => setShowAppName(event.target.checked)} />Show app name</label>
-        <p className="text-xs text-muted-foreground">{showAppName ? "Libera Editor appears in the right footer. Footer text (or page number / total pages when blank) is centered." : "Footer text (or page number / total pages when blank) appears in the left footer."}</p>
+        {footerMode === "custom" && <label className="block space-y-1 text-sm"><span>{showAppName ? t("footerTextCentered") : t("footerTextLeft")}</span><input name="footer" type="text" maxLength={500} defaultValue={options.footer} className="block w-full rounded-md border border-border bg-card px-3 py-2" /></label>}
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={showAppName} onChange={(event) => setShowAppName(event.target.checked)} />{t("showAppName")}</label>
+        <p className="text-xs text-muted-foreground">{showAppName ? t("appNameFooterHelp") : t("footerLeftHelp")}</p>
         <label className="block space-y-1 text-sm">
-          <span>Citations</span>
+          <span>{t("citations")}</span>
           <select name="citations" defaultValue={options.citations} className="block w-full rounded-md border border-border bg-card px-3 py-2">
-            <option value="formatted">Formatted text</option><option value="biblatex">biblatex</option>
+            <option value="formatted">{t("formattedText")}</option><option value="biblatex">{t("biblatex")}</option>
           </select>
-          <span className="block text-xs text-muted-foreground">Formatted text matches the Markdown preview. biblatex writes \parencite commands and a .bib file, and needs biber.</span>
+          <span className="block text-xs text-muted-foreground">{t("citationsHelp")}</span>
         </label>
         <label className="block space-y-1 text-sm">
-          <span>Custom instructions (optional)</span>
-          <textarea name="customInstructions" rows={5} maxLength={MAX_LATEX_CUSTOM_INSTRUCTIONS_LENGTH} defaultValue={options.customInstructions} placeholder="For example: Add a table of contents, use blue section headings, and keep tables near the text that references them." className="block w-full resize-y rounded-md border border-border bg-card px-3 py-2" />
-          <span className="block text-xs text-muted-foreground">Tell the model how to prepare your document. Saved for future exports. Up to 10,000 characters; selected page settings take precedence.</span>
+          <span>{t("customInstructions")}</span>
+          <textarea name="customInstructions" rows={5} maxLength={MAX_LATEX_CUSTOM_INSTRUCTIONS_LENGTH} defaultValue={options.customInstructions} placeholder={t("customInstructionsPlaceholder")} className="block w-full resize-y rounded-md border border-border bg-card px-3 py-2" />
+          <span className="block text-xs text-muted-foreground">{t("customInstructionsHelp")}</span>
         </label>
         {settingsError && <p role="alert" className="text-sm text-red-600">{settingsError}</p>}
 
       </form>
     </ModalDialog>
-    <ModalDialog open={open} title="LaTeX PDF export" panelClassName="max-w-5xl" onClose={close}
+    <ModalDialog open={open} title={t("latexPdfExport")} panelClassName="max-w-5xl" onClose={close}
       footer={<>
-        {result && <><a className="rounded-md border border-border px-3 py-2 text-sm" href={result.source} download={result.archive ? "document-latex.zip" : "document.tex"}>{result.archive ? "Save LaTeX (.zip)" : "Save LaTeX"}</a><a className="rounded-md bg-foreground px-3 py-2 text-sm text-background" href={result.pdf} download="document.pdf">Save PDF</a></>}
-        {error && <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={() => void start()}>Retry</button>}
-        <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={close}>{busy ? "Cancel" : "Close"}</button>
+        {result && <><a className="rounded-md border border-border px-3 py-2 text-sm" href={result.source} download={result.archive ? "document-latex.zip" : "document.tex"}>{result.archive ? t("saveLatexZip") : t("saveLatex")}</a><a className="rounded-md bg-foreground px-3 py-2 text-sm text-background" href={result.pdf} download="document.pdf">{t("savePdf")}</a></>}
+        {error && <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={() => void start()}>{t("retry")}</button>}
+        <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={close}>{busy ? t("cancel") : t("close")}</button>
       </>}>
       {busy && <div role="status" aria-live="polite" className="flex min-h-40 flex-col items-center justify-center gap-4 py-8 text-center">
         <LoaderCircle aria-hidden="true" className="h-9 w-9 animate-spin text-muted-foreground motion-reduce:animate-none" />
         <div className="space-y-1">
           <p className="text-sm font-medium">{status}</p>
-          <p className="text-xs text-muted-foreground">This may take a few minutes. You can cancel at any time.</p>
+          <p className="text-xs text-muted-foreground">{t("mayTakeFewMinutes")}</p>
         </div>
       </div>}
       {error && <pre role="alert" className="max-h-64 overflow-auto whitespace-pre-wrap text-sm text-red-600">{error}</pre>}
-      {result && <iframe title="Generated LaTeX PDF" src={result.pdf} className="h-[65vh] w-full rounded border border-border" />}
+      {result && <iframe title={t("generatedPdfTitle")} src={result.pdf} className="h-[65vh] w-full rounded border border-border" />}
     </ModalDialog>
   </>;
 }

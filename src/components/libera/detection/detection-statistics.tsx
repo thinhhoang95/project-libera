@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { histogram, type ClassStatistics, type Detection, type DetectionScale, type DetectionStatistics, type SpatialPattern, type Summary } from "@/lib/detection/results";
 
@@ -30,26 +31,24 @@ function medianIqr(summary: Summary) {
   return summary.n > 1 ? `${formatNumber(summary.median)} [${formatNumber(summary.q1, 3)}–${formatNumber(summary.q3, 3)}]` : formatNumber(summary.median);
 }
 
-const PATTERN_LABELS: Record<SpatialPattern, string> = {
-  clustered: "Clustered",
-  random: "Random (CSR)",
-  dispersed: "Regular (dispersed)",
-  insufficient: "Too few objects",
-};
-
 function Pattern({ pattern }: { pattern: SpatialPattern }) {
-  return <span className={pattern === "random" || pattern === "insufficient" ? "text-muted-foreground" : "font-medium"}>{PATTERN_LABELS[pattern]}</span>;
+  const t = useTranslations("detection.detectionStatistics");
+  return <span className={pattern === "random" || pattern === "insufficient" ? "text-muted-foreground" : "font-medium"}>{t(`pattern.${pattern}`)}</span>;
 }
 
 function Swatch({ color }: { color: string }) {
   return <span aria-hidden className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color }} />;
 }
 
+/** Stands for the "All objects" row in the distribution picker. */
+const ALL_OBJECTS = "\u0000all";
+
 const th = "whitespace-nowrap px-2 py-1.5 text-left text-[11px] font-medium text-muted-foreground";
 const td = "whitespace-nowrap px-2 py-1.5 tabular-nums";
 
 /** A histogram of one measurement, with a tooltip on each bar. */
 function Histogram({ values, unit, label }: { values: number[]; unit: string; label: string }) {
+  const t = useTranslations("detection.detectionStatistics");
   const [hover, setHover] = useState<number | null>(null);
   const bins = histogram(values);
   if (bins.length < 2) return null;
@@ -65,7 +64,7 @@ function Histogram({ values, unit, label }: { values: number[]; unit: string; la
     <figure className="space-y-1">
       <figcaption className="text-xs font-medium">{label}</figcaption>
       <div className="relative">
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-md" role="img" aria-label={`${label} histogram`} onPointerLeave={() => setHover(null)}>
+        <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-md" role="img" aria-label={t("histogramLabel", { label })} onPointerLeave={() => setHover(null)}>
           <line x1={pad.left} x2={width - pad.right} y1={pad.top + plotHeight} y2={pad.top + plotHeight} className="stroke-border" strokeWidth={1} />
           <text x={pad.left - 4} y={pad.top + 8} textAnchor="end" className="fill-muted-foreground" fontSize={9}>{maxCount}</text>
           <text x={pad.left - 4} y={pad.top + plotHeight} textAnchor="end" className="fill-muted-foreground" fontSize={9}>0</text>
@@ -94,7 +93,7 @@ function Histogram({ values, unit, label }: { values: number[]; unit: string; la
         {active ? (
           <div className="pointer-events-none absolute left-1/2 top-0 -translate-x-1/2 rounded-md border border-border bg-card px-2 py-1 text-[11px] shadow-sm">
             <span className="tabular-nums">{formatNumber(active.from, 3)}–{formatNumber(active.to, 3)} {unit}</span>
-            <span className="ml-2 font-medium tabular-nums">{active.count} {active.count === 1 ? "object" : "objects"}</span>
+            <span className="ml-2 font-medium tabular-nums">{t("objectCount", { count: active.count })}</span>
           </div>
         ) : null}
       </div>
@@ -114,44 +113,56 @@ function Tile({ label, value, detail }: { label: string; value: string; detail?:
 
 /** Counts, size and shape, and spatial distribution, per label and overall. */
 export function DetectionStatisticsView({ statistics, detections, scale }: { statistics: DetectionStatistics; detections: Detection[]; scale: DetectionScale }) {
+  const t = useTranslations("detection.detectionStatistics");
   const unit = scale.unit;
   const areaUnit = `${unit}²`;
-  const densityUnit = unit === "px" ? "per MP" : `per ${unit}²`;
+  const densityUnit = unit === "px" ? t("perMegapixel") : t("perAreaUnit", { unit });
   const overall = statistics.overall;
   const rows: ClassStatistics[] = [...statistics.classes.filter((entry) => entry.count > 0), overall];
   const length = unit === "px" ? 1 : scale.perPixel;
-  const [histogramLabel, setHistogramLabel] = useState("All objects");
-  const histogramDetections = histogramLabel === "All objects" ? detections : detections.filter((detection) => detection.label === histogramLabel);
+  const [histogramLabel, setHistogramLabel] = useState(ALL_OBJECTS);
+  const histogramDetections = histogramLabel === ALL_OBJECTS ? detections : detections.filter((detection) => detection.label === histogramLabel);
   const scoredDetections = histogramDetections.filter((detection) => detection.origin !== "manual");
 
-  if (!overall.count) return <p className="p-4 text-sm text-muted-foreground">No detections at this confidence.</p>;
+  if (!overall.count) return <p className="p-4 text-sm text-muted-foreground">{t("noDetections")}</p>;
 
   return (
     <div className="space-y-5 p-4 text-xs">
       <div className="grid grid-cols-2 gap-2">
         <Tile
-          label="Objects"
+          label={t("objectsTile")}
           value={String(overall.count)}
-          detail={`${statistics.classes.filter((entry) => entry.count).length} of ${statistics.classes.length} labels${overall.origins.edited || overall.origins.manual ? ` · ${overall.origins.edited} edited, ${overall.origins.manual} manual` : ""}`}
+          detail={t(overall.origins.edited || overall.origins.manual ? "labelsSummaryEdits" : "labelsSummary", {
+            classes: statistics.classes.filter((entry) => entry.count).length,
+            total: statistics.classes.length,
+            edited: overall.origins.edited,
+            manual: overall.origins.manual,
+          })}
         />
-        <Tile label="Density" value={formatNumber(overall.density, 3)} detail={densityUnit} />
-        <Tile label="Area covered" value={`${formatNumber(overall.coverage * 100, 3)}%`} detail="sum of mask areas" />
-        <Tile label="Mean confidence" value={formatNumber(overall.confidence.mean, 3)} detail={overall.confidence.n ? `range ${formatNumber(overall.confidence.min, 2)}–${formatNumber(overall.confidence.max, 2)}${overall.origins.manual ? ", model scores only" : ""}` : "no model detections"} />
+        <Tile label={t("densityTile")} value={formatNumber(overall.density, 3)} detail={densityUnit} />
+        <Tile label={t("areaCovered")} value={t("percentValue", { value: formatNumber(overall.coverage * 100, 3) })} detail={t("sumOfMaskAreas")} />
+        <Tile
+          label={t("meanConfidence")}
+          value={formatNumber(overall.confidence.mean, 3)}
+          detail={overall.confidence.n
+            ? t(overall.origins.manual ? "confidenceRangeModelOnly" : "confidenceRange", { min: formatNumber(overall.confidence.min, 2), max: formatNumber(overall.confidence.max, 2) })
+            : t("noModelDetections")}
+        />
       </div>
 
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Counts and density</h3>
+        <h3 className="text-sm font-semibold">{t("countsAndDensity")}</h3>
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full border-collapse">
-            <thead className="bg-muted/60"><tr><th className={th}>Label</th><th className={th}>n</th><th className={th}>%</th><th className={th}>Density ({densityUnit})</th><th className={th}>Coverage</th><th className={th}>Confidence</th></tr></thead>
+            <thead className="bg-muted/60"><tr><th className={th}>{t("thLabel")}</th><th className={th}>n</th><th className={th}>%</th><th className={th}>{t("thDensity", { unit: densityUnit })}</th><th className={th}>{t("thCoverage")}</th><th className={th}>{t("thConfidence")}</th></tr></thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.label} className={`border-t border-border ${row === overall ? "font-medium" : ""}`}>
-                  <td className="whitespace-nowrap px-2 py-1.5"><span className="flex items-center gap-1.5">{row !== overall ? <Swatch color={row.color} /> : null}{row.label}</span></td>
+                  <td className="whitespace-nowrap px-2 py-1.5"><span className="flex items-center gap-1.5">{row !== overall ? <Swatch color={row.color} /> : null}{row === overall ? t("allObjects") : row.label}</span></td>
                   <td className={td}>{row.count}</td>
                   <td className={td}>{formatNumber((row.count / overall.count) * 100, 3)}</td>
                   <td className={td}>{formatNumber(row.density, 3)}</td>
-                  <td className={td}>{formatNumber(row.coverage * 100, 3)}%</td>
+                  <td className={td}>{t("percentValue", { value: formatNumber(row.coverage * 100, 3) })}</td>
                   <td className={td}>{meanSd(row.confidence)}</td>
                 </tr>
               ))}
@@ -161,14 +172,14 @@ export function DetectionStatisticsView({ statistics, detections, scale }: { sta
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Size and shape</h3>
+        <h3 className="text-sm font-semibold">{t("sizeAndShape")}</h3>
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full border-collapse">
-            <thead className="bg-muted/60"><tr><th className={th}>Label</th><th className={th}>Area ({areaUnit}) mean ± SD</th><th className={th}>Median [IQR]</th><th className={th}>Range</th><th className={th}>CV</th><th className={th}>Eq. diameter ({unit})</th><th className={th}>Perimeter ({unit})</th><th className={th}>Circularity</th><th className={th}>Aspect ratio</th></tr></thead>
+            <thead className="bg-muted/60"><tr><th className={th}>{t("thLabel")}</th><th className={th}>{t("thArea", { unit })}</th><th className={th}>{t("thMedianIqr")}</th><th className={th}>{t("thRange")}</th><th className={th}>{t("thCv")}</th><th className={th}>{t("thEquivalentDiameter", { unit })}</th><th className={th}>{t("thPerimeter", { unit })}</th><th className={th}>{t("thCircularity")}</th><th className={th}>{t("thAspectRatio")}</th></tr></thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.label} className={`border-t border-border ${row === overall ? "font-medium" : ""}`}>
-                  <td className="whitespace-nowrap px-2 py-1.5"><span className="flex items-center gap-1.5">{row !== overall ? <Swatch color={row.color} /> : null}{row.label}</span></td>
+                  <td className="whitespace-nowrap px-2 py-1.5"><span className="flex items-center gap-1.5">{row !== overall ? <Swatch color={row.color} /> : null}{row === overall ? t("allObjects") : row.label}</span></td>
                   <td className={td}>{meanSd(row.area)}</td>
                   <td className={td}>{medianIqr(row.area)}</td>
                   <td className={td}>{row.area.n ? `${formatNumber(row.area.min, 3)}–${formatNumber(row.area.max, 3)}` : "–"}</td>
@@ -183,26 +194,26 @@ export function DetectionStatisticsView({ statistics, detections, scale }: { sta
           </table>
         </div>
         <div className="flex items-center gap-2">
-          <label htmlFor="detection-histogram-label" className="text-muted-foreground">Distribution of</label>
+          <label htmlFor="detection-histogram-label" className="text-muted-foreground">{t("distributionOf")}</label>
           <select id="detection-histogram-label" className="rounded-md border border-input bg-background px-2 py-1" value={histogramLabel} onChange={(event) => setHistogramLabel(event.target.value)}>
-            {rows.map((row) => <option key={row.label} value={row.label}>{row.label}</option>)}
+            {rows.map((row) => <option key={row.label} value={row === overall ? ALL_OBJECTS : row.label}>{row === overall ? t("allObjects") : row.label}</option>)}
           </select>
         </div>
         <div className="grid gap-3">
-          <Histogram label="Area" unit={areaUnit} values={histogramDetections.map((detection) => detection.area * length * length)} />
-          <Histogram label="Confidence" unit="score" values={scoredDetections.map((detection) => detection.confidence)} />
+          <Histogram label={t("areaLabel")} unit={areaUnit} values={histogramDetections.map((detection) => detection.area * length * length)} />
+          <Histogram label={t("confidenceLabel")} unit={t("scoreUnit")} values={scoredDetections.map((detection) => detection.confidence)} />
         </div>
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Spatial distribution</h3>
+        <h3 className="text-sm font-semibold">{t("spatialDistribution")}</h3>
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full border-collapse">
-            <thead className="bg-muted/60"><tr><th className={th}>Label</th><th className={th}>Centroid x̄, ȳ ({unit})</th><th className={th}>NN distance ({unit})</th><th className={th}>Clark–Evans R</th><th className={th}>z</th><th className={th}>p</th><th className={th}>Pattern</th></tr></thead>
+            <thead className="bg-muted/60"><tr><th className={th}>{t("thLabel")}</th><th className={th}>{t("thCentroid", { unit })}</th><th className={th}>{t("thNearestNeighbor", { unit })}</th><th className={th}>{t("thClarkEvans")}</th><th className={th}>z</th><th className={th}>p</th><th className={th}>{t("thPattern")}</th></tr></thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.label} className={`border-t border-border ${row === overall ? "font-medium" : ""}`}>
-                  <td className="whitespace-nowrap px-2 py-1.5"><span className="flex items-center gap-1.5">{row !== overall ? <Swatch color={row.color} /> : null}{row.label}</span></td>
+                  <td className="whitespace-nowrap px-2 py-1.5"><span className="flex items-center gap-1.5">{row !== overall ? <Swatch color={row.color} /> : null}{row === overall ? t("allObjects") : row.label}</span></td>
                   <td className={td}>{row.count ? `${formatNumber(row.centroid.x, 4)}, ${formatNumber(row.centroid.y, 4)}` : "–"}</td>
                   <td className={td}>{row.nearestNeighbor ? meanSd(row.nearestNeighbor.distances) : "–"}</td>
                   <td className={td}>{row.nearestNeighbor ? formatNumber(row.nearestNeighbor.r, 3) : "–"}</td>
@@ -216,11 +227,11 @@ export function DetectionStatisticsView({ statistics, detections, scale }: { sta
         </div>
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full border-collapse">
-            <thead className="bg-muted/60"><tr><th className={th}>Label</th><th className={th}>Quadrats</th><th className={th}>Variance/mean</th><th className={th}>χ² (df)</th><th className={th}>p</th><th className={th}>Morisita I<sub>δ</sub></th><th className={th}>Pattern</th></tr></thead>
+            <thead className="bg-muted/60"><tr><th className={th}>{t("thLabel")}</th><th className={th}>{t("thQuadrats")}</th><th className={th}>{t("thVarianceMean")}</th><th className={th}>{t("thChiSquare")}</th><th className={th}>p</th><th className={th}>{t.rich("thMorisita", { sub: (chunks) => <sub>{chunks}</sub> })}</th><th className={th}>{t("thPattern")}</th></tr></thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.label} className={`border-t border-border ${row === overall ? "font-medium" : ""}`}>
-                  <td className="whitespace-nowrap px-2 py-1.5"><span className="flex items-center gap-1.5">{row !== overall ? <Swatch color={row.color} /> : null}{row.label}</span></td>
+                  <td className="whitespace-nowrap px-2 py-1.5"><span className="flex items-center gap-1.5">{row !== overall ? <Swatch color={row.color} /> : null}{row === overall ? t("allObjects") : row.label}</span></td>
                   <td className={td}>{row.quadrats ? `${row.quadrats.columns} × ${row.quadrats.rows}` : "–"}</td>
                   <td className={td}>{row.quadrats ? formatNumber(row.quadrats.vmr, 3) : "–"}</td>
                   <td className={td}>{row.quadrats ? `${formatNumber(row.quadrats.chiSquare, 4)} (${row.quadrats.df})` : "–"}</td>
@@ -235,14 +246,14 @@ export function DetectionStatisticsView({ statistics, detections, scale }: { sta
       </section>
 
       <details className="rounded-lg border border-border bg-card px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-        <summary className="cursor-pointer font-medium text-foreground">Methods</summary>
+        <summary className="cursor-pointer font-medium text-foreground">{t("methods")}</summary>
         <ul className="mt-2 list-disc space-y-1 pl-4">
-          <li>Areas and perimeters come from each instance mask’s outline (shoelace formula); objects without a mask use their box. Coverage sums mask areas, so overlapping masks count twice.</li>
-          <li>Equivalent diameter = 2√(A/π). Circularity = 4πA/P² (1 for a circle). Aspect ratio = the box’s long side over its short side. SD is the sample standard deviation; CV = SD/mean; IQR is the 25th–75th percentile.</li>
-          <li>Clark–Evans R = mean observed nearest-neighbour distance between centroids ÷ the expectation under complete spatial randomness, with Donnelly’s (1978) edge correction for the image rectangle. R &lt; 1 suggests clustering, R &gt; 1 regular spacing; z tests R = 1 (two-sided).</li>
-          <li>Quadrat analysis counts centroids in a grid with five cells on the image’s shorter side. Variance/mean (index of dispersion) is 1 under randomness; (q − 1)·VMR follows χ² with q − 1 degrees of freedom (two-sided test). Morisita’s I<sub>δ</sub> is 1 under randomness, above 1 when clustered.</li>
-          <li>Statistics cover model detections at or above the confidence filter, and every hand-tagged (manual) or hand-corrected (edited) object. Edited and hand-drawn outlines are smooth curves through their control points; their measurements come from those curves. Confidence statistics leave out manual objects. With fewer than five objects the tests are not interpreted.</li>
-          <li>{unit === "px" ? "Sizes are in pixels; set a scale to measure in physical units." : `Scale: 1 px = ${formatNumber(scale.perPixel)} ${unit}.`}</li>
+          <li>{t("methodsAreas")}</li>
+          <li>{t("methodsDiameter")}</li>
+          <li>{t("methodsClarkEvans")}</li>
+          <li>{t.rich("methodsQuadrat", { sub: (chunks) => <sub>{chunks}</sub> })}</li>
+          <li>{t("methodsSample")}</li>
+          <li>{unit === "px" ? t("methodsSizesPx") : t("methodsScale", { perPixel: formatNumber(scale.perPixel), unit })}</li>
         </ul>
       </details>
     </div>
