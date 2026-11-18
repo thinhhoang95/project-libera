@@ -5,7 +5,7 @@ import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, equationAlias, isInLatexComment, isPartLabelMacro, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
-import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, formatCounterValue, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
+import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, floatAlias, formatCounterValue, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroPassThrough, structureMacroNames } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
@@ -1208,7 +1208,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return override.node === node ? result : undefined;
         }
       }
-      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "") && !equationAlias(defs, environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
+      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "") && !equationAlias(defs, environmentName(node, (start, end) => read(state, start, end)) ?? "") && !floatAlias(defs, environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
 
       if (name in SECTION_CLASSES) {
         const command = node.getChild("SectioningCommand");
@@ -1623,7 +1623,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (/^deluxetable\*?$/.test(environmentName(node, readNode) ?? "") && !defs.environments.has(environmentName(node, readNode)!)) return drawDeluxeTable(node) ?? environment(node);
           // `table*`, `algorithm` and the other floats the grammar does not name; a theorem the document calls
           // `algorithm` (`\newtheorem{algorithm}{Algorithm}`, Callaway & Sant'Anna's bootstrap) is the document's own.
-          const kind = floatKind(node, readNode);
+          const kind = floatKind(node, readNode, defs);
           if (kind && !defs.theorems.has(environmentName(node, readNode) ?? "")) return drawFloat(node, kind);
           // `tabular*` and `tabulary` are tabulars the grammar does not name.
           if (isTabular(node, readNode)) return drawTabular(node);
@@ -2042,7 +2042,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function captionofBlock(node: SyntaxNode): FigureContent["kind"] | null {
     if (!structural || !/^(?:center|minipage|flushleft|flushright)$/.test(environmentName(node, readNode) ?? "")) return null;
     for (let parent = node.parent; parent; parent = parent.parent) {
-      if (parent.name === "FigureEnvironment" || parent.name === "TableEnvironment" || (parent.name === "Environment" && floatKind(parent, readNode))) return null;
+      if (parent.name === "FigureEnvironment" || parent.name === "TableEnvironment" || (parent.name === "Environment" && floatKind(parent, readNode, defs))) return null;
     }
     const match = /\\captionof\s*\{\s*([A-Za-z]+)\s*\}/.exec(stripTexComments(read(state, node.from, node.to)));
     return match ? FLOAT_KINDS[match[1]] ?? null : null;
@@ -3572,7 +3572,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: at === null ? new TableWidget(source, use.from - range.from, range.to - range.from, true) : new TableWidget(source, use.from + at - range.from, range.to - range.from) }] });
       return true;
     }
-    const kind = floatKind(env, readText);
+    const kind = floatKind(env, readText, defs);
     if (!kind || !wellFormedEnvironment(env, scratch)) return false;
     const figure = figureSpec(env, environmentName(env, readText) ?? "", scratch, defs, expandRowsAt(use.from), () => null, kind);
     if (!figure) return false;
