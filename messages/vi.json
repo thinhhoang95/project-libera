@@ -5367,7 +5367,7 @@
     "footerCounts": "{files, plural, one {# tệp} other {# tệp}} · {notes, plural, one {# ghi chú} other {# ghi chú}} · {sideFiles, plural, one {# tệp phụ} other {# tệp phụ}} · {seconds} giây",
     "leftAsTheyAre": "Giữ nguyên ({count})",
     "lostWarning": "{count, plural, one {# mục bên dưới giữ} other {# mục bên dưới giữ}} những thứ bị xóa vĩnh viễn: chú thích, nét mực, nhận xét, bản chép lời, mã hoặc hình ảnh. Việc này không thể hoàn tác trong Libera; lịch sử phiên bản của dịch vụ đồng bộ có thể vẫn còn chúng.",
-    "matchByNameWarning": "Tệp được khớp chỉ theo tên. Nếu một tệp bên dưới là tệp khác nhưng tình cờ trùng tên, nó sẽ nhận các bản ghi này. Liên kết trong ghi chú không thay đổi.",
+    "matchByNameWarning": "Tệp được khớp theo nội dung nếu bản ghi có lưu nội dung đó, nếu không thì theo tên. Nếu một tệp được khớp theo tên bên dưới là tệp khác nhưng tình cờ trùng tên, nó sẽ nhận các bản ghi này. Liên kết trong ghi chú không thay đổi.",
     "movedFilesHeading": "Đã tìm thấy tệp được di chuyển ({count})",
     "noMovedFile": "Không tìm thấy tệp nào được di chuyển theo tên.",
     "noRecordsMoved": "Không có bản ghi nào được di chuyển.",

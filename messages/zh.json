@@ -5367,7 +5367,7 @@
     "footerCounts": "{files, plural, one {# 个文件} other {# 个文件}} · {notes, plural, one {# 条笔记} other {# 条笔记}} · {sideFiles, plural, one {# 个附属文件} other {# 个附属文件}} · {seconds} 秒",
     "leftAsTheyAre": "保持原样（{count}）",
     "lostWarning": "下方{count, plural, one {# 项} other {# 项}}包含将被永久删除的内容：批注、墨迹、评论、转录稿、代码或图片。此操作无法在 Libera 中撤销；您的同步服务的版本历史中可能仍保留这些内容。",
-    "matchByNameWarning": "文件仅按名称匹配。如果下方某个文件实际上是另一个恰好同名的文件，它将获得这些记录。笔记中的链接不会更改。",
+    "matchByNameWarning": "记录保存了文件内容特征时按内容匹配，否则按名称匹配。如果下方某个按名称匹配的文件实际上是另一个恰好同名的文件，它将获得这些记录。笔记中的链接不会更改。",
     "movedFilesHeading": "已找到的移动文件（{count}）",
     "noMovedFile": "未能按名称找到任何已移动的文件。",
     "noRecordsMoved": "没有移动任何记录。",

@@ -5367,7 +5367,7 @@
     "footerCounts": "{files, plural, one {# file} other {# files}} · {notes, plural, one {# note} other {# notes}} · {sideFiles, plural, one {# side file} other {# side files}} · {seconds} s",
     "leftAsTheyAre": "Left as they are ({count})",
     "lostWarning": "{count, plural, one {# item below holds} other {# items below hold}} things that are deleted for good: annotations, ink, comments, transcripts, code or images. This can't be undone in Libera; your sync service's version history may still have them.",
-    "matchByNameWarning": "Files are matched by name only. If a file below is a different file that happens to have the same name, it gets these records. Links in notes are not changed.",
+    "matchByNameWarning": "Files are matched by their content where a record kept it, and by name otherwise. If a file matched by name below is a different file that happens to have the same name, it gets these records. Links in notes are not changed.",
     "movedFilesHeading": "Moved files found ({count})",
     "noMovedFile": "No moved file could be found by name.",
     "noRecordsMoved": "No records were moved.",

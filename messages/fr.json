@@ -5367,7 +5367,7 @@
     "footerCounts": "{files, plural, one {# fichier} other {# fichiers}} · {notes, plural, one {# note} other {# notes}} · {sideFiles, plural, one {# fichier annexe} other {# fichiers annexes}} · {seconds} s",
     "leftAsTheyAre": "Laissés tels quels ({count})",
     "lostWarning": "{count, plural, one {# élément ci-dessous contient} other {# éléments ci-dessous contiennent}} des données supprimées définitivement : annotations, encre, commentaires, transcriptions, code ou images. Cette action est irréversible dans Libera ; l’historique de versions de votre service de synchronisation peut encore les contenir.",
-    "matchByNameWarning": "Les fichiers sont associés uniquement par leur nom. Si un fichier ci-dessous est un autre fichier qui porte le même nom, il reçoit ces enregistrements. Les liens dans les notes ne sont pas modifiés.",
+    "matchByNameWarning": "Les fichiers sont associés par leur contenu lorsqu’un enregistrement l’a conservé, sinon par leur nom. Si un fichier associé par son nom ci-dessous est un autre fichier qui porte le même nom, il reçoit ces enregistrements. Les liens dans les notes ne sont pas modifiés.",
     "movedFilesHeading": "Fichiers déplacés trouvés ({count})",
     "noMovedFile": "Aucun fichier déplacé n’a pu être retrouvé par son nom.",
     "noRecordsMoved": "Aucun enregistrement n’a été déplacé.",
