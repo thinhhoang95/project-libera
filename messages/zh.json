@@ -8297,5 +8297,93 @@
       "failedFallback": "聊天失败。",
       "failed": "文档聊天失败。"
     }
+  },
+  "find": {
+    "previousMatch": "上一个匹配（Shift+Enter）",
+    "nextMatch": "下一个匹配（Enter）",
+    "close": "关闭（Esc）",
+    "matchCount": "{current}/{total}",
+    "replaceWith": "替换为",
+    "replace": "替换",
+    "replaceAll": "全部",
+    "replaceTitle": "替换当前匹配（在替换框中按 Enter）",
+    "replaceAllTitle": "替换全部匹配（Cmd/Ctrl+Enter）",
+    "modes": {
+      "label": "查找模式",
+      "plain": "文本",
+      "pattern": "模式",
+      "regex": "正则"
+    },
+    "modeHints": {
+      "plain": "按输入的文本查找",
+      "pattern": "模式（Alt+P）：* 是一个空位，可用 @1 复用。参见速查表",
+      "regex": "正则表达式（Alt+R）：用 @1、@名称 复用分组"
+    },
+    "matchCase": "区分大小写（Alt+C）",
+    "wholeWord": "全词匹配（Alt+W）",
+    "flexibleSpacing": "灵活空白：一个空格可匹配任意空白，包括没有空白",
+    "preserveCase": "保留大小写：跟随首字母大写或全大写的匹配",
+    "inSelection": "在选区中查找",
+    "markdownReplacement": "替换内容为 Markdown（**粗体**、$公式$）",
+    "where": "范围",
+    "scopes": {
+      "anywhere": "任意位置",
+      "outsideMath": "公式之外",
+      "insideMath": "公式之内",
+      "skipCommentsAndCode": "跳过注释和代码"
+    },
+    "cheatSheet": "模式速查表",
+    "presets": "预设",
+    "previewTitle": "替换当前匹配时将写入的内容",
+    "incomplete": "查找提前停止：此模式对整篇文档开销过大",
+    "replacedSummary": "已替换 {replaced, plural, other {# 处}}",
+    "skippedSummary": "跳过 {skipped, plural, other {# 处}}：不是数字",
+    "yourPresets": "我的预设",
+    "noPresets": "暂无。为当前的查找与替换命名即可保存。",
+    "presetName": "预设名称",
+    "savePreset": "保存",
+    "deletePreset": "删除预设 {name}",
+    "builtInPresets": "内置",
+    "presetNames": {
+      "inlineToDisplay": "行内公式 \\( \\) 转为行间 \\[ \\]",
+      "displayToInline": "行间公式 \\[ \\] 转为行内 \\( \\)",
+      "dollarToParens": "$…$ 转为 \\( \\)",
+      "parensToDollar": "\\( \\) 转为 $…$",
+      "fracToDfrac": "\\frac 转为 \\dfrac",
+      "markdownBoldToLatex": "Markdown **粗体** 转为 \\textbf",
+      "latexBoldToMarkdown": "\\textbf 转为 Markdown **粗体**",
+      "latexEmphToMarkdown": "\\emph 转为 Markdown *斜体*",
+      "swapPair": "交换一对 (a,b) 为 (b,a)"
+    },
+    "cheat": {
+      "rows": {
+        "hole": "空位：在同一段落内、括号保持配对的最短文本。用 @1、@2… 复用",
+        "single": "恰好一个字符",
+        "named": "命名空位。再次使用同一名称时必须匹配相同文本",
+        "typed": "带类型的空位（类型见下）；不需要名称时写 @:类型",
+        "regexHole": "必须匹配正则表达式的空位，如 @x/[^,]+/",
+        "escapes": "字面的 *、? 或 @。其他反斜杠都是字面字符：直接输入 \\frac 即可",
+        "references": "在替换中：编号空位、命名空位、整个匹配",
+        "counter": "在替换中：匹配序号 1、2、3…",
+        "expressions": "在替换中：算术运算以及 .upper .lower .title .trim；编号空位写作 @(@1*2)"
+      },
+      "types": "类型：any、block（可跨空行）、line、word、int、num、space、cmd（\\alpha）、arg（一个 TeX 参数：'{'…'}' 或单个记号）、opt（[…] 或无）、math（$…$、\\(…\\)、\\[…\\]）。",
+      "examples": "示例（点击试用）",
+      "useExample": "用此示例填写查找和替换框"
+    },
+    "messages": {
+      "invalidRegex": "无效的正则表达式：{detail}",
+      "unknownType": "未知的空位类型“{type}”。可用类型：any、block、line、word、int、num、space、cmd、arg、opt、math",
+      "typeExpected": "请在冒号后写类型，如 @x:num",
+      "unterminatedRegex": "正则表达式需要以 / 结束",
+      "numberedHoleName": "空位会自动编号：此处请用 *，或用字母命名，如 @x",
+      "needsLiteral": "请加入字面文本或带类型的空位：只有空位的模式会匹配一切",
+      "adjacentHoles": "两个空位相邻：前一个总是为空",
+      "unknownCapture": "查找模式中没有名为 @{name} 的空位。字面的 @ 请写作 \\@",
+      "unterminatedExpression": "请用 ) 结束表达式",
+      "invalidExpression": "无法解析此表达式",
+      "dollarReference": "请用 {suggestion} 代替 {written}",
+      "notANumber": "“{value}”不是数字"
+    }
   }
 }

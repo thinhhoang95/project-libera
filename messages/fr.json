@@ -8297,5 +8297,93 @@
       "failedFallback": "Échec de la conversation.",
       "failed": "Échec de la conversation sur le document."
     }
+  },
+  "find": {
+    "previousMatch": "Occurrence précédente (Maj+Entrée)",
+    "nextMatch": "Occurrence suivante (Entrée)",
+    "close": "Fermer (Échap)",
+    "matchCount": "{current}/{total}",
+    "replaceWith": "Remplacer par",
+    "replace": "Remplacer",
+    "replaceAll": "Tout",
+    "replaceTitle": "Remplacer cette occurrence (Entrée dans le champ de remplacement)",
+    "replaceAllTitle": "Remplacer toutes les occurrences (Cmd/Ctrl+Entrée)",
+    "modes": {
+      "label": "Mode de recherche",
+      "plain": "Texte",
+      "pattern": "Motif",
+      "regex": "Regex"
+    },
+    "modeHints": {
+      "plain": "Rechercher le texte tel quel",
+      "pattern": "Motif (Alt+P) : * est un trou réutilisable avec @1. Voir l’aide-mémoire",
+      "regex": "Expression régulière (Alt+R) : réutilisez les groupes avec @1, @nom"
+    },
+    "matchCase": "Respecter la casse (Alt+C)",
+    "wholeWord": "Mot entier (Alt+W)",
+    "flexibleSpacing": "Espacement souple : une espace correspond à n’importe quel espacement, même vide",
+    "preserveCase": "Conserver la casse : suivre une occurrence en capitale initiale ou en majuscules",
+    "inSelection": "Rechercher dans la sélection",
+    "markdownReplacement": "Le remplacement est du Markdown (**gras**, $maths$)",
+    "where": "Où",
+    "scopes": {
+      "anywhere": "Partout",
+      "outsideMath": "Hors des maths",
+      "insideMath": "Dans les maths",
+      "skipCommentsAndCode": "Ignorer commentaires et code"
+    },
+    "cheatSheet": "Aide-mémoire des motifs",
+    "presets": "Préréglages",
+    "previewTitle": "Ce que Remplacer écrira pour l’occurrence courante",
+    "incomplete": "La recherche s’est arrêtée tôt : ce motif est trop coûteux pour tout le document",
+    "replacedSummary": "{replaced, plural, one {# occurrence remplacée} other {# occurrences remplacées}}",
+    "skippedSummary": "{skipped, plural, one {# ignorée} other {# ignorées}} : pas un nombre",
+    "yourPresets": "Vos préréglages",
+    "noPresets": "Aucun pour l’instant. Nommez la recherche actuelle pour l’enregistrer.",
+    "presetName": "Nom du préréglage",
+    "savePreset": "Enregistrer",
+    "deletePreset": "Supprimer le préréglage {name}",
+    "builtInPresets": "Intégrés",
+    "presetNames": {
+      "inlineToDisplay": "Maths en ligne \\( \\) vers centrées \\[ \\]",
+      "displayToInline": "Maths centrées \\[ \\] vers en ligne \\( \\)",
+      "dollarToParens": "$…$ vers \\( \\)",
+      "parensToDollar": "\\( \\) vers $…$",
+      "fracToDfrac": "\\frac vers \\dfrac",
+      "markdownBoldToLatex": "**Gras** Markdown vers \\textbf",
+      "latexBoldToMarkdown": "\\textbf vers **gras** Markdown",
+      "latexEmphToMarkdown": "\\emph vers *italique* Markdown",
+      "swapPair": "Échanger une paire (a,b) en (b,a)"
+    },
+    "cheat": {
+      "rows": {
+        "hole": "Un trou : le texte le plus court qui convient, crochets équilibrés, dans un seul paragraphe. Réutilisez-le avec @1, @2…",
+        "single": "Exactement un caractère",
+        "named": "Un trou nommé. Le même nom une seconde fois doit correspondre au même texte",
+        "typed": "Un trou typé (types ci-dessous) ; @:type s’il n’a pas besoin de nom",
+        "regexHole": "Un trou qui doit correspondre à une expression régulière, comme @x/[^,]+/",
+        "escapes": "Un *, ? ou @ littéral. Les autres barres obliques inverses sont littérales : tapez \\frac tel quel",
+        "references": "Dans le remplacement : un trou numéroté, un trou nommé, toute l’occurrence",
+        "counter": "Dans le remplacement : le numéro de l’occurrence, 1, 2, 3…",
+        "expressions": "Dans le remplacement : arithmétique et .upper .lower .title .trim ; @(@1*2) pour un trou numéroté"
+      },
+      "types": "Types : any, block (peut traverser des lignes vides), line, word, int, num, space, cmd (\\alpha), arg (un argument TeX : '{'…'}' ou un seul élément), opt ([…] ou rien), math ($…$, \\(…\\), \\[…\\]).",
+      "examples": "Exemples (cliquez pour essayer)",
+      "useExample": "Remplir les champs avec cet exemple"
+    },
+    "messages": {
+      "invalidRegex": "Expression régulière invalide : {detail}",
+      "unknownType": "Type de trou inconnu « {type} ». Types : any, block, line, word, int, num, space, cmd, arg, opt, math",
+      "typeExpected": "Écrivez un type après les deux-points, comme @x:num",
+      "unterminatedRegex": "L’expression régulière doit se fermer par /",
+      "numberedHoleName": "Les trous sont numérotés automatiquement : utilisez * ici, ou nommez-le avec des lettres, comme @x",
+      "needsLiteral": "Ajoutez du texte littéral ou un trou typé : un motif fait seulement de trous correspond à tout",
+      "adjacentHoles": "Deux trous côte à côte : le premier est toujours vide",
+      "unknownCapture": "Aucun trou nommé @{name} dans le motif. Écrivez \\@ pour un @ littéral",
+      "unterminatedExpression": "Fermez l’expression avec )",
+      "invalidExpression": "Cette expression est illisible",
+      "dollarReference": "Écrivez {suggestion} au lieu de {written}",
+      "notANumber": "« {value} » n’est pas un nombre"
+    }
   }
 }

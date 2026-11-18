@@ -191,3 +191,26 @@ export function replaceAllInText(text: string, matches: FindMatch[], replacer: i
   out.push(text.slice(offset));
   return { text: out.join(""), replaced, skipped };
 }
+
+export type MatchPreview = {
+  matched: string;
+  captures: { group: number; label: string; text: string }[];
+  /** What Replace would write; null when there is no valid replacement. */
+  result: string | { error: import("./types").FindMessage } | null;
+};
+
+/** The active match as the find bar shows it: its text, captures and replacement. */
+export function describeMatch(text: string, match: FindMatch, finder: Finder, replacer: import("./replace").Replacer | null, counter: number): MatchPreview {
+  const captures = match.captures
+    .filter((capture) => capture.start >= 0)
+    .map((capture) => {
+      const group = finder.groups.find((candidate) => candidate.index === capture.index);
+      return { group: capture.index, label: group?.name ?? String(capture.index), text: text.slice(capture.start, capture.end) };
+    });
+  const rendered = replacer ? replacer.render(text, match, counter) : null;
+  return {
+    matched: text.slice(match.start, match.end),
+    captures,
+    result: rendered === null ? null : typeof rendered === "string" ? rendered : { error: rendered.error },
+  };
+}

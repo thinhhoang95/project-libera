@@ -8297,5 +8297,93 @@
       "failedFallback": "Chat failed.",
       "failed": "Document chat failed."
     }
+  },
+  "find": {
+    "previousMatch": "Previous match (Shift+Enter)",
+    "nextMatch": "Next match (Enter)",
+    "close": "Close (Esc)",
+    "matchCount": "{current}/{total}",
+    "replaceWith": "Replace with",
+    "replace": "Replace",
+    "replaceAll": "All",
+    "replaceTitle": "Replace this match (Enter in the replace field)",
+    "replaceAllTitle": "Replace all matches (Cmd/Ctrl+Enter)",
+    "modes": {
+      "label": "Search mode",
+      "plain": "Plain",
+      "pattern": "Pattern",
+      "regex": "Regex"
+    },
+    "modeHints": {
+      "plain": "Find the text as typed",
+      "pattern": "Pattern (Alt+P): * is a hole you can reuse as @1. See the cheat sheet",
+      "regex": "Regular expression (Alt+R): reuse groups as @1, @name"
+    },
+    "matchCase": "Match case (Alt+C)",
+    "wholeWord": "Whole word (Alt+W)",
+    "flexibleSpacing": "Flexible spacing: one space matches any spacing, none included",
+    "preserveCase": "Preserve case: follow a capitalised or all-caps match",
+    "inSelection": "Find in selection",
+    "markdownReplacement": "Replacement is Markdown (**bold**, $math$)",
+    "where": "Where",
+    "scopes": {
+      "anywhere": "Anywhere",
+      "outsideMath": "Outside math",
+      "insideMath": "Inside math",
+      "skipCommentsAndCode": "Skip comments & code"
+    },
+    "cheatSheet": "Pattern cheat sheet",
+    "presets": "Presets",
+    "previewTitle": "What Replace writes for the current match",
+    "incomplete": "The search stopped early: this pattern is too expensive for the whole document",
+    "replacedSummary": "Replaced {replaced, plural, one {# match} other {# matches}}",
+    "skippedSummary": "{skipped, plural, one {# skipped} other {# skipped}}: not a number",
+    "yourPresets": "Your presets",
+    "noPresets": "None yet. Name the current find and replace to save it.",
+    "presetName": "Preset name",
+    "savePreset": "Save",
+    "deletePreset": "Delete preset {name}",
+    "builtInPresets": "Built in",
+    "presetNames": {
+      "inlineToDisplay": "Inline math \\( \\) to display \\[ \\]",
+      "displayToInline": "Display math \\[ \\] to inline \\( \\)",
+      "dollarToParens": "$…$ to \\( \\)",
+      "parensToDollar": "\\( \\) to $…$",
+      "fracToDfrac": "\\frac to \\dfrac",
+      "markdownBoldToLatex": "Markdown **bold** to \\textbf",
+      "latexBoldToMarkdown": "\\textbf to Markdown **bold**",
+      "latexEmphToMarkdown": "\\emph to Markdown *italic*",
+      "swapPair": "Swap a pair (a,b) to (b,a)"
+    },
+    "cheat": {
+      "rows": {
+        "hole": "A hole: the shortest text that fits, with brackets kept balanced, inside one paragraph. Reuse it as @1, @2…",
+        "single": "Exactly one character",
+        "named": "A named hole. The same name again must match the same text",
+        "typed": "A typed hole (see the types below); @:type when it needs no name",
+        "regexHole": "A hole that must match a regular expression, like @x/[^,]+/",
+        "escapes": "A literal *, ? or @. Other backslashes are literal: type \\frac as is",
+        "references": "In the replacement: a numbered hole, a named hole, the whole match",
+        "counter": "In the replacement: the match number, 1, 2, 3…",
+        "expressions": "In the replacement: arithmetic and .upper .lower .title .trim; @(@1*2) for a numbered hole"
+      },
+      "types": "Types: any, block (may cross blank lines), line, word, int, num, space, cmd (\\alpha), arg (a TeX argument: '{'…'}' or one token), opt ([…] or nothing), math ($…$, \\(…\\), \\[…\\]).",
+      "examples": "Examples (click to try)",
+      "useExample": "Fill the find and replace fields with this example"
+    },
+    "messages": {
+      "invalidRegex": "Invalid regular expression: {detail}",
+      "unknownType": "Unknown hole type “{type}”. Types: any, block, line, word, int, num, space, cmd, arg, opt, math",
+      "typeExpected": "Write a type after the colon, like @x:num",
+      "unterminatedRegex": "The regular expression needs a closing /",
+      "numberedHoleName": "Holes are numbered by themselves: use * here, or name it with letters, like @x",
+      "needsLiteral": "Add some literal text or a typed hole: a pattern of holes alone matches everything",
+      "adjacentHoles": "Two holes side by side: the first one is always empty",
+      "unknownCapture": "No hole called @{name} in the find pattern. Write \\@ for a literal @",
+      "unterminatedExpression": "Close the expression with )",
+      "invalidExpression": "This expression can’t be read",
+      "dollarReference": "Write {suggestion} instead of {written}",
+      "notANumber": "“{value}” is not a number"
+    }
   }
 }

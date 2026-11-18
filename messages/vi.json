@@ -8297,5 +8297,93 @@
       "failedFallback": "Cuộc trò chuyện thất bại.",
       "failed": "Trò chuyện về tài liệu thất bại."
     }
+  },
+  "find": {
+    "previousMatch": "Kết quả trước (Shift+Enter)",
+    "nextMatch": "Kết quả sau (Enter)",
+    "close": "Đóng (Esc)",
+    "matchCount": "{current}/{total}",
+    "replaceWith": "Thay bằng",
+    "replace": "Thay",
+    "replaceAll": "Tất cả",
+    "replaceTitle": "Thay kết quả này (Enter trong ô thay thế)",
+    "replaceAllTitle": "Thay tất cả kết quả (Cmd/Ctrl+Enter)",
+    "modes": {
+      "label": "Chế độ tìm",
+      "plain": "Văn bản",
+      "pattern": "Mẫu",
+      "regex": "Regex"
+    },
+    "modeHints": {
+      "plain": "Tìm đúng văn bản đã gõ",
+      "pattern": "Mẫu (Alt+P): * là một chỗ trống, dùng lại bằng @1. Xem bảng tóm tắt",
+      "regex": "Biểu thức chính quy (Alt+R): dùng lại nhóm bằng @1, @tên"
+    },
+    "matchCase": "Phân biệt hoa thường (Alt+C)",
+    "wholeWord": "Nguyên từ (Alt+W)",
+    "flexibleSpacing": "Khoảng trắng linh hoạt: một dấu cách khớp với mọi khoảng trắng, kể cả không có",
+    "preserveCase": "Giữ kiểu chữ: theo kết quả viết hoa chữ đầu hoặc viết hoa toàn bộ",
+    "inSelection": "Tìm trong vùng chọn",
+    "markdownReplacement": "Nội dung thay là Markdown (**đậm**, $toán$)",
+    "where": "Phạm vi",
+    "scopes": {
+      "anywhere": "Mọi nơi",
+      "outsideMath": "Ngoài công thức",
+      "insideMath": "Trong công thức",
+      "skipCommentsAndCode": "Bỏ qua chú thích và mã"
+    },
+    "cheatSheet": "Bảng tóm tắt mẫu",
+    "presets": "Mẫu có sẵn",
+    "previewTitle": "Nội dung sẽ được ghi cho kết quả hiện tại",
+    "incomplete": "Tìm kiếm dừng sớm: mẫu này quá tốn kém cho toàn bộ tài liệu",
+    "replacedSummary": "Đã thay {replaced, plural, other {# kết quả}}",
+    "skippedSummary": "Bỏ qua {skipped, plural, other {# kết quả}}: không phải số",
+    "yourPresets": "Mẫu của bạn",
+    "noPresets": "Chưa có. Đặt tên cho phép tìm và thay hiện tại để lưu.",
+    "presetName": "Tên mẫu",
+    "savePreset": "Lưu",
+    "deletePreset": "Xoá mẫu {name}",
+    "builtInPresets": "Có sẵn",
+    "presetNames": {
+      "inlineToDisplay": "Công thức cùng dòng \\( \\) thành riêng dòng \\[ \\]",
+      "displayToInline": "Công thức riêng dòng \\[ \\] thành cùng dòng \\( \\)",
+      "dollarToParens": "$…$ thành \\( \\)",
+      "parensToDollar": "\\( \\) thành $…$",
+      "fracToDfrac": "\\frac thành \\dfrac",
+      "markdownBoldToLatex": "**Đậm** Markdown thành \\textbf",
+      "latexBoldToMarkdown": "\\textbf thành **đậm** Markdown",
+      "latexEmphToMarkdown": "\\emph thành *nghiêng* Markdown",
+      "swapPair": "Đổi chỗ cặp (a,b) thành (b,a)"
+    },
+    "cheat": {
+      "rows": {
+        "hole": "Một chỗ trống: đoạn ngắn nhất phù hợp, giữ cân bằng dấu ngoặc, trong một đoạn văn. Dùng lại bằng @1, @2…",
+        "single": "Đúng một ký tự",
+        "named": "Chỗ trống có tên. Lặp lại cùng tên thì phải khớp cùng văn bản",
+        "typed": "Chỗ trống có kiểu (xem các kiểu bên dưới); @:kiểu khi không cần tên",
+        "regexHole": "Chỗ trống phải khớp một biểu thức chính quy, ví dụ @x/[^,]+/",
+        "escapes": "Ký tự *, ? hoặc @ nguyên văn. Các dấu gạch chéo ngược khác giữ nguyên: gõ \\frac như bình thường",
+        "references": "Trong nội dung thay: chỗ trống theo số, theo tên, toàn bộ kết quả",
+        "counter": "Trong nội dung thay: số thứ tự kết quả, 1, 2, 3…",
+        "expressions": "Trong nội dung thay: phép tính và .upper .lower .title .trim; @(@1*2) cho chỗ trống theo số"
+      },
+      "types": "Các kiểu: any, block (có thể vượt qua dòng trống), line, word, int, num, space, cmd (\\alpha), arg (một đối số TeX: '{'…'}' hoặc một ký hiệu), opt ([…] hoặc không có), math ($…$, \\(…\\), \\[…\\]).",
+      "examples": "Ví dụ (bấm để thử)",
+      "useExample": "Điền ví dụ này vào ô tìm và ô thay"
+    },
+    "messages": {
+      "invalidRegex": "Biểu thức chính quy không hợp lệ: {detail}",
+      "unknownType": "Kiểu chỗ trống “{type}” không tồn tại. Các kiểu: any, block, line, word, int, num, space, cmd, arg, opt, math",
+      "typeExpected": "Viết một kiểu sau dấu hai chấm, ví dụ @x:num",
+      "unterminatedRegex": "Biểu thức chính quy cần dấu / đóng",
+      "numberedHoleName": "Chỗ trống được đánh số tự động: dùng * ở đây, hoặc đặt tên bằng chữ, ví dụ @x",
+      "needsLiteral": "Thêm văn bản cố định hoặc chỗ trống có kiểu: mẫu chỉ toàn chỗ trống sẽ khớp mọi thứ",
+      "adjacentHoles": "Hai chỗ trống liền nhau: chỗ đầu luôn rỗng",
+      "unknownCapture": "Mẫu tìm không có chỗ trống tên @{name}. Viết \\@ để có ký tự @",
+      "unterminatedExpression": "Đóng biểu thức bằng )",
+      "invalidExpression": "Không đọc được biểu thức này",
+      "dollarReference": "Viết {suggestion} thay cho {written}",
+      "notANumber": "“{value}” không phải là số"
+    }
   }
 }
