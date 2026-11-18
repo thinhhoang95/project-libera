@@ -3,6 +3,8 @@ import { detachReferenceAttachments, moveReferenceAttachments } from "./referenc
 import { randomInt } from "node:crypto";
 import { NOTEBOOK_ILLUSTRATION_IDS } from "@/lib/notebook-illustrations";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { isNotebookMigrating } from "@/lib/storage/migration-fence";
+import { withMovedReviewsUnder } from "@/lib/agent/review-store";
 import { StorageError } from "@/lib/storage/errors";
 import { pathExists } from "@/lib/storage/fs-utils";
 import {
@@ -31,6 +33,21 @@ import type { LiberaNotebookMetadata } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { remapLastNotebookName } from "@/lib/storage/last-notebook";
 import { assertNotSharedItem, SharedDocumentError, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+
+/** Whether two paths are the same directory on disk (a case-insensitive disk answers for both spellings of a name). */
+async function isSameDirectory(first: string, second: string) {
+  try {
+    const [a, b] = await Promise.all([stat(first), stat(second)]);
+    return a.dev === b.dev && a.ino === b.ino;
+  } catch { return false; }
+}
+
+/** An unfinished migration holds a notebook (as source or destination): it can't be renamed or deleted until it ends. */
+async function assertNotebookNotMigrating(name: string, action: string) {
+  if (await isNotebookMigrating(name)) {
+    throw new StorageError(`${name} is part of a notebook migration that has not finished, so it can't be ${action} yet. Finish or stop the migration first.`, 409);
+  }
+}
 
 /** Notebooks and linked folders share one namespace of top-level names. */
 function assertNameNotUsedByFolder(name: string, except?: string) {
@@ -87,18 +104,24 @@ export async function renameNotebook(
   // orphan the project. Changing only the color or emoji is still fine.
   if (!linkedFolder && safeCurrentName !== safeNextName) assertNotSharedItem(safeCurrentName);
 
+  if (safeCurrentName !== safeNextName) {
+    await assertNotebookNotMigrating(safeCurrentName, "renamed");
+    await assertNotebookNotMigrating(safeNextName, "renamed to");
+  }
+
   if (linkedFolder) {
     // Only the folder's name in Libera changes; the folder on disk keeps its name.
-    renameLinkedFolder(safeCurrentName, safeNextName);
+    await withMovedReviewsUnder(safeCurrentName, safeNextName, async () => renameLinkedFolder(safeCurrentName, safeNextName));
   } else {
     const nextPath = notebookPath(safeNextName);
 
-    if (currentPath !== nextPath && (await pathExists(nextPath))) {
-      throw new StorageError("Destination notebook already exists.", 409);
-    }
-
     if (currentPath !== nextPath) {
-      await rename(currentPath, nextPath);
+      // On a case-insensitive disk the new spelling finds the notebook itself: that is a rename, not a clash.
+      const caseOnly = safeCurrentName.toLowerCase() === safeNextName.toLowerCase() && await isSameDirectory(currentPath, nextPath);
+      if (!caseOnly && (await pathExists(nextPath))) {
+        throw new StorageError("Destination notebook already exists.", 409);
+      }
+      await withMovedReviewsUnder(safeCurrentName, safeNextName, () => rename(currentPath, nextPath));
     }
   }
 
@@ -120,6 +143,11 @@ export async function renameNotebook(
   await renameNotebookViewOption(currentName, nextName);
   await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
   await moveReviewPath(currentName, nextName);
+  // Undo history of agent runs names files by notebook too (pending reviews moved with the folder above).
+  if (currentName !== nextName) {
+    const { recordMovedRunFolder } = await import("@/lib/agent/snapshots");
+    await recordMovedRunFolder(currentName, nextName);
+  }
   // The notebook's own library moves with its folder; pointers into it are renamed here.
   await moveReferenceAttachments(currentName, nextName);
   await renameFileMetadataPathPrefix(currentName, nextName);
@@ -140,6 +168,7 @@ export async function deleteNotebook(name: string) {
   const marker = sharedNotebookMarker(assertSafeSegment(name, "Notebook name"));
   if (marker && !marker.revoked) throw new SharedDocumentError(name);
 
+  await assertNotebookNotMigrating(name, "deleted");
   await ensureAdminRoot();
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);

@@ -10,7 +10,7 @@ import { isTextFileType } from "@/lib/types";
 import { writeJsonState } from "@/lib/storage/json-state";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { isPathMigrating } from "@/lib/storage/migration-fence";
-import { resolveLibraryPath } from "./library";
+import { listNotebookNames, resolveLibraryPath } from "./library";
 import type { AgentReviewFile, AgentReviewRevertResult } from "./types";
 
 // Manual review: the agent's edits are applied as usual, and each file it
@@ -180,11 +180,14 @@ export async function listPendingReviews(): Promise<AgentReviewFile[]> {
   try { names = (await readdir(reviewDirectory())).filter((name) => name.endsWith(".json")); }
   catch { return []; }
   const files: AgentReviewFile[] = [];
+  const notebooks = new Set(await listNotebookNames());
   for (const name of names) {
     let entry: unknown;
     try { entry = JSON.parse(await readFile(path.join(reviewDirectory(), name), "utf8")); }
     catch { continue; }
     if (!isEntry(entry)) continue;
+    // Its notebook is gone (renamed or deleted elsewhere): neither shown nor dropped, so a repair can still find it.
+    if (!notebooks.has(entry.path.split("/")[0])) continue;
     const pending = entry;
     const current = await serialized(pending.path, async () => {
       const latest = await readEntry(pending.path);

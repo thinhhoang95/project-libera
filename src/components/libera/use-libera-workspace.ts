@@ -577,8 +577,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     applyExpanded(nextExpanded, { persist: options?.persist });
   }
 
-  function workspaceFileRequest<T>(url: string, init: RequestInit, describe: (result: T) => WorkspaceFileChange) {
-    return workspaceManager.runFileChange(() => apiRequest<T>(url, init), describe);
+  function workspaceFileRequest<T>(url: string, init: RequestInit, describe: (result: T) => WorkspaceFileChange, onPersistFailed?: (error: Error) => void) {
+    return workspaceManager.runFileChange(() => apiRequest<T>(url, init), describe, onPersistFailed);
   }
 
   async function applyCompleteTree(nextTree: LiberaTree) {
@@ -3960,12 +3960,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    * The app follows a migration's result, then tells the server it did, which
    * then forgets the result. A failure here leaves the result on the server,
    * so the next migration dialog applies it again; the files have moved either way.
+   * `persistFailure`: the saved workspaces could not be written with the moved
+   * paths (runFileChange keeps going on that); the journal is then not
+   * acknowledged, and the result is replayed.
    */
-  async function settleMigrationResult(result: MigrationResult) {
+  async function settleMigrationResult(result: MigrationResult, persistFailure: { error: Error | null }) {
     try {
       await applyMigrationResult(result);
       // Other windows of the app have their own tabs and state to follow.
       migrationChannelRef.current?.postMessage(result);
+      // Tabs, expanded folders and the like follow through the normal checkpoint: write it now, so the acknowledgement below means it is on disk.
+      if (!persistFailure.error) await workspaceManager.checkpoint();
+      if (persistFailure.error) throw persistFailure.error;
       if (result.state === "done") await apiRequest("/api/notebooks/migrate", { method: "POST", body: JSON.stringify({ action: "acknowledge", id: result.id }) });
     } catch (error) {
       setWorkspaceError(tRef.current("movedButNotUpdatedError", { message: error instanceof Error ? error.message : String(error) }));
@@ -3975,8 +3981,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   /** A finished migration whose result never reached this window (the app quit, the response was lost). */
   async function applyUnacknowledgedMigration(result: MigrationResult) {
-    await workspaceManager.runFileChange(async () => result, (value) => migrationFileChange(value));
-    await settleMigrationResult(result);
+    const persistFailure: { error: Error | null } = { error: null };
+    await workspaceManager.runFileChange(async () => result, (value) => migrationFileChange(value), (error) => { persistFailure.error = error; });
+    await settleMigrationResult(result, persistFailure);
   }
 
   /** Runs a reviewed migration. Throws when nothing moved (the plan changed, a blocker); a partial run returns `interrupted`. */
@@ -3988,20 +3995,22 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       ? { ...request, destination: { ...request.destination, create: { ...create, groupId: null, workspaceGroupId: create.groupId ?? null } } }
       : request;
     await flushReviewsUnder(request.paths);
+    const persistFailure: { error: Error | null } = { error: null };
     const result = await workspaceFileRequest<MigrationResult>("/api/notebooks/migrate", {
       method: "POST",
       body: JSON.stringify({ action: "run", request: body, token }),
-    }, (value) => migrationFileChange(value));
-    await settleMigrationResult(result);
+    }, (value) => migrationFileChange(value), (error) => { persistFailure.error = error; });
+    await settleMigrationResult(result, persistFailure);
     return result;
   }
 
   async function resumeNotebookMigration(id: string, mode: "continue" | "stop") {
+    const persistFailure: { error: Error | null } = { error: null };
     const result = await workspaceFileRequest<MigrationResult>("/api/notebooks/migrate", {
       method: "POST",
       body: JSON.stringify({ action: "resume", id, mode }),
-    }, (value) => migrationFileChange(value));
-    await settleMigrationResult(result);
+    }, (value) => migrationFileChange(value), (error) => { persistFailure.error = error; });
+    await settleMigrationResult(result, persistFailure);
     return result;
   }
 
@@ -4049,9 +4058,32 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   // Another window ran a migration: this window's tabs and state follow it.
   const migrationChannelRef = useRef<BroadcastChannel | null>(null);
-  const latestMigrationApply = useRef(applyMigrationResult);
+  /**
+   * This window follows a migration another window ran: its saved workspaces
+   * (not only its tabs) get the new paths. There is no confirmation back to
+   * the other window. A failure to apply it falls back to the server's list of
+   * unacknowledged migrations (the other window may not have acknowledged yet),
+   * and the tree is refreshed from disk either way, so no stale path is shown.
+   */
+  async function followMigrationFromOtherWindow(result: MigrationResult) {
+    try {
+      await workspaceManager.runFileChange(async () => result, (value) => migrationFileChange(value));
+      await applyMigrationResult(result);
+    } catch (error) {
+      setWorkspaceError(tRef.current("movedButNotUpdatedError", { message: error instanceof Error ? error.message : String(error) }));
+      try {
+        const { unacknowledged } = await apiRequest<{ unacknowledged: MigrationResult[] }>("/api/notebooks/migrate");
+        for (const pending of unacknowledged) {
+          await workspaceManager.runFileChange(async () => pending, (value) => migrationFileChange(value));
+          await applyMigrationResult(pending);
+        }
+      } catch { /* Left to the next launch or the Migration dialog, which replay unacknowledged results. */ }
+      await refreshTree().catch(() => undefined);
+    }
+  }
+  const latestMigrationApply = useRef(followMigrationFromOtherWindow);
   useLayoutEffect(() => {
-    latestMigrationApply.current = applyMigrationResult;
+    latestMigrationApply.current = followMigrationFromOtherWindow;
   });
   useEffect(() => {
     if (!authenticated || typeof BroadcastChannel === "undefined") return;

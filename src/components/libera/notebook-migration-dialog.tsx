@@ -225,9 +225,16 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
   async function saveAll() {
     setBusy(true);
     setError("");
-    try { await onSaveTabs(paths); }
+    let saved = false;
+    try { await onSaveTabs(paths); saved = true; }
     catch (failure) { setError(failure instanceof Error ? failure.message : t("saveFilesFailed")); }
     finally { setBusy(false); }
+    // Saving changed what the plan's token covers: the plan shown is stale. Fetch it again, so the
+    // plan the user sees (warnings included) is the one Migrate runs. Nothing runs without a click.
+    if (saved) {
+      setPlan(null);
+      await review();
+    }
   }
 
   function chooseNewNotebook(values: NotebookFormValues) {

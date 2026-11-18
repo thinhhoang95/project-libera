@@ -76,7 +76,7 @@ import { copyTranscript } from "@/lib/storage/transcripts";
 import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { assertNotMigrating, itemLibraryPath } from "@/lib/storage/migration-fence";
+import { assertNotMigrating, assertNothingMigratingWithin, itemLibraryPath } from "@/lib/storage/migration-fence";
 import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
 
 /** Reads a file for a tab. Text files come with their content, except plain
@@ -394,6 +394,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
   const nextPath = itemPath(current.notebook, nextParts);
   assertNotSharedItem(current.notebook, current.pathParts);
   await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
+  await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
   assertNotSharedItem(current.notebook, nextParts);
   await assertNotMigrating(itemLibraryPath(current.notebook, nextParts));
 
@@ -463,6 +464,7 @@ export async function archiveFolder(relativePath: string) {
   const currentPath = itemPath(current.notebook, current.pathParts);
   assertNotSharedItem(current.notebook, current.pathParts);
   await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
+  await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
   await assertDirectoryExists(currentPath, "Folder was not found.");
 
   const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
@@ -502,6 +504,7 @@ export async function deleteFolder(relativePath: string) {
   const targetPath = itemPath(current.notebook, current.pathParts);
   assertNotSharedItem(current.notebook, current.pathParts);
   await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
+  await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
   await assertDirectoryExists(targetPath, "Folder was not found.");
   const markdown = (await readMarkdownAssetDocuments(current.notebook)).documents.filter((document) =>
     document.documentPath.startsWith(`${relativePath}/`));
