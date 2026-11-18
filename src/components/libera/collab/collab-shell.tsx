@@ -9,7 +9,7 @@ import { UserPlus, Users, UserX } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { LocalProject } from "@/lib/collab/local-api";
 import { useCollabStatus } from "@/lib/collab/ui/hooks";
-import { connectionWording, roleLabel } from "@/lib/collab/ui/wording";
+import { connectionWording, isKnownConnection, roleLabel } from "@/lib/collab/ui/wording";
 import { useCollabShell, type CollabShellValue } from "./collab-provider";
 import { NotificationsBell } from "./notifications-bell";
 import "./collab.css";
@@ -22,7 +22,7 @@ export function CollabRailButtons() {
   const collab = useCollabStatus();
   if (!shell?.visible) return null;
   const status = collab.status;
-  const wording = status ? connectionWording(status.connection, tWording) : null;
+  const wording = status && isKnownConnection(status.connection) ? connectionWording(status.connection, tWording) : null;
   const tone = wording?.tone ?? (collab.phase === "error" ? "danger" : "neutral");
   const label = wording?.label ?? (collab.error ? t("unavailable") : t("collaboration"));
   const pending = status?.pendingCommands ?? 0;

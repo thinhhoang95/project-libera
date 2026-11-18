@@ -2516,7 +2516,7 @@
     "emptyAlbum": "Album này không có ảnh nào.",
     "emptyGallery": "Thư viện ảnh của bạn chưa có ảnh nào.",
     "gallerySections": "Các mục của thư viện ảnh",
-    "insertPhotos": "{count, plural, one {Chèn ảnh} other {Chèn # ảnh}}",
+    "insertPhotos": "{count, plural, =0 {Chèn ảnh} =1 {Chèn ảnh} other {Chèn # ảnh}}",
     "inserting": "Đang chèn…",
     "noAlbums": "Chưa có album nào.",
     "noStarredPhotos": "Không có ảnh được gắn sao.",

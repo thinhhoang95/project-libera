@@ -2516,7 +2516,7 @@
     "emptyAlbum": "此相册中没有照片。",
     "emptyGallery": "您的图库中暂时没有照片。",
     "gallerySections": "图库分区",
-    "insertPhotos": "{count, plural, one {插入照片} other {插入 # 张照片}}",
+    "insertPhotos": "{count, plural, =0 {插入照片} =1 {插入照片} other {插入 # 张照片}}",
     "inserting": "正在插入…",
     "noAlbums": "暂无相册。",
     "noStarredPhotos": "没有已加星标的照片。",

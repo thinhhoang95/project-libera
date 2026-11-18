@@ -89,7 +89,7 @@ test("notebook image viewer has the Gallery viewer's features", async (t) => {
     await press("i");
     const info = host.querySelector('[aria-label="Image info"]')!;
     assert.match(info.textContent ?? "", /2000 × 1000/);
-    assert.match(info.textContent ?? "", /2 KB/);
+    assert.match(info.textContent ?? "", /2 kB/);
     assert.match(info.textContent ?? "", /Notes\/a\.png/);
     await render("Notes/b.png");
     await act(async () => { await Promise.resolve(); });

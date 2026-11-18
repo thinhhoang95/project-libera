@@ -33,6 +33,11 @@ const CONNECTION_KEY: Record<HostConnection, { key: string; tone: CollabTone }> 
   "update-required": { key: "updateRequired", tone: "danger" },
 };
 
+/** Whether the host reported a connection state this build knows (a status that is missing it, or newer than the app, has none). */
+export function isKnownConnection(connection: unknown): connection is HostConnection {
+  return typeof connection === "string" && Object.hasOwn(CONNECTION_KEY, connection);
+}
+
 export function connectionWording(connection: HostConnection, t: WordingTranslator = englishTranslator): ConnectionWording {
   const { key, tone } = CONNECTION_KEY[connection];
   return { label: t(`connection.${key}.label`), detail: t(`connection.${key}.detail`), tone };

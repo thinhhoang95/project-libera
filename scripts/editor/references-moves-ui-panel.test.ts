@@ -465,7 +465,7 @@ test("For this document: disabled without citations; copy and export send the ac
     assert.match(host.querySelector("[role=alert]")?.textContent ?? "", /Exported essay-bibliography\.bib\. 2 cited keys are not in the library: missing2001, odd key\./);
 
     await click(byLabel(host, "References menu"));
-    await click(byLabel(menu(host), "Export bibliography as Formatted html"));
+    await click(byLabel(menu(host), "Export bibliography as Formatted HTML"));
     await waitFor(() => downloads.length === 2, "downloaded the formatted list");
     assert.deepEqual(server.bodies("/api/references/bibliography").at(-1), { notebook: "Notes", format: "html", documentText: draft, documentName: "Notes/essay.md", download: true });
   } finally {

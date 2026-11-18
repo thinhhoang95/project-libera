@@ -386,7 +386,7 @@ test("a candidate card shows the formatted reference and provenance, and conflic
 
   const confirm = buttonByText(card, /Add & confirm/) as HTMLButtonElement;
   assert.equal(confirm.disabled, true);
-  assert.match(byLabel(card, "Why it cannot be confirmed")?.textContent ?? "", /Sources disagree on published in/);
+  assert.match(byLabel(card, "Why it cannot be confirmed")?.textContent ?? "", /Sources disagree on Published in/);
 
   await click(byLabel(card, "Use Nature from Crossref"));
   assert.equal((buttonByText(card, /Add & confirm/) as HTMLButtonElement).disabled, false, "every field is now authoritative and confident");
@@ -707,8 +707,8 @@ test("re-resolve shows the differences and never overwrites the user's fields si
   const rows = [...dialog.querySelectorAll("tr[data-field]")];
   assert.deepEqual(rows.map((row) => row.getAttribute("data-field")), ["title", "container-title", "volume"]);
   assert.match(rows[0].textContent ?? "", /My own title.*The registered title/);
-  assert.equal((byLabel(dialog, "Use the resolved title") as HTMLInputElement).checked, false, "the user's value is kept by default");
-  assert.equal((byLabel(dialog, "Use the resolved published in") as HTMLInputElement).checked, true);
+  assert.equal((byLabel(dialog, "Use the resolved Title") as HTMLInputElement).checked, false, "the user's value is kept by default");
+  assert.equal((byLabel(dialog, "Use the resolved Published in") as HTMLInputElement).checked, true);
   assert.match(dialog.textContent ?? "", /1 field you wrote will be kept/);
   await click(buttonByText(document.querySelector("[role=dialog]")!, "Apply"));
   assert.deepEqual(server.patches().at(-1), [{

@@ -143,7 +143,7 @@ test("costs format with precision that suits their size", () => {
   assert.equal(formatCost(0.0042), "$0.0042");
   assert.equal(formatCost(0.123), "$0.123");
   assert.equal(formatCost(12.345), "$12.35");
-  assert.equal(formatCost(1234), "$1234");
+  assert.equal(formatCost(1234), "$1,234");
 });
 
 test("the ledger appends entries per month and reads them back as buckets", async () => {
