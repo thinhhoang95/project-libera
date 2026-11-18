@@ -183,3 +183,23 @@ gr-qc 2611.15331 2611.15321, nucl-th 2611.10816 2611.10465.
 Notable: math.LO 2611.11828 (137 quiver tikz-cd diagrams), cs.NI 2611.13943 (sn-jnl inline bbl with `\ifx…\undefined\def` fallbacks),
 cond-mat.str-el 2611.17927 (REVTeX 4.2 inline bbl), math.OA 2611.08668 (inline `theindex`, `\index` with `\ref`), math.CT 2611.03553
 (`\usebox` arrows, its own `\lean` mark). q-bio.QM was asked for but the arXiv listing came back empty (rate limit); none audited.
+
+## 2026-11-18, round 9 (23 papers, docs/audits/2026-11-18-latex-visual-paper-review-9.md)
+
+- astro-ph.CO: 2611.17552 2611.17676
+- astro-ph.EP: 2611.16040 2611.16046
+- astro-ph.HE: 2611.20738 2611.21043
+- astro-ph.SR: 2611.19134 2611.19628
+- cs.DC: 2611.16180 2611.16219
+- cs.HC: 2611.21095 2611.21155
+- eess.SP: 2611.19192 2611.19238
+- hep-ex: 2611.16397 2611.16454
+- math.CV: 2611.13409 2611.13725
+- math.MG: 2611.13338
+- math.QA: 2611.13129 2611.13239
+- physics.comp-ph: 2611.19014 2611.19128
+
+Notable: hep-ex 2611.16454 (ATLAS: 15 collaboration style files with kvoptions booleans, `\AtlasOrcid` in the class, 2887 authors),
+astro-ph.SR 2611.19628 (AASTeX 7 authors in an `\input` file, footnotes inside `\citep` notes), astro-ph.HE 2611.21043 (REVTeX
+bbl with `\natexlab`), math.QA 2611.13129 (`\mathchar'26` barred d), eess.SP 2611.19192 (user environments wrapping floats).
+50 were asked for; arXiv's listing API hung and 14 small categories came back empty (see the write-up).
