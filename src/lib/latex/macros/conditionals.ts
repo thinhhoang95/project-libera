@@ -28,10 +28,10 @@ const PRIMITIVE_CONDITIONALS = new Set([
 const COMMAND_TESTS = /^if(?:def|undef|cs)[a-z]*$/;
 
 /** Whether `\name` (its name ending at `at`) opens a conditional that a `\fi` closes; `\ifbool{x}{…}{…}` and `\ifthenelse` are macros, `\iff` an arrow. */
-export function opensConditional(name: string, text: string, at: number, facts?: Pick<ConditionalFacts, "switchState">) {
+export function opensConditional(name: string, text: string, at: number, facts?: Pick<ConditionalFacts, "switchState" | "defined">) {
   if (!name.startsWith("if") || name === "ifthenelse" || name === "iff") return false;
   if (PRIMITIVE_CONDITIONALS.has(name) || facts?.switchState?.(name) !== undefined) return true;
-  if (COMMAND_TESTS.test(name)) return false;
+  if (COMMAND_TESTS.test(name) || facts?.defined?.(name) === true) return false;
   return !/^\s*\{/.test(text.slice(at, at + 40));
 }
 

@@ -303,6 +303,8 @@ class TexScanner {
   private opensConditional(name: string) {
     if (PRIMITIVE_CONDITIONALS.has(name) || this.isSwitch(name)) return true;
     if (COMMAND_TESTS.test(name)) return false;
+    // A macro the document defines (hep-ex 2611.16454's `\newcommand*{\ifb}{fb\(^{-1}\)}`, written `\ifb,` in text) is no conditional.
+    if (this.facts?.defined?.(name) === true) return false;
     // `\ifbool{x}`, `\iffieldundef{x}`, `\ifnumequal{a}{b}`: a test taking braced arguments.
     return !/^\s*\{/.test(this.source.slice(this.pos, this.pos + 40));
   }

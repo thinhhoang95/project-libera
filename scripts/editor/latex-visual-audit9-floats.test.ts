@@ -166,3 +166,59 @@ test("a user macro that is only a size switch is hidden like the switch itself, 
   assert.match(text(caret.view), /\\TableText\s*User size/);
   caret.done();
 });
+
+test("a deluxetable cell with `\\parbox[t]{9cm}{\\raggedright …}` draws its text, `NaN` and `6$''$` included, and the `\\edef`/`\\setlength` before it draw nothing odd (astro-ph.EP 2611.16046)", () => {
+  const source = String.raw`\edef\savedtabcolsep{\the\tabcolsep}\setlength{\tabcolsep}{4pt}
+\begin{deluxetable*}{ll}
+\tabletypesize{\scriptsize}
+\tablecaption{The frame criteria.\label{tab:rules}}
+\tablehead{\colhead{Criterion} & \colhead{Test}}
+\startdata
+pixels & \parbox[t]{9.0cm}{\raggedright PS1 and ZTF: masked pixels are not used. The Mt Lemmon telescopes and CFHT: a NaN or saturated pixel within the fit radius, or a Gaia source within 6$''$ puts the frame out.} \\
+fit area & \parbox[t]{2.3cm}{\raggedright PS1} \\
+\enddata
+\end{deluxetable*}
+\setlength{\tabcolsep}{\savedtabcolsep}`;
+  const doc = body(source, "\\usepackage{aastex701}\n");
+  assert.deepEqual(doc.left, []);
+  const table = doc.view.contentDOM.querySelector(".cm-vis-figure");
+  assert.ok(table, doc.view.contentDOM.innerHTML);
+  const shown = table.textContent ?? "";
+  assert.match(shown, /a NaN or saturated pixel within the fit radius/);
+  assert.doesNotMatch(shown, /\\[a-zA-Z]{2,}|parbox|raggedright|savedtabcolsep/);
+  doc.done();
+});
+
+test("an `\\item[...]` label with a command nothing knows stays source, no widget with raw LaTeX; one with a macro the document defines is drawn (hep-ex 2611.16454)", () => {
+  const list = (label: string) => `\\begin{description}\n\\item[${label}] The fraction.\n\\end{description}`;
+  const unknown = body(list("Momentum \\unknownmacro ($\\unknownmacro^2$):"));
+  assert.deepEqual(unknown.view.contentDOM.querySelectorAll(".cm-vis-item-description").length, 0);
+  assert.match(text(unknown.view), /\\item\[Momentum \\unknownmacro/);
+  assert.ok(![...unknown.view.contentDOM.querySelectorAll(".cm-vis-item")].some((node) => /\\/.test(node.textContent ?? "")));
+  unknown.done();
+  const pre = "\\newcommand{\\pT}{\\ensuremath{p_{\\text{T}}}\\xspace}\n";
+  const known = body(list("Fraction of track-plus-EM-system \\pT ($\\pT^\\mathrm{EM+track} / \\pT$):"), pre);
+  const marker = known.view.contentDOM.querySelector(".cm-vis-item");
+  assert.ok(marker, known.view.contentDOM.innerHTML);
+  assert.doesNotMatch(marker.textContent ?? "", /\\[a-zA-Z]/);
+  assert.match(marker.textContent ?? "", /Fraction of track-plus-EM-system/);
+  assert.ok(marker.querySelector(".katex"), marker.innerHTML);
+  // A click on the marker shows its source.
+  click(marker);
+  assert.match(text(known.view), /\\item\[Fraction of track-plus-EM-system \\pT/);
+  known.done();
+});
+
+test("a macro named like a conditional (`\\ifb` for inverse femtobarns) opens no conditional, so a `\\clearpage` restored later by `\\let` is hidden (hep-ex 2611.16454)", () => {
+  const pre = "\\newcommand*{\\ifb}{fb\\(^{-1}\\)}\n";
+  const src = "\\let\\clearpagebak\\clearpage\n\\let\\clearpage\\relax\n\nText one \\ifb, two.\n\n\\let\\clearpage\\clearpagebak\n%\n\n\\clearpage\n\nText two.\n\n\\clearpage\n";
+  const d = body(src, pre);
+  assert.ok(!d.left.includes("clearpage"), `left: ${d.left.join(" ")}`);
+  assert.ok(!d.lines.join(" ").includes("clearpage"), d.lines.join(" | "));
+  d.done();
+  // The caret on a `\clearpage` shows its source (a layout command reveals where it stands).
+  const full = inDoc(src, pre);
+  const caret = mount(full, full.lastIndexOf("\\clearpage") + 2);
+  assert.match(text(caret.view), /\\clearpage/);
+  caret.done();
+});

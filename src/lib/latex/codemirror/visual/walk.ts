@@ -982,15 +982,30 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    * Whether an item label written with formulas or commands can be drawn: each `$…$` is a formula KaTeX reads (the
    * document's macros expanded), and outside them only text styles and spacing. Else the label is shown as written.
    */
-  const drawableLabel = (label: string, pos: number) => {
+  const drawableLabel = (label: string, pos: number, depth = 0): boolean => {
     let drawable = true;
-    const text = label.replace(/\$([^$]*)\$/g, (_, formula: string) => {
+    const formulaDrawn = (formula: string) => {
       const expanded = expandLatexMacros(formula, defs, { mode: "math", pos });
       if (!expanded.ok || renderKatex(expanded.text, false) === null) drawable = false;
-      return "";
-    });
+    };
+    // The document's `\ensuremath{…}` (a macro such as `\pT`) is a formula too; `\xspace` is a space.
+    let text = label.replace(/\$([^$]*)\$/g, (_, formula: string) => { formulaDrawn(formula); return ""; }).replace(/\\xspace(?![A-Za-z@])/g, "");
+    for (let at = text.search(/\\ensuremath\s*\{/); at >= 0; at = text.search(/\\ensuremath\s*\{/)) {
+      const open = text.indexOf("{", at);
+      const group = readGroup(text, open, TEX_GROUPS);
+      if (!group) return false;
+      formulaDrawn(group.content);
+      text = text.slice(0, at) + text.slice(group.end);
+    }
     if (!drawable) return false;
-    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => /^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|textup|textsl|textmd|textsuperscript|textsubscript|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) && !/\$/.test(text);
+    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => {
+      if (/^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|textup|textsl|textmd|textsuperscript|textsubscript|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) return true;
+      // A macro of the document without arguments whose text is drawable in turn; any other command is unknown.
+      const macro = macroAt(defs, use[1], pos);
+      if (!macro || macro.arity || macro.spec || macro.optional !== undefined || macro.unsupported || depth > 3) return false;
+      const expanded = expandLatexMacros(`\\${use[1]}`, defs, { mode: "text", pos });
+      return expanded.ok && drawableLabel(expanded.text, pos, depth + 1);
+    }) && !/\$/.test(text);
   };
 
   /** An item marker in the current list for `\item` (or a macro for it) at [at, to]; `optional` is its `[label]`. */
@@ -1004,8 +1019,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (optional !== null) {
       latex = /[\\$]/.test(optional);
       label = latex ? optional.trim() : optional.replace(/[{}]/g, "").trim();
-      // A label that cannot be drawn (an unknown command, a formula KaTeX rejects) stays as written.
-      if (latex && !drawableLabel(label, list.node.from)) latex = false;
+      // A label that cannot be drawn (an unknown command, a formula KaTeX rejects) stays source: a marker showing its raw
+      // LaTeX would be junk (hep-ex 2611.16454's `\item[… \pT ($\pT^\mathrm{EM+track}$):]` with `\pT` unknown).
+      if (latex && !drawableLabel(label, list.node.from)) return false;
       if (list.variant !== "description") variant = "number";
     } else if (list.variant === "number") {
       list.count++;
