@@ -52,7 +52,7 @@ function openPreferences(query = "?mode=configuration", { signedIn = true, switc
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const settle = async () => { for (let index = 0; index < 4; index += 1) await tick(); };
 const rows = (document) => Array.from(document.querySelectorAll("#users-list .user-row"));
-const buttonsOf = (row) => Array.from(row.querySelectorAll(".user-actions button")).map((button) => button.textContent);
+const buttonsOf = (row) => Array.from(row.querySelectorAll(".user-actions button")).map((button) => button.getAttribute("aria-label") || button.textContent);
 
 test("Users lists everyone; only other, non-first users can be switched to or removed", async () => {
   const { dom } = openPreferences();

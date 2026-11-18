@@ -438,8 +438,13 @@
       .ai-card-title { flex: 1; min-width: 0; }
       .ai-card-title h4 { font-size: 14px; line-height: 1.3; margin: 0; }
       .ai-card-title p { color: var(--muted-foreground, #71717a); font-size: 12px; line-height: 1.4; margin: 2px 0 0; }
-      .ai-card-grid { display: grid; gap: 10px 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      /* Fields in one row share three tracks (label, control, help), so a label that wraps
+         or a help line under one control never pushes the neighbouring controls out of line.
+         The row spacing is a margin on each field, taken back once under the grid. */
+      .ai-card-grid { column-gap: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: -10px; }
       .ai-field { min-width: 0; }
+      .ai-card-grid > .ai-field:not(.hidden, [hidden]) { align-content: start; display: grid; grid-row: span 3; grid-template-columns: minmax(0, 1fr); grid-template-rows: subgrid; margin-bottom: 10px; }
+      .ai-card-grid > .ai-field > label { align-self: end; }
       .ai-field-wide { grid-column: 1 / -1; }
       .ai-field .field-help { margin-top: 6px; }
       .ai-card > .field-help { margin-top: 6px; }
@@ -525,8 +530,9 @@
         .routing-body { padding: 0 16px 16px; }
       }
       /* Preferences → AI: the jump bar, the Model Pool and custom system prompts */
-      .ai-jump { background: var(--dialog-surface, #fff); border: 1px solid var(--border, #e4e4e7); border-radius: 12px; box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground, #18181b) 6%, transparent); display: flex; flex-wrap: wrap; gap: 2px; margin: 0 0 12px; padding: 4px; position: sticky; top: -20px; z-index: 5; }
-      .libera-dialog .ai-jump button { background: none; border: 0; border-radius: 8px; color: var(--muted-foreground, #71717a); cursor: pointer; font-size: 12px; font-weight: 600; padding: 6px 12px; transition: background-color 0.15s, color 0.15s; }
+      .ai-jump { background: var(--dialog-surface, #fff); border: 1px solid var(--border, #e4e4e7); border-radius: 12px; box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground, #18181b) 6%, transparent); display: flex; flex-wrap: nowrap; gap: 2px; margin: 0 0 12px; overflow-x: auto; overscroll-behavior-x: contain; padding: 4px; position: sticky; scrollbar-width: none; top: -20px; z-index: 5; }
+      .ai-jump::-webkit-scrollbar { display: none; }
+      .libera-dialog .ai-jump button { background: none; border: 0; border-radius: 8px; color: var(--muted-foreground, #71717a); cursor: pointer; flex-shrink: 0; font-size: 12px; font-weight: 600; padding: 6px 12px; transition: background-color 0.15s, color 0.15s; white-space: nowrap; }
       .libera-dialog .ai-jump button:hover { background: var(--muted, #f4f4f5); color: var(--foreground, #18181b); }
       .libera-dialog .ai-jump button:focus-visible { outline: 2px solid color-mix(in srgb, var(--ring, #2563eb) 70%, transparent); outline-offset: 1px; }
       .ai-part { border-top: 1px solid var(--border, #e4e4e7); margin-top: 28px; padding-top: 20px; scroll-margin-top: 44px; }
@@ -630,6 +636,8 @@
       .user-text input { padding: 6px 10px; }
       .user-actions { display: flex; flex: 0 0 auto; gap: 6px; }
       .user-actions button { padding: 6px 10px; }
+      .user-actions button:has(> svg:only-child) { align-items: center; display: inline-flex; height: 32px; justify-content: center; padding: 0; width: 32px; }
+      .user-actions button[data-danger]:hover:not(:disabled) { border-color: var(--destructive, #dc2626); color: var(--destructive, #dc2626); }
       .users-add { margin-top: 12px; }
       .editor-theme-scopes { background: var(--muted, #f4f4f5); border-radius: 10px; display: grid; gap: 3px; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 3px; }
       .editor-theme-scopes button { align-items: center; background: transparent; border: 0; border-radius: 8px; color: var(--muted-foreground, #71717a); cursor: pointer; display: flex; flex-direction: column; font: inherit; font-size: 12.5px; font-weight: 600; gap: 1px; min-width: 0; padding: 6px 8px; }
@@ -660,15 +668,16 @@
       .editor-theme-editor-header label { flex: 1; margin: 0; }
       .editor-theme-editor-header label span { display: block; margin-bottom: 6px; }
       .editor-theme-editor-header button { padding: 8px 14px; }
-      .editor-theme-fonts-row { align-items: end; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; margin-top: 14px; }
-      .editor-theme-font-field { display: flex; flex-direction: column; gap: 6px; margin: 0; min-width: 0; }
-      .editor-theme-font-field small { color: var(--muted-foreground, #71717a); font-size: 11px; font-weight: 400; line-height: 1.3; min-height: 2.6em; order: 3; }
-      .editor-theme-fonts-row > button { align-self: start; margin-top: 24px; padding: 8px 12px; white-space: nowrap; }
+      .editor-theme-fonts-row { align-items: start; column-gap: 10px; display: grid; grid-auto-flow: column; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; grid-template-rows: auto auto auto; margin-top: 14px; row-gap: 6px; }
+      .editor-theme-font-field { display: contents; }
+      .editor-theme-font-field > * { min-width: 0; }
+      .editor-theme-font-field small { color: var(--muted-foreground, #71717a); font-size: 11px; font-weight: 400; line-height: 1.3; }
+      .editor-theme-fonts-row > button { align-self: stretch; grid-row: 2; padding: 0 12px; white-space: nowrap; }
       .editor-theme-font-status { margin: 6px 0 0; min-height: 16px; }
       .editor-theme-fonts { color: var(--muted-foreground, #71717a); font-size: 10.5px; line-height: 1.2; margin-top: -4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .editor-theme-preview pre { border-radius: 6px; font-size: 11.5px; margin: 0 0 8px; padding: 6px 8px; white-space: pre-wrap; }
       .editor-theme-preview pre b { font-weight: 600; }
-      @media (max-width: 640px) { .editor-theme-fonts-row { grid-template-columns: 1fr; } .editor-theme-fonts-row > button { margin-top: 0; } }
+      @media (max-width: 640px) { .editor-theme-fonts-row { grid-auto-flow: row; grid-template-columns: 1fr; grid-template-rows: none; } .editor-theme-fonts-row > small { margin-bottom: 8px; } .editor-theme-fonts-row > button { grid-row: auto; padding: 8px 12px; } }
       .editor-theme-columns { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
       .editor-theme-column h5 { font-size: 12px; margin: 0 0 8px; color: var(--muted-foreground, #71717a); text-transform: uppercase; letter-spacing: 0.04em; }
       .editor-theme-preview { border: 1px solid var(--border, #e4e4e7); border-radius: 10px; font-size: 12px; line-height: 1.45; min-height: 150px; padding: 12px 14px; }
@@ -3596,8 +3605,18 @@
       });
       document.querySelector("#model-pool-local-link").addEventListener("click", () => setActiveSection("local-llms"));
       document.querySelectorAll("[data-ai-jump]").forEach((button) => {
-        button.addEventListener("click", () => document.querySelector(button.dataset.aiJump)?.scrollIntoView({ block: "start" }));
+        button.addEventListener("click", () => {
+          document.querySelector(button.dataset.aiJump)?.scrollIntoView({ block: "start" });
+          button.scrollIntoView({ block: "nearest", inline: "nearest" });
+        });
       });
+      // The jump menu is one row: the mouse wheel moves it sideways when it does not fit.
+      document.querySelector(".ai-jump").addEventListener("wheel", (event) => {
+        const nav = event.currentTarget;
+        if (nav.scrollWidth <= nav.clientWidth || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+        event.preventDefault();
+        nav.scrollLeft += event.deltaY;
+      }, { passive: false });
 
       // Preferences → AI: a custom system prompt on every function's card.
       // Libera adds it after its own instructions, which still set the output format.
@@ -4207,6 +4226,13 @@
         }
       }
 
+      // Lucide paths: log-in, pencil, trash-2.
+      const userActionIcons = {
+        switch: '<path d="m10 17 5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>',
+        rename: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+        remove: '<path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+      };
+
       function renderUsers({ activeProfileId, maxProfiles, profiles }) {
         usersStatus.textContent = "";
         usersList.replaceChildren(...profiles.map((profile) => {
@@ -4240,32 +4266,35 @@
           if (profile.id !== activeProfileId) text.append(password);
           const actions = document.createElement("div");
           actions.className = "user-actions";
-          const button = (label, onClick) => {
+          // Icon-only: the label is the tooltip and the accessible name.
+          const button = (label, icon, onClick) => {
             const element = document.createElement("button");
             element.type = "button";
             element.className = "secondary";
-            element.textContent = label;
+            element.title = label;
+            element.setAttribute("aria-label", label);
+            element.innerHTML = `<svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg>`;
             element.addEventListener("click", onClick);
             actions.append(element);
             return element;
           };
           if (profile.id !== activeProfileId) {
-            button(t("switchButton"), () => runUsersAction(async () => {
+            button(t("switchButton"), userActionIcons.switch, () => runUsersAction(async () => {
               usersStatus.textContent = t("restartingAs", { name: profile.name });
               const result = await window.liberaSetup.switchProfile(profile.id);
               if (!result.switched) usersStatus.textContent = t("switchCancelled");
             }, t("couldNotSwitchUser")));
           }
-          button(t("renameButton"), () => startRename(row, text, profile, profile.id !== activeProfileId ? password : null));
+          button(t("renameButton"), userActionIcons.rename, () => startRename(row, text, profile, profile.id !== activeProfileId ? password : null));
           // The first user owns the original settings files; the running user cannot remove themself.
           if (profile.id !== activeProfileId && profile.id !== "default") {
-            button(t("removeButton"), () => runUsersAction(async () => {
+            button(t("removeButton"), userActionIcons.remove, () => runUsersAction(async () => {
               const result = await window.liberaSetup.removeProfile(profile.id, password.value);
               password.value = "";
               if (result.canceled) return;
               renderUsers(result);
               usersStatus.textContent = t("removedUser", { name: profile.name });
-            }, t("couldNotRemoveUser")));
+            }, t("couldNotRemoveUser"))).dataset.danger = "";
           }
           row.append(avatar, text, actions);
           return row;
