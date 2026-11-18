@@ -199,7 +199,7 @@ test("Stop finishes what moved and leaves the rest untouched in the source", () 
   await assertNotebookSound("Dst");
 }));
 
-test("a crash during finalizing resumes without running the interrupted step twice", () => withLibrary(async () => {
+test("a crash during finalizing resumes and runs the interrupted step again", () => withLibrary(async () => {
   await file("Src/a.md", "a");
   await setStarredFilePath("Src/a.md", true);
   const request: MigrationRequest = { source: "Src", paths: ["Src/a.md"], destination: { notebook: "Dst" } };
@@ -211,7 +211,7 @@ test("a crash during finalizing resumes without running the interrupted step twi
   assert.equal(interrupted.phase, "finalizing");
   const resumed = await resumeMigration(interrupted.id, "continue");
   assert.equal(resumed.state, "done");
-  assert.ok(resumed.bookkeeping.some((entry) => /assets/.test(entry)), "the interrupted step is reported, not repeated");
+  assert.deepEqual(resumed.bookkeeping, [], "each step is safe to repeat, so the interrupted one simply runs again");
   assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths, ["Dst/a.md"]);
   await assertNotebookSound("Src");
   await assertNotebookSound("Dst");
