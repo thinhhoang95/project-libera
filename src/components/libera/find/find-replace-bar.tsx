@@ -33,6 +33,8 @@ export type FindBarProps = {
   summary?: { replaced: number; skipped: number } | null;
   placeholder: string;
   findInputRef: RefObject<HTMLInputElement | null>;
+  /** The replacement field, for editors that open the bar on it (Mod-H). */
+  replaceInputRef?: RefObject<HTMLTextAreaElement | null>;
   onNext: () => void;
   onPrevious: () => void;
   onClose: () => void;
@@ -71,7 +73,7 @@ function useUserPresets() {
 const EMPTY_PRESETS: FindPreset[] = [];
 
 export function FindReplaceBar({
-  find, matchCount, activeIndex, incomplete = false, preview, summary, placeholder, findInputRef,
+  find, matchCount, activeIndex, incomplete = false, preview, summary, placeholder, findInputRef, replaceInputRef,
   onNext, onPrevious, onClose, onReplace, onReplaceAll, showScopes = false, inSelection, markdownReplacement,
   onPresetApplied, className = "absolute right-3 top-3 z-20", extra,
 }: FindBarProps) {
@@ -223,6 +225,7 @@ export function FindReplaceBar({
           onChange={find.setReplacement}
           onKeyDown={handleReplaceKeyDown}
           highlights={isPattern && compiledReplacement ? replacementHighlights(compiledReplacement.parts) : []}
+          textareaRef={replaceInputRef}
           multiline
           label={t("replaceWith")}
           placeholder={t("replaceWith")}

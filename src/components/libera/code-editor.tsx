@@ -3,7 +3,7 @@
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, foldGutter, foldKeymap, indentOnInput, syntaxHighlighting } from "@codemirror/language";
-import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import { highlightSelectionMatches } from "@codemirror/search";
 import { Compartment, EditorState, Prec, Transaction } from "@codemirror/state";
 import {
   EditorView, crosshairCursor, drawSelection, dropCursor, highlightActiveLine, highlightActiveLineGutter,
@@ -26,6 +26,9 @@ import { reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review
 import { useCodeMirrorReview } from "@/components/libera/use-editor-review";
 import { LatexChangeBar } from "@/components/libera/latex/latex-change-bar";
 import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "@/components/libera/codemirror-text-width";
+import { CodeMirrorFindBar } from "@/components/libera/find/codemirror-find-bar";
+import { searchKeymapWithoutPanel } from "@/lib/find/codemirror";
+import { CodeMirrorFindSession } from "@/lib/find/codemirror-session";
 
 type CodeEditorProps = {
   fileName: string;
@@ -83,6 +86,8 @@ export function CodeEditor({
   const [cursor, setCursor] = useState({ line: 1, column: 1, selected: 0 });
   const [menu, setMenu] = useState<CodeEditorMenuState | null>(null);
   const [view, setView] = useState<EditorView | null>(null);
+  /** The find & replace bar (Mod-F, Mod-H): its fields, keys and searches; one per editor, kept across view rebuilds. */
+  const [findSession] = useState(() => new CodeMirrorFindSession());
   // The agent's changes under manual review, for the change bar.
   const [agentHunks, setAgentHunks] = useState<ReviewHunk[]>([]);
 
@@ -156,14 +161,14 @@ export function CodeEditor({
         crosshairCursor(),
         highlightActiveLine(),
         highlightSelectionMatches(),
-        search({ top: true }),
+        findSession.extension,
         ...(!binding && initialRef.current.documentPath
           ? [agentReviewCodeMirror(initialRef.current.documentPath, { outside: (transaction) => transaction.annotation(Transaction.remote) === true })]
           : []),
         syntaxHighlighting(codeHighlightStyle),
         language.of([]),
         ...(wrap ? [EditorView.lineWrapping] : []),
-        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, indentWithTab]),
+        keymap.of([...closeBracketsKeymap, ...findSession.keymap, ...defaultKeymap, ...searchKeymapWithoutPanel, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, indentWithTab]),
         EditorView.contentAttributes.of({ "aria-label": initialRef.current.label, spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
         EditorView.updateListener.of((update) => {
           const hunks = update.state.field(reviewHunksField, false);
@@ -206,6 +211,7 @@ export function CodeEditor({
     binding?.attach(created);
     viewRef.current = created;
     setView(created);
+    findSession.attach(created);
     const head = created.state.selection.main.head;
     const headLine = created.state.doc.lineAt(head);
     setCursor({ line: headLine.number, column: head - headLine.from + 1, selected: 0 });
@@ -238,12 +244,13 @@ export function CodeEditor({
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
       if (!binding) publishDraft();
       releaseReflow();
+      findSession.attach(null);
       binding?.destroy();
       created.destroy();
       viewRef.current = null;
       setView(null);
     };
-  }, [publishDraft, reportViewState]);
+  }, [findSession, publishDraft, reportViewState]);
 
   useLayoutEffect(() => {
     // A shared tab's draft is read from the Y.Text, never from the editor.
@@ -318,6 +325,7 @@ export function CodeEditor({
         <div ref={hostRef} className="absolute inset-0" />
         <CodeMirrorTextWidth wrapperRef={wrapperRef} enabled={wraps} kind="code" />
         {view && agentHunks.length ? <LatexChangeBar view={view} hunks={agentHunks} /> : null}
+        <CodeMirrorFindBar session={findSession} kind="code" flavor="text" />
       </div>
       {menu ? <CodeEditorMenu view={menu.view} menu={menu} onClose={() => setMenu(null)} /> : null}
       <div className="libera-code-editor-status flex shrink-0 items-center gap-4 border-t border-border bg-card px-3 py-1 text-xs text-muted-foreground">
