@@ -1,5 +1,6 @@
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { renderKatex } from "./math-render";
+import { SYMBOL_COMMANDS } from "./symbols";
 
 /* Bibliography entries written as markup (audit round 8): the `.bbl` files of BibTeX styles that wrap every field in a
  * command (REVTeX's `\bibinfo{author}{…}`, cond-mat 2611.17927) and the classes' own bibliography commands (EPL's
@@ -91,10 +92,13 @@ function finish(text: string | null): string | null {
   let formulas = true;
   const outside = tidy.replace(/\$([^$]*)\$/g, (_, formula: string) => { if (!renderKatex(formula, false)) formulas = false; return " "; });
   if (!formulas) return null;
-  for (const match of outside.matchAll(/\\([A-Za-z@]+)/g)) if (!DRAWN.test(match[1])) return null;
+  for (const match of outside.matchAll(/\\([A-Za-z@]+)/g)) if (!DRAWN.test(match[1]) && !Object.hasOwn(SYMBOL_COMMANDS, `\\${match[1]}`)) return null;
   // (`\href{…}{…}` alone prints its text: what stays between braces is read by the renderer.)
   return tidy || null;
 }
+
+/** natbib's author-year label ends in `(1972)`, `(1972a)` or `(1972{\natexlab{a}})`. */
+export const AUTHOR_YEAR_LABEL = /\(\s*\d{4}(?:[a-z]|\{?\\natexlab\s*\{[a-z]?\}\}?)?\s*\)/;
 
 /** The markup of REVTeX's `.bbl` entries. */
 export const REVTEX_ENTRY = /\\(?:bibinfo|bibfield|BibitemOpen|BibitemShut)(?![A-Za-z@])/;

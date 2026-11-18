@@ -142,6 +142,8 @@ const NOTE_WRAPPERS = /^\\(?:emph|textit|textbf|textsc|textrm|textsf|texttt|text
 /** Citation commands a note may hold, and how one prints (command, keys, notes) when the chip knows the bibliography. */
 const NOTE_CITE = /^\\(?:[cC]ite(?:t|p|alt|alp|author|year|yearpar|num)?|[pP]arencite|[tT]extcite)\*?$/;
 type NestedCite = (command: string, keys: string[], pre?: string, post?: string) => string;
+/** The text of a reference (`\ref{fig:a}` in a citation note, "Figure 2"), from the document's numbering. */
+type NestedRef = (command: string, keys: string[]) => string;
 
 const MATH_NOTE_SYMBOLS: Record<string, string> = {
   "\\pm": "±", "\\mp": "∓", "\\times": "×", "\\cdot": "·", "\\sim": "∼", "\\simeq": "≃", "\\approx": "≈", "\\le": "≤", "\\leq": "≤", "\\ge": "≥", "\\geq": "≥",
@@ -208,7 +210,7 @@ const NOTE_MATH_SPACED = /^\\(?:pm|mp|times|cdot|sim|approx|simeq|le|leq|ge|geq|
 const NOTE_SUPERSCRIPTS: Record<string, string> = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹", "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼", "(": "⁽", ")": "⁾", n: "ⁿ", i: "ⁱ" };
 const NOTE_SUBSCRIPTS: Record<string, string> = { "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉", "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎" };
 const NOTE_SUPER_LETTERS: Record<string, string> = { ...NOTE_SUPERSCRIPTS, o: "ᵒ", e: "ᵉ", r: "ʳ", s: "ˢ", t: "ᵗ", d: "ᵈ", a: "ᵃ", m: "ᵐ", h: "ʰ", " ": " " };
-const NOTE_SUB_LETTERS: Record<string, string> = { ...NOTE_SUBSCRIPTS, a: "ₐ", e: "ₑ", o: "ₒ", i: "ᵢ", n: "ₙ", r: "ᵣ", x: "ₓ" };
+const NOTE_SUB_LETTERS: Record<string, string> = { ...NOTE_SUBSCRIPTS, a: "ₐ", e: "ₑ", o: "ₒ", i: "ᵢ", n: "ₙ", r: "ᵣ", x: "ₓ", h: "ₕ", j: "ⱼ", k: "ₖ", l: "ₗ", m: "ₘ", p: "ₚ", s: "ₛ", t: "ₜ", u: "ᵤ", v: "ᵥ" };
 /** Commands of a formula that print their argument's text (`{\rm mas\,yr^{-1}}`). */
 const NOTE_MATH_WRAPPERS = /^\\(?:mathrm|mathit|mathbf|mathsf|mathtt|mathnormal|text|textrm|textit|textbf|mbox|operatorname)$/;
 const NOTE_MATH_SPACES = /^\\(?:,|;|:|>| |quad|qquad|thinspace|enspace)$/;
@@ -227,15 +229,22 @@ export function noteMathText(math: string, depth = 0): string | null {
     if (char === "{" || char === "}") { i++; continue; }
     if (char === "^" || char === "_") {
       const group = math[i + 1] === "{" ? readGroup(math, i + 1) : null;
-      const raw = group ? group.content : /^\\(?:[A-Za-z]+|.)/.exec(math.slice(i + 1))?.[0] ?? math.slice(i + 1, i + 2);
+      let raw = group ? group.content : /^\\(?:[A-Za-z]+|.)/.exec(math.slice(i + 1))?.[0] ?? math.slice(i + 1, i + 2);
+      // `R_\mathrm{s}`: the font command takes the group after it, which is then the whole script.
+      let used = group ? 0 : raw.length;
+      if (!group && NOTE_MATH_WRAPPERS.test(raw) && math[i + 1 + raw.length] === "{") {
+        const wrapped = readGroup(math, i + 1 + raw.length);
+        if (wrapped) { raw = math.slice(i + 1, wrapped.end); used = raw.length; }
+      }
       const inner = raw ? noteMathText(raw, depth + 1) : null;
       if (inner === null) return null;
-      const map = char === "^" ? NOTE_SUPERSCRIPTS : NOTE_SUBSCRIPTS;
+      // (A subscript of letters, `R_\mathrm{s}`: the subscript characters that exist, as `\textsubscript` has them.)
+      const map = char === "^" ? NOTE_SUPERSCRIPTS : NOTE_SUB_LETTERS;
       const letters = [...inner.trim()];
       if (inner === "°") out += inner;
       else if (letters.length && letters.every((letter) => map[letter] !== undefined)) out += letters.map((letter) => map[letter]).join("");
       else return null;
-      i = group ? group.end : i + 1 + raw.length;
+      i = group ? group.end : i + 1 + used;
       continue;
     }
     if (char !== "\\") {
@@ -286,7 +295,7 @@ export function citationNotes(optionals: string[], defs: LatexDefinitions | unde
  * emphasis and font switches give their text, spacing commands are dropped, `~` is a space, simple formulas their
  * characters. Null when the note holds anything else: the citation then stays source.
  */
-export function citationNoteText(note: string, depth = 0, cite?: NestedCite): string | null {
+export function citationNoteText(note: string, depth = 0, cite?: NestedCite, ref?: NestedRef): string | null {
   if (depth > 8) return null;
   let out = "";
   for (let i = 0; i < note.length;) {
@@ -337,9 +346,34 @@ export function citationNoteText(note: string, depth = 0, cite?: NestedCite): st
     }
     const group = readGroup(note, after);
     if (/^\\(?:hspace|hskip)\*?$/.test(command) && group) { i = group.end; continue; }
+    // A reference in the note (`[][and Figure~\ref{fig:a}(d) below]`, astro-ph.SR 2611.19628): its number, `?` before the document is known.
+    if (/^\\(?:ref|eqref|autoref|cref|Cref|vref)$/.test(command) && group && /^[^\\{}[\]%$#&]+$/.test(group.content)) {
+      out += ref ? ref(command, group.content.split(",").map((key) => key.trim()).filter(Boolean)) : "?";
+      i = group.end;
+      continue;
+    }
+    // A label prints nothing. A link prints its address (`\url`) or its text (`\href`).
+    if (command === "\\label" && group) { i = group.end; continue; }
+    if (command === "\\url" && group && !/[\\{}$]/.test(group.content.replace(/\\[%#_&]/g, ""))) { out += group.content.replace(/\\([%#_&])/g, "$1"); i = group.end; continue; }
+    if (command === "\\href" && group) {
+      const label = readGroup(note, group.end);
+      const inner = label ? citationNoteText(label.content, depth + 1, cite, ref) : null;
+      if (!label || inner === null) return null;
+      out += inner;
+      i = label.end;
+      continue;
+    }
+    // A footnote in the note (`GLEs\footnote{\url{...}}; e.g.,`): its text, in parentheses after the word it marks.
+    if (command === "\\footnote" && group) {
+      const inner = citationNoteText(group.content, depth + 1, cite, ref);
+      if (inner === null) return null;
+      out += ` (${inner.trim()})`;
+      i = group.end;
+      continue;
+    }
     // `n\textsuperscript{o} 10` (2611.11859): a script of letters, as the superscript characters when they all exist.
     if (/^\\text(?:super|sub)script$/.test(command) && group) {
-      const inner = citationNoteText(group.content, depth + 1, cite);
+      const inner = citationNoteText(group.content, depth + 1, cite, ref);
       if (inner === null) return null;
       const map = command === "\\textsuperscript" ? NOTE_SUPER_LETTERS : NOTE_SUB_LETTERS;
       const letters = [...inner];
@@ -348,7 +382,7 @@ export function citationNoteText(note: string, depth = 0, cite?: NestedCite): st
       continue;
     }
     if (NOTE_WRAPPERS.test(command) && group) {
-      const inner = citationNoteText(group.content, depth + 1, cite);
+      const inner = citationNoteText(group.content, depth + 1, cite, ref);
       if (inner === null) return null;
       out += inner;
       i = group.end;
@@ -381,7 +415,7 @@ export type CitationParts = { command: string; keys: string[]; pre?: string; pos
 const TEXTUAL_CITATIONS = /^(?:citet|textcite|Citet|Textcite|citeA)$/;
 
 /** The chip text of a citation: numbers from the `.aux` when the style is numeric, else author and year. */
-export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLookup, style: CitationStyle = {}) {
+export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLookup, style: CitationStyle = {}, ref?: NestedRef) {
   const name = parts.command.replace(/^\\/, "").replace(/\*$/, "");
   const items = parts.keys.map((key) => {
     const compiled = aux.citations[key];
@@ -399,9 +433,9 @@ export function citationText(parts: CitationParts, aux: LatexAuxData, bib: BibLo
   });
   const allNumeric = items.every((item) => item.numeric);
   // Notes as they print: `p.~5` is "p. 5".
-  const nested: NestedCite = (command, keys, preNote, postNote) => citationText({ command, keys, pre: preNote, post: postNote }, aux, bib, style);
-  const pre = parts.pre ? (citationNoteText(parts.pre, 0, nested) ?? plainTexText(parts.pre)).trim() : "";
-  const post = parts.post ? (citationNoteText(parts.post, 0, nested) ?? plainTexText(parts.post)).trim() : "";
+  const nested: NestedCite = (command, keys, preNote, postNote) => citationText({ command, keys, pre: preNote, post: postNote }, aux, bib, style, ref);
+  const pre = parts.pre ? (citationNoteText(parts.pre, 0, nested, ref) ?? plainTexText(parts.pre)).trim() : "";
+  const post = parts.post ? (citationNoteText(parts.post, 0, nested, ref) ?? plainTexText(parts.post)).trim() : "";
   const note = (text: string) => `${pre ? `${pre} ` : ""}${text}${post ? `, ${post}` : ""}`;
   if (name === "citeauthor" || name === "Citeauthor") return items.map((item) => item.authors ?? item.key).join("; ");
   // biblatex's `\citetitle` prints the entry's title; `\fullcite` the whole entry, roughly as the list gives it.

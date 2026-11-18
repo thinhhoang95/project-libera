@@ -460,7 +460,7 @@ export function renderLatexFragment(latex: string, context: FragmentContext): Do
       const keyText = keys ? read(keys.from, keys.to).replace(/^\{|\}$/g, "") : "";
       const optionals = node.getChildren("OptionalArgument").map((arg) => read(arg.from + 1, arg.to - 1));
       const chip = element("span", "cm-vis-chip cm-vis-cite");
-      chip.textContent = citationText({ command: read(ctrl.from, ctrl.to), keys: keyText.split(",").map((key) => key.trim()).filter(Boolean), pre: optionals.length > 1 ? optionals[0] : undefined, post: optionals.at(-1) }, context.aux, context.bib, citationStyle(context.defs));
+      chip.textContent = citationText({ command: read(ctrl.from, ctrl.to), keys: keyText.split(",").map((key) => key.trim()).filter(Boolean), pre: optionals.length > 1 ? optionals[0] : undefined, post: optionals.at(-1) }, context.aux, context.bib, citationStyle(context.defs), (command, keys) => referenceChipText(command, keys, context.numbering, context.aux, context.defs));
       parent.appendChild(chip);
       return;
     }
