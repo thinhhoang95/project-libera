@@ -57,6 +57,9 @@ function mirrorPieces(value: string, highlights: readonly Highlight[]) {
 }
 
 const FIELD_TEXT = "font-mono text-[13px] leading-5 tracking-normal";
+// Inline, because the unlayered global `input, textarea { background-color }` rule beats `bg-transparent`;
+// the field must stay see-through for the chips behind it.
+const SEE_THROUGH = { backgroundColor: "transparent" } as const;
 
 export function FindField({
   value,
@@ -110,6 +113,7 @@ export function FindField({
           aria-invalid={invalid || undefined}
           className={`relative block w-full resize-none border-0 bg-transparent ${padding} ${FIELD_TEXT} text-foreground outline-none`}
           rows={rows}
+          style={SEE_THROUGH}
           spellCheck={false}
           value={value}
           placeholder={placeholder}
@@ -123,6 +127,7 @@ export function FindField({
           aria-label={label}
           aria-invalid={invalid || undefined}
           className={`relative block h-8 w-full border-0 bg-transparent ${padding} ${FIELD_TEXT} text-foreground outline-none`}
+          style={SEE_THROUGH}
           spellCheck={false}
           value={value}
           placeholder={placeholder}

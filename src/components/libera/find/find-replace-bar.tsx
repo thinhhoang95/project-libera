@@ -4,7 +4,7 @@ import {
   BookMarked, CaseSensitive, CaseUpper, ChevronDown, ChevronUp, Info, Replace, ReplaceAll, Search, Space, TextSelect, Trash2, WholeWord, X,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import type { FindMessage, FindMode, FindScope, MatchPreview } from "@/lib/find";
 import { BUILT_IN_FIND_PRESETS, type FindPreset, type FindRecipeStep } from "@/lib/find/presets";
 import { recipeSteps } from "@/lib/find/recipe";
@@ -83,6 +83,15 @@ export function FindReplaceBar({
   const t = useTranslations("find");
   const messageText = useFindMessageText();
   const [panel, setPanel] = useState<"cheat" | "presets" | null>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  /** A replace button disables itself when nothing is left to match; keep focus in the bar so Escape still closes it. */
+  const keepFocus = (action: () => void) => {
+    action();
+    window.requestAnimationFrame(() => {
+      const bar = barRef.current;
+      if (bar && !bar.contains(document.activeElement)) bar.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    });
+  };
   // A recipe being put together from the current fields, kept while the bar is open.
   const [recipe, setRecipe] = useState<FindRecipeStep[]>([]);
   const { settings, updateSettings, compiled, compiledReplacement } = find;
@@ -133,6 +142,7 @@ export function FindReplaceBar({
   const status = queryError ?? replacementError;
   return (
     <div
+      ref={barRef}
       role="search"
       className={`${className} flex w-[34rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg`}
       // Escape anywhere in the bar closes it; the fields handle (and mark) their own Escape first.
@@ -237,10 +247,10 @@ export function FindReplaceBar({
           placeholder={t("replaceWith")}
           invalid={!!replacementError}
         />
-        <button type="button" className={TEXT_BUTTON} disabled={!canReplace} title={t("replaceTitle")} onClick={onReplace}>
+        <button type="button" className={TEXT_BUTTON} disabled={!canReplace} title={t("replaceTitle")} onClick={() => keepFocus(onReplace)}>
           <Replace aria-hidden className="h-4 w-4" /><span className="libera-btn-label">{t("replace")}</span>
         </button>
-        <button type="button" className={TEXT_BUTTON} disabled={!canReplace} title={t("replaceAllTitle")} onClick={onReplaceAll}>
+        <button type="button" className={TEXT_BUTTON} disabled={!canReplace} title={t("replaceAllTitle")} onClick={() => keepFocus(onReplaceAll)}>
           <ReplaceAll aria-hidden className="h-4 w-4" /><span className="libera-btn-label">{t("replaceAll")}</span>
         </button>
       </div>
