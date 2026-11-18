@@ -125,6 +125,8 @@ test("Preferences picks, duplicates, imports and saves editor themes", async () 
         },
       };
       window.liberaSetup = {
+        // The page reads its messages from the preload (electron/i18n.cjs), as in the app.
+        getI18n: () => require("../../electron/i18n.cjs").setupPayload(),
         getState: async () => ({
           dataDir: "/tmp/notebooks",
           hasApiKey: true,

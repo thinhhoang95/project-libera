@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { filterPhotos, groupPhotos, indexAtOffset, ME, nearestPhoto, NO_FILTER, photoContributor, timeChangepoints, UNKNOWN_CONTRIBUTOR } from "../../src/lib/gallery-timeline";
+import { englishTranslator } from "./intl";
 
 const at = (year: number, month: number, day: number, hour = 12, minute = 0) => new Date(year, month - 1, day, hour, minute).toISOString();
 const photo = (createdAt: string, addedBy?: string | null) => ({ createdAt, ...(addedBy === undefined ? {} : { shared: { addedBy: addedBy ?? undefined } }) });
 const now = new Date(2026, 9, 24, 15);
+const text = { locale: "en", t: englishTranslator("lib.galleryTimeline") };
 
 test("auto grouping starts a section where the time between photos jumps", () => {
   // A morning burst, an afternoon burst, then a trip two weeks later.
@@ -13,7 +15,7 @@ test("auto grouping starts a section where the time between photos jumps", () =>
     at(2026, 9, 1, 16, 0), at(2026, 9, 1, 16, 3), at(2026, 9, 1, 16, 9),
     at(2026, 9, 15, 10), at(2026, 9, 15, 18), at(2026, 9, 16, 9), at(2026, 9, 17, 11),
   ].map((time) => photo(time));
-  const sections = groupPhotos(photos, "auto", now);
+  const sections = groupPhotos(photos, "auto", text, now);
   assert.deepEqual(sections.map((section) => section.photos.length), [4, 3, 4]);
   assert.equal(sections[2].label.includes("15"), true);
   // The two bursts of Sep 1 carry their start times.
@@ -21,7 +23,7 @@ test("auto grouping starts a section where the time between photos jumps", () =>
   assert.ok(sections[0].label.includes("·") && sections[1].label.includes("·"));
   assert.equal(sections[2].label.includes("17"), true);
   // Newest first gives the same sections, reversed.
-  assert.deepEqual(groupPhotos([...photos].reverse(), "auto", now).map((section) => section.photos.length), [4, 3, 4]);
+  assert.deepEqual(groupPhotos([...photos].reverse(), "auto", text, now).map((section) => section.photos.length), [4, 3, 4]);
 });
 
 test("auto never splits close photos and always splits a gap of over a week", () => {
@@ -36,15 +38,15 @@ test("auto never splits close photos and always splits a gap of over a week", ()
 
 test("calendar groupings follow days, Monday weeks, months and years", () => {
   const photos = [at(2026, 10, 24), at(2026, 10, 19, 8), at(2026, 10, 18), at(2026, 9, 30), at(2025, 12, 31)].map((time) => photo(time));
-  assert.deepEqual(groupPhotos(photos, "day", now).map((section) => section.photos.length), [1, 1, 1, 1, 1]);
-  assert.equal(groupPhotos(photos, "day", now)[0].label, "Today");
-  const weeks = groupPhotos(photos, "week", now);
+  assert.deepEqual(groupPhotos(photos, "day", text, now).map((section) => section.photos.length), [1, 1, 1, 1, 1]);
+  assert.equal(groupPhotos(photos, "day", text, now)[0].label, "Today");
+  const weeks = groupPhotos(photos, "week", text, now);
   assert.deepEqual(weeks.map((section) => section.photos.length), [2, 1, 1, 1]);
   assert.equal(weeks[0].label, "This week");
-  const months = groupPhotos(photos, "month", now);
+  const months = groupPhotos(photos, "month", text, now);
   assert.deepEqual(months.map((section) => section.photos.length), [3, 1, 1]);
   assert.equal(months[0].label, "This month");
-  assert.deepEqual(groupPhotos(photos, "year", now).map((section) => section.label), ["2026", "2025"]);
+  assert.deepEqual(groupPhotos(photos, "year", text, now).map((section) => section.label), ["2026", "2025"]);
 });
 
 test("the filter keeps chosen contributors within the days given", () => {

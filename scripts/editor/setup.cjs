@@ -19,11 +19,19 @@ function englishIntl(intl) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const config = { locale: "en", messages, timeZone };
   const formatter = intl.createFormatter(config);
+  // One translator per namespace, like the real provider: components list `t` in effect and memo dependencies, so a
+  // new function on every render would re-run them forever.
+  const translators = new Map();
+  const translatorFor = (namespace) => {
+    const key = namespace ?? "";
+    if (!translators.has(key)) translators.set(key, intl.createTranslator({ ...config, namespace }));
+    return translators.get(key);
+  };
   // The original hook throws only when no provider is mounted; it does so on every render, so hook order is stable.
   const orFallback = (hook, fallback) => (...args) => { try { return hook(...args); } catch { return fallback(...args); } };
   return {
     ...intl,
-    useTranslations: orFallback(intl.useTranslations, (namespace) => intl.createTranslator({ ...config, namespace })),
+    useTranslations: orFallback(intl.useTranslations, translatorFor),
     useFormatter: orFallback(intl.useFormatter, () => formatter),
     useLocale: orFallback(intl.useLocale, () => "en"),
     useMessages: orFallback(intl.useMessages, () => messages),

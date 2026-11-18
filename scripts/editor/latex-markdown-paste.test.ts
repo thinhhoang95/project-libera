@@ -13,7 +13,10 @@ import {
   DEFAULT_MARKDOWN_PASTE_OPTIONS, type LatexPasteContext,
 } from "../../src/lib/latex/markdown-paste";
 import { hasMarkdownSyntax, isRichClipboardHtml } from "../../src/lib/latex/markdown-paste/detect";
-import { splitRawLatex, localImagePath, latexHtmlColor } from "../../src/lib/latex/markdown-paste/convert";
+import { splitRawLatex, localImagePath, latexHtmlColor, pasteWarningText } from "../../src/lib/latex/markdown-paste/convert";
+import { englishTranslator } from "./intl";
+
+const warningText = (warning: Parameters<typeof pasteWarningText>[1] | undefined) => (warning ? pasteWarningText(englishTranslator("lib.latex.markdownPaste.convert"), warning) : "");
 import { captionFromParagraph } from "../../src/lib/latex/markdown-paste/analyze";
 import { pasteMathMarkers } from "../../src/lib/latex/markdown-paste/markers";
 import { hasBalancedBraces, hasBalancedEnvironments, escapeLatexText, labelSlug, uniqueLabel, mathSymbolsToCommands } from "../../src/lib/latex/latex-text";
@@ -889,7 +892,7 @@ test("prices are text: a $ before a digit, or after a space in a formula that be
 test("©, ® and ™ keep their TeX spellings under pdfLaTeX; real emoji are still removed", () => {
   const result = markdownToLatex("Copyright © 2026 ACME™®, ©️ and 😀.", {}, article());
   assert.equal(result.latex, String.raw`Copyright \copyright{} 2026 ACME\texttrademark{}\textregistered{}, \copyright{} and .`);
-  assert.match(result.warnings.find((warning) => warning.code === "emoji")?.message ?? "", /1 removed/);
+  assert.match(warningText(result.warnings.find((warning) => warning.code === "emoji")), /1 removed/);
 });
 
 test("Unicode symbols inside a text argument of a formula are wrapped in \\ensuremath", () => {
@@ -1030,7 +1033,7 @@ test("visual editor: heading numbers go even when the title is unnumbered", () =
 test("visual editor: diagram warnings name every language", () => {
   const result = markdownToLatex("```chart\n{}\n```\n\n```mermaid\ngraph TD\n```");
   const warning = result.warnings.find((item) => item.code === "diagram");
-  assert.match(warning?.message ?? "", /^2 diagrams \(chart, mermaid\)/);
+  assert.match(warningText(warning), /^2 diagrams \(chart, mermaid\)/);
 });
 
 test("visual editor: highlight colors", () => {

@@ -9,25 +9,12 @@ export function isAgentPermission(value: unknown): value is AgentPermission {
   return AGENT_PERMISSIONS.some((permission) => permission === value);
 }
 
+/** Sent to the model in the system prompt (src/lib/agent/prompt.ts); the interface words these itself. */
 export const AGENT_PERMISSION_LABELS: Record<AgentPermission, string> = {
   "read-only": "Read Only",
   "open-files": "Modify opened files only",
   notebook: "Modify all files in Notebook/Folder",
 };
-
-/**
- * The same modes in a shared notebook (plan M3.4), where the agent's changes
- * are suggestions others review: it never edits a shared file directly.
- */
-export const SHARED_AGENT_PERMISSION_LABELS: Record<AgentPermission, string> = {
-  "read-only": "Read Only",
-  "open-files": "Suggest in opened files",
-  notebook: "Suggest in notebook",
-};
-
-export function agentPermissionLabel(permission: AgentPermission, shared: boolean): string {
-  return (shared ? SHARED_AGENT_PERMISSION_LABELS : AGENT_PERMISSION_LABELS)[permission];
-}
 
 export type AgentTaskStatus = "pending" | "in_progress" | "completed";
 export type AgentTask = { id: string; subject: string; status: AgentTaskStatus };

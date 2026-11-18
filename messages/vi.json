@@ -1320,7 +1320,7 @@
   },
   "documentChatPanel": {
     "addPhotosButton": "Thêm ảnh",
-    "agentOverlap": "Tác nhân trong “{title}” có thể vẫn đang thay đổi {overlap}. Hãy đợi nó hoàn tất hoặc dừng nó trước, để hai lần chạy không sửa cùng một tệp. Tác nhân chỉ đọc có thể chạy song song với nó.",
+    "agentOverlap": "Tác nhân trong “{title}” có thể vẫn đang thay đổi {kind, select, notebook {sổ tay “{name}”} other {tệp “{name}”}}. Hãy đợi nó hoàn tất hoặc dừng nó trước, để hai lần chạy không sửa cùng một tệp. Tác nhân chỉ đọc có thể chạy song song với nó.",
     "agentPermissionAria": "Quyền của tác nhân",
     "agentPermissionTitle": "Quyền của tác nhân: {label}",
     "agentPlaceholder": "Yêu cầu tác nhân tìm, đọc hoặc chỉnh sửa… Nhập @ để chọn tệp",
@@ -2379,6 +2379,77 @@
       "zoomInLabel": "Phóng to",
       "zoomLabel": "Thu phóng",
       "zoomOutLabel": "Thu nhỏ"
+    },
+    "updater": {
+      "checkFailed": "Kiểm tra bản cập nhật không thành công.",
+      "laterButton": "Để sau",
+      "restartButton": "Khởi động lại và cập nhật",
+      "readyTitle": "Bản cập nhật Libera đã sẵn sàng",
+      "downloaded": "Libera {version} đã được tải xuống.",
+      "saveEditsDetail": "Hãy lưu các chỉnh sửa đang mở, rồi dùng Khởi động lại và cập nhật trong hộp thoại Giới thiệu.",
+      "restartDetail": "Khởi động lại Libera ngay để cài đặt bản cập nhật, hoặc cài đặt vào lần thoát tiếp theo.",
+      "noUpdateReady": "Chưa có bản cập nhật nào đã tải xuống sẵn sàng để cài đặt.",
+      "saveBeforeRestart": "Hãy lưu tất cả chỉnh sửa đang mở trước khi khởi động lại để cài đặt bản cập nhật.",
+      "stateUnavailable": "Không thể xem trạng thái cập nhật từ cửa sổ này.",
+      "checksUnavailable": "Không thể kiểm tra bản cập nhật từ cửa sổ này.",
+      "installUnavailable": "Không thể cài đặt bản cập nhật từ cửa sổ này.",
+      "documentStateUnavailable": "Không thể xem trạng thái tài liệu từ cửa sổ này."
+    },
+    "latexSnippets": {
+      "nameRequired": "Hãy đặt tên cho đoạn mã.",
+      "nameTooLong": "Dùng tối đa {max} ký tự.",
+      "nameCharacters": "Dùng chữ cái, chữ số, dấu gạch ngang và gạch dưới, bắt đầu bằng chữ cái hoặc chữ số.",
+      "nameTaken": "Đã có đoạn mã tên /{name}."
+    },
+    "quickPrompts": {
+      "marker": "Lời nhắc nhanh",
+      "notList": "Lời nhắc nhanh phải là một danh sách.",
+      "tooMany": "Không thêm quá {max} lời nhắc nhanh.",
+      "needsIdentifier": "Lời nhắc nhanh {number} cần một mã định danh bắt đầu bằng dấu gạch chéo.",
+      "badIdentifier": "Mã định danh của lời nhắc nhanh {number} chỉ được dùng chữ cái, chữ số, dấu gạch ngang và gạch dưới, và phải bắt đầu bằng chữ cái hoặc chữ số.",
+      "identifierInUse": "Mã định danh /{identifier} của lời nhắc nhanh đã được dùng.",
+      "needsPrompt": "Lời nhắc nhanh {number} cần có nội dung.",
+      "promptTooLong": "Lời nhắc nhanh {number} phải có tối đa {max, number} ký tự."
+    },
+    "preferencesIo": {
+      "notBackup": "Đây không phải là bản sao lưu tùy chọn của Libera.",
+      "unsupportedVersion": "Phiên bản bản sao lưu tùy chọn của Libera không được hỗ trợ: {version}.",
+      "missingPreferences": "Bản sao lưu tùy chọn của Libera thiếu đối tượng tùy chọn.",
+      "wrongPassword": "Mật khẩu chính không mở được bản sao lưu tùy chọn này.",
+      "passwordRequired": "Cần có mật khẩu chính để mã hóa hoặc mở bản sao lưu tùy chọn.",
+      "notEncryptedBackup": "Đây không phải là bản sao lưu tùy chọn Libera đã mã hóa.",
+      "unsafeEncryption": "Bản sao lưu tùy chọn dùng thiết lập mã hóa không được hỗ trợ hoặc không an toàn.",
+      "damaged": "Bản sao lưu tùy chọn đã mã hóa bị hỏng."
+    },
+    "localLlms": {
+      "customLabel": "máy chủ",
+      "customSubject": "Máy chủ",
+      "timeout": "{subject} tại {url} chưa phản hồi kịp thời. Có thể nó vẫn đang tải {model}, hoặc mô hình quá lớn đối với máy tính này.",
+      "unreachable": "Không thể kết nối tới {server} tại {url}, nên {name} không khả dụng. Máy chủ đã chạy chưa? {start}",
+      "requestFailed": "Yêu cầu tới {server} tại {url} không thành công: {error}",
+      "rejectedKey": "{subject} đã từ chối khóa API của {name}. Hãy kiểm tra khóa trong Tùy chọn → LLM cục bộ.",
+      "noTools": "{model} không thể gọi công cụ, nên không thể hoạt động ở chế độ Tác nhân. Hãy chọn mô hình hỗ trợ công cụ, hoặc chuyển sang Trò chuyện.",
+      "contextExceeded": "Yêu cầu này quá dài đối với cửa sổ ngữ cảnh của {model}. Hãy gửi ít hơn, chẳng hạn bằng cách tắt Toàn bộ tài liệu hoặc bắt đầu cuộc trò chuyện mới. {advice}",
+      "stillLoading": "{subject} vẫn đang tải {model}. Hãy thử lại sau ít phút.",
+      "modelMissing": "{subject} chưa sẵn sàng với {model}. {advice}",
+      "serverErrorDetail": "{subject} đã trả về lỗi cho {name}: {detail}",
+      "serverErrorStatus": "{subject} đã trả về lỗi cho {name} (HTTP {status}).",
+      "enterBaseUrl": "Nhập URL gốc, chẳng hạn http://localhost:11434/v1.",
+      "notJson": "{url}/models không trả về JSON. Hãy kiểm tra xem đây có phải địa chỉ tương thích OpenAI của máy chủ không; địa chỉ này thường kết thúc bằng /v1.",
+      "connectedChooseModel": "Đã kết nối tới {server}: {count, plural, one {# mô hình có sẵn} other {# mô hình có sẵn}}. Hãy chọn một mô hình để hoàn tất kiểm tra.",
+      "connectedAnswered": "Đã kết nối tới {server}: {model} đã trả lời sau {seconds} giây. {count, plural, one {# mô hình có sẵn} other {# mô hình có sẵn}}.",
+      "ollamaStart": "Khởi động bằng `ollama serve`, hoặc mở ứng dụng Ollama.",
+      "ollamaLoad": "Tải về bằng `ollama pull {model}`, hoặc chọn mô hình khác trong Tùy chọn → LLM cục bộ.",
+      "ollamaContext": "Tăng độ dài ngữ cảnh trong cài đặt của ứng dụng Ollama, hoặc đặt OLLAMA_CONTEXT_LENGTH trước khi khởi động máy chủ.",
+      "lmstudioStart": "Trong LM Studio, mở tab Developer và khởi động máy chủ.",
+      "lmstudioLoad": "Nạp mô hình trong tab Developer của LM Studio, hoặc chạy `lms load {model}`.",
+      "lmstudioContext": "Tải lại mô hình trong LM Studio với độ dài ngữ cảnh lớn hơn.",
+      "llamaserverStart": "Khởi động bằng `llama-server -m your-model.gguf --port 8080`.",
+      "llamaserverLoad": "llama-server phục vụ mô hình mà nó được khởi động cùng; hãy kiểm tra tùy chọn -m.",
+      "llamaserverContext": "Khởi động lại llama-server với ngữ cảnh lớn hơn, chẳng hạn `-c 32768`.",
+      "customStart": "Cũng hãy kiểm tra URL gốc.",
+      "customLoad": "Kiểm tra xem máy chủ đã nạp mô hình này chưa, hoặc chọn mô hình khác trong Tùy chọn → LLM cục bộ.",
+      "customContext": "Hãy cấp cho mô hình độ dài ngữ cảnh lớn hơn trên máy chủ."
     }
   },
   "existingImageDialog": {
@@ -3745,6 +3816,13 @@
             "stale": "Chưa áp dụng: văn bản đã thay đổi kể từ khi đề xuất được đưa ra.",
             "unconfirmed": "Không thể xác nhận quyết định. Hãy thử lại."
           }
+        },
+        "reviews": {
+          "signInRequired": "Đăng nhập vào tài khoản cộng tác để yêu cầu rà soát.",
+          "onlyEditors": "Chỉ người chỉnh sửa và chủ sở hữu mới có thể yêu cầu rà soát.",
+          "pickReviewer": "Chọn ít nhất một người rà soát.",
+          "selectPassage": "Hãy chọn đoạn cần rà soát trước.",
+          "refused": "Máy chủ đã từ chối yêu cầu này ({status})."
         }
       },
       "ui": {
@@ -4023,6 +4101,54 @@
             "labelNotFound": "{reference} (không tìm thấy nhãn)",
             "citationNotFound": "{key} (không tìm thấy trích dẫn)",
             "altClickToEdit": "\\{name}: Alt-click hoặc Alt+Enter để chỉnh sửa"
+          },
+          "floatEdit": {
+            "caption": "Chú thích",
+            "column": "Cột",
+            "source": "Nguồn",
+            "codeListing": "Mã ({environment})",
+            "editorLabel": "{label} (LaTeX). Enter để lưu, Shift+Enter để xuống dòng mới, Esc để hủy.",
+            "changedWhileEditing": "Phần này của phần tử nổi đã thay đổi trong lúc bạn chỉnh sửa, nên văn bản của bạn chưa được lưu:\n\n{text}",
+            "coAuthorChanged": "Một đồng tác giả đã thay đổi phần này trong lúc bạn chỉnh sửa. Thay thế phiên bản của họ bằng phiên bản của bạn?"
+          },
+          "titleEdit": {
+            "part": {
+              "title": "Tiêu đề",
+              "author": "Tác giả",
+              "date": "Ngày",
+              "abstract": "Tóm tắt",
+              "line": "Đường thẳng",
+              "note": "Từ khóa và ghi chú"
+            },
+            "newAuthor": "Tác giả mới",
+            "editorLabel": "{label} (LaTeX). Enter để lưu, Shift+Enter để xuống dòng mới, Esc để hủy.",
+            "changedWhileAddingAuthor": "Tiêu đề đã thay đổi trong lúc bạn thêm tác giả, nên văn bản của bạn chưa được lưu:\n\n{text}",
+            "changedWhileEditing": "Tiêu đề đã thay đổi trong lúc bạn chỉnh sửa, nên văn bản của bạn chưa được lưu:\n\n{text}",
+            "blockChanged": "Khối tiêu đề đã thay đổi trong lúc bạn chỉnh sửa, nên văn bản của bạn chưa được lưu:\n\n{text}",
+            "coAuthorChanged": "Một đồng tác giả đã thay đổi phần này của tiêu đề trong lúc bạn chỉnh sửa. Thay thế phiên bản của họ bằng phiên bản của bạn?"
+          },
+          "algorithmEdit": {
+            "statement": "Câu lệnh",
+            "newStatement": "Câu lệnh mới",
+            "caption": "Chú thích",
+            "menuLabel": "Thuật toán",
+            "editorLabel": "{label} (LaTeX). Enter để lưu, Shift+Enter để xuống dòng mới, Esc để hủy, Tab để sang câu lệnh tiếp theo, Ctrl+Enter để thêm câu lệnh bên dưới.",
+            "changedEditingStatement": "Thuật toán đã thay đổi trong lúc bạn chỉnh sửa câu lệnh này, nên văn bản của bạn chưa được lưu:\n\n{text}",
+            "changedEditing": "Thuật toán đã thay đổi trong lúc bạn chỉnh sửa, nên văn bản của bạn chưa được lưu:\n\n{text}",
+            "changedEditingCaption": "Chú thích đã thay đổi trong lúc bạn chỉnh sửa, nên văn bản của bạn chưa được lưu:\n\n{text}",
+            "coAuthorStatement": "Một đồng tác giả đã thay đổi câu lệnh này trong lúc bạn chỉnh sửa. Thay thế phiên bản của họ bằng phiên bản của bạn?",
+            "coAuthorCaption": "Một đồng tác giả đã thay đổi chú thích này trong lúc bạn chỉnh sửa. Thay thế phiên bản của họ bằng phiên bản của bạn?",
+            "insertAbove": "Chèn câu lệnh phía trên",
+            "insertBelow": "Chèn câu lệnh phía dưới",
+            "deleteStatement": "Xóa câu lệnh",
+            "deleteBlock": "Xóa khối",
+            "showSource": "Hiển thị mã nguồn",
+            "notStatement": "Không thể thực hiện ở đây (dòng này không được viết dưới dạng câu lệnh)",
+            "notPossible": "Không thể thực hiện ở đây",
+            "deleteFromFirstLine": "Hãy xóa khối từ dòng đầu tiên của nó",
+            "cannotEditFile": "Không thể chỉnh sửa tệp này",
+            "changedWhileMenuOpen": "Thuật toán đã thay đổi khi menu này đang mở; chưa có gì bị xóa. Hãy thử lại.",
+            "confirmDeleteBlock": "{lines, plural, one {Xóa khối này và # dòng LaTeX trong đó?} other {Xóa khối này và # dòng LaTeX trong đó?}}"
           }
         }
       },
@@ -4050,6 +4176,51 @@
             "ieee": "IEEE",
             "apa": "APA ấn bản thứ 7",
             "nature": "Nature"
+          }
+        }
+      },
+      "markdownPaste": {
+        "choices": {
+          "templateError": {
+            "empty": "Nhập một lệnh như \\frametitle, hoặc một mẫu có #1.",
+            "unusable": "{command} không thể dùng cho tiêu đề.",
+            "multiline": "Mẫu phải nằm trên một dòng.",
+            "parameter": "Dùng #1 đúng một lần, ở vị trí chứa văn bản tiêu đề, và không dùng # nào khác.",
+            "braces": "Các dấu ngoặc nhọn trong mẫu không khớp nhau.",
+            "unsafe": "Mẫu không được chứa môi trường, ghi chú (%), ký hiệu ^^, hoặc lệnh đọc tệp hay định nghĩa macro."
+          }
+        },
+        "convert": {
+          "warning": {
+            "emoji": "pdfLaTeX không thể dàn trang emoji: {count, plural, one {đã xóa #} other {đã xóa #}}.",
+            "front-matter": "Phần đầu (front matter) của ghi chú đã bị bỏ qua.",
+            "unreferenced-footnote": "{count, plural, one {# chú thích cuối trang không được tham chiếu và đã bị bỏ qua.} other {# chú thích cuối trang không được tham chiếu và đã bị bỏ qua.}}",
+            "heading-template": "Tiêu đề tùy chỉnh không hợp lệ, nên các tiêu đề đó đã được ghi in đậm.",
+            "deep-list": "Danh sách lồng sâu hơn mức LaTeX cho phép đã được gộp vào danh sách bao quanh.",
+            "box-color": "Khối có màu đã được ghi như trích dẫn thường: màu của nó đã bị bỏ. Hãy nạp tcolorbox trong phần mở đầu (preamble) để giữ màu.",
+            "diagram": "{count, plural, one {# sơ đồ ({detail}) được dán dưới dạng mã: LaTeX không thể vẽ nó.} other {# sơ đồ ({detail}) được dán dưới dạng mã: LaTeX không thể vẽ chúng.}}",
+            "html-live": "Một khối HTML tương tác đã được dán dưới dạng mã: LaTeX không thể chạy nó.",
+            "unsafe-math": "{count, plural, one {# công thức có thể thoát khỏi chế độ toán hoặc đọc tệp nên đã được dán dưới dạng văn bản.} other {# công thức có thể thoát khỏi chế độ toán hoặc đọc tệp nên đã được dán dưới dạng văn bản.}}",
+            "inline-display": "Công thức hiển thị nằm giữa đoạn văn đã được viết nội tuyến.",
+            "html": "Một phần HTML không có tương đương trong LaTeX: các thẻ đã bị xóa và nội dung văn bản được giữ lại.",
+            "image-path": "{count, plural, one {# đường dẫn ảnh không thể dùng trong LaTeX nên đã được để lại dưới dạng ghi chú (%).} other {# đường dẫn ảnh không thể dùng trong LaTeX nên đã được để lại dưới dạng ghi chú (%).}}",
+            "remote-image": "{count, plural, one {# ảnh là địa chỉ web: hãy tải nó vào dự án để đưa vào.} other {# ảnh là địa chỉ web: hãy tải chúng vào dự án để đưa vào.}}",
+            "ink-image": "{count, plural, one {# hình vẽ bằng bút mực là SVG: hãy xuất nó sang PDF hoặc PNG cho LaTeX.} other {# hình vẽ bằng bút mực là SVG: hãy xuất chúng sang PDF hoặc PNG cho LaTeX.}}",
+            "image-format": "{count, plural, one {# ảnh có định dạng mà pdfLaTeX không thể đưa vào (hãy chuyển sang PDF, PNG hoặc JPEG).} other {# ảnh có định dạng mà pdfLaTeX không thể đưa vào (hãy chuyển sang PDF, PNG hoặc JPEG).}}",
+            "missing-image": "{count, plural, one {# ảnh chưa có trong dự án.} other {# ảnh chưa có trong dự án.}}",
+            "rowspan": "Các ô gộp qua nhiều hàng đã được tách: văn bản vẫn nằm ở hàng đầu tiên, các ô bên dưới để trống.",
+            "table-truncated": "Bảng có hơn 64 cột hoặc 5.000 hàng: phần còn lại đã bị bỏ. Hãy dán dưới dạng văn bản thuần để giữ lại toàn bộ.",
+            "longtable-twocolumn": "longtable không hoạt động trong tài liệu hai cột, nên các bảng đã được viết bằng tabular.",
+            "caption-without-float": "{detail, select, box {Chú thích không thể đặt trong khung, nên chú thích bảng ở đó đã bị bỏ.} other {Chú thích cần một phần tử nổi kiểu bảng: hãy chọn Bảng trong mục Phần tử nổi để giữ lại.}}",
+            "label-taken": "Nhãn của một bảng đã được dùng, nên một số đã được thêm vào nhãn.",
+            "label": "Nhãn của một bảng chứa ký tự mà nhãn LaTeX không thể có, nên nhãn đã được tạo từ chú thích.",
+            "soul": "{detail, select, hl {Các vùng tô sáng quanh liên kết, chú thích cuối trang, trích dẫn, mã hoặc công thức \\(…\\) đã bị xóa: \\hl không thể chứa chúng.} other {Phần gạch ngang quanh liên kết, chú thích cuối trang, trích dẫn, mã hoặc công thức \\(…\\) đã bị xóa: \\st không thể chứa chúng.}}",
+            "line-height": "Khoảng cách dòng đặt trong văn bản đã bị bỏ.",
+            "raw-block": "Các môi trường hoặc lệnh khối LaTeX được viết trong văn bản đã được giữ lại dưới dạng văn bản: chúng không thể đứng ở vị trí dán.",
+            "script": "Một phần văn bản nằm trong hệ chữ mà pdfLaTeX có thể không dàn trang được: hãy biên dịch bằng XeLaTeX hoặc LuaLaTeX nếu có lỗi.",
+            "cyclic-footnote": "Một chú thích cuối trang tự tham chiếu đến chính nó đã được giữ nguyên như đã viết.",
+            "nested-footnote": "Chú thích cuối trang nằm trong một chú thích cuối trang khác đã được viết trong ngoặc đơn.",
+            "cite-keys": "{count, plural, one {# khóa trích dẫn không có trong danh mục tài liệu.} other {# khóa trích dẫn không có trong danh mục tài liệu.}}"
           }
         }
       }
@@ -4401,6 +4572,27 @@
         "playbackFailed": "Không thể phát âm thanh này.",
         "noText": "Không có văn bản nào để đọc to.",
         "synthesisFailed": "Không thể đọc văn bản to."
+      }
+    },
+    "codeLanguages": {
+      "plainText": "Văn bản thuần"
+    },
+    "galleryTimeline": {
+      "today": "Hôm nay",
+      "yesterday": "Hôm qua",
+      "thisWeek": "Tuần này",
+      "thisMonth": "Tháng này",
+      "labelWithTime": "{label} · {time}"
+    },
+    "slideDiagrams": {
+      "error": "{detail, select, none {Lỗi sơ đồ.} other {Lỗi sơ đồ: {detail}}}"
+    },
+    "aiActivity": {
+      "action": {
+        "write": "Đang viết bằng AI",
+        "rewrite": "Đang viết lại bằng AI",
+        "format": "Đang định dạng bằng AI",
+        "image": "Đang chuyển đổi ảnh bằng AI"
       }
     }
   },
@@ -4854,7 +5046,8 @@
   "markdownSource": {
     "markdownCodemirrorEditor": {
       "dropImage": "Thả hình ảnh để chèn",
-      "selectionLabel": "Vùng chọn"
+      "selectionLabel": "Vùng chọn",
+      "sourceEditorLabel": "Trình soạn thảo Markdown nguồn"
     },
     "markdownSourceContextMenu": {
       "aiFormat": "Định dạng bằng AI",
@@ -7322,13 +7515,7 @@
     "unindentHeadings": "Bỏ thụt lề tiêu đề",
     "whatShouldAiWrite": "AI nên viết gì? Nhập / để xem lời nhắc",
     "writeNewTextWithAi": "Viết văn bản mới bằng AI",
-    "writeWithAi": "Viết bằng AI",
-    "activity": {
-      "write": "Đang viết bằng AI",
-      "rewrite": "Đang viết lại bằng AI",
-      "format": "Đang định dạng bằng AI",
-      "image": "Đang chuyển đổi ảnh bằng AI"
-    }
+    "writeWithAi": "Viết bằng AI"
   },
   "tiptapLiveCodeBlockView": {
     "foldMacroDefinitions": "Thu gọn định nghĩa macro",

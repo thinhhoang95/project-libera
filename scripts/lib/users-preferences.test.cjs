@@ -20,6 +20,8 @@ function openPreferences(query = "?mode=configuration", { signedIn = true, switc
     beforeParse(window) {
       window.matchMedia = () => ({ matches: false, addEventListener() {} });
       window.liberaSetup = {
+        // The page reads its messages from the preload (electron/i18n.cjs), as in the app.
+        getI18n: () => require("../../electron/i18n.cjs").setupPayload(),
         getState: async () => ({ dataDir: "/notes/vy", hasApiKey: true, hasPasswordHash: true, canManageProfiles: signedIn }),
         listOpenRouterModels: async () => ({ ok: true, models: [] }),
         selectDataDir: async () => "/notes/ann",

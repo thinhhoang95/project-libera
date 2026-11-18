@@ -18,7 +18,6 @@ import { planIndexRepair } from "../../src/lib/search/repair";
 import type { LiberaFileNode } from "../../src/lib/types";
 import {
   findTermRanges,
-  searchLocationLabel,
   searchQueryPlainText,
   searchQueryTerms,
   searchQueryText,
@@ -347,8 +346,6 @@ test("search hits open at their passage in each kind of file", () => {
   assert.equal(searchRevealViewState("latex", { ...hit, location: { line: 12 } })?.latex?.revealLine?.line, 12);
   assert.equal(searchRevealViewState("text", { ...hit, location: { line: 5, endLine: 9 } })?.text?.reveal?.endLine, 9);
   assert.equal(searchRevealViewState("image", hit), undefined);
-  assert.equal(searchLocationLabel("pdf", { page: 4, section: "Results" }), "Page 4 · Results");
-  assert.equal(searchLocationLabel("text", { line: 5, endLine: 9 }), "Lines 5–9");
 });
 
 test("rendered Markdown words drop syntax so the visual editor can find a passage", () => {

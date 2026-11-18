@@ -9,7 +9,6 @@ import { NextRequest } from "next/server";
 import { normalizeTranscriptionPreferences } from "../../electron/transcription-preferences.cjs";
 import { GET as getRawFile } from "../../src/app/api/files/raw/[...path]/route";
 import { createSessionToken, SESSION_COOKIE_NAME } from "../../src/lib/auth";
-import { searchKindLabel, searchLocationLabel } from "../../src/lib/global-search";
 import { parseByteRange } from "../../src/lib/http-range";
 import { copyFileToDirectory, createFolder, deleteFile, moveFileToDirectory, renameFolder } from "../../src/lib/storage/files";
 import { getContentType, getFileType } from "../../src/lib/storage/file-types";
@@ -218,8 +217,6 @@ test("clock, current segment, passages and exports", () => {
 
   assert.match(transcriptToMarkdown(value, "Interview"), /^# Interview\n[\s\S]*\*\*Speaker 2\*\* · 0:04\nThanks for having me\./);
   assert.match(transcriptToSrt(value), /^1\n00:00:00,000 --> 00:00:04,000\nSpeaker 1: Hello and welcome\./);
-  assert.equal(searchKindLabel("audio"), "Voice memo");
-  assert.equal(searchLocationLabel("audio", { start: 125000, section: "Speaker 1" }), "2:05 · Speaker 1");
 });
 
 test("long transcripts split into passages of about 250 tokens with context", () => {

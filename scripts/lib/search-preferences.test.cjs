@@ -13,6 +13,8 @@ function openPreferences(state, overrides = {}, query = "?mode=configuration") {
     beforeParse(window) {
       window.matchMedia = () => ({ matches: false, addEventListener() {} });
       window.liberaSetup = {
+        // The page reads its messages from the preload (electron/i18n.cjs), as in the app.
+        getI18n: () => require("../../electron/i18n.cjs").setupPayload(),
         getState: async () => ({ dataDir: "/tmp/notebooks", hasApiKey: true, hasPasswordHash: true, searchDefaultIndexFile: "/app/search-index/x/libera-search.sqlite", ...state }),
         save: async (input) => {
           calls.saved = JSON.parse(JSON.stringify(input));

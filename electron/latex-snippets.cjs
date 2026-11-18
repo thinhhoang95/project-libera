@@ -2,6 +2,8 @@
  * Electron config under `latexSnippets`, so they survive restarts and travel
  * with preferences backups. Shared by the Electron main process and the app. */
 
+const { englishTranslator } = require("./english-messages.cjs");
+
 const MAX_LATEX_SNIPPETS = 200;
 const MAX_LATEX_SNIPPET_NAME_LENGTH = 64;
 const MAX_LATEX_SNIPPET_LENGTH = 50_000;
@@ -13,16 +15,20 @@ function normalizeLatexSnippetName(value) {
   return typeof value === "string" ? value.trim().replace(/^\/+/, "") : "";
 }
 
+const englishWording = englishTranslator("electron.latexSnippets");
+
 /** Why a name cannot be used, or null when it can.
  * @param {string} name
  * @param {{ id: string; name: string }[]} snippets
- * @param {string} [exceptId] the snippet being renamed */
-function latexSnippetNameError(name, snippets, exceptId) {
-  if (!name) return "Give the snippet a name.";
-  if (name.length > MAX_LATEX_SNIPPET_NAME_LENGTH) return `Use at most ${MAX_LATEX_SNIPPET_NAME_LENGTH} characters.`;
-  if (!LATEX_SNIPPET_NAME_PATTERN.test(name)) return "Use letters, numbers, hyphens and underscores, starting with a letter or number.";
+ * @param {string} [exceptId] the snippet being renamed
+ * @param {(key: string, values?: Record<string, string | number>) => string} [translate] the `electron.latexSnippets`
+ *   messages in the interface language; English when omitted (the server) */
+function latexSnippetNameError(name, snippets, exceptId, translate = englishWording) {
+  if (!name) return translate("nameRequired");
+  if (name.length > MAX_LATEX_SNIPPET_NAME_LENGTH) return translate("nameTooLong", { max: MAX_LATEX_SNIPPET_NAME_LENGTH });
+  if (!LATEX_SNIPPET_NAME_PATTERN.test(name)) return translate("nameCharacters");
   const key = name.toLocaleLowerCase();
-  if (snippets.some((snippet) => snippet.id !== exceptId && snippet.name.toLocaleLowerCase() === key)) return `A snippet named /${name} already exists.`;
+  if (snippets.some((snippet) => snippet.id !== exceptId && snippet.name.toLocaleLowerCase() === key)) return translate("nameTaken", { name });
   return null;
 }
 

@@ -13,7 +13,7 @@ import { ModalDialog } from "@/components/libera/modal-dialog";
 import { useMarkdownReview } from "@/components/libera/markdown-review-context";
 import { useSharedTab } from "@/lib/collab/bindings/react-shared-tabs";
 import { can } from "@/lib/collab/protocol/roles";
-import { useDescribeError } from "@/lib/collab/ui/use-describe-error";
+import { useDescribeReviewError } from "@/lib/collab/client/use-describe-review-error";
 import { roleLabel } from "@/lib/collab/ui/wording";
 import type { ReviewRange } from "@/lib/markdown-review";
 import { useProjectMembers } from "../mentions/mention-textarea";
@@ -54,7 +54,7 @@ export function RequestReviewDialog({ session, selection, onClose, documentOnly 
   const t = useTranslations("collab.reviews.requestReview");
   const tCommon = useTranslations("common");
   const tWording = useTranslations("lib.collab.ui.wording");
-  const describeError = useDescribeError();
+  const describeError = useDescribeReviewError();
   const review = useMarkdownReview();
   const members = useProjectMembers(session.resolved.projectId);
   const others = members.filter((member) => member.id !== snapshot?.localUserId && member.role !== "viewer");

@@ -24,7 +24,13 @@ import { parseMarkdown, type ParsedMarkdown } from "./parse";
  * anything it had to drop. */
 
 export type RequiredPackage = { name: string; options?: string; line: string; reason: string };
-export type PasteWarning = { code: string; message: string };
+/** Something the conversion had to drop or change. The paste dialog and notice word it (`pasteWarningText`); `count` is how many
+ * occurrences there were, `detail` what a few of the messages name (`hl` or `st`, `box`, the diagram languages). */
+export type PasteWarning = { code: string; count: number; detail?: string };
+/** The sentence for a warning; `t` is the `lib.latex.markdownPaste.convert` translator. */
+export function pasteWarningText(t: (key: string, values?: Record<string, string | number>) => string, warning: PasteWarning) {
+  return t(`warning.${warning.code}`, { count: warning.count, detail: warning.detail ?? "" });
+}
 export type ConvertResult = {
   latex: string;
   /** Paragraphs, lists, environments: pasted inside a line, it needs blank lines around it. */
@@ -241,7 +247,7 @@ export class MarkdownLatexConverter {
       ot1: !hasT1Fonts(context),
       unicode: context.engine !== "pdflatex",
       dropEmoji: context.engine === "pdflatex",
-      onDropped: (count) => this.warn("emoji", count, (n) => `pdfLaTeX cannot typeset emoji: ${n} removed.`),
+      onDropped: (count) => this.warn("emoji", count),
     };
     structure.depths.forEach((depth, rank) => this.headingRank.set(depth, rank));
     // A caption paragraph leaves the text only when caption detection is on and that table will write the caption.
@@ -280,7 +286,7 @@ export class MarkdownLatexConverter {
   convert(): ConvertResult {
     const root = this.parsed.tree as unknown as MdNode;
     // The parser already drops YAML front matter from the tree, so it is read from the source.
-    if (this.parsed.source && yamlFrontMatterEnd(this.parsed.source)) this.warn("front-matter", 1, () => "The note's front matter was left out.");
+    if (this.parsed.source && yamlFrontMatterEnd(this.parsed.source)) this.warn("front-matter");
     let latex: string;
     let block = false;
     if (this.context.inlineOnly) latex = this.flatten(nodeChildren(root)).replace(/\s*\n\s*/g, " ").trim();
@@ -291,7 +297,7 @@ export class MarkdownLatexConverter {
       block = parts.length > 1 || /^(?:\\(?:begin|\[|part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\b|%)/.test(parts[0] ?? "") || /\n\s*\n/.test(parts[0] ?? "");
     }
     for (const [id] of this.structure.footnotes) {
-      if (!this.structure.footnoteReferences.has(id)) this.warn("unreferenced-footnote", 1, (n) => `${n} footnote${n === 1 ? " is" : "s are"} never referenced and ${n === 1 ? "was" : "were"} left out.`);
+      if (!this.structure.footnoteReferences.has(id)) this.warn("unreferenced-footnote");
     }
     const packages = [...this.required.values()];
     const missing = packages.filter((pkg) => !PACKAGES[pkg.name]?.satisfiedBy.some((name) => this.context.packages.has(name)));
@@ -306,10 +312,10 @@ export class MarkdownLatexConverter {
     this.required.set(name, { name, options, line: `\\usepackage${options ? `[${options}]` : ""}{${name}}`, reason });
   }
 
-  private warn(code: string, by: number, message: (count: number) => string) {
+  private warn(code: string, by = 1, detail?: string) {
     const count = (this.counts.get(code) ?? 0) + by;
     this.counts.set(code, count);
-    this.warnings.set(code, { code, message: message(count) });
+    this.warnings.set(code, detail === undefined ? { code, count } : { code, count, detail });
   }
 
   private firstText(node: MdNode): MdNode | null {
@@ -370,7 +376,7 @@ export class MarkdownLatexConverter {
       case "table": return this.table(node, state);
       case "html": return this.htmlBlock(node, state);
       case "yaml": case "toml":
-        this.warn("front-matter", 1, () => "The note's front matter was left out.");
+        this.warn("front-matter");
         return null;
       case "thematicBreak": case "definition": case "footnoteDefinition": case "liberaBibliography":
         return null;
@@ -394,7 +400,7 @@ export class MarkdownLatexConverter {
       case "custom": {
         const parsed = parseHeadingTemplate(this.choices.headingCustoms[rank] ?? this.choices.headingCustom);
         if ("error" in parsed) {
-          this.warn("heading-template", 1, () => "The custom heading is not valid, so those headings were written in bold.");
+          this.warn("heading-template");
           return `\\textbf{${title}}`;
         }
         return parsed.template.replace("#1", () => title);
@@ -427,7 +433,7 @@ export class MarkdownLatexConverter {
     const inner: BlockState = { ...state, nested: true, itemize: state.itemize + (ordered ? 0 : 1), enumerate: state.enumerate + (ordered ? 1 : 0) };
     if (level >= 4 || state.itemize + state.enumerate + state.other >= 6) {
       // LaTeX nests lists four deep (six in all): deeper items join the list around them.
-      this.warn("deep-list", 1, () => "Lists nested deeper than LaTeX allows were joined to the list around them.");
+      this.warn("deep-list");
       return nodeChildren(node).map((item) => this.listItem(item, state)).join("\n");
     }
     const start = node.start ?? 1;
@@ -471,7 +477,7 @@ export class MarkdownLatexConverter {
     // quote and quotation are lists to LaTeX: they count toward its six levels of nesting.
     const parts = this.blocks(nodeChildren(node), { ...state, nested: true, other: state.other + 1, container: boxed ? "box" : state.container });
     if (alert && firstText) this.overrides.delete(firstText);
-    if (box && !boxed && !state.footnote) this.warn("box-color", 1, () => "A colored box was written as a plain quote: its color was dropped. Load tcolorbox in the preamble to keep it.");
+    if (box && !boxed && !state.footnote) this.warn("box-color");
     const color = typeof box === "string" ? BOX_COLORS[box.toLowerCase()] ?? "gray" : alert ? alertColor(alert[1]) : null;
     const escapedTitle = title ? this.escape(title) : null;
     if (boxed) {
@@ -495,9 +501,9 @@ export class MarkdownLatexConverter {
     const value = (node.value ?? "").replace(/\t/g, "    ");
     if (DIAGRAM_LANGUAGES.has(language)) {
       this.diagramLanguages.add(language);
-      this.warn("diagram", 1, (n) => `${n} diagram${n === 1 ? "" : "s"} (${[...this.diagramLanguages].join(", ")}) pasted as code: LaTeX cannot draw ${n === 1 ? "it" : "them"}.`);
+      this.warn("diagram", 1, [...this.diagramLanguages].join(", "));
     }
-    if (language === "html" && /(?:^|\s)live(?:\s|$)/i.test(node.meta ?? "")) this.warn("html-live", 1, () => "An interactive HTML block was pasted as code: LaTeX cannot run it.");
+    if (language === "html" && /(?:^|\s)live(?:\s|$)/i.test(node.meta ?? "")) this.warn("html-live");
     if (state.footnote) return this.codeLines(value);
     const comment = DIAGRAM_LANGUAGES.has(language) ? `% Diagram (${language})\n` : "";
     if (this.choices.codeBlocks === "lstlisting" && !/\\end\s*\{lstlisting\}/.test(value)) {
@@ -528,7 +534,7 @@ export class MarkdownLatexConverter {
   }
 
   private unsafeMath(value: string) {
-    this.warn("unsafe-math", 1, (n) => `${n} formula${n === 1 ? "" : "s"} could break out of math or read files and ${n === 1 ? "was" : "were"} pasted as text.`);
+    this.warn("unsafe-math");
     return this.escape(value.replace(/\s+/g, " ").trim());
   }
 
@@ -544,7 +550,7 @@ export class MarkdownLatexConverter {
         .replace(/\\label\s*\{[^}]*\}/g, "")
         .trim();
       if (/\\begin\{(?:aligned|gathered)\}/.test(tex)) this.need("amsmath", "aligned formulas in text");
-      this.warn("inline-display", 1, () => "A display formula inside running text was written inline.");
+      this.warn("inline-display");
     }
     return this.choices.inlineMath === "paren" ? `\\(${tex}\\)` : `$${tex}$`;
   }
@@ -589,7 +595,7 @@ export class MarkdownLatexConverter {
     if (/^<br\s*\/?>$/i.test(html)) return null;
     if (/^<img\b/i.test(html)) return state ? this.figure(node, state) : null;
     const tags = [...new Set([...html.matchAll(/<([A-Za-z][\w-]*)/g)].map((match) => match[1].toLowerCase()))].filter((tag) => !HTML_BLOCK_TAGS.has(tag));
-    if (tags.length) this.warn("html", tags.length, () => "Some HTML had no LaTeX equivalent: its tags were dropped and its text kept.");
+    if (tags.length) this.warn("html", tags.length);
     const tree = typeof DOMParser === "undefined" ? null : htmlToMarkdownTree(html, { keepPlain: true });
     if (tree) {
       const children = nodeChildren(tree);
@@ -623,20 +629,20 @@ export class MarkdownLatexConverter {
   private resolveImage(src: string) {
     const resolved = localImagePath(src, this.context.documentDir);
     if (!resolved) {
-      this.warn("image-path", 1, (n) => `${n} image path${n === 1 ? "" : "s"} could not be used in LaTeX and ${n === 1 ? "was" : "were"} left as a comment.`);
+      this.warn("image-path");
       return null;
     }
     if ("remote" in resolved) {
-      this.warn("remote-image", 1, (n) => `${n} image${n === 1 ? " is a web address" : "s are web addresses"}: download ${n === 1 ? "it" : "them"} into the project to include ${n === 1 ? "it" : "them"}.`);
+      this.warn("remote-image");
       return null;
     }
     if (/(?:^|\/)ink-[^/]*\.svg$/i.test(resolved.path)) {
-      this.warn("ink-image", 1, (n) => `${n} ink drawing${n === 1 ? " is" : "s are"} SVG: export ${n === 1 ? "it" : "them"} to PDF or PNG for LaTeX.`);
+      this.warn("ink-image");
     } else if (/\.(?:svg|webp|gif|bmp|tiff?|heic)$/i.test(resolved.path)) {
-      this.warn("image-format", 1, (n) => `${n} image${n === 1 ? " is" : "s are"} in a format pdfLaTeX cannot include (convert to PDF, PNG or JPEG).`);
+      this.warn("image-format");
     }
     if (this.context.files && !this.context.files.has(resolved.path)) {
-      this.warn("missing-image", 1, (n) => `${n} image${n === 1 ? " is" : "s are"} not in the project yet.`);
+      this.warn("missing-image");
     }
     return resolved.path;
   }
@@ -686,8 +692,8 @@ export class MarkdownLatexConverter {
     const choice = this.choices.tables[index] ?? { caption: info?.caption ?? "", label: "" };
     const rows = nodeChildren(node);
     if (!rows.length) return null;
-    if (node.data?.hProperties?.rowspan) this.warn("rowspan", 1, () => "Cells merged across rows were split: the text stays in the first row, the cells below are empty.");
-    if (node.data?.hProperties?.truncated) this.warn("table-truncated", 1, () => "A table had more than 64 columns or 5,000 rows: the rest was left out. Paste as plain text to keep all of it.");
+    if (node.data?.hProperties?.rowspan) this.warn("rowspan");
+    if (node.data?.hProperties?.truncated) this.warn("table-truncated");
     // Cells by column; a cell from HTML may span several (`colspan`).
     const slots = new Map(rows.map((row) => {
       let column = 0;
@@ -710,7 +716,7 @@ export class MarkdownLatexConverter {
     const hasBreak = (column: number) => single(column).some((cell) => /"type":"break"|<br\b/i.test(JSON.stringify(cell)));
     const total = lengths.reduce((sum, length) => sum + length, 0);
     const environment = this.tableEnvironment();
-    if (environment !== this.choices.tableEnvironment) this.warn("longtable-twocolumn", 1, () => "longtable does not work in two-column documents, so the tables were written as tabular.");
+    if (environment !== this.choices.tableEnvironment) this.warn("longtable-twocolumn");
     const wrap = this.choices.tableWrap || environment === "tabularx";
     let wrapped = new Set<number>();
     if (wrap) {
@@ -823,7 +829,7 @@ export class MarkdownLatexConverter {
         const body = (this.choices.tableCaptionBelow ? [sized, ...captionLines] : [...captionLines, sized]).join("\n");
         return footnotes ? `${body}\n${footnotes}` : body;
       }
-      if (caption) this.warn("caption-without-float", 1, () => state.container === "box" ? "Captions cannot go in a box, so table captions there were left out." : "Captions need a table float: choose Table under Float to keep them.");
+      if (caption) this.warn("caption-without-float", 1, state.container === "box" ? "box" : "float");
       const body = size ? `{${size}\n${tabular}\n}` : tabular;
       return footnotes ? `${body}\n${footnotes}` : body;
     }
@@ -870,10 +876,10 @@ export class MarkdownLatexConverter {
     const label = given.trim();
     if (label && isValidLabel(label)) {
       if (!this.labels.has(label)) { this.labels.add(label); return label; }
-      this.warn("label-taken", 1, () => "A table label was already used, so a number was added to it.");
+      this.warn("label-taken");
       return uniqueLabel(label, this.labels);
     }
-    if (label) this.warn("label", 1, () => "A table label had characters LaTeX labels cannot hold, so one was made from the caption.");
+    if (label) this.warn("label");
     return uniqueLabel(`tab:${labelSlug(caption, "table")}`, this.labels);
   }
 
@@ -930,7 +936,7 @@ export class MarkdownLatexConverter {
     const outside = content.replace(/\\\$/g, "").replace(/\$[^$]*\$/g, "");
     const commands = [...outside.matchAll(/\\([A-Za-z@]+)/g)].map((match) => match[1]);
     if (/\$|\\\(/.test(outside) || commands.some((name) => !SOUL_SAFE.has(name))) {
-      this.warn("soul", 1, () => command === "hl" ? "Highlights around links, footnotes, citations, code or \\(…\\) math were dropped: \\hl cannot hold them." : "Strikethrough around links, footnotes, citations, code or \\(…\\) math was dropped: \\st cannot hold them.");
+      this.warn("soul", 1, command);
       return content;
     }
     this.need("soul", command === "hl" ? "highlights" : "strikethrough");
@@ -975,7 +981,7 @@ export class MarkdownLatexConverter {
       }
       case "liberaTextStyle": {
         const content = this.argument(node, state);
-        if (node.data?.hProperties?.["data-line-height"]) this.warn("line-height", 1, () => "Line spacing set in the text was left out.");
+        if (node.data?.hProperties?.["data-line-height"]) this.warn("line-height");
         const size = fontSizeSwitch(Number(node.data?.hProperties?.["data-font-size"]));
         return size && !state.moving && content.trim() ? `{\\${size} ${content}}` : content;
       }
@@ -1015,7 +1021,7 @@ export class MarkdownLatexConverter {
         }
       }
     }
-    if (/^<\/?[A-Za-z]/.test(html)) this.warn("html", 1, () => "Some HTML had no LaTeX equivalent: its tags were dropped and its text kept.");
+    if (/^<\/?[A-Za-z]/.test(html)) this.warn("html");
     return { text: "", end: index };
   }
 
@@ -1032,7 +1038,7 @@ export class MarkdownLatexConverter {
       case "small": return content.trim() ? `{\\small ${content}}` : content;
       case "span": case "font": case "a": case "abbr": case "q": return content;
       default:
-        this.warn("html", 1, () => "Some HTML had no LaTeX equivalent: its tags were dropped and its text kept.");
+        this.warn("html");
         return content;
     }
   }
@@ -1053,7 +1059,7 @@ export class MarkdownLatexConverter {
     // Environments and block commands cannot stand in an argument, a heading or a table cell.
     const inlineOnly = this.context.inlineOnly || state.moving || !!state.cell || !!state.argument;
     if (inlineOnly && BLOCK_COMMAND.test(text)) {
-      this.warn("raw-block", 1, () => "LaTeX environments or block commands written in the text were kept as text: they cannot stand where the paste goes.");
+      this.warn("raw-block");
       return this.escape(text);
     }
     this.keptPackages(text);
@@ -1118,7 +1124,7 @@ export class MarkdownLatexConverter {
   /** Text as LaTeX, with straight quotes made typographic and non-Latin scripts noted under pdfLaTeX. */
   private escape(value: string) {
     if (this.context.engine === "pdflatex" && /[Ѐ-ӿ֐-ۿ฀-๿぀-ヿ㐀-鿿가-힯]/.test(value)) {
-      this.warn("script", 1, () => "Some text is in a script pdfLaTeX may not typeset: compile with XeLaTeX or LuaLaTeX if it shows errors.");
+      this.warn("script");
     }
     let text = escapeLatexText(value, this.textOptions);
     if (/\\mathbb\{/.test(text)) this.need("amsfonts", "symbols such as ℝ");
@@ -1185,14 +1191,14 @@ export class MarkdownLatexConverter {
     if (state.skipFootnotes) return "";
     // A footnote whose text refers back to itself (directly or through another) is not expanded again.
     if (this.expandingFootnotes.has(id)) {
-      this.warn("cyclic-footnote", 1, () => "A footnote that refers to itself was left as written.");
+      this.warn("cyclic-footnote");
       return this.escape(`[^${id}]`);
     }
     this.expandingFootnotes.add(id);
     try {
       // A footnote inside a footnote (or pasted into one) has no reliable number in LaTeX: its text goes in parentheses instead.
       if (state.footnote || this.context.inFootnote) {
-        this.warn("nested-footnote", 1, () => "A footnote inside another footnote was written in parentheses.");
+        this.warn("nested-footnote");
         const inner = this.blocks(nodeChildren(definition), FOOTNOTE_BLOCK_STATE).join(" ");
         return inner.trim() ? ` (${inner.trim()})` : "";
       }
@@ -1228,7 +1234,7 @@ export class MarkdownLatexConverter {
     if (citation.narrative && (!known || !citation.items.every((item) => known.has(item.key)))) return this.escape(raw);
     if (known) {
       const unknown = citation.items.filter((item) => !known.has(item.key));
-      if (unknown.length) this.warn("cite-keys", unknown.length, (n) => `${n} cited key${n === 1 ? " is" : "s are"} not in the bibliography.`);
+      if (unknown.length) this.warn("cite-keys", unknown.length);
     }
     return citationLatex(citation, bibliographyDialect(this.context));
   }

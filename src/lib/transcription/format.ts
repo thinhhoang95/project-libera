@@ -9,16 +9,7 @@ export function formatClock(seconds: number) {
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
 }
 
-/** "1h 12m", "4m 05s", "38s". */
-export function formatDuration(seconds: number) {
-  const total = Math.max(0, Math.round(seconds));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
-  if (minutes) return `${minutes}m ${String(total % 60).padStart(2, "0")}s`;
-  return `${total}s`;
-}
-
+/** The name a transcript shows for a speaker. Unnamed speakers hold "Speaker N" in the data itself (stored English text, like the model-facing transcript). */
 export function speakerName(transcript: Pick<Transcript, "speakers">, speaker: number | null) {
   return speaker === null ? "" : transcript.speakers[speaker]?.name || `Speaker ${speaker + 1}`;
 }

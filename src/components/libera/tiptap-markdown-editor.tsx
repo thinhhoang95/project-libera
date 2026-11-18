@@ -221,6 +221,7 @@ function cachedListHistoryState(current: Editor, shared: boolean): ToolbarListHi
 export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab, sharedStatus, onExpandMacros }: Props) {
   const t = useTranslations("tiptapMarkdownEditor");
   const tPython = useTranslations("tiptapPythonFigureView");
+  const frontMatterTitle = useTranslations("lib.tiptapFrontMatter")("frontMatterTitle");
   const tColor = useTranslations("lib.markdownColors.color");
   const colorName = (color: { label: string }) => tColor(color.label.toLowerCase());
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
@@ -293,7 +294,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView, imageNodeView }),
+    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView, imageNodeView, frontMatterTitle }),
     ...citations.extensions,
     // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
     // from recording remote edits (shared tabs only).
@@ -316,7 +317,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView, imageNodeView]);
+  ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView, imageNodeView, frontMatterTitle]);
 
   const editor = useEditor({
     extensions,

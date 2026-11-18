@@ -1,6 +1,6 @@
 // Every user-facing sentence about collaboration state lives here (and in the `lib.collab.ui.wording` messages), so
 // the pill, the account dialog and the tests agree on the wording. Functions take a translator `t` made with
-// `useTranslations("lib.collab.ui.wording")`; without one they fall back to the English messages in wording-en.json,
+// `useTranslations("lib.collab.ui.wording")`; without one they fall back to the English messages in messages/en.json,
 // which keeps callers that have not been converted yet (and the tests) working.
 
 import { createTranslator } from "next-intl";
@@ -8,12 +8,12 @@ import type { HostConnection, ShareProgress } from "@/lib/collab/local-api";
 import type { NotificationInfo } from "@/lib/collab/protocol/api";
 import type { SyncState, SyncStatus } from "@/lib/collab/protocol/local";
 import type { Role } from "@/lib/collab/protocol/roles";
-import english from "./wording-en.json";
+import { lib } from "../../../../messages/en.json";
 
 /** What `useTranslations("lib.collab.ui.wording")` returns, as far as this file needs it. */
 export type WordingTranslator = (key: string, values?: Record<string, string | number>) => string;
 
-const englishTranslator = createTranslator({ locale: "en", messages: english, onError: () => {} }) as unknown as WordingTranslator;
+const englishTranslator = createTranslator({ locale: "en", messages: lib.collab.ui.wording, onError: () => {} }) as unknown as WordingTranslator;
 
 /** Visual tone; components map it to colours (collab.css). */
 export type CollabTone = "neutral" | "local" | "busy" | "ok" | "warn" | "danger";

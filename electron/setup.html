@@ -4119,7 +4119,7 @@
                 return { result: await window.liberaSetup.exportPreferences(password) };
               } catch (error) {
                 const message = ipcErrorMessage(error, t("unableExportPreferences"));
-                if (/master password is incorrect/i.test(message)) return { retry: t("wrongPasswordExport") };
+                if (message.includes(t("main:masterPasswordIncorrect"))) return { retry: t("wrongPasswordExport") };
                 return { error: message };
               }
             },
@@ -4149,7 +4149,7 @@
                   return { result: await window.liberaSetup.importPreferences(password) };
                 } catch (error) {
                   const message = ipcErrorMessage(error, t("unableLoadPreferences"));
-                  if (/does not open this preferences backup/i.test(message)) return { retry: t("wrongPasswordOpen") };
+                  if (message.includes(t("preferencesIo:wrongPassword"))) return { retry: t("wrongPasswordOpen") };
                   return { error: message };
                 }
               },
@@ -4747,7 +4747,7 @@
             message.includes("password")
           ) {
             setActiveSection("general");
-          } else if (message.includes("Quick prompt")) {
+          } else if (message.toLocaleLowerCase().includes(t("quickPrompts:marker").toLocaleLowerCase())) {
             setActiveSection("ai");
           }
 

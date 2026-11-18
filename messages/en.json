@@ -1320,7 +1320,7 @@
   },
   "documentChatPanel": {
     "addPhotosButton": "Add photos",
-    "agentOverlap": "The agent in “{title}” may still change {overlap}. Wait for it to finish or stop it first, so the two runs do not edit the same files. A Read Only agent can run alongside it.",
+    "agentOverlap": "The agent in “{title}” may still change {kind, select, notebook {the notebook “{name}”} other {the file “{name}”}}. Wait for it to finish or stop it first, so the two runs do not edit the same files. A Read Only agent can run alongside it.",
     "agentPermissionAria": "Agent permission",
     "agentPermissionTitle": "Agent permission: {label}",
     "agentPlaceholder": "Ask the agent to find, read or edit… Type @ for files",
@@ -2379,6 +2379,77 @@
       "zoomInLabel": "Zoom in",
       "zoomLabel": "Zoom",
       "zoomOutLabel": "Zoom out"
+    },
+    "updater": {
+      "checkFailed": "The update check failed.",
+      "laterButton": "Later",
+      "restartButton": "Restart and Update",
+      "readyTitle": "Libera Update Ready",
+      "downloaded": "Libera {version} has been downloaded.",
+      "saveEditsDetail": "Save your open edits, then use Restart and Update in the About dialog.",
+      "restartDetail": "Restart Libera now to install the update, or install it the next time you quit.",
+      "noUpdateReady": "No downloaded update is ready to install.",
+      "saveBeforeRestart": "Save all open edits before restarting to install the update.",
+      "stateUnavailable": "Updater state is unavailable from this window.",
+      "checksUnavailable": "Update checks are unavailable from this window.",
+      "installUnavailable": "Update installation is unavailable from this window.",
+      "documentStateUnavailable": "Document state is unavailable from this window."
+    },
+    "latexSnippets": {
+      "nameRequired": "Give the snippet a name.",
+      "nameTooLong": "Use at most {max} characters.",
+      "nameCharacters": "Use letters, numbers, hyphens and underscores, starting with a letter or number.",
+      "nameTaken": "A snippet named /{name} already exists."
+    },
+    "quickPrompts": {
+      "marker": "Quick prompt",
+      "notList": "Quick prompts must be a list.",
+      "tooMany": "Add no more than {max} quick prompts.",
+      "needsIdentifier": "Quick prompt {number} needs a slash identifier.",
+      "badIdentifier": "Quick prompt {number} identifier may use letters, numbers, hyphens, and underscores, and must start with a letter or number.",
+      "identifierInUse": "Quick prompt identifier /{identifier} is already in use.",
+      "needsPrompt": "Quick prompt {number} needs prompt text.",
+      "promptTooLong": "Quick prompt {number} must be {max, number} characters or fewer."
+    },
+    "preferencesIo": {
+      "notBackup": "This is not a Libera preferences backup.",
+      "unsupportedVersion": "Unsupported Libera preferences backup version: {version}.",
+      "missingPreferences": "The Libera preferences backup is missing its preferences object.",
+      "wrongPassword": "The master password does not open this preferences backup.",
+      "passwordRequired": "A master password is required to encrypt or open a preferences backup.",
+      "notEncryptedBackup": "This is not an encrypted Libera preferences backup.",
+      "unsafeEncryption": "The preferences backup uses unsupported or unsafe encryption settings.",
+      "damaged": "The encrypted preferences backup is damaged."
+    },
+    "localLlms": {
+      "customLabel": "the server",
+      "customSubject": "The server",
+      "timeout": "{subject} at {url} did not answer in time. It may still be loading {model}, or the model may be too large for this computer.",
+      "unreachable": "Could not reach {server} at {url}, so {name} is unavailable. Is the server running? {start}",
+      "requestFailed": "The request to {server} at {url} failed: {error}",
+      "rejectedKey": "{subject} rejected the API key for {name}. Check the key in Preferences → Local LLMs.",
+      "noTools": "{model} cannot call tools, so it cannot work in Agent mode. Choose a model with tool support, or switch to Chat.",
+      "contextExceeded": "This request is too long for {model}'s context window. Send less, for example by turning off Whole document or starting a new chat. {advice}",
+      "stillLoading": "{subject} is still loading {model}. Try again in a moment.",
+      "modelMissing": "{subject} does not have {model} ready. {advice}",
+      "serverErrorDetail": "{subject} returned an error for {name}: {detail}",
+      "serverErrorStatus": "{subject} returned an error for {name} (HTTP {status}).",
+      "enterBaseUrl": "Enter a base URL such as http://localhost:11434/v1.",
+      "notJson": "{url}/models did not return JSON. Check that this is the server's OpenAI-compatible address, which usually ends in /v1.",
+      "connectedChooseModel": "Connected to {server}: {count, plural, one {# model} other {# models}} available. Choose a model to finish the test.",
+      "connectedAnswered": "Connected to {server}: {model} answered in {seconds} s. {count, plural, one {# model} other {# models}} available.",
+      "ollamaStart": "Start it with `ollama serve`, or open the Ollama app.",
+      "ollamaLoad": "Download it with `ollama pull {model}`, or choose another model in Preferences → Local LLMs.",
+      "ollamaContext": "Raise the context length in the Ollama app's settings, or set OLLAMA_CONTEXT_LENGTH before starting the server.",
+      "lmstudioStart": "In LM Studio, open the Developer tab and start the server.",
+      "lmstudioLoad": "Load it in LM Studio's Developer tab, or run `lms load {model}`.",
+      "lmstudioContext": "Reload the model in LM Studio with a larger context length.",
+      "llamaserverStart": "Start it with `llama-server -m your-model.gguf --port 8080`.",
+      "llamaserverLoad": "llama-server serves the model it was started with; check its -m option.",
+      "llamaserverContext": "Restart llama-server with a larger context, for example `-c 32768`.",
+      "customStart": "Check the base URL too.",
+      "customLoad": "Check that the server has it loaded, or choose another model in Preferences → Local LLMs.",
+      "customContext": "Give the model a larger context length on the server."
     }
   },
   "existingImageDialog": {
@@ -3745,6 +3816,13 @@
             "stale": "Not applied: the text changed since it was suggested.",
             "unconfirmed": "The decision could not be confirmed. Try again."
           }
+        },
+        "reviews": {
+          "signInRequired": "Sign in to your collaboration account to request a review.",
+          "onlyEditors": "Only editors and owners can request a review.",
+          "pickReviewer": "Pick at least one reviewer.",
+          "selectPassage": "Select the passage to review first.",
+          "refused": "The server refused this ({status})."
         }
       },
       "ui": {
@@ -4023,6 +4101,54 @@
             "labelNotFound": "{reference} (label not found)",
             "citationNotFound": "{key} (citation not found)",
             "altClickToEdit": "\\{name}: Alt-click or Alt+Enter to edit"
+          },
+          "floatEdit": {
+            "caption": "Caption",
+            "column": "Column",
+            "source": "Source",
+            "codeListing": "Code ({environment})",
+            "editorLabel": "{label} (LaTeX). Enter saves, Shift+Enter starts a new line, Escape cancels.",
+            "changedWhileEditing": "This part of the float changed while you were editing it, so your text was not saved:\n\n{text}",
+            "coAuthorChanged": "A co-author changed this part while you were editing it. Replace their version with yours?"
+          },
+          "titleEdit": {
+            "part": {
+              "title": "Title",
+              "author": "Author",
+              "date": "Date",
+              "abstract": "Abstract",
+              "line": "Line",
+              "note": "Keywords and notes"
+            },
+            "newAuthor": "New author",
+            "editorLabel": "{label} (LaTeX). Enter saves, Shift+Enter starts a new line, Escape cancels.",
+            "changedWhileAddingAuthor": "The title changed while you were adding an author, so your text was not saved:\n\n{text}",
+            "changedWhileEditing": "The title changed while you were editing it, so your text was not saved:\n\n{text}",
+            "blockChanged": "The title block changed while you were editing it, so your text was not saved:\n\n{text}",
+            "coAuthorChanged": "A co-author changed this part of the title while you were editing it. Replace their version with yours?"
+          },
+          "algorithmEdit": {
+            "statement": "Statement",
+            "newStatement": "New statement",
+            "caption": "Caption",
+            "menuLabel": "Algorithm",
+            "editorLabel": "{label} (LaTeX). Enter saves, Shift+Enter starts a new line, Escape cancels, Tab goes to the next statement, Ctrl+Enter adds a statement below.",
+            "changedEditingStatement": "The algorithm changed while you were editing this statement, so your text was not saved:\n\n{text}",
+            "changedEditing": "The algorithm changed while you were editing it, so your text was not saved:\n\n{text}",
+            "changedEditingCaption": "The caption changed while you were editing it, so your text was not saved:\n\n{text}",
+            "coAuthorStatement": "A co-author changed this statement while you were editing it. Replace their version with yours?",
+            "coAuthorCaption": "A co-author changed this caption while you were editing it. Replace their version with yours?",
+            "insertAbove": "Insert statement above",
+            "insertBelow": "Insert statement below",
+            "deleteStatement": "Delete statement",
+            "deleteBlock": "Delete block",
+            "showSource": "Show source",
+            "notStatement": "Not possible here (this line is not written as a statement)",
+            "notPossible": "Not possible here",
+            "deleteFromFirstLine": "Delete the block from its first line",
+            "cannotEditFile": "This file cannot be edited",
+            "changedWhileMenuOpen": "The algorithm changed while this menu was open; nothing was deleted. Try again.",
+            "confirmDeleteBlock": "{lines, plural, one {Delete this block and the # line of LaTeX in it?} other {Delete this block and the # lines of LaTeX in it?}}"
           }
         }
       },
@@ -4050,6 +4176,51 @@
             "ieee": "IEEE",
             "apa": "APA 7th edition",
             "nature": "Nature"
+          }
+        }
+      },
+      "markdownPaste": {
+        "choices": {
+          "templateError": {
+            "empty": "Enter a command such as \\frametitle, or a template with #1.",
+            "unusable": "{command} cannot be used for headings.",
+            "multiline": "The template must be one line.",
+            "parameter": "Use #1 exactly once, where the heading's text goes, and no other #.",
+            "braces": "The braces in the template do not balance.",
+            "unsafe": "The template may not contain environments, comments, ^^ notation or commands that read files or define macros."
+          }
+        },
+        "convert": {
+          "warning": {
+            "emoji": "pdfLaTeX cannot typeset emoji: {count, plural, one {# removed} other {# removed}}.",
+            "front-matter": "The note's front matter was left out.",
+            "unreferenced-footnote": "{count, plural, one {# footnote is never referenced and was left out.} other {# footnotes are never referenced and were left out.}}",
+            "heading-template": "The custom heading is not valid, so those headings were written in bold.",
+            "deep-list": "Lists nested deeper than LaTeX allows were joined to the list around them.",
+            "box-color": "A colored box was written as a plain quote: its color was dropped. Load tcolorbox in the preamble to keep it.",
+            "diagram": "{count, plural, one {# diagram ({detail}) pasted as code: LaTeX cannot draw it.} other {# diagrams ({detail}) pasted as code: LaTeX cannot draw them.}}",
+            "html-live": "An interactive HTML block was pasted as code: LaTeX cannot run it.",
+            "unsafe-math": "{count, plural, one {# formula could break out of math or read files and was pasted as text.} other {# formulas could break out of math or read files and were pasted as text.}}",
+            "inline-display": "A display formula inside running text was written inline.",
+            "html": "Some HTML had no LaTeX equivalent: its tags were dropped and its text kept.",
+            "image-path": "{count, plural, one {# image path could not be used in LaTeX and was left as a comment.} other {# image paths could not be used in LaTeX and were left as a comment.}}",
+            "remote-image": "{count, plural, one {# image is a web address: download it into the project to include it.} other {# images are web addresses: download them into the project to include them.}}",
+            "ink-image": "{count, plural, one {# ink drawing is SVG: export it to PDF or PNG for LaTeX.} other {# ink drawings are SVG: export them to PDF or PNG for LaTeX.}}",
+            "image-format": "{count, plural, one {# image is in a format pdfLaTeX cannot include (convert to PDF, PNG or JPEG).} other {# images are in a format pdfLaTeX cannot include (convert to PDF, PNG or JPEG).}}",
+            "missing-image": "{count, plural, one {# image is not in the project yet.} other {# images are not in the project yet.}}",
+            "rowspan": "Cells merged across rows were split: the text stays in the first row, the cells below are empty.",
+            "table-truncated": "A table had more than 64 columns or 5,000 rows: the rest was left out. Paste as plain text to keep all of it.",
+            "longtable-twocolumn": "longtable does not work in two-column documents, so the tables were written as tabular.",
+            "caption-without-float": "{detail, select, box {Captions cannot go in a box, so table captions there were left out.} other {Captions need a table float: choose Table under Float to keep them.}}",
+            "label-taken": "A table label was already used, so a number was added to it.",
+            "label": "A table label had characters LaTeX labels cannot hold, so one was made from the caption.",
+            "soul": "{detail, select, hl {Highlights around links, footnotes, citations, code or \\(…\\) math were dropped: \\hl cannot hold them.} other {Strikethrough around links, footnotes, citations, code or \\(…\\) math was dropped: \\st cannot hold them.}}",
+            "line-height": "Line spacing set in the text was left out.",
+            "raw-block": "LaTeX environments or block commands written in the text were kept as text: they cannot stand where the paste goes.",
+            "script": "Some text is in a script pdfLaTeX may not typeset: compile with XeLaTeX or LuaLaTeX if it shows errors.",
+            "cyclic-footnote": "A footnote that refers to itself was left as written.",
+            "nested-footnote": "A footnote inside another footnote was written in parentheses.",
+            "cite-keys": "{count, plural, one {# cited key is not in the bibliography.} other {# cited keys are not in the bibliography.}}"
           }
         }
       }
@@ -4401,6 +4572,27 @@
         "playbackFailed": "This audio could not be played.",
         "noText": "There is no text to read aloud.",
         "synthesisFailed": "Could not read the text aloud."
+      }
+    },
+    "codeLanguages": {
+      "plainText": "Plain text"
+    },
+    "galleryTimeline": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "thisWeek": "This week",
+      "thisMonth": "This month",
+      "labelWithTime": "{label} · {time}"
+    },
+    "slideDiagrams": {
+      "error": "{detail, select, none {Diagram error.} other {Diagram error: {detail}}}"
+    },
+    "aiActivity": {
+      "action": {
+        "write": "Writing with AI",
+        "rewrite": "Rewriting with AI",
+        "format": "Formatting with AI",
+        "image": "Converting the image with AI"
       }
     }
   },
@@ -4854,7 +5046,8 @@
   "markdownSource": {
     "markdownCodemirrorEditor": {
       "dropImage": "Drop image to insert",
-      "selectionLabel": "Selection"
+      "selectionLabel": "Selection",
+      "sourceEditorLabel": "Source Markdown editor"
     },
     "markdownSourceContextMenu": {
       "aiFormat": "AI Format",
@@ -7322,13 +7515,7 @@
     "unindentHeadings": "Unindent Headings",
     "whatShouldAiWrite": "What should AI write? Type / for prompts",
     "writeNewTextWithAi": "Write new text with AI",
-    "writeWithAi": "Write with AI",
-    "activity": {
-      "write": "Writing with AI",
-      "rewrite": "Rewriting with AI",
-      "format": "Formatting with AI",
-      "image": "Converting the image with AI"
-    }
+    "writeWithAi": "Write with AI"
   },
   "tiptapLiveCodeBlockView": {
     "foldMacroDefinitions": "Fold the macro definitions",

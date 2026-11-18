@@ -2,6 +2,7 @@ import { MapMode, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { dispatchAsOneStep } from "../../../collab/undo-boundary";
 import { visualConfig } from "./model";
+import { visualText } from "./labels";
 import { minimalChange } from "./title-edit";
 import { floatPartPos, setFloatHooks } from "./widgets";
 
@@ -53,7 +54,7 @@ function editPart(view: EditorView, target: HTMLElement, from: number, expected:
   area.spellcheck = false;
   area.rows = 1;
   area.value = resume?.draft ?? view.state.sliceDoc(from, to);
-  area.setAttribute("aria-label", `${label} (LaTeX). Enter saves, Shift+Enter starts a new line, Escape cancels.`);
+  area.setAttribute("aria-label", visualText(view.state)("floatEdit.editorLabel", { label }));
   target.classList.add("cm-vis-float-editing");
   target.replaceChildren(area);
   const fit = () => { area.style.height = "auto"; area.style.height = `${area.scrollHeight + 2}px`; };
@@ -86,8 +87,8 @@ function editPart(view: EditorView, target: HTMLElement, from: number, expected:
     // Opening and leaving a part without typing writes nothing.
     if (save && session.typed && text !== original) {
       if (now === null || session.from === null || !canEdit(view)) {
-        window.alert(`The ${label.toLowerCase()} changed while you were editing it, so your text was not saved:\n\n${text}`);
-      } else if (now === original || window.confirm(`A co-author changed this ${label.toLowerCase()} while you were editing it. Replace their version with yours?`)) {
+        window.alert(visualText(view.state)("floatEdit.changedWhileEditing", { text }));
+      } else if (now === original || window.confirm(visualText(view.state)("floatEdit.coAuthorChanged"))) {
         // Only the characters that changed are written, as one undo step.
         dispatchAsOneStep(view, { changes: minimalChange(session.from, now, text), userEvent: "input.visual.float" });
       }
@@ -105,7 +106,7 @@ function editPart(view: EditorView, target: HTMLElement, from: number, expected:
       requestAnimationFrame(() => {
         if (done || area.isConnected) return;
         session.abandon();
-        if (session.typed && area.value !== original) window.alert(`The float changed while you were editing its ${label.toLowerCase()}, so your text was not saved:\n\n${area.value}`);
+        if (session.typed && area.value !== original) window.alert(visualText(view.state)("floatEdit.changedWhileEditing", { text: area.value }));
       });
       return;
     }
@@ -127,7 +128,7 @@ function adoptSessions(view: EditorView, dom: HTMLElement) {
     const draft = session.area.value;
     session.abandon();
     if (!editPart(view, target, from, view.state.sliceDoc(from, to), label, { original, draft, typed }) && typed && draft !== original) {
-      window.alert(`The float changed while you were editing its ${label.toLowerCase()}, so your text was not saved:\n\n${draft}`);
+      window.alert(visualText(view.state)("floatEdit.changedWhileEditing", { text: draft }));
     }
   }
 }

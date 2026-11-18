@@ -250,16 +250,17 @@ export function LatexEditor({
 }: LatexEditorProps) {
   const t = useTranslations("latex.latexEditor");
   const tImages = useTranslations("latex.latexImageDrop");
-  const tWidgets = useTranslations("lib.latex.codemirror.visual.widgets");
-  const tTableEdit = useTranslations("lib.latex.codemirror.visual.tableEdit");
-  const tDrawingPreview = useTranslations("lib.latex.codemirror.visual.drawingPreview");
+  const tVisual = useTranslations("lib.latex.codemirror.visual");
+  const tPasteWarnings = useTranslations("lib.latex.markdownPaste.convert");
+  const tPasteWarningsRef = useRef(tPasteWarnings);
   const tRef = useRef(t);
   const tImagesRef = useRef(tImages);
-  const tVisualRef = useRef({ widgets: tWidgets, tableEdit: tTableEdit, drawingPreview: tDrawingPreview });
+  const tVisualRef = useRef(tVisual);
   useLayoutEffect(() => {
     tRef.current = t;
+    tPasteWarningsRef.current = tPasteWarnings;
     tImagesRef.current = tImages;
-    tVisualRef.current = { widgets: tWidgets, tableEdit: tTableEdit, drawingPreview: tDrawingPreview };
+    tVisualRef.current = tVisual;
   });
   const compileRoot = rootPath ?? documentPath;
   const hostRef = useRef<HTMLDivElement>(null);
@@ -375,7 +376,7 @@ export function LatexEditor({
       target.focus();
       // No notice when nothing went into the document (suggest mode made it a suggestion).
       if (inserted && inserted.to > inserted.from) {
-        showPasteNotice({ id: nextDialogIdRef.current++, range: trackRange(target, inserted.from, inserted.to), inserted, markdown: request.text, html: request.html, missing: result.missing.map((pkg) => pkg.line), warnings: result.warnings.map((warning) => warning.message) });
+        showPasteNotice({ id: nextDialogIdRef.current++, range: trackRange(target, inserted.from, inserted.to), inserted, markdown: request.text, html: request.html, missing: result.missing.map((pkg) => pkg.line), warnings: result.warnings.map((warning) => converter.pasteWarningText((key, values) => tPasteWarningsRef.current(key as never, values as never), warning)) });
       }
     } catch {
       // The conversion failed: a paste still goes in, as the text it was.
@@ -558,11 +559,7 @@ export function LatexEditor({
           // Before the Markdown paste: a clipboard holding only an image is a figure, not text.
           latexImagePaste(() => (imagesRef.current ? imageHandlerRef.current : null)),
           // The Visual mode's tooltips, menus and prompts (widgets are not React): keys are "<group>.<key>".
-          visualTranslator.of((key, values) => {
-            const dot = key.indexOf(".");
-            const group = key.slice(0, dot) as keyof typeof tVisualRef.current;
-            return tVisualRef.current[group](key.slice(dot + 1), values);
-          }),
+          visualTranslator.of((key, values) => tVisualRef.current(key as never, values as never)),
           drawingPreviewCompartment.of(drawingPreviewExtension(initialRef.current.compileRoot, () => engineRef.current ?? "auto", () => tRef.current)),
           latexMarkdownPaste(() => markdownPasteConfig((request) => { void pasteRequestRef.current(request); }, () => mathMarkersRef.current)),
           Prec.high(markdownPasteKeymap(() => (request) => { void pasteRequestRef.current(request); }, (message) => aiErrorRef.current(message))),

@@ -88,11 +88,12 @@ export function buildSlideDiagramConfig(tokens: SlideChartTheme, fontFamily: str
 /**
  * Mermaid's parse errors span several lines, with the source excerpt and a
  * caret in between; the first line says where, the last what was expected.
+ * This is Mermaid's own English text, shortened; "" when it said nothing. The
+ * caller words the sentence around it (lib.slideDiagrams.error).
  */
-export function slideDiagramErrorMessage(reason: unknown) {
+export function slideDiagramErrorDetail(reason: unknown) {
   const text = reason instanceof Error ? reason.message : String(reason ?? "");
   const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return "Diagram error.";
-  const summary = lines.length > 1 ? `${lines[0].replace(/:$/, "")}. ${lines[lines.length - 1]}` : lines[0];
-  return `Diagram error: ${summary}`;
+  if (!lines.length) return "";
+  return lines.length > 1 ? `${lines[0].replace(/:$/, "")}. ${lines[lines.length - 1]}` : lines[0];
 }

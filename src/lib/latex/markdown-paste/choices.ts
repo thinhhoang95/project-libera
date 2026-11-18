@@ -32,7 +32,14 @@ export function headingMapFor(top: MarkdownPasteOptions["headingTop"], ranks: nu
   return map.slice(0, Math.max(0, ranks));
 }
 
-export type HeadingTemplate = { template: string } | { error: string };
+/** Why a custom heading was refused; `headingTemplateErrorText` words it. `unusable` names the command in `command`. */
+export type HeadingTemplateErrorCode = "empty" | "unusable" | "multiline" | "parameter" | "braces" | "unsafe";
+export type HeadingTemplate = { template: string } | { error: HeadingTemplateErrorCode; command?: string };
+
+/** The dialog's sentence for a refused template; `t` is the `lib.latex.markdownPaste.choices` translator. */
+export function headingTemplateErrorText(t: (key: string, values?: Record<string, string>) => string, error: Extract<HeadingTemplate, { error: unknown }>) {
+  return t(`templateError.${error.error}`, { command: error.command ?? "" });
+}
 
 /**
  * A custom heading: a command name (`\frametitle`, `\section*`), written as
@@ -41,17 +48,17 @@ export type HeadingTemplate = { template: string } | { error: string };
  */
 export function parseHeadingTemplate(input: string): HeadingTemplate {
   const text = input.trim();
-  if (!text) return { error: "Enter a command such as \\frametitle, or a template with #1." };
+  if (!text) return { error: "empty" };
   if (/^\\[A-Za-z@]+\*?$/.test(text)) {
-    if (hasUnsafeTex(text) || /^\\(?:begin|end|item)\b/.test(text)) return { error: `${text} cannot be used for headings.` };
+    if (hasUnsafeTex(text) || /^\\(?:begin|end|item)\b/.test(text)) return { error: "unusable", command: text };
     return { template: `${text}{#1}` };
   }
-  if (/\n/.test(text)) return { error: "The template must be one line." };
+  if (/\n/.test(text)) return { error: "multiline" };
   // Exactly one parameter, #1: any other unescaped # would be a stray macro parameter.
   const parameters = text.match(/(?<!\\)#./g) ?? [];
-  if (parameters.length !== 1 || parameters[0] !== "#1" || /(?<!\\)#$/.test(text)) return { error: "Use #1 exactly once, where the heading's text goes, and no other #." };
-  if (!hasBalancedBraces(text.replace("#1", ""))) return { error: "The braces in the template do not balance." };
-  if (/\\(?:begin|end)\b|(?<!\\)%/.test(text) || hasUnsafeTex(text)) return { error: "The template may not contain environments, comments, ^^ notation or commands that read files or define macros." };
+  if (parameters.length !== 1 || parameters[0] !== "#1" || /(?<!\\)#$/.test(text)) return { error: "parameter" };
+  if (!hasBalancedBraces(text.replace("#1", ""))) return { error: "braces" };
+  if (/\\(?:begin|end)\b|(?<!\\)%/.test(text) || hasUnsafeTex(text)) return { error: "unsafe" };
   return { template: text };
 }
 

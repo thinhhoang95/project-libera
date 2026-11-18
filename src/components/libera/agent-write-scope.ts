@@ -18,12 +18,15 @@ export function agentWriteScope(permission: AgentPermission, notebook: string | 
   return { files: openFiles };
 }
 
-/** Returns a notebook or file the two scopes share, or null when they do not overlap. */
-export function agentWriteOverlap(a: AgentWriteScope, b: AgentWriteScope): string | null {
-  if (a.notebook && a.notebook === b.notebook) return a.notebook;
+/** What two scopes share: a whole notebook, or one file (by path). */
+export type AgentWriteOverlap = { kind: "notebook" | "file"; name: string };
+
+/** Returns the notebook or file the two scopes share, or null when they do not overlap. */
+export function agentWriteOverlap(a: AgentWriteScope, b: AgentWriteScope): AgentWriteOverlap | null {
+  if (a.notebook && a.notebook === b.notebook) return { kind: "notebook", name: a.notebook };
   const inNotebook = (scope: AgentWriteScope, other: AgentWriteScope) => scope.notebook ? other.files.find((file) => file.notebook === scope.notebook) : undefined;
   const crossing = inNotebook(a, b) ?? inNotebook(b, a);
-  if (crossing) return crossing.path;
+  if (crossing) return { kind: "file", name: crossing.path };
   const shared = a.files.find((file) => b.files.some((other) => other.path === file.path));
-  return shared?.path ?? null;
+  return shared ? { kind: "file", name: shared.path } : null;
 }

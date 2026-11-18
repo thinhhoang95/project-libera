@@ -4,15 +4,10 @@ import { installWindowActivityAttributes } from "./window-activity";
 // Tracks in-flight AI operations (format, rewrite, write...) across editors so
 // the workspace chrome can show a single Gemini-style glow while any runs, and
 // a floating card can offer Stop for the ones that can be cancelled.
-export type AiActivity = { id: number; label: string; cancel: () => void };
+export type AiActivity = { id: number; label?: string; action?: AiAction; cancel: () => void };
 
-/** What the floating card says while each editor AI action runs. */
-export const AI_ACTION_LABELS = {
-  write: "Writing with AI",
-  rewrite: "Rewriting with AI",
-  format: "Formatting with AI",
-  image: "Converting the image with AI",
-} as const;
+/** The editor AI actions the floating card names; it words them in the interface language (lib.aiActivity.action). */
+export type AiAction = "write" | "rewrite" | "format" | "image";
 
 let active = 0;
 let nextId = 1;
@@ -23,7 +18,7 @@ function emit() {
   for (const listener of listeners) listener();
 }
 
-export function beginAiActivity(options?: { label: string; cancel: () => void }): () => void {
+export function beginAiActivity(options?: { label?: string; action?: AiAction; cancel: () => void }): () => void {
   active += 1;
   const activity = options ? { id: nextId++, ...options } : null;
   if (activity) cancellable = [...cancellable, activity];

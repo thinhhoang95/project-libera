@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SLIDE_THEME_TOKENS, slideSeriesPalette } from "../../src/lib/slide-charts";
-import { buildSlideDiagramConfig, mixHex, slideDiagramErrorMessage } from "../../src/lib/slide-diagrams";
+import { buildSlideDiagramConfig, mixHex, slideDiagramErrorDetail } from "../../src/lib/slide-diagrams";
 
 test("mixHex lays one color over another", () => {
   assert.equal(mixHex("#ffffff", "#000000", 0), "#000000");
@@ -44,7 +44,7 @@ test("node fills are tints between the surface and the series color", () => {
 
 test("parse errors are shortened to where and what", () => {
   const error = new Error("Parse error on line 2:\n...A --> \n-----------^\nExpecting 'NODE_STRING', got 'EOF'");
-  assert.equal(slideDiagramErrorMessage(error), "Diagram error: Parse error on line 2. Expecting 'NODE_STRING', got 'EOF'");
-  assert.equal(slideDiagramErrorMessage(new Error("No diagram type detected")), "Diagram error: No diagram type detected");
-  assert.equal(slideDiagramErrorMessage(""), "Diagram error.");
+  assert.equal(slideDiagramErrorDetail(error), "Parse error on line 2. Expecting 'NODE_STRING', got 'EOF'");
+  assert.equal(slideDiagramErrorDetail(new Error("No diagram type detected")), "No diagram type detected");
+  assert.equal(slideDiagramErrorDetail(""), "");
 });

@@ -1,4 +1,10 @@
 const { app, dialog, ipcMain } = require("electron");
+const i18n = require("./i18n.cjs");
+
+/** A message of the update dialogs and errors in the interface language (namespace electron.updater). */
+function um(key, values) {
+  return i18n.t(`electron.updater.${key}`, values);
+}
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const INITIAL_CHECK_DELAY_MS = 30_000;
@@ -43,7 +49,7 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
   function friendlyError(error) {
     const message = error instanceof Error ? error.message : String(error ?? "");
 
-    return message.trim() || "The update check failed.";
+    return message.trim() || um("checkFailed");
   }
 
   async function promptForRestart(version) {
@@ -56,14 +62,12 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
     const hasUnsavedDocuments = dirtyDocumentCount > 0;
     const options = {
       type: "info",
-      buttons: hasUnsavedDocuments ? ["Later"] : ["Restart and Update", "Later"],
+      buttons: hasUnsavedDocuments ? [um("laterButton")] : [um("restartButton"), um("laterButton")],
       cancelId: hasUnsavedDocuments ? 0 : 1,
       defaultId: 0,
-      title: "Libera Update Ready",
-      message: `Libera ${version} has been downloaded.`,
-      detail: hasUnsavedDocuments
-        ? "Save your open edits, then use Restart and Update in the About dialog."
-        : "Restart Libera now to install the update, or install it the next time you quit.",
+      title: um("readyTitle"),
+      message: um("downloaded", { version }),
+      detail: hasUnsavedDocuments ? um("saveEditsDetail") : um("restartDetail"),
     };
     const result = window && !window.isDestroyed()
       ? await dialog.showMessageBox(window, options)
@@ -76,11 +80,11 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
 
   async function restartAndInstall() {
     if (!autoUpdater || state.status !== "downloaded") {
-      throw new Error("No downloaded update is ready to install.");
+      throw new Error(um("noUpdateReady"));
     }
 
     if (dirtyDocumentCount > 0) {
-      throw new Error("Save all open edits before restarting to install the update.");
+      throw new Error(um("saveBeforeRestart"));
     }
 
     await onBeforeInstall();
@@ -124,7 +128,7 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
   function installIpcHandlers() {
     ipcMain.handle("updater:get-state", (event) => {
       if (!getWindowFromEvent(event)) {
-        throw new Error("Updater state is unavailable from this window.");
+        throw new Error(um("stateUnavailable"));
       }
 
       return state;
@@ -132,7 +136,7 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
 
     ipcMain.handle("updater:check", (event) => {
       if (!getWindowFromEvent(event)) {
-        throw new Error("Update checks are unavailable from this window.");
+        throw new Error(um("checksUnavailable"));
       }
 
       return check({ manual: true });
@@ -140,7 +144,7 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
 
     ipcMain.handle("updater:restart-and-install", (event) => {
       if (!getWindowFromEvent(event)) {
-        throw new Error("Update installation is unavailable from this window.");
+        throw new Error(um("installUnavailable"));
       }
 
       return restartAndInstall();
@@ -148,7 +152,7 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
 
     ipcMain.handle("updater:set-dirty-document-count", (event, count) => {
       if (!getWindowFromEvent(event)) {
-        throw new Error("Document state is unavailable from this window.");
+        throw new Error(um("documentStateUnavailable"));
       }
 
       dirtyDocumentCount = Number.isInteger(count) && count > 0 ? Math.min(count, 10_000) : 0;

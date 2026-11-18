@@ -1,9 +1,10 @@
+import { dateTimeFormat } from "@/lib/i18n/format";
+
 /** How the gallery splits photos into dated sections, filters them, and finds a date in them. */
 
 export type GalleryGrouping = "auto" | "day" | "week" | "month" | "year";
 
 export const GALLERY_GROUPINGS: GalleryGrouping[] = ["auto", "day", "week", "month", "year"];
-export const GROUPING_LABEL: Record<GalleryGrouping, string> = { auto: "Auto", day: "Day", week: "Week", month: "Month", year: "Year" };
 
 type Dated = { createdAt: string };
 export type PhotoSection<T> = { key: string; label: string; photos: T[] };
@@ -35,42 +36,45 @@ function startOfWeek(date: Date) {
   return start;
 }
 
-function shortDate(date: Date, now: Date, withYear = date.getFullYear() !== now.getFullYear()) {
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}) });
+/** What the labels need from the interface: its locale and the `lib.galleryTimeline` messages. */
+export type GalleryTimelineText = { locale: string; t: (key: "today" | "yesterday" | "thisWeek" | "thisMonth" | "labelWithTime", values?: { label: string; time: string }) => string };
+
+function dateText(date: Date, locale: string, options: Intl.DateTimeFormatOptions) {
+  return dateTimeFormat(locale, options).format(date);
 }
 
-export function dayLabel(date: Date, now = new Date()) {
+/** The days from `start` to `end` as one range (`Sep 15 – 17`), the way the locale writes it. */
+function dateRange(start: Date, end: Date, now: Date, locale: string) {
+  const withYear = start.getFullYear() !== end.getFullYear() || start.getFullYear() !== now.getFullYear();
+  const sameMonth = start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth();
+  return dateTimeFormat(locale, { month: "short", day: "numeric", ...(withYear || (sameMonth && start.getFullYear() !== now.getFullYear()) ? { year: "numeric" } : {}) }).formatRange(start, end);
+}
+
+export function dayLabel(date: Date, text: GalleryTimelineText, now = new Date()) {
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
-  if (dayKey(date) === dayKey(now)) return "Today";
-  if (dayKey(date) === dayKey(yesterday)) return "Yesterday";
-  return date.toLocaleDateString(undefined, {
-    weekday: "short", month: "short", day: "numeric",
-    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
-  });
+  if (dayKey(date) === dayKey(now)) return text.t("today");
+  if (dayKey(date) === dayKey(yesterday)) return text.t("yesterday");
+  return dateText(date, text.locale, { weekday: "short", month: "short", day: "numeric", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
 }
 
-function weekLabel(start: Date, now: Date) {
-  if (dayKey(start) === dayKey(startOfWeek(now))) return "This week";
+function weekLabel(start: Date, now: Date, text: GalleryTimelineText) {
+  if (dayKey(start) === dayKey(startOfWeek(now))) return text.t("thisWeek");
   const end = new Date(start);
   end.setDate(start.getDate() + 6);
-  return `${shortDate(start, now, start.getFullYear() !== end.getFullYear() || start.getFullYear() !== now.getFullYear())} – ${shortDate(end, now)}`;
+  return dateRange(start, end, now, text.locale);
 }
 
-function monthLabel(date: Date, now: Date) {
-  if (date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()) return "This month";
-  return date.toLocaleDateString(undefined, { month: "long", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
+function monthLabel(date: Date, now: Date, text: GalleryTimelineText) {
+  if (date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()) return text.t("thisMonth");
+  return dateText(date, text.locale, { month: "long", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
 }
 
 /** The days a run of photos covers, earliest first whatever the sort order. */
-function spanLabel(first: Date, last: Date, now: Date) {
+function spanLabel(first: Date, last: Date, now: Date, text: GalleryTimelineText) {
   const [start, end] = first <= last ? [first, last] : [last, first];
-  if (dayKey(start) === dayKey(end)) return dayLabel(start, now);
-  if (start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth()) {
-    const month = start.toLocaleDateString(undefined, { month: "short" });
-    return `${month} ${start.getDate()} – ${end.getDate()}${start.getFullYear() === now.getFullYear() ? "" : `, ${start.getFullYear()}`}`;
-  }
-  return `${shortDate(start, now, start.getFullYear() !== end.getFullYear() || start.getFullYear() !== now.getFullYear())} – ${shortDate(end, now)}`;
+  if (dayKey(start) === dayKey(end)) return dayLabel(start, text, now);
+  return dateRange(start, end, now, text.locale);
 }
 
 function median(values: number[]) {
@@ -106,7 +110,7 @@ export function timeChangepoints(times: number[]) {
 }
 
 /** Photos in the order shown, cut into sections; each section is one run of the list. */
-export function groupPhotos<T extends Dated>(photos: T[], grouping: GalleryGrouping, now = new Date()): Array<PhotoSection<T>> {
+export function groupPhotos<T extends Dated>(photos: T[], grouping: GalleryGrouping, text: GalleryTimelineText, now = new Date()): Array<PhotoSection<T>> {
   if (grouping === "auto") {
     const times = photos.map((photo) => Date.parse(photo.createdAt));
     const sections: Array<PhotoSection<T>> = [];
@@ -115,14 +119,14 @@ export function groupPhotos<T extends Dated>(photos: T[], grouping: GalleryGroup
       const slice = photos.slice(bounds[index], bounds[index + 1]);
       if (!slice.length) continue;
       const first = new Date(slice[0].createdAt);
-      sections.push({ key: `auto-${first.getTime()}-${bounds[index]}`, label: spanLabel(first, new Date(slice.at(-1)!.createdAt), now), photos: slice });
+      sections.push({ key: `auto-${first.getTime()}-${bounds[index]}`, label: spanLabel(first, new Date(slice.at(-1)!.createdAt), now, text), photos: slice });
     }
     // Several sections on one day are told apart by the time they start.
     const repeated = new Set(sections.filter((section, index) => sections[index - 1]?.label === section.label).map((section) => section.label));
     for (const section of sections) {
       if (!repeated.has(section.label)) continue;
       const times = section.photos.map((photo) => Date.parse(photo.createdAt));
-      section.label += ` · ${new Date(Math.min(...times)).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+      section.label = text.t("labelWithTime", { label: section.label, time: dateText(new Date(Math.min(...times)), text.locale, { hour: "numeric", minute: "2-digit" }) });
     }
     return sections;
   }
@@ -135,10 +139,10 @@ export function groupPhotos<T extends Dated>(photos: T[], grouping: GalleryGroup
           : `${date.getFullYear()}`;
     const last = sections.at(-1);
     if (last?.key === key) { last.photos.push(photo); continue; }
-    const label = grouping === "day" ? dayLabel(date, now)
-      : grouping === "week" ? weekLabel(startOfWeek(date), now)
-        : grouping === "month" ? monthLabel(date, now)
-          : `${date.getFullYear()}`;
+    const label = grouping === "day" ? dayLabel(date, text, now)
+      : grouping === "week" ? weekLabel(startOfWeek(date), now, text)
+        : grouping === "month" ? monthLabel(date, now, text)
+          : dateText(date, text.locale, { year: "numeric" });
     sections.push({ key, label, photos: [photo] });
   }
   return sections;

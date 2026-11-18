@@ -7,6 +7,12 @@
 // Version 1 files written before encryption existed can still be loaded.
 
 const { createCipheriv, createDecipheriv, randomBytes, scrypt: scryptCallback } = require("node:crypto");
+const i18n = require("./i18n.cjs");
+
+/** A message about preferences backups in the interface language (namespace electron.preferencesIo). */
+function pm(key, values) {
+  return i18n.t(`electron.preferencesIo.${key}`, values);
+}
 
 const BACKUP_FORMAT = "libera-preferences";
 const BACKUP_VERSION = 1;
@@ -73,15 +79,15 @@ function createPreferencesBackup(config, exportedAt = new Date().toISOString()) 
 
 function parsePreferencesBackup(value) {
   if (!isRecord(value) || value.format !== BACKUP_FORMAT) {
-    throw new Error("This is not a Libera preferences backup.");
+    throw new Error(pm("notBackup"));
   }
 
   if (value.version !== BACKUP_VERSION) {
-    throw new Error(`Unsupported Libera preferences backup version: ${String(value.version)}.`);
+    throw new Error(pm("unsupportedVersion", { version: String(value.version) }));
   }
 
   if (!isRecord(value.preferences)) {
-    throw new Error("The Libera preferences backup is missing its preferences object.");
+    throw new Error(pm("missingPreferences"));
   }
 
   return Object.fromEntries(
@@ -94,7 +100,7 @@ function parsePreferencesBackup(value) {
 
 class PreferencesBackupPasswordError extends Error {
   constructor() {
-    super("The master password does not open this preferences backup.");
+    super(pm("wrongPassword"));
     this.name = "PreferencesBackupPasswordError";
     this.code = "wrong-password";
   }
@@ -138,7 +144,7 @@ function additionalData(kdf) {
 
 function assertPassword(password) {
   if (typeof password !== "string" || password.length === 0) {
-    throw new TypeError("A master password is required to encrypt or open a preferences backup.");
+    throw new TypeError(pm("passwordRequired"));
   }
 }
 
@@ -176,11 +182,11 @@ async function encryptPreferencesBackup(backup, password, params = KDF) {
 /** Returns the plain (version 1) backup inside an encrypted envelope. */
 async function decryptPreferencesBackup(value, password) {
   assertPassword(password);
-  if (!isEncryptedPreferencesBackup(value)) throw new Error("This is not an encrypted Libera preferences backup.");
-  if (!validKdf(value.kdf)) throw new Error("The preferences backup uses unsupported or unsafe encryption settings.");
+  if (!isEncryptedPreferencesBackup(value)) throw new Error(pm("notEncryptedBackup"));
+  if (!validKdf(value.kdf)) throw new Error(pm("unsafeEncryption"));
   const iv = typeof value.iv === "string" ? Buffer.from(value.iv, "base64") : Buffer.alloc(0);
   const data = typeof value.data === "string" ? Buffer.from(value.data, "base64") : Buffer.alloc(0);
-  if (iv.length !== 12 || data.length < 17) throw new Error("The encrypted preferences backup is damaged.");
+  if (iv.length !== 12 || data.length < 17) throw new Error(pm("damaged"));
 
   const key = await deriveKey(password, value.kdf);
   let text;
@@ -199,7 +205,7 @@ async function decryptPreferencesBackup(value, password) {
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error("The encrypted preferences backup is damaged.");
+    throw new Error(pm("damaged"));
   }
 }
 
@@ -211,7 +217,7 @@ async function readPreferencesBackup(value, password) {
   if (isEncryptedPreferencesBackup(value)) {
     const inner = await decryptPreferencesBackup(value, password);
     if (!isRecord(inner) || inner.version !== BACKUP_VERSION) {
-      throw new Error("The encrypted preferences backup is damaged.");
+      throw new Error(pm("damaged"));
     }
     return parsePreferencesBackup(inner);
   }

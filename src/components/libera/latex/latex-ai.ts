@@ -2,7 +2,7 @@
 
 import type { EditorView } from "@codemirror/view";
 import type { useTranslations } from "next-intl";
-import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
+import { beginAiActivity } from "@/lib/ai-activity";
 import { apiRequest } from "@/components/libera/api-client";
 import { readIncludeDocumentContext } from "@/components/libera/ai-document-context-preference";
 import { aiTaskRequestOptions } from "@/components/libera/ai-model-picker";
@@ -52,7 +52,7 @@ export async function runLatexAi(view: EditorView, action: Exclude<AiChangeSourc
   const thread = action !== "format" ? aiEditThreadFor(documentPath, includeDocument) : undefined;
   const controller = new AbortController();
   controllers.set(view, controller);
-  const endActivity = beginAiActivity({ label: AI_ACTION_LABELS[action], cancel: () => controller.abort() });
+  const endActivity = beginAiActivity({ action, cancel: () => controller.abort() });
   onError("");
   view.dispatch({ effects: setPendingAiRequest.of({ id, from: target.from, to: target.to, kind: action }) });
 

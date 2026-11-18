@@ -1,4 +1,3 @@
-import { formatClock } from "@/lib/transcription/format";
 import type { LiberaFileNode, LiberaFileType } from "@/lib/types";
 
 /** Shared by the Global Search API and its client. Nothing here may touch the server. */
@@ -204,40 +203,6 @@ export function searchQueryTerms(text: string) {
   }
 
   return terms.slice(0, 16);
-}
-
-export function searchKindLabel(kind: SearchFileKind) {
-  switch (kind) {
-    case "markdown":
-      return "Note";
-    case "pdf":
-      return "PDF";
-    case "latex":
-      return "LaTeX";
-    case "text":
-      return "Text & code";
-    case "image":
-      return "Image";
-    case "audio":
-      return "Voice memo";
-    case "reference":
-      return "Reference";
-  }
-}
-
-export function searchLocationLabel(kind: SearchFileKind, location: SearchLocation) {
-  const parts: string[] = [];
-  if (kind === "audio") {
-    if (location.start !== undefined) parts.push(formatClock(location.start / 1000));
-    if (location.section) parts.push(location.section);
-    return parts.join(" · ");
-  }
-  if (location.page) parts.push(`Page ${location.page}`);
-  if (location.section) parts.push(location.section);
-  if (!location.page && location.line && kind !== "markdown") {
-    parts.push(location.endLine && location.endLine > location.line ? `Lines ${location.line}–${location.endLine}` : `Line ${location.line}`);
-  }
-  return parts.join(" · ");
 }
 
 /** Lower-case text without diacritics, with each folded character's offset in the original. */

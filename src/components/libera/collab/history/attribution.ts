@@ -12,13 +12,13 @@ import * as Y from "yjs";
 import type { Actor, AiFeature, Provenance } from "@/lib/collab/protocol/actor";
 import type { UpdateRecord, UpdatesPage, UserSummary } from "@/lib/collab/protocol/api";
 import { ContentKeys } from "@/lib/collab/protocol/schema";
-import english from "./attribution-en.json";
+import { collab } from "../../../../../messages/en.json";
 
 /** What `useTranslations("collab.history.attribution")` returns, as far as this file needs it. */
 export type AttributionTranslator = (key: string, values?: Record<string, string>) => string;
 
 /** English wording, used when the caller passes no translator (tests, code outside React). */
-const englishTranslator = createTranslator({ locale: "en", messages: english, onError: () => {} }) as unknown as AttributionTranslator;
+const englishTranslator = createTranslator({ locale: "en", messages: collab.history.attribution, onError: () => {} }) as unknown as AttributionTranslator;
 
 export interface AttributionAuthor {
   key: string;

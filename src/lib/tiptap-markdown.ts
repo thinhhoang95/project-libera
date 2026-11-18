@@ -380,6 +380,8 @@ export type MarkdownExtensionOptions = {
   codeBlockNodeView?: NodeViewRenderer;
   /** The Visual editor's image view, which adds Re-run and Code to figures made by a note's Python (tiptap-python-figure-view.ts). */
   imageNodeView?: NodeViewRenderer;
+  /** The front matter block's tooltip, in the interface language (lib.tiptapFrontMatter.frontMatterTitle). */
+  frontMatterTitle?: string;
 };
 
 export function createMarkdownExtensions(documentPath: string, options: MarkdownExtensionOptions = {}) {
@@ -397,7 +399,7 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
     // Before the citation node so `[^1]` is a footnote, not a bracket run.
     FootnoteReference, FootnoteDefinition, Superscript, Subscript,
     CitationNode.configure({ nodeView: options.citationNodeView ?? null }),
-    FrontMatterNode.configure({ documentPath }),
+    FrontMatterNode.configure({ documentPath, title: options.frontMatterTitle }),
     LiberaBlockquote,
     Underline.extend({
       renderMarkdown: (node, h) => `<u>${h.renderChildren(node)}</u>`,

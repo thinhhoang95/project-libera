@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { commentsContext, commentsContextSummary, pdfCommentChatThreads, reviewCommentThreads } from "../../src/lib/chat-comments";
+import { commentsContext, pdfCommentChatThreads, reviewCommentThreads } from "../../src/lib/chat-comments";
 import { messagesWithoutExcludedDocuments, newChatContexts, validateChatMessages, type ChatMessage } from "../../src/lib/document-chat";
 import { matchingCommentTargets } from "../../src/components/libera/chat-file-composer";
 import type { ReviewThread } from "../../src/lib/markdown-review";
@@ -22,7 +22,6 @@ test("review comments become one context with every reply, in document order", (
   assert.match(context.text, /^Review comments on a\.md: 1 unresolved, 1 resolved\./);
   assert.ok(context.text.indexOf("Cite this?") < context.text.indexOf("Done."));
   assert.match(context.text, /1\. open · line 3, on “First”\n {2}- the user, comment, 2026-10-01:\n {4}Cite this\?\n {2}- AI \(Agent mode, for the user\), reply/);
-  assert.equal(commentsContextSummary(context), "2 threads, 1 resolved");
   assert.ok(validateChatMessages([{ id: "1", role: "user", text: "", contexts: [context] }]));
   assert.equal(commentsContext("Notes/a.md", "a.md", []), null);
 });

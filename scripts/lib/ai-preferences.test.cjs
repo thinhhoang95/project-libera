@@ -154,6 +154,8 @@ test('Preferences UI loads and saves every function setting', async () => {
     beforeParse(window) {
       window.matchMedia = () => ({ matches: false, addEventListener() {} });
       window.liberaSetup = {
+        // The page reads its messages from the preload (electron/i18n.cjs), as in the app.
+        getI18n: () => require("../../electron/i18n.cjs").setupPayload(),
         getState: async () => ({ aiFunctions, quickPrompts, hasApiKey: true, hasPasswordHash: true, dataDir: '/tmp/notebooks' }),
         save: async (input) => { saved = JSON.parse(JSON.stringify(input)); },
         exportPreferences: async (password) => { exportRequests += 1; exportPassword = password; return { canceled: false, fileName: 'libera-preferences.json' }; },

@@ -15,6 +15,8 @@ test('Markdown marker textareas load defaults, save and reload persisted setting
     beforeParse(window) {
       window.matchMedia = () => ({ matches: false, addEventListener() {} });
       window.liberaSetup = {
+        // The page reads its messages from the preload (electron/i18n.cjs), as in the app.
+        getI18n: () => require("../../electron/i18n.cjs").setupPayload(),
         getState: async () => state,
         save: async input => writeFileSync(configPath, JSON.stringify({ ...state,
           markdownInlineMathMarkers: normalizeMathMarkers(input.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),

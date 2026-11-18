@@ -325,7 +325,7 @@ export function MarkdownCodeMirrorEditor({
           },
           click: () => { scheduleFileLinkPopupRefresh(); scheduleSelection(); return false; },
         })),
-        markdownSourceSetup(),
+        markdownSourceSetup({ ariaLabel: t("sourceEditorLabel") }),
         mathCompartment.of(liberaMathMarkers.of(initial.mathMarkers ?? {})),
         // Shared tabs review the agent's changes as suggestions instead.
         ...(initial.documentSource !== "external" && initial.activeFilePath

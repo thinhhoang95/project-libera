@@ -1320,7 +1320,7 @@
   },
   "documentChatPanel": {
     "addPhotosButton": "添加照片",
-    "agentOverlap": "“{title}”中的智能体可能仍会更改{overlap}。请等待其完成或先将其停止，以免两次运行同时编辑同一文件。只读智能体可与其同时运行。",
+    "agentOverlap": "“{title}”中的智能体可能仍会更改{kind, select, notebook {笔记本“{name}”} other {文件“{name}”}}。请等待其完成或先将其停止，以免两次运行同时编辑同一文件。只读智能体可与其同时运行。",
     "agentPermissionAria": "智能体权限",
     "agentPermissionTitle": "智能体权限：{label}",
     "agentPlaceholder": "让智能体查找、阅读或编辑… 输入 @ 选择文件",
@@ -2379,6 +2379,77 @@
       "zoomInLabel": "放大",
       "zoomLabel": "缩放",
       "zoomOutLabel": "缩小"
+    },
+    "updater": {
+      "checkFailed": "检查更新失败。",
+      "laterButton": "稍后",
+      "restartButton": "重启并更新",
+      "readyTitle": "Libera 更新已就绪",
+      "downloaded": "Libera {version} 已下载。",
+      "saveEditsDetail": "请保存未完成的编辑，然后在“关于”对话框中使用“重启并更新”。",
+      "restartDetail": "请立即重启 Libera 以安装更新，或在下次退出时安装。",
+      "noUpdateReady": "没有已下载、可供安装的更新。",
+      "saveBeforeRestart": "重启以安装更新前，请保存所有未完成的编辑。",
+      "stateUnavailable": "无法从此窗口获取更新状态。",
+      "checksUnavailable": "无法从此窗口检查更新。",
+      "installUnavailable": "无法从此窗口安装更新。",
+      "documentStateUnavailable": "无法从此窗口获取文档状态。"
+    },
+    "latexSnippets": {
+      "nameRequired": "请为片段命名。",
+      "nameTooLong": "最多使用 {max} 个字符。",
+      "nameCharacters": "请使用字母、数字、连字符和下划线，且以字母或数字开头。",
+      "nameTaken": "名为 /{name} 的片段已存在。"
+    },
+    "quickPrompts": {
+      "marker": "快捷提示词",
+      "notList": "快捷提示词必须是列表。",
+      "tooMany": "最多添加 {max} 条快捷提示词。",
+      "needsIdentifier": "第 {number} 条快捷提示词需要一个以斜杠开头的标识符。",
+      "badIdentifier": "第 {number} 条快捷提示词的标识符只能使用字母、数字、连字符和下划线，且必须以字母或数字开头。",
+      "identifierInUse": "快捷提示词标识符 /{identifier} 已被使用。",
+      "needsPrompt": "第 {number} 条快捷提示词需要提示词文本。",
+      "promptTooLong": "第 {number} 条快捷提示词不得超过 {max, number} 个字符。"
+    },
+    "preferencesIo": {
+      "notBackup": "这不是 Libera 偏好设置备份。",
+      "unsupportedVersion": "不支持的 Libera 偏好设置备份版本：{version}。",
+      "missingPreferences": "Libera 偏好设置备份缺少偏好设置对象。",
+      "wrongPassword": "主密码无法打开此偏好设置备份。",
+      "passwordRequired": "加密或打开偏好设置备份需要主密码。",
+      "notEncryptedBackup": "这不是加密的 Libera 偏好设置备份。",
+      "unsafeEncryption": "偏好设置备份使用了不受支持或不安全的加密设置。",
+      "damaged": "加密的偏好设置备份已损坏。"
+    },
+    "localLlms": {
+      "customLabel": "服务器",
+      "customSubject": "服务器",
+      "timeout": "{subject}在 {url} 未能及时响应。它可能仍在加载 {model}，或者该模型对这台计算机来说可能过大。",
+      "unreachable": "无法连接到 {url} 上的 {server}，因此 {name} 不可用。服务器是否正在运行？{start}",
+      "requestFailed": "发送到 {url} 上 {server} 的请求失败：{error}",
+      "rejectedKey": "{subject}拒绝了 {name} 的 API 密钥。请在偏好设置 → 本地 LLM 中检查该密钥。",
+      "noTools": "{model}无法调用工具，因此无法在智能体模式下工作。请选择支持工具的模型，或切换到聊天。",
+      "contextExceeded": "此请求对于 {model} 的上下文窗口来说过长。请减少发送的内容，例如关闭“整个文档”或开始新的聊天。{advice}",
+      "stillLoading": "{subject}仍在加载 {model}。请稍后重试。",
+      "modelMissing": "{subject}尚未准备好 {model}。{advice}",
+      "serverErrorDetail": "{subject}为 {name} 返回了错误：{detail}",
+      "serverErrorStatus": "{subject}为 {name} 返回了错误（HTTP {status}）。",
+      "enterBaseUrl": "请输入基础 URL，例如 http://localhost:11434/v1。",
+      "notJson": "{url}/models 没有返回 JSON。请检查这是否为服务器的 OpenAI 兼容地址，该地址通常以 /v1 结尾。",
+      "connectedChooseModel": "已连接到 {server}：{count, plural, one {可用 # 个模型} other {可用 # 个模型}}。请选择一个模型以完成测试。",
+      "connectedAnswered": "已连接到 {server}：{model} 在 {seconds} 秒内作出了回应。{count, plural, one {可用 # 个模型} other {可用 # 个模型}}。",
+      "ollamaStart": "请使用 `ollama serve` 启动，或打开 Ollama 应用。",
+      "ollamaLoad": "请使用 `ollama pull {model}` 下载它，或在偏好设置 → 本地 LLM 中选择其他模型。",
+      "ollamaContext": "请在 Ollama 应用的设置中提高上下文长度，或在启动服务器前设置 OLLAMA_CONTEXT_LENGTH。",
+      "lmstudioStart": "在 LM Studio 中打开 Developer 标签页并启动服务器。",
+      "lmstudioLoad": "请在 LM Studio 的 Developer 标签页中加载它，或运行 `lms load {model}`。",
+      "lmstudioContext": "请在 LM Studio 中以更大的上下文长度重新加载该模型。",
+      "llamaserverStart": "请使用 `llama-server -m your-model.gguf --port 8080` 启动它。",
+      "llamaserverLoad": "llama-server 提供启动时所用的模型；请检查其 -m 选项。",
+      "llamaserverContext": "请以更大的上下文重新启动 llama-server，例如 `-c 32768`。",
+      "customStart": "也请检查基础 URL。",
+      "customLoad": "请检查服务器是否已加载该模型，或在偏好设置 → 本地 LLM 中选择其他模型。",
+      "customContext": "请在服务器上为该模型设置更大的上下文长度。"
     }
   },
   "existingImageDialog": {
@@ -3745,6 +3816,13 @@
             "stale": "未应用：提出建议后文本已更改。",
             "unconfirmed": "无法确认此处理结果。请重试。"
           }
+        },
+        "reviews": {
+          "signInRequired": "请登录协作账户以请求审阅。",
+          "onlyEditors": "只有编辑者和所有者可以请求审阅。",
+          "pickReviewer": "请至少选择一位审阅者。",
+          "selectPassage": "请先选择要审阅的段落。",
+          "refused": "服务器拒绝了此请求（{status}）。"
         }
       },
       "ui": {
@@ -4023,6 +4101,54 @@
             "labelNotFound": "{reference}（未找到标签）",
             "citationNotFound": "{key}（未找到引用）",
             "altClickToEdit": "\\{name}：Alt 点击或 Alt+Enter 进行编辑"
+          },
+          "floatEdit": {
+            "caption": "说明文字",
+            "column": "列",
+            "source": "来源",
+            "codeListing": "代码（{environment}）",
+            "editorLabel": "{label}（LaTeX）。Enter 保存，Shift+Enter 换行，Esc 取消。",
+            "changedWhileEditing": "此浮动体部分在您编辑时已被更改，因此您的文本未保存：\n\n{text}",
+            "coAuthorChanged": "合著者在您编辑时修改了这一部分。是否用您的版本替换他们的版本？"
+          },
+          "titleEdit": {
+            "part": {
+              "title": "标题",
+              "author": "作者",
+              "date": "日期",
+              "abstract": "摘要",
+              "line": "直线",
+              "note": "关键词与备注"
+            },
+            "newAuthor": "新作者",
+            "editorLabel": "{label}（LaTeX）。Enter 保存，Shift+Enter 换行，Esc 取消。",
+            "changedWhileAddingAuthor": "在您添加作者时标题已更改，因此您的文本未保存：\n\n{text}",
+            "changedWhileEditing": "在您编辑时标题已更改，因此您的文本未保存：\n\n{text}",
+            "blockChanged": "在您编辑时标题块已更改，因此您的文本未保存：\n\n{text}",
+            "coAuthorChanged": "合著者在您编辑时修改了标题的这一部分。是否用您的版本替换他们的版本？"
+          },
+          "algorithmEdit": {
+            "statement": "语句",
+            "newStatement": "新语句",
+            "caption": "说明文字",
+            "menuLabel": "算法",
+            "editorLabel": "{label}（LaTeX）。Enter 保存，Shift+Enter 换行，Esc 取消，Tab 跳到下一条语句，Ctrl+Enter 在下方添加语句。",
+            "changedEditingStatement": "在您编辑此语句时算法已更改，因此您的文本未保存：\n\n{text}",
+            "changedEditing": "在您编辑时算法已更改，因此您的文本未保存：\n\n{text}",
+            "changedEditingCaption": "在您编辑时题注已更改，因此您的文本未保存：\n\n{text}",
+            "coAuthorStatement": "合著者在您编辑时修改了此语句。是否用您的版本替换他们的版本？",
+            "coAuthorCaption": "合著者在您编辑时修改了此题注。是否用您的版本替换他们的版本？",
+            "insertAbove": "在上方插入语句",
+            "insertBelow": "在下方插入语句",
+            "deleteStatement": "删除语句",
+            "deleteBlock": "删除块",
+            "showSource": "显示源代码",
+            "notStatement": "此处无法执行（此行不是以语句形式编写的）",
+            "notPossible": "此处无法执行",
+            "deleteFromFirstLine": "请从首行开始删除该块",
+            "cannotEditFile": "无法编辑此文件",
+            "changedWhileMenuOpen": "此菜单打开期间算法已更改；未删除任何内容。请重试。",
+            "confirmDeleteBlock": "{lines, plural, one {要删除此块及其中的 # 行 LaTeX 吗？} other {要删除此块及其中的 # 行 LaTeX 吗？}}"
           }
         }
       },
@@ -4050,6 +4176,51 @@
             "ieee": "IEEE",
             "apa": "APA 第 7 版",
             "nature": "Nature"
+          }
+        }
+      },
+      "markdownPaste": {
+        "choices": {
+          "templateError": {
+            "empty": "请输入命令，例如 \\frametitle，或包含 #1 的模板。",
+            "unusable": "{command} 不能用于标题。",
+            "multiline": "模板必须为一行。",
+            "parameter": "#1 只能使用一次，放在标题文本的位置，且不得再使用其他 #。",
+            "braces": "模板中的花括号不成对。",
+            "unsafe": "模板不得包含环境、注释、^^ 记法，或读取文件、定义宏的命令。"
+          }
+        },
+        "convert": {
+          "warning": {
+            "emoji": "pdfLaTeX 无法排版表情符号：已移除 {count, plural, one {# 个} other {# 个}}。",
+            "front-matter": "笔记的前置元数据（front matter）已被省略。",
+            "unreferenced-footnote": "{count, plural, one {# 个脚注从未被引用，已省略。} other {# 个脚注从未被引用，已省略。}}",
+            "heading-template": "自定义标题无效，因此这些标题已改写为粗体。",
+            "deep-list": "嵌套层级超过 LaTeX 允许范围的列表，已与其周围的列表合并。",
+            "box-color": "彩色框已写成普通引用，其颜色已被舍弃。请在导言区加载 tcolorbox 以保留颜色。",
+            "diagram": "{count, plural, one {# 个图表（{detail}）已作为代码粘贴：LaTeX 无法绘制它。} other {# 个图表（{detail}）已作为代码粘贴：LaTeX 无法绘制它们。}}",
+            "html-live": "交互式 HTML 块已作为代码粘贴：LaTeX 无法运行它。",
+            "unsafe-math": "{count, plural, one {# 个公式可能跳出数学模式或读取文件，已作为文本粘贴。} other {# 个公式可能跳出数学模式或读取文件，已作为文本粘贴。}}",
+            "inline-display": "正文中的展示公式已写成行内公式。",
+            "html": "部分 HTML 没有对应的 LaTeX 写法：其标签已被删除，文本已保留。",
+            "image-path": "{count, plural, one {# 个图片路径无法在 LaTeX 中使用，已保留为注释。} other {# 个图片路径无法在 LaTeX 中使用，已保留为注释。}}",
+            "remote-image": "{count, plural, one {# 张图片是网址：请将其下载到项目中以便引用。} other {# 张图片是网址：请将它们下载到项目中以便引用。}}",
+            "ink-image": "{count, plural, one {# 个墨迹绘图是 SVG：请导出为 PDF 或 PNG 以供 LaTeX 使用。} other {# 个墨迹绘图是 SVG：请导出为 PDF 或 PNG 以供 LaTeX 使用。}}",
+            "image-format": "{count, plural, one {# 张图片的格式 pdfLaTeX 无法引入（请转换为 PDF、PNG 或 JPEG）。} other {# 张图片的格式 pdfLaTeX 无法引入（请转换为 PDF、PNG 或 JPEG）。}}",
+            "missing-image": "{count, plural, one {# 张图片尚未在项目中。} other {# 张图片尚未在项目中。}}",
+            "rowspan": "跨行合并的单元格已被拆分：文本保留在第一行，下方的单元格为空。",
+            "table-truncated": "表格超过 64 列或 5000 行，其余部分已省略。请以纯文本粘贴以保留全部内容。",
+            "longtable-twocolumn": "longtable 不适用于双栏文档，因此这些表格已改用 tabular 编写。",
+            "caption-without-float": "{detail, select, box {题注不能放在框内，因此其中的表格题注已省略。} other {题注需要表格浮动体：请在“浮动体”下选择“表格”以保留题注。}}",
+            "label-taken": "表格标签已被使用，因此已为其添加编号。",
+            "label": "表格标签包含 LaTeX 标签无法容纳的字符，因此已根据题注生成了一个标签。",
+            "soul": "{detail, select, hl {围绕链接、脚注、引用、代码或 \\(…\\) 公式的高亮已被删除：\\hl 无法容纳它们。} other {围绕链接、脚注、引用、代码或 \\(…\\) 公式的删除线已被删除：\\st 无法容纳它们。}}",
+            "line-height": "正文中设置的行距已被省略。",
+            "raw-block": "写在正文中的 LaTeX 环境或块命令已保留为文本：它们无法出现在粘贴的位置。",
+            "script": "部分文本使用了 pdfLaTeX 可能无法排版的文字：如果出现错误，请使用 XeLaTeX 或 LuaLaTeX 编译。",
+            "cyclic-footnote": "引用自身的脚注已保留原样。",
+            "nested-footnote": "脚注中的脚注已写成括号内的文字。",
+            "cite-keys": "{count, plural, one {# 个被引用的键不在参考文献列表中。} other {# 个被引用的键不在参考文献列表中。}}"
           }
         }
       }
@@ -4401,6 +4572,27 @@
         "playbackFailed": "无法播放此音频。",
         "noText": "没有可朗读的文本。",
         "synthesisFailed": "无法朗读文本。"
+      }
+    },
+    "codeLanguages": {
+      "plainText": "纯文本"
+    },
+    "galleryTimeline": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "thisWeek": "本周",
+      "thisMonth": "本月",
+      "labelWithTime": "{label} · {time}"
+    },
+    "slideDiagrams": {
+      "error": "{detail, select, none {图表错误。} other {图表错误：{detail}}}"
+    },
+    "aiActivity": {
+      "action": {
+        "write": "正在使用 AI 写作",
+        "rewrite": "正在使用 AI 改写",
+        "format": "正在使用 AI 格式化",
+        "image": "正在使用 AI 转换图片"
       }
     }
   },
@@ -4854,7 +5046,8 @@
   "markdownSource": {
     "markdownCodemirrorEditor": {
       "dropImage": "拖放图片以插入",
-      "selectionLabel": "所选内容"
+      "selectionLabel": "所选内容",
+      "sourceEditorLabel": "Markdown 源代码编辑器"
     },
     "markdownSourceContextMenu": {
       "aiFormat": "AI 格式化",
@@ -7322,13 +7515,7 @@
     "unindentHeadings": "减少标题缩进",
     "whatShouldAiWrite": "AI 应写什么？输入 / 可查看提示词",
     "writeNewTextWithAi": "用 AI 写作新文本",
-    "writeWithAi": "用 AI 写作",
-    "activity": {
-      "write": "正在使用 AI 写作",
-      "rewrite": "正在使用 AI 改写",
-      "format": "正在使用 AI 格式化",
-      "image": "正在使用 AI 转换图片"
-    }
+    "writeWithAi": "用 AI 写作"
   },
   "tiptapLiveCodeBlockView": {
     "foldMacroDefinitions": "折叠宏定义",

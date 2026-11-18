@@ -1,3 +1,10 @@
+const i18n = require("./i18n.cjs");
+
+/** A message of the quick prompt checks, in the interface language (namespace electron.quickPrompts). */
+function qm(key, values) {
+  return i18n.t(`electron.quickPrompts.${key}`, values);
+}
+
 const MAX_QUICK_PROMPTS = 50;
 const MAX_QUICK_PROMPT_IDENTIFIER_LENGTH = 64;
 const MAX_QUICK_PROMPT_LENGTH = 20_000;
@@ -23,21 +30,21 @@ function normalizeQuickPrompts(input) {
 }
 
 function validateQuickPrompts(input) {
-  if (!Array.isArray(input)) throw new Error("Quick prompts must be a list.");
-  if (input.length > MAX_QUICK_PROMPTS) throw new Error(`Add no more than ${MAX_QUICK_PROMPTS} quick prompts.`);
+  if (!Array.isArray(input)) throw new Error(qm("notList"));
+  if (input.length > MAX_QUICK_PROMPTS) throw new Error(qm("tooMany", { max: MAX_QUICK_PROMPTS }));
   const identifiers = new Set();
   return input.map((value, index) => {
     const identifier = normalizedIdentifier(value?.identifier);
     const prompt = typeof value?.prompt === "string" ? value.prompt : "";
-    const label = `Quick prompt ${index + 1}`;
-    if (!identifier) throw new Error(`${label} needs a slash identifier.`);
+    const number = index + 1;
+    if (!identifier) throw new Error(qm("needsIdentifier", { number }));
     if (identifier.length > MAX_QUICK_PROMPT_IDENTIFIER_LENGTH || !QUICK_PROMPT_IDENTIFIER_PATTERN.test(identifier)) {
-      throw new Error(`${label} identifier may use letters, numbers, hyphens, and underscores, and must start with a letter or number.`);
+      throw new Error(qm("badIdentifier", { number }));
     }
     const key = identifier.toLocaleLowerCase();
-    if (identifiers.has(key)) throw new Error(`Quick prompt identifier /${identifier} is already in use.`);
-    if (!prompt.trim()) throw new Error(`${label} needs prompt text.`);
-    if (prompt.length > MAX_QUICK_PROMPT_LENGTH) throw new Error(`${label} must be ${MAX_QUICK_PROMPT_LENGTH.toLocaleString()} characters or fewer.`);
+    if (identifiers.has(key)) throw new Error(qm("identifierInUse", { identifier }));
+    if (!prompt.trim()) throw new Error(qm("needsPrompt", { number }));
+    if (prompt.length > MAX_QUICK_PROMPT_LENGTH) throw new Error(qm("promptTooLong", { number, max: MAX_QUICK_PROMPT_LENGTH }));
     identifiers.add(key);
     return { identifier, prompt };
   });

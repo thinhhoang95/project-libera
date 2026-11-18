@@ -58,6 +58,9 @@ export function provenanceOfOrigin(origin: unknown): Provenance | undefined {
   return undefined;
 }
 
+/** `readOnlyReason` of a bridge that could not stay in step with the shared text and rebuilt itself read-only. */
+export const READ_ONLY_DESYNC = "desync";
+
 export interface TiptapYTextBridgeOptions {
   editor: Editor;
   /** The shared source text (`ContentKeys.source` of the content sub-document). */
@@ -72,7 +75,11 @@ export interface TiptapYTextBridgeOptions {
   flushDelay?: number;
   /** Y.UndoManager capture timeout: changes closer than this merge into one undo step (default 500 ms). */
   captureTimeout?: number;
-  /** Start in the D1 fallback: a live, read-only rendered view. */
+  /**
+   * Start in the D1 fallback: a live, read-only rendered view. The reason is a code, not text for the user: the
+   * bridge sets READ_ONLY_DESYNC when it could not stay in step, and whoever shows a notice words it
+   * (`lib.collab.bindings.tiptapYtext.readOnlyDesync`).
+   */
   readOnlyReason?: string | null;
   onReadOnlyChange?: (reason: string | null) => void;
   /** Called when a sync step throws. The bridge rebuilds from Y.Text and turns read-only. */
@@ -534,7 +541,7 @@ class Bridge implements TiptapYTextBridge, RemoteCursorSource {
     } catch (rebuildError) {
       this.options.onError?.(rebuildError);
     }
-    this.setReadOnly("The Visual editor could not stay in step with the shared document. Switch to Source to edit it.");
+    this.setReadOnly(READ_ONLY_DESYNC);
   }
 
   private publishCursor() {

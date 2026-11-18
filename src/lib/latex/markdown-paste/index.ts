@@ -51,7 +51,8 @@ export function markdownToLatex(
 
 export { scoreMarkdown, looksLikeMarkdown } from "./detect";
 export { createPasteContext, readPreambleInfo, sectionBefore, hasChapters, isTwoColumn, bibliographyDialect, type LatexPasteContext } from "./context";
-export { resolveChoices, headingMapFor, headingLadder, autoTopHeading, parseHeadingTemplate } from "./choices";
+export { resolveChoices, headingMapFor, headingLadder, autoTopHeading, parseHeadingTemplate, headingTemplateErrorText } from "./choices";
 export type { MarkdownPasteAnalysis } from "./analyze";
+export { pasteWarningText } from "./convert";
 export type { ConvertResult, RequiredPackage, PasteWarning } from "./convert";
 export * from "./options";

@@ -43,9 +43,9 @@ export function findCodeLanguage(fileName: string): LanguageDescription | null {
   return LanguageDescription.matchFilename(languages, fileName.split("/").pop() ?? fileName);
 }
 
-/** The language's display name, for the status bar. */
+/** The language's display name (a programming language's own name), for the status bar; null for plain text. */
 export function codeLanguageName(fileName: string) {
-  return findCodeLanguage(fileName)?.name ?? "Plain text";
+  return findCodeLanguage(fileName)?.name ?? null;
 }
 
 export async function loadCodeLanguage(fileName: string): Promise<LanguageSupport | null> {

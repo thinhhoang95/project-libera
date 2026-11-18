@@ -16,7 +16,7 @@ import type { SharedDocSession } from "@/lib/collab/client/registry";
 import { consumeReviewOpen, pendingReviewOpen, subscribeReviewOpen, type ReviewsController, type ReviewsSnapshot } from "@/lib/collab/client/reviews";
 import type { Review, ReviewAssignment, UserSummary } from "@/lib/collab/protocol/api";
 import { roleAtLeast, type Role } from "@/lib/collab/protocol/roles";
-import { useDescribeError } from "@/lib/collab/ui/use-describe-error";
+import { useDescribeReviewError } from "@/lib/collab/client/use-describe-review-error";
 import { timeAgo } from "@/lib/collab/ui/wording";
 import { dateTimeFormat } from "@/lib/i18n/format";
 import { ListFilterButton, ShowMoreButton, usePagedList } from "../../list-controls";
@@ -66,7 +66,7 @@ function AssignmentLine({ assignment, me, now }: { assignment: ReviewAssignment;
 
 function DecisionButtons({ review, controller, snapshot, revisionId, compact }: { review: Review; controller: ReviewsController; snapshot: ReviewsSnapshot; revisionId?: string; compact?: boolean }) {
   const t = useTranslations("collab.reviews.reviewsPanel");
-  const describeError = useDescribeError();
+  const describeError = useDescribeReviewError();
   const [comment, setComment] = useState("");
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState("");
@@ -95,14 +95,14 @@ function DecisionButtons({ review, controller, snapshot, revisionId, compact }: 
         ? <button type="button" className={`${buttonClass} text-amber-700 dark:text-amber-300`} data-action="request-changes" onClick={() => void decide("changes-requested")}>{t("sendRequestChanges")}</button>
         : <button type="button" className={`${buttonClass} text-amber-700 dark:text-amber-300`} data-action="ask-changes" onClick={() => setAsking(true)}><X aria-hidden className="h-3.5 w-3.5" />{t("requestChanges")}</button>}
     </div>
-    {error || snapshot.failed[review.id] ? <p role="alert" className="text-xs text-destructive">{error || snapshot.failed[review.id]}</p> : null}
+    {error || snapshot.failed[review.id] ? <p role="alert" className="text-xs text-destructive">{error || describeError(snapshot.failed[review.id])}</p> : null}
   </div>;
 }
 
 function ReviewCard({ review, controller, snapshot, role, now, onOpen }: { review: Review; controller: ReviewsController; snapshot: ReviewsSnapshot; role: Role | null; now: number; onOpen: () => void }) {
   const t = useTranslations("collab.reviews.reviewsPanel");
   const tWording = useTranslations("lib.collab.ui.wording");
-  const describeError = useDescribeError();
+  const describeError = useDescribeReviewError();
   const me = snapshot.localUserId;
   const mine = review.assignments.find((assignment) => assignment.reviewer.id === me);
   const canClose = review.status !== "closed" && (review.requestedBy.id === me || (!!role && roleAtLeast(role, "editor")));
@@ -139,7 +139,7 @@ export function ReviewCheckpoint({ review, session, controller, snapshot, onClos
   const t = useTranslations("collab.reviews.reviewsPanel");
   const tCommon = useTranslations("common");
   const tAttribution = useTranslations("collab.history.attribution");
-  const describeError = useDescribeError();
+  const describeError = useDescribeReviewError();
   // A PDF has no text to show as it was: its reviewer reads it in the viewer.
   const pdf = isPdfDocId(docId);
   const [base, setBase] = useState<{ text: string; serverSeq: number } | null>(null);
@@ -193,6 +193,7 @@ export function ReviewCheckpoint({ review, session, controller, snapshot, onClos
 export function ReviewsPanel({ session }: { session: SharedDocSession }) {
   const { controller, snapshot } = useReviews(session);
   const t = useTranslations("collab.reviews.reviewsPanel");
+  const describeError = useDescribeReviewError();
   const [openId, setOpenId] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
   const [status, setStatus] = useState<ReviewStatusFilter>("all");
@@ -236,7 +237,7 @@ export function ReviewsPanel({ session }: { session: SharedDocSession }) {
             : page.visible.map((review) => <ReviewCard key={review.id} review={review} controller={controller} snapshot={snapshot} role={role} now={now} onOpen={() => setOpenId(review.id)} />)}
       {page.remaining > 0 ? <li><ShowMoreButton remaining={page.remaining} onClick={page.showMore} /></li> : null}
     </ul>
-    {snapshot.error ? <p role="alert" className="border-t border-border px-3 py-1.5 text-xs text-destructive">{snapshot.error}</p> : null}
+    {snapshot.error ? <p role="alert" className="border-t border-border px-3 py-1.5 text-xs text-destructive">{describeError(snapshot.error)}</p> : null}
     <p className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground" aria-live="polite">{t("openCount", { count: open.length })}</p>
     {shown ? <ReviewCheckpoint key={shown.id} review={shown} session={session} controller={controller} snapshot={snapshot} onClose={() => setOpenId(null)} /> : null}
   </section>;

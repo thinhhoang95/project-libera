@@ -85,6 +85,8 @@ test("Preferences dismisses through its own bridge and prevents dismissal during
     beforeParse(window) {
       window.matchMedia = () => ({ matches: false, addEventListener() {} });
       window.liberaSetup = {
+        // The page reads its messages from the preload (electron/i18n.cjs), as in the app.
+        getI18n: () => require("../../electron/i18n.cjs").setupPayload(),
         getState: async () => ({ hasApiKey: true, hasPasswordHash: true, dataDir: "/tmp/notebooks" }),
         close: () => { closes += 1; },
         onRequestClose: (listener) => { requestClose = listener; },

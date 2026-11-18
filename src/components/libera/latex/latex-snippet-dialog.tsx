@@ -22,6 +22,7 @@ function suggestName(body: string, snippets: LatexSnippet[]) {
 
 export function LatexSnippetDialog({ request, onClose }: { request: LatexSnippetDialogRequest; onClose: () => void }) {
   const t = useTranslations("latex.latexSnippetDialog");
+  const tName = useTranslations("electron.latexSnippets");
   const snippets = useLatexSnippets();
   const formId = useId();
   const [name, setName] = useState(() => request.mode === "rename" ? request.snippet.name : suggestName(request.body, snippets));
@@ -30,7 +31,7 @@ export function LatexSnippetDialog({ request, onClose }: { request: LatexSnippet
   const [error, setError] = useState("");
   const body = request.mode === "rename" ? request.snippet.body : request.body;
   const normalized = normalizeLatexSnippetName(name);
-  const nameError = latexSnippetNameError(normalized, snippets, request.mode === "rename" ? request.snippet.id : undefined);
+  const nameError = latexSnippetNameError(normalized, snippets, request.mode === "rename" ? request.snippet.id : undefined, (key, values) => tName(key as never, values as never));
   const unchanged = request.mode === "rename" && normalized === request.snippet.name;
 
   async function save() {

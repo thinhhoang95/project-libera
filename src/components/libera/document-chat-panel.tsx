@@ -1060,7 +1060,7 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
         const overlap = otherId === id ? null : agentWriteOverlap(writeScope, other);
         if (!overlap) continue;
         const title = store?.chats.find((item) => item.id === otherId)?.title ?? t("anotherChat");
-        return refuse(t("agentOverlap", { title, overlap }));
+        return refuse(t("agentOverlap", { title, kind: overlap.kind, name: overlap.name }));
       }
     }
     const prompt = chat.prompt;
@@ -1519,9 +1519,9 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
 
   const chatTime = (createdAt: string) => {
     const date = new Date(createdAt);
-    return format.dateTime(date, date.toDateString() === now.toDateString()
-      ? { hour: "numeric", minute: "2-digit" }
-      : { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+    // Compact 24-hour times, as before ("08:29"; another day adds the date); separators and order follow the locale.
+    const time = { hour: "2-digit", minute: "2-digit", hourCycle: "h23" } as const;
+    return format.dateTime(date, date.toDateString() === now.toDateString() ? time : { day: "2-digit", month: "2-digit", ...time });
   };
   const speakerName = (role: ChatMessage["role"], agent: boolean) => role === "user" ? t("speakerYou") : agent ? t("speakerAgent") : t("speakerAi");
   const commentsSummary = (context: ChatContext) => {

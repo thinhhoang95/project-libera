@@ -1320,7 +1320,7 @@
   },
   "documentChatPanel": {
     "addPhotosButton": "Ajouter des photos",
-    "agentOverlap": "L’agent de « {title} » peut encore modifier {overlap}. Attendez qu’il termine ou arrêtez-le d’abord, pour que les deux exécutions ne modifient pas les mêmes fichiers. Un agent en lecture seule peut fonctionner en parallèle.",
+    "agentOverlap": "L’agent de « {title} » peut encore modifier {kind, select, notebook {le carnet « {name} »} other {le fichier « {name} »}}. Attendez qu’il termine ou arrêtez-le d’abord, pour que les deux exécutions ne modifient pas les mêmes fichiers. Un agent en lecture seule peut fonctionner en parallèle.",
     "agentPermissionAria": "Autorisation de l’agent",
     "agentPermissionTitle": "Autorisation de l’agent : {label}",
     "agentPlaceholder": "Demandez à l’agent de chercher, lire ou modifier… Tapez @ pour les fichiers",
@@ -2379,6 +2379,77 @@
       "zoomInLabel": "Zoom avant",
       "zoomLabel": "Zoom",
       "zoomOutLabel": "Zoom arrière"
+    },
+    "updater": {
+      "checkFailed": "La recherche de mises à jour a échoué.",
+      "laterButton": "Plus tard",
+      "restartButton": "Redémarrer et mettre à jour",
+      "readyTitle": "Mise à jour de Libera prête",
+      "downloaded": "La version {version} de Libera a été téléchargée.",
+      "saveEditsDetail": "Enregistrez vos modifications en cours, puis utilisez Redémarrer et mettre à jour dans la boîte de dialogue À propos.",
+      "restartDetail": "Redémarrez Libera maintenant pour installer la mise à jour, ou installez-la à la prochaine fermeture de l’application.",
+      "noUpdateReady": "Aucune mise à jour téléchargée n’est prête à être installée.",
+      "saveBeforeRestart": "Enregistrez toutes vos modifications avant de redémarrer pour installer la mise à jour.",
+      "stateUnavailable": "L’état de la mise à jour n’est pas disponible depuis cette fenêtre.",
+      "checksUnavailable": "La recherche de mises à jour n’est pas disponible depuis cette fenêtre.",
+      "installUnavailable": "L’installation des mises à jour n’est pas disponible depuis cette fenêtre.",
+      "documentStateUnavailable": "L’état des documents n’est pas disponible depuis cette fenêtre."
+    },
+    "latexSnippets": {
+      "nameRequired": "Donnez un nom à l’extrait.",
+      "nameTooLong": "Utilisez au plus {max} caractères.",
+      "nameCharacters": "Utilisez des lettres, des chiffres, des tirets et des tirets bas, en commençant par une lettre ou un chiffre.",
+      "nameTaken": "Un extrait nommé /{name} existe déjà."
+    },
+    "quickPrompts": {
+      "marker": "rapide",
+      "notList": "Les requêtes rapides doivent former une liste.",
+      "tooMany": "N’ajoutez pas plus de {max} requêtes rapides.",
+      "needsIdentifier": "La requête rapide {number} doit avoir un identifiant commençant par une barre oblique.",
+      "badIdentifier": "L’identifiant de la requête rapide {number} peut contenir des lettres, des chiffres, des tirets et des tirets bas, et doit commencer par une lettre ou un chiffre.",
+      "identifierInUse": "L’identifiant de requête rapide /{identifier} est déjà utilisé.",
+      "needsPrompt": "La requête rapide {number} doit avoir un texte.",
+      "promptTooLong": "La requête rapide {number} ne doit pas dépasser {max, number} caractères."
+    },
+    "preferencesIo": {
+      "notBackup": "Ce fichier n’est pas une sauvegarde de préférences Libera.",
+      "unsupportedVersion": "Version de sauvegarde de préférences Libera non prise en charge : {version}.",
+      "missingPreferences": "La sauvegarde de préférences Libera ne contient pas d’objet de préférences.",
+      "wrongPassword": "Le mot de passe principal n’ouvre pas cette sauvegarde de préférences.",
+      "passwordRequired": "Un mot de passe principal est nécessaire pour chiffrer ou ouvrir une sauvegarde de préférences.",
+      "notEncryptedBackup": "Ce fichier n’est pas une sauvegarde de préférences Libera chiffrée.",
+      "unsafeEncryption": "La sauvegarde de préférences utilise des paramètres de chiffrement non pris en charge ou dangereux.",
+      "damaged": "La sauvegarde de préférences chiffrée est endommagée."
+    },
+    "localLlms": {
+      "customLabel": "le serveur",
+      "customSubject": "Le serveur",
+      "timeout": "{subject} à l’adresse {url} n’a pas répondu à temps. Il charge peut-être encore {model}, ou le modèle est peut-être trop volumineux pour cet ordinateur.",
+      "unreachable": "Impossible de joindre {server} à l’adresse {url}, donc {name} n’est pas disponible. Le serveur est-il démarré ? {start}",
+      "requestFailed": "La requête vers {server} à l’adresse {url} a échoué : {error}",
+      "rejectedKey": "{subject} a refusé la clé d’API pour {name}. Vérifiez la clé dans Préférences → LLM locaux.",
+      "noTools": "{model} ne peut pas appeler d’outils et ne peut donc pas fonctionner en mode Agent. Choisissez un modèle compatible avec les outils, ou passez à Chat.",
+      "contextExceeded": "Cette requête est trop longue pour la fenêtre de contexte de {model}. Envoyez-en moins, par exemple en désactivant Document entier ou en démarrant une nouvelle conversation. {advice}",
+      "stillLoading": "{subject} charge encore {model}. Réessayez dans un instant.",
+      "modelMissing": "{subject} n’a pas {model} de prêt. {advice}",
+      "serverErrorDetail": "{subject} a renvoyé une erreur pour {name} : {detail}",
+      "serverErrorStatus": "{subject} a renvoyé une erreur pour {name} (HTTP {status}).",
+      "enterBaseUrl": "Saisissez une URL de base, par exemple http://localhost:11434/v1.",
+      "notJson": "{url}/models n’a pas renvoyé de JSON. Vérifiez qu’il s’agit bien de l’adresse du serveur compatible OpenAI, qui se termine généralement par /v1.",
+      "connectedChooseModel": "Connecté à {server} : {count, plural, one {# modèle disponible} other {# modèles disponibles}}. Choisissez un modèle pour terminer le test.",
+      "connectedAnswered": "Connecté à {server} : {model} a répondu en {seconds} s. {count, plural, one {# modèle disponible} other {# modèles disponibles}}.",
+      "ollamaStart": "Lancez-le avec `ollama serve`, ou ouvrez l’application Ollama.",
+      "ollamaLoad": "Téléchargez-le avec `ollama pull {model}`, ou choisissez un autre modèle dans Préférences → LLM locaux.",
+      "ollamaContext": "Augmentez la longueur de contexte dans les réglages de l’application Ollama, ou définissez OLLAMA_CONTEXT_LENGTH avant de démarrer le serveur.",
+      "lmstudioStart": "Dans LM Studio, ouvrez l’onglet Developer et démarrez le serveur.",
+      "lmstudioLoad": "Chargez-le dans l’onglet Developer de LM Studio, ou exécutez `lms load {model}`.",
+      "lmstudioContext": "Rechargez le modèle dans LM Studio avec une plus grande longueur de contexte.",
+      "llamaserverStart": "Lancez-le avec `llama-server -m your-model.gguf --port 8080`.",
+      "llamaserverLoad": "llama-server sert le modèle avec lequel il a été lancé ; vérifiez son option -m.",
+      "llamaserverContext": "Relancez llama-server avec un contexte plus grand, par exemple `-c 32768`.",
+      "customStart": "Vérifiez aussi l’URL de base.",
+      "customLoad": "Vérifiez que le serveur l’a chargé, ou choisissez un autre modèle dans Préférences → LLM locaux.",
+      "customContext": "Donnez au modèle une plus grande longueur de contexte sur le serveur."
     }
   },
   "existingImageDialog": {
@@ -3745,6 +3816,13 @@
             "stale": "Non appliquée : le texte a changé depuis la suggestion.",
             "unconfirmed": "La décision n’a pas pu être confirmée. Réessayez."
           }
+        },
+        "reviews": {
+          "signInRequired": "Connectez-vous à votre compte de collaboration pour demander une relecture.",
+          "onlyEditors": "Seuls les éditeurs et les propriétaires peuvent demander une relecture.",
+          "pickReviewer": "Choisissez au moins un relecteur.",
+          "selectPassage": "Sélectionnez d’abord le passage à relire.",
+          "refused": "Le serveur a refusé cette demande ({status})."
         }
       },
       "ui": {
@@ -4023,6 +4101,54 @@
             "labelNotFound": "{reference} (étiquette introuvable)",
             "citationNotFound": "{key} (citation introuvable)",
             "altClickToEdit": "\\{name} : Alt-clic ou Alt+Entrée pour modifier"
+          },
+          "floatEdit": {
+            "caption": "Légende",
+            "column": "Colonne",
+            "source": "Source",
+            "codeListing": "Code ({environment})",
+            "editorLabel": "{label} (LaTeX). Entrée enregistre, Maj+Entrée commence une nouvelle ligne, Échap annule.",
+            "changedWhileEditing": "Cette partie de l’élément flottant a changé pendant que vous la modifiiez ; votre texte n’a donc pas été enregistré :\n\n{text}",
+            "coAuthorChanged": "Un coauteur a modifié cette partie pendant que vous la modifiiez. Remplacer sa version par la vôtre ?"
+          },
+          "titleEdit": {
+            "part": {
+              "title": "Titre",
+              "author": "Auteur",
+              "date": "Date",
+              "abstract": "Résumé",
+              "line": "Ligne",
+              "note": "Mots-clés et notes"
+            },
+            "newAuthor": "Nouvel auteur",
+            "editorLabel": "{label} (LaTeX). Entrée enregistre, Maj+Entrée commence une nouvelle ligne, Échap annule.",
+            "changedWhileAddingAuthor": "Le titre a changé pendant que vous ajoutiez un auteur ; votre texte n’a donc pas été enregistré :\n\n{text}",
+            "changedWhileEditing": "Le titre a changé pendant que vous le modifiiez ; votre texte n’a donc pas été enregistré :\n\n{text}",
+            "blockChanged": "Le bloc de titre a changé pendant que vous le modifiiez ; votre texte n’a donc pas été enregistré :\n\n{text}",
+            "coAuthorChanged": "Un coauteur a modifié cette partie du titre pendant que vous la modifiiez. Remplacer sa version par la vôtre ?"
+          },
+          "algorithmEdit": {
+            "statement": "Instruction",
+            "newStatement": "Nouvelle instruction",
+            "caption": "Légende",
+            "menuLabel": "Algorithme",
+            "editorLabel": "{label} (LaTeX). Entrée enregistre, Maj+Entrée commence une nouvelle ligne, Échap annule, Tab passe à l’instruction suivante, Ctrl+Entrée ajoute une instruction en dessous.",
+            "changedEditingStatement": "L’algorithme a changé pendant que vous modifiiez cette instruction ; votre texte n’a donc pas été enregistré :\n\n{text}",
+            "changedEditing": "L’algorithme a changé pendant que vous le modifiiez ; votre texte n’a donc pas été enregistré :\n\n{text}",
+            "changedEditingCaption": "La légende a changé pendant que vous la modifiiez ; votre texte n’a donc pas été enregistré :\n\n{text}",
+            "coAuthorStatement": "Un coauteur a modifié cette instruction pendant que vous la modifiiez. Remplacer sa version par la vôtre ?",
+            "coAuthorCaption": "Un coauteur a modifié cette légende pendant que vous la modifiiez. Remplacer sa version par la vôtre ?",
+            "insertAbove": "Insérer une instruction au-dessus",
+            "insertBelow": "Insérer une instruction en dessous",
+            "deleteStatement": "Supprimer l’instruction",
+            "deleteBlock": "Supprimer le bloc",
+            "showSource": "Afficher la source",
+            "notStatement": "Impossible ici (cette ligne n’est pas écrite comme une instruction)",
+            "notPossible": "Impossible ici",
+            "deleteFromFirstLine": "Supprimez le bloc à partir de sa première ligne",
+            "cannotEditFile": "Ce fichier ne peut pas être modifié",
+            "changedWhileMenuOpen": "L’algorithme a changé pendant que ce menu était ouvert ; rien n’a été supprimé. Réessayez.",
+            "confirmDeleteBlock": "{lines, plural, one {Supprimer ce bloc et la # ligne de LaTeX qu’il contient ?} other {Supprimer ce bloc et les # lignes de LaTeX qu’il contient ?}}"
           }
         }
       },
@@ -4050,6 +4176,51 @@
             "ieee": "IEEE",
             "apa": "APA, 7e édition",
             "nature": "Nature"
+          }
+        }
+      },
+      "markdownPaste": {
+        "choices": {
+          "templateError": {
+            "empty": "Saisissez une commande comme \\frametitle, ou un modèle contenant #1.",
+            "unusable": "{command} ne peut pas servir pour les titres.",
+            "multiline": "Le modèle doit tenir sur une seule ligne.",
+            "parameter": "Utilisez #1 exactement une fois, là où va le texte du titre, et aucun autre #.",
+            "braces": "Les accolades du modèle ne sont pas équilibrées.",
+            "unsafe": "Le modèle ne peut contenir ni environnements, ni commentaires, ni notation ^^, ni commandes qui lisent des fichiers ou définissent des macros."
+          }
+        },
+        "convert": {
+          "warning": {
+            "emoji": "pdfLaTeX ne sait pas composer les emoji : {count, plural, one {# retiré} other {# retirés}}.",
+            "front-matter": "L’en-tête (front matter) de la note a été omis.",
+            "unreferenced-footnote": "{count, plural, one {# note de bas de page n’est jamais citée et a été omise.} other {# notes de bas de page ne sont jamais citées et ont été omises.}}",
+            "heading-template": "Le titre personnalisé n’est pas valide ; ces titres ont donc été écrits en gras.",
+            "deep-list": "Les listes imbriquées plus profondément que LaTeX ne le permet ont été fusionnées avec la liste qui les entoure.",
+            "box-color": "Un encadré coloré a été écrit comme une citation simple : sa couleur a été abandonnée. Chargez tcolorbox dans le préambule pour la conserver.",
+            "diagram": "{count, plural, one {# diagramme ({detail}) collé comme code : LaTeX ne sait pas le dessiner.} other {# diagrammes ({detail}) collés comme code : LaTeX ne sait pas les dessiner.}}",
+            "html-live": "Un bloc HTML interactif a été collé comme code : LaTeX ne peut pas l’exécuter.",
+            "unsafe-math": "{count, plural, one {# formule pouvait sortir du mode mathématique ou lire des fichiers ; elle a été collée comme texte.} other {# formules pouvaient sortir du mode mathématique ou lire des fichiers ; elles ont été collées comme texte.}}",
+            "inline-display": "Une formule en mode display au milieu d’un texte a été écrite en ligne.",
+            "html": "Du code HTML n’avait pas d’équivalent LaTeX : ses balises ont été supprimées et son texte conservé.",
+            "image-path": "{count, plural, one {# chemin d’image n’a pas pu être utilisé dans LaTeX et a été laissé en commentaire.} other {# chemins d’image n’ont pas pu être utilisés dans LaTeX et ont été laissés en commentaire.}}",
+            "remote-image": "{count, plural, one {# image est une adresse web : téléchargez-la dans le projet pour l’inclure.} other {# images sont des adresses web : téléchargez-les dans le projet pour les inclure.}}",
+            "ink-image": "{count, plural, one {# dessin à l’encre est un SVG : exportez-le en PDF ou PNG pour LaTeX.} other {# dessins à l’encre sont des SVG : exportez-les en PDF ou PNG pour LaTeX.}}",
+            "image-format": "{count, plural, one {# image est dans un format que pdfLaTeX ne peut pas inclure (convertissez-la en PDF, PNG ou JPEG).} other {# images sont dans un format que pdfLaTeX ne peut pas inclure (convertissez-les en PDF, PNG ou JPEG).}}",
+            "missing-image": "{count, plural, one {# image n’est pas encore dans le projet.} other {# images ne sont pas encore dans le projet.}}",
+            "rowspan": "Les cellules fusionnées sur plusieurs lignes ont été séparées : le texte reste dans la première ligne, les cellules du dessous sont vides.",
+            "table-truncated": "Un tableau comptait plus de 64 colonnes ou 5 000 lignes : le reste a été omis. Collez en texte brut pour tout conserver.",
+            "longtable-twocolumn": "longtable ne fonctionne pas dans les documents à deux colonnes ; les tableaux ont donc été écrits avec tabular.",
+            "caption-without-float": "{detail, select, box {Les légendes ne peuvent pas aller dans un encadré ; les légendes de tableau y ont donc été omises.} other {Les légendes nécessitent un tableau flottant : choisissez Tableau sous Flottant pour les conserver.}}",
+            "label-taken": "Une étiquette de tableau était déjà utilisée ; un numéro y a donc été ajouté.",
+            "label": "Une étiquette de tableau contenait des caractères que les étiquettes LaTeX ne peuvent pas contenir ; elle a donc été créée à partir de la légende.",
+            "soul": "{detail, select, hl {Les surlignages autour de liens, de notes de bas de page, de citations, de code ou de formules \\(…\\) ont été supprimés : \\hl ne peut pas les contenir.} other {Le texte barré autour de liens, de notes de bas de page, de citations, de code ou de formules \\(…\\) a été supprimé : \\st ne peut pas le contenir.}}",
+            "line-height": "L’interligne défini dans le texte a été omis.",
+            "raw-block": "Les environnements ou commandes de bloc LaTeX écrits dans le texte ont été conservés comme texte : ils ne peuvent pas figurer à l’endroit du collage.",
+            "script": "Une partie du texte est dans une écriture que pdfLaTeX ne sait peut-être pas composer : compilez avec XeLaTeX ou LuaLaTeX en cas d’erreur.",
+            "cyclic-footnote": "Une note de bas de page qui se référence elle-même a été laissée telle quelle.",
+            "nested-footnote": "Une note de bas de page dans une autre note de bas de page a été écrite entre parenthèses.",
+            "cite-keys": "{count, plural, one {# clé citée n’est pas dans la bibliographie.} other {# clés citées ne sont pas dans la bibliographie.}}"
           }
         }
       }
@@ -4401,6 +4572,27 @@
         "playbackFailed": "Cet audio n’a pas pu être lu.",
         "noText": "Il n’y a aucun texte à lire à voix haute.",
         "synthesisFailed": "Le texte n’a pas pu être lu à voix haute."
+      }
+    },
+    "codeLanguages": {
+      "plainText": "Texte brut"
+    },
+    "galleryTimeline": {
+      "today": "Aujourd’hui",
+      "yesterday": "Hier",
+      "thisWeek": "Cette semaine",
+      "thisMonth": "Ce mois-ci",
+      "labelWithTime": "{label} · {time}"
+    },
+    "slideDiagrams": {
+      "error": "{detail, select, none {Erreur de diagramme.} other {Erreur de diagramme : {detail}}}"
+    },
+    "aiActivity": {
+      "action": {
+        "write": "Écriture avec l’IA",
+        "rewrite": "Réécriture avec l’IA",
+        "format": "Mise en forme avec l’IA",
+        "image": "Conversion de l’image avec l’IA"
       }
     }
   },
@@ -4854,7 +5046,8 @@
   "markdownSource": {
     "markdownCodemirrorEditor": {
       "dropImage": "Déposez l’image pour l’insérer",
-      "selectionLabel": "Sélection"
+      "selectionLabel": "Sélection",
+      "sourceEditorLabel": "Éditeur de source Markdown"
     },
     "markdownSourceContextMenu": {
       "aiFormat": "Mise en forme IA",
@@ -7322,13 +7515,7 @@
     "unindentHeadings": "Désindenter les titres",
     "whatShouldAiWrite": "Que doit écrire l’IA ? Tapez / pour les requêtes",
     "writeNewTextWithAi": "Écrire un nouveau texte avec l’IA",
-    "writeWithAi": "Écrire avec l’IA",
-    "activity": {
-      "write": "Écriture avec l’IA",
-      "rewrite": "Réécriture avec l’IA",
-      "format": "Mise en forme avec l’IA",
-      "image": "Conversion de l’image avec l’IA"
-    }
+    "writeWithAi": "Écrire avec l’IA"
   },
   "tiptapLiveCodeBlockView": {
     "foldMacroDefinitions": "Replier les définitions de macros",

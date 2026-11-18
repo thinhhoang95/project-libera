@@ -171,10 +171,13 @@ function setupPayload(namespace = "electron.setup") {
       }
     }
   }
-  // The page also checks error text coming back from main (see setup.html), so it gets the plain main-process strings.
-  let main = loadMessages(locale);
-  for (const part of ["electron", "main"]) main = isPlainObject(main) ? main[part] : undefined;
-  if (isPlainObject(main)) for (const [key, value] of Object.entries(main)) if (typeof value === "string" && !/[{<]/.test(value)) messages[`main:${key}`] = value;
+  // The page also checks error text coming back from main (see setup.html), so it gets the plain strings of the
+  // namespaces whose errors it recognises, as "main:<key>", "preferencesIo:<key>", "quickPrompts:<key>".
+  for (const name of ["main", "preferencesIo", "quickPrompts"]) {
+    let errors = loadMessages(locale);
+    for (const part of ["electron", name]) errors = isPlainObject(errors) ? errors[part] : undefined;
+    if (isPlainObject(errors)) for (const [key, value] of Object.entries(errors)) if (typeof value === "string" && !/[{<]/.test(value)) messages[`${name}:${key}`] = value;
+  }
   return { locale, formattingLocale: formattingLocale(locale), messages };
 }
 

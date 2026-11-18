@@ -17,7 +17,7 @@ import {
   slideSeriesPalette,
   type SlideChartTable,
 } from "@/lib/slide-charts";
-import { buildSlideDiagramConfig, slideDiagramErrorMessage } from "@/lib/slide-diagrams";
+import { buildSlideDiagramConfig, slideDiagramErrorDetail } from "@/lib/slide-diagrams";
 
 export type SlideBlockMode = "export" | "presenter" | "preview";
 
@@ -223,6 +223,7 @@ function renderDiagram(source: string, config: ReturnType<typeof buildSlideDiagr
  * labels), so diagrams render in every notebook, shared ones included.
  */
 export function SlideDiagram({ documentPath, fontFamily, source, theme }: SlideBlockProps) {
+  const t = useTranslations("lib.slideDiagrams");
   const trust = useContentTrust(documentPath);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const key = `${theme}\n${trust}\n${fontFamily ?? ""}\n${source}`;
@@ -240,7 +241,7 @@ export function SlideDiagram({ documentPath, fontFamily, source, theme }: SlideB
         if (!canceled) setResult({ key, svg });
       },
       (reason: unknown) => {
-        if (!canceled) setResult({ key, error: slideDiagramErrorMessage(reason) });
+        if (!canceled) setResult({ key, error: slideDiagramErrorDetail(reason) });
       },
     );
 
@@ -255,7 +256,7 @@ export function SlideDiagram({ documentPath, fontFamily, source, theme }: SlideB
       className="markdown-slide-diagram"
       {...(result?.key === key ? {} : { [SLIDE_BLOCK_PENDING_ATTRIBUTE]: "true" })}
     >
-      {result?.error ? <BlockMessage>{result.error}</BlockMessage> : null}
+      {result?.error !== undefined ? <BlockMessage>{t("error", { detail: result.error || "none" })}</BlockMessage> : null}
       {result?.svg ? <div dangerouslySetInnerHTML={{ __html: result.svg }} /> : null}
     </div>
   );

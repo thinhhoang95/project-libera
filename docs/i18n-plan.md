@@ -80,6 +80,34 @@ namespaced by feature area.
 - Fixed: the two text comparisons that translation would break (`use-meeting-recorder.ts`, `photo-viewer.tsx`).
 - Pilot: the Spending page and panel (`spending.*`, `lib.spending.*`) are fully converted, English and French.
 
+## Status (2026-11-18): app-wide conversion done
+
+- Every interface area is converted (13 feature areas in wave 1, leftover helpers in wave 2). Languages: English,
+  French, Vietnamese, Simplified Chinese — 7,085 keys each, `check-messages.mjs` reports 0 problems. Style guides:
+  `docs/i18n/{fr,vi,zh}-style.md`.
+- Electron: `electron/i18n.cjs` (main process, intl-messageformat) and the Preferences window (`electron/setup.html`,
+  messages via `liberaSetup.getI18n()`); `electron/prepare-dist.cjs` ships `messages/`.
+- Parallel work: `scripts/i18n/put-messages.mjs` replaces whole namespaces under a lock.
+- Tests: `scripts/editor/setup.cjs` makes next-intl hooks fall back to English (one cached translator per namespace)
+  when no provider is mounted; `scripts/editor/intl.ts` gives English translators to helper tests. Electron
+  Preferences tests stub `getI18n` with `setupPayload()`.
+- Sweep: under `en-XA`, every rail panel, the command palette, the editors and the chat panel show no unconverted
+  text; the layout holds with 40% longer text.
+
+### Still open
+- **Server text**: `error.message` from `/api/*`, server-side parsers (BibTeX/RIS), search indexing, migration and
+  integrity plans, recording/transcription jobs. Needs error codes from the API routes, worded in the client.
+- **Bundle size**: `src/lib/collab/ui/wording.ts`, `.../history/attribution.ts`, `.../client/reviews.ts` and
+  `src/lib/latex/codemirror/visual/labels-en.ts` import `messages/en.json` for English defaults; Turbopack bundles the
+  whole file (~390 KB) as a client chunk. Replace with small generated per-namespace files kept in sync by the checker.
+- **Decisions**: default file/folder names (`src/components/libera/default-names.ts`), example placeholders,
+  translated palette keywords, a word for "token" in zh/vi.
+- **Native review**: the flagged choices in each language's agent reports (e.g. vi "thẻ" for both tabs and tags,
+  zh 令牌 vs Token).
+- **Unverified**: a packaging build with `messages/` (prepare-dist check added but not run); the Language switch
+  end-to-end in the Electron app.
+- OS-localized items: Electron role menu items (Undo, Copy…) follow the OS language, not Libera's preference.
+
 ## Converting an area (the brief for each per-area pass)
 
 Follow the Spending pilot (`src/components/libera/spending/*`, `src/lib/spending.ts`).

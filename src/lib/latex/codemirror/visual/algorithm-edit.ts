@@ -4,6 +4,7 @@ import { dispatchAsOneStep } from "../../../collab/undo-boundary";
 import { readGroup } from "../../../macros/core";
 import { isAlgorithmicStatement, type AlgorithmLine } from "./algorithm";
 import { visualConfig } from "./model";
+import { visualText, type VisualTranslator } from "./labels";
 import { minimalChange } from "./title-edit";
 import { revealSourceAt, setAlgorithmHooks, type AlgorithmElement } from "./widgets";
 
@@ -47,13 +48,13 @@ function findList(view: EditorView, base: number) {
 }
 
 /** The field over a line or caption: Enter saves, Shift+Enter starts a new line, Escape cancels. */
-function field(value: string, label: string) {
+function field(value: string, label: string, tr: VisualTranslator) {
   const area = document.createElement("textarea");
   area.className = "cm-vis-title-editor cm-vis-algorithm-editor";
   area.spellcheck = false;
   area.rows = 1;
   area.value = value;
-  area.setAttribute("aria-label", `${label} (LaTeX). Enter saves, Shift+Enter starts a new line, Escape cancels, Tab goes to the next statement, Ctrl+Enter adds a statement below.`);
+  area.setAttribute("aria-label", tr("algorithmEdit.editorLabel", { label }));
   return area;
 }
 
@@ -83,7 +84,7 @@ function editLine(view: EditorView, list: AlgorithmElement, index: number, resum
   const from = base + line.source.from;
   const to = base + line.source.to;
   const original = resume?.original ?? view.state.sliceDoc(from, to);
-  const area = field(resume?.draft ?? original, "Statement");
+  const area = field(resume?.draft ?? original, visualText(view.state)("algorithmEdit.statement"), visualText(view.state));
   const drawn = [...body.childNodes];
   row.classList.add("cm-vis-algorithm-editing");
   body.replaceChildren(area);
@@ -115,8 +116,8 @@ function editLine(view: EditorView, list: AlgorithmElement, index: number, resum
     // Opening and leaving a statement without typing writes nothing.
     if (save && session.typed && text !== original) {
       if (now === null || session.from === null || !canEdit(view)) {
-        window.alert(`The algorithm changed while you were editing this statement, so your text was not saved:\n\n${text}`);
-      } else if (now === original || window.confirm("A co-author changed this statement while you were editing it. Replace their version with yours?")) {
+        window.alert(visualText(view.state)("algorithmEdit.changedEditingStatement", { text }));
+      } else if (now === original || window.confirm(visualText(view.state)("algorithmEdit.coAuthorStatement"))) {
         dispatchAsOneStep(view, { changes: minimalChange(session.from, now, text), userEvent: "input.visual.algorithm" });
       }
     }
@@ -156,7 +157,7 @@ function editLine(view: EditorView, list: AlgorithmElement, index: number, resum
       requestAnimationFrame(() => {
         if (done || area.isConnected) return;
         session.abandon();
-        if (session.typed && area.value !== original) window.alert(`The algorithm changed while you were editing it, so your text was not saved:\n\n${area.value}`);
+        if (session.typed && area.value !== original) window.alert(visualText(view.state)("algorithmEdit.changedEditing", { text: area.value }));
       });
       return;
     }
@@ -176,7 +177,7 @@ function adopt(view: EditorView, list: AlgorithmElement) {
     const draft = session.area.value;
     session.abandon();
     if (!editLine(view, list, index, { original, draft, typed }) && typed && draft !== original) {
-      window.alert(`The algorithm changed while you were editing it, so your text was not saved:\n\n${draft}`);
+      window.alert(visualText(view.state)("algorithmEdit.changedEditing", { text: draft }));
     }
   }
 }
@@ -226,7 +227,7 @@ function openInsert(view: EditorView, list: AlgorithmElement, index: number, whe
   body.className = "cm-vis-algorithm-body";
   const number = document.createElement("span");
   number.className = "cm-vis-algorithm-number";
-  const area = field("", "New statement");
+  const area = field("", visualText(view.state)("algorithmEdit.newStatement"), visualText(view.state));
   body.append(area);
   fresh.append(number, body);
   row.insertAdjacentElement(where === "above" ? "beforebegin" : "afterend", fresh);
@@ -313,7 +314,8 @@ function lineMenu(view: EditorView, event: MouseEvent, list: AlgorithmElement, i
   const menu = document.createElement("div");
   menu.className = "cm-vis-table-menu cm-vis-algorithm-menu";
   menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "Algorithm");
+  const tr = visualText(view.state);
+  menu.setAttribute("aria-label", tr("algorithmEdit.menuLabel"));
   menu.style.left = `${Math.min(event.clientX, window.innerWidth - 200)}px`;
   menu.style.top = `${Math.min(event.clientY, window.innerHeight - 180)}px`;
   const returnFocus = document.activeElement as HTMLElement | null;
@@ -328,24 +330,24 @@ function lineMenu(view: EditorView, event: MouseEvent, list: AlgorithmElement, i
   const current = () => (session.base === null ? null : findList(view, session.base));
   const lines = removal?.block ? view.state.sliceDoc(removal.from, removal.to).split("\n").filter((text) => text.trim()).length : 0;
   const items: Array<[string, string | null, () => void]> = [
-    ["Insert statement above", line.source?.exact ? null : "Not possible here (this line is not written as a statement)", () => { const now = current(); if (now) openInsert(view, now, index, "above"); }],
-    ["Insert statement below", line.after !== undefined ? null : "Not possible here", () => { const now = current(); if (now) openInsert(view, now, index, "below"); }],
-    [removal?.block ? "Delete block" : "Delete statement", removal ? null : line.role === "middle" || line.role === "close" ? "Delete the block from its first line" : "Not possible here (this line is not written as a statement)", () => {
+    [tr("algorithmEdit.insertAbove"), line.source?.exact ? null : tr("algorithmEdit.notStatement"), () => { const now = current(); if (now) openInsert(view, now, index, "above"); }],
+    [tr("algorithmEdit.insertBelow"), line.after !== undefined ? null : tr("algorithmEdit.notPossible"), () => { const now = current(); if (now) openInsert(view, now, index, "below"); }],
+    [removal?.block ? tr("algorithmEdit.deleteBlock") : tr("algorithmEdit.deleteStatement"), removal ? null : line.role === "middle" || line.role === "close" ? tr("algorithmEdit.deleteFromFirstLine") : tr("algorithmEdit.notStatement"), () => {
       const now = session.from !== null && session.to !== null ? view.state.sliceDoc(session.from, session.to) : null;
-      if (now === null || now !== session.original || !canEdit(view)) { window.alert("The algorithm changed while this menu was open; nothing was deleted. Try again."); return; }
-      if (removal!.block && !window.confirm(`Delete this block and the ${lines} lines of LaTeX in it?`)) return;
+      if (now === null || now !== session.original || !canEdit(view)) { window.alert(tr("algorithmEdit.changedWhileMenuOpen")); return; }
+      if (removal!.block && !window.confirm(tr("algorithmEdit.confirmDeleteBlock", { lines }))) return;
       dispatchAsOneStep(view, { changes: { from: session.from!, to: session.to! }, userEvent: "delete.visual.algorithm" });
     }],
-    ["Show source", line.source ? null : "Not possible here", () => { const b = session.base; if (b !== null && line.source) revealSourceAt(view, b + line.source.from, b + line.source.to); }],
+    [tr("algorithmEdit.showSource"), line.source ? null : tr("algorithmEdit.notPossible"), () => { const b = session.base; if (b !== null && line.source) revealSourceAt(view, b + line.source.from, b + line.source.to); }],
   ];
   const buttons: HTMLButtonElement[] = [];
-  for (const [label, disabled, act] of items) {
+  for (const [itemIndex, [label, disabled, act]] of items.entries()) {
     const button = document.createElement("button");
     button.type = "button";
     button.setAttribute("role", "menuitem");
     button.tabIndex = -1;
     button.textContent = label;
-    if (disabled || !canEdit(view) && label !== "Show source") { button.disabled = true; button.title = disabled ?? "This file cannot be edited"; }
+    if (disabled || !canEdit(view) && itemIndex !== items.length - 1) { button.disabled = true; button.title = disabled ?? tr("algorithmEdit.cannotEditFile"); }
     button.addEventListener("mousedown", (down) => down.preventDefault());
     button.addEventListener("click", (click) => {
       click.preventDefault();
@@ -390,7 +392,7 @@ function editCaption(view: EditorView, target: HTMLElement, caption: string, ran
   if (!span) return false;
   for (const other of [...sessions]) if (other.view === view && other.area?.isConnected) other.area.blur();
   const original = view.state.sliceDoc(span.from, span.to);
-  const area = field(original, "Caption");
+  const area = field(original, visualText(view.state)("algorithmEdit.caption"), visualText(view.state));
   const drawn = [...target.childNodes];
   target.replaceChildren(area);
   fit(area);
@@ -410,8 +412,8 @@ function editCaption(view: EditorView, target: HTMLElement, caption: string, ran
     const text = area.value;
     const now = session.from !== null && session.to !== null ? view.state.sliceDoc(session.from, session.to) : null;
     if (save && session.typed && text !== original) {
-      if (now === null || session.from === null || !canEdit(view)) window.alert(`The caption changed while you were editing it, so your text was not saved:\n\n${text}`);
-      else if (now === original || window.confirm("A co-author changed this caption while you were editing it. Replace their version with yours?")) {
+      if (now === null || session.from === null || !canEdit(view)) window.alert(visualText(view.state)("algorithmEdit.changedEditingCaption", { text }));
+      else if (now === original || window.confirm(visualText(view.state)("algorithmEdit.coAuthorCaption"))) {
         dispatchAsOneStep(view, { changes: minimalChange(session.from, now, text), userEvent: "input.visual.algorithm" });
       }
     }

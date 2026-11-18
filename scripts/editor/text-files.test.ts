@@ -27,9 +27,9 @@ test("picks a highlighting language by file name, with overrides for ambiguous e
   assert.equal(codeLanguageName("setup.cfg"), "Properties files");
   assert.equal(codeLanguageName("analysis.qmd"), "Markdown");
   assert.equal(codeLanguageName("Dockerfile"), "Dockerfile");
-  assert.equal(codeLanguageName("Makefile"), "Plain text");
-  assert.equal(codeLanguageName("notes.txt"), "Plain text");
-  assert.equal(codeLanguageName("readme.text"), "Plain text");
+  assert.equal(codeLanguageName("Makefile"), null);
+  assert.equal(codeLanguageName("notes.txt"), null);
+  assert.equal(codeLanguageName("readme.text"), null);
   assert.ok(await loadCodeLanguage("index.ts"));
   assert.equal(await loadCodeLanguage("notes.txt"), null);
 });

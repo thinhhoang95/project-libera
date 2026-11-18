@@ -5,6 +5,11 @@
  * the server (src/lib/local-llm.ts) uses it to read the endpoints and to turn
  * a failure into a message that says what to do.
  */
+const { englishTranslator } = require("./english-messages.cjs");
+
+/** The `electron.localLlms` messages in English: what the server shows, and what any caller gets without a translator. */
+const englishWording = englishTranslator("electron.localLlms");
+
 const LOCAL_MODEL_PREFIX = "local/";
 const MAX_LOCAL_LLMS = 20;
 const LOCAL_ALIAS = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -16,31 +21,19 @@ const LOCAL_LLM_PRESETS = Object.freeze({
   ollama: Object.freeze({
     label: "Ollama",
     baseUrl: "http://localhost:11434/v1",
-    start: "Start it with `ollama serve`, or open the Ollama app.",
-    load: (model) => `Download it with \`ollama pull ${model}\`, or choose another model in Preferences → Local LLMs.`,
-    context: "Raise the context length in the Ollama app's settings, or set OLLAMA_CONTEXT_LENGTH before starting the server.",
   }),
   lmstudio: Object.freeze({
     label: "LM Studio",
     baseUrl: "http://localhost:1234/v1",
-    start: "In LM Studio, open the Developer tab and start the server.",
-    load: (model) => `Load it in LM Studio's Developer tab, or run \`lms load ${model}\`.`,
-    context: "Reload the model in LM Studio with a larger context length.",
   }),
   llamaserver: Object.freeze({
     label: "llama-server",
     baseUrl: "http://localhost:8080/v1",
-    start: "Start it with `llama-server -m your-model.gguf --port 8080`.",
-    load: () => "llama-server serves the model it was started with; check its -m option.",
-    context: "Restart llama-server with a larger context, for example `-c 32768`.",
   }),
   custom: Object.freeze({
     label: "the server",
     subject: "The server",
     baseUrl: "",
-    start: "Check the base URL too.",
-    load: () => "Check that the server has it loaded, or choose another model in Preferences → Local LLMs.",
-    context: "Give the model a larger context length on the server.",
   }),
 });
 
@@ -96,6 +89,20 @@ function localLlmHeaders(endpoint) {
   };
 }
 
+function presetKeyOf(endpoint) {
+  return Object.hasOwn(LOCAL_LLM_PRESETS, endpoint?.preset) ? endpoint.preset : "custom";
+}
+
+/** The server as a name inside a sentence: "Ollama", or "the server" for a custom address. */
+function presetLabel(endpoint, translate) {
+  return presetKeyOf(endpoint) === "custom" ? translate("customLabel") : LOCAL_LLM_PRESETS[endpoint.preset].label;
+}
+
+/** The server as the subject of a sentence: "Ollama", or "The server". */
+function presetSubject(endpoint, translate) {
+  return presetKeyOf(endpoint) === "custom" ? translate("customSubject") : LOCAL_LLM_PRESETS[endpoint.preset].label;
+}
+
 const UNREACHABLE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 const TIMEOUT_CODES = new Set(["ETIMEDOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
 
@@ -120,40 +127,42 @@ const NO_TOOLS = /does not support tools|tools? (is |are )?not supported|not sup
 /**
  * A plain-language account of a failed request to a local server. Give it the
  * HTTP status and the server's own message, or the thrown `error` when no
- * response came back. `retryable` is true only for what can pass on its own.
+ * response came back. `retryable` is true only for what can pass on its own. `translate` words the message in the
+ * interface language (the `electron.localLlms` messages); it defaults to English, which the server shows.
  */
-function describeLocalLlmFailure(endpoint, { status, detail = "", error } = {}) {
-  const preset = LOCAL_LLM_PRESETS[endpoint.preset] ?? LOCAL_LLM_PRESETS.custom;
-  const subject = preset.subject ?? preset.label;
+function describeLocalLlmFailure(endpoint, { status, detail = "", error } = {}, translate = englishWording) {
+  const subject = presetSubject(endpoint, translate);
   const name = `local/${endpoint.alias}`;
   const model = endpoint.model || name;
   const text = String(detail);
+  const advice = (kind, values) => translate(`${presetKeyOf(endpoint)}${kind}`, values);
+  const label = presetLabel(endpoint, translate);
   if (status === undefined) {
     const codes = errorCodes(error);
     if ([...codes].some((code) => TIMEOUT_CODES.has(code))) {
-      return { kind: "timeout", retryable: false, message: `${subject} at ${endpoint.baseUrl} did not answer in time. It may still be loading ${model}, or the model may be too large for this computer.` };
+      return { kind: "timeout", retryable: false, message: translate("timeout", { subject, url: endpoint.baseUrl, model }) };
     }
     if (!codes.size || [...codes].some((code) => UNREACHABLE_CODES.has(code))) {
-      return { kind: "unreachable", retryable: false, message: `Could not reach ${preset.label} at ${endpoint.baseUrl}, so ${name} is unavailable. Is the server running? ${preset.start}` };
+      return { kind: "unreachable", retryable: false, message: translate("unreachable", { server: label, url: endpoint.baseUrl, name, start: advice("Start") }) };
     }
-    return { kind: "server", retryable: false, message: `The request to ${preset.label} at ${endpoint.baseUrl} failed: ${error instanceof Error ? error.message : String(error)}` };
+    return { kind: "server", retryable: false, message: translate("requestFailed", { server: label, url: endpoint.baseUrl, error: error instanceof Error ? error.message : String(error) }) };
   }
   if (status === 401 || status === 403) {
-    return { kind: "auth", retryable: false, message: `${subject} rejected the API key for ${name}. Check the key in Preferences → Local LLMs.` };
+    return { kind: "auth", retryable: false, message: translate("rejectedKey", { subject, name }) };
   }
   if (NO_TOOLS.test(text)) {
-    return { kind: "no-tools", retryable: false, message: `${model} cannot call tools, so it cannot work in Agent mode. Choose a model with tool support, or switch to Chat.` };
+    return { kind: "no-tools", retryable: false, message: translate("noTools", { model }) };
   }
   if (CONTEXT_EXCEEDED.test(text)) {
-    return { kind: "context", retryable: false, message: `This request is too long for ${model}'s context window. Send less, for example by turning off Whole document or starting a new chat. ${preset.context}` };
+    return { kind: "context", retryable: false, message: translate("contextExceeded", { model, advice: advice("Context") }) };
   }
   if (status === 503 || /loading model/i.test(text)) {
-    return { kind: "loading", retryable: true, message: `${subject} is still loading ${model}. Try again in a moment.` };
+    return { kind: "loading", retryable: true, message: translate("stillLoading", { subject, model }) };
   }
   if (MODEL_MISSING.test(text) || status === 404) {
-    return { kind: "model", retryable: false, message: `${subject} does not have ${model} ready. ${preset.load(model)}` };
+    return { kind: "model", retryable: false, message: translate("modelMissing", { subject, model, advice: advice("Load", { model }) }) };
   }
-  return { kind: "server", retryable: status === 429 || status >= 500, message: `${subject} returned an error for ${name}${text ? `: ${text.slice(0, 300)}` : ` (HTTP ${status}).`}` };
+  return { kind: "server", retryable: status === 429 || status >= 500, message: text ? translate("serverErrorDetail", { subject, name, detail: text.slice(0, 300) }) : translate("serverErrorStatus", { subject, name, status }) };
 }
 
 /** The message in an error reply, in the shapes OpenAI-compatible servers use. */
@@ -191,9 +200,9 @@ function draftEndpoint(input) {
   };
 }
 
-async function listLocalLlmModels(input, { fetchImpl = globalThis.fetch, timeoutMs = LOCAL_LLM_LIST_TIMEOUT_MS } = {}) {
+async function listLocalLlmModels(input, { fetchImpl = globalThis.fetch, timeoutMs = LOCAL_LLM_LIST_TIMEOUT_MS, translate = englishWording } = {}) {
   const endpoint = draftEndpoint(input);
-  if (!endpoint.baseUrl) return { ok: false, kind: "url", message: "Enter a base URL such as http://localhost:11434/v1." };
+  if (!endpoint.baseUrl) return { ok: false, kind: "url", message: translate("enterBaseUrl") };
   let response;
   try {
     response = await fetchImpl(`${endpoint.baseUrl}/models`, { headers: localLlmHeaders(endpoint), signal: AbortSignal.timeout(timeoutMs) });
@@ -202,18 +211,16 @@ async function listLocalLlmModels(input, { fetchImpl = globalThis.fetch, timeout
   }
   if (!response.ok) return { ok: false, ...describeLocalLlmFailure(endpoint, { status: response.status, detail: await readLocalError(response) }) };
   const payload = await response.json().catch(() => null);
-  if (!payload) return { ok: false, kind: "server", message: `${endpoint.baseUrl}/models did not return JSON. Check that this is the server's OpenAI-compatible address, which usually ends in /v1.` };
+  if (!payload) return { ok: false, kind: "server", message: translate("notJson", { url: endpoint.baseUrl }) };
   return { ok: true, models: localModelIds(payload) };
 }
 
 /** Lists the models, then asks the chosen model for one token, so a pass means a real request works. */
-async function testLocalLlm(input, { fetchImpl = globalThis.fetch, timeoutMs = LOCAL_LLM_TEST_TIMEOUT_MS, now = Date.now } = {}) {
+async function testLocalLlm(input, { fetchImpl = globalThis.fetch, timeoutMs = LOCAL_LLM_TEST_TIMEOUT_MS, now = Date.now, translate = englishWording } = {}) {
   const endpoint = draftEndpoint(input);
-  const preset = LOCAL_LLM_PRESETS[endpoint.preset] ?? LOCAL_LLM_PRESETS.custom;
-  const listed = await listLocalLlmModels(endpoint, { fetchImpl });
+  const listed = await listLocalLlmModels(endpoint, { fetchImpl, translate });
   if (!listed.ok) return listed;
-  const count = `${listed.models.length} model${listed.models.length === 1 ? "" : "s"} available`;
-  if (!endpoint.model) return { ok: true, models: listed.models, message: `Connected to ${preset.label}: ${count}. Choose a model to finish the test.` };
+  if (!endpoint.model) return { ok: true, models: listed.models, message: translate("connectedChooseModel", { server: presetLabel(endpoint, translate), count: listed.models.length }) };
   const started = now();
   let response;
   try {
@@ -224,11 +231,11 @@ async function testLocalLlm(input, { fetchImpl = globalThis.fetch, timeoutMs = L
       body: JSON.stringify({ model: endpoint.model, messages: [{ role: "user", content: "Reply with OK." }], max_tokens: 1, temperature: 0 }),
     });
   } catch (error) {
-    return { ok: false, models: listed.models, ...describeLocalLlmFailure(endpoint, { error }) };
+    return { ok: false, models: listed.models, ...describeLocalLlmFailure(endpoint, { error }, translate) };
   }
-  if (!response.ok) return { ok: false, models: listed.models, ...describeLocalLlmFailure(endpoint, { status: response.status, detail: await readLocalError(response) }) };
+  if (!response.ok) return { ok: false, models: listed.models, ...describeLocalLlmFailure(endpoint, { status: response.status, detail: await readLocalError(response) }, translate) };
   const seconds = ((now() - started) / 1000).toFixed(1);
-  return { ok: true, models: listed.models, message: `Connected to ${preset.label}: ${endpoint.model} answered in ${seconds} s. ${count[0].toUpperCase()}${count.slice(1)}.` };
+  return { ok: true, models: listed.models, message: translate("connectedAnswered", { server: presetLabel(endpoint, translate), model: endpoint.model, seconds, count: listed.models.length }) };
 }
 
 module.exports = {

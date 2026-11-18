@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useFormatter, useTranslations } from "next-intl";
+import { useFormatter, useLocale, useTranslations } from "next-intl";
 import {
   ArrowDownWideNarrow,
   ArrowLeft,
@@ -184,6 +184,8 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   const t = useTranslations("imageGalleryView");
   const tTimeline = useTranslations("galleryTimeline");
   const tCommon = useTranslations("common");
+  const tTimelineLabels = useTranslations("lib.galleryTimeline");
+  const locale = useLocale();
   const tSharing = useTranslations("gallerySharing");
   const format = useFormatter();
   useRegisterGalleryTranslator();
@@ -248,7 +250,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   }, [archive.photos, contents, sort, viewKey]);
   const myAccountId = useCollabStatus().status?.account?.id;
   const photos = useMemo(() => filterPhotos(viewPhotos, filter, myAccountId), [filter, myAccountId, viewPhotos]);
-  const groups = useMemo(() => groupPhotos(photos, grouping), [grouping, photos]);
+  const groups = useMemo(() => groupPhotos(photos, grouping, { locale, t: (key, values) => tTimelineLabels(key, values) }), [grouping, locale, photos, tTimelineLabels]);
   const rowLayout = useMemo(() => galleryRows(groups, layout.mode, width, GALLERY_ZOOM_LEVELS[layout.zoom]), [groups, layout.mode, layout.zoom, width]);
   const filtering = filterCount(filter) > 0;
 

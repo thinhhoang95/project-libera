@@ -4,6 +4,7 @@ const test = require("node:test");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { JSDOM } = require("jsdom");
+const { setupPayload } = require("../../electron/i18n.cjs");
 const { describeLocalLlmFailure, listLocalLlmModels, normalizeLocalBaseUrl, normalizeLocalLlms, testLocalLlm } = require("../../electron/local-llms.cjs");
 const { normalizeAiPreferences } = require("../../electron/ai-preferences.cjs");
 
@@ -117,6 +118,7 @@ async function preferencesPage(aiFunctions, liberaSetup = {}) {
     beforeParse(window) {
       window.matchMedia = () => ({ matches: false, addEventListener() {} });
       window.liberaSetup = {
+        getI18n: () => setupPayload(),
         getState: async () => ({ aiFunctions, quickPrompts: [], hasApiKey: true, hasPasswordHash: true, dataDir: "/tmp/notebooks" }),
         save: async (input) => { page.saved = JSON.parse(JSON.stringify(input)); },
         ...liberaSetup,

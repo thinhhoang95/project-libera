@@ -64,6 +64,7 @@ export function CodeEditor({
   onChange, onRegisterDraft, onViewStateChange, onSave, collab,
 }: CodeEditorProps) {
   const t = useTranslations("codeEditor");
+  const tLanguage = useTranslations("lib.codeLanguages");
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -320,7 +321,7 @@ export function CodeEditor({
       </div>
       {menu ? <CodeEditorMenu view={menu.view} menu={menu} onClose={() => setMenu(null)} /> : null}
       <div className="libera-code-editor-status flex shrink-0 items-center gap-4 border-t border-border bg-card px-3 py-1 text-xs text-muted-foreground">
-        <span>{codeLanguageName(fileName)}</span>
+        <span>{codeLanguageName(fileName) ?? tLanguage("plainText")}</span>
         <span className="ml-auto tabular-nums">
           {cursor.selected ? t("cursorPositionSelected", cursor) : t("cursorPosition", cursor)}
         </span>

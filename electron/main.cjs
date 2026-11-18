@@ -61,6 +61,11 @@ const i18n = require("./i18n.cjs");
 function tm(key, values) {
   return i18n.t(`electron.main.${key}`, values);
 }
+
+/** The Local LLMs test and model-list messages (electron/local-llms.cjs) in the interface language. */
+function localLlmMessage(key, values) {
+  return i18n.t(`electron.localLlms.${key}`, values);
+}
 const {
   DEFAULT_PROFILE_ID,
   MAX_PROFILES,
@@ -1361,8 +1366,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
 
     ipcMain.handle("setup:load-ai-system-prompt-file", () => loadAiSystemPromptFile(setupWindow));
     // Here rather than in the page, which cross-origin rules keep from local servers.
-    ipcMain.handle("setup:list-local-llm-models", (_event, endpoint) => listLocalLlmModels(endpoint));
-    ipcMain.handle("setup:test-local-llm", (_event, endpoint) => testLocalLlm(endpoint));
+    ipcMain.handle("setup:list-local-llm-models", (_event, endpoint) => listLocalLlmModels(endpoint, { translate: localLlmMessage }));
+    ipcMain.handle("setup:test-local-llm", (_event, endpoint) => testLocalLlm(endpoint, { translate: localLlmMessage }));
 
     ipcMain.handle("setup:save", (_event, input) => queueProfileMutation(async () => {
       const existingConfig = readConfig();

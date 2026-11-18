@@ -21,7 +21,7 @@ export const FRONT_MATTER_NODE_NAME = "frontMatter";
 export type FrontMatterOptions = {
   /** The document's library path: style requests for it are applied here. */
   documentPath: string | null;
-  /** The tooltip on the block, in the interface language (lib.tiptapFrontMatter.frontMatterTitle). */
+  /** The tooltip on the block, in the interface language (lib.tiptapFrontMatter.frontMatterTitle); none when not given. */
   title?: string;
 };
 
@@ -72,7 +72,7 @@ export const FrontMatterNode = Node.create<FrontMatterOptions, { listener: ((eve
   draggable: false,
 
   addOptions() {
-    return { documentPath: null, title: "Front matter (edit it in the Source editor)" };
+    return { documentPath: null, title: undefined };
   },
 
   addStorage() {

@@ -992,9 +992,16 @@ function sourcePartElement(view: EditorView, dom: HTMLElement, part: NonNullable
     const from = widgetPos(view, dom);
     if (from === null) return;
     const at = from + part.offset;
-    if (event.altKey || !floatHooks?.edit(view, element, at, part.text, part.name ?? "Source")) revealSourceAt(view, at, at + part.length);
+    if (event.altKey || !floatHooks?.edit(view, element, at, part.text, floatPartLabel(view, part.name))) revealSourceAt(view, at, at + part.length);
   });
   return element;
+}
+
+/** The noun for an editable float part (`Code (lstlisting)` is how the reader names a listing); shown in the field's accessible name. */
+function floatPartLabel(view: EditorView, name: string | undefined) {
+  const t = visualText(view.state);
+  const listing = name?.match(/^Code \((.*)\)$/);
+  return listing ? t("floatEdit.codeListing", { environment: listing[1] }) : name ?? t("floatEdit.source");
 }
 
 /** CSS for `\includegraphics` options beyond the width: `height`, `scale`, `angle`, `trim` with `clip`, `keepaspectratio`, `page`. */
@@ -1144,7 +1151,7 @@ export class FigureWidget extends VisualWidget {
         text.addEventListener("mousedown", (event) => {
           if (event.button !== 0 || event.altKey || event.detail >= 2 || (event.target as HTMLElement).closest(".cm-vis-float-editor")) return;
           const from = widgetPos(view, dom);
-          if (from === null || !floatHooks?.edit(view, text, from + offset, original, "Caption")) return;
+          if (from === null || !floatHooks?.edit(view, text, from + offset, original, visualText(view.state)("floatEdit.caption"))) return;
           event.preventDefault();
           event.stopPropagation();
         });
@@ -1319,7 +1326,7 @@ export class ColumnsWidget extends VisualWidget {
         event.stopPropagation();
         const from = widgetPos(view, dom);
         if (from === null) return;
-        if (event.altKey || !floatHooks?.edit(view, column, from + spec.offset, spec.body, "Column")) revealSourceAt(view, from + spec.offset, from + spec.offset + spec.length);
+        if (event.altKey || !floatHooks?.edit(view, column, from + spec.offset, spec.body, visualText(view.state)("floatEdit.column"))) revealSourceAt(view, from + spec.offset, from + spec.offset + spec.length);
       });
       dom.append(column);
     }

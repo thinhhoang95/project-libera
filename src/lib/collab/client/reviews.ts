@@ -17,6 +17,8 @@
 // The server decides who may do what and computes outdated approvals; the
 // controller only mirrors its answers.
 
+import { createTranslator } from "next-intl";
+import { lib as englishMessages } from "../../../../messages/en.json";
 import { addAnchor } from "../anchors";
 import {
   ControlRoutes,
@@ -30,9 +32,37 @@ import type { CreateReviewRequest, Review, ReviewDecision } from "../protocol/ap
 import { EventKind } from "../protocol/messages";
 import { can, type Role } from "../protocol/roles";
 import { subscribeHostEvents } from "../ui/bridge";
-import { CollabClientError, collabClient, describeError, type CollabClient } from "../ui/client";
+import { CollabClientError, collabClient, type CollabClient } from "../ui/client";
 import type { CollabReplica } from "./replica";
 import { getSharedDocRegistry, type SharedDocSession } from "./registry";
+
+/** What `useTranslations("lib.collab.client.reviews")` returns, as far as this file needs it. */
+export type ReviewsTranslator = (key: string, values?: Record<string, string | number>) => string;
+
+const englishWording = createTranslator({ locale: "en", messages: englishMessages.collab.client.reviews, onError: () => {} }) as unknown as ReviewsTranslator;
+
+export type ReviewsErrorCode = "signInRequired" | "onlyEditors" | "pickReviewer" | "selectPassage" | "refused";
+
+/**
+ * A refusal the controller words itself. `message` is English (tests, logs); the UI words it in the interface
+ * language with `describeReviewError`.
+ */
+export class ReviewsError extends Error {
+  constructor(readonly code: ReviewsErrorCode, readonly values: Record<string, string | number> = {}) {
+    super(englishWording(code, values));
+    this.name = "ReviewsError";
+  }
+}
+
+/**
+ * Error text for anything the reviews controller stored or threw, in the interface language: `t` is the
+ * `lib.collab.client.reviews` messages and `describeClientError` is `useDescribeError()`.
+ */
+export function describeReviewError(error: unknown, t: ReviewsTranslator, describeClientError: (error: unknown) => string): string {
+  if (error instanceof ReviewsError) return t(error.code, error.values);
+  if (typeof error === "string") return error;
+  return describeClientError(error);
+}
 
 export interface ReviewsApi {
   list(docId: string): Promise<Review[]>;
@@ -70,11 +100,12 @@ export interface ReviewsSnapshot {
   docId: string;
   /** Newest first; null until the first load. */
   reviews: Review[] | null;
-  error: string | null;
+  /** What went wrong loading the list: word it with `describeReviewError`. */
+  error: unknown;
   /** This account's decisions that the server has not confirmed yet, by review id. */
   pending: Record<string, PendingReviewDecision>;
-  /** A decision the server refused, by review id. */
-  failed: Record<string, string>;
+  /** A decision the server refused, by review id: word it with `describeReviewError`. */
+  failed: Record<string, unknown>;
   localUserId: string | null;
   canRequest: boolean;
 }
@@ -118,9 +149,9 @@ export class ReviewsController {
   private readonly newId: (prefix: string) => string;
   private readonly listeners = new Set<() => void>();
   private reviews: Review[] | null = null;
-  private error: string | null = null;
+  private error: unknown = null;
   private pending: Record<string, PendingReviewDecision> = {};
-  private failed: Record<string, string> = {};
+  private failed: Record<string, unknown> = {};
   private readonly commands = new Map<string, string>();
   private snapshot: ReviewsSnapshot | null = null;
   private loading: Promise<void> | null = null;
@@ -172,7 +203,7 @@ export class ReviewsController {
         this.reviews = [...reviews].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
         this.error = null;
       } catch (error) {
-        this.error = describeError(error);
+        this.error = error;
       } finally {
         this.loading = null;
         this.changed();
@@ -201,13 +232,13 @@ export class ReviewsController {
     if (event.t === "command-settled" && event.kind === "review.decide") {
       const reviewId = this.commands.get(event.id);
       if (!reviewId) return;
-      this.settle(reviewId, event.id, event.ok, event.body, event.error?.message ?? `The server refused this (${event.status}).`);
+      this.settle(reviewId, event.id, event.ok, event.body, event.error?.message ?? new ReviewsError("refused", { status: event.status }));
       return;
     }
     if (event.t === "status" && event.status.connection === "connected" && (this.error || !this.reviews)) void this.load();
   }
 
-  private settle(reviewId: string, commandId: string, ok: boolean, body: unknown, error: string) {
+  private settle(reviewId: string, commandId: string, ok: boolean, body: unknown, error: unknown) {
     this.commands.delete(commandId);
     if (this.pending[reviewId]?.commandId === commandId) {
       const { [reviewId]: _settled, ...rest } = this.pending;
@@ -222,17 +253,17 @@ export class ReviewsController {
   /** Requests a review (editors and owners). A range scope is anchored first, so it syncs even before the server answers. */
   async request(input: RequestReviewInput): Promise<Review> {
     const me = this.localUserId();
-    if (!me) throw new Error("Sign in to your collaboration account to request a review.");
-    if (!can(this.role, "request-review")) throw new Error("Only editors and owners can request a review.");
+    if (!me) throw new ReviewsError("signInRequired");
+    if (!can(this.role, "request-review")) throw new ReviewsError("onlyEditors");
     const assignees = [...new Set(input.assignees)].filter(Boolean);
-    if (!assignees.length) throw new Error("Pick at least one reviewer.");
+    if (!assignees.length) throw new ReviewsError("pickReviewer");
     const note = input.note?.trim();
     let scope: CreateReviewRequest["scope"] = { kind: "document" };
     let anchorId: string | null = null;
     if (input.range) {
       const ytext = this.replica.ytext;
       const { start, end } = input.range;
-      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > ytext.length) throw new Error("Select the passage to review first.");
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > ytext.length) throw new ReviewsError("selectPassage");
       anchorId = this.newId("anc");
       addAnchor(this.replica.annotations, ytext, start, end, { id: anchorId, kind: "review-scope", createdBy: me });
       scope = { kind: "range", anchorId, quote: ytext.toString().slice(start, end) };
@@ -289,10 +320,10 @@ export class ReviewsController {
         this.changed();
         return { queued: true };
       }
-      this.settle(reviewId, commandId, true, response.review, "");
+      this.settle(reviewId, commandId, true, response.review, null);
       return { queued: false, review: response.review };
     } catch (error) {
-      this.settle(reviewId, commandId, false, null, describeError(error));
+      this.settle(reviewId, commandId, false, null, error);
       throw error;
     }
   }

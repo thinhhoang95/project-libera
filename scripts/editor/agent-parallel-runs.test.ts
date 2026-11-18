@@ -16,11 +16,11 @@ test("Agent write scopes overlap on a shared notebook or file, and Read Only cla
   assert.equal(agentWriteScope("notebook", undefined, [plan]), null);
   const research = agentWriteScope("notebook", "Research", [diary])!;
   assert.deepEqual(research, { notebook: "Research", files: [] }, "a notebook run claims the notebook, not the open files");
-  assert.equal(agentWriteOverlap(research, agentWriteScope("notebook", "Research", [])!), "Research");
+  assert.deepEqual(agentWriteOverlap(research, agentWriteScope("notebook", "Research", [])!), { kind: "notebook", name: "Research" });
   assert.equal(agentWriteOverlap(research, agentWriteScope("notebook", "Diary", [])!), null);
-  assert.equal(agentWriteOverlap(research, agentWriteScope("open-files", undefined, [diary, plan])!), "Research/plan.md");
+  assert.deepEqual(agentWriteOverlap(research, agentWriteScope("open-files", undefined, [diary, plan])!), { kind: "file", name: "Research/plan.md" });
   assert.equal(agentWriteOverlap(agentWriteScope("open-files", undefined, [diary])!, research), null);
-  assert.equal(agentWriteOverlap(agentWriteScope("open-files", undefined, [plan])!, agentWriteScope("open-files", undefined, [diary, plan])!), "Research/plan.md");
+  assert.deepEqual(agentWriteOverlap(agentWriteScope("open-files", undefined, [plan])!, agentWriteScope("open-files", undefined, [diary, plan])!), { kind: "file", name: "Research/plan.md" });
   assert.equal(agentWriteOverlap(agentWriteScope("open-files", undefined, [plan])!, agentWriteScope("open-files", undefined, [diary])!), null);
 });
 
@@ -104,7 +104,7 @@ test("chats respond in parallel: a new chat runs while another streams, and file
     await type("Also rewrite the plan");
     await click("Send message");
     assert.equal(runs.length, 1, "a second run that may change the same notebook does not start");
-    assert.match(alertText(), /The agent in “Tidy the plan” may still change Research\./);
+    assert.match(alertText(), /The agent in “Tidy the plan” may still change the notebook “Research”./);
     assert.equal(host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!.value, "Also rewrite the plan", "the refused prompt stays in the composer");
 
     await choosePermission("read-only");

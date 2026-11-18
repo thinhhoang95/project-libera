@@ -4,6 +4,7 @@ import { dispatchAsOneStep } from "../../../collab/undo-boundary";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { isInLatexComment } from "../../macros/definitions";
 import { beginDocumentIndex } from "../../document-begin";
+import { visualText } from "./labels";
 import { preambleOpenField, togglePreamble, visualConfig, visualDefinitions } from "./model";
 import { preambleEndOf } from "./structural";
 import { ACCUMULATING_AUTHORS, authorBreakMacro, INFORMS, LIPICS, titleClass } from "./walk";
@@ -218,7 +219,6 @@ export function minimalChange(from: number, now: string, text: string) {
   return { from: from + start, to: from + now.length - end, insert: text.slice(start, text.length - end) };
 }
 
-const LABELS: Record<TitlePart, string> = { title: "Title", author: "Author", date: "Date", abstract: "Abstract", line: "Line", note: "Keywords and notes" };
 
 /** What ` \and ` and a new author's text are written after, at the end of the author list (an author being added has no source yet). */
 const ADD_AUTHOR_PREFIX = " \\and ";
@@ -312,7 +312,8 @@ function editPart(view: EditorView, block: TitleElement, part: TitlePart, index:
   area.spellcheck = false;
   area.rows = 1;
   area.value = resume?.draft ?? view.state.sliceDoc(span.from, span.to);
-  area.setAttribute("aria-label", `${adding ? "New author" : LABELS[part]} (LaTeX). Enter saves, Shift+Enter starts a new line, Escape cancels.`);
+  const tr = visualText(view.state);
+  area.setAttribute("aria-label", tr("titleEdit.editorLabel", { label: adding ? tr("titleEdit.newAuthor") : tr(`titleEdit.part.${part}`) }));
   target.classList.add("cm-vis-title-editing");
   target.replaceChildren(area);
   const fit = () => { area.style.height = "auto"; area.style.height = `${area.scrollHeight + 2}px`; };
@@ -344,13 +345,13 @@ function editPart(view: EditorView, block: TitleElement, part: TitlePart, index:
     if (adding) {
       // A new author: ` \and ` and its text at the end of the list (the point moves with every change before it).
       if (save && text.trim()) {
-        if (session.from === null || !canEdit(view)) window.alert(`The title changed while you were adding an author, so your text was not saved:\n\n${text}`);
+        if (session.from === null || !canEdit(view)) window.alert(tr("titleEdit.changedWhileAddingAuthor", { text }));
         else dispatchAsOneStep(view, { changes: { from: session.from, insert: ADD_AUTHOR_PREFIX + text.trim() }, userEvent: "input.visual.title" });
       }
     } else if (save && session.typed && text !== original) {
       if (now === null || session.from === null || !canEdit(view)) {
-        window.alert(`The title changed while you were editing it, so your text was not saved:\n\n${text}`);
-      } else if (now === original || window.confirm(`A co-author changed this ${LABELS[part].toLowerCase()} while you were editing it. Replace their version with yours?`)) {
+        window.alert(tr("titleEdit.changedWhileEditing", { text }));
+      } else if (now === original || window.confirm(tr("titleEdit.coAuthorChanged"))) {
         dispatchAsOneStep(view, { changes: minimalChange(session.from, now, text), userEvent: "input.visual.title" });
       }
     }
@@ -382,7 +383,7 @@ function editPart(view: EditorView, block: TitleElement, part: TitlePart, index:
       requestAnimationFrame(() => {
         if (done || area.isConnected) return;
         session.abandon();
-        if (session.typed && area.value !== original) window.alert(`The title block changed while you were editing it, so your text was not saved:\n\n${area.value}`);
+        if (session.typed && area.value !== original) window.alert(tr("titleEdit.blockChanged", { text: area.value }));
       });
       return;
     }
@@ -402,7 +403,7 @@ function adoptSessions(view: EditorView, block: TitleElement) {
     const draft = session.area.value;
     session.abandon();
     if (!editPart(view, block, part, index, { original, draft, typed }, adding) && typed && draft !== original) {
-      window.alert(`The title block changed while you were editing it, so your text was not saved:\n\n${draft}`);
+      window.alert(visualText(view.state)("titleEdit.blockChanged", { text: draft }));
     }
   }
 }

@@ -57,13 +57,6 @@ export function filterGalleryChatPhotos(store: ChatStore, keep: (id: string) => 
   return chats.every((chat, i) => chat === store.chats[i]) ? store : { ...store, chats };
 }
 
-export function formatChatTimestamp(createdAt: string, now = new Date()) {
-  const date = new Date(createdAt);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  return date.toDateString() === now.toDateString() ? time : `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${time}`;
-}
-
 /**
  * Asks the chat panel to quote a passage, with where it comes from: the
  * transcript panel sends lines of a recording ("[3:05] Vy: …") this way.

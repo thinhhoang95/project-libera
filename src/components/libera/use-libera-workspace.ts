@@ -87,7 +87,7 @@ import { remapDocumentHeadingNumbering } from "./heading-numbering-state";
 import { agentReviewStore } from "@/lib/agent-review/store";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
-import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
+import { beginAiActivity } from "@/lib/ai-activity";
 import { resolvePdfQuote, showPdfQuoteNotice } from "@/components/libera/references/pdf-quote-cite";
 import { parsePdfQuoteSource, PDF_QUOTE_CITE_EVENT, quoteBlockInsertion, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import { MARKDOWN_TABLE_FIRST_HEADER, markdownTable } from "@/lib/markdown-table";
@@ -2636,7 +2636,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const controller = new AbortController();
-    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.format, cancel: () => controller.abort() });
+    const endActivity = beginAiActivity({ action: "format", cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
@@ -2699,7 +2699,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const controller = new AbortController();
-    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.rewrite, cancel: () => controller.abort() });
+    const endActivity = beginAiActivity({ action: "rewrite", cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
@@ -2765,7 +2765,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const scrollState = getMarkdownTextareaScrollState();
 
     const controller = new AbortController();
-    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.write, cancel: () => controller.abort() });
+    const endActivity = beginAiActivity({ action: "write", cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
@@ -2834,7 +2834,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const controller = new AbortController();
-    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.image, cancel: () => controller.abort() });
+    const endActivity = beginAiActivity({ action: "image", cancel: () => controller.abort() });
     setImageMarkdownConverting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 

@@ -67,7 +67,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
   const [working, setWorking] = useState<AiAction | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const pendingRef = useRef<{ controller: AbortController; dispose: () => void } | null>(null);
-  useEffect(() => (working ? beginAiActivity({ label: t(`activity.${working}`), cancel: () => pendingRef.current?.controller.abort() }) : undefined), [working, t]);
+  useEffect(() => (working ? beginAiActivity({ action: working, cancel: () => pendingRef.current?.controller.abort() }) : undefined), [working]);
   const hasHeadings = useEditorState({ editor, selector: ({ editor: current }) => hasTiptapHeadings(current.state.doc) });
   const headingNumbering = useHeadingNumbering(documentPath, (maxDepth) => {
     const { doc } = editor.state;

@@ -87,11 +87,3 @@ export function commentsContextCount(context: ChatContext) {
   const match = context.text.match(/: (\d+) unresolved, (\d+) resolved\./);
   return match ? String(Number(match[1]) + Number(match[2])) : undefined;
 }
-
-/** "3 threads" for a comments context, read back from its header. */
-export function commentsContextSummary(context: ChatContext) {
-  const match = context.text.match(/: (\d+) unresolved, (\d+) resolved\./);
-  if (!match) return "comments";
-  const total = Number(match[1]) + Number(match[2]);
-  return `${total} thread${total === 1 ? "" : "s"}${Number(match[2]) ? `, ${match[2]} resolved` : ""}`;
-}

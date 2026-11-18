@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import {
-  autoTopHeading, convertPreparedMarkdown, hasChapters, headingMapFor, isTwoColumn, normalizePlacement, parseHeadingTemplate,
+  autoTopHeading, convertPreparedMarkdown, hasChapters, headingMapFor, isTwoColumn, normalizePlacement, parseHeadingTemplate, headingTemplateErrorText, pasteWarningText,
   SECTION_COMMANDS, type HeadingTarget, type LatexPasteContext, type MarkdownPasteChoices, type MarkdownPasteOptions,
   type PreparedMarkdownPaste, type TableEnvironment,
 } from "@/lib/latex/markdown-paste";
@@ -75,6 +75,8 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
 }) {
   const t = useTranslations("latex.latexMarkdownPasteDialog");
   const tc = useTranslations("common");
+  const tChoices = useTranslations("lib.latex.markdownPaste.choices");
+  const tConvert = useTranslations("lib.latex.markdownPaste.convert");
   const headingLabel = (target: HeadingTarget) => HEADING_COMMANDS[target] ?? t(target === "bold" ? "headingBold" : target === "plain" ? "headingPlain" : "headingCustom");
   const { prepared, context, origin } = request;
   const { analysis } = prepared;
@@ -105,7 +107,7 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
   const templateErrors = headingMap.map((target, rank) => {
     if (target !== "custom") return null;
     const parsed = parseHeadingTemplate(customs[rank] ?? "");
-    return "error" in parsed ? parsed.error : null;
+    return "error" in parsed ? headingTemplateErrorText((key, values) => tChoices(key as never, values as never), parsed) : null;
   });
   const invalid = templateErrors.some(Boolean);
   const previewLines = result.latex.split("\n");
@@ -435,7 +437,7 @@ export default function LatexMarkdownPasteDialog({ request, onPaste, onPlain, on
           {result.warnings.length ? (
             <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
               {result.warnings.map((warning) => (
-                <li key={warning.code} className="flex items-start gap-1.5"><TriangleAlert aria-hidden className="mt-0.5 h-3 w-3 shrink-0 text-amber-600" />{warning.message}</li>
+                <li key={warning.code} className="flex items-start gap-1.5"><TriangleAlert aria-hidden className="mt-0.5 h-3 w-3 shrink-0 text-amber-600" />{pasteWarningText((key, values) => tConvert(key as never, values as never), warning)}</li>
               ))}
             </ul>
           ) : null}
