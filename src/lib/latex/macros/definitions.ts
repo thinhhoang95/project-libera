@@ -188,7 +188,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|include|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef|chardef|DeclareSymbolFontAlphabet)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|include|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|SetupKeyvalOptions|DeclareBoolOption|ProcessKeyvalOptions|ProcessLocalKeyvalOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef|chardef|DeclareSymbolFontAlphabet)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -765,9 +765,9 @@ export type DefinitionSource = {
 };
 
 /** The key a source is loaded by: `\input{dir/macros.tex}` is "input:dir/macros", `\usepackage{mine}` "package:mine". */
-export function loadKey(kind: "input" | "package", name: string) {
+export function loadKey(kind: "input" | "package" | "class", name: string) {
   const trimmed = name.trim().replace(/^\.\//, "");
-  return kind === "input" ? `input:${trimmed.replace(/\.(?:tex|ltx)$/i, "")}` : `package:${trimmed.replace(/\.sty$/i, "")}`;
+  return kind === "input" ? `input:${trimmed.replace(/\.(?:tex|ltx)$/i, "")}` : kind === "class" ? `class:${trimmed.replace(/\.cls$/i, "")}` : `package:${trimmed.replace(/\.sty$/i, "")}`;
 }
 
 type ReadOptions = {
@@ -927,6 +927,18 @@ function optionGiven(context: ReadContext, option: string): boolean | null {
   return (context.defs.packageOptions.get(loaded) ?? []).includes(option) || classOptions.includes(option);
 }
 
+/** The options `context.file` was loaded with (the class's too when `withClass`: kvoptions' `\ProcessKeyvalOptions*`); null when how it was loaded is not known. */
+function givenOptions(context: ReadContext, withClass: boolean): string[] | null {
+  const file = context.file !== undefined ? /^(.*)\.(sty|cls)$/i.exec(context.file) : null;
+  if (!file) return null;
+  const named = (name: string) => file[1] === name || file[1].endsWith(`/${name}`);
+  const classOptions = context.defs.classOptions ?? [];
+  if (file[2].toLowerCase() === "cls") return context.defs.documentClass !== null && named(context.defs.documentClass) ? classOptions : null;
+  const loaded = context.defs.packages.find(named);
+  if (loaded === undefined) return null;
+  return [...(context.defs.packageOptions.get(loaded) ?? []), ...(withClass ? classOptions : [])];
+}
+
 /** thmtools' and amsthm's theorem styles the document makes (`\newtheoremstyle{named}…`, `\declaretheoremstyle[…]{mythm}`), by name. */
 const documentTheoremStyles = new WeakMap<LatexDefinitions, Map<string, TheoremStyle>>();
 
@@ -1048,12 +1060,16 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
     theoremStyle: "plain",
   };
   const scanner = new TexScanner(source);
+  /** Reads another file where this one loads it (`\documentclass` shadows `options` below). */
+  const loadOther = options.load;
   if (options.uncertain) scanner.assumeUncertain();
   if (source.includes("%")) for (const match of source.matchAll(/^[ \t]*%+[ \t]*\\(?:def|newcommand\s*\{?)\s*\\([A-Za-z@]+)/gm)) (defs.commentedOut ??= new Set()).add(match[1]);
   /** The code of the options given, run at `\ProcessOptions`. */
   const pendingOptions: Array<{ text: string; offset: number; uncertain: boolean }> = [];
   /** Every option's code, by name, for `\ExecuteOptions`. */
   const declaredOptions = new Map<string, { text: string; offset: number }>();
+  /** kvoptions' `\SetupKeyvalOptions{family=…,prefix=…}` and the booleans `\DeclareBoolOption` made after it (key to its `\if` switch). */
+  const keyvals = { family: "", prefix: null as string | null, bools: new Map<string, string>() };
   // Conditionals are decided by what is defined where the reader is (TeX reads the file in this order).
   const here = () => context.offset + scanner.pos;
   const latest = (name: string) => {
@@ -1064,6 +1080,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
   scanner.facts = {
     constant: (name) => constantOf(latest(name)),
     defined: (name) => definedState(defs, latest(name), name),
+    language: (name) => languageIs(defs, name),
     switchState: (name) => {
       const list = defs.switches?.get(name);
       if (!list) return undefined;
@@ -1474,6 +1491,8 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
           defs.documentClass = name.content.trim();
           // The class's options, which its `\DeclareOption`s and every package's see.
           defs.classOptions = [...(defs.passedOptions?.get(name.content.trim()) ?? []), ...(options ? options.content.replace(/%[^\n]*/g, "").split(",").map((option) => option.trim()).filter(Boolean) : [])];
+          // The commands the project's own copy of the class gives (latex-dependencies.ts), read with the options just set.
+          loadOther?.(loadKey("class", name.content.trim()), start);
         }
         // JMLR's class loads algorithm2e as `\PassOptionsToPackage{algo2e,ruled}{algorithm2e}` (the environment is `algorithm2e`; q-bio.NC 2611.07809).
         if (name.content.trim() === "jmlr" && !defs.packages.includes("algorithm2e")) {
@@ -1635,6 +1654,41 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       for (const macro of made ?? []) {
         if (uncertain) shadow(macro.name, `\\${macro.name} is defined under a condition`);
         else addMacro(context, { name: macro.name, arity: 0, body: macro.body, pos, file: context.file }, "renew");
+      }
+    } else if (command === "SetupKeyvalOptions") {
+      const group = readGroupAt(source, index);
+      if (!group) continue;
+      end = group.end;
+      const values = keyValues(group.content.replace(/%[^\n]*/g, ""));
+      keyvals.family = values.get("family") ?? keyvals.family;
+      keyvals.prefix = values.get("prefix") ?? keyvals.prefix;
+    } else if (command === "DeclareBoolOption") {
+      // `\DeclareBoolOption[true]{misc}` makes the switch `\ifAPHY@misc` (family, else the file's own name, `@`, key), false unless told.
+      const initial = readOptionalAt(source, index);
+      const key = readGroupAt(source, initial?.end ?? index);
+      if (!key) continue;
+      end = key.end;
+      const name = key.content.trim();
+      const prefix = keyvals.prefix ?? `${keyvals.family || /([^/]+)\.[A-Za-z]+$/.exec(context.file ?? "")?.[1] || ""}@`;
+      if (!/^[A-Za-z@]+$/.test(name) || prefix === "@" || !/^[A-Za-z@]*$/.test(prefix)) continue;
+      const initially = initial ? { true: true, false: false }[initial.content.trim() as "true" | "false"] ?? null : false;
+      keyvals.bools.set(name, `if${prefix}${name}`);
+      scanner.onSwitch?.(`if${prefix}${name}`, uncertain ? null : initially, start);
+    } else if (command === "ProcessKeyvalOptions" || command === "ProcessLocalKeyvalOptions") {
+      // The options this file was loaded with (`\usepackage[process=true]{atlasphysics}`; `\ProcessKeyvalOptions*` adds the class's) set the booleans.
+      const family = starred ? null : readGroupAt(source, index);
+      if (family) end = family.end;
+      const given = givenOptions(context, starred);
+      const values = new Map<string, boolean | null>();
+      for (const option of given ?? []) {
+        const equals = option.indexOf("=");
+        const key = (equals < 0 ? option : option.slice(0, equals)).trim();
+        const text = equals < 0 ? "true" : option.slice(equals + 1).trim();
+        values.set(key, text === "true" ? true : text === "false" ? false : null);
+      }
+      for (const [key, switchName] of keyvals.bools) {
+        if (given && !values.has(key)) continue;
+        scanner.onSwitch?.(switchName, uncertain || !given ? null : values.get(key) ?? null, start);
       }
     } else if (command === "DeclareOption" || command === "ProcessOptions" || command === "ExecuteOptions") {
       // A package's or class's option (ICML's `\DeclareOption{accepted}{\gdef\isaccepted{1}}`): its code runs at
@@ -1954,8 +2008,25 @@ export function conditionalFacts(defs: LatexDefinitions, pos: number, math?: boo
     defined: (name) => definedState(defs, macroAt(defs, name, pos), name),
     switchState: (name) => switchAt(defs, name, pos),
     classOption: (option) => ieeeClassOption(defs, option),
+    language: (name) => languageIs(defs, name),
     math,
   };
+}
+
+/** babel's language options and what each is called by `\iflanguage` (English is American unless told, as babel's `english` is). */
+const BABEL_LANGUAGES: Record<string, string> = {
+  english: "usenglish", usenglish: "usenglish", american: "usenglish", ukenglish: "ukenglish", british: "ukenglish", australian: "australian", canadian: "canadian", newzealand: "newzealand",
+  french: "french", francais: "french", german: "german", ngerman: "ngerman", austrian: "austrian", naustrian: "naustrian", spanish: "spanish", italian: "italian", portuguese: "portuguese", brazilian: "brazilian",
+  dutch: "dutch", swedish: "swedish", norwegian: "norwegian", danish: "danish", finnish: "finnish", polish: "polish", russian: "russian", czech: "czech", greek: "greek", turkish: "turkish",
+};
+
+/** Whether `\iflanguage{name}` holds: the last language among the class's and babel's options is the main one (babel's rule); undefined when none is given. */
+function languageIs(defs: LatexDefinitions, name: string): boolean | undefined {
+  const options = [...(defs.classOptions ?? []), ...(defs.packageOptions.get("babel") ?? [])];
+  let main: string | undefined;
+  for (const option of options) main = BABEL_LANGUAGES[option.toLowerCase()] ?? main;
+  const asked = BABEL_LANGUAGES[name.trim().toLowerCase()];
+  return main === undefined || asked === undefined ? undefined : main === asked;
 }
 
 /** IEEEtran's options that are off unless given: `\ifCLASSOPTIONcaptionsoff`, `compsoc`, `conference`, `peerreview`. */
@@ -2194,6 +2265,56 @@ export function classTheoremSource(cls: string, text: string) {
     if (!captionFont || !bodyFont) continue;
     const style = /\\(?:itshape|it|slshape|sl)(?![A-Za-z])/.test(bodyFont.content) ? "plain" : /\\(?:bfseries|bf)(?![A-Za-z])/.test(captionFont.content) ? "definition" : "remark";
     out.push(`\\theoremstyle{${style}}${head}`);
+  }
+  return out.join("\n");
+}
+
+/**
+ * The commands a document class the project has gives its users (the ATLAS class's `\AtlasOrcid`), as source the definition
+ * reader reads: the `\newcommand`s and `\NewDocumentCommand`s the class makes at its top level (not inside a conditional,
+ * which the class's own options decide), and its kvoptions setup (`\DeclareBoolOption`…) that their bodies' `\ifbool`s read.
+ * Commands with a name that is not letters only, or with class internals (`\@…`) in the body, are not given: they are the class's
+ * page layout, not the document's. Empty for a class that makes none.
+ */
+export function classCommandSource(text: string) {
+  const out: string[] = [];
+  let depth = 0;
+  let scanned = 0;
+  /** Brace depth at `at`, counted from where the last call stopped (matches come in order). */
+  const depthAt = (at: number) => {
+    for (; scanned < at; scanned++) {
+      const char = text[scanned];
+      if (char === "\\") scanned++;
+      else if (char === "%") { const end = text.indexOf("\n", scanned); scanned = end < 0 ? text.length : end; }
+      else if (char === "{") depth++;
+      else if (char === "}") depth--;
+    }
+    return depth;
+  };
+  const pattern = /\\(newcommand|NewDocumentCommand|DeclareDocumentCommand|SetupKeyvalOptions|DeclareBoolOption|ProcessKeyvalOptions)(?![A-Za-z@])(\*?)/g;
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    const at = match.index;
+    if (inComment(text, at) || depthAt(at) !== 0) continue;
+    const index = at + match[0].length;
+    let end: number | null = null;
+    if (match[1] === "SetupKeyvalOptions") end = readGroupAt(text, index)?.end ?? null;
+    else if (match[1] === "DeclareBoolOption") end = readGroupAt(text, readOptionalAt(text, index)?.end ?? index)?.end ?? null;
+    else if (match[1] === "ProcessKeyvalOptions") end = match[2] ? index : readGroupAt(text, index)?.end ?? null;
+    else {
+      const name = readCommandName(text, index);
+      if (!name || !/^[A-Za-z]+$/.test(name.name)) continue;
+      let next = name.end;
+      let body: { content: string; end: number } | null;
+      if (match[1] === "newcommand") {
+        for (let count = 0; count < 2; count++) next = readOptionalAt(text, next)?.end ?? next;
+        body = readGroupAt(text, next);
+      } else {
+        const spec = readGroupAt(text, next);
+        body = spec && readGroupAt(text, spec.end);
+      }
+      if (body && !/\\[A-Za-z]*@/.test(body.content)) end = body.end;
+    }
+    if (end !== null) out.push(text.slice(at, end));
   }
   return out.join("\n");
 }
