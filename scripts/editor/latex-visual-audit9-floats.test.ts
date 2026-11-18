@@ -153,3 +153,16 @@ test("a user environment is a float only when its code opens and closes one: oth
   assert.equal(view.contentDOM.querySelectorAll(".cm-vis-figure").length, 0);
   done();
 });
+
+test("a user macro that is only a size switch is hidden like the switch itself, and its source shows at the caret (eess.SP 2611.19192)", () => {
+  const pre = "\\newcommand{\\TableText}{\\footnotesize}\n\\newcommand{\\Mixed}{\\footnotesize x}\n";
+  const source = "Before.\n\n\\TableText\nUser size.\n\n\\Mixed\nMixed.";
+  const doc = body(source, pre);
+  assert.deepEqual(doc.lines, ["Before.", "User size.", "x", "Mixed."]);
+  assert.deepEqual(doc.left, []);
+  doc.done();
+  const full = inDoc(source, pre);
+  const caret = mount(full, full.lastIndexOf("\\TableText") + 2);
+  assert.match(text(caret.view), /\\TableText\s*User size/);
+  caret.done();
+});

@@ -325,6 +325,8 @@ const INLINE_LAYOUT = /^\\(?:begingroup|endgroup|nointerlineskip|vss|eject|oneco
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2, "\\resizebox": 3, "\\scalebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
 const SPACING_ONLY = /^\s*(?:\\x?spaceskip\s*=[^]*?\\relax\s*|\\relax\s*)+$/;
+/** A macro body of size and alignment switches only (eess.SP 2611.19192's `\newcommand{\TableText}{\footnotesize}`): hidden, as the switches are when written out. */
+const SWITCHES_ONLY = /^(?:\s|%[^\n]*(?:\n|$)|\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge|centering|raggedright|raggedleft)(?![A-Za-z@]))+$/;
 
 /**
  * Where a run of definitions at the start of `text` is (`\providecommand{\x}[1]{#1}`, `\def\x{…}`, `\let\x\y`,
@@ -3716,7 +3718,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     const use = expandLatexMacroUse(source, defs, { mode: "text", pos: node.from });
     // A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing` in its references, B5-27) prints nothing.
-    if (use && structural && SPACING_ONLY.test(use.text)) {
+    if (use && structural && (SPACING_ONLY.test(use.text) || SWITCHES_ONLY.test(use.text))) {
       const to = node.from + use.length;
       emit({ kind: "symbol", from: node.from, to, reveal: "touch", replaces: [{ from: node.from, to }] });
       consumed.push([node.from, to]);
