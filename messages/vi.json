@@ -7697,6 +7697,7 @@
     "loginFailedError": "Đăng nhập không thành công.",
     "moveFileError": "Không thể di chuyển tệp.",
     "movedButNotUpdatedError": "Các tệp đã được chuyển, nhưng ứng dụng không thể cập nhật đầy đủ cho việc này: {message}. Hãy mở lại Di chuyển để thử lại.",
+    "movedLinksNotice": "{count, plural, other {# liên kết trong ghi chú này}} giờ mở một tệp khác, hoặc không mở được tệp nào, từ vị trí mới: {links}",
     "noNoteQuoteNotice": "Không có ghi chú nào đang mở: đoạn trích và trích dẫn đã được sao chép vào bảng nhớ tạm.",
     "noSnipTextError": "Không tìm thấy văn bản trong vùng chụp.",
     "noteNameRequired": "Cần nhập tên ghi chú.",

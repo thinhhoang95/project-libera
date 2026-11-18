@@ -246,8 +246,13 @@ export type LiberaFilePayload = {
  * PATCH /api/files after a move or rename. Markdown moved to another notebook
  * also reports the references copied along (src/lib/references/moves.ts).
  */
-export type LiberaFileMovePayload = LiberaFilePayload & {
+/** A link in a moved note: `was` is the file it opened, `now` the file it opens from the new place (null: none). */
+export type LiberaMovedLink = { href: string; was: string; now: string | null };
+
+export type LiberaFileMovePayload =LiberaFilePayload & {
   references?: ReferenceMoveResult;
+  /** Relative links of a moved Markdown note that open another file (or none) from its new place. */
+  changedLinks?: LiberaMovedLink[];
   /** Image URLs rewritten when moving Markdown into another notebook. */
   imageSources?: Record<string, string>;
 };

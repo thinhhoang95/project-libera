@@ -7697,6 +7697,7 @@
     "loginFailedError": "登录失败。",
     "moveFileError": "无法移动文件。",
     "movedButNotUpdatedError": "文件已移动，但应用无法为此完全更新：{message}。请重新打开“迁移”以重试。",
+    "movedLinksNotice": "{count, plural, other {此笔记中有 # 个链接}}在新位置会打开另一个文件，或无法打开任何文件：{links}",
     "noNoteQuoteNotice": "没有打开的笔记：引文和引用已复制到剪贴板。",
     "noSnipTextError": "截图中未找到文本。",
     "noteNameRequired": "须填写笔记名称。",

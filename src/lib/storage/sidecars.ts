@@ -11,7 +11,8 @@ import { inspectAudioPeaksCache } from "@/lib/transcription/peaks";
 import { pythonSidecarPath } from "@/lib/python/sidecar";
 import { INK_DIR } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
-import { moveFileIfExists, pathExists } from "@/lib/storage/fs-utils";
+import { StorageError } from "@/lib/storage/errors";
+import { moveFileIfExists, moveWithoutReplacing, pathExists } from "@/lib/storage/fs-utils";
 import { inkFolderPath, inspectInkFolder, supportsInk, type InkFolderInspection } from "@/lib/storage/ink";
 import { deletePythonSidecar, movePythonSidecar } from "@/lib/storage/markdown-assets";
 import {
@@ -117,8 +118,33 @@ async function moveKind(kind: SidecarKind, from: string, to: string) {
 }
 
 /**
+ * The non-cache records of a file (by SIDECAR_KINDS id, "python" for a note's
+ * code) that a change of its file type would leave without a home: records of
+ * a kind the new type has no use for. Caches are not records; they are made again.
+ */
+export async function lostSidecarRecords(notebook: string, parts: string[], fromType: string, toType: string): Promise<string[]> {
+  if (fromType === toType) return [];
+  const caches = new Set(SIDECAR_KINDS.filter((kind) => kind.cache).map((kind) => kind.id));
+  const keptKinds = new Set(SIDECAR_KINDS.filter((kind) => kind.appliesTo(toType)).map((kind) => kind.id));
+  const lost: string[] = [];
+  for (const sidecar of await existingSidecars(notebook, parts, fromType)) {
+    if (caches.has(sidecar.kind) || keptKinds.has(sidecar.kind)) continue;
+    // An ink folder with nothing in it holds no strokes.
+    if (sidecar.kind === "ink" && !(await readdir(sidecar.path).catch(() => ["?"])).length) continue;
+    lost.push(sidecar.kind);
+  }
+  return lost;
+}
+
+/**
  * A file moved (or renamed) from one path to another: its sidecars follow when
- * it keeps its kind of file, and are removed when it becomes another kind.
+ * the new type of file still has them. Records the new type has no use for are
+ * never deleted: the move is refused instead (lostSidecarRecords); only caches
+ * are dropped.
+ *
+ * All or nothing: if a sidecar can't be moved, those already moved are put
+ * back before the error is rethrown. On success the result puts them all back
+ * (for a caller whose own later step failed).
  */
 export async function moveFileSidecars(
   fromNotebook: string,
@@ -127,18 +153,49 @@ export async function moveFileSidecars(
   toParts: string[],
   fromType: string,
   toType: string,
-) {
-  for (const kind of SIDECAR_KINDS) {
-    if (!kind.appliesTo(fromType)) continue;
-    const from = kind.filePath(fromNotebook, fromParts);
-    if (toType === fromType) await moveKind(kind, from, kind.filePath(toNotebook, toParts));
-    else await rm(from, { force: true, recursive: true }).catch(kind.cache ? () => undefined : (error) => { throw error; });
+): Promise<() => Promise<void>> {
+  const lost = await lostSidecarRecords(fromNotebook, fromParts, fromType, toType);
+  if (lost.length) throw new StorageError(`${fromNotebook}/${fromParts.join("/")} still has records (${lost.join(", ")}) that a ${toType} file cannot keep.`, 409);
+  const moved: { from: string; to: string }[] = [];
+  let python: { from: string; to: string } | null = null;
+  const undo = async () => {
+    const stuck: string[] = [];
+    if (python) {
+      const { from, to } = python;
+      try { await movePythonSidecar(to, from); } catch { stuck.push(`its Python code is now at ${to}`); }
+    }
+    for (const entry of [...moved].reverse()) {
+      try { await moveFileIfExists(entry.to, entry.from); } catch { stuck.push(`${entry.from} is now at ${entry.to}`); }
+    }
+    if (stuck.length) throw new StorageError(`Could not put the records of ${fromNotebook}/${fromParts.join("/")} back: ${stuck.join("; ")}.`, 500);
+  };
+  try {
+    for (const kind of SIDECAR_KINDS) {
+      if (!kind.appliesTo(fromType)) continue;
+      const from = kind.filePath(fromNotebook, fromParts);
+      if (kind.appliesTo(toType)) {
+        const to = kind.filePath(toNotebook, toParts);
+        const present = from !== to && await pathExists(from);
+        await moveKind(kind, from, to);
+        if (present && (!kind.cache || await pathExists(to))) moved.push({ from, to });
+      } else {
+        // Only a cache can be left here: the rest was refused above.
+        await rm(from, { force: true, recursive: true }).catch(kind.cache ? () => undefined : (error) => { throw error; });
+      }
+    }
+    if (fromType === "markdown") {
+      const from = `${fromNotebook}/${fromParts.join("/")}`;
+      if (toType === "markdown") {
+        const to = `${toNotebook}/${toParts.join("/")}`;
+        await movePythonSidecar(from, to);
+        python = { from, to };
+      } else await deletePythonSidecar(from);
+    }
+  } catch (error) {
+    await undo();
+    throw error;
   }
-  if (fromType === "markdown") {
-    const from = `${fromNotebook}/${fromParts.join("/")}`;
-    if (toType === "markdown") await movePythonSidecar(from, `${toNotebook}/${toParts.join("/")}`);
-    else await deletePythonSidecar(from);
-  }
+  return undo;
 }
 
 /** A file was deleted: remove the sidecars of its kind. */
@@ -157,7 +214,11 @@ export async function removeFileSidecars(notebook: string, pathParts: string[], 
  */
 export async function moveFolderSidecars(fromNotebook: string, fromParts: string[], toNotebook: string, toParts: string[]) {
   for (const kind of SIDECAR_KINDS) {
-    await moveKind(kind, kind.directoryPath(fromNotebook, fromParts), kind.directoryPath(toNotebook, toParts));
+    const from = kind.directoryPath(fromNotebook, fromParts);
+    const to = kind.directoryPath(toNotebook, toParts);
+    // A cache is made again and may replace one; anything else never replaces what is there.
+    if (kind.cache) await moveKind(kind, from, to);
+    else await moveWithoutReplacing(from, to);
   }
 }
 

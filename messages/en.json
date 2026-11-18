@@ -7697,6 +7697,7 @@
     "loginFailedError": "Login failed.",
     "moveFileError": "Could not move file.",
     "movedButNotUpdatedError": "The files moved, but the app could not fully update for it: {message}. Reopen Migration to try again.",
+    "movedLinksNotice": "{count, plural, one {# link in this note} other {# links in this note}} now open a different file, or none, from the new place: {links}",
     "noNoteQuoteNotice": "No note is open: the quote and citation were copied to the clipboard.",
     "noSnipTextError": "No text was found in the snip.",
     "noteNameRequired": "Note name is required.",
