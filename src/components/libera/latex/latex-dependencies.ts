@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type * as Y from "yjs";
 import type { OpenTab } from "@/components/libera/types";
 import { getSharedDocRegistry } from "@/lib/collab/client/registry";
-import { classTheoremSource, isInLatexComment, loadKey, readLatexInputs } from "@/lib/latex/macros/definitions";
+import { classCommandSource, classTheoremSource, isInLatexComment, loadKey, readLatexInputs } from "@/lib/latex/macros/definitions";
 import { findInclusion, includeTargets } from "@/lib/latex/macros/project-numbering";
 import type { MacroSource } from "@/lib/latex/codemirror/visual";
 import { resolveRelativeNotebookPath } from "@/lib/latex/project";
@@ -140,8 +140,12 @@ export async function collectMacroSources(options: {
     const cls = resolveRelativeNotebookPath(rootPath, `${match[1].trim()}.cls`);
     if (!cls || !known.has(cls) || isInLatexComment(preamble, match.index ?? 0) || paths.includes(cls)) continue;
     paths.push(cls);
-    const theorems = classTheoremSource(match[1].trim(), await readText(cls));
-    if (theorems) sources.unshift({ path: cls, text: theorems, version: version(cls) });
+    const classText = await readText(cls);
+    const theorems = classTheoremSource(match[1].trim(), classText);
+    // What the class gives its users is read where `\documentclass` is, with the class options (its `\ifbool`s read them), theorems included.
+    const commands = classCommandSource(classText);
+    if (commands) sources.push({ path: cls, text: `${theorems}\n${commands}`, version: version(cls), loadedBy: loader, key: loadKey("class", match[1]) });
+    else if (theorems) sources.unshift({ path: cls, text: theorems, version: version(cls) });
   }
   const seen = new Set<string>([filePath, rootPath]);
   let queue = loadsOf(text, rootPath, known, true).map((load) => ({ ...load, loadedBy: loader, body: load.pos >= bodyFrom }));

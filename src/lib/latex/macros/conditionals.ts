@@ -17,6 +17,8 @@ export type ConditionalFacts = {
   math?: boolean;
   /** IEEEtran's `\ifCLASSOPTIONcaptionsoff` (name without the prefix): whether that class option is given; undefined for another class or an option not known. */
   classOption?: (option: string) => boolean | undefined;
+  /** babel's `\iflanguage{name}`: whether `name` is the document's language; undefined when the language is not known. */
+  language?: (name: string) => boolean | undefined;
 };
 
 /** TeX's own conditionals (and engine tests): each is closed by a `\fi`. */
@@ -392,7 +394,7 @@ function decideIfThenTest(test: string, facts: ConditionalFacts): boolean | null
  * `\nottoggle`, `\ifbool{b}`, `\notbool`, `\ifdef{\cmd}`, `\ifndef`, `\ifundef`, `\ifcsdef{name}`, `\ifcsundef`,
  * `\ifdefempty{\cmd}`, and `\ifthenelse{test}`.
  */
-export const BRACED_CONDITIONAL = /^(?:(?:if|not)(?:toggle|bool)|if(?:def|ndef|undef|csdef|csundef|defempty)|ifthenelse|ifstrequal|ifstrempty|ifblank|notblank)$/;
+export const BRACED_CONDITIONAL = /^(?:(?:if|not)(?:toggle|bool)|if(?:def|ndef|undef|csdef|csundef|defempty)|iflanguage|ifthenelse|ifstrequal|ifstrempty|ifblank|notblank)$/;
 
 /** etoolbox's toggles share the switches' table (definitions.ts), under this prefix: `\newtoggle{long}` is `toggle:long`. */
 export const TOGGLE_PREFIX = "toggle:";
@@ -444,6 +446,7 @@ export function decideBracedConditional(text: string, at: number, name: string, 
   if (name === "ifstrequal") value = other && literal(test.content) && literal(other.content) ? test.content === other.content : null;
   else if (name === "ifstrempty" || name === "ifblank" || name === "notblank") value = literal(test.content) ? !test.content.trim() : null;
   else if (name === "ifthenelse") value = decideIfThenTest(test.content, facts);
+  else if (name === "iflanguage") value = literal(test.content) ? facts.language?.(argument) ?? null : null;
   else if (/toggle$/.test(name)) value = command ? facts.switchState?.(`${TOGGLE_PREFIX}${command}`) ?? null : null;
   else if (/bool$/.test(name)) value = command ? facts.switchState?.(`if${command}`) ?? null : null;
   else if (name === "ifdefempty") {
