@@ -212,7 +212,7 @@ export type MigrationResult = {
   createdNotebook: boolean;
   /** Files that are at their new path (the panel's files; hidden folder content is not listed). */
   moved: MigrationMove[];
-  /** Files still in the source. */
+  /** Files, and hidden or unknown folder content, still in the source. */
   remaining: string[];
   folders: { from: string; to: string }[];
   references: ReferenceMoveResult | null;
@@ -222,10 +222,14 @@ export type MigrationResult = {
   bookkeeping: string[];
   /** Sidecars, files or prepared copies still found at a moved item's old path. */
   leftovers: string[];
+  /** Moved items not found at their destination, or there with another type or size. Results saved before this field existed lack it. */
+  missing?: string[];
   /**
-   * What the final check could say: `clean` (everything moved and nothing is
-   * left at an old path), `incomplete` (files remain, or leftovers), or
-   * `unverified` (the source could not be checked).
+   * What the final check could say: `clean` (every moved item is at its
+   * destination with the size it had, nothing selected remains in the source
+   * or is left at an old path, and every record followed), `incomplete`
+   * (items remain, are missing or are left behind, or records did not
+   * follow), or `unverified` (a place could not be checked).
    */
   check: "clean" | "incomplete" | "unverified";
   /** A workspace group chosen for the new notebook, for the app to record. */
@@ -1189,7 +1193,8 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
   const moved: MigrationMove[] = [];
   const remaining: string[] = [];
   journal.items.forEach((item, index) => {
-    if (item.kind !== "file") return;
+    // Hidden or unknown content of a selected folder is not listed as moved, but when it stayed it is not "nothing left" either.
+    if (item.kind !== "file") { if (states[index] === "pending") remaining.push(item.from); return; }
     if (states[index] === "pending") { remaining.push(item.from); return; }
     moved.push({
       from: item.from,
@@ -1204,6 +1209,7 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
   // path (the item itself, a sidecar), and no prepared copy left anywhere.
   // The notebook check's definition of "nothing left" (storage/integrity.ts).
   let leftovers: string[] = [];
+  const missing: string[] = [];
   let unverified = false;
   if (journal.state === "done") {
     const places: Parameters<typeof checkNothingLeftAt>[0] = [];
@@ -1220,9 +1226,27 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
     const check = await checkNothingLeftAt(places);
     leftovers = [...leftovers, ...check.leftovers];
     unverified ||= check.unverified;
+    // Every item counted as moved is at its destination, of the type and size it had.
+    for (const [index, item] of journal.items.entries()) {
+      if (states[index] === "pending") continue;
+      try {
+        const stats = await lstatOrNull(located(item, item.to));
+        if (!stats) missing.push(`${item.to} (not found)`);
+        else if (stats.isDirectory() !== item.identity.directory) missing.push(`${item.to} (is not the ${item.identity.directory ? "folder" : "file"} that moved)`);
+        else if (stats.isFile() && item.images) {
+          // A note rewritten while moving: by the text it was rewritten to, as the resume reads it.
+          const text = await readFile(located(item, item.to), "utf8").catch(() => null);
+          if (text === null || hashText(text) !== item.images.after) missing.push(`${item.to} (is not the note that moved)`);
+        } else if (stats.isFile() && stats.size !== item.identity.size) missing.push(`${item.to} (its size is ${stats.size} bytes, not ${item.identity.size})`);
+      } catch (error) {
+        unverified = true;
+        missing.push(`${item.to} (could not be checked: ${errorText(error)})`);
+      }
+    }
   }
+  // Records that did not follow (bookkeeping) are part of "clean" too: the final check says only what it verified.
   const check: MigrationResult["check"] = journal.state !== "done" ? "incomplete" : unverified ? "unverified"
-    : remaining.length || leftovers.length || moved.some((move) => move.incomplete) ? "incomplete" : "clean";
+    : remaining.length || leftovers.length || missing.length || journal.bookkeeping.length || moved.some((move) => move.incomplete) ? "incomplete" : "clean";
 
   return {
     id: journal.id,
@@ -1237,6 +1261,7 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
     referenceEntries: journal.referenceEntries ?? { copied: 0, reused: 0 },
     bookkeeping: journal.bookkeeping,
     leftovers,
+    missing,
     check,
     ...(journal.createdNotebook && journal.create && journal.create.workspaceGroupId !== undefined
       ? { workspaceGroup: { notebook: journal.destination.notebook, groupId: journal.create.workspaceGroupId } } : {}),

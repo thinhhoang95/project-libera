@@ -410,6 +410,8 @@ test("a tether to a drive that is not connected is a warning to keep; a missing 
 test("a damaged workspace file, and review documents that are not on disk, are reported", () => withLibrary(async () => {
   await file("Nb/a.md", "A\n");
   await raw(workspaceMetadataPath(), "{ broken");
+  // A record of another notebook is not this one's; it is a notebook that exists (records of one that does not are reported by any check).
+  await createNotebook("Other");
   await raw(path.join(reviewsDirectory(getStateRoot()), "index.json"), JSON.stringify({ schemaVersion: 2, documents: { r1: "Nb/a.md", r2: "Nb/gone.md", r3: "Other/x.md" } }));
   const report = await verifyNotebook("Nb");
   const lines = messages(report, "records").sort();

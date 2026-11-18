@@ -232,12 +232,35 @@ export async function listSidecars(notebook: string): Promise<{ sidecars: Listed
   return { sidecars: listed, unreadable };
 }
 
-/** Null when it can't be told (no permission, a drive offline): such a file is not taken for gone. */
-async function isFileOfType(notebook: string, parts: string[], kind: SidecarKind): Promise<boolean | null> {
+/** A folder's names, once: `null` when it can't be listed (no permission, a drive offline), `false` when it is not there. */
+type Listing = Set<string> | null | false;
+
+/**
+ * Whether the file is there by the exact name its folder lists, as the app's
+ * tree and every record keyed by path see it: on a case-insensitive disk
+ * (macOS, Windows) `stat` also says yes to `Paper.pdf` when the file was
+ * renamed to `paper.pdf` outside the app, and its side files would never be
+ * found. Null when it can't be told (no permission, a drive offline): such a
+ * file is not taken for gone.
+ */
+async function isFileOfType(notebook: string, parts: string[], kind: SidecarKind, listings: Map<string, Promise<Listing>>): Promise<boolean | null> {
   const type = getFileType(parts.at(-1) ?? "");
   if (!type || !kind.appliesTo(type)) return false;
+  const target = filePathFromParts(notebook, parts);
+  const directory = path.dirname(target);
+  let listing = listings.get(directory);
+  if (!listing) {
+    listing = readdir(directory).then(
+      (names): Listing => new Set(names),
+      (error): Listing => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? false : null,
+    );
+    listings.set(directory, listing);
+  }
+  const names = await listing;
+  if (names === null) return null;
+  if (names === false || !names.has(path.basename(target))) return false;
   try {
-    return (await stat(filePathFromParts(notebook, parts))).isFile();
+    return (await stat(target)).isFile();
   } catch (error) {
     return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? false : null;
   }
@@ -256,8 +279,9 @@ function safeParts(parts: string[]) {
  */
 export async function findOrphanedSidecars(notebook: string, listed?: ListedSidecar[]): Promise<OrphanedSidecar[]> {
   const orphans: OrphanedSidecar[] = [];
+  const listings = new Map<string, Promise<Listing>>();
   for (const sidecar of listed ?? (await listSidecars(notebook)).sidecars) {
-    if (safeParts(sidecar.fileParts) && (await isFileOfType(notebook, sidecar.fileParts, sidecar.kindInfo)) === false) {
+    if (safeParts(sidecar.fileParts) && (await isFileOfType(notebook, sidecar.fileParts, sidecar.kindInfo, listings)) === false) {
       orphans.push({ kind: sidecar.kind, path: sidecar.path, filePath: sidecar.filePath });
     }
   }
