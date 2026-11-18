@@ -1595,6 +1595,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (payload.references) reportReferences(payload.references, payload.file.notebook);
   }
 
+  /** Links in a moved note that now open another file, or none: a notice, the move itself succeeded. */
+  function reportMovedLinks(payload: LiberaFileMovePayload) {
+    const links = payload.changedLinks;
+    if (!links?.length) return;
+    const shown = links.slice(0, 3).map((link) => link.href).join(", ");
+    const text = tRef.current("movedLinksNotice", { count: links.length, links: links.length > 3 ? `${shown}, …` : shown });
+    setReferenceMoveNotice({ id: Date.now(), tone: "info", text });
+  }
+
   function reportReferences(references: ReferenceMoveResult, notebook: string) {
     if (references.destinationRevision !== null) announceReferenceLibraryChange(notebook, references.destinationRevision);
     const summary = referenceMoveSummary(references, notebook);
@@ -3817,9 +3826,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
       retargetOpenTab(file.path, payload);
       reportReferenceMove(payload);
+      reportMovedLinks(payload);
       await refreshTree(payload.file.notebook);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : tRef.current("moveFileError"));
+      // A failed move leaves the disk as it was, but never trust the tree to say so: show what is there.
+      await refreshTree().catch(() => undefined);
     }
   }
 
@@ -3863,6 +3875,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
       retargetOpenTab(file.path, payload);
       reportReferenceMove(payload);
+      reportMovedLinks(payload);
       await refreshTree(payload.file.notebook);
       updateExpanded((current) => {
         const next = new Set(current);
@@ -3872,6 +3885,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : tRef.current("moveFileError"));
+      // A failed move leaves the disk as it was, but never trust the tree to say so: show what is there.
+      await refreshTree().catch(() => undefined);
     }
   }
 
@@ -4233,6 +4248,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setClosedViewStates((current) => remapClosedViewStates(current, (path) =>
         withinPath(path, folder.path) ? `${nextPath}${path.slice(folder.path.length)}` : path));
     } catch (error) {
+      // Show what is on disk now, whatever the failure left.
+      await refreshTree().catch(() => undefined);
       throw new Error(error instanceof Error ? error.message : tRef.current("renameFolderError"));
     }
   }

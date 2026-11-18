@@ -7700,6 +7700,7 @@
     "loginFailedError": "La connexion a échoué.",
     "moveFileError": "Impossible de déplacer le fichier.",
     "movedButNotUpdatedError": "Les fichiers ont été déplacés, mais l’application n’a pas pu se mettre entièrement à jour : {message}. Rouvrez Migration pour réessayer.",
+    "movedLinksNotice": "{count, plural, one {# lien de cette note ouvre} other {# liens de cette note ouvrent}} désormais un autre fichier, ou aucun, depuis le nouvel emplacement : {links}",
     "noNoteQuoteNotice": "Aucune note n’est ouverte : la citation et la référence ont été copiées dans le presse-papiers.",
     "noSnipTextError": "Aucun texte n’a été trouvé dans la capture.",
     "noteNameRequired": "Le nom de la note est obligatoire.",
