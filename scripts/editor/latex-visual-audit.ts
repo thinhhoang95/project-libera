@@ -168,7 +168,10 @@ const lineAt = (text: string, pos: number) => {
 };
 
 async function auditFile(filePath: string, rootPath: string, known: ReadonlySet<string>, read: (path: string) => string) {
-  const doc = read(filePath);
+  // The caret is put at the end, out of the way. A file that ends without a newline would have it touching its last
+  // construct, which then shows as source (round 9: a macro file ending in `}` counted its last definition's body).
+  const onDisk = read(filePath);
+  const doc = onDisk.endsWith("\n") ? onDisk : `${onDisk}\n`;
   // The app loads KaTeX's mhchem the first time a formula uses `\ce`, and draws it again; the audit loads it up front.
   // Under tsx `import()` finds the extension's ESM build, which registers on another KaTeX than the CommonJS one used here: load the CommonJS build too.
   if (/\\(?:ce|pu)\s*\{/.test(doc)) { createRequire(import.meta.url)("katex/contrib/mhchem"); await loadMhchem(); }
