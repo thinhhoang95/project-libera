@@ -36,7 +36,7 @@ import { LatexChangeBar } from "../latex/latex-change-bar";
 import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
 import { reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
 import { MarkdownSourceContextMenu, sourceContextMenuState, type SourceContextMenuState } from "./markdown-source-context-menu";
-import { MarkdownSourceFindBar } from "./markdown-source-find-bar";
+import { FindReplaceBar } from "../find/find-replace-bar";
 import { useMarkdownSourceDraft } from "./use-markdown-source-draft";
 import { useMarkdownSourceFind } from "./use-markdown-source-find";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
@@ -112,6 +112,7 @@ export function MarkdownCodeMirrorEditor({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const t = useTranslations("markdownSource.markdownCodemirrorEditor");
   const tCitations = useTranslations("lib.markdownCodemirror.citations");
+  const tFind = useTranslations("find");
   const viewRef = useRef<EditorView | null>(null);
   const [view, setView] = useState<EditorView | null>(null);
   const [contextMenu, setContextMenu] = useState<SourceContextMenuState | null>(null);
@@ -593,7 +594,7 @@ export function MarkdownCodeMirrorEditor({
   });
   useLayoutEffect(() => { findOpenRef.current = find.open; }, [find.open]);
   const matches = find.matches;
-  const activeMatch = matches.length ? (find.active + matches.length) % matches.length : 0;
+  const activeMatch = find.active;
   useEffect(() => {
     if (view) view.dispatch({ effects: setFindMatches.of({ matches, active: activeMatch }) });
   }, [view, matches, activeMatch]);
@@ -728,22 +729,7 @@ export function MarkdownCodeMirrorEditor({
       {view && agentHunks.length ? <LatexChangeBar view={view} hunks={agentHunks} /> : null}
 
       {find.open ? (
-        <MarkdownSourceFindBar
-          activeIndex={find.active}
-          findInputRef={find.findInputRef}
-          matchCount={matches.length}
-          query={find.query}
-          replacement={find.replacement}
-          wildcards={find.wildcards}
-          onClose={find.closeFind}
-          onNext={find.next}
-          onPrevious={find.previous}
-          onQueryChange={find.updateQuery}
-          onReplace={find.replace}
-          onReplaceAll={find.replaceAll}
-          onReplacementChange={find.setReplacement}
-          onWildcardsChange={find.updateWildcards}
-        />
+        <FindReplaceBar {...find.barProps} placeholder={tFind("findInNote")} />
       ) : null}
 
       {draggingImage ? (

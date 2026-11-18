@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { after, test, beforeEach } from "node:test";
 import { JSDOM } from "jsdom";
 import { act, createElement, createRef, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -24,6 +24,13 @@ import { TiptapEditorActions } from "../../src/components/libera/tiptap-editor-a
 import { TiptapMarkdownEditor } from "../../src/components/libera/tiptap-markdown-editor";
 import { MarkdownEditor } from "../../src/components/libera/markdown-editor";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT } from "../../src/lib/markdown-outline-navigation";
+import { resetFindStoreForTests } from "../../src/lib/find/settings-store";
+
+// Find settings (mode, toggles) persist across tests in one process; each test starts from Plain.
+beforeEach(() => {
+  try { globalThis.localStorage?.removeItem("libera.find.settings.v1"); } catch { /* no storage */ }
+  resetFindStoreForTests();
+});
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element", "Node", "MouseEvent", "KeyboardEvent", "DOMParser", "MutationObserver", "getComputedStyle"] as const) {
@@ -54,10 +61,11 @@ function create(content: string) {
   return new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), Mathematics], content, contentType: "markdown" });
 }
 
-async function setControlledInput(input: HTMLInputElement, value: string) {
+async function setControlledInput(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => { input.focus(); });
   await act(async () => {
-    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    const prototype = input instanceof dom.window.HTMLTextAreaElement ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(input, value);
     const event = new dom.window.Event("propertychange", { bubbles: true });
     Object.defineProperty(event, "propertyName", { value: "value" });
     input.dispatchEvent(event);
@@ -886,8 +894,8 @@ test("source find replaces wildcard matches without affecting unmatched Markdown
     });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
     await setControlledInput(host.querySelector<HTMLInputElement>('[aria-label="Find in note"]')!, "item-??;");
-    await act(async () => { host.querySelector<HTMLInputElement>('[aria-label="Wildcard matches"]')!.click(); });
-    await setControlledInput(host.querySelector<HTMLInputElement>('[aria-label="Replace with"]')!, "X");
+    await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find((radio) => radio.textContent === "Pattern")!.click(); });
+    await setControlledInput(host.querySelector<HTMLTextAreaElement>('[aria-label="Replace with"]')!, "X");
     assert.match(host.textContent ?? "", /1\/2/);
     const replaceAll = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace all")!;
     await act(async () => { replaceAll.click(); });

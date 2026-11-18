@@ -1,6 +1,6 @@
 import "./setup.cjs";
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { after, test, beforeEach } from "node:test";
 import { JSDOM } from "jsdom";
 import { act, cloneElement, createElement, createRef, type ComponentProps, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -13,6 +13,13 @@ import { CodeMirrorTextareaAdapter } from "../../src/lib/markdown-codemirror/tex
 import { DOCUMENT_STYLE_REQUEST_EVENT } from "../../src/lib/references/document-style";
 import { MarkdownReviewProvider, useMarkdownReview } from "../../src/components/libera/markdown-review-context";
 import { newReview, syncReview } from "../../src/lib/markdown-review";
+import { resetFindStoreForTests } from "../../src/lib/find/settings-store";
+
+// Find settings (mode, toggles) persist across tests in one process; each test starts from Plain.
+beforeEach(() => {
+  try { globalThis.localStorage?.removeItem("libera.find.settings.v1"); } catch { /* no storage */ }
+  resetFindStoreForTests();
+});
 
 /* Run identical observable scenarios through the two Source editors. Browser
  * typing/layout and native undo are represented by the existing jsdom seams. */
@@ -121,10 +128,11 @@ function pasteEvent(data: Record<string, string>) {
   return event;
 }
 
-async function setControlledInput(input: HTMLInputElement, value: string) {
+async function setControlledInput(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => { input.focus(); });
   await act(async () => {
-    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    const prototype = input instanceof dom.window.HTMLTextAreaElement ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(input, value);
     const event = new dom.window.Event("propertychange", { bubbles: true });
     Object.defineProperty(event, "propertyName", { value: "value" });
     input.dispatchEvent(event);
@@ -476,12 +484,12 @@ for (const kind of ["textarea", "CodeMirror"] as const) {
       await settle(25);
       assert.deepEqual(editor.selection, [0, 3]);
       await setControlledInput(find, "o?e");
-      await act(async () => { editor.host.querySelector<HTMLInputElement>('[aria-label="Wildcard matches"]')!.click(); });
-      const replace = editor.host.querySelector<HTMLInputElement>('[aria-label="Replace with"]')!;
+      await act(async () => { Array.from(editor.host.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find((radio) => radio.textContent === "Pattern")!.click(); });
+      const replace = editor.host.querySelector<HTMLTextAreaElement>('[aria-label="Replace with"]')!;
       await setControlledInput(replace, "X");
-      await act(async () => { keydown(replace, "Enter", { shiftKey: true }); });
+      await act(async () => { keydown(replace, "Enter"); });
       await settle(25);
-      assert.equal(editor.text, "X one ONE other", "Shift+Enter replaces the active match");
+      assert.equal(editor.text, "X one ONE other", "Enter in the replace field replaces the active match");
       await act(async () => { button(editor.host, "Replace all").click(); });
       await settle(25);
       assert.equal(editor.text, "X X X other");
@@ -509,7 +517,7 @@ for (const kind of ["textarea", "CodeMirror"] as const) {
       }
       await editor.render({ value: "one one" });
       assert.match(editor.host.textContent ?? "", /2\/2/);
-      await setControlledInput(editor.host.querySelector<HTMLInputElement>('[aria-label="Replace with"]')!, "X");
+      await setControlledInput(editor.host.querySelector<HTMLTextAreaElement>('[aria-label="Replace with"]')!, "X");
       await act(async () => { button(editor.host, "Replace").click(); });
       assert.equal(editor.text, "one one", "an active index beyond the new matches does not replace a different match");
     } finally { await editor.dispose(); }
@@ -523,7 +531,7 @@ for (const kind of ["textarea", "CodeMirror"] as const) {
       await editor.select(at, at + 2);
       await editor.key("f", { ctrlKey: true });
       await settle(25);
-      await setControlledInput(editor.host.querySelector<HTMLInputElement>('[aria-label="Replace with"]')!, "9.");
+      await setControlledInput(editor.host.querySelector<HTMLTextAreaElement>('[aria-label="Replace with"]')!, "9.");
       await act(async () => { button(editor.host, "Replace").click(); });
       await settle(25);
       assert.equal(editor.text, source, "numbering restores the structural number");

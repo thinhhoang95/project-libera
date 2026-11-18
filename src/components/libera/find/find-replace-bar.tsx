@@ -128,7 +128,8 @@ export function FindReplaceBar({
     <div
       role="search"
       className={`${className} flex w-[34rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg`}
-      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); onClose(); } }}
+      // Escape anywhere in the bar closes it; the fields handle (and mark) their own Escape first.
+      onKeyDown={(event) => { if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); onClose(); } }}
     >
       <div className="flex min-w-0 items-center gap-1">
         <Search aria-hidden className="ml-1 h-4 w-4 shrink-0 text-muted-foreground" />

@@ -8307,7 +8307,7 @@
     "matchCount": "{current}/{total}",
     "replaceWith": "Thay bằng",
     "replace": "Thay",
-    "replaceAll": "Tất cả",
+    "replaceAll": "Thay tất cả",
     "replaceTitle": "Thay kết quả này (Enter trong ô thay thế)",
     "replaceAllTitle": "Thay tất cả kết quả (Cmd/Ctrl+Enter)",
     "modes": {

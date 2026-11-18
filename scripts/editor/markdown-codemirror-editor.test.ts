@@ -1,6 +1,6 @@
 import "./setup.cjs";
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { after, test, beforeEach } from "node:test";
 import { JSDOM } from "jsdom";
 import { act, createElement, createRef, useRef, useState, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
@@ -15,6 +15,13 @@ import { normalizeChatGptCopiedMarkdown } from "../../src/lib/chatgpt-markdown-n
 import { anchorAt, newReview, syncReview, type ReviewDocument } from "../../src/lib/markdown-review";
 import { markdownValueSync } from "../../src/lib/markdown-codemirror/value-sync";
 import { replaceTextareaSelectionWithUndo } from "../../src/lib/textarea-editing";
+import { resetFindStoreForTests } from "../../src/lib/find/settings-store";
+
+// Find settings (mode, toggles) persist across tests in one process; each test starts from Plain.
+beforeEach(() => {
+  try { globalThis.localStorage?.removeItem("libera.find.settings.v1"); } catch { /* no storage */ }
+  resetFindStoreForTests();
+});
 
 /* The CodeMirror Markdown Source editor as a component: the same draft flow,
  * shortcuts, paste, find and review behaviour as the textarea editor, and the
@@ -120,10 +127,11 @@ function pasteEvent(data: Record<string, string>) {
   return event;
 }
 
-async function setControlledInput(input: HTMLInputElement, value: string) {
+async function setControlledInput(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => { input.focus(); });
   await act(async () => {
-    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    const prototype = input instanceof dom.window.HTMLTextAreaElement ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(input, value);
     const event = new dom.window.Event("propertychange", { bubbles: true });
     Object.defineProperty(event, "propertyName", { value: "value" });
     input.dispatchEvent(event);
@@ -383,8 +391,8 @@ test("Find and Replace with wildcards behaves like the textarea editor", async (
     await act(async () => { editor.view.focus(); keydown(editor.view.contentDOM, "f", { ctrlKey: true }); });
     await settle(10);
     await setControlledInput(editor.host.querySelector<HTMLInputElement>('[aria-label="Find in note"]')!, "item-??;");
-    await act(async () => { editor.host.querySelector<HTMLInputElement>('[aria-label="Wildcard matches"]')!.click(); });
-    await setControlledInput(editor.host.querySelector<HTMLInputElement>('[aria-label="Replace with"]')!, "X");
+    await act(async () => { Array.from(editor.host.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find((radio) => radio.textContent === "Pattern")!.click(); });
+    await setControlledInput(editor.host.querySelector<HTMLTextAreaElement>('[aria-label="Replace with"]')!, "X");
     assert.match(editor.host.textContent ?? "", /1\/2/);
     assert.equal(editor.view.contentDOM.querySelectorAll(".markdown-editor-find-match").length, 2);
     assert.equal(editor.view.contentDOM.querySelectorAll(".markdown-editor-find-match-active").length, 1);

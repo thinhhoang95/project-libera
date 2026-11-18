@@ -8307,7 +8307,7 @@
     "matchCount": "{current}/{total}",
     "replaceWith": "Replace with",
     "replace": "Replace",
-    "replaceAll": "All",
+    "replaceAll": "Replace all",
     "replaceTitle": "Replace this match (Enter in the replace field)",
     "replaceAllTitle": "Replace all matches (Cmd/Ctrl+Enter)",
     "modes": {

@@ -8307,7 +8307,7 @@
     "matchCount": "{current}/{total}",
     "replaceWith": "替换为",
     "replace": "替换",
-    "replaceAll": "全部",
+    "replaceAll": "全部替换",
     "replaceTitle": "替换当前匹配（在替换框中按 Enter）",
     "replaceAllTitle": "替换全部匹配（Cmd/Ctrl+Enter）",
     "modes": {

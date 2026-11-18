@@ -11,7 +11,7 @@ export { changeSelectedHeadingLevels, findMarkdownImageInText, getChangedTextRan
 export type { HeadingLevelChangeDirection, MarkdownFormat } from "@/lib/markdown-source";
 
 import { MarkdownSourceContextMenu, sourceContextMenuState, type SourceContextMenuState } from "./markdown-source/markdown-source-context-menu";
-import { MarkdownSourceFindBar } from "./markdown-source/markdown-source-find-bar";
+import { FindReplaceBar } from "./find/find-replace-bar";
 import type { MarkdownSourceEditorProps } from "./markdown-source/types";
 import { useMarkdownSourceDraft } from "./markdown-source/use-markdown-source-draft";
 import { useMarkdownSourceFind } from "./markdown-source/use-markdown-source-find";
@@ -300,6 +300,7 @@ export function MarkdownEditor({
   onSelectionChange,
 }: MarkdownEditorProps) {
   const t = useTranslations("markdownEditor");
+  const tFind = useTranslations("find");
   const [editorValue, setEditorValue] = useState(value);
   const [initialValue] = useState(value);
   const [contextMenu, setContextMenu] = useState<SourceContextMenuState | null>(null);
@@ -388,7 +389,7 @@ export function MarkdownEditor({
     text: editorValue, textareaRef, readText: () => editorValueRef.current, updateText: setEditorValue,
     commitText: commitEditorValue, readDraft, closeContextMenu: () => setContextMenu(null), syncScroll: syncHighlightLayerScroll,
   });
-  const { open: findOpen, query: findQuery, wildcards: wildcardMatches, active: activeMatchIndex, matches: textMatches, findMatches } = find;
+  const { open: findOpen, active: activeMatchIndex, matchesFor: findMatchesFor } = find;
   const refreshHighlightLayer = useCallback(() => {
     // This layer is intentionally owned by the input handler, not React.
     // Stable line nodes isolate layout and avoid allocating thousands of React
@@ -396,7 +397,7 @@ export function MarkdownEditor({
     const layer = highlightLayerRef.current;
     if (!layer) return;
     const text = editorValueRef.current;
-    const matches = findOpen ? findMatches(text, findQuery, { wildcards: wildcardMatches }) : NO_FIND_MATCHES;
+    const matches = findOpen ? findMatchesFor(text) : NO_FIND_MATCHES;
     const last = lastHighlightRefreshRef.current;
     if (last && last.layer === layer && last.text === text && last.matches === matches &&
       last.activeMatchIndex === activeMatchIndex && last.reviewRanges === reviewRanges) {
@@ -454,7 +455,7 @@ export function MarkdownEditor({
     }
     const textarea = textareaRef.current;
     if (textarea) { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; }
-  }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef, findMatches]);
+  }, [activeMatchIndex, findOpen, reviewRanges, textareaRef, findMatchesFor]);
   const headingLinkOptions = useMemo(
     () =>
       fileLinkPopup?.headings
@@ -1230,12 +1231,7 @@ export function MarkdownEditor({
       />
 
       {findOpen ? (
-        <MarkdownSourceFindBar
-          activeIndex={activeMatchIndex} findInputRef={find.findInputRef} matchCount={textMatches.length}
-          query={findQuery} replacement={find.replacement} wildcards={wildcardMatches}
-          onClose={find.closeFind} onNext={find.next} onPrevious={find.previous} onQueryChange={find.updateQuery}
-          onReplace={find.replace} onReplaceAll={find.replaceAll} onReplacementChange={find.setReplacement} onWildcardsChange={find.updateWildcards}
-        />
+        <FindReplaceBar {...find.barProps} placeholder={tFind("findInNote")} />
       ) : null}
 
       {draggingImage ? (
