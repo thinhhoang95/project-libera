@@ -361,7 +361,8 @@ export function useSavedWorkspaces(options: Options) {
     retry: () => setAttempt((value) => value + 1),
     visibleTree, organizedTree, updateView: stableUpdateView,
     organizeTree: (tree: LiberaTree) => applyWorkspaceView(tree, libraryRef.current.workspaces.find((workspace) => workspace.id === libraryRef.current.activeWorkspaceId)?.view),
-    runFileChange: async <T,>(operation: () => Promise<T>, describe: (result: T) => WorkspaceFileChange): Promise<T> => {
+    // `onPersistFailed`: for a caller that must not treat the change as durable (a migration acknowledging its journal) when the write failed.
+    runFileChange: async <T,>(operation: () => Promise<T>, describe: (result: T) => WorkspaceFileChange, onPersistFailed?: (error: Error) => void): Promise<T> => {
       if (locked.current || !readyRef.current) throw new Error(tRef.current("workspaceLoadingError"));
       const workspaceId = libraryRef.current.activeWorkspaceId;
       const task = (async () => {
@@ -373,6 +374,7 @@ export function useSavedWorkspaces(options: Options) {
         await persist(next).catch((error: Error) => {
           lastSaved.current = "";
           current.current.onError(tRef.current("fileChangedNotSavedError", { message: error.message }));
+          onPersistFailed?.(error);
         });
         return result;
       })();

@@ -79,6 +79,24 @@ export async function isPathMigrating(libraryPath: string) {
     migration.folders.some((folder) => within(libraryPath, folder)));
 }
 
+/**
+ * A migration that has not finished moves something inside this folder (a file
+ * or folder, as source or destination), or the folder lies inside a folder it
+ * moves. Renaming, archiving or deleting such a folder would strand the journal.
+ */
+export async function isAnythingMigratingWithin(libraryFolder: string) {
+  return (await activeMigrations()).some((migration) =>
+    [...migration.paths].some((candidate) => within(candidate, libraryFolder)) ||
+    migration.folders.some((folder) => within(folder, libraryFolder) || within(libraryFolder, folder)));
+}
+
+/** Folder operations that rename, move, archive or delete a folder wait while a migration works inside it. */
+export async function assertNothingMigratingWithin(libraryFolder: string) {
+  if (await isAnythingMigratingWithin(libraryFolder)) {
+    throw new StorageError(`${libraryFolder.split("/").at(-1)} holds files that are being moved to another notebook. Try again when the migration has finished.`, 409);
+  }
+}
+
 /** File operations on a path a migration is moving wait until it finishes. */
 export async function assertNotMigrating(...libraryPaths: string[]) {
   for (const libraryPath of libraryPaths) {
