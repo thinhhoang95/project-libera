@@ -4,7 +4,7 @@ import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } 
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
 import { forEachDiagnostic, lintGutter, lintKeymap, setDiagnostics, type Diagnostic } from "@codemirror/lint";
-import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import { highlightSelectionMatches } from "@codemirror/search";
 import { Compartment, EditorState, Prec, Transaction } from "@codemirror/state";
 import { ySyncAnnotation } from "y-codemirror.next";
 import {
@@ -59,6 +59,9 @@ import { getLatexSnippets } from "./latex-snippets-store";
 import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "../codemirror-text-width";
 import { useMarkdownDisplayPreferences } from "../markdown-display-preferences";
 import { latexImagePaste, type LatexImageHandler } from "@/lib/latex/codemirror/image-paste";
+import { activeFindRanges, searchKeymapWithoutPanel } from "@/lib/find/codemirror";
+import { CodeMirrorFindSession } from "@/lib/find/codemirror-session";
+import { CodeMirrorFindBar } from "../find/codemirror-find-bar";
 import { latexSpellcheck, latexSpellcheckActive } from "@/lib/latex/codemirror/spellcheck";
 import { drawingPreviewConfig, type DrawingPreviewConfig } from "@/lib/latex/codemirror/visual/drawing-preview";
 import { saveAndInsertImages, type LatexImageInsertResult, type LatexImageSupport } from "./latex-image-drop";
@@ -283,6 +286,8 @@ export function LatexEditor({
   const { preferences: { latexSpellcheck: spellcheckSetting } } = useMarkdownDisplayPreferences();
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
+  /** The find & replace bar (Mod-F, Mod-H): its fields, keys and searches; one per editor, kept across view rebuilds. */
+  const [findSession] = useState(() => new CodeMirrorFindSession());
   const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath, editorMode, compileRoot, spellcheck: spellcheckSetting });
   /** The paths the installed Visual mode resolves against, to reconfigure it when the tab is renamed or moved. */
   const visualPathsRef = useRef<string | null>(null);
@@ -548,7 +553,7 @@ export function LatexEditor({
         crosshairCursor(),
         highlightActiveLine(),
         highlightSelectionMatches(),
-        search({ top: true }),
+        findSession.extension,
         lintGutter(),
         EditorView.lineWrapping,
         latexLanguageSupport(name),
@@ -573,6 +578,8 @@ export function LatexEditor({
         ...(isTex ? [latexMathPreview(), latexVisualState(), latexDefinitionDiagnostics()] : []),
         // Pending suggestions and AI changes stay visible as source in the Visual mode.
         visualRevealRanges.of((target) => [...(target.field(reviewHunksField, false) ?? []), ...previewSuggestions(target)]),
+        // So is the active find match, as when the cursor moves into it.
+        visualRevealRanges.of(activeFindRanges),
         // So does LaTeX with a compile error, so its underline is not hidden with the markup.
         visualRevealRanges.of((target) => {
           const ranges: Array<{ from: number; to: number }> = [];
@@ -580,7 +587,7 @@ export function LatexEditor({
           return ranges;
         }),
         visualCompartment.of(visual ? visualExtensions(initialRef.current.documentPath, initialRef.current.compileRoot) : []),
-        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
+        keymap.of([...closeBracketsKeymap, ...findSession.keymap, ...defaultKeymap, ...searchKeymapWithoutPanel, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
         EditorView.contentAttributes.of({ "aria-label": tRef.current("sourceEditorLabel"), autocorrect: "off", autocapitalize: "off" }),
         spellcheckCompartment.of(latexSpellcheck(latexSpellcheckActive(initialRef.current.spellcheck, visual))),
         EditorView.updateListener.of((update) => {
@@ -633,6 +640,7 @@ export function LatexEditor({
     binding?.attach(created);
     viewRef.current = created;
     setView(created);
+    findSession.attach(created);
     const savedScroll = modeScrollRef.current![visual ? "visual" : "source"];
     cancelRestoreRef.current = savedScroll ? restoreCodeMirrorScroll(created, savedScroll, () => { cancelRestoreRef.current = null; }) : null;
     if (!cancelRestoreRef.current && restore?.selectionStart !== undefined) {
@@ -657,11 +665,12 @@ export function LatexEditor({
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
       publishDraft();
       releaseReflow();
+      findSession.attach(null);
       binding?.destroy();
       created.destroy();
       viewRef.current = null;
     };
-  }, [publishDraft, reportViewState]);
+  }, [findSession, publishDraft, reportViewState]);
 
   // Expose imperative actions for the PDF pane, the log and the outline.
   useLayoutEffect(() => {
@@ -863,6 +872,7 @@ export function LatexEditor({
         <LatexImageNotice key={imageNotice.id} message={imageNotice.message} missing={imageNotice.missing} onClose={() => setImageNotice(null)} />
       ) : null}
       {view && hunks.length ? <LatexChangeBar view={view} hunks={hunks} /> : null}
+      <CodeMirrorFindBar session={findSession} kind="latex" flavor="latex" showScopes />
     </div>
   );
 }
