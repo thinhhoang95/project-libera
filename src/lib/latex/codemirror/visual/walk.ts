@@ -5,7 +5,7 @@ import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
 import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, equationAlias, isInLatexComment, isPartLabelMacro, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
-import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, formatCounterValue, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
+import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, floatAlias, formatCounterValue, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
 import { readAlgorithm2eBody, readAlgorithmicBody } from "./algorithm";
 import { isPairMacro, itemMacroNames, MATH_ENVIRONMENT, macroEnvironmentRegionAt, macroPassThrough, structureMacroNames } from "../../macros/structure";
 import { latexParser, OPAQUE_DRAWING_ENVIRONMENTS } from "../latex-parser";
@@ -325,6 +325,8 @@ const INLINE_LAYOUT = /^\\(?:begingroup|endgroup|nointerlineskip|vss|eject|oneco
 const TEXT_WRAPPERS: Record<string, number> = { "\\afterpage": 1, "\\raisebox": 2, "\\resizebox": 3, "\\scalebox": 2 };
 /** A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing`: `\spaceskip=… \relax`), or `\relax`. */
 const SPACING_ONLY = /^\s*(?:\\x?spaceskip\s*=[^]*?\\relax\s*|\\relax\s*)+$/;
+/** A macro body of size and alignment switches only (eess.SP 2611.19192's `\newcommand{\TableText}{\footnotesize}`): hidden, as the switches are when written out. */
+const SWITCHES_ONLY = /^(?:\s|%[^\n]*(?:\n|$)|\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge|centering|raggedright|raggedleft)(?![A-Za-z@]))+$/;
 
 /**
  * Where a run of definitions at the start of `text` is (`\providecommand{\x}[1]{#1}`, `\def\x{…}`, `\let\x\y`,
@@ -980,15 +982,30 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    * Whether an item label written with formulas or commands can be drawn: each `$…$` is a formula KaTeX reads (the
    * document's macros expanded), and outside them only text styles and spacing. Else the label is shown as written.
    */
-  const drawableLabel = (label: string, pos: number) => {
+  const drawableLabel = (label: string, pos: number, depth = 0): boolean => {
     let drawable = true;
-    const text = label.replace(/\$([^$]*)\$/g, (_, formula: string) => {
+    const formulaDrawn = (formula: string) => {
       const expanded = expandLatexMacros(formula, defs, { mode: "math", pos });
       if (!expanded.ok || renderKatex(expanded.text, false) === null) drawable = false;
-      return "";
-    });
+    };
+    // The document's `\ensuremath{…}` (a macro such as `\pT`) is a formula too; `\xspace` is a space.
+    let text = label.replace(/\$([^$]*)\$/g, (_, formula: string) => { formulaDrawn(formula); return ""; }).replace(/\\xspace(?![A-Za-z@])/g, "");
+    for (let at = text.search(/\\ensuremath\s*\{/); at >= 0; at = text.search(/\\ensuremath\s*\{/)) {
+      const open = text.indexOf("{", at);
+      const group = readGroup(text, open, TEX_GROUPS);
+      if (!group) return false;
+      formulaDrawn(group.content);
+      text = text.slice(0, at) + text.slice(group.end);
+    }
     if (!drawable) return false;
-    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => /^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|textup|textsl|textmd|textsuperscript|textsubscript|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) && !/\$/.test(text);
+    return [...text.matchAll(/\\([A-Za-z@]+)/g)].every((use) => {
+      if (/^(?:textbf|textit|emph|textrm|textsf|texttt|textsc|textnormal|textup|textsl|textmd|textsuperscript|textsubscript|mathrm|mbox|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|normalfont|bf|it|rm|tt|sf|em)$/.test(use[1])) return true;
+      // A macro of the document without arguments whose text is drawable in turn; any other command is unknown.
+      const macro = macroAt(defs, use[1], pos);
+      if (!macro || macro.arity || macro.spec || macro.optional !== undefined || macro.unsupported || depth > 3) return false;
+      const expanded = expandLatexMacros(`\\${use[1]}`, defs, { mode: "text", pos });
+      return expanded.ok && drawableLabel(expanded.text, pos, depth + 1);
+    }) && !/\$/.test(text);
   };
 
   /** An item marker in the current list for `\item` (or a macro for it) at [at, to]; `optional` is its `[label]`. */
@@ -1002,8 +1019,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if (optional !== null) {
       latex = /[\\$]/.test(optional);
       label = latex ? optional.trim() : optional.replace(/[{}]/g, "").trim();
-      // A label that cannot be drawn (an unknown command, a formula KaTeX rejects) stays as written.
-      if (latex && !drawableLabel(label, list.node.from)) latex = false;
+      // A label that cannot be drawn (an unknown command, a formula KaTeX rejects) stays source: a marker showing its raw
+      // LaTeX would be junk (hep-ex 2611.16454's `\item[… \pT ($\pT^\mathrm{EM+track}$):]` with `\pT` unknown).
+      if (latex && !drawableLabel(label, list.node.from)) return false;
       if (list.variant !== "description") variant = "number";
     } else if (list.variant === "number") {
       list.count++;
@@ -1208,7 +1226,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           return override.node === node ? result : undefined;
         }
       }
-      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "") && !equationAlias(defs, environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
+      if (ENVIRONMENT_NODES.has(name) && defs.environments.has(environmentName(node, (start, end) => read(state, start, end)) ?? "") && !equationAlias(defs, environmentName(node, (start, end) => read(state, start, end)) ?? "") && !floatAlias(defs, environmentName(node, (start, end) => read(state, start, end)) ?? "")) return undefined;
 
       if (name in SECTION_CLASSES) {
         const command = node.getChild("SectioningCommand");
@@ -1623,7 +1641,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           if (/^deluxetable\*?$/.test(environmentName(node, readNode) ?? "") && !defs.environments.has(environmentName(node, readNode)!)) return drawDeluxeTable(node) ?? environment(node);
           // `table*`, `algorithm` and the other floats the grammar does not name; a theorem the document calls
           // `algorithm` (`\newtheorem{algorithm}{Algorithm}`, Callaway & Sant'Anna's bootstrap) is the document's own.
-          const kind = floatKind(node, readNode);
+          const kind = floatKind(node, readNode, defs);
           if (kind && !defs.theorems.has(environmentName(node, readNode) ?? "")) return drawFloat(node, kind);
           // `tabular*` and `tabulary` are tabulars the grammar does not name.
           if (isTabular(node, readNode)) return drawTabular(node);
@@ -2042,7 +2060,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   function captionofBlock(node: SyntaxNode): FigureContent["kind"] | null {
     if (!structural || !/^(?:center|minipage|flushleft|flushright)$/.test(environmentName(node, readNode) ?? "")) return null;
     for (let parent = node.parent; parent; parent = parent.parent) {
-      if (parent.name === "FigureEnvironment" || parent.name === "TableEnvironment" || (parent.name === "Environment" && floatKind(parent, readNode))) return null;
+      if (parent.name === "FigureEnvironment" || parent.name === "TableEnvironment" || (parent.name === "Environment" && floatKind(parent, readNode, defs))) return null;
     }
     const match = /\\captionof\s*\{\s*([A-Za-z]+)\s*\}/.exec(stripTexComments(read(state, node.from, node.to)));
     return match ? FLOAT_KINDS[match[1]] ?? null : null;
@@ -3589,7 +3607,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       emit({ kind: "table", from: range.from, to: range.to, reveal: "strict", replaces: [{ from: range.from, to: range.to, block: !!span, widget: at === null ? new TableWidget(source, use.from - range.from, range.to - range.from, true) : new TableWidget(source, use.from + at - range.from, range.to - range.from) }] });
       return true;
     }
-    const kind = floatKind(env, readText);
+    const kind = floatKind(env, readText, defs);
     if (!kind || !wellFormedEnvironment(env, scratch)) return false;
     const figure = figureSpec(env, environmentName(env, readText) ?? "", scratch, defs, expandRowsAt(use.from), () => null, kind);
     if (!figure) return false;
@@ -3733,7 +3751,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     }
     const use = expandLatexMacroUse(source, defs, { mode: "text", pos: node.from });
     // A macro that only sets TeX's spacing (IEEEtran's `\BIBentryALTinterwordspacing` in its references, B5-27) prints nothing.
-    if (use && structural && SPACING_ONLY.test(use.text)) {
+    if (use && structural && (SPACING_ONLY.test(use.text) || SWITCHES_ONLY.test(use.text))) {
       const to = node.from + use.length;
       emit({ kind: "symbol", from: node.from, to, reveal: "touch", replaces: [{ from: node.from, to }] });
       consumed.push([node.from, to]);
