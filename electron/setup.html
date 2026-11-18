@@ -719,10 +719,13 @@
                   <div class="ai-card-grid">
                     <div class="ai-field"><label for="theme-preference">Theme</label>
                       <select id="theme-preference" aria-describedby="theme-help"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></div>
+                    <div class="ai-field"><label for="locale-preference">Language</label>
+                      <select id="locale-preference" aria-describedby="locale-help"><option value="system">System</option><option value="en" lang="en">English</option><option value="fr" lang="fr">Français</option></select></div>
                     <div class="ai-field"><label for="your-name">Your name</label>
                       <input id="your-name" autocomplete="given-name" type="text" placeholder="How should Libera greet you?" aria-describedby="your-name-help" /></div>
                   </div>
                   <p id="theme-help" class="field-help">System follows your device’s appearance. Theme changes apply when saved.</p>
+                  <p id="locale-help" class="field-help">System uses your device’s language when Libera has it, otherwise English. Language changes apply after Libera restarts.</p>
                   <p id="your-name-help" class="field-help">Your name is optional. It adds a personal greeting to your notebooks and sign-in screen.</p>
                 </article>
               </div>
@@ -1793,6 +1796,7 @@
       const formTitle = document.querySelector("#form-title");
       const formDescription = document.querySelector("#form-description");
       const themePreferenceInput = document.querySelector("#theme-preference");
+      const localePreferenceInput = document.querySelector("#locale-preference");
       const systemAppearance = window.matchMedia("(prefers-color-scheme: dark)");
       function updateAppearance() {
         const preference = themePreferenceInput.value;
@@ -3744,6 +3748,11 @@
         const state = await window.liberaSetup.getState();
 
         themePreferenceInput.value = state.themePreference || "system";
+        // The development pseudo-locale is not offered in the list; keep it selectable when already set.
+        if (state.localePreference && ![...localePreferenceInput.options].some((option) => option.value === state.localePreference)) {
+          localePreferenceInput.add(new Option(state.localePreference, state.localePreference));
+        }
+        localePreferenceInput.value = state.localePreference || "system";
         updateAppearance();
         yourNameInput.value = state.yourName || "";
         smartPasteInput.checked = state.smartPaste === true;
@@ -4498,6 +4507,7 @@
             changePassword: !changePasswordFields.classList.contains("hidden"),
             currentPassword: currentPasswordInput.value,
             themePreference: themePreferenceInput.value,
+            localePreference: localePreferenceInput.value,
             yourName: yourNameInput.value,
             smartPaste: smartPasteInput.checked,
             sourceEditor: sourceEditorInput.value,

@@ -87,6 +87,8 @@ const LEGACY_USER_DATA_FOLDER = "Libera for Vy Tran";
 const ADMIN_USER = "admin";
 const MARKDOWN_ASSETS_DIR = "_assets";
 const THEME_PREFERENCES = new Set(["light", "dark", "system"]);
+// Interface languages; keep in step with LOCALES in src/lib/i18n/locales.ts. "en-XA" is the development pseudo-locale.
+const INTERFACE_LOCALES = new Set(["en", "fr"]);
 const NATIVE_MENU_ITEM_TYPES = new Set(["normal", "checkbox", "radio"]);
 const MAX_NATIVE_MENU_ITEMS = 64;
 const MAX_NATIVE_MENU_ID_LENGTH = 128;
@@ -510,6 +512,18 @@ function normalizeThemePreference(themePreference) {
   return THEME_PREFERENCES.has(themePreference) ? themePreference : "system";
 }
 
+function normalizeLocalePreference(value) {
+  return INTERFACE_LOCALES.has(value) || value === "en-XA" ? value : "system";
+}
+
+/** The interface language the server renders: the preference, or for "system" the closest match to the OS language. */
+function resolveInterfaceLocale(config) {
+  const preference = normalizeLocalePreference(config.localePreference);
+  if (preference !== "system") return preference;
+  const base = String(app.getLocale() || "en").toLowerCase().split("-")[0];
+  return INTERFACE_LOCALES.has(base) ? base : "en";
+}
+
 function normalizeOpenRouterModel(model) {
   const trimmed = typeof model === "string" ? model.trim() : "";
 
@@ -635,6 +649,7 @@ function normalizedImportedPreferences(input) {
 
   return {
     themePreference: normalizeThemePreference(input.themePreference),
+    localePreference: normalizeLocalePreference(input.localePreference),
     yourName: normalizeYourName(input.yourName),
     smartPaste: normalizeSmartPaste(input.smartPaste),
     sourceEditor: normalizeSourceEditor(input.sourceEditor),
@@ -888,6 +903,7 @@ function resolvedNotebookIllustrations(config) {
 function getConfigStatus(config = readConfig()) {
   return {
     themePreference: normalizeThemePreference(config.themePreference),
+    localePreference: normalizeLocalePreference(config.localePreference),
     yourName: normalizeYourName(config.yourName),
     smartPaste: normalizeSmartPaste(config.smartPaste),
     sourceEditor: normalizeSourceEditor(config.sourceEditor),
@@ -1154,6 +1170,7 @@ function validateSetupInput(input, existingConfig) {
 
   return {
     themePreference: normalizeThemePreference(input?.themePreference),
+    localePreference: normalizeLocalePreference(input?.localePreference),
     yourName: normalizeYourName(input?.yourName),
     smartPaste: normalizeSmartPaste(input?.smartPaste),
     sourceEditor: normalizeSourceEditor(input?.sourceEditor),
@@ -1359,6 +1376,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       const nextConfig = {
         ...existingConfig,
         themePreference: validated.themePreference,
+        localePreference: validated.localePreference,
         yourName: validated.yourName,
         smartPaste: validated.smartPaste,
         sourceEditor: validated.sourceEditor,
@@ -2557,6 +2575,7 @@ async function startNextServer(config) {
     ...aiPreferencesEnvironment(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
     LIBERA_SESSION_SECRET: config.sessionSecret,
     LIBERA_THEME: normalizeThemePreference(config.themePreference),
+    LIBERA_LOCALE: resolveInterfaceLocale(config),
     NODE_ENV: mode === "dev" ? "development" : "production",
     OPENAI_API_KEY: config.openaiApiKey,
     PORT: String(port),

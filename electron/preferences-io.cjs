@@ -21,6 +21,7 @@ const MAX_KDF_WORK = KDF.N * KDF.r;
 
 const PREFERENCE_KEYS = Object.freeze([
   "themePreference",
+  "localePreference",
   "yourName",
   "smartPaste",
   "sourceEditor",

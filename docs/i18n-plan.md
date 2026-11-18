@@ -62,6 +62,46 @@ namespaced by feature area.
 - User content (Markdown, LaTeX, notebooks) is never translated.
 - Content language for read-aloud, transcription and spellcheck is a separate setting from interface language.
 
+## Phase 0 — done (2026-11-18)
+
+- `next-intl` 4.15 without routing: `src/i18n/request.ts` (wired in `next.config.ts`), provider in
+  `src/app/layout.tsx`, which also sets `<html lang>`.
+- Locale: Electron's `localePreference` (`system` | `en` | `fr`, plus the dev pseudo-locale `en-XA`) in the profile
+  config, chosen under Preferences → General → Appearance. Electron resolves `system` against the OS language and
+  starts the server with `LIBERA_LOCALE`; a change goes through the existing "Restart now" prompt. Outside Electron
+  (`next dev`), `Accept-Language` decides. `.claude/launch.json` has `next-dev-fr` and `next-dev-pseudo`.
+- Messages: `src/lib/i18n/messages.ts` loads `messages/<locale>.json` over English, so a missing translation shows
+  English, never a key. `en-XA` is generated from English (accented, padded ~40%, bracketed): plain English on screen
+  under `en-XA` means text that was never converted.
+- Formatting: React components use next-intl's `useFormatter()`; helpers shared with non-React code take the
+  locale and use `src/lib/i18n/format.ts` (cached `Intl` objects).
+- Check: `node scripts/i18n/check-messages.mjs [locale]` parses every message with the ICU parser next-intl uses and
+  compares each translation's keys, arguments and tags with English.
+- Fixed: the two text comparisons that translation would break (`use-meeting-recorder.ts`, `photo-viewer.tsx`).
+- Pilot: the Spending page and panel (`spending.*`, `lib.spending.*`) are fully converted, English and French.
+
+## Converting an area (the brief for each per-area pass)
+
+Follow the Spending pilot (`src/components/libera/spending/*`, `src/lib/spending.ts`).
+
+1. Keys: keep the file-based namespaces from the inventory (`useTranslations("spending.spendingView")`). Rename or
+   restructure keys freely while converting; delete inventory keys that end up unused. Enumerations shown in the UI
+   (periods, statuses, units, components) get one key per value, looked up by the value:
+   `tLib(\`period.${period.key}\`)` — the English `label` fields in `src/lib` are no longer rendered.
+2. Whole sentences: no sentence is assembled in code from fragments, joined with `" · "`, or capitalised/lowercased
+   in code. Use `{x, select, …}` for variants (pass `"none"` / `"yes"` / `"no"` for optional or boolean parts) and
+   `{n, plural, one {…} other {…}}` for counts. Two complete sentences may be separate messages joined by a space.
+   Inline markup uses rich tags: `t.rich("vsSpanBefore", { delta: (chunks) => <span>…{chunks}</span> })`.
+3. Formatting: no `"en"`, `"en-US"` or `undefined` locales in UI code. Pass `useLocale()` into shared helpers;
+   currencies via `Intl` currency formatting, percentages via `style: "percent"`, weekday/month names from `Intl`.
+4. Errors: a store or helper outside React keeps an empty message for its own fallback, and the component shows a
+   translated one. Server error text (`error.message` from API routes) is still English; that is a later pass.
+5. Stay English: text sent to AI models, product/format/model names, keyboard shortcuts, user content.
+6. French: add every new or changed key to `messages/fr.json` (glossary and typography in
+   `docs/i18n/fr-style.md`); `check-messages.mjs fr` must report 0 problems.
+7. Verify: typecheck, lint the touched files, then open the area under `next-dev-pseudo` — anything not bracketed is
+   unconverted — and under `next-dev-fr`. Remove the area's keys from `docs/i18n/en.sources.json` when done.
+
 ## Inventory (2026-11-18)
 
 `messages/en.json` holds **7,204 messages** (217 ICU plurals) inventoried from every UI file; each key's source

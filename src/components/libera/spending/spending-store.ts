@@ -90,7 +90,7 @@ export function refreshSpending({ account = true } = {}) {
       const value = shown && JSON.stringify(shown) === JSON.stringify(fetched) ? shown : fetched;
       publish({ ...state, report: { status: "ready", value, error: "", loadedAt: Date.now() } });
     } catch (error) {
-      publish({ ...state, report: { ...state.report, status: "error", error: error instanceof Error ? error.message : "Could not load spending." } });
+      publish({ ...state, report: { ...state.report, status: "error", error: error instanceof Error ? error.message : "" } });
     } finally {
       reportRequest = null;
     }
@@ -102,7 +102,7 @@ export function refreshSpending({ account = true } = {}) {
         const { account: value } = await apiRequest<{ account: AccountUsage | null }>("/api/usage/account");
         publish({ ...state, account: { status: "ready", value, error: "", loadedAt: Date.now() } });
       } catch (error) {
-        publish({ ...state, account: { ...state.account, status: "error", error: error instanceof Error ? error.message : "Could not reach OpenRouter." } });
+        publish({ ...state, account: { ...state.account, status: "error", error: error instanceof Error ? error.message : "" } });
       } finally {
         accountRequest = null;
       }

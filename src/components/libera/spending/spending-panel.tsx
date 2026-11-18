@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
+import { useFormatter, useLocale, useTranslations } from "next-intl";
 import { ChartColumnStacked, Coins, Layers, RotateCw, Settings2, Sigma, Boxes } from "lucide-react";
 import {
-  formatCost, formatMetric, modelOrder, modelRows, PERIODS, resolvePeriod, summarize,
+  formatCost, formatMetric, modelOrder, modelRows, OTHER_MODELS, PERIODS, resolvePeriod, summarize,
   type AccountUsage, type Breakdown, type Metric,
 } from "@/lib/spending";
 import { refreshSpending, updateSpendingSettings, useSpending } from "./spending-store";
@@ -11,7 +12,6 @@ import { filterReport, formatPercent, modelColor } from "./spending-format";
 import styles from "./spending.module.css";
 
 const iconButton = "libera-sidebar-icon-button inline-flex h-[29px] w-[29px] items-center justify-center rounded-lg disabled:opacity-50";
-const sinceFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
 const subscribeNever = () => () => {};
 
 /**
@@ -21,6 +21,10 @@ const subscribeNever = () => () => {};
  */
 export function SpendingPanel() {
   const { settings, report, account } = useSpending();
+  const t = useTranslations("spending.spendingPanel");
+  const tLib = useTranslations("lib.spending");
+  const format = useFormatter();
+  const locale = useLocale();
   const full = report.value;
   // The report's load time stands in for "now"; it refreshes every minute while the page is open.
   const now = report.loadedAt || account.loadedAt;
@@ -48,80 +52,84 @@ export function SpendingPanel() {
   return (
     <div className={`${styles.tokens} ${styles.panel}`}>
       <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
-        <h2 className="min-w-0 truncate text-sm font-semibold">Spending</h2>
+        <h2 className="min-w-0 truncate text-sm font-semibold">{t("heading")}</h2>
         <div className="flex items-center">
-          <button type="button" className={iconButton} aria-label="Refresh" title="Refresh" disabled={report.status === "loading"} onClick={() => void refreshSpending()}>
+          <button type="button" className={iconButton} aria-label={t("refresh")} title={t("refresh")} disabled={report.status === "loading"} onClick={() => void refreshSpending()}>
             <RotateCw aria-hidden className={`h-4 w-4 ${report.status === "loading" ? "animate-spin" : ""}`} />
           </button>
           {hasPreferences ? (
-            <button type="button" className={iconButton} aria-label="AI preferences" title="Preferences → AI" onClick={() => void window.liberaPreferences?.open("ai")}>
+            <button type="button" className={iconButton} aria-label={t("aiPreferences")} title={t("aiPreferencesTitle")} onClick={() => void window.liberaPreferences?.open("ai")}>
               <Settings2 aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
         </div>
       </div>
       <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">
-        OpenRouter tokens and cost{full?.since ? ` recorded since ${sinceFormat.format(full.since)}` : ""}.
+        {t("blurb", { since: full?.since ? format.dateTime(full.since, { month: "short", day: "numeric", year: "numeric" }) : "none" })}
       </p>
 
       <div className={styles.panelScroll}>
-        <Section title="Period">
-          <div className={styles.periods} role="radiogroup" aria-label="Period">
+        <Section title={t("period")}>
+          <div className={styles.periods} role="radiogroup" aria-label={t("period")}>
             {PERIODS.map((period) => {
               const total = derived?.totals.get(period.key) ?? 0;
+              const label = tLib(`period.${period.key}`);
               return (
                 <button key={period.key} type="button" role="radio" aria-checked={settings.period === period.key} className={styles.periodRow}
-                  aria-label={derived ? `${period.label}, ${formatMetric(total, settings.metric, { precise: true })}` : period.label}
+                  aria-label={derived ? t("periodAriaLabel", { period: label, value: formatMetric(total, settings.metric, { precise: true, locale }) }) : label}
                   onClick={() => updateSpendingSettings({ period: period.key })}>
-                  <span>{period.label}</span>
-                  <span className={styles.periodValue}>{derived ? formatMetric(total, settings.metric) : ""}</span>
+                  <span>{label}</span>
+                  <span className={styles.periodValue}>{derived ? formatMetric(total, settings.metric, { locale }) : ""}</span>
                 </button>
               );
             })}
           </div>
         </Section>
 
-        <Section title="Measure">
-          <Segmented<Metric> label="Measure" value={settings.metric} onChange={(metric) => updateSpendingSettings({ metric })}
-            options={[{ value: "cost", label: "Cost", icon: Coins }, { value: "tokens", label: "Tokens", icon: Sigma }]} />
+        <Section title={t("measure")}>
+          <Segmented<Metric> label={t("measure")} value={settings.metric} onChange={(metric) => updateSpendingSettings({ metric })}
+            options={[{ value: "cost", label: t("cost"), icon: Coins }, { value: "tokens", label: t("tokens"), icon: Sigma }]} />
         </Section>
 
-        <Section title="Break down by">
-          <Segmented<Breakdown> label="Break down by" value={settings.breakdown} onChange={(breakdown) => updateSpendingSettings({ breakdown })}
-            options={[{ value: "component", label: "Component", icon: Layers }, { value: "model", label: "Model", icon: Boxes }]} />
+        <Section title={t("breakDownBy")}>
+          <Segmented<Breakdown> label={t("breakDownBy")} value={settings.breakdown} onChange={(breakdown) => updateSpendingSettings({ breakdown })}
+            options={[{ value: "component", label: t("component"), icon: Layers }, { value: "model", label: t("model"), icon: Boxes }]} />
           <p className={`${styles.panelNote} mt-2`}>
-            {settings.breakdown === "component" ? "Input, output, cache reads and cache writes." : "The seven costliest models overall; the rest are grouped as Other models."}
+            {settings.breakdown === "component" ? t("componentNote") : t("modelNote")}
           </p>
         </Section>
 
         {derived && derived.models.length ? (
-          <Section title="Models">
-            <div role="radiogroup" aria-label="Models">
-              <button type="button" role="radio" aria-checked={settings.model === null} aria-label="All models" className={styles.modelRow} onClick={() => updateSpendingSettings({ model: null })}>
+          <Section title={t("models")}>
+            <div role="radiogroup" aria-label={t("models")}>
+              <button type="button" role="radio" aria-checked={settings.model === null} aria-label={t("allModels")} className={styles.modelRow} onClick={() => updateSpendingSettings({ model: null })}>
                 <span className={styles.swatch} style={{ background: "conic-gradient(var(--sp-1) 0 25%, var(--sp-2) 0 50%, var(--sp-3) 0 75%, var(--sp-7) 0)" }} />
-                <span>All models</span>
+                <span>{t("allModels")}</span>
                 <span />
               </button>
-              {derived.models.map((row) => (
+              {derived.models.map((row) => {
+                const label = row.model === OTHER_MODELS ? tLib("otherModels") : row.label;
+                return (
                 <button key={row.model} type="button" role="radio" aria-checked={settings.model === row.model} className={styles.modelRow} title={row.model}
-                  aria-label={`${row.label}, ${formatPercent(row.share)}`}
+                  aria-label={t("modelAriaLabel", { label, share: formatPercent(row.share, locale) })}
                   onClick={() => updateSpendingSettings({ model: settings.model === row.model ? null : row.model })}>
                   <span className={styles.swatch} style={{ background: modelColor(row.model, derived.order) }} />
-                  <span>{row.label}</span>
-                  <span>{formatPercent(row.share)}</span>
+                  <span>{label}</span>
+                  <span>{formatPercent(row.share, locale)}</span>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </Section>
         ) : null}
 
-        <Section title="OpenRouter key">
+        <Section title={t("openRouterKey")}>
           <AccountCard status={account.status} account={account.value} error={account.error} />
         </Section>
 
         <p className={styles.panelNote}>
           <ChartColumnStacked aria-hidden className="mr-1 inline h-3 w-3 align-[-1px]" />
-          Libera keeps this history on this computer. The key’s counters above come from OpenRouter and include every app that uses the key.
+          {t("panelNote")}
         </p>
       </div>
     </div>
@@ -155,31 +163,36 @@ function Segmented<T extends string>({ label, value, options, onChange }: {
 }
 
 function AccountCard({ status, account, error }: { status: string; account: AccountUsage | null; error: string }) {
-  if (status === "error") return <div className={styles.accountCard}>{error}</div>;
-  if (!account) return <div className={styles.accountCard}>{status === "ready" ? "Add an OpenRouter API key in Preferences to see its usage." : "Loading…"}</div>;
+  const t = useTranslations("spending.spendingPanel");
+  const tLib = useTranslations("lib.spending");
+  const tStore = useTranslations("spending.spendingStore");
+  const locale = useLocale();
+  if (status === "error") return <div className={styles.accountCard}>{error || tStore("openRouterError")}</div>;
+  if (!account) return <div className={styles.accountCard}>{status === "ready" ? t("addKeyInPreferences") : t("loading")}</div>;
+  const cost = (value: number) => formatCost(value, { locale });
   const used = account.limit ? Math.min(1, (account.limit - (account.remaining ?? account.limit)) / account.limit) : 0;
   const level = used > 0.9 ? "danger" : used > 0.75 ? "warning" : "ok";
   return (
     <div className={styles.accountCard}>
       <div className={styles.accountGrid}>
-        <div><span>Today</span><strong>{formatCost(account.daily)}</strong></div>
-        <div><span>This week</span><strong>{formatCost(account.weekly)}</strong></div>
-        <div><span>This month</span><strong>{formatCost(account.monthly)}</strong></div>
+        <div><span>{tLib("period.today")}</span><strong>{cost(account.daily)}</strong></div>
+        <div><span>{tLib("period.week")}</span><strong>{cost(account.weekly)}</strong></div>
+        <div><span>{tLib("period.month")}</span><strong>{cost(account.monthly)}</strong></div>
       </div>
       {account.limit !== null ? (
         <div className={styles.meter}>
           <div className="flex justify-between text-[11px] text-muted-foreground">
-            <span>{formatCost(account.remaining ?? 0)} left of {formatCost(account.limit)}</span>
-            <span>{account.reset ? `resets ${account.reset}` : ""}</span>
+            <span>{t("leftOf", { remaining: cost(account.remaining ?? 0), limit: cost(account.limit) })}</span>
+            <span>{account.reset ? t("resets", { date: account.reset }) : ""}</span>
           </div>
-          <div className={styles.meterTrack} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(used * 100)} aria-label={`${Math.round(used * 100)}% of the key’s limit used`}>
+          <div className={styles.meterTrack} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(used * 100)} aria-label={t("usedPercentAria", { used: Math.round(used * 100) / 100 })}>
             <span data-level={level} style={{ width: `${Math.max(2, used * 100)}%` }} />
           </div>
         </div>
       ) : (
-        <div className="mt-2 text-[11px] text-muted-foreground">{formatCost(account.usage)} used in total · no spending limit{account.label ? ` · ${account.label}` : ""}</div>
+        <div className="mt-2 text-[11px] text-muted-foreground">{t("usedInTotal", { usage: cost(account.usage), label: account.label || "none" })}</div>
       )}
-      <div className="mt-2 text-[11px] text-muted-foreground">Days, weeks and months in UTC.</div>
+      <div className="mt-2 text-[11px] text-muted-foreground">{t("utcNote")}</div>
     </div>
   );
 }

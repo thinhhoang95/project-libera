@@ -518,10 +518,14 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
     return () => window.removeEventListener("keydown", handleKey);
   });
 
+  // The viewer's own command group: its palette commands, its toolbar's data-command-toolbar, and the filter that keeps
+  // that toolbar out of the Tools submenus all read this one value, so they still match once it is translated.
+  const photoGroup = "Photo";
+
   // Moving between photos and the Info panel's actions, for the command palette; the toolbar's buttons are read from the page.
   usePaletteCommands(rootRef, () => {
     if (!photo || editing || detecting) return [];
-    const group = "Photo";
+    const group = photoGroup;
     return [
       { id: "photo:previous", title: "Previous photo", group, icon: ChevronLeft, shortcut: "←", disabled: !hasPrevious, run: () => go(-1) },
       { id: "photo:next", title: "Next photo", group, icon: ChevronRight, shortcut: "→", disabled: !hasNext, run: () => go(1) },
@@ -554,7 +558,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
   useAppMenuPhoto("viewer", () => {
     if (!photo) return [];
     const root = rootRef.current;
-    const tools = root ? toolbarCommands(root).filter((command) => command.group !== "Photo") : [];
+    const tools = root ? toolbarCommands(root).filter((command) => command.group !== photoGroup) : [];
     const toolMenus = [...new Set(tools.map((command) => command.group!))].map((group): NativeMenuEntry => ({
       id: `tools:${group}`, label: group, submenu: commandMenuItems(tools.filter((command) => command.group === group)),
     }));
@@ -616,7 +620,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
       actions.onEdited?.(result);
       setNotice(mode === "copy" ? "Saved as a copy" : "Saved. You can revert to the original from Info.");
     }} /> : <>
-      <header className="flex min-w-0 items-center gap-1 overflow-x-auto px-2 py-2" data-command-toolbar="Photo">
+      <header className="flex min-w-0 items-center gap-1 overflow-x-auto px-2 py-2" data-command-toolbar={photoGroup}>
         <button className={toolButton} aria-label="Back to gallery" title="Back (Esc)" onClick={onClose}><ArrowLeft className="h-5 w-5" /></button>
         <div className="mr-auto min-w-0 px-2">
           <p className="truncate text-sm font-medium">{new Date(photo.createdAt).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" })}</p>

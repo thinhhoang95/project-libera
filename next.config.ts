@@ -1,5 +1,9 @@
 import type { NextConfig } from "next";
+import createNextIntlPlugin from "next-intl/plugin";
 import { relative } from "node:path";
+
+// Interface language: request config in src/i18n/request.ts (no locale in URLs; see docs/i18n-plan.md).
+const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 // Browser resolution selects index.dom.js, which accesses document at import
 // time and crashes inside a Web Worker. The default export uses an entity
@@ -47,4 +51,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withNextIntl(nextConfig);

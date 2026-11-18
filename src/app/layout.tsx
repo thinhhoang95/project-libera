@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import Script from "next/script";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale } from "next-intl/server";
 import { ThemeSync } from "@/components/libera/theme-sync";
 import "katex/dist/katex.min.css";
 import "./globals.css";
@@ -41,12 +43,13 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const configuredTheme = await getConfiguredThemePreference();
+  const locale = await getLocale();
 
   return (
-    <html lang="en" className="h-full antialiased" suppressHydrationWarning>
+    <html lang={locale} className="h-full antialiased" suppressHydrationWarning>
       <body className="flex h-full flex-col overflow-hidden font-sans">
         <ThemeSync />
-        {children}
+        <NextIntlClientProvider>{children}</NextIntlClientProvider>
         <Script
           id="libera-theme"
           strategy="beforeInteractive"

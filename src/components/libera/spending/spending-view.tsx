@@ -1,22 +1,32 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
+import { useLocale, useTranslations } from "next-intl";
+import { numberFormat } from "@/lib/i18n/format";
 import {
   ArrowDownRight, ArrowUpRight, CalendarDays, ChartColumnStacked, Coins, Database, Info, Loader2, Minus, Repeat2, RotateCw, Sigma, X,
 } from "lucide-react";
 import {
-  buildChart, buildHeatmap, COMPONENTS, formatCost, formatMetric, formatTokens, modelLabel, modelOrder, modelRows,
+  buildChart, buildHeatmap, COMPONENTS, formatCost, formatMetric, formatTokens, modelLabel, modelOrder, modelRows, OTHER_MODELS,
   previousRange, resolvePeriod, summarize,
-  type Breakdown, type ChartData, type Heatmap, type Metric, type PeriodRange, type PeriodSummary, type UsageReport,
+  type Breakdown, type ChartData, type Component, type Heatmap, type Metric, type PeriodRange, type PeriodSummary, type SeriesKey, type UsageReport,
 } from "@/lib/spending";
 import { refreshSpending, updateSpendingSettings, useSpending } from "./spending-store";
 import {
-  binLabel, binTitle, componentColor, filterReport, formatDay, formatPercent, formatRange, formatShortDay, modelColor,
-  niceScale, periodLabel, seriesColor,
+  binLabel, binTitle, componentColor, filterReport, formatDay, formatPercent, formatRange, formatShortDay, formatShortMonth, modelColor,
+  niceScale, seriesColor, weekdayNames,
 } from "./spending-format";
 import styles from "./spending.module.css";
 
 const REFRESH_MS = 60_000;
+
+/** Labels for chart series: components and "Other models" come from the messages; model names stay as they are. */
+function useSeriesLabel() {
+  const tLib = useTranslations("lib.spending");
+  return (key: SeriesKey, breakdown: Breakdown) => breakdown === "component"
+    ? { label: tLib(`component.${key.key as Component}.label`), detail: tLib(`component.${key.key as Component}.detail`) }
+    : { label: key.key === OTHER_MODELS ? tLib("otherModels") : key.label, detail: key.detail };
+}
 
 /** Keeps the page current while it is open: on mount, every minute, and when the window regains focus. */
 function useLiveSpending() {
@@ -58,6 +68,10 @@ function useElementWidth(ref: RefObject<HTMLElement | null>) {
 export function SpendingView() {
   const { settings, report } = useSpending();
   const now = useLiveSpending();
+  const t = useTranslations("spending.spendingView");
+  const tLib = useTranslations("lib.spending");
+  const tStore = useTranslations("spending.spendingStore");
+  const locale = useLocale();
   const full = report.value;
 
   const derived = useMemo(() => {
@@ -83,16 +97,16 @@ export function SpendingView() {
           {report.status === "error" ? (
             <div className={styles.empty} role="alert">
               <div className={styles.emptyArt}><ChartColumnStacked aria-hidden className="h-9 w-9" /></div>
-              <h2>Spending could not be loaded</h2>
-              <p>{report.error}</p>
+              <h2>{t("loadFailed")}</h2>
+              <p>{report.error || tStore("loadSpendingError")}</p>
               <button type="button" className="mt-4 inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm" onClick={() => void refreshSpending()}>
-                <RotateCw aria-hidden className="h-3.5 w-3.5" /> Try again
+                <RotateCw aria-hidden className="h-3.5 w-3.5" /> {t("tryAgain")}
               </button>
             </div>
           ) : (
             <div className={styles.empty} role="status">
               <Loader2 aria-hidden className="h-6 w-6 animate-spin text-muted-foreground" />
-              <p>Loading spending…</p>
+              <p>{t("loadingSpending")}</p>
             </div>
           )}
         </div>
@@ -102,26 +116,26 @@ export function SpendingView() {
 
   const { order, range, chart, summary, previous, rows, heatmap } = derived;
   const { metric, breakdown } = settings;
-  const filteredLabel = settings.model ? modelLabel(settings.model, full.models) : null;
+  const filteredLabel = settings.model ? (settings.model === OTHER_MODELS ? tLib("otherModels") : modelLabel(settings.model, full.models)) : null;
 
   return (
     <div className={`${styles.tokens} ${styles.page}`} data-command-scope="1">
       <div className={styles.content}>
         <header className={styles.header}>
           <div>
-            <div className={styles.eyebrow}><ChartColumnStacked aria-hidden className="h-3.5 w-3.5" /> OpenRouter spending</div>
-            <h1 className={styles.title}>{periodLabel(settings.period)}</h1>
-            <p className={styles.range}>{formatRange(range, now)}</p>
+            <div className={styles.eyebrow}><ChartColumnStacked aria-hidden className="h-3.5 w-3.5" /> {t("openRouterSpending")}</div>
+            <h1 className={styles.title}>{tLib(`period.${settings.period}`)}</h1>
+            <p className={styles.range}>{formatRange(range, locale, now)}</p>
           </div>
           <div className={styles.headerMeta}>
             {filteredLabel ? (
               <span className={styles.chip}>
                 <span className={styles.swatch} style={{ background: modelColor(settings.model!, order) }} />
-                Only {filteredLabel}
-                <button type="button" aria-label="Show every model" title="Show every model" onClick={() => updateSpendingSettings({ model: null })}><X aria-hidden className="h-3 w-3" /></button>
+                {t("onlyModel", { model: filteredLabel })}
+                <button type="button" aria-label={t("showEveryModel")} title={t("showEveryModel")} onClick={() => updateSpendingSettings({ model: null })}><X aria-hidden className="h-3 w-3" /></button>
               </span>
             ) : null}
-            {report.status === "loading" ? <Loader2 aria-label="Refreshing" className="h-3.5 w-3.5 animate-spin" /> : null}
+            {report.status === "loading" ? <Loader2 aria-label={t("refreshingAria")} className="h-3.5 w-3.5 animate-spin" /> : null}
           </div>
         </header>
 
@@ -131,8 +145,8 @@ export function SpendingView() {
           <section className={styles.card} aria-labelledby="spending-chart-title">
             <div className={styles.cardHeader}>
               <div>
-                <h2 id="spending-chart-title" className={styles.cardTitle}>{metric === "cost" ? "Cost" : "Tokens"} by {breakdown === "component" ? "component" : "model"}</h2>
-                <p className={styles.cardSubtitle}>Per {range.unit === "hour" ? "hour" : range.unit}{metric === "cost" && breakdown === "component" ? " · input, output and cache costs are estimated from each model’s prices" : ""}</p>
+                <h2 id="spending-chart-title" className={styles.cardTitle}>{t("chartTitle", { metric, breakdown })}</h2>
+                <p className={styles.cardSubtitle}>{t("chartSubtitle", { unit: range.unit, estimated: metric === "cost" && breakdown === "component" ? "yes" : "no" })}</p>
               </div>
               <Legend keys={chart.keys} breakdown={breakdown} order={order} />
             </div>
@@ -154,12 +168,17 @@ export function SpendingView() {
 // ---------------------------------------------------------------------------
 
 function DeltaBadge({ current, previous, metric }: { current: number; previous: number; metric: Metric }) {
-  if (!previous) return <span>{current ? "Nothing in the span before" : ""}</span>;
+  const t = useTranslations("spending.spendingView");
+  const locale = useLocale();
+  if (!previous) return <span>{current ? t("nothingInSpanBefore") : ""}</span>;
   const change = (current - previous) / previous;
   const Icon = Math.abs(change) < 0.005 ? Minus : change > 0 ? ArrowUpRight : ArrowDownRight;
   return (
-    <span title={`${formatMetric(previous, metric, { precise: true })} in the span before`}>
-      <span className={styles.delta}><Icon aria-hidden className="h-3.5 w-3.5" />{formatPercent(Math.abs(change))}</span> vs. the span before
+    <span title={t("inSpanBefore", { value: formatMetric(previous, metric, { precise: true, locale }) })}>
+      {t.rich("vsSpanBefore", {
+        percent: formatPercent(Math.abs(change), locale),
+        delta: (chunks) => <span className={styles.delta}><Icon aria-hidden className="h-3.5 w-3.5" />{chunks}</span>,
+      })}
     </span>
   );
 }
@@ -168,21 +187,25 @@ function StatTiles({ summary, previous, metric, range, now }: { summary: PeriodS
   const elapsedDays = Math.max(1, Math.ceil((Math.min(range.end, now) - range.start) / 86_400_000));
   const heroValue = metric === "cost" ? summary.cost : summary.totalTokens;
   const promptTokens = summary.tokens.input + summary.tokens.cacheRead + summary.tokens.cacheWrite;
+  const t = useTranslations("spending.spendingView");
+  const locale = useLocale();
+  const tokens = (value: number, exact = false) => formatTokens(value, { exact, locale });
+  const cost = (value: number, precise = false) => formatCost(value, { precise, locale });
   return (
-    <section className={styles.stats} aria-label="Totals for the period">
+    <section className={styles.stats} aria-label={t("totalsAria")}>
       <div className={`${styles.stat} ${styles.hero}`}>
-        <div className={styles.statLabel}>{metric === "cost" ? <Coins aria-hidden className="h-3.5 w-3.5" /> : <Sigma aria-hidden className="h-3.5 w-3.5" />}{metric === "cost" ? "Total cost" : "Total tokens"}{summary.estimated && metric === "cost" ? " (partly estimated)" : ""}</div>
-        <div className={styles.statValue} title={formatMetric(heroValue, metric, { precise: true, exact: true })}>{formatMetric(heroValue, metric, { precise: true })}</div>
+        <div className={styles.statLabel}>{metric === "cost" ? <Coins aria-hidden className="h-3.5 w-3.5" /> : <Sigma aria-hidden className="h-3.5 w-3.5" />}{t("heroLabel", { metric, estimated: summary.estimated && metric === "cost" ? "yes" : "no" })}</div>
+        <div className={styles.statValue} title={formatMetric(heroValue, metric, { precise: true, exact: true, locale })}>{formatMetric(heroValue, metric, { precise: true, locale })}</div>
         <div className={styles.statDetail}><DeltaBadge current={heroValue} previous={metric === "cost" ? previous.cost : previous.totalTokens} metric={metric} /></div>
       </div>
       {metric === "cost" ? (
-        <Stat icon={Sigma} label="Tokens" value={formatTokens(summary.totalTokens)} detail={`${formatTokens(promptTokens)} in · ${formatTokens(summary.tokens.output)} out`} title={`${formatTokens(summary.totalTokens, { exact: true })} tokens`} />
+        <Stat icon={Sigma} label={t("statTokens")} value={tokens(summary.totalTokens)} detail={t("statTokensDetail", { input: tokens(promptTokens), output: tokens(summary.tokens.output) })} title={t("statTokensTitle", { count: tokens(summary.totalTokens, true) })} />
       ) : (
-        <Stat icon={Coins} label="Cost" value={formatCost(summary.cost, { precise: true })} detail={summary.totalTokens ? `${formatCost(summary.cost / summary.totalTokens * 1e6)} per million tokens` : "—"} />
+        <Stat icon={Coins} label={t("statCost")} value={cost(summary.cost, true)} detail={summary.totalTokens ? t("statCostDetail", { cost: cost(summary.cost / summary.totalTokens * 1e6) }) : "—"} />
       )}
-      <Stat icon={Repeat2} label="Requests" value={formatTokens(summary.requests)} detail={summary.requests ? `${formatCost(summary.cost / summary.requests, { precise: true })} each on average` : "—"} title={`${formatTokens(summary.requests, { exact: true })} requests`} />
-      <Stat icon={Database} label="Cache hit rate" value={formatPercent(summary.cacheHitRate)} detail={summary.cacheSavings ? `≈ ${formatCost(summary.cacheSavings)} saved by caching` : "of prompt tokens read from cache"} />
-      <Stat icon={CalendarDays} label="Daily average" value={formatMetric((metric === "cost" ? summary.cost : summary.totalTokens) / elapsedDays, metric)} detail={`${summary.activeDays} active ${summary.activeDays === 1 ? "day" : "days"} of ${elapsedDays}`} />
+      <Stat icon={Repeat2} label={t("statRequests")} value={tokens(summary.requests)} detail={summary.requests ? t("statRequestsDetail", { cost: cost(summary.cost / summary.requests, true) }) : "—"} title={t("statRequestsTitle", { count: tokens(summary.requests, true) })} />
+      <Stat icon={Database} label={t("statCacheHitRate")} value={formatPercent(summary.cacheHitRate, locale)} detail={summary.cacheSavings ? t("statCacheSaved", { saved: cost(summary.cacheSavings) }) : t("statCacheHint")} />
+      <Stat icon={CalendarDays} label={t("statDailyAverage")} value={formatMetric((metric === "cost" ? summary.cost : summary.totalTokens) / elapsedDays, metric, { locale })} detail={t("statDailyDetail", { active: summary.activeDays, elapsed: elapsedDays })} />
     </section>
   );
 }
@@ -198,15 +221,20 @@ function Stat({ icon: Icon, label, value, detail, title }: { icon: typeof Coins;
 }
 
 function Legend({ keys, breakdown, order }: { keys: ChartData["keys"]; breakdown: Breakdown; order: string[] }) {
+  const t = useTranslations("spending.spendingView");
+  const seriesLabel = useSeriesLabel();
   if (keys.length < 2) return null;
   return (
-    <ul className={styles.legend} aria-label="Legend">
-      {keys.map((key) => (
-        <li key={key.key} className={styles.legendItem} title={key.detail ?? key.label}>
+    <ul className={styles.legend} aria-label={t("legendAria")}>
+      {keys.map((key) => {
+        const { label, detail } = seriesLabel(key, breakdown);
+        return (
+        <li key={key.key} className={styles.legendItem} title={detail ?? label}>
           <span className={styles.swatch} style={{ background: seriesColor(key.key, breakdown, order) }} />
-          <span>{key.label}</span>
+          <span>{label}</span>
         </li>
-      ))}
+        );
+      })}
     </ul>
   );
 }
@@ -228,6 +256,11 @@ function StackedBars({ chart, range, metric, breakdown, order, now }: { chart: C
   const ref = useRef<HTMLDivElement>(null);
   const width = useElementWidth(ref);
   const [hover, setHover] = useState<number | null>(null);
+  const t = useTranslations("spending.spendingView");
+  const tFormat = useTranslations("spending.spendingFormat");
+  const locale = useLocale();
+  const seriesLabel = useSeriesLabel();
+  const weekOf = (date: string) => tFormat("weekOf", { date });
   const plotW = Math.max(0, width - MARGIN.left - MARGIN.right);
   const plotH = CHART_HEIGHT - MARGIN.top - MARGIN.bottom;
   const scale = niceScale(chart.max);
@@ -270,7 +303,7 @@ function StackedBars({ chart, range, metric, breakdown, order, now }: { chart: C
       data-hovering={hover !== null}
       tabIndex={0}
       role="group"
-      aria-label={`${metric === "cost" ? "Cost" : "Tokens"} per ${range.unit}, ${formatMetric(chart.total, metric)} in total. Use the arrow keys to read each ${range.unit}.`}
+      aria-label={t("chartAria", { metric, unit: range.unit, total: formatMetric(chart.total, metric, { locale }) })}
       onKeyDown={onKeyDown}
       onBlur={() => setHover(null)}
     >
@@ -280,7 +313,7 @@ function StackedBars({ chart, range, metric, breakdown, order, now }: { chart: C
             {scale.ticks.map((tick) => (
               <g key={tick} transform={`translate(0,${plotH - toY(tick)})`}>
                 {tick ? <line className={styles.gridLine} x1={0} x2={plotW} /> : null}
-                <text className={styles.axisText} x={-10} dy="0.32em" textAnchor="end">{metric === "cost" ? formatAxisCost(tick) : formatTokens(tick)}</text>
+                <text className={styles.axisText} x={-10} dy="0.32em" textAnchor="end">{metric === "cost" ? formatAxisCost(tick, locale) : formatTokens(tick, { locale })}</text>
               </g>
             ))}
             {hover !== null ? <rect className={styles.hoverBand} x={band * hover} y={0} width={band} height={plotH} rx={6} /> : null}
@@ -307,32 +340,32 @@ function StackedBars({ chart, range, metric, breakdown, order, now }: { chart: C
             <line className={styles.baseline} x1={0} x2={plotW} y1={plotH} y2={plotH} />
             {chart.bins.map((bin, index) => labelled.has(index) ? (
               <text key={bin.start} className={`${styles.axisText} ${index === currentIndex ? styles.axisToday : ""}`} x={band * (index + 0.5)} y={plotH + 17} textAnchor="middle">
-                {binLabel(bin.start, range.unit, multiYear)}
+                {binLabel(bin.start, range.unit, multiYear, locale)}
               </text>
             ) : null)}
           </g>
         </svg>
       ) : <div style={{ height: CHART_HEIGHT }} />}
-      {chart.total === 0 && width > 0 ? <div className={styles.emptyChart}>Nothing recorded in this period</div> : null}
+      {chart.total === 0 && width > 0 ? <div className={styles.emptyChart}>{t("nothingRecordedPeriod")}</div> : null}
       {hovered ? (
         <div className={styles.tooltip} style={{ left: tooltipLeft, top: tooltipTop }} role="status">
-          <div className={styles.tooltipTitle}><span>{binTitle(hovered.start, hovered.end, range.unit)}</span><span>{formatMetric(hovered.total, metric, { precise: true })}</span></div>
+          <div className={styles.tooltipTitle}><span>{binTitle(hovered.start, hovered.end, range.unit, locale, weekOf)}</span><span>{formatMetric(hovered.total, metric, { precise: true, locale })}</span></div>
           {hovered.total ? (
             <div className={styles.tooltipRows}>
               {[...chart.keys].reverse().filter((key) => hovered.values[key.key]).map((key) => (
-                <TooltipRow key={key.key} color={seriesColor(key.key, breakdown, order)} label={key.label} value={`${formatMetric(hovered.values[key.key], metric, { precise: true })} · ${formatPercent(hovered.values[key.key] / hovered.total)}`} />
+                <TooltipRow key={key.key} color={seriesColor(key.key, breakdown, order)} label={seriesLabel(key, breakdown).label} value={`${formatMetric(hovered.values[key.key], metric, { precise: true, locale })} · ${formatPercent(hovered.values[key.key] / hovered.total, locale)}`} />
               ))}
             </div>
-          ) : <div className="mt-1 text-[12px] opacity-70">{hovered.start > now ? "Still to come" : "Nothing recorded"}</div>}
+          ) : <div className="mt-1 text-[12px] opacity-70">{hovered.start > now ? t("stillToCome") : t("nothingRecorded")}</div>}
         </div>
       ) : null}
       <div className="sr-only">
       <table>
-        <caption>{metric === "cost" ? "Cost" : "Tokens"} per {range.unit}</caption>
-        <thead><tr><th scope="col">{range.unit}</th>{chart.keys.map((key) => <th key={key.key} scope="col">{key.label}</th>)}<th scope="col">Total</th></tr></thead>
+        <caption>{t("chartCaption", { metric, unit: range.unit })}</caption>
+        <thead><tr><th scope="col">{t("unitHeader", { unit: range.unit })}</th>{chart.keys.map((key) => <th key={key.key} scope="col">{seriesLabel(key, breakdown).label}</th>)}<th scope="col">{t("totalHeader")}</th></tr></thead>
         <tbody>
           {chart.bins.filter((bin) => bin.total).map((bin) => (
-            <tr key={bin.start}><th scope="row">{binTitle(bin.start, bin.end, range.unit)}</th>{chart.keys.map((key) => <td key={key.key}>{formatMetric(bin.values[key.key] ?? 0, metric, { precise: true })}</td>)}<td>{formatMetric(bin.total, metric, { precise: true })}</td></tr>
+            <tr key={bin.start}><th scope="row">{binTitle(bin.start, bin.end, range.unit, locale, weekOf)}</th>{chart.keys.map((key) => <td key={key.key}>{formatMetric(bin.values[key.key] ?? 0, metric, { precise: true, locale })}</td>)}<td>{formatMetric(bin.total, metric, { precise: true, locale })}</td></tr>
           ))}
         </tbody>
       </table>
@@ -342,8 +375,8 @@ function StackedBars({ chart, range, metric, breakdown, order, now }: { chart: C
 }
 
 /** Axis ticks are round numbers: "$0.5", not "$0.500". */
-function formatAxisCost(value: number) {
-  return value ? `$${Number(value.toPrecision(3))}` : "$0";
+function formatAxisCost(value: number, locale: string) {
+  return numberFormat(locale, { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 6 }).format(value ? Number(value.toPrecision(3)) : 0);
 }
 
 function TooltipRow({ color, label, value }: { color: string; label: string; value: string }) {
@@ -361,35 +394,39 @@ function Composition({ summary, metric }: { summary: PeriodSummary; metric: Metr
   const components = COMPONENTS.filter((component) => component.key === "input" || component.key === "output" || summary.tokens[component.key] || summary.costs[component.key]);
   const values = metric === "cost" ? summary.costs : summary.tokens;
   const total = metric === "cost" ? summary.cost : summary.totalTokens;
+  const t = useTranslations("spending.spendingView");
+  const tLib = useTranslations("lib.spending");
+  const locale = useLocale();
+  const label = (key: Component) => tLib(`component.${key}.label`);
   return (
     <section className={styles.card} aria-labelledby="spending-composition-title">
       <div className={styles.cardHeader}>
         <div>
-          <h2 id="spending-composition-title" className={styles.cardTitle}>Where it went</h2>
-          <p className={styles.cardSubtitle}>{metric === "cost" ? "Cost" : "Tokens"} by component for the period</p>
+          <h2 id="spending-composition-title" className={styles.cardTitle}>{t("whereItWent")}</h2>
+          <p className={styles.cardSubtitle}>{t("byComponentPeriod", { metric })}</p>
         </div>
       </div>
-      <div className={styles.composition} role="img" aria-label={components.map((component) => `${component.label} ${formatPercent(total ? values[component.key] / total : 0)}`).join(", ")}>
+      <div className={styles.composition} role="img" aria-label={new Intl.ListFormat(locale, { type: "unit" }).format(components.map((component) => t("compositionPart", { label: label(component.key), share: formatPercent(total ? values[component.key] / total : 0, locale) })))}>
         {components.map((component) => values[component.key] ? (
-          <span key={component.key} style={{ flexGrow: values[component.key], background: componentColor(component.key) }} title={`${component.label}: ${formatPercent(values[component.key] / total)}`} />
+          <span key={component.key} style={{ flexGrow: values[component.key], background: componentColor(component.key) }} title={t("compositionSegment", { label: label(component.key), share: formatPercent(values[component.key] / total, locale) })} />
         ) : null)}
       </div>
-      <div className={styles.compositionRows} role="table" aria-label="Components">
+      <div className={styles.compositionRows} role="table" aria-label={t("componentsAria")}>
         <span aria-hidden />
-        <span role="columnheader" className="text-[11px] font-semibold uppercase tracking-wide opacity-60">Component</span>
-        <span role="columnheader" className={`${styles.muted} text-[11px] font-semibold uppercase tracking-wide`}>Tokens</span>
-        <span role="columnheader" className={`${styles.muted} text-[11px] font-semibold uppercase tracking-wide`}>Cost</span>
-        <span role="columnheader" className={`${styles.muted} text-[11px] font-semibold uppercase tracking-wide`}>Share</span>
+        <span role="columnheader" className="text-[11px] font-semibold uppercase tracking-wide opacity-60">{t("componentHeader")}</span>
+        <span role="columnheader" className={`${styles.muted} text-[11px] font-semibold uppercase tracking-wide`}>{t("tokensHeader")}</span>
+        <span role="columnheader" className={`${styles.muted} text-[11px] font-semibold uppercase tracking-wide`}>{t("costHeader")}</span>
+        <span role="columnheader" className={`${styles.muted} text-[11px] font-semibold uppercase tracking-wide`}>{t("shareHeader")}</span>
         {components.map((component) => (
-          <Row key={component.key} color={componentColor(component.key)} label={component.label} detail={component.detail}
-            tokens={component.key === "other" ? "—" : formatTokens(summary.tokens[component.key])}
-            cost={formatCost(summary.costs[component.key], { precise: true })}
-            share={formatPercent(total ? values[component.key] / total : 0)} />
+          <Row key={component.key} color={componentColor(component.key)} label={label(component.key)} detail={tLib(`component.${component.key}.detail`)}
+            tokens={component.key === "other" ? "—" : formatTokens(summary.tokens[component.key], { locale })}
+            cost={formatCost(summary.costs[component.key], { precise: true, locale })}
+            share={formatPercent(total ? values[component.key] / total : 0, locale)} />
         ))}
       </div>
       <p className={styles.note}>
         <Info aria-hidden className="h-3.5 w-3.5" />
-        <span>OpenRouter reports what each request cost in total. Libera splits it by component using the model’s prices for input, output and cache, so the parts add up to the real charge.{summary.reasoning ? ` Output includes ${formatTokens(summary.reasoning)} reasoning tokens.` : ""}</span>
+        <span>{t("compositionNote")}{summary.reasoning ? ` ${t("reasoningNote", { tokens: formatTokens(summary.reasoning, { locale }) })}` : ""}</span>
       </p>
     </section>
   );
@@ -411,13 +448,16 @@ function Row({ color, label, detail, tokens, cost, share }: { color: string; lab
 const HEAT_LABEL_W = 30;
 const HEAT_TOP = 18;
 const HEAT_GAP = 3;
-const WEEKDAY_LABELS: [number, string][] = [[0, "Mon"], [2, "Wed"], [4, "Fri"]];
-const heatMonth = new Intl.DateTimeFormat(undefined, { month: "short" });
+/** Rows labelled down the side: Monday, Wednesday and Friday (rows 0, 2 and 4). */
+const WEEKDAY_ROWS = [0, 2, 4];
 
 function HeatmapCard({ heatmap, metric, range }: { heatmap: Heatmap; metric: Metric; range: PeriodRange }) {
   const ref = useRef<HTMLDivElement>(null);
   const width = useElementWidth(ref);
   const [hover, setHover] = useState<{ day: number; value: number; requests: number; x: number; y: number } | null>(null);
+  const t = useTranslations("spending.spendingView");
+  const locale = useLocale();
+  const weekdays = weekdayNames(locale);
   const columns = heatmap.weeks.length;
   // Fit the year to the card; on narrow cards show the most recent weeks.
   const fitted = Math.floor((width - HEAT_LABEL_W) / (10 + HEAT_GAP));
@@ -431,22 +471,22 @@ function HeatmapCard({ heatmap, metric, range }: { heatmap: Heatmap; metric: Met
   weeks.forEach((week, index) => {
     const month = new Date(week[0].day).getMonth();
     const previous = index ? new Date(weeks[index - 1][0].day).getMonth() : -1;
-    if (month !== previous && (!months.length || index * pitch - months.at(-1)!.x > 28)) months.push({ x: index * pitch, label: heatMonth.format(week[0].day) });
+    if (month !== previous && (!months.length || index * pitch - months.at(-1)!.x > 28)) months.push({ x: index * pitch, label: formatShortMonth(week[0].day, locale) });
   });
 
   return (
     <section className={styles.card} aria-labelledby="spending-heatmap-title">
       <div className={styles.cardHeader}>
         <div>
-          <h2 id="spending-heatmap-title" className={styles.cardTitle}>Calendar</h2>
-          <p className={styles.cardSubtitle}>{metric === "cost" ? "Cost" : "Tokens"} per day · the selected period is shaded</p>
+          <h2 id="spending-heatmap-title" className={styles.cardTitle}>{t("calendar")}</h2>
+          <p className={styles.cardSubtitle}>{t("calendarSubtitle", { metric })}</p>
         </div>
       </div>
       <div ref={ref} className={styles.heatmap}>
         {width ? (
-          <svg width={HEAT_LABEL_W + weeks.length * pitch} height={HEAT_TOP + 7 * pitch} role="img" aria-label={`${heatmap.activeDays} active days in the last year, ${formatMetric(heatmap.total, metric)} in total`} onMouseLeave={() => setHover(null)}>
+          <svg width={HEAT_LABEL_W + weeks.length * pitch} height={HEAT_TOP + 7 * pitch} role="img" aria-label={t("heatmapAria", { days: heatmap.activeDays, total: formatMetric(heatmap.total, metric, { locale }) })} onMouseLeave={() => setHover(null)}>
             {months.map((month) => <text key={month.x} className={styles.axisText} x={HEAT_LABEL_W + month.x} y={11}>{month.label}</text>)}
-            {WEEKDAY_LABELS.map(([row, label]) => <text key={label} className={styles.axisText} x={0} y={HEAT_TOP + row * pitch + cell / 2} dy="0.32em">{label}</text>)}
+            {WEEKDAY_ROWS.map((row) => <text key={row} className={styles.axisText} x={0} y={HEAT_TOP + row * pitch + cell / 2} dy="0.32em">{weekdays[row]}</text>)}
             <g transform={`translate(${HEAT_LABEL_W},${HEAT_TOP})`}>
               {weeks.map((week, column) => week.map((day, row) => day.day >= range.start && day.day < range.end && !day.future ? (
                 <rect key={`r${day.day}`} className={styles.heatRange} x={column * pitch - HEAT_GAP / 2} y={row * pitch - HEAT_GAP / 2} width={pitch} height={pitch} />
@@ -470,17 +510,17 @@ function HeatmapCard({ heatmap, metric, range }: { heatmap: Heatmap; metric: Met
         ) : <div style={{ height: HEAT_TOP + 7 * 14 }} />}
         {hover ? (
           <div className={styles.tooltip} style={{ left: hover.x, top: hover.y }} role="status">
-            <div className={styles.tooltipTitle}><span>{formatDay(hover.day)}</span></div>
-            <div className="mt-1 text-[12px]">{hover.requests ? `${formatMetric(hover.value, metric, { precise: true })} · ${hover.requests} ${hover.requests === 1 ? "request" : "requests"}` : "No requests"}</div>
+            <div className={styles.tooltipTitle}><span>{formatDay(hover.day, locale)}</span></div>
+            <div className="mt-1 text-[12px]">{hover.requests ? t("heatRequests", { value: formatMetric(hover.value, metric, { precise: true, locale }), requests: hover.requests }) : t("noRequests")}</div>
           </div>
         ) : null}
       </div>
       <div className={styles.heatFooter}>
-        <span>{heatmap.activeDays} active {heatmap.activeDays === 1 ? "day" : "days"} in the last year{busiest?.value ? ` · busiest ${formatShortDay(busiest.day)} (${formatMetric(busiest.value, metric)})` : ""}</span>
+        <span>{t("heatFooter", { days: heatmap.activeDays, busiest: busiest?.value ? formatShortDay(busiest.day, locale) : "none", value: busiest?.value ? formatMetric(busiest.value, metric, { locale }) : "" })}</span>
         <span className={styles.heatScale} aria-hidden>
-          <span>Less</span>
+          <span>{t("less")}</span>
           {[0, 1, 2, 3, 4].map((level) => <i key={level} style={{ background: `var(--sp-heat-${level})` }} />)}
-          <span>More</span>
+          <span>{t("more")}</span>
         </span>
       </div>
     </section>
@@ -502,11 +542,15 @@ function TodayRing({ weeks, cell, pitch }: { weeks: Heatmap["weeks"]; cell: numb
 // Models.
 
 function ModelTable({ rows, order, metric, selected, report }: { rows: ReturnType<typeof modelRows>; order: string[]; metric: Metric; selected: string | null; report: UsageReport }) {
+  const t = useTranslations("spending.spendingView");
+  const tLib = useTranslations("lib.spending");
+  const locale = useLocale();
+  const tokens = (value: number, exact = false) => formatTokens(value, { exact, locale });
   if (!rows.length) {
     return (
       <section className={styles.card}>
-        <h2 className={styles.cardTitle}>Models</h2>
-        <p className={styles.cardSubtitle}>No model was used in this period.</p>
+        <h2 className={styles.cardTitle}>{t("modelsHeading")}</h2>
+        <p className={styles.cardSubtitle}>{t("noModelUsed")}</p>
       </section>
     );
   }
@@ -516,21 +560,21 @@ function ModelTable({ rows, order, metric, selected, report }: { rows: ReturnTyp
     <section className={styles.card} aria-labelledby="spending-models-title">
       <div className={styles.cardHeader}>
         <div>
-          <h2 id="spending-models-title" className={styles.cardTitle}>By model</h2>
-          <p className={styles.cardSubtitle}>Select a model to see only its use; select it again to see every model.</p>
+          <h2 id="spending-models-title" className={styles.cardTitle}>{t("byModelHeading")}</h2>
+          <p className={styles.cardSubtitle}>{t("selectModelHint")}</p>
         </div>
       </div>
       <div className={styles.tableWrap}>
         <table className={styles.table}>
           <thead>
             <tr>
-              <th scope="col">Model</th>
-              <th scope="col">Requests</th>
-              <th scope="col">Input</th>
-              <th scope="col">Output</th>
-              <th scope="col">Cache read</th>
-              <th scope="col">Cost</th>
-              <th scope="col">Share of {metric === "cost" ? "cost" : "tokens"}</th>
+              <th scope="col">{t("colModel")}</th>
+              <th scope="col">{t("colRequests")}</th>
+              <th scope="col">{t("colInput")}</th>
+              <th scope="col">{t("colOutput")}</th>
+              <th scope="col">{t("colCacheRead")}</th>
+              <th scope="col">{t("colCost")}</th>
+              <th scope="col">{t("colShare", { metric })}</th>
             </tr>
           </thead>
           <tbody>
@@ -542,19 +586,19 @@ function ModelTable({ rows, order, metric, selected, report }: { rows: ReturnTyp
                   <div className={styles.modelCell}>
                     <span className={styles.swatch} style={{ background: modelColor(row.model, order) }} />
                     <div className="min-w-0">
-                      <div className={styles.modelName}>{row.label}</div>
-                      <div className={styles.modelId}>{row.model}{report.models[row.model]?.pricing ? "" : " · prices unknown"}</div>
+                      <div className={styles.modelName}>{row.model === OTHER_MODELS ? tLib("otherModels") : row.label}</div>
+                      <div className={styles.modelId}>{report.models[row.model]?.pricing ? row.model : t("modelIdPricesUnknown", { model: row.model })}</div>
                     </div>
                   </div>
                 </td>
-                <td>{formatTokens(row.requests, { exact: true })}</td>
-                <td title={formatTokens(row.input, { exact: true })}>{formatTokens(row.input)}</td>
-                <td title={formatTokens(row.output, { exact: true })}>{formatTokens(row.output)}</td>
-                <td title={formatTokens(row.cached, { exact: true })}>{row.input ? `${formatTokens(row.cached)} · ${formatPercent(row.cached / row.input)}` : "—"}</td>
-                <td className={styles.costCell}>{formatCost(row.cost, { precise: true })}</td>
+                <td>{tokens(row.requests, true)}</td>
+                <td title={tokens(row.input, true)}>{tokens(row.input)}</td>
+                <td title={tokens(row.output, true)}>{tokens(row.output)}</td>
+                <td title={tokens(row.cached, true)}>{row.input ? `${tokens(row.cached)} · ${formatPercent(row.cached / row.input, locale)}` : "—"}</td>
+                <td className={styles.costCell}>{formatCost(row.cost, { precise: true, locale })}</td>
                 <td>
                   <div className={styles.shareCell}>
-                    <span>{formatPercent(row.share)}</span>
+                    <span>{formatPercent(row.share, locale)}</span>
                     <span className={styles.shareTrack}><span style={{ width: `${Math.max(2, row.share * 100)}%`, background: modelColor(row.model, order) }} /></span>
                   </div>
                 </td>
@@ -564,12 +608,12 @@ function ModelTable({ rows, order, metric, selected, report }: { rows: ReturnTyp
           {rows.length > 1 ? (
             <tfoot>
               <tr>
-                <td>All models</td>
-                <td>{formatTokens(totals.requests, { exact: true })}</td>
-                <td>{formatTokens(totals.input)}</td>
-                <td>{formatTokens(totals.output)}</td>
-                <td>{totals.input ? `${formatTokens(totals.cached)} · ${formatPercent(totals.cached / totals.input)}` : "—"}</td>
-                <td>{formatCost(totals.cost, { precise: true })}</td>
+                <td>{t("allModelsFoot")}</td>
+                <td>{tokens(totals.requests, true)}</td>
+                <td>{tokens(totals.input)}</td>
+                <td>{tokens(totals.output)}</td>
+                <td>{totals.input ? `${tokens(totals.cached)} · ${formatPercent(totals.cached / totals.input, locale)}` : "—"}</td>
+                <td>{formatCost(totals.cost, { precise: true, locale })}</td>
                 <td />
               </tr>
             </tfoot>
@@ -581,14 +625,12 @@ function ModelTable({ rows, order, metric, selected, report }: { rows: ReturnTyp
 }
 
 function EmptyLedger() {
+  const t = useTranslations("spending.spendingView");
   return (
     <section className={`${styles.card} ${styles.empty}`}>
       <div className={styles.emptyArt}><ChartColumnStacked aria-hidden className="h-9 w-9" /></div>
-      <h2>No spending recorded yet</h2>
-      <p>
-        From now on Libera records every OpenRouter request it makes, from AI chat and writing to formatting, reviews and image generation, with its tokens and what it cost.
-        Use any AI feature and its spending appears here. Your key’s overall usage across every app is in the Spending panel.
-      </p>
+      <h2>{t("noSpendingYet")}</h2>
+      <p>{t("emptyLedgerBody")}</p>
     </section>
   );
 }

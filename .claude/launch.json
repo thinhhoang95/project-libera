@@ -21,6 +21,18 @@
       "port": 3000
     },
     {
+      "name": "next-dev-fr",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["cross-env", "LIBERA_LOCALE=fr", "next", "dev", "-p", "3001"],
+      "port": 3001
+    },
+    {
+      "name": "next-dev-pseudo",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["cross-env", "LIBERA_LOCALE=en-XA", "next", "dev", "-p", "3002"],
+      "port": 3002
+    },
+    {
       "name": "isolated-test",
       "runtimeExecutable": "/private/tmp/claude-501/-Volumes-CrucialX-project-libera/a01d1348-7cfd-41e8-932b-553007bb64cd/scratchpad/run.sh",
       "runtimeArgs": [],

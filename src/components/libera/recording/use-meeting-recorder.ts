@@ -79,6 +79,8 @@ function quietThreshold(rms: number[]) {
 export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRecording, notebook: string, recordingId: string) => void }) {
   const [state, setState] = useState<RecorderState>("idle");
   const [error, setError] = useState("");
+  // The edit-save failure last shown, so a later successful save clears that message and no other.
+  const editSaveError = useRef("");
   const [session, setSession] = useState<RecordingStatus | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [transcriptEdits, setTranscriptEdits] = useState<SegmentEdits | null>(null);
@@ -464,10 +466,13 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
         if (sessionId.current === id) {
           applyStatus(status);
           // An earlier failure is mended: the edits it kept are saved now.
-          setError((current) => (current.startsWith("Your edits could not be saved") ? "" : current));
+          setError((current) => (current && current === editSaveError.current ? "" : current));
         }
       } catch (failure) {
-        if (sessionId.current === id) setError(failure instanceof Error ? `Your edits could not be saved: ${failure.message}` : "Your edits could not be saved.");
+        if (sessionId.current === id) {
+          editSaveError.current = failure instanceof Error ? `Your edits could not be saved: ${failure.message}` : "Your edits could not be saved.";
+          setError(editSaveError.current);
+        }
         throw failure;
       }
     });

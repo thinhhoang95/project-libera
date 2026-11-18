@@ -13,6 +13,8 @@
  * zone with a whole-hour offset (and within half an hour elsewhere).
  */
 
+import { numberFormat } from "@/lib/i18n/format";
+
 /** One OpenRouter request. Token counts follow OpenRouter: `cached` and `cacheWrite` are part of `input`. */
 export type UsageEntry = {
   /** When the response arrived, in ms. */
@@ -515,23 +517,31 @@ export function buildHeatmap(report: UsageReport, metric: Metric, now = Date.now
 // ---------------------------------------------------------------------------
 // Formatting.
 
-const compactNumber = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
-const exactNumber = new Intl.NumberFormat("en");
+type FormatLocale = { locale?: string };
 
-export function formatCost(value: number, { precise = false } = {}) {
-  if (!value) return "$0";
-  if (value >= 10_000) return `$${compactNumber.format(value)}`;
-  if (value >= 100) return `$${value.toFixed(precise ? 2 : 0)}`;
-  if (value >= 1) return `$${value.toFixed(2)}`;
-  if (value >= 0.01) return `$${value.toFixed(precise ? 4 : 3)}`;
-  if (value >= 0.0001) return `$${value.toFixed(4)}`;
-  return "<$0.0001";
+/** Spending is billed in US dollars; the interface locale decides separators and where the symbol goes. */
+function usd(locale: string, digits: number, compact = false) {
+  return numberFormat(locale, {
+    style: "currency", currency: "USD",
+    minimumFractionDigits: compact ? 0 : digits, maximumFractionDigits: digits,
+    ...(compact ? { notation: "compact" as const } : {}),
+  });
 }
 
-export function formatTokens(value: number, { exact = false } = {}) {
-  return exact ? exactNumber.format(Math.round(value)) : compactNumber.format(Math.round(value));
+export function formatCost(value: number, { precise = false, locale = "en" }: { precise?: boolean } & FormatLocale = {}) {
+  if (!value) return usd(locale, 0).format(0);
+  if (value >= 10_000) return usd(locale, 1, true).format(value);
+  if (value >= 100) return usd(locale, precise ? 2 : 0).format(value);
+  if (value >= 1) return usd(locale, 2).format(value);
+  if (value >= 0.01) return usd(locale, precise ? 4 : 3).format(value);
+  if (value >= 0.0001) return usd(locale, 4).format(value);
+  return `<${usd(locale, 4).format(0.0001)}`;
 }
 
-export function formatMetric(value: number, metric: Metric, options?: { precise?: boolean; exact?: boolean }) {
+export function formatTokens(value: number, { exact = false, locale = "en" }: { exact?: boolean } & FormatLocale = {}) {
+  return numberFormat(locale, exact ? {} : { notation: "compact", maximumFractionDigits: 1 }).format(Math.round(value));
+}
+
+export function formatMetric(value: number, metric: Metric, options?: { precise?: boolean; exact?: boolean; locale?: string }) {
   return metric === "cost" ? formatCost(value, options) : formatTokens(value, options);
 }
