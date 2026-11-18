@@ -12,6 +12,7 @@ import { undoDepth } from "@tiptap/pm/history";
 import { TIPTAP_DRAFT_DELAY_MS } from "../../src/components/libera/use-tiptap-draft";
 import { hasTiptapHeadings } from "../../src/lib/tiptap-editor-actions";
 import { tiptapFindPluginKey, updateTiptapFind } from "../../src/lib/tiptap-find";
+import { compileFind, DEFAULT_FIND_OPTIONS } from "../../src/lib/find";
 
 function setupDom() {
   const dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { url: "http://localhost", pretendToBeVisual: true });
@@ -153,7 +154,9 @@ test("rapid typing avoids serialization and React commits; snapshots, external e
     await settle();
     assert.equal(published, original());
 
-    await act(async () => { updateTiptapFind(editor, { query: "Việt" }); });
+    const viet = compileFind("Việt", { ...DEFAULT_FIND_OPTIONS, flavor: "markdown" });
+    assert.ok(viet.ok);
+    await act(async () => { updateTiptapFind(editor, { finder: viet.finder }); });
     assert.equal(tiptapFindPluginKey.getState(editor.state)?.matches.length, 1);
     await act(async () => { editor.commands.selectAll(); editor.commands.insertContent("Other text"); });
     assert.equal(tiptapFindPluginKey.getState(editor.state)?.matches.length, 0);

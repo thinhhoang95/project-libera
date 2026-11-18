@@ -11,6 +11,7 @@ import { resetReferenceLibraryCache } from "../../src/components/libera/referenc
 import { configureCitationFormatting } from "../../src/lib/references/format-client";
 import { resetRecentCitations } from "../../src/lib/references/reference-suggestions";
 import { findTiptapTextMatches } from "../../src/lib/tiptap-find";
+import { compileFind, DEFAULT_FIND_OPTIONS } from "../../src/lib/find";
 import { tiptapReviewBlocks } from "../../src/lib/tiptap-review";
 import { diffDocuments } from "../../src/lib/tiptap-changes";
 import { CITATION_NODE_NAME } from "../../src/lib/tiptap-citation";
@@ -247,11 +248,15 @@ test("find matches a citation's raw token and covers the whole node", async () =
   const visual = await mountVisual("See [@smith2020sparse, p. 12] here.");
   try {
     const [pos] = citationPositions(visual.editor);
-    assert.deepEqual(findTiptapTextMatches(visual.editor.state.doc, "smith2020"), [{ from: pos, to: pos + 1 }]);
+    const ranges = (query: string) => {
+      const compiled = compileFind(query, { ...DEFAULT_FIND_OPTIONS, flavor: "markdown" });
+      assert.ok(compiled.ok);
+      return findTiptapTextMatches(visual.editor.state.doc, compiled.finder).map((match) => ({ from: match.from, to: match.to }));
+    };
+    assert.deepEqual(ranges("smith2020"), [{ from: pos, to: pos + 1 }]);
     // Text around the citation still maps character by character.
-    assert.deepEqual(findTiptapTextMatches(visual.editor.state.doc, "here"), [{ from: pos + 2, to: pos + 6 }]);
-    const across = findTiptapTextMatches(visual.editor.state.doc, "See [@smith");
-    assert.deepEqual(across, [{ from: 1, to: pos + 1 }]);
+    assert.deepEqual(ranges("here"), [{ from: pos + 2, to: pos + 6 }]);
+    assert.deepEqual(ranges("See [@smith"), [{ from: 1, to: pos + 1 }]);
   } finally {
     await visual.dispose();
   }

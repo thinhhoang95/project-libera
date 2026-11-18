@@ -280,17 +280,23 @@ export function pasteMarkdownTableIntoCells(editor: Editor, markdown: string): b
   return true;
 }
 
-/** With `track`, the replacement is shown as proposed changes to accept or reject. */
-export function replaceTiptapRangeWithMarkdown(editor: Editor, range: EditorRange, markdown: string, track?: ChangeSource) {
+/** Markdown parsed for insertion at `range` of `doc` (the current document), or null without a Markdown parser. */
+export function tiptapMarkdownInsertionContent(editor: Editor, range: EditorRange, markdown: string, doc: Node = editor.state.doc): JSONContent[] | null {
   const parsed = editor.markdown?.parse(markdown);
-  if (!parsed) return false;
-  const from = editor.state.doc.resolve(range.from);
-  const to = editor.state.doc.resolve(range.to);
+  if (!parsed) return null;
+  const from = doc.resolve(range.from);
+  const to = doc.resolve(range.to);
   // A one-paragraph AI reply to an inline selection should stay within its
   // paragraph/heading, rather than splitting the surrounding text into blocks.
-  const content = from.sameParent(to) && from.parent.inlineContent && parsed.content?.length === 1 && parsed.content[0].type === "paragraph"
+  return from.sameParent(to) && from.parent.inlineContent && parsed.content?.length === 1 && parsed.content[0].type === "paragraph"
     ? parsed.content[0].content ?? []
     : parsed.content ?? [];
+}
+
+/** With `track`, the replacement is shown as proposed changes to accept or reject. */
+export function replaceTiptapRangeWithMarkdown(editor: Editor, range: EditorRange, markdown: string, track?: ChangeSource) {
+  const content = tiptapMarkdownInsertionContent(editor, range, markdown);
+  if (!content) return false;
   return editor.chain()
     .command(({ tr }) => {
       closeHistory(tr);
