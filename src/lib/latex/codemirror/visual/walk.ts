@@ -18,7 +18,7 @@ import { acronymText, argumentInner, CITE_ALIASES, commandArguments, hasDirectEr
 import { circledText, CONTROL_SYMBOLS, cssColor, DINGBATS, FONT_SWITCHES, LIGATURE_CHARS, readAccent, SIZE_COMMAND, SYMBOL_COMMANDS, TEXT_LIGATURES, todayText } from "./symbols";
 import { macroBuiltTabular, macroRowReadings, parseTabular, readCtable, readDeluxeTable, readLongTable, readTableSettings } from "./table-model";
 import { argumentGroups, transparentPlan } from "./transparent";
-import { commandUseEnd, eplNameLatex, eplReviewLatex, readBibitemHead, REVTEX_ENTRY, revtexEntryLatex } from "./bibliography";
+import { AUTHOR_YEAR_LABEL, commandUseEnd, eplNameLatex, eplReviewLatex, readBibitemHead, REVTEX_ENTRY, revtexEntryLatex } from "./bibliography";
 import { gameTabular } from "./game";
 import { FRAMED_PROSE, genericListHead, GENERIC_LISTS, readEnvironmentArguments, tableRuleRun, WRAPPER_ENVIRONMENTS } from "./environments";
 import {
@@ -1838,7 +1838,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const stop = /\\bibitem(?![A-Za-z@])|\\end\s*\{thebibliography\}/.exec(rest);
     if (!stop) return false;
     const body = rest.slice(0, stop.index);
-    const authorYear = head.label !== null && (/\(\s*\d{4}[a-z]?\s*\)/.test(head.label) || /\\citeauthoryear\s*\{/.test(head.label));
+    const authorYear = head.label !== null && (AUTHOR_YEAR_LABEL.test(head.label) || /\\citeauthoryear\s*\{/.test(head.label));
     if (!REVTEX_ENTRY.test(body) || (head.label !== null && !authorYear)) return false;
     const latex = revtexEntryLatex(body);
     if (latex === null) return false;
@@ -2308,7 +2308,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const theorem = defs.theorems.get(name);
     const user = defs.environments.get(name);
     const block = TEXT_BLOCKS[name];
-    if (!theorem && !user && !block && name !== "proof" && !ACKNOWLEDGMENTS.test(name)) return undefined;
+    // AASTeX 7's `contribution` prints an "Author Contributions" section, as `acknowledgments` prints its own (astro-ph.EP 2611.16040).
+    const contribution = name === "contribution" && !user && !theorem && !block && AASTEX.test(defs.documentClass ?? "");
+    if (!theorem && !user && !block && name !== "proof" && !ACKNOWLEDGMENTS.test(name) && !contribution) return undefined;
     const begin = formed.begin;
     // The optional argument (a theorem's name) may be inside BeginEnv or right after it.
     let headerEnd = begin.to;
@@ -2343,13 +2345,13 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     const contentLines = formed.content ? { from: doc.lineAt(Math.min(doc.length, headerEnd + 1)).from, to: doc.lineAt(Math.max(formed.end.from - 1, 0)).to } : null;
 
     // NeurIPS's `ack` and the like: a heading as the abstract's.
-    const acknowledgments = ACKNOWLEDGMENTS.test(name);
+    const acknowledgments = ACKNOWLEDGMENTS.test(name) || contribution;
     // A user environment that is a theorem in a frame (the book 2403.14606's `boxdef`): drawn as the theorem, without the frame.
     const wrapped = user && !theorem ? wrappedTheorem(userArgs ? substituteArguments(user.begin, userArgs) : user.begin, user.end, defs) : null;
     const shown = theorem ?? (wrapped ? defs.theorems.get(wrapped.env) : undefined);
     if (shown || name === "proof" || name === "abstract" || acknowledgments) {
       const variant = shown ? "theorem" : name === "proof" ? "proof" : "abstract";
-      const title = shown ? shown.title : name === "proof" ? (note ?? "Proof") : acknowledgments ? "Acknowledgments" : "Abstract";
+      const title = shown ? shown.title : name === "proof" ? (note ?? "Proof") : acknowledgments ? (contribution ? "Author Contributions" : "Acknowledgments") : "Abstract";
       const header = new EnvironmentHeaderWidget(variant, title, theorem ? note : wrapped ? wrapped.note : null, shown?.numbered ? "theorem" : null, 0);
       const span = aloneOnLines(doc, begin.from, headerEnd);
       // The proof's own `\renewcommand{\qedsymbol}{$\blacksquare$}` right after its header on the same line (math.CO 2611.13390):
@@ -3041,7 +3043,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const given = range ? read(state, range.from, range.to).trim().replace(/^\{([\s\S]*)\}$/, "$1") : null;
         // natbib's author–year labels (`[{Ba et~al.(2016)Ba, Kiros, and Hinton}]`) are not printed in the list.
         // A label with commands (`CGK{\etalchar{+}}20`) is printed as text, or the line stays source.
-        const authorYear = given !== null && (/\(\s*\d{4}[a-z]?\s*\)/.test(given) || /\\citeauthoryear\s*\{/.test(given));
+        const authorYear = given !== null && (AUTHOR_YEAR_LABEL.test(given) || /\\citeauthoryear\s*\{/.test(given));
         const printed = given !== null && !authorYear && /[\\{}]/.test(given) ? citationNoteText(citationNotes([given], defs, node.from).post ?? given) : given;
         if (given !== null && printed === null) return false;
         const label = given === null ? `[${bibitemNumber(doc, env.from, node.from)}]` : authorYear ? "" : `[${printed}]`;
@@ -3361,6 +3363,21 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       const end = mandatory[0].node.to;
       emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: first.from, widget: new SymbolWidget("Keywords: ", "\\keywords", "cm-vis-keywords-label") }, { from: first.to, to: end }] });
       consumed.push([node.from, first.from]);
+      return undefined;
+    }
+    // elsarticle's `\MSC[2020] 30C65 \sep 28A80` in the keywords prints "MSC 2020:" before the codes (math.CV 2611.13725).
+    if (text === "\\MSC" && defs.documentClass === "elsarticle" && !mandatory.length && !hasDirectError(node) && !macroAt(defs, "MSC", node.from)) {
+      const optional = args.find((arg) => arg.optional);
+      const year = optional ? argumentInner(optional.node) : null;
+      const end = optional ? optional.node.to : ctrl.to;
+      if (structural) emit({ kind: "style", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end, widget: new SymbolWidget(`MSC${year ? ` ${read(state, year.from, year.to).trim()}` : ""}: `, read(state, node.from, end), "cm-vis-keywords-label") }] });
+      consumed.push([node.from, end]);
+      return undefined;
+    }
+    // `\urlprefix` (url.sty, written into the `.bbl` by BibTeX's `\newblock\urlprefix\url{…}`) prints "URL ".
+    if (text === "\\urlprefix" && !args.length && !macroAt(defs, "urlprefix", node.from)) {
+      if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to, widget: new SymbolWidget("URL ", text) }] });
+      consumed.push([node.from, ctrl.to]);
       return undefined;
     }
     if (AASTEX.test(defs.documentClass ?? "") && first && !hasDirectError(node)) {
@@ -5009,7 +5026,7 @@ function jhepPlaces(text: string): FrontDetailsView | null {
 }
 
 /** What imsart's and elsarticle's front matter may hold before the abstract: the title block's commands. */
-const FRONT_MATTER_COMMANDS = /^(?:title|runtitle|subtitle|author|runauthor|address|affiliation|affil|printead|ead|thanksref|thankstext|thanks|tnoteref|tnotetext|corref|cortext|fnref|fntext|date|dedicated|received|accepted|support|orcid|email|and|AND|thanksmark|dedicatory)$/;
+const FRONT_MATTER_COMMANDS = /^(?:title|runtitle|subtitle|author|runauthor|address|affiliation|affil|printead|ead|thanksref|thankstext|thanks|tnoteref|tnotetext|nonumnote|corref|cortext|fnref|fntext|date|dedicated|received|accepted|support|orcid|email|and|AND|thanksmark|dedicatory)$/;
 
 /** An author written with imsart's name parts (`\fnms{Susan} \snm{Athey}\ead[label=e1]{…}`), as the name it prints. */
 function frontMatterAuthor(author: string) {
@@ -5072,9 +5089,12 @@ type AastexFrontMatter = { from: number; to: number; title: string | null; autho
  * (all of them before AASTeX 7, only `[show]` ones since) and keywords are small lines. Offsets are in `text`; null when
  * something else comes right before the abstract, or the run has no title or author.
  */
-function aastexFrontMatter(text: string, documentClass: string): AastexFrontMatter | null {
+function aastexFrontMatter(text: string, documentClass: string, whole = false): AastexFrontMatter | null {
   type Declaration = { name: string; optional: string | null; groups: string[] };
-  let run: { start: number; end: number; items: Declaration[] } | null = null;
+  type Run = { start: number; end: number; items: Declaration[] };
+  let run: Run | null = null;
+  // The run before an `\input{authorlist}` that holds the authors (astro-ph.SR 2611.19628): kept when nothing else follows it.
+  let held: Run | null = null;
   let i = 0;
   while (i < text.length) {
     const space = /^\s+/.exec(text.slice(i, i + 400));
@@ -5098,9 +5118,19 @@ function aastexFrontMatter(text: string, documentClass: string): AastexFrontMatt
       run ??= { start, end, items: [] };
       run.items.push(item);
       run.end = end;
-    } else run = null;
+    } else if (command && /^(?:input|include)$/.test(command[1]) && item.groups.length === 1 && !whole) {
+      // (The input line stays as it is: the run ends before it.)
+      held = run ?? held;
+      run = null;
+    } else {
+      // A file of its own that holds only the declarations (`authorlist.tex`): anything else in it is not that.
+      if (whole) return null;
+      run = null;
+      held = null;
+    }
     i = end;
   }
+  run ??= held;
   if (!run) return null;
   // Before AASTeX 7 every `\email` is printed; since, only `\email[show]{…}`.
   const allEmails = /^aastex6\d*$/.test(documentClass) || documentClass === "emulateapj";
@@ -5124,6 +5154,7 @@ function aastexFrontMatter(text: string, documentClass: string): AastexFrontMatt
     else if (item.name === "keywords") keywords.push(last);
   }
   if (title === null && !authors.length) return null;
+  if (whole && !authors.length) return null;
   if (emails.length) notes.push([emails.length > 1 ? "Emails" : "Email", emails.join(", ")]);
   if (keywords.length) notes.push(["Keywords", keywords.join(", ")]);
   const author = authors.length ? authors.map(({ name, places }) => [name, ...places.map((place) => `{\\small ${place}}`)].join(" \\\\ ")).join(" \\and ") : null;
@@ -5143,6 +5174,11 @@ function aastexFrontMatterIn(doc: Text, bodyStart: number, documentClass: string
     if (isInLatexComment(body, match.index ?? 0)) continue;
     if (match[0].startsWith("\\maketitle")) titled = true;
     else if (stop < 0) stop = match.index ?? 0;
+  }
+  // A file the main one includes that holds only the author block (no `\documentclass`, no abstract): all of it.
+  if (stop < 0 && !titled && bodyStart === 0 && !/\\documentclass(?![A-Za-z@])/.test(body)) {
+    const found = aastexFrontMatter(body, documentClass, true);
+    if (found) front = { ...found, from: found.from, to: found.to };
   }
   // With a `\maketitle` the title block is drawn there.
   if (stop > 0 && !titled) {

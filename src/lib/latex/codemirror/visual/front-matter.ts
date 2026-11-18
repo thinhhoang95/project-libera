@@ -196,7 +196,7 @@ export function frontMatterDetails(text: string, offset: number, documentClass: 
     // elsarticle: `\author[a,b]{…}` takes the addresses labelled a and b (one unlabelled address is everyone's);
     // `\ead{…}` is the last author's email; `\cortext`, `\tnotetext` and `\fntext` are notes. Springer Nature's sn-jnl
     // does the same with `\author*[1,2]{…}`, `\affil[1]{…}` and `\email{…}`.
-    const all = uses(text, offset, ["author", "address", "affiliation", "affil", "ead", "email", "cortext", "tnotetext", "fntext"]);
+    const all = uses(text, offset, ["author", "address", "affiliation", "affil", "ead", "email", "cortext", "tnotetext", "fntext", "nonumnote"]);
     const addresses = new Map<string, FrontLine>();
     const unlabelled: FrontLine[] = [];
     for (const use of all) {
@@ -225,7 +225,7 @@ export function frontMatterDetails(text: string, offset: number, documentClass: 
         details.authorLines[author].push(trimmedLine(/url/i.test(use.optional ?? "") ? "URL: " : "Email: ", use.arg.latex, use.arg.from));
       } else if (use.name === "cortext") details.notes.push(trimmedLine("∗ ", use.arg.latex, use.arg.from));
       else if (use.name === "tnotetext") details.notes.push(trimmedLine("☆ ", use.arg.latex, use.arg.from));
-      else if (use.name === "fntext") details.notes.push(trimmedLine("", use.arg.latex, use.arg.from));
+      else if (use.name === "fntext" || use.name === "nonumnote") details.notes.push(trimmedLine("", use.arg.latex, use.arg.from));
     }
     if (author + 1 !== authorCount) return null;
     // Several unlabelled addresses (one per author group): listed after the authors.
