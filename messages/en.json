@@ -8355,7 +8355,8 @@
       "markdownBoldToLatex": "Markdown **bold** to \\textbf",
       "latexBoldToMarkdown": "\\textbf to Markdown **bold**",
       "latexEmphToMarkdown": "\\emph to Markdown *italic*",
-      "swapPair": "Swap a pair (a,b) to (b,a)"
+      "swapPair": "Swap a pair (a,b) to (b,a)",
+      "chatGptMathToDollars": "ChatGPT math \\( \\) \\[ \\] to $ and $$"
     },
     "cheat": {
       "rows": {
@@ -8386,6 +8387,14 @@
       "invalidExpression": "This expression can’t be read",
       "dollarReference": "Write {suggestion} instead of {written}",
       "notANumber": "“{value}” is not a number"
-    }
+    },
+    "stepCount": "{count, plural, one {# step} other {# steps}}",
+    "runRecipe": "Run",
+    "runRecipeTitle": "Run every step in order as one edit",
+    "recipeUnavailable": "Recipes can't run in this editor yet",
+    "recipeDraft": "Recipe being built",
+    "removeStep": "Remove step {number}",
+    "addStep": "Add as step",
+    "addStepTitle": "Add the current find and replace as the next step of a recipe"
   }
 }

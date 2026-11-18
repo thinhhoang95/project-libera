@@ -8355,7 +8355,8 @@
       "markdownBoldToLatex": "Markdown **粗体** 转为 \\textbf",
       "latexBoldToMarkdown": "\\textbf 转为 Markdown **粗体**",
       "latexEmphToMarkdown": "\\emph 转为 Markdown *斜体*",
-      "swapPair": "交换一对 (a,b) 为 (b,a)"
+      "swapPair": "交换一对 (a,b) 为 (b,a)",
+      "chatGptMathToDollars": "ChatGPT 公式 \\( \\) \\[ \\] 转为 $ 和 $$"
     },
     "cheat": {
       "rows": {
@@ -8386,6 +8387,14 @@
       "invalidExpression": "无法解析此表达式",
       "dollarReference": "请用 {suggestion} 代替 {written}",
       "notANumber": "“{value}”不是数字"
-    }
+    },
+    "stepCount": "{count, plural, other {# 步}}",
+    "runRecipe": "运行",
+    "runRecipeTitle": "按顺序运行所有步骤，作为一次编辑",
+    "recipeUnavailable": "此编辑器暂不支持运行配方",
+    "recipeDraft": "正在编写的配方",
+    "removeStep": "移除第 {number} 步",
+    "addStep": "添加为步骤",
+    "addStepTitle": "将当前的查找与替换添加为配方的下一步"
   }
 }

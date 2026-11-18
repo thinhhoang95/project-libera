@@ -6,7 +6,8 @@ import {
 import { useTranslations } from "next-intl";
 import { useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import type { FindMessage, FindMode, FindScope, MatchPreview } from "@/lib/find";
-import { BUILT_IN_FIND_PRESETS, type FindPreset } from "@/lib/find/presets";
+import { BUILT_IN_FIND_PRESETS, type FindPreset, type FindRecipeStep } from "@/lib/find/presets";
+import { recipeSteps } from "@/lib/find/recipe";
 import { deleteUserFindPreset, getUserFindPresets, saveUserFindPreset, subscribeFindStore } from "@/lib/find/settings-store";
 import { FindField, groupColor, queryHighlights, replacementHighlights } from "./find-field";
 import type { FindQueryState } from "./use-find-query";
@@ -46,6 +47,8 @@ export type FindBarProps = {
   markdownReplacement?: { active: boolean; onToggle: () => void };
   /** Called after a preset fills the bar (TipTap also applies its Markdown flag). */
   onPresetApplied?: (preset: FindPreset) => void;
+  /** Runs a recipe's steps in order as one edit; recipes can't run where this is missing. */
+  onRunRecipe?: (steps: FindRecipeStep[]) => void;
   className?: string;
   /** Extra controls at the end of the options row. */
   extra?: ReactNode;
@@ -73,11 +76,13 @@ const EMPTY_PRESETS: FindPreset[] = [];
 export function FindReplaceBar({
   find, matchCount, activeIndex, incomplete = false, preview, summary, placeholder, findInputRef,
   onNext, onPrevious, onClose, onReplace, onReplaceAll, showScopes = false, inSelection, markdownReplacement,
-  onPresetApplied, className = "absolute right-3 top-3 z-20", extra,
+  onPresetApplied, onRunRecipe, className = "absolute right-3 top-3 z-20", extra,
 }: FindBarProps) {
   const t = useTranslations("find");
   const messageText = useFindMessageText();
   const [panel, setPanel] = useState<"cheat" | "presets" | null>(null);
+  // A recipe being put together from the current fields, kept while the bar is open.
+  const [recipe, setRecipe] = useState<FindRecipeStep[]>([]);
   const { settings, updateSettings, compiled, compiledReplacement } = find;
   const current = matchCount ? Math.min(activeIndex + 1, matchCount) : 0;
   const queryError = compiled.ok ? null : compiled.error;
@@ -252,7 +257,16 @@ export function FindReplaceBar({
       ) : null}
 
       {panel === "cheat" ? <CheatSheet onUse={(preset) => applyPreset(preset)} /> : null}
-      {panel === "presets" ? <PresetsPanel find={find} markdownReplacement={markdownReplacement?.active} onApply={applyPreset} /> : null}
+      {panel === "presets" ? (
+        <PresetsPanel
+          find={find}
+          markdownReplacement={markdownReplacement?.active}
+          onApply={applyPreset}
+          onRun={onRunRecipe ? (preset) => { onRunRecipe(recipeSteps(preset)); setPanel(null); } : undefined}
+          recipe={recipe}
+          onRecipeChange={setRecipe}
+        />
+      ) : null}
     </div>
   );
 }
@@ -342,32 +356,59 @@ function CheatSheet({ onUse }: { onUse: (preset: FindPreset) => void }) {
   );
 }
 
-function PresetsPanel({ find, markdownReplacement, onApply }: { find: FindQueryState; markdownReplacement?: boolean; onApply: (preset: FindPreset) => void }) {
+function PresetsPanel({ find, markdownReplacement, onApply, onRun, recipe, onRecipeChange }: {
+  find: FindQueryState;
+  markdownReplacement?: boolean;
+  onApply: (preset: FindPreset) => void;
+  onRun?: (preset: FindPreset) => void;
+  recipe: FindRecipeStep[];
+  onRecipeChange: (steps: FindRecipeStep[]) => void;
+}) {
   const t = useTranslations("find");
   const userPresets = useUserPresets();
   const [name, setName] = useState("");
-  const canSave = !!find.query && !!name.trim();
+  const currentStep = (): FindRecipeStep => ({
+    query: find.query,
+    replacement: find.replacement,
+    mode: find.settings.mode,
+    matchCase: find.settings.matchCase,
+    wholeWord: find.settings.wholeWord,
+    flexibleSpacing: find.settings.flexibleSpacing,
+    preserveCase: find.settings.preserveCase,
+    scope: find.settings.scope,
+  });
+  const canSave = (!!find.query || recipe.length > 0) && !!name.trim();
   const save = () => {
     if (!canSave) return;
+    const steps = recipe.length ? recipe : null;
+    const first = steps ? steps[0] : currentStep();
     saveUserFindPreset({
+      ...first,
       name: name.trim(),
-      query: find.query,
-      replacement: find.replacement,
-      mode: find.settings.mode,
-      matchCase: find.settings.matchCase,
-      wholeWord: find.settings.wholeWord,
-      flexibleSpacing: find.settings.flexibleSpacing,
-      scope: find.settings.scope,
-      ...(markdownReplacement !== undefined ? { markdownReplacement } : {}),
+      ...(steps ? { steps } : {}),
+      ...(markdownReplacement !== undefined && !steps ? { markdownReplacement } : {}),
     });
     setName("");
+    onRecipeChange([]);
   };
   const row = (preset: FindPreset, label: string, removable: boolean) => (
     <li key={preset.id} className="flex min-w-0 items-center gap-1">
-      <button type="button" className="flex min-w-0 flex-1 flex-col rounded px-1 py-0.5 text-left hover:bg-muted" onClick={() => onApply(preset)}>
-        <span className="truncate text-foreground">{label}</span>
-        <span className="truncate font-mono text-muted-foreground">{preset.query} → {preset.replacement}</span>
-      </button>
+      {preset.steps?.length ? (
+        <div className="flex min-w-0 flex-1 flex-col px-1 py-0.5">
+          <span className="truncate text-foreground">{label} <span className="text-muted-foreground">· {t("stepCount", { count: preset.steps.length })}</span></span>
+          <span className="truncate font-mono text-muted-foreground">{preset.steps.map((step) => `${step.query} → ${step.replacement}`).join("  ·  ")}</span>
+        </div>
+      ) : (
+        <button type="button" className="flex min-w-0 flex-1 flex-col rounded px-1 py-0.5 text-left hover:bg-muted" onClick={() => onApply(preset)}>
+          <span className="truncate text-foreground">{label}</span>
+          <span className="truncate font-mono text-muted-foreground">{preset.query} → {preset.replacement}</span>
+        </button>
+      )}
+      {preset.steps?.length ? (
+        <button type="button" className={TEXT_BUTTON} disabled={!onRun} title={onRun ? t("runRecipeTitle") : t("recipeUnavailable")} onClick={() => onRun?.(preset)}>
+          {t("runRecipe")}
+        </button>
+      ) : null}
       {removable ? (
         <button type="button" className={ICON_BUTTON} aria-label={t("deletePreset", { name: label })} title={t("deletePreset", { name: label })} onClick={() => deleteUserFindPreset(preset.id)}>
           <Trash2 aria-hidden className="h-3.5 w-3.5" />
@@ -380,7 +421,32 @@ function PresetsPanel({ find, markdownReplacement, onApply }: { find: FindQueryS
       <p className="font-medium text-foreground">{t("yourPresets")}</p>
       {userPresets.length ? <ul className="mt-1 flex flex-col gap-0.5">{userPresets.map((preset) => row(preset, preset.name ?? preset.query, true))}</ul>
         : <p className="mt-1 text-muted-foreground">{t("noPresets")}</p>}
+      {recipe.length ? (
+        <div className="mt-2">
+          <p className="font-medium text-foreground">{t("recipeDraft")}</p>
+          <ol className="mt-1 flex list-decimal flex-col gap-0.5 pl-5">
+            {recipe.map((step, index) => (
+              <li key={index} className="font-mono text-muted-foreground">
+                <span className="flex min-w-0 items-center gap-1">
+                  <span className="min-w-0 flex-1 truncate">{step.query} → {step.replacement}</span>
+                  <button type="button" className={ICON_BUTTON} aria-label={t("removeStep", { number: index + 1 })} title={t("removeStep", { number: index + 1 })} onClick={() => onRecipeChange(recipe.filter((_, other) => other !== index))}>
+                    <X aria-hidden className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ol>
+          {onRun ? (
+            <button type="button" className={TEXT_BUTTON} onClick={() => onRun({ id: "draft", query: recipe[0].query, replacement: recipe[0].replacement, mode: recipe[0].mode, steps: recipe })}>
+              {t("runRecipe")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="mt-1 flex items-center gap-1">
+        <button type="button" className={TEXT_BUTTON} disabled={!find.query} title={t("addStepTitle")} onClick={() => onRecipeChange([...recipe, currentStep()])}>
+          {t("addStep")}
+        </button>
         <input
           aria-label={t("presetName")}
           placeholder={t("presetName")}

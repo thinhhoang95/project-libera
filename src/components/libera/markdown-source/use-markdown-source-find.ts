@@ -2,7 +2,8 @@
 
 import { useMemo, useRef, useState, type RefObject } from "react";
 import { compileFind, describeMatch, type FindMatch, type Finder, type TextRange } from "@/lib/find";
-import type { FindPreset } from "@/lib/find/presets";
+import type { FindPreset, FindRecipeStep } from "@/lib/find/presets";
+import { runRecipe } from "@/lib/find/recipe";
 import type { FindSettings } from "@/lib/find/settings-store";
 import { getChangedTextRange } from "@/lib/markdown-source";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
@@ -182,6 +183,24 @@ export function useMarkdownSourceFind({ text, textareaRef, readText, updateText,
     window.requestAnimationFrame(() => focused?.focus());
   }
 
+  /** Runs a recipe over the whole text as one undoable edit of the changed span. */
+  function runRecipeSteps(steps: FindRecipeStep[]) {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const current = readText();
+    const result = runRecipe(current, steps, "markdown");
+    setSummary({ replaced: result.replaced, skipped: result.skipped });
+    if (result.text === current) return;
+    const change = getChangedTextRange(current, result.text);
+    const caret = change.selectionStart + change.replacement.length;
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: change.selectionStart, selectionEnd: change.selectionEnd, replacement: change.replacement,
+      nextSelectionStart: caret, nextSelectionEnd: caret, scrollLeft: textarea.scrollLeft, scrollTop: textarea.scrollTop,
+    })) commitText(textarea, result.text);
+    readDraft();
+    setActive(0);
+  }
+
   const activeMatch = matches[activeIndex];
   const preview = activeMatch && finder ? describeMatch(text, activeMatch, finder, replacer, activeIndex + 1) : null;
 
@@ -200,6 +219,7 @@ export function useMarkdownSourceFind({ text, textareaRef, readText, updateText,
     onClose: closeFind,
     onReplace: () => { if (activeMatch) replaceMatches([activeMatch], activeIndex + 1); },
     onReplaceAll: () => replaceMatches(matches, 1),
+    onRunRecipe: runRecipeSteps,
   };
 
   return { open, active: activeIndex, matches, matchesFor, findInputRef, openFind, closeFind, barProps };

@@ -157,3 +157,32 @@ test("Where: Inside math only replaces in formulas", async () => {
     assert.equal(editor.changes.at(-1), "x is $y+1$ and \\(2y\\)");
   } finally { await editor.dispose(); }
 });
+
+test("a recipe runs its steps as one edit", async () => {
+  const editor = await mount("Let \\(x\\) be \\[y\\]");
+  try {
+    await editor.openFind();
+    await act(async () => { editor.host.querySelector<HTMLButtonElement>('[aria-label="Presets"]')!.click(); });
+    const recipeRow = Array.from(editor.host.querySelectorAll("li")).find((item) => item.textContent?.includes("ChatGPT math"))!;
+    await act(async () => { Array.from(recipeRow.querySelectorAll("button")).find((button) => button.textContent === "Run")!.click(); });
+    assert.equal(editor.changes.at(-1), "Let $x$ be $$y$$");
+    assert.match(editor.host.textContent ?? "", /Replaced 2 matches/);
+  } finally { await editor.dispose(); }
+});
+
+test("a recipe can be put together from the current fields", async () => {
+  const editor = await mount("a b");
+  try {
+    await editor.openFind();
+    await act(async () => { editor.host.querySelector<HTMLButtonElement>('[aria-label="Presets"]')!.click(); });
+    await setControlledInput(editor.query(), "a");
+    await setControlledInput(editor.replacement(), "b");
+    await act(async () => { editor.button("Add as step").click(); });
+    await setControlledInput(editor.query(), "b");
+    await setControlledInput(editor.replacement(), "c");
+    await act(async () => { editor.button("Add as step").click(); });
+    assert.match(editor.host.textContent ?? "", /Recipe being built/);
+    await act(async () => { editor.button("Run").click(); });
+    assert.equal(editor.changes.at(-1), "c c");
+  } finally { await editor.dispose(); }
+});

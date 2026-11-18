@@ -240,3 +240,21 @@ test("hostile patterns stop at the step budget instead of freezing", { timeout: 
   assert.equal(finderFor("\\(*\\)").find(formulas).matches.length, 5000);
   assert.ok(performance.now() - quick < 1500);
 });
+
+test("recipes run their steps in order over each step's result", async () => {
+  const { runRecipe, recipeSteps } = await import("../../src/lib/find/recipe");
+  const { BUILT_IN_FIND_PRESETS } = await import("../../src/lib/find/presets");
+  const chatGpt = BUILT_IN_FIND_PRESETS.find((preset) => preset.id === "chatGptMathToDollars")!;
+  const result = runRecipe("Let \\(x\\) be\n\\[\nx^2\n\\]", recipeSteps(chatGpt), "markdown");
+  assert.equal(result.text, "Let $x$ be\n$$\nx^2\n$$");
+  assert.deepEqual(result.steps.map((step) => step.replaced), [1, 1]);
+  const chained = runRecipe("a", [
+    { query: "a", replacement: "b", mode: "plain" },
+    { query: "b", replacement: "c", mode: "plain" },
+    { query: "@x:nope", replacement: "", mode: "pattern" },
+  ], "text");
+  assert.equal(chained.text, "c");
+  assert.equal(chained.steps[2].error?.message.id, "unknownType");
+  // A plain preset is a one-step recipe.
+  assert.deepEqual(recipeSteps({ id: "p", query: "a", replacement: "b", mode: "plain" }).length, 1);
+});

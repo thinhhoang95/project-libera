@@ -3,10 +3,24 @@ import type { FindMode, FindScope } from "./types";
 /* Saved find & replace pairs. Built-in ones are named through i18n
  * (`find.presetNames.<id>`); user presets carry their own name. */
 
+/** One find & replace pair of a recipe. */
+export type FindRecipeStep = {
+  query: string;
+  replacement: string;
+  mode: FindMode;
+  matchCase?: boolean;
+  wholeWord?: boolean;
+  flexibleSpacing?: boolean;
+  preserveCase?: boolean;
+  scope?: FindScope;
+};
+
 export type FindPreset = {
   id: string;
   /** A user preset's name; built-ins are named by `id`. */
   name?: string;
+  /** A recipe: steps run in order as one edit. `query`/`replacement` then hold the first step. */
+  steps?: FindRecipeStep[];
   query: string;
   replacement: string;
   mode: FindMode;
@@ -28,11 +42,27 @@ export const BUILT_IN_FIND_PRESETS: readonly FindPreset[] = [
   { id: "latexBoldToMarkdown", query: "\\textbf{*}", replacement: "**@1**", mode: "pattern", markdownReplacement: true },
   { id: "latexEmphToMarkdown", query: "\\emph{*}", replacement: "*@1*", mode: "pattern", markdownReplacement: true },
   { id: "swapPair", query: "(*,*)", replacement: "(@2,@1)", mode: "pattern" },
+  {
+    id: "chatGptMathToDollars",
+    query: "\\[*\\]",
+    replacement: "$$@1$$",
+    mode: "pattern",
+    steps: [
+      { query: "\\[@x:block\\]", replacement: "$$@x$$", mode: "pattern" },
+      { query: "\\(*\\)", replacement: "$@1$", mode: "pattern" },
+    ],
+  },
 ];
 
-export function isFindPreset(value: unknown): value is FindPreset {
+function isStep(value: unknown): value is FindRecipeStep {
   if (!value || typeof value !== "object") return false;
+  const step = value as Partial<FindRecipeStep>;
+  return typeof step.query === "string" && typeof step.replacement === "string"
+    && (step.mode === "plain" || step.mode === "pattern" || step.mode === "regex");
+}
+
+export function isFindPreset(value: unknown): value is FindPreset {
+  if (!isStep(value)) return false;
   const preset = value as Partial<FindPreset>;
-  return typeof preset.id === "string" && typeof preset.query === "string" && typeof preset.replacement === "string"
-    && (preset.mode === "plain" || preset.mode === "pattern" || preset.mode === "regex");
+  return typeof preset.id === "string" && (preset.steps === undefined || (Array.isArray(preset.steps) && preset.steps.every(isStep)));
 }

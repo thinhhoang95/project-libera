@@ -8355,7 +8355,8 @@
       "markdownBoldToLatex": "**Gras** Markdown vers \\textbf",
       "latexBoldToMarkdown": "\\textbf vers **gras** Markdown",
       "latexEmphToMarkdown": "\\emph vers *italique* Markdown",
-      "swapPair": "Échanger une paire (a,b) en (b,a)"
+      "swapPair": "Échanger une paire (a,b) en (b,a)",
+      "chatGptMathToDollars": "Maths ChatGPT \\( \\) \\[ \\] vers $ et $$"
     },
     "cheat": {
       "rows": {
@@ -8386,6 +8387,14 @@
       "invalidExpression": "Cette expression est illisible",
       "dollarReference": "Écrivez {suggestion} au lieu de {written}",
       "notANumber": "« {value} » n’est pas un nombre"
-    }
+    },
+    "stepCount": "{count, plural, one {# étape} other {# étapes}}",
+    "runRecipe": "Lancer",
+    "runRecipeTitle": "Exécuter toutes les étapes dans l’ordre en une seule modification",
+    "recipeUnavailable": "Les recettes ne peuvent pas encore s’exécuter dans cet éditeur",
+    "recipeDraft": "Recette en cours",
+    "removeStep": "Retirer l’étape {number}",
+    "addStep": "Ajouter comme étape",
+    "addStepTitle": "Ajouter la recherche et le remplacement actuels comme étape suivante d’une recette"
   }
 }

@@ -8355,7 +8355,8 @@
       "markdownBoldToLatex": "**Đậm** Markdown thành \\textbf",
       "latexBoldToMarkdown": "\\textbf thành **đậm** Markdown",
       "latexEmphToMarkdown": "\\emph thành *nghiêng* Markdown",
-      "swapPair": "Đổi chỗ cặp (a,b) thành (b,a)"
+      "swapPair": "Đổi chỗ cặp (a,b) thành (b,a)",
+      "chatGptMathToDollars": "Công thức ChatGPT \\( \\) \\[ \\] thành $ và $$"
     },
     "cheat": {
       "rows": {
@@ -8386,6 +8387,14 @@
       "invalidExpression": "Không đọc được biểu thức này",
       "dollarReference": "Viết {suggestion} thay cho {written}",
       "notANumber": "“{value}” không phải là số"
-    }
+    },
+    "stepCount": "{count, plural, other {# bước}}",
+    "runRecipe": "Chạy",
+    "runRecipeTitle": "Chạy lần lượt mọi bước trong một lần sửa",
+    "recipeUnavailable": "Trình soạn thảo này chưa chạy được công thức",
+    "recipeDraft": "Công thức đang tạo",
+    "removeStep": "Xoá bước {number}",
+    "addStep": "Thêm thành bước",
+    "addStepTitle": "Thêm phép tìm và thay hiện tại làm bước tiếp theo của công thức"
   }
 }
