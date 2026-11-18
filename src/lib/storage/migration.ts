@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Dirent, Stats } from "node:fs";
-import { copyFile, cp, link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
+import { createReadStream, type Dirent, type Stats } from "node:fs";
+import { copyFile, cp, link, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { transformReviewBaselines, withMovedReview } from "@/lib/agent/review-store";
 import { recordMovedRunFiles, type MovedRunFile } from "@/lib/agent/snapshots";
@@ -158,6 +158,18 @@ type JournalItem = MigrationItem & {
    * and discarding staging removes them whole, even after a crash.
    */
   ownedDirectories?: string[];
+  /**
+   * Staging began on this item (saved before its first write, after checking
+   * that its owned directories did not exist yet): only then is anything under
+   * `ownedDirectories` this migration's to remove.
+   */
+  stagingBegan?: boolean;
+  /**
+   * A copy made across drives: a sha256 of the file (a digest of the paths
+   * and sizes, for a folder), saved before the copy is published. Recovery
+   * accepts a destination only when it still has this content.
+   */
+  contentHash?: string;
   /** A note's images copied while staging, its rewrite map, and its text hashes before and after it. */
   images?: { created: string[]; imageSources: Record<string, string>; before: string; after: string };
 };
@@ -183,9 +195,13 @@ type Journal = {
   folderTargets: string[];
   /** Destination folders that did not exist when planned (library paths): removed again, when empty, if staging is undone. */
   createdFolders: string[];
-  /** Finalize steps that ended, and the one that started (a step that started but did not end is not run twice). */
+  /** Finalize steps that ended, and the one that started. A step that started but did not end runs again on resume: each is safe to repeat. */
   finalized: FinalizeStep[];
   finalizing?: FinalizeStep;
+  /** Steps that threw: how often, and the bookkeeping note kept for it. A step is retried once on resume, then passed over. */
+  stepFailures?: Partial<Record<FinalizeStep, { count: number; note: string }>>;
+  /** The reference entries of moved PDFs were copied (the step's counts are in `referenceEntries`); a repeat does not copy again. */
+  entriesCopied?: boolean;
   finishedFolders?: { from: string; to: string }[];
   references?: ReferenceMoveResult | null;
   referenceEntries?: MigrationResult["referenceEntries"];
@@ -857,15 +873,24 @@ async function stageItem(journal: Journal, index: number, item: JournalItem, bat
   }
 }
 
-/** Undo staging: staged notes and copied images. The source was never touched. */
-/** Undo one item's staging: its staged note, and the `_assets` folders it owns (new with the migration). */
+/**
+ * Undo one item's staging: its staged note, its copied images, and the
+ * `_assets` folders it owns. An item staging never began is left entirely
+ * alone: whatever is at its planned paths is not this migration's.
+ */
 async function discardItem(journal: Journal, index: number, item: JournalItem) {
+  if (!item.stagingBegan && !item.images) { delete item.method; return; }
   await rm(stagedPath(journal, index, item), { force: true, recursive: true }).catch(() => undefined);
   await rm(`${stagedPath(journal, index, item)}.tmp`, { force: true }).catch(() => undefined);
   for (const created of item.images?.created ?? []) await rm(created, { force: true }).catch(() => undefined);
   const assets = path.join(notebookPath(item.to.split("/")[0]), MARKDOWN_ASSETS_DIR);
   for (const directory of item.ownedDirectories ?? []) {
-    await rm(directory, { force: true, recursive: true }).catch(() => undefined);
+    // The folder did not exist when staging began, so what is in it came from
+    // this migration. With the created images recorded, only those (removed
+    // above) and the folders they leave empty go; without that record (a
+    // crash mid-staging) the journal's own proof is all there is.
+    if (item.images) await removeEmptyDirectories(directory);
+    else await rm(directory, { force: true, recursive: true }).catch(() => undefined);
     // Parents left empty, up to and including `_assets`.
     for (let parent = path.dirname(directory); parent.startsWith(assets); parent = path.dirname(parent)) {
       if (!(await rmdir(parent).then(() => true, () => false))) break;
@@ -907,19 +932,45 @@ async function publish(from: string, to: string) {
   return false;
 }
 
-/** The destination holds this migration's file: checked by identity, never assumed from a name. */
-async function isOurs(journal: Journal, index: number, item: JournalItem, destination: Stats, staged: Stats | null, source: Stats | null) {
+/** A sha256 of a file, streamed. */
+async function fileHash(target: string) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(target)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
+}
+
+/** A digest of a folder's relative paths, kinds and sizes (links by target), without following links. */
+async function directoryDigest(directory: string) {
+  const lines: string[] = [];
+  const walk = async (current: string, relative: string): Promise<void> => {
+    const entries = (await readdir(current, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const target = path.join(current, entry.name);
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) { lines.push(`d ${name}`); await walk(target, name); }
+      else if (entry.isSymbolicLink()) lines.push(`l ${name} ${await readlink(target).catch(() => "")}`);
+      else lines.push(`f ${name} ${(await lstat(target)).size}`);
+    }
+  };
+  await walk(directory, "");
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
+
+/** The destination holds this migration's file: checked by identity or recorded content, never assumed from a name or a size. */
+async function isOurs(journal: Journal, index: number, item: JournalItem, destination: Stats, staged: Stats | null) {
   if (item.method === "link" || item.method === "rename") {
     if (destination.dev === item.identity.dev && destination.ino === item.identity.ino) return true;
-    // A folder copied from another drive (`rename` of a folder across drives is a copy).
-    return item.identity.directory && !source && !staged && destination.isDirectory();
+    // A folder copied from another drive (`rename` of a folder across drives is a copy): the copy's recorded digest must match.
+    if (!item.identity.directory || staged || !destination.isDirectory() || !item.contentHash) return false;
+    return await directoryDigest(located(item, item.to)).catch(() => null) === item.contentHash;
   }
   if (staged) return staged.dev === destination.dev && staged.ino === destination.ino;
   if (item.method === "staged") {
     const text = await readFile(located(item, item.to), "utf8").catch(() => null);
     return text !== null && hashText(text) === item.images?.after;
   }
-  return !item.identity.directory && destination.size === item.identity.size;
+  if (item.identity.directory || !item.contentHash || destination.size !== item.identity.size) return false;
+  return await fileHash(located(item, item.to)).catch(() => null) === item.contentHash;
 }
 
 /** Where the item is, from the disk. Throws when the disk does not match the migration (an unrelated file, a missing one). */
@@ -930,7 +981,7 @@ async function reconcile(journal: Journal, index: number, item: JournalItem): Pr
     lstatOrNull(stagedPath(journal, index, item)),
   ]);
   if (destination) {
-    if (!(await isOurs(journal, index, item, destination, staged, source))) {
+    if (!(await isOurs(journal, index, item, destination, staged))) {
       throw new StorageError(`${item.to} is not the file this migration moved there. Nothing was replaced or removed; check it and resume.`, 409);
     }
     return "published";
@@ -953,6 +1004,14 @@ async function retireSource(journal: Journal, index: number, item: JournalItem) 
   if (!stats) return;
   if (stats.dev !== item.identity.dev || stats.ino !== item.identity.ino) {
     throw new StorageError(`${item.from} changed while migrating. Both copies were kept; check them and resume.`, 409);
+  }
+  // A separate copy (not the same inode) holds the text as it was when
+  // published: a source edited in place since then has newer content.
+  if (!item.identity.directory) {
+    const destination = await lstatOrNull(located(item, item.to));
+    if (destination && (destination.dev !== stats.dev || destination.ino !== stats.ino) && !sameSource(item, stats)) {
+      throw new StorageError(`${item.from} was edited after it was copied to ${item.to}. Both copies were kept; compare them and resume.`, 409);
+    }
   }
   await rm(source, { force: true, recursive: item.identity.directory });
 }
@@ -979,6 +1038,10 @@ async function commit(journal: Journal, index: number, item: JournalItem) {
       // A hidden folder on another drive: copied to its staged name first, then renamed into place.
       await rm(staged, { force: true, recursive: true });
       await cp(source, staged, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true, verbatimSymlinks: true });
+      // The copy must match the folder it came from; its digest is what a resume checks the destination against.
+      item.contentHash = await directoryDigest(staged);
+      if (await directoryDigest(source) !== item.contentHash) throw new StorageError(`${item.from} changed while it was being copied. Nothing was removed; review the migration again.`, 409);
+      await saveJournal(journal);
       await rename(staged, destination);
       break;
     case "staged":
@@ -989,6 +1052,10 @@ async function commit(journal: Journal, index: number, item: JournalItem) {
       await rm(staged, { force: true });
       await copyFile(source, staged);
       if ((await stat(staged)).size !== item.identity.size) throw new StorageError(`${item.from} could not be copied completely.`, 409);
+      // The copy's content, recorded before it is published: a resume accepts a destination only with this content.
+      item.contentHash = await fileHash(staged);
+      if (await fileHash(source) !== item.contentHash) throw new StorageError(`${item.from} changed while it was being copied. Nothing was removed; review the migration again.`, 409);
+      await saveJournal(journal);
       await keepDates(staged, item.identity, sourceStats.birthtime);
       await publish(staged, destination);
       break;
@@ -1045,23 +1112,51 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A step runs once: a step that started and did not end (an interruption) is reported instead of run again. */
-async function step(journal: Journal, name: FinalizeStep, run: () => Promise<void>) {
-  if (journal.finalized.includes(name)) return;
-  if (journal.finalizing === name) {
-    journal.bookkeeping.push(`The step "${name}" was interrupted and was not run again; check it by hand.`);
-  } else {
-    journal.finalizing = name;
-    await saveJournal(journal);
-    injectFault?.(`finalize:${name}`);
-    try { await run(); }
-    catch (error) {
-      journal.bookkeeping.push(`${name}: ${errorText(error)}`);
-      console.error(`[migration] Finalize step ${name} failed:`, error);
+/** A note for the result, once: a repeated step does not say the same thing twice. */
+function note(journal: Journal, text: string) {
+  if (!journal.bookkeeping.includes(text)) journal.bookkeeping.push(text);
+}
+
+/**
+ * Run a finalize step, ending only when it did: a step that started and did
+ * not end (an interruption) runs again on resume, so each one is written to
+ * be safe to repeat. A step that throws is noted and retried once on the next
+ * resume; failing again, it is passed over with its note kept. Returns false
+ * when the steps after it should wait for that retry.
+ */
+async function step(journal: Journal, name: FinalizeStep, run: () => Promise<void>): Promise<boolean> {
+  if (journal.finalized.includes(name)) return true;
+  journal.finalizing = name;
+  await saveJournal(journal);
+  injectFault?.(`finalize:${name}`);
+  try {
+    injectFault?.(`finalizing:${name}`);
+    await run();
+  } catch (error) {
+    console.error(`[migration] Finalize step ${name} failed:`, error);
+    const count = (journal.stepFailures?.[name]?.count ?? 0) + 1;
+    const text = `${name}: ${errorText(error)}`;
+    journal.stepFailures = { ...journal.stepFailures, [name]: { count, note: text } };
+    note(journal, text);
+    delete journal.finalizing;
+    if (count < 2) {
+      await saveJournal(journal);
+      return false;
     }
+    journal.finalized.push(name);
+    await saveJournal(journal);
+    return true;
+  }
+  // A retry that worked takes back the note of the failure before it.
+  const failed = journal.stepFailures?.[name];
+  if (failed) {
+    journal.bookkeeping = journal.bookkeeping.filter((text) => text !== failed.note);
+    delete journal.stepFailures![name];
   }
   journal.finalized.push(name);
   delete journal.finalizing;
+  await saveJournal(journal);
+  return true;
 }
 
 async function finalize(journal: Journal, states: ItemState[]) {
@@ -1069,8 +1164,14 @@ async function finalize(journal: Journal, states: ItemState[]) {
   journal.phase = "finalizing";
   const files = journal.items.filter((item, index) => item.kind === "file" && states[index] === "finished");
   const moves = new Map(files.map((item) => [item.from, item.to]));
+  delete journal.error;
+  // After a step fails, the ones that follow wait for its retry (they build on its output).
+  let halted = false as boolean;
+  const run = async (name: FinalizeStep, body: () => Promise<void>) => {
+    if (!halted && !(await step(journal, name, body))) halted = true;
+  };
 
-  await step(journal, "folders", async () => {
+  await run("folders", async () => {
     const finished: { from: string; to: string }[] = [];
     for (const folder of [...journal.folders].sort((a, b) => b.from.length - a.from.length)) {
       if (journal.items.some((item, index) => states[index] !== "finished" && item.from.startsWith(`${folder.from}/`))) continue;
@@ -1079,7 +1180,7 @@ async function finalize(journal: Journal, states: ItemState[]) {
       for (const kind of SIDECAR_KINDS) await removeEmptyDirectories(kind.directoryPath(notebook, parts));
       // Content that arrived after the plan stays, and so does the folder's identity.
       if (await lstatOrNull(itemPath(notebook, parts))) {
-        journal.bookkeeping.push(`${folder.from} received new content during the migration; it stays in ${journal.source}.`);
+        note(journal, `${folder.from} received new content during the migration; it stays in ${journal.source}.`);
         continue;
       }
       finished.push(folder);
@@ -1087,7 +1188,7 @@ async function finalize(journal: Journal, states: ItemState[]) {
     journal.finishedFolders = finished;
   });
 
-  await step(journal, "records", async () => {
+  await run("records", async () => {
     await moveReviewPaths(moves);
     await renameFileMetadataPaths(moves);
     for (const folder of journal.finishedFolders ?? []) {
@@ -1096,15 +1197,15 @@ async function finalize(journal: Journal, states: ItemState[]) {
     }
   });
 
-  await step(journal, "assets", async () => {
+  await run("assets", async () => {
     // The moved notes' images and uploads, written as embeds for the cleanup scan; images other notes use stay.
     const notes = files.filter((item) => item.images).map((item) => ({ documentPath: item.from, content: Object.keys(item.images!.imageSources).map((source) => `![](<${source}>)`).join("\n") }));
     if (notes.length) await cleanupMarkdownImageAssets(journal.source, notes);
   });
 
-  await step(journal, "attachments", async () => {
+  await run("attachments", async () => {
     const { changed, failures } = await moveReferenceAttachmentsBatch(moves);
-    for (const failure of failures) journal.bookkeeping.push(`Reference attachments in ${failure.notebook || "a library"} still point at the old paths: ${errorText(failure.error)}`);
+    for (const failure of failures) note(journal,`Reference attachments in ${failure.notebook || "a library"} still point at the old paths: ${errorText(failure.error)}`);
     // Open References panels of the libraries that changed reload (one event per library, not per file).
     for (const notebook of changed) {
       try { publishReferenceEvent({ type: "library", notebook, revision: (await readReferenceLibrary(notebook)).revision }); }
@@ -1112,23 +1213,27 @@ async function finalize(journal: Journal, states: ItemState[]) {
     }
   });
 
-  await step(journal, "tether", async () => {
+  await run("tether", async () => {
     // A tethered .bib file among the moved files follows, in one pass.
     for (const failure of await moveTetheredFilesBatch(moves)) {
-      journal.bookkeeping.push(`The tethered .bib file of ${failure.notebook} could not follow its move: ${errorText(failure.error)}`);
+      note(journal, `The tethered .bib file of ${failure.notebook} could not follow its move: ${errorText(failure.error)}`);
     }
   });
 
-  await step(journal, "references", async () => {
+  await run("references", async () => {
     // References cited by notes follow them. LaTeX sources are never
     // rewritten by reference features, so they are left out, as they are
     // for single moves (references-moves.test.ts).
     const citing = files.filter((item) => item.fileType === "markdown").map((item) => ({ from: item.from, to: item.to }));
-    journal.references = citing.length ? await copyReferencesOnMove(journal.source, journal.destination.notebook, citing) : null;
-    if (journal.references?.error) journal.bookkeeping.push(`Cited references: ${journal.references.error}`);
+    // Its key maps are what the history step rewrites by: a repeat would find the notes already rewritten and map nothing, so the output is kept.
+    if (journal.references === undefined) {
+      journal.references = citing.length ? await copyReferencesOnMove(journal.source, journal.destination.notebook, citing) : null;
+      await saveJournal(journal);
+    }
+    if (journal.references?.error) note(journal, `Cited references: ${journal.references.error}`);
   });
 
-  await step(journal, "history", async () => {
+  await run("history", async () => {
     // Pending agent reviews and undo history see the files as the migration left them.
     const keyMaps = new Map((journal.references?.drafts ?? []).map((draft) => [draft.path, new Map(Object.entries(draft.map))]));
     const baselines = new Map<string, (text: string) => string>();
@@ -1149,10 +1254,11 @@ async function finalize(journal: Journal, states: ItemState[]) {
     await recordMovedRunFiles(undo);
   });
 
-  await step(journal, "entries", async () => {
+  await run("entries", async () => {
     // A moved PDF's reference entry is copied into the destination library; other PDFs may get one automatically.
     const pdfs = new Set(files.filter((item) => item.fileType === "pdf").map((item) => item.to));
-    const entries: MigrationResult["referenceEntries"] = { copied: 0, reused: 0 };
+    // A repeat after the copy keeps its counts: the entries exist now, so copying again would report them as reused.
+    const entries: MigrationResult["referenceEntries"] = journal.entriesCopied && journal.referenceEntries ? journal.referenceEntries : { copied: 0, reused: 0 };
     journal.referenceEntries = entries;
     if (!pdfs.size) return;
     try {
@@ -1165,10 +1271,12 @@ async function finalize(journal: Journal, states: ItemState[]) {
         keys.push(entry.key);
         for (const value of paths) attached.add(value);
       }
-      if (keys.length) {
+      if (keys.length && !journal.entriesCopied) {
         const copy = await copyReferenceEntries(journal.source, journal.destination.notebook, keys);
         entries.copied = copy.copied.length;
         entries.reused = copy.reused.length;
+        journal.entriesCopied = true;
+        await saveJournal(journal);
       }
       notifyReferenceFilesAdded([...pdfs].filter((value) => !attached.has(value)));
     } catch (error) {
@@ -1176,10 +1284,18 @@ async function finalize(journal: Journal, states: ItemState[]) {
     }
   });
 
-  await step(journal, "notify", async () => {
+  await run("notify", async () => {
     notifySearchChanges([...moves.keys(), ...moves.values()]);
   });
 
+  if (halted) {
+    // A step failed and gets its retry on resume; nothing more runs until then.
+    journal.state = "interrupted";
+    journal.error = "A final bookkeeping step failed. Resume to try it again.";
+    journal.result = await resultOf(journal, states);
+    await saveJournal(journal);
+    return;
+  }
   journal.state = "done";
   journal.result = await resultOf(journal, states);
   await saveJournal(journal);
@@ -1298,7 +1414,12 @@ async function runMoving(journal: Journal, continueRemaining: boolean): Promise<
         await discardItem(journal, index, item);
         continue;
       }
-      states[index] = await moveItem(journal, index, item, states[index]);
+      try { states[index] = await moveItem(journal, index, item, states[index]); }
+      catch (error) {
+        // Stop never gets stuck on a file it can't finish (a source edited since it was copied): both copies stay, reported as not fully moved.
+        if (continueRemaining || states[index] !== "published") throw error;
+        note(journal, errorText(error));
+      }
     }
   } catch (error) {
     // Where each unfinished file is now comes from the disk: the one that failed may already be published.
@@ -1366,6 +1487,12 @@ export async function runMigration(request: MigrationRequest, expectedToken: str
       // Selected folders are recreated, empty ones included.
       for (const folder of journal.folderTargets) await mkdir(rawAbsolute(folder), { recursive: true });
       for (const [index, item] of journal.items.entries()) {
+        // Staging may only remove what it made: the item's folders must be free now, and the journal says staging began before it writes anything.
+        for (const directory of item.ownedDirectories ?? []) {
+          if (await lstatOrNull(directory)) throw new StorageError(`${directory} appeared since the migration was reviewed. Nothing was replaced; review it again.`, 409);
+        }
+        item.stagingBegan = true;
+        await saveJournal(journal);
         await stageItem(journal, index, item, batch);
         injectFault?.(`staged:${item.from}`);
       }
@@ -1424,7 +1551,8 @@ export async function resumeMigration(id: string, mode: "continue" | "stop"): Pr
       const states: ItemState[] = [];
       for (const [index, item] of journal.items.entries()) {
         const state = await reconcile(journal, index, item);
-        states[index] = state === "published" ? "finished" : "pending";
+        // Published and its source gone: finished. A source still there (kept by Stop) is not a clean move.
+        states[index] = state !== "published" ? "pending" : (await lstatOrNull(located(item, item.from))) ? "published" : "finished";
       }
       await finalize(journal, states);
       return journal.result!;
