@@ -1590,8 +1590,11 @@ export async function runMigration(request: MigrationRequest, expectedToken: str
       for (const folder of journal.folderTargets) await mkdir(rawAbsolute(folder), { recursive: true });
       for (const [index, item] of journal.items.entries()) {
         // Staging may only remove what it made: the item's folders must be free now, and the journal says staging began before it writes anything.
+        // A folder this run already made as the parent of an earlier note's folder (`_assets/a` above `_assets/a/b`) is its own.
+        const madeAbove = (directory: string) => journal.items.slice(0, index).some((earlier) => earlier.stagingBegan &&
+          (earlier.ownedDirectories ?? []).some((owned) => owned.startsWith(`${directory}${path.sep}`)));
         for (const directory of item.ownedDirectories ?? []) {
-          if (await lstatOrNull(directory)) throw new StorageError(`${directory} appeared since the migration was reviewed. Nothing was replaced; review it again.`, 409);
+          if (await lstatOrNull(directory) && !madeAbove(directory)) throw new StorageError(`${directory} appeared since the migration was reviewed. Nothing was replaced; review it again.`, 409);
         }
         item.stagingBegan = true;
         await saveJournal(journal);
