@@ -6,11 +6,13 @@ import { transformReviewBaselines, withMovedReview } from "@/lib/agent/review-st
 import { recordMovedRunFiles, type MovedRunFile } from "@/lib/agent/snapshots";
 import { isSharedNotebookPath, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { latexDependencies } from "@/lib/latex/dependencies";
+import { isSlideChartDataFile, parseSlideChartSpec, resolveDeckRelativePath, slideChartBlocks } from "@/lib/slide-charts";
 import { pythonSidecarPath } from "@/lib/python/sidecar";
 import { moveTetheredFilesBatch } from "@/lib/references/bib-tether";
 import { publishReferenceEvent } from "@/lib/references/library-events";
 import { rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
+import { isLatexCitingPath, latexCitedKeys } from "@/lib/references/latex-cite-syntax";
 import { copyReferenceEntries } from "@/lib/references/copy-entries";
 import { notifyReferenceFilesAdded, referenceJobsFilePath } from "@/lib/references/jobs";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
@@ -21,6 +23,7 @@ import { getFileType } from "@/lib/storage/file-types";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, markdownImageTargets, readMarkdownAssetDocuments, type MarkdownAssetBatch } from "@/lib/storage/markdown-assets";
 import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
+import { destinationRecords } from "@/lib/storage/destination-records";
 import { checkNothingLeftAt } from "@/lib/storage/integrity";
 import { migrationJournalDirectory, migrationJournalsChanged } from "@/lib/storage/migration-fence";
 import { createNotebook, deleteNotebook } from "@/lib/storage/notebooks";
@@ -35,7 +38,7 @@ import {
   notebookPath,
   splitFilePath,
 } from "@/lib/storage/paths";
-import { moveReferenceAttachmentsBatch, readReferenceLibrary } from "@/lib/storage/references";
+import { inspectReferenceLibrary, moveReferenceAttachmentsBatch, readReferenceLibrary } from "@/lib/storage/references";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { existingSidecars, moveFileSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { fileExistence, libraryNotebookNames, linkCandidates, readNotebookLinkIndex, resolveLinkWith } from "@/lib/storage/library-links";
@@ -116,7 +119,7 @@ export type MigrationItem = {
   count?: number;
 };
 
-export type MigrationWarningKind = "renamed" | "inbound-links" | "inbound-images" | "outbound-links" | "latex-left-behind" | "latex-includes-moving" | "latex-incomplete" | "cross-device";
+export type MigrationWarningKind = "renamed" | "inbound-links" | "inbound-images" | "outbound-links" | "latex-left-behind" | "latex-includes-moving" | "latex-incomplete" | "latex-shadowed" | "latex-citations" | "renamed-records" | "cross-device";
 
 export type MigrationWarning = {
   kind: MigrationWarningKind;
@@ -648,29 +651,43 @@ async function buildPlan(request: MigrationRequest) {
   }
 
   const items: JournalItem[] = [];
+  // Records of an earlier file (stars, tags, review comments, a reference
+  // attachment...) can wait at a path with no file: the arriving file would
+  // take them over. They are read once for the whole plan.
+  const records = candidates.some((candidate) => candidate.kind === "file") ? await destinationRecords() : null;
+  /** Items renamed only because records of an earlier file are at their name, by target path. */
+  const keptFree = new Set<string>();
   const ordered = [...candidates].sort((a, b) => a.fromParts.join("/").localeCompare(b.fromParts.join("/")));
   for (const candidate of ordered) {
     const parent = placed(candidate.fromParts, candidate.base).slice(0, -1);
     const name = candidate.fromParts.at(-1)!;
     await reserveFolder(parent);
     let next = name;
+    let firstClash: "file" | "records" | null = null;
     for (let index = 1; ; index += 1) {
       const target = [destinationName, ...parent, next].join("/");
       const key = target.toLowerCase();
       let clash = takenFiles.has(key) || takenFolders.has(key);
+      let byRecords = false;
+      if (!clash && !create) clash = !!(await lstatOrNull(rawAbsolute(target)));
+      if (!clash && records && candidate.kind === "file") {
+        byRecords = (await records.at(destinationName, [...parent, next], candidate.fileType)).length > 0;
+        clash = byRecords;
+      }
       if (!clash && !create) {
-        clash = !!(await lstatOrNull(rawAbsolute(target)));
-        if (!clash && candidate.kind === "file") clash = (await existingSidecars(destinationName, [...parent, next], candidate.fileType)).length > 0;
+        if (candidate.kind === "file") clash = (await existingSidecars(destinationName, [...parent, next], candidate.fileType)).length > 0;
         if (!clash && candidate.fileType === "markdown") {
           for (const directory of ownedAssetDirectories(target)) if (await lstatOrNull(directory)) clash = true;
         }
       }
       if (!clash) { takenFiles.add(key); break; }
+      if (index === 1) firstClash = byRecords ? "records" : "file";
       next = withSuffix(name, index);
     }
     // macOS junk (.DS_Store, ._*) is not worth keeping twice.
     if (next !== name && candidate.kind === "other" && JUNK(name)) continue;
     const to = [destinationName, ...parent, next].join("/");
+    if (next !== name && firstClash === "records") keptFree.add(to);
     items.push({
       from: [source, ...candidate.fromParts].join("/"),
       to,
@@ -699,7 +716,7 @@ async function buildPlan(request: MigrationRequest) {
   };
   blockers.push(...await workInProgressBlockers(source, fullFolders.map((folder) => folder.from)));
   const identities = new Map(items.map((item) => [item.from, item.identity]));
-  const warnings = await planWarnings(core);
+  const warnings = await planWarnings(core, keptFree);
   const plan: MigrationPlan = {
     ...core,
     token: token(core, identities, request.destination.create, warnings),
@@ -722,13 +739,17 @@ export async function planMigration(request: MigrationRequest): Promise<Migratio
 
 // ---- Warnings ----------------------------------------------------------------
 
-async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
+async function planWarnings(plan: PlanCore, keptFree: ReadonlySet<string> = new Set()): Promise<MigrationWarning[]> {
   const warnings: MigrationWarning[] = [];
   const files = plan.items.filter((item) => item.kind === "file");
   const moves = new Map(files.map((item) => [item.from, item.to]));
   const arriving = new Set(moves.values());
 
-  const renamed = files.filter((item) => item.renamed);
+  const renamed = files.filter((item) => item.renamed && !keptFree.has(item.to));
+  const keptApart = files.filter((item) => item.renamed && keptFree.has(item.to));
+  if (keptApart.length) {
+    warnings.push({ kind: "renamed-records", message: `${keptApart.length} ${keptApart.length === 1 ? "file is" : "files are"} renamed because stars, tags, comments, reference attachments or other records of an earlier file are kept at the destination name.`, paths: keptApart.map((item) => `${item.from} → ${item.to}`) });
+  }
   if (renamed.length) {
     warnings.push({ kind: "renamed", message: `${renamed.length} ${renamed.length === 1 ? "file has" : "files have"} the same name as a file in the destination and will be renamed to keep both.`, paths: renamed.map((item) => `${item.from} → ${item.to}`) });
   }
@@ -743,11 +764,32 @@ async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
     const before = disk.exists;
     const after = (candidate: string) => arriving.has(candidate) || (!moves.has(candidate) && before(candidate));
 
-    // Notes that stay and link to a file that moves.
+    // Every note is read from disk, not taken from the last saved link index
+    // (which can be older than the note): links, chart data and images all come
+    // from its text. A note the scan did not reach keeps its indexed links.
+    const allMoves = new Map(plan.items.map((item) => [item.from, item.to]));
+    const allArriving = new Set(allMoves.values());
+    const chartData = (documentPath: string, content: string) => {
+      const targets: { data: string; target: string }[] = [];
+      for (const block of slideChartBlocks(content)) {
+        const parsed = parseSlideChartSpec(block.code);
+        if (!("spec" in parsed) || !isSlideChartDataFile(parsed.spec.data)) continue;
+        const data = parsed.spec.data!.trim();
+        targets.push({ data, target: resolveDeckRelativePath(documentPath, data) });
+      }
+      return targets;
+    };
+    // Notes that stay and link to, or chart data from, a file that moves.
     const inbound = new Set<string>();
+    // Notes that stay and show a moving image by its library address (`/api/files/raw/...`): the link index leaves embeds out.
+    const showing = new Set<string>();
     for (const notebook of await libraryNotebookNames()) {
-      for (const [notePath, hrefs] of Object.entries(await readNotebookLinkIndex(notebook))) {
-        if (moves.has(notePath)) continue;
+      const { documents } = await readMarkdownAssetDocuments(notebook);
+      const read = new Set(documents.map((note) => note.documentPath));
+      const linksOf = new Map<string, string[]>(documents.map((note) => [note.documentPath, extractNotebookLinkDestinations(note.content)]));
+      for (const [notePath, hrefs] of Object.entries(await readNotebookLinkIndex(notebook))) if (!read.has(notePath)) linksOf.set(notePath, hrefs);
+      for (const [notePath, hrefs] of linksOf) {
+        if (moves.has(notePath) || allMoves.has(notePath)) continue;
         for (const href of hrefs) {
           const candidates = linkCandidates(href, notePath);
           if (!candidates.some((candidate) => moves.has(candidate))) continue;
@@ -755,6 +797,11 @@ async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
           const target = resolveLinkWith(href, notePath, before);
           if (target && target !== notePath && moves.has(target)) inbound.add(notePath);
         }
+      }
+      for (const note of documents) {
+        if (allMoves.has(note.documentPath)) continue;
+        if (chartData(note.documentPath, note.content).some(({ target }) => allMoves.has(target))) inbound.add(note.documentPath);
+        if (markdownImageTargets(note.documentPath, note.content).some((target) => target.libraryPath && moves.has(target.libraryPath))) showing.add(note.documentPath);
       }
     }
     // Moving notes whose links resolve elsewhere from their new place (both ends moving included).
@@ -769,13 +816,14 @@ async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
         const expected = moves.get(target) ?? target;
         if (resolveLinkWith(href, note.to, after) !== expected) outbound.add(note.from);
       }
-    }
-    // Notes that stay and show a moving image by its library address (`/api/files/raw/...`): the link index leaves embeds out.
-    const showing = new Set<string>();
-    const { documents } = await readMarkdownAssetDocuments(plan.source);
-    for (const note of documents) {
-      if (moves.has(note.documentPath)) continue;
-      if (markdownImageTargets(note.documentPath, note.content).some((target) => target.libraryPath && moves.has(target.libraryPath))) showing.add(note.documentPath);
+      // A chart reads its data from the note's folder, by the name as written.
+      for (const { data, target } of chartData(note.from, content)) {
+        const arrived = resolveDeckRelativePath(note.to, data);
+        await check([target, arrived]);
+        if (!before(target)) continue;
+        const expected = allMoves.get(target) ?? target;
+        if (arrived !== expected || !(allArriving.has(arrived) || (!allMoves.has(arrived) && before(arrived)))) outbound.add(note.from);
+      }
     }
     if (showing.size) warnings.push({ kind: "inbound-images", message: `${showing.size} ${showing.size === 1 ? "note that stays shows" : "notes that stay show"} images you are moving. Those images will no longer show there.`, paths: [...showing].sort() });
     if (inbound.size) warnings.push({ kind: "inbound-links", message: `${inbound.size} ${inbound.size === 1 ? "note links" : "notes link"} to files you are moving. Those links will stop working.`, paths: [...inbound].sort() });
@@ -786,7 +834,7 @@ async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
 
   try {
     const { files: sourceFiles, truncated } = await listVisibleNotebookFiles(plan.source);
-    const { dependencies, mainFiles, incomplete } = await latexDependencies(plan.source, sourceFiles);
+    const { dependencies, references, mainFiles, incomplete } = await latexDependencies(plan.source, sourceFiles);
     const leftBehind = new Set<string>();
     const lost = new Set<string>();
     for (const [file, needs] of dependencies) {
@@ -799,9 +847,63 @@ async function planWarnings(plan: PlanCore): Promise<MigrationWarning[]> {
     }
     if (leftBehind.size) warnings.push({ kind: "latex-left-behind", message: `Moving LaTeX files use ${leftBehind.size} ${leftBehind.size === 1 ? "file" : "files"} that you are not moving. Add them to keep the project compiling.`, paths: [...leftBehind].sort() });
     if (lost.size) warnings.push({ kind: "latex-includes-moving", message: `${lost.size} LaTeX ${lost.size === 1 ? "file that stays uses" : "files that stay use"} files you are moving.`, paths: [...lost].sort() });
+    // A moving file's `\input`, `\includegraphics`... as TeX would resolve them at the final paths
+    // (the main file's folder moved with it, a renamed arrival under its new name), against what
+    // they resolve to now. A different file or none: a renamed dependency, or one the destination already has.
+    const visible = new Set(sourceFiles);
+    const landing = fileExistence();
+    const shifted = new Set<string>();
+    for (const [file, written] of references) {
+      const target = moves.get(file);
+      if (!target) continue;
+      const roots = [...(mainFiles.get(file) ?? [])].sort();
+      const root = roots.find((candidate) => moves.has(candidate)) ?? file;
+      const rootTarget = moves.get(root) ?? target;
+      const rootFrom = root.slice(0, root.lastIndexOf("/") + 1);
+      const rootTo = rootTarget.slice(0, rootTarget.lastIndexOf("/") + 1);
+      const arrived = (candidate: string) => candidate.startsWith(rootFrom) ? `${rootTo}${candidate.slice(rootFrom.length)}` : moves.get(candidate) ?? candidate;
+      for (const reference of written) {
+        const current = reference.candidates.find((candidate) => visible.has(candidate));
+        if (!current || !moves.has(current)) continue;
+        const expected = moves.get(current)!;
+        const afterwards = reference.candidates.map(arrived).filter((candidate) => !candidate.startsWith(`${plan.source}/`));
+        await landing.check(afterwards.filter((candidate) => !arriving.has(candidate)));
+        const found = afterwards.find((candidate) => arriving.has(candidate) || landing.exists(candidate));
+        if (found !== expected) shifted.add(`${file}: ${reference.written}`);
+      }
+    }
+    if (shifted.size) warnings.push({ kind: "latex-shadowed", message: `${shifted.size} ${shifted.size === 1 ? "reference in a moving LaTeX file" : "references in moving LaTeX files"} will use a different file, or none, after the move.`, paths: [...shifted].sort() });
     if (incomplete || truncated) warnings.push({ kind: "latex-incomplete", message: `${plan.source} has more or larger LaTeX sources than the check reads, so LaTeX dependencies may be missing from this review.`, paths: [] });
   } catch (error) {
     console.error("[migration] Could not check LaTeX projects:", error);
+  }
+
+  // LaTeX sources are not given the cited references when they move (only notes are): the keys they
+  // cite that the source library has and the destination's does not.
+  try {
+    const moving = files.filter((item) => isLatexCitingPath(item.from));
+    if (moving.length) {
+      const keysOf = async (notebook: string) => {
+        const inspected = await inspectReferenceLibrary(notebook).catch(() => null);
+        const keys = new Set<string>();
+        if (inspected && !("damaged" in inspected)) for (const entry of Object.values(inspected.library?.entries ?? {})) for (const key of [entry.key, ...(entry.aliases ?? [])]) keys.add(key);
+        return keys;
+      };
+      const sourceKeys = await keysOf(plan.source);
+      if (sourceKeys.size) {
+        const destinationKeys = plan.destination.create ? new Set<string>() : await keysOf(plan.destination.notebook);
+        const citing: string[] = [];
+        for (const item of moving) {
+          let text: string;
+          try { text = await readFile(absolute(item.from), "utf8"); } catch { continue; }
+          const missing = latexCitedKeys(text).filter((key) => sourceKeys.has(key) && !destinationKeys.has(key));
+          if (missing.length) citing.push(`${item.from}: ${missing.join(", ")}`);
+        }
+        if (citing.length) warnings.push({ kind: "latex-citations", message: `${citing.length} moving LaTeX ${citing.length === 1 ? "file cites" : "files cite"} references of ${plan.source} that ${plan.destination.notebook} does not have. They are not copied with LaTeX files.`, paths: citing.sort() });
+      }
+    }
+  } catch (error) {
+    console.error("[migration] Could not check LaTeX citations:", error);
   }
 
   return warnings;

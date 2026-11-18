@@ -5467,12 +5467,15 @@
     "migrate": "迁移",
     "warning": {
       "renamed": "{count, plural, one {# 个文件与目标位置的一个文件同名} other {# 个文件与目标位置的文件同名}}，将被重命名以保留两者。",
+      "renamed-records": "{count, plural, one {# 个文件已重命名} other {# 个文件已重命名}}，因为目标名称下仍保留着早先文件的星标、标签、批注、参考文献附件或其他记录。",
       "cross-device": "这些笔记本位于不同的驱动器上，因此文件将被复制，然后从源位置删除。其创建日期不会被保留。",
       "inbound-images": "{count, plural, one {# 条保留的笔记} other {# 条保留的笔记}}显示着您正在移动的图片。这些图片将不再在那里显示。",
       "inbound-links": "{count, plural, one {# 条笔记} other {# 条笔记}}链接到您正在移动的文件。这些链接将失效。",
       "outbound-links": "{count, plural, one {# 条正在移动的笔记含有链接} other {# 条正在移动的笔记含有链接}}，它们将无法再从新位置找到其文件。",
       "latex-left-behind": "正在移动的 LaTeX 文件使用了 {count, plural, one {# 个您未移动的文件} other {# 个您未移动的文件}}。请将其一并添加，以确保项目可以正常编译。",
       "latex-includes-moving": "{count, plural, one {# 个保留的 LaTeX 文件} other {# 个保留的 LaTeX 文件}}使用了您正在移动的文件。",
+      "latex-shadowed": "移动后，{count, plural, one {被移动的 LaTeX 文件中有 # 处引用} other {被移动的 LaTeX 文件中有 # 处引用}}将使用另一个文件，或找不到文件。",
+      "latex-citations": "{count, plural, one {# 个被移动的 LaTeX 文件引用了} other {# 个被移动的 LaTeX 文件引用了}}目标笔记本中没有的参考文献。参考文献不会随 LaTeX 文件一起复制。",
       "latex-incomplete": "{source} 中的 LaTeX 源文件比检查读取的更多或更大，因此本次审阅可能缺少 LaTeX 依赖项。"
     }
   },

@@ -30,6 +30,7 @@ import { markdownImageSources, rewriteMarkdownImageSources } from "@/lib/markdow
 import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
+import { libraryNotebookNames } from "@/lib/storage/library-links";
 
 export { markdownImageSources } from "@/lib/markdown-image-sources";
 
@@ -214,6 +215,22 @@ function ownedPrefixes(documentPath: string) {
   return new Set([pythonFigureFolder(documentPath), markdownAssetsPathPrefix(pathParts), `${MARKDOWN_ASSETS_DIR}/${markdownAssetsDirectoryName(name)}`]);
 }
 
+/**
+ * Library paths (lowercased) that notes of the other local notebooks embed by
+ * their `/api/files/raw/` address. Null when one of those notebooks could not
+ * be read in full.
+ */
+export async function rawEmbedsInOtherNotebooks(notebook: string) {
+  const embeds = new Set<string>();
+  for (const other of await libraryNotebookNames()) {
+    if (other === notebook) continue;
+    const { documents, complete } = await readMarkdownAssetDocuments(other).catch(() => ({ documents: [] as MarkdownDocument[], complete: false }));
+    if (!complete) return null;
+    for (const document of documents) for (const raw of referencedRawFilePaths(document.content)) embeds.add(raw.toLowerCase());
+  }
+  return embeds;
+}
+
 /** Remove only affected assets, keeping every image referenced by another saved note. */
 export async function cleanupMarkdownImageAssets(notebook: string, previous: MarkdownDocument[], overrides: MarkdownDocument[] = []) {
   // The local archive remains writable inside a shared notebook, but its
@@ -256,10 +273,24 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
       }
     }
   }
+  const pruned: string[] = [];
   for (const candidate of candidates) {
     if (references.has(candidate.toLowerCase())) continue;
     // ProseMirror history can refer to any prior version, regardless of its age.
     if ((parsePythonFigureSource(candidate) || isInkBlockRenderingName(path.basename(candidate))) && previous.some((document) => documents.some((saved) => saved.documentPath === document.documentPath))) continue;
+    pruned.push(candidate);
+  }
+  // A note of another notebook can embed an upload by its library address
+  // (`/api/files/raw/...`), as a moved note's image is. Looked for only when
+  // something is about to go; a notebook that can't be read in full keeps them all.
+  let embeddedElsewhere = new Set<string>();
+  if (pruned.length) {
+    const elsewhere = await rawEmbedsInOtherNotebooks(notebook);
+    if (!elsewhere) return;
+    embeddedElsewhere = elsewhere;
+  }
+  for (const candidate of pruned) {
+    if (embeddedElsewhere.has(`${notebook}/${candidate}`.toLowerCase())) continue;
     const asset = markdownAssetPath(notebook, candidate);
     await rm(asset.targetPath, { force: true });
     directories.add(path.dirname(asset.targetPath));

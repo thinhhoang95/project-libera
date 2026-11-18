@@ -5467,12 +5467,15 @@
     "migrate": "Migrer",
     "warning": {
       "renamed": "{count, plural, one {# fichier porte} other {# fichiers portent}} le même nom qu’un fichier de la destination ; {count, plural, one {il sera renommé} other {ils seront renommés}} pour conserver les deux.",
+      "renamed-records": "{count, plural, one {# fichier est renommé} other {# fichiers sont renommés}} parce que des étoiles, étiquettes, commentaires, pièces jointes de références ou d’autres données d’un fichier précédent subsistent à ce nom dans la destination.",
       "cross-device": "Les carnets se trouvent sur des lecteurs différents, donc les fichiers sont copiés puis supprimés de la source. Leurs dates de création ne sont pas conservées.",
       "inbound-images": "{count, plural, one {# note qui reste affiche} other {# notes qui restent affichent}} des images que vous déplacez. Ces images ne s’afficheront plus à cet endroit.",
       "inbound-links": "{count, plural, one {# note renvoie} other {# notes renvoient}} vers des fichiers que vous déplacez. Ces liens cesseront de fonctionner.",
       "outbound-links": "{count, plural, one {# note déplacée contient des liens} other {# notes déplacées contiennent des liens}} qui ne trouveront plus leur fichier depuis le nouvel emplacement.",
       "latex-left-behind": "Les fichiers LaTeX à déplacer utilisent {count, plural, one {# fichier} other {# fichiers}} que vous ne déplacez pas. Ajoutez-les pour que le projet continue de se compiler.",
       "latex-includes-moving": "{count, plural, one {# fichier LaTeX qui reste utilise} other {# fichiers LaTeX qui restent utilisent}} des fichiers que vous déplacez.",
+      "latex-shadowed": "{count, plural, one {# référence d’un fichier LaTeX déplacé utilisera} other {# références de fichiers LaTeX déplacés utiliseront}} un autre fichier, ou aucun, après le déplacement.",
+      "latex-citations": "{count, plural, one {# fichier LaTeX déplacé cite} other {# fichiers LaTeX déplacés citent}} des références que le carnet de destination n’a pas. Les références ne sont pas copiées avec les fichiers LaTeX.",
       "latex-incomplete": "{source} contient plus de sources LaTeX, ou de plus grandes, que la vérification n’en lit : des dépendances LaTeX peuvent manquer dans cette relecture."
     }
   },
