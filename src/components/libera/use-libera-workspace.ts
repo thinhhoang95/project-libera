@@ -82,6 +82,7 @@ import {
 } from "@/lib/workspaces";
 import type { MigrationRequest, MigrationResult } from "@/lib/storage/migration";
 import type { MigrationPreset } from "./notebook-migration-dialog";
+import { REPAIR_MOVED_EVENT } from "./notebook-integrity-dialog";
 import type { ReferenceMoveResult } from "@/lib/references/moves";
 import { remapDocumentHeadingNumbering } from "./heading-numbering-state";
 import { agentReviewStore } from "@/lib/agent-review/store";
@@ -4070,6 +4071,48 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     await refreshTree(result.destination);
     if (result.moved.length) setSelectedNotebookName(result.destination);
   }
+
+  /**
+   * Try to fix gave the records of files moved outside the app to the files
+   * now in place: open tabs, saved workspaces and unsaved editor state that
+   * know the old paths follow, as after a migration (applyMigrationResult).
+   */
+  async function applyRepairMoves(moved: ReadonlyArray<{ from: string; to: string }>) {
+    if (!moved.length) return;
+    const pairs = moved.map(({ from, to }) => ({ from, to }));
+    const moves = new Map(pairs.map((move) => [move.from, move.to]));
+    await workspaceManager.runFileChange(async () => pairs, () => ({ paths: pairs.map((move) => move.to), moved: pairs }));
+    const isOpen = (path: string) => tabsRef.current.find((tab) => !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab) && tab.file.path === path);
+    const open = pairs.filter((move) => isOpen(move.from));
+    for (const move of pairs) if (!isOpen(move.from)) pendingSaves.moveUnsaved(move.from, move.to);
+    const payloads = await Promise.all(open.map((move) => apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`).catch(() => null)));
+    open.forEach((move, index) => {
+      const tab = isOpen(move.from);
+      const payload = payloads[index] ?? (tab ? { file: { ...tab.file, path: move.to, name: move.to.split("/").at(-1)!, notebook: move.to.split("/")[0] } } : null);
+      if (payload) retargetOpenTab(move.from, payload);
+    });
+    setFileInteractions((current) => {
+      if (!Object.keys(current).some((path) => moves.has(path))) return current;
+      const next = Object.fromEntries(Object.entries(current).map(([path, at]) => [moves.get(path) ?? path, at]));
+      try { window.localStorage.setItem(FILE_INTERACTIONS_STORAGE_KEY, JSON.stringify(next)); } catch { /* Storage unavailable. */ }
+      return next;
+    });
+    remapDocumentHeadingNumbering(moves);
+  }
+
+  const latestRepairApply = useRef(applyRepairMoves);
+  useLayoutEffect(() => {
+    latestRepairApply.current = applyRepairMoves;
+  });
+  useEffect(() => {
+    if (!authenticated) return;
+    const onRepaired = (event: Event) => {
+      const moves = (event as CustomEvent<{ moves?: Array<{ from: string; to: string }> }>).detail?.moves;
+      if (Array.isArray(moves)) void latestRepairApply.current(moves).catch((error: Error) => setWorkspaceError(error.message));
+    };
+    window.addEventListener(REPAIR_MOVED_EVENT, onRepaired);
+    return () => window.removeEventListener(REPAIR_MOVED_EVENT, onRepaired);
+  }, [authenticated]);
 
   // Another window ran a migration: this window's tabs and state follow it.
   const migrationChannelRef = useRef<BroadcastChannel | null>(null);

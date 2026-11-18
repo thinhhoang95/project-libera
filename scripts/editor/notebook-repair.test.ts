@@ -105,7 +105,8 @@ test("a name that could be several files is never guessed", () => withTemporaryL
   await writeLibraryFile("Nb/rec/talk.m4a", "audio");
   await writeAt(transcriptPath("Nb", ["rec", "talk.m4a"]), seeded("transcript"));
   await writeLibraryFile("Nb/other/talk.m4a", "another recording");
-  await writeAt(transcriptPath("Nb", ["other", "talk.m4a"]), seeded("transcript"));
+  // Its own transcript, not a copy of the missing file's: a destination holding the very same bytes counts as an interrupted try's (notebook-repair-identity.test.ts).
+  await writeAt(transcriptPath("Nb", ["other", "talk.m4a"]), JSON.stringify({ ...JSON.parse(seeded("transcript")), createdAt: "another" }));
   await finderMove("Nb/rec/talk.m4a", "Nb/gone.m4a");
   // A file deleted for good.
   await writeLibraryFile("Nb/old/lost.pdf", "%PDF");
@@ -126,7 +127,7 @@ test("a name that could be several files is never guessed", () => withTemporaryL
   ]);
   const applied = await applyNotebookRepair("Nb", plan.token);
   assert.deepEqual(applied.moved, []);
-  assert.deepEqual(await readFile(transcriptPath("Nb", ["other", "talk.m4a"]), "utf8"), seeded("transcript"), "a file's own records are never replaced");
+  assert.deepEqual(await readFile(transcriptPath("Nb", ["other", "talk.m4a"]), "utf8"), JSON.stringify({ ...JSON.parse(seeded("transcript")), createdAt: "another" }), "a file's own records are never replaced");
 }));
 
 test("opening a moved note before the fix doesn't keep its comments from following it", () => withTemporaryLibrary(["Nb"], async () => {

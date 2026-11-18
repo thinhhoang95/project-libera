@@ -21,6 +21,8 @@ import { ModalDialog } from "./modal-dialog";
 const secondary = "rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60";
 const danger = "rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-60";
 const primary = "rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60";
+/** Sent after Try to fix moved records: `detail.moves` are the confirmed pairs, for tabs, saved workspaces and unsaved editor state to follow (use-libera-workspace.ts). */
+export const REPAIR_MOVED_EVENT = "libera:repair-moved";
 const PREVIEW = 20;
 const ORDER: IntegritySeverity[] = ["error", "warning", "info"];
 /** Checks whose findings can come from a file moved outside the app. */
@@ -173,6 +175,7 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
       const result = await apiRequest<RepairResult>("/api/notebooks/repair", { method: "POST", body: JSON.stringify({ notebook, token: plan.token }) });
       setFixed(result); setPlan(null);
       window.dispatchEvent(new CustomEvent(REVIEWS_MOVED_EVENT, { detail: { paths: result.moved.map((move) => move.to) } }));
+      window.dispatchEvent(new CustomEvent(REPAIR_MOVED_EVENT, { detail: { moves: result.moved.map(({ from, to }) => ({ from, to })) } }));
       await settle();
       again();
     } catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
@@ -341,6 +344,8 @@ function RepairPlanView({ plan }: { plan: RepairPlan }) {
   function unmatchedReason(item: RepairUnmatched) {
     if (item.reason === "none") return t("unmatchedNone");
     if (item.reason === "shared-name") return t("unmatchedSharedName");
+    if (item.reason === "different") return t("unmatchedDifferent", { candidates: item.candidates.join(", "), count: item.candidates.length });
+    if (item.reason === "elsewhere") return t("unmatchedElsewhere", { candidates: item.candidates.join(", "), count: item.candidates.length });
     if (item.reason === "own") return t("unmatchedOwn", { candidates: item.candidates.join(", "), count: item.candidates.length });
     return t("unmatchedSeveral", { candidates: item.candidates.join(", ") });
   }

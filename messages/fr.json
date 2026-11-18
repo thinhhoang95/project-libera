@@ -5402,6 +5402,8 @@
     "unmatchedOwn": "{candidates} {count, plural, one {a déjà ses propres enregistrements} other {ont déjà leurs propres enregistrements}}, donc {count, plural, one {il s’agit probablement d’un autre fichier} other {ce sont probablement d’autres fichiers}}.",
     "unmatchedSeveral": "Plusieurs fichiers portent ce nom : {candidates}.",
     "unmatchedSharedName": "D’autres fichiers manquants portent le même nom, il est donc impossible de savoir lequel est lequel.",
+    "unmatchedDifferent": "{candidates} {count, plural, one {porte ce nom mais n’est pas le fichier} other {portent ce nom mais ne sont pas le fichier}} pour {count, plural, one {lequel} other {lequel}} ces enregistrements ont été créés (le contenu diffère) ; rien n’est déplacé.",
+    "unmatchedElsewhere": "{candidates} {count, plural, one {est peut-être ce fichier} other {sont peut-être ce fichier}} (sous un autre nom ou dans un autre carnet), mais ce n’est pas certain : rien n’est déplacé. Remettez le fichier à sa place ou conservez ces enregistrements.",
     "working": "Traitement…",
     "unmatchedLine": "{records} · {reason}"
   },
