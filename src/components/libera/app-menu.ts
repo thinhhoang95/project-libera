@@ -57,17 +57,17 @@ export function withMenuActions(items: NativeMenuEntry[], run: (id: string) => v
 }
 
 /** Insert > Table: a size as Rows > Columns, up to the toolbar grid's 8 × 8. */
-export function tableSizeMenu(onPick: (rows: number, columns: number) => void, size = 8): NativeMenuEntry {
+export function tableSizeMenu(onPick: (rows: number, columns: number) => void, t: (key: "table" | "rows" | "columns", values?: { count: number }) => string, size = 8): NativeMenuEntry {
   const counts = Array.from({ length: size }, (_, index) => index + 1);
   return {
     id: "table",
-    label: "Table",
+    label: t("table"),
     submenu: counts.map((rows) => ({
       id: `table-${rows}`,
-      label: rows === 1 ? "1 Row" : `${rows} Rows`,
+      label: t("rows", { count: rows }),
       submenu: counts.map((columns) => ({
         id: `table-${rows}x${columns}`,
-        label: columns === 1 ? "1 Column" : `${columns} Columns`,
+        label: t("columns", { count: columns }),
         onSelect: () => onPick(rows, columns),
       })),
     })),

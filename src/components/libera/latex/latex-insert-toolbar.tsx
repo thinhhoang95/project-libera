@@ -54,6 +54,7 @@ type LatexInsertToolbarProps = {
 export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, missingInMainFile, onNotice, fontSizePx, visualMode = false }: LatexInsertToolbarProps) {
   const t = useTranslations("latex.latexInsertToolbar");
   const tStyles = useTranslations("lib.latex.snippets");
+  const tAppMenu = useTranslations("appMenu");
   const { preferences: { textScale, latexSpellcheck }, updatePreferences } = useMarkdownDisplayPreferences();
   const [open, setOpen] = useState<MenuId | null>(null);
   const anchors = useRef(new Map<MenuId, HTMLButtonElement>());
@@ -232,7 +233,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       { id: "math", label: t("math"), submenu: menuItems("math", true) },
       { id: "figure", label: t("figure"), submenu: menuItems("figure", true) },
       { id: "subfigures", label: t("sideBySideGraphics"), submenu: menuItems("subfigures", true) },
-      tableSizeMenu((rows, columns) => template(() => tableTemplate(rows, columns), ["booktabs"])),
+      tableSizeMenu((rows, columns) => template(() => tableTemplate(rows, columns), ["booktabs"]), tAppMenu),
       { id: "code", label: t("codeBlock"), submenu: menuItems("code", true) },
       { type: "separator" },
       { id: "cite", label: t("citation"), onSelect: cite },

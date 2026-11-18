@@ -189,6 +189,7 @@ export function MarkdownToolbar({
 }: MarkdownToolbarProps) {
   const t = useTranslations("markdownToolbar");
   const tColor = useTranslations("lib.markdownColors.color");
+  const tAppMenu = useTranslations("appMenu");
   const colorName = (color: { label: string }) => tColor(color.label.toLowerCase());
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const toolbarRootRef = useRef<HTMLDivElement>(null);
@@ -399,7 +400,7 @@ export function MarkdownToolbar({
           { id: "snip-markdown", label: t("menuSnipAsMarkdown"), enabled: canStartScreenshotSnip, onSelect: () => onStartScreenshotSnip("markdown") },
         ],
       },
-      tableSizeMenu(onInsertTable),
+      tableSizeMenu(onInsertTable, tAppMenu),
       { type: "separator" },
       { id: "math-block", label: t("menuMathBlock"), onSelect: () => onInsert("$$\n", "\n$$", "x = y") },
       { id: "code-block", label: t("menuCodeBlock"), onSelect: () => onInsert("\n```\n", "\n```\n", "code") },

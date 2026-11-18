@@ -223,6 +223,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const tPython = useTranslations("tiptapPythonFigureView");
   const frontMatterTitle = useTranslations("lib.tiptapFrontMatter")("frontMatterTitle");
   const tColor = useTranslations("lib.markdownColors.color");
+  const tAppMenu = useTranslations("appMenu");
   const colorName = (color: { label: string }) => tColor(color.label.toLowerCase());
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number; markdown: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
@@ -881,7 +882,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
             ] : []),
           ],
         },
-        tableSizeMenu((rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()),
+        tableSizeMenu((rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run(), tAppMenu),
         { id: "equation", label: t("menuEquation"), onSelect: openMath },
         { id: "footnote", label: t("menuFootnote"), onSelect: () => editor.chain().focus().insertFootnote().run() },
         { id: "ink", label: t("menuInkBlock"), enabled: !untitled, onSelect: () => editor.chain().focus().insertContent([{ type: "image", attrs: { src: inkBlockSource(documentPath, createInkId()), alt: "Ink" } }, { type: "paragraph" }]).run() },

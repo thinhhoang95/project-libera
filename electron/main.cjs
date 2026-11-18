@@ -1964,11 +1964,11 @@ function installApplicationMenu() {
               { type: "separator" },
               configurationMenuItem,
               { type: "separator" },
-              { role: "services" },
+              { label: tm("servicesMenuItem"), role: "services" },
               { type: "separator" },
               { label: tm("hideAppMenuItem", { appName: APP_DISPLAY_NAME }), role: "hide" },
               { label: tm("hideOthersMenuItem"), role: "hideOthers" },
-              { role: "unhide" },
+              { label: tm("showAllMenuItem"), role: "unhide" },
               { type: "separator" },
               { label: tm("quitAppMenuItem", { appName: APP_DISPLAY_NAME }), role: "quit" },
             ],
@@ -1982,22 +1982,22 @@ function installApplicationMenu() {
         ...(isMac ? [] : [configurationMenuItem, { type: "separator" }]),
         ...(isMac ? rendererMenus.file : []),
         closeTabMenuItem,
-        ...(isMac ? [] : [{ type: "separator" }, { role: "quit" }]),
+        ...(isMac ? [] : [{ type: "separator" }, { label: tm("quitAppMenuItem", { appName: APP_DISPLAY_NAME }), role: "quit" }]),
       ],
     },
     {
       label: tm("editMenu"),
       submenu: [
-        { role: "undo" },
-        { role: "redo" },
+        { label: tm("undoMenuItem"), role: "undo" },
+        { label: tm("redoMenuItem"), role: "redo" },
         { type: "separator" },
-        { role: "cut" },
-        { role: "copy" },
-        { role: "paste" },
-        { role: "pasteAndMatchStyle" },
-        { role: "delete" },
+        { label: tm("cutMenuItem"), role: "cut" },
+        { label: tm("copyMenuItem"), role: "copy" },
+        { label: tm("pasteMenuItem"), role: "paste" },
+        { label: tm("pasteAndMatchStyleMenuItem"), role: "pasteAndMatchStyle" },
+        { label: tm("deleteMenuItem"), role: "delete" },
         { type: "separator" },
-        { role: "selectAll" },
+        { label: tm("selectAllMenuItem"), role: "selectAll" },
       ],
     },
     ...(isMac ? rendererMenus.editor : []),
@@ -2005,14 +2005,14 @@ function installApplicationMenu() {
       label: tm("viewMenu"),
       submenu: [
         ...(isMac ? rendererMenus.view : []),
-        { role: "reload" },
-        { role: "forceReload" },
+        { label: tm("reloadMenuItem"), role: "reload" },
+        { label: tm("forceReloadMenuItem"), role: "forceReload" },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
+        { label: tm("resetZoomMenuItem"), role: "resetZoom" },
+        { label: tm("zoomInMenuItem"), role: "zoomIn" },
+        { label: tm("zoomOutMenuItem"), role: "zoomOut" },
         { type: "separator" },
-        { role: "togglefullscreen" },
+        { label: tm("toggleFullScreenMenuItem"), role: "togglefullscreen" },
       ],
     },
     ...(isMac ? rendererMenus.app : []),
@@ -2020,7 +2020,7 @@ function installApplicationMenu() {
       ? [
           {
             label: tm("windowMenu"),
-            submenu: [{ role: "minimize" }, { role: "zoom" }],
+            submenu: [{ label: tm("minimizeMenuItem"), role: "minimize" }, { label: tm("zoomWindowMenuItem"), role: "zoom" }],
           },
         ]
       : [
@@ -2206,9 +2206,9 @@ function buildRendererAppMenus() {
 
   return {
     file: withSeparator(buildNativeMenuTemplate(menus.file, select)),
-    editor: topLevel([["Format", menus.format], ["Insert", menus.insert], ["References", menus.references], ["Gallery", menus.gallery], ["Photo", menus.photo]]),
+    editor: topLevel([[tm("formatMenu"), menus.format], [tm("insertMenu"), menus.insert], [tm("referencesMenu"), menus.references], [tm("galleryMenu"), menus.gallery], [tm("photoMenu"), menus.photo]]),
     view: withSeparator(buildNativeMenuTemplate(menus.view, select)),
-    app: topLevel([["Tab", menus.tab], ["AI", menus.ai]]),
+    app: topLevel([[tm("tabMenu"), menus.tab], [tm("aiMenu"), menus.ai]]),
   };
 }
 
