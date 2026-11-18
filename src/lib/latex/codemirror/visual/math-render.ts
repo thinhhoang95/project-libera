@@ -787,8 +787,10 @@ const LINE_LENGTH_USE = /(?:(?<![\w.])(-?(?:\d+\.?\d*|\.\d+))\s*)?\\(baselineski
  */
 export function forKatex(latex: string) {
   // Plain TeX's barred letter, `{\mathchar'26\mkern-9mu d}` (2611.13129's quantized differential): `\mathchar'26` is the bar `\hbar` is
-  // built from, so `h` is `\hbar` and another letter is drawn with a short bar over its stem. Any other `\mathchar` is left (KaTeX fails).
-  if (latex.includes("\\mathchar")) latex = latex.replace(BARRED_LETTER, (_, letter: string) => (letter === "h" ? "\\hbar " : `\\mathord{\\mathrlap{\\mkern1.5mu\\raisebox{0.02em}{$\\scriptstyle-$}}${letter}}`));
+  // built from, so `h` is `\hbar`. For another letter the bar is drawn as TeX places it: the macron at its own height, over the
+  // letter's left half (`\bar{}` is that macron, centred on nothing, so it is moved half its width; with `h` this construct is
+  // indistinguishable from KaTeX's own `\hbar`, checked in a browser). Any other `\mathchar` is left (KaTeX fails).
+  if (latex.includes("\\mathchar")) latex = latex.replace(BARRED_LETTER, (_, letter: string) => (letter === "h" ? "\\hbar " : `\\mathord{\\mathrlap{\\kern0.25em\\bar{}}${letter}}`));
   // A length in line heights (`\hspace{.1\baselineskip} \rule{.5pt}{.5\baselineskip}`, 2611.13338): KaTeX knows only units, so
   // the factor times the line (1.2em, TeX's 12pt over 10pt) or the paragraph indent (1.5em).
   if (LINE_LENGTH.test(latex)) latex = latex.replace(LINE_LENGTH_USE, (_, factor: string | undefined, name: string) => `${Math.round((factor ? Number(factor) || 0 : 1) * (name === "parindent" ? 1.5 : 1.2) * 1000) / 1000}em`);
