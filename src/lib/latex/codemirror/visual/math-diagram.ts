@@ -246,7 +246,8 @@ function readTikzArrow(text: string, from: number): { arrow: Arrow; end: number 
       for (const extra of label.options) {
         const pair = /^([a-z ]+?)\s*=\s*(.*)$/.exec(extra);
         // `description`, `anchor=center`: the label on the arrow, drawn beside it. `name`, `inner sep`: for 2-cells, which are not drawn.
-        if (extra === "description" || extra === "anchor=center" || pair?.[1] === "name" || pair?.[1] === "inner sep") continue;
+        // `sloped` turns the label along its arrow (2611.13239's `"\sim"'{sloped}`): drawn upright, which a horizontal arrow's label is anyway.
+        if (extra === "description" || extra === "anchor=center" || extra === "sloped" || pair?.[1] === "name" || pair?.[1] === "inner sep") continue;
         if (pair?.[1] === "pos" && /^[01]?\.?\d*$/.test(pair[2].trim())) { turned = true; continue; }
         if (pair?.[1] === "rotate" && /^-?\d+$/.test(pair[2].trim())) { rotate = Number(pair[2].trim()); turned = true; continue; }
         return null;
