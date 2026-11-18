@@ -110,7 +110,7 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
     <ModalDialog open={settingsOpen} title={t("latexOptions")} description={t("latexOptionsDescription")} panelClassName="max-w-xl" onClose={() => { if (!savingSettings) setSettingsOpen(false); }}
       footer={<>
         <button type="button" disabled={savingSettings} onClick={() => setSettingsOpen(false)}>{t("cancel")}</button>
-        <button type="submit" form="latex-options-form" disabled={savingSettings} className="libera-dialog-primary">{savingSettings ? t("savingSettings") : t("generatePdf")}</button>
+        <button type="submit" form="latex-options-form" disabled={savingSettings} className="libera-dialog-primary"><span className="libera-btn-label">{savingSettings ? t("savingSettings") : t("generatePdf")}</span></button>
       </>}>
 
       <form id="latex-options-form" className="space-y-5" onSubmit={async (event) => {

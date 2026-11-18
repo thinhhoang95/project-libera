@@ -288,7 +288,7 @@ export function DuplicateGroupsList({ groups, onMerge, onOpen }: { groups: Refer
             <div className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{duplicateGroupLabel(kind, tDisplay)}</span>
               <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" aria-label={t("mergeKeysAria", { keys: group.map((entry) => entry.key).join(", ") })} onClick={() => onMerge(group)}>
-                <Merge aria-hidden className="h-3 w-3" /> {t("merge")}
+                <Merge aria-hidden className="h-3 w-3" /> <span className="libera-btn-label">{t("merge")}</span>
               </button>
             </div>
             <ul className="space-y-0.5">

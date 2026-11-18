@@ -102,7 +102,7 @@ export function NameListEditor({
         );
       })}
       <button type="button" className="libera-panel-button h-7 px-2.5" onClick={() => onChange([...names, { family: "", given: "" }])}>
-        <Plus aria-hidden className="h-3.5 w-3.5" /> {addLabel ?? `Add ${label.toLowerCase().replace(/s$/, "")}`}
+        <Plus aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{addLabel ?? `Add ${label.toLowerCase().replace(/s$/, "")}`}</span>
       </button>
     </fieldset>
   );

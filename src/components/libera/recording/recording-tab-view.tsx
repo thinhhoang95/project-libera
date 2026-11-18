@@ -135,10 +135,10 @@ function DetachedRecording({ recordingId }: { recordingId: string }) {
             <span className="h-2.5 w-2.5 rounded-full bg-white" /> {t("recordOn")}
           </button>
           <button type="button" className="inline-flex h-9 items-center gap-1.5 rounded-full border border-border px-4 font-medium hover:bg-muted disabled:opacity-50" disabled={busy} onClick={() => void unfinished.save(recordingId, status.notebook)}>
-            {unfinished.saving === recordingId ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null} {tCommon("save")}
+            {unfinished.saving === recordingId ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null} <span className="libera-btn-label">{tCommon("save")}</span>
           </button>
           <button type="button" className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={busy} onClick={() => void unfinished.remove(recordingId)}>
-            <Trash2 aria-hidden className="h-4 w-4" /> {tCommon("delete")}
+            <Trash2 aria-hidden className="h-4 w-4" /> <span className="libera-btn-label">{tCommon("delete")}</span>
           </button>
         </div>
         {recorder.state !== "idle" && recorder.state !== "error" ? <p className="mt-3 text-xs text-muted-foreground">{t("anotherRecording")}</p> : null}
@@ -252,7 +252,7 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{t("toolbarSummary", { name: name || t("recording") })}</span>
         {!railSlot ? (
           <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-2.5 text-sm font-medium transition hover:bg-muted" title={t("showControlsTitle")} onClick={() => requestRailTab("recording")}>
-            <PanelLeft aria-hidden className="h-4 w-4" /> {t("controls")}
+            <PanelLeft aria-hidden className="h-4 w-4" /> <span className="libera-btn-label">{t("controls")}</span>
           </button>
         ) : null}
       </div>
@@ -314,9 +314,9 @@ function RecordingTab({ tabId, recorder, onDiscard }: { tabId: string; recorder:
               className={`h-7 rounded-lg px-3 text-xs font-medium transition ${view === option ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => setView(option)}
             >
-              {option === "recap"
+              <span className="libera-btn-label">{option === "recap"
                 ? (recapDraft.bullets.length ? t("recapTabCount", { count: recapDraft.bullets.length }) : t("recap"))
-                : (lines.length ? t("transcriptTabCount", { count: lines.length }) : t("transcript"))}
+                : (lines.length ? t("transcriptTabCount", { count: lines.length }) : t("transcript"))}</span>
             </button>
           ))}
         </div>

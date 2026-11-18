@@ -109,7 +109,7 @@ export function DeepSearchDialog({
           disabled={searching || !query.trim()}
         >
           <FileSearch aria-hidden className="h-4 w-4" />
-          {t("search")}
+          <span className="libera-btn-label">{t("search")}</span>
         </button>
       </form>
 

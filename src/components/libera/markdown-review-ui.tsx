@@ -164,7 +164,7 @@ export function ReviewComments() {
         <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label={t("undoAcceptance")} title={t("undoAcceptance")} disabled={!!r.busy || !r.doc?.undo.length} onClick={() => void r.action("undo")}><Undo2 aria-hidden size={14} /></button>
         <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label={t("redoAcceptance")} title={t("redoAcceptance")} disabled={!!r.busy || !r.doc?.redo?.length} onClick={() => void r.action("redo")}><Redo2 aria-hidden size={14} /></button>
       </div>
-      <button type="button" className="libera-panel-button h-9 w-full" aria-pressed={r.chatReview} title={r.chatReview ? t("returnToChat") : t("planAddressingComments")} onClick={() => r.setChatReview(!r.chatReview)}><Sparkles size={14} /> {t("agenticReview")}</button>
+      <button type="button" className="libera-panel-button h-9 w-full" aria-pressed={r.chatReview} title={r.chatReview ? t("returnToChat") : t("planAddressingComments")} onClick={() => r.setChatReview(!r.chatReview)}><Sparkles size={14} /> <span className="libera-btn-label">{t("agenticReview")}</span></button>
       {r.doc && <>
         {(threads.length > 0 || openSuggestions.length > 0) && <div className="review-comment-search relative">
           <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

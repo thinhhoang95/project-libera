@@ -228,7 +228,7 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
                   type="button"
                   onClick={() => void markRead("all")}
                 >
-                  <CheckCheck aria-hidden className="h-3.5 w-3.5" /> {t("markAllRead")}
+                  <CheckCheck aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{t("markAllRead")}</span>
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-1.5">

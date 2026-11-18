@@ -431,7 +431,7 @@ export function SearchPreview({
           </p>
         </div>
         <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" title={t("openAtPassageTitle")} onClick={() => onOpen(entry, "tab")}>
-          {t("open")} <ArrowUpRight aria-hidden className="h-4 w-4" />
+          <span className="libera-btn-label">{t("open")}</span> <ArrowUpRight aria-hidden className="h-4 w-4" />
         </button>
         <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg" aria-label={t("openToTheRight")} title={t("openToTheRightTitle")} onClick={() => onOpen(entry, "right")}>
           <PanelRight aria-hidden className="h-4 w-4" />

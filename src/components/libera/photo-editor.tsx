@@ -397,7 +397,7 @@ export function PhotoEditor({ src, copyOnly = false, onCancel, onSave }: {
       {FILTER_PRESETS.map((preset) => <AdjustmentFilter key={preset.id} id={`${filterId}-${preset.id}`} adjustments={preset.adjustments} />)}
     </svg>
     <header className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
-      <button className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm hover:bg-white/10" disabled={Boolean(saving)} onClick={onCancel}><X className="h-4 w-4" />{tCommon("cancel")}</button>
+      <button className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm hover:bg-white/10" disabled={Boolean(saving)} onClick={onCancel}><X className="h-4 w-4" /><span className="libera-btn-label">{tCommon("cancel")}</span></button>
       <h2 className="mr-auto truncate text-sm font-medium">{t("editPhoto")}</h2>
       <button className={panelButton} disabled={!dirty || Boolean(saving)} onClick={() => { setEdits(NO_EDITS); setAspectId("free"); }}><RotateCcw className="h-4 w-4" />{tCommon("reset")}</button>
       {copyOnly ? <button className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-medium text-black disabled:opacity-40" disabled={!dirty || Boolean(saving)} title={t("saveAsCopyTitle")} onClick={() => void save("copy")}>

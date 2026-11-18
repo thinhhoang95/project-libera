@@ -903,7 +903,7 @@ export function ImageViewer({
             }}
           >
             <MousePointer2 aria-hidden className="h-4 w-4" />
-            {t("toolSelect")}
+            <span className="libera-btn-label">{t("toolSelect")}</span>
           </button>
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
@@ -920,7 +920,7 @@ export function ImageViewer({
             }}
           >
             <Type aria-hidden className="h-4 w-4" />
-            {t("toolText")}
+            <span className="libera-btn-label">{t("toolText")}</span>
           </button>
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
@@ -938,7 +938,7 @@ export function ImageViewer({
             }}
           >
             <PenLine aria-hidden className="h-4 w-4" />
-            {t("toolDraw")}
+            <span className="libera-btn-label">{t("toolDraw")}</span>
           </button>
           {tool === "ink" ? <span ref={setInkToolbarSlot} className="libera-ink-toolbar-slot" /> : <>
           <TextAnnotationStyleControls

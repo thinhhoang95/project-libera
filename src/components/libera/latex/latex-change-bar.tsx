@@ -31,9 +31,9 @@ export function LatexChangeBar({ view, hunks }: { view: EditorView; hunks: Revie
       <span aria-live="polite" className="min-w-14 whitespace-nowrap text-center text-xs tabular-nums text-muted-foreground">{t("position", { current: current + 1, total: hunks.length })}</span>
       <button type="button" className={navClass} aria-label={t("nextChange")} title={t("nextChange")} onClick={() => reveal(current + 1)}><ChevronDown aria-hidden className="h-4 w-4" /></button>
       <button type="button" className="libera-change-bar-reject ml-1 inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-2.5 font-medium" title={t("rejectAllTitle")}
-        onMouseDown={(event) => event.preventDefault()} onClick={() => { decideReviewHunks(view, "all", "reject"); view.focus(); }}><X aria-hidden className="h-3.5 w-3.5" />{t("rejectAll")}</button>
+        onMouseDown={(event) => event.preventDefault()} onClick={() => { decideReviewHunks(view, "all", "reject"); view.focus(); }}><X aria-hidden className="h-3.5 w-3.5" /><span className="libera-btn-label">{t("rejectAll")}</span></button>
       <button type="button" className="libera-change-bar-accept inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-2.5 font-medium" title={t("acceptAllTitle")}
-        onMouseDown={(event) => event.preventDefault()} onClick={() => { decideReviewHunks(view, "all", "accept"); view.focus(); }}><Check aria-hidden className="h-3.5 w-3.5" />{t("acceptAll")}</button>
+        onMouseDown={(event) => event.preventDefault()} onClick={() => { decideReviewHunks(view, "all", "accept"); view.focus(); }}><Check aria-hidden className="h-3.5 w-3.5" /><span className="libera-btn-label">{t("acceptAll")}</span></button>
     </div>
   );
 }

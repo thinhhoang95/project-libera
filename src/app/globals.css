@@ -2999,6 +2999,10 @@ html.dark select:not([multiple]):not([size]):not(.libera-select-plain) { backgro
 .libera-panel-primary { display: flex; align-items: center; justify-content: center; gap: 0.5rem; border-radius: 10px; background: linear-gradient(180deg, #6697f2, #3f74e0); color: #ffffff; font-size: 13px; font-weight: 600; box-shadow: inset 0 1px 0 #ffffff40, 0 1px 2px #2a4f9a33, 0 4px 12px #3f74e026; transition: filter 150ms, box-shadow 150ms, opacity 150ms; }
 .libera-panel-primary:hover:not(:disabled) { filter: brightness(1.05); box-shadow: inset 0 1px 0 #ffffff40, 0 1px 2px #2a4f9a33, 0 6px 16px #3f74e033; }
 .libera-panel-primary:disabled { opacity: 0.45; box-shadow: none; }
+/* Labels never spill out of a button: a button that wraps its text in .libera-btn-label can shrink below its content, keeps its icons at size and ellipsizes the label. */
+button:has(> .libera-btn-label) { min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+button:has(> .libera-btn-label) > svg { flex-shrink: 0; }
+.libera-btn-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .libera-panel-range { accent-color: #3f74e0; }
 .libera-panel-field:focus-visible, .libera-panel-segmented > button:focus-visible, .libera-panel-tile:focus-visible, .libera-panel-button:focus-visible, .libera-panel-primary:focus-visible { outline: 2px solid #457be6; outline-offset: 2px; }
 html.dark .libera-panel-card { background: #a3bbef0c; box-shadow: inset 0 0 0 1px #8298cb1a; }

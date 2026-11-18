@@ -378,7 +378,7 @@ export function MarkdownSlidesPreview({
                       onClick={() => onPresentFrom(index)}
                     >
                       <Play aria-hidden className="h-3 w-3" />
-                      {t("presentFromHere")}
+                      <span className="libera-btn-label">{t("presentFromHere")}</span>
                     </button>
                   ) : null}
                 </div>

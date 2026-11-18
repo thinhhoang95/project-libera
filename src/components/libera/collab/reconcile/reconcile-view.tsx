@@ -157,7 +157,7 @@ export function ReconcileView({
               </button>
             ) : null}
             <button type="submit" className="libera-dialog-primary">
-              {submitting ? tCommon("saving") : t("keepMerged")}
+              <span className="libera-btn-label">{submitting ? tCommon("saving") : t("keepMerged")}</span>
             </button>
           </div>
         </fieldset>

@@ -418,7 +418,7 @@ export function VoiceMemoViewer({
         ) : null}
         {!railSlot ? (
           <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-2.5 text-sm font-medium transition hover:bg-muted" title={t("showControlsTitle")} onClick={showControls}>
-            <PanelLeft aria-hidden className="h-4 w-4" /> {t("controls")}
+            <PanelLeft aria-hidden className="h-4 w-4" /> <span className="libera-btn-label">{t("controls")}</span>
           </button>
         ) : null}
       </div>

@@ -650,7 +650,7 @@ export function CandidateList({ notebook, library, result, busy, onCommit, onEdi
           {!drafts.length ? (
             <div className="flex justify-end">
               <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy} onClick={() => void onCommit(updates, t("attachFileLabel"), updateTarget(updates))}>
-                <Paperclip aria-hidden className="h-3.5 w-3.5" /> {t("attach")}
+                <Paperclip aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{t("attach")}</span>
               </button>
             </div>
           ) : null}
@@ -659,7 +659,7 @@ export function CandidateList({ notebook, library, result, busy, onCommit, onEdi
       {multiple ? (
         <div className="flex justify-end">
           <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy || !chosen.length} onClick={() => void add(chosen, t("addManyLabel", { count: chosen.length }))}>
-            <Plus aria-hidden className="h-3.5 w-3.5" /> {t("addSelected", { count: chosen.length })}
+            <Plus aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{t("addSelected", { count: chosen.length })}</span>
           </button>
         </div>
       ) : null}
@@ -752,7 +752,7 @@ function CandidateCard({ index, notebook, styleSetting, candidate, duplicates, m
                         <div key={position} className="flex items-center gap-1.5">
                           <span className="min-w-0 flex-1 break-words">{formatFieldValue(field, alternative.value)}</span>
                           <ProvenanceChip provenance={alternative.provenance} />
-                          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" aria-label={t("useFromAria", { value: formatFieldValue(field, alternative.value), source: provenanceLabel(alternative.provenance.source, tDisplay) })} onClick={() => onChange(chooseCandidateAlternative(candidate, field, alternative))}>{t("use")}</button>
+                          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" aria-label={t("useFromAria", { value: formatFieldValue(field, alternative.value), source: provenanceLabel(alternative.provenance.source, tDisplay) })} onClick={() => onChange(chooseCandidateAlternative(candidate, field, alternative))}><span className="libera-btn-label">{t("use")}</span></button>
                         </div>
                       ))}
                       <button type="button" className="text-[11px] font-medium text-accent hover:underline" onClick={() => onChange(keepCandidateValue(candidate, field))}>{t("keepThisValue")}</button>
@@ -773,7 +773,7 @@ function CandidateCard({ index, notebook, styleSetting, candidate, duplicates, m
               <BadgeCheck aria-hidden className="h-3 w-3" /> {t("addAndConfirm")}
             </button>
             <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy} onClick={() => onAdd(false)}>
-              <Check aria-hidden className="h-3.5 w-3.5" /> {duplicates.length ? t("addAnyway") : tc("add")}
+              <Check aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{duplicates.length ? t("addAnyway") : tc("add")}</span>
             </button>
           </>
         ) : null}

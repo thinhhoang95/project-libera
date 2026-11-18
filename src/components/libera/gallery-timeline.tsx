@@ -97,7 +97,7 @@ export function JumpToDateButton({ times, onJump }: { times: number[]; onJump: (
         <label className="flex-1 text-xs font-medium text-muted-foreground">{t("date")}
           <input type="date" data-autofocus className={`${dateInput} mt-1`} value={day} min={min} max={max} onChange={(event) => setDay(event.target.value)} />
         </label>
-        <button type="submit" className="h-9 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={parseDay(day) === null}>{t("go")}</button>
+        <button type="submit" className="h-9 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={parseDay(day) === null}><span className="libera-btn-label">{t("go")}</span></button>
       </form>
       <div className="border-t border-border px-2 pb-2 pt-1.5">
         {years.map(({ year, months }) => <div key={year} className="mt-1.5">

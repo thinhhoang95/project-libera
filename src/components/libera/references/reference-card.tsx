@@ -245,18 +245,18 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, citeS
               {onConfirmNext && reviewLeft > 0 ? (
                 <>
                   <button type="button" className="libera-panel-primary h-8 flex-1 px-3" title={citeSyntax === "latex" ? t("confirmNextTitleNoShortcut") : t("confirmNextTitle", { shortcut: CONFIRM_NEXT_SHORTCUT })} onClick={onConfirmNext}>
-                    <ChevronsRight aria-hidden className="h-4 w-4" /> {t("confirmAndNext")}
+                    <ChevronsRight aria-hidden className="h-4 w-4" /> <span className="libera-btn-label">{t("confirmAndNext")}</span>
                   </button>
                   <button type="button" className="libera-panel-button h-8 px-3" onClick={() => void run([{ op: "update", id: entry.id, status: "confirmed" }], t("confirmLabel", { key: entry.key }))}>
-                    <Check aria-hidden className="h-4 w-4" /> {t("confirm")}
+                    <Check aria-hidden className="h-4 w-4" /> <span className="libera-btn-label">{t("confirm")}</span>
                   </button>
                 </>
               ) : (
                 <>
                   <button type="button" className="libera-panel-primary h-8 flex-1 px-3" onClick={() => void run([{ op: "update", id: entry.id, status: "confirmed" }], t("confirmLabel", { key: entry.key }))}>
-                    <Check aria-hidden className="h-4 w-4" /> {t("confirm")}
+                    <Check aria-hidden className="h-4 w-4" /> <span className="libera-btn-label">{t("confirm")}</span>
                   </button>
-                  <button type="button" className="libera-panel-button h-8 px-3" onClick={onEditAll}>{t("editAll")}</button>
+                  <button type="button" className="libera-panel-button h-8 px-3" onClick={onEditAll}><span className="libera-btn-label">{t("editAll")}</span></button>
                 </>
               )}
             </div>
@@ -393,7 +393,7 @@ function KeyEditor({ entry, library, onRename, onCopy, onCopyCitation, onUpdateC
         <form className="space-y-1.5" onSubmit={(event) => { event.preventDefault(); void save(); }}>
           <div className="flex gap-1.5">
             <input className="libera-panel-field h-8 min-w-0 flex-1 px-2 font-mono text-[12px]" aria-label={t("newKeyAria")} value={draft} autoFocus onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setEditing(false); } }} />
-            <button type="submit" className="libera-panel-button h-8 px-2.5" disabled={Boolean(problem)}>{t("rename")}</button>
+            <button type="submit" className="libera-panel-button h-8 px-2.5" disabled={Boolean(problem)}><span className="libera-btn-label">{t("rename")}</span></button>
             <button type="button" className="libera-panel-button h-8 px-2" aria-label={t("cancelRenameAria")} onClick={() => setEditing(false)}><X aria-hidden className="h-3.5 w-3.5" /></button>
           </div>
           {problem ? <p role="alert" className="text-[11px] text-destructive">{problem}</p> : (
@@ -408,13 +408,13 @@ function KeyEditor({ entry, library, onRename, onCopy, onCopyCitation, onUpdateC
           <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg" aria-label={tRow("copyKey")} title={tRow("copyKey")} onClick={onCopy}><Copy aria-hidden className="h-3.5 w-3.5" /></button>
           <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg" aria-label={tRow("copyAs", { citation: `[@${entry.key}]` })} title={tRow("copyAs", { citation: `[@${entry.key}]` })} onClick={() => onCopyCitation("pandoc")}><Quote aria-hidden className="h-3.5 w-3.5" /></button>
           <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg" aria-label={tRow("copyAs", { citation: `\\cite{${entry.key}}` })} title={tRow("copyAs", { citation: `\\cite{${entry.key}}` })} onClick={() => onCopyCitation("latex")}><Braces aria-hidden className="h-3.5 w-3.5" /></button>
-          <button type="button" className="libera-panel-button ml-auto h-7 px-2.5" onClick={() => { setDraft(entry.key); setEditing(true); }}>{t("renameKey")}</button>
+          <button type="button" className="libera-panel-button ml-auto h-7 px-2.5" onClick={() => { setDraft(entry.key); setEditing(true); }}><span className="libera-btn-label">{t("renameKey")}</span></button>
         </div>
       )}
       {offer && onUpdateCitations ? (
         <div className="flex items-center gap-2 rounded-lg bg-muted/60 p-2 text-[11px]" role="status" aria-label={t("keyRenamedAria")}>
           <span className="min-w-0 flex-1">{t.rich("rewriteOffer", { from: offer.from, to: offer.to, code: (chunks) => <code className="font-mono">{chunks}</code> })}</span>
-          <button type="button" className="libera-panel-button h-7 shrink-0 px-2.5" onClick={() => onUpdateCitations(offer.from, offer.to)}>{t("updateCitations")}</button>
+          <button type="button" className="libera-panel-button h-7 shrink-0 px-2.5" onClick={() => onUpdateCitations(offer.from, offer.to)}><span className="libera-btn-label">{t("updateCitations")}</span></button>
         </div>
       ) : null}
       {entry.aliases.length ? (
@@ -492,7 +492,7 @@ function FieldRow({ entry, field, editable, onCommit, onChoose, onKeep }: {
               <div key={index} className="flex items-center gap-1.5">
                 <span className="min-w-0 flex-1 break-words">{formatFieldValue(field, alternative.value)}</span>
                 <ProvenanceChip provenance={alternative.provenance} />
-                <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" aria-label={t("useFromAria", { value: formatFieldValue(field, alternative.value), source: provenanceLabel(alternative.provenance.source, tDisplay) })} onClick={() => onChoose(alternative)}>{t("use")}</button>
+                <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" aria-label={t("useFromAria", { value: formatFieldValue(field, alternative.value), source: provenanceLabel(alternative.provenance.source, tDisplay) })} onClick={() => onChoose(alternative)}><span className="libera-btn-label">{t("use")}</span></button>
               </div>
             ))}
             <button type="button" className="text-[11px] font-medium text-accent hover:underline" onClick={onKeep}>{t("keepCurrent")}</button>
@@ -675,7 +675,7 @@ function AttachmentsSection({ entry, files = [], onOpenPath, onAttach, onDetach 
         <form className="space-y-1" onSubmit={(event) => { event.preventDefault(); void addLink(); }}>
           <div className="flex gap-1.5">
             <input className="libera-panel-field h-7 min-w-0 flex-1 px-2 text-[12px]" aria-label={t("linkAria")} placeholder="https://" value={link} autoFocus onChange={(event) => setLink(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setAdding(null); } }} />
-            <button type="submit" className="libera-panel-button h-7 px-2.5" disabled={!link.trim() || Boolean(linkProblem)}>{tc("add")}</button>
+            <button type="submit" className="libera-panel-button h-7 px-2.5" disabled={!link.trim() || Boolean(linkProblem)}><span className="libera-btn-label">{tc("add")}</span></button>
             <button type="button" className="libera-panel-button h-7 px-2" aria-label={t("cancelLinkAria")} onClick={() => setAdding(null)}><X aria-hidden className="h-3.5 w-3.5" /></button>
           </div>
           {linkProblem ? <p role="alert" className="text-[11px] text-destructive">{linkProblem}</p> : null}
@@ -683,10 +683,10 @@ function AttachmentsSection({ entry, files = [], onOpenPath, onAttach, onDetach 
       ) : (
         <div className="flex flex-wrap items-center gap-1.5">
           <button type="button" className="libera-panel-button h-7 px-2.5 text-[12px]" onClick={() => { setQuery(""); setAdding("file"); }}>
-            <Paperclip aria-hidden className="h-3.5 w-3.5" /> {t("attachFile")}
+            <Paperclip aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{t("attachFile")}</span>
           </button>
           <button type="button" className="libera-panel-button h-7 px-2.5 text-[12px]" onClick={() => { setLink(""); setAdding("link"); }}>
-            <Link2 aria-hidden className="h-3.5 w-3.5" /> {t("addLink")}
+            <Link2 aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{t("addLink")}</span>
           </button>
           {!entry.attachments.length ? <span className="text-[11px] text-muted-foreground">{t("orDropPdf")}</span> : null}
         </div>

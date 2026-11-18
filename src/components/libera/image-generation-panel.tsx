@@ -484,7 +484,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
                   if (event.key === "Enter") { event.preventDefault(); if (newAlbum.trim()) void createAlbumForDestination(newAlbum.trim()); }
                   if (event.key === "Escape") { event.preventDefault(); setNewAlbum(null); }
                 }} />
-              <button type="button" className="libera-panel-button shrink-0 px-3" disabled={!newAlbum.trim()} onClick={() => void createAlbumForDestination(newAlbum.trim())}>{t("create")}</button>
+              <button type="button" className="libera-panel-button shrink-0 px-3" disabled={!newAlbum.trim()} onClick={() => void createAlbumForDestination(newAlbum.trim())}><span className="libera-btn-label">{t("create")}</span></button>
             </div>}
             {albumMissing && <p className="px-1 text-xs text-muted-foreground">{t("albumDeleted")}</p>}
           </> : <>
@@ -502,7 +502,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
         {generating ? <button type="button" className="libera-panel-button w-full gap-2 px-4 py-2.5 text-[13px]" onClick={() => abortRef.current?.abort()}>
           <Loader2 aria-hidden className="h-4 w-4 animate-spin" />{t("generating")} <span className="inline-flex items-center gap-1 text-muted-foreground"><Square aria-hidden className="h-3 w-3" />{tc("stop")}</span>
         </button> : <button type="submit" disabled={!ready} className="libera-panel-primary w-full px-4 py-2.5" title={t("generateTitle")}>
-          <Sparkles aria-hidden className="h-4 w-4" />{t("generate")}
+          <Sparkles aria-hidden className="h-4 w-4" /><span className="libera-btn-label">{t("generate")}</span>
         </button>}
 
         {result && <div role="status" className="libera-panel-card p-3 text-xs leading-relaxed">

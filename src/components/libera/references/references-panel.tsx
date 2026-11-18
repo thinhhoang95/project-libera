@@ -1450,7 +1450,7 @@ function ReferencesPanelBody({
           <div role="alert" className="mx-3 space-y-2 rounded-lg bg-destructive-muted p-3 text-xs text-destructive">
             <p>{error}</p>
             <button type="button" className="libera-panel-button h-7 px-2.5 text-foreground" onClick={() => void reload().catch(() => undefined)}>
-              <RefreshCw aria-hidden className="h-3.5 w-3.5" /> {tc("retry")}
+              <RefreshCw aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{tc("retry")}</span>
             </button>
           </div>
         );
@@ -1951,7 +1951,7 @@ function JobStatusLine({ job, library, error, reviewing, onCancel, onDismiss, on
         {active ? <Loader2 aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin" /> : job.failed || job.state === "failed" ? <AlertCircle aria-hidden className="h-3.5 w-3.5 shrink-0 text-destructive" /> : <Check aria-hidden className="h-3.5 w-3.5 shrink-0 text-accent" />}
         <span className="min-w-0 flex-1 truncate" title={job.current}>{active ? jobProgressText(job, t) : jobSummaryText(job, library, t)}</span>
         {active ? (
-          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" onClick={() => onCancel(job.id)}>{tc("cancel")}</button>
+          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" onClick={() => onCancel(job.id)}><span className="libera-btn-label">{tc("cancel")}</span></button>
         ) : (
           <button type="button" className="shrink-0" aria-label={tc("dismiss")} onClick={() => onDismiss(job.id)}><X aria-hidden className="h-3 w-3" /></button>
         )}
@@ -1993,8 +1993,8 @@ function FactCheckPopover({ path, defaultWebSearch, blocker, onCancel, onStart }
         <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} /> {t("factCheckWeb")}
       </label>
       <div className="flex justify-end gap-1.5">
-        <button type="button" className="libera-panel-button h-7 px-3" onClick={onCancel}>{tc("cancel")}</button>
-        <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={Boolean(blocker)} onClick={() => onStart(webSearch)}>{t("factCheckStart")}</button>
+        <button type="button" className="libera-panel-button h-7 px-3" onClick={onCancel}><span className="libera-btn-label">{tc("cancel")}</span></button>
+        <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={Boolean(blocker)} onClick={() => onStart(webSearch)}><span className="libera-btn-label">{t("factCheckStart")}</span></button>
       </div>
     </div>
   );
@@ -2359,7 +2359,7 @@ function BulkActionsBar({ count, canCite, citeSyntax, entries, knownTags, tagsOp
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onTagsOpen(false); } }}
             />
-            <button type="submit" className="libera-panel-button h-7 px-2.5" disabled={!draft.trim()}>{tc("add")}</button>
+            <button type="submit" className="libera-panel-button h-7 px-2.5" disabled={!draft.trim()}><span className="libera-btn-label">{tc("add")}</span></button>
           </form>
           <datalist id="libera-reference-bulk-tags">
             {knownTags.map((tag) => <option key={tag} value={tag} />)}

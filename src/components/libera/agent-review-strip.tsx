@@ -77,9 +77,9 @@ export function AgentReviewStrip({ readTabDraft, onOpenFile, onReverted, onError
         <span className="truncate">{t("fileCount", { count: rows.length })}</span>
       </button>
       <button type="button" disabled={busy} className="libera-change-bar-reject inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-md px-2 font-medium disabled:opacity-40"
-        title={t("rejectAllTitle")} onClick={() => void decide(all, "revert")}><X aria-hidden size={12} />{t("rejectAll")}</button>
+        title={t("rejectAllTitle")} onClick={() => void decide(all, "revert")}><X aria-hidden size={12} /><span className="libera-btn-label">{t("rejectAll")}</span></button>
       <button type="button" disabled={busy} className="libera-change-bar-accept inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-md px-2 font-medium disabled:opacity-40"
-        title={t("acceptAllTitle")} onClick={() => void decide(all, "keep")}><Check aria-hidden size={12} />{t("acceptAll")}</button>
+        title={t("acceptAllTitle")} onClick={() => void decide(all, "keep")}><Check aria-hidden size={12} /><span className="libera-btn-label">{t("acceptAll")}</span></button>
     </div>
     {!collapsed && <ul className="max-h-40 overflow-auto border-t border-border py-1">
       {rows.map((row) => <li key={row.path} className="flex items-center gap-1 px-2">

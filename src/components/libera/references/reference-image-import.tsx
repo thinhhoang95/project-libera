@@ -360,14 +360,14 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
         </div>
         <div className="flex items-center justify-end gap-2">
           {working ? (
-            <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancel}>{tc("cancel")}</button>
+            <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancel}><span className="libera-btn-label">{tc("cancel")}</span></button>
           ) : (
             <>
               <button type="button" className="libera-panel-button h-6 whitespace-nowrap px-2 text-[11px]" title={t("pasteTitle")} onClick={() => void pasteFromClipboard()}>
-                <ClipboardPaste aria-hidden className="h-3 w-3" /> {t("pasteButton")}
+                <ClipboardPaste aria-hidden className="h-3 w-3" /> <span className="libera-btn-label">{t("pasteButton")}</span>
               </button>
               <button type="button" className="libera-panel-button h-6 whitespace-nowrap px-2 text-[11px]" title={t("imageTitle")} onClick={() => inputRef.current?.click()}>
-                <ImageUp aria-hidden className="h-3 w-3" /> {t("imageButton")}
+                <ImageUp aria-hidden className="h-3 w-3" /> <span className="libera-btn-label">{t("imageButton")}</span>
               </button>
             </>
           )}

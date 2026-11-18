@@ -405,11 +405,11 @@ export function AddReferenceBox({
               {detected ? t.rich("detected", { kind: inputKindLabel(detected.kind, tDisplay), hasValue: detected.value ? "yes" : "no", value: detected.value ?? "", strong: (chunks) => <span className="font-medium text-foreground">{chunks}</span>, mono: (chunks) => <span className="font-mono">{chunks}</span> }) : t("pasteHint")}
             </span>
             <button type="button" className="libera-panel-button h-7 px-2" title={t("fileTitle")} onClick={() => fileInputRef.current?.click()}>
-              <FileUp aria-hidden className="h-3.5 w-3.5" /> {t("fileButton")}
+              <FileUp aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{t("fileButton")}</span>
             </button>
             <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={!detected || busy || Boolean(lookup)} onClick={() => void submit()}>
               {busy ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : detected && !isFormat ? <Search aria-hidden className="h-3.5 w-3.5" /> : null}
-              {!detected ? tc("add") : isFormat ? t("importButton") : detected.kind === "bibliography" ? t("lookUpAll") : t("lookUp")}
+              <span className="libera-btn-label">{!detected ? tc("add") : isFormat ? t("importButton") : detected.kind === "bibliography" ? t("lookUpAll") : t("lookUp")}</span>
             </button>
           </div>
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title={t("webSearchTitle")}>
@@ -427,7 +427,7 @@ export function AddReferenceBox({
             <div className="flex items-center gap-2 text-[11px]" role="status" aria-label={t("lookupProgressAria")}>
               <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
               <span className="min-w-0 flex-1 truncate">{lookup}</span>
-              <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancelLookup}>{tc("cancel")}</button>
+              <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancelLookup}><span className="libera-btn-label">{tc("cancel")}</span></button>
             </div>
           ) : null}
           <input ref={fileInputRef} type="file" hidden accept=".bib,.ris,.json,.txt" aria-label={t("fileInputAria")} onChange={(event) => {
@@ -486,7 +486,7 @@ export function AddReferenceBox({
                       </span>
                       {fuzzy ? (
                         <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={() => onMerge([existing.id, added.id])}>
-                          <Merge aria-hidden className="h-3 w-3" /> {t("merge")}
+                          <Merge aria-hidden className="h-3 w-3" /> <span className="libera-btn-label">{t("merge")}</span>
                         </button>
                       ) : null}
                     </li>
@@ -504,7 +504,7 @@ export function AddReferenceBox({
             </div>
           ) : null}
           <div className="flex justify-end">
-            <button type="button" className="libera-panel-button h-7 px-3" onClick={() => { setText(""); setView({ kind: "input" }); onClose(); }}>{tc("done")}</button>
+            <button type="button" className="libera-panel-button h-7 px-3" onClick={() => { setText(""); setView({ kind: "input" }); onClose(); }}><span className="libera-btn-label">{tc("done")}</span></button>
           </div>
         </div>
       )}

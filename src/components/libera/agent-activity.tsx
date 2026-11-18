@@ -127,14 +127,14 @@ export function AgentRunView({ run, streaming, mathMarkers, macroScope, fontSize
     {!!run.changes.length && <section className="libera-agent-changes" aria-label={t("changedFiles")}>
       <h3>
         <Pencil aria-hidden size={13} />{t("changedFiles")} <span>{run.changes.length}</span>
-        {pendingChanges.length > 1 && !streaming && <button type="button" className="libera-agent-undo" disabled={undoing} onClick={() => onUndo()}><Undo2 aria-hidden size={12} />{t("undoAll")}</button>}
+        {pendingChanges.length > 1 && !streaming && <button type="button" className="libera-agent-undo" disabled={undoing} onClick={() => onUndo()}><Undo2 aria-hidden size={12} /><span className="libera-btn-label">{t("undoAll")}</span></button>}
       </h3>
       <ul>{run.changes.map((change) => <li key={change.path} data-reverted={change.reverted || undefined}>
         <button type="button" className="libera-agent-file" title={t("openFileTitle", { path: change.path })} disabled={change.reverted && change.created} onClick={() => onOpenFile(change.path)}>{change.path}</button>
         {change.created && <span className="libera-agent-badge">{t("newBadge")}</span>}
         {change.suggested && <span className="libera-agent-badge" title={t("suggestedBadgeTitle")}>{t("suggestedBadge")}</span>}
         {change.reverted ? <span className="libera-agent-badge">{change.suggested ? t("withdrawnBadge") : t("undoneBadge")}</span>
-          : !streaming && <button type="button" className="libera-agent-undo" disabled={undoing} aria-label={t("undoChangesLabel", { path: change.path })} title={change.suggested ? t("withdrawTitle") : change.created ? t("deleteNewFileTitle") : t("restoreFileTitle")} onClick={() => onUndo([change.path])}><Undo2 aria-hidden size={12} />{t("undo")}</button>}
+          : !streaming && <button type="button" className="libera-agent-undo" disabled={undoing} aria-label={t("undoChangesLabel", { path: change.path })} title={change.suggested ? t("withdrawTitle") : change.created ? t("deleteNewFileTitle") : t("restoreFileTitle")} onClick={() => onUndo([change.path])}><Undo2 aria-hidden size={12} /><span className="libera-btn-label">{t("undo")}</span></button>}
       </li>)}</ul>
     </section>}
     {!!run.comments?.some((entry) => entry.count) && <section className="libera-agent-changes" aria-label={t("reviewComments")}>

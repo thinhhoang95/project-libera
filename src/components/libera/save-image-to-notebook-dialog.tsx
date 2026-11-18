@@ -83,7 +83,7 @@ function SaveImageForm({ source, tree, onUpload, onClose }: {
           {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
           <div className="libera-dialog-actions flex justify-end gap-2 pt-2">
             <button type="button" className="rounded-lg border border-border px-4 py-2 text-sm" onClick={onClose}>{tCommon("cancel")}</button>
-            <button type="submit" className="libera-dialog-primary" disabled={!folder || !name.trim()}>{submitting ? tCommon("saving") : tCommon("save")}</button>
+            <button type="submit" className="libera-dialog-primary" disabled={!folder || !name.trim()}><span className="libera-btn-label">{submitting ? tCommon("saving") : tCommon("save")}</span></button>
           </div>
         </fieldset>
       </form>

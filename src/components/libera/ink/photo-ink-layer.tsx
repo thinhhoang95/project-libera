@@ -140,24 +140,24 @@ export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, o
             <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy} title={t("saveWithInkTitle")}
               onClick={() => { void ink.save().then(() => downloadImage({ name: "photo-with-ink", src: `/api/gallery/photos/ink/export?id=${encodeURIComponent(photoId)}` }), () => undefined); }}>
               <Download aria-hidden className="h-3.5 w-3.5" />
-              {t("saveWithInk")}
+              <span className="libera-btn-label">{t("saveWithInk")}</span>
             </button>
             {confirmFlatten ? (
               <>
                 <button type="button" className="libera-photo-ink-action is-danger" disabled={busy} onClick={() => void flatten()}>
                   <Layers aria-hidden className="h-3.5 w-3.5" />
-                  {t("drawIntoPhoto")}
+                  <span className="libera-btn-label">{t("drawIntoPhoto")}</span>
                 </button>
                 <button type="button" className="libera-photo-ink-action" disabled={busy} onClick={() => setConfirmFlatten(false)}>
                   <X aria-hidden className="h-3.5 w-3.5" />
-                  {t("cancel")}
+                  <span className="libera-btn-label">{t("cancel")}</span>
                 </button>
               </>
             ) : (
               <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy || photo?.changed} title={t("flattenTitle")}
                 onClick={() => setConfirmFlatten(true)}>
                 <Layers aria-hidden className="h-3.5 w-3.5" />
-                {t("flatten")}
+                <span className="libera-btn-label">{t("flatten")}</span>
               </button>
             )}
           </span>

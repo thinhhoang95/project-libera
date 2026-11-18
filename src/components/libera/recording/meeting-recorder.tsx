@@ -177,7 +177,7 @@ export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { chi
         )}
         <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-destructive hover:bg-destructive/10 disabled:opacity-40" disabled={state === "stopping"} aria-label={t("stopAndSave")} title={t("stopAndSave")} onClick={() => void recorder.stop()}><Square aria-hidden className="h-3 w-3" fill="currentColor" /></button>
         <button type="button" className="inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium hover:bg-muted" title={t("showRecording")} onClick={() => open(session.id, session.name, session.notebook)}>
-          <Maximize2 aria-hidden className="h-3.5 w-3.5" /> {t("show")}
+          <Maximize2 aria-hidden className="h-3.5 w-3.5" /> <span className="libera-btn-label">{t("show")}</span>
         </button>
       </div>
     );
@@ -200,12 +200,12 @@ export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { chi
               <div className="mb-1.5 text-xs text-muted-foreground">{t("recordingInPath", { duration: formatClock(recording.savedSeconds), path: recording.parentPath })}</div>
               <div className="flex flex-wrap gap-1.5">
                 <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50" disabled={Boolean(recovering)} onClick={() => void saveUnfinished(recording.id, recording.notebook)}>
-                  {recovering === recording.id ? <Loader2 aria-hidden className="h-3 w-3 animate-spin" /> : null} {tCommon("save")}
+                  {recovering === recording.id ? <Loader2 aria-hidden className="h-3 w-3 animate-spin" /> : null} <span className="libera-btn-label">{tCommon("save")}</span>
                 </button>
                 <button type="button" className="h-7 rounded-md border border-border px-2.5 text-xs font-medium hover:bg-muted disabled:opacity-50" disabled={Boolean(recovering)} onClick={() => void recordOn(recording.id)}>
-                  {t("recordOn")}
+                  <span className="libera-btn-label">{t("recordOn")}</span>
                 </button>
-                <button type="button" className="ml-auto h-7 rounded-md px-2 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={Boolean(recovering)} onClick={() => void discardUnfinished(recording.id)}>{tCommon("delete")}</button>
+                <button type="button" className="ml-auto h-7 rounded-md px-2 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={Boolean(recovering)} onClick={() => void discardUnfinished(recording.id)}><span className="libera-btn-label">{tCommon("delete")}</span></button>
               </div>
             </li>
           ))}

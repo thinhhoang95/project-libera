@@ -195,7 +195,7 @@ export function HeadingNumberingControl({
                 className="h-8 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-sm"
                 onChange={(event) => setStartAt(event.target.value)}
               />
-              <button type="submit" className="h-8 rounded-md bg-primary px-3 text-sm text-primary-foreground">{t("apply")}</button>
+              <button type="submit" className="h-8 rounded-md bg-primary px-3 text-sm text-primary-foreground"><span className="libera-btn-label">{t("apply")}</span></button>
             </div>
           </form>
         ) : null}

@@ -67,7 +67,7 @@ export function DocumentChatExportDialog({ snapshot, onClose, onSaved, onSaveToN
         {loading && <p role="status" className="text-sm text-muted-foreground">{t("loadingNotebooks")}</p>}
         {!loading && !directories.length && !error && <p className="text-sm text-muted-foreground">{t("createNotebookHint")}</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-        <div className="libera-dialog-actions flex justify-end gap-2"><button type="button" onClick={onClose}>{tc("cancel")}</button><button type="submit" className="libera-dialog-primary disabled:opacity-40" disabled={!directory || !name.trim()}>{saving ? tc("saving") : tc("save")}</button></div>
+        <div className="libera-dialog-actions flex justify-end gap-2"><button type="button" onClick={onClose}>{tc("cancel")}</button><button type="submit" className="libera-dialog-primary disabled:opacity-40" disabled={!directory || !name.trim()}><span className="libera-btn-label">{saving ? tc("saving") : tc("save")}</span></button></div>
       </fieldset>
     </form>
   </ModalDialog>;

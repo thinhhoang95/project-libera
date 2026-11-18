@@ -46,9 +46,9 @@ export function TiptapChangeBar({ editor }: { editor: Editor }) {
     <button type="button" className={navClass} aria-label={t("nextChange")} title={t("nextChange")} onClick={() => reveal(current + 1)}><ChevronDown aria-hidden className="h-4 w-4" /></button>
     {decidable ? <>
     <button type="button" className="libera-change-bar-reject ml-1 inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-2.5 font-medium" title={t("rejectAllChangesTitle")}
-      onMouseDown={(event) => event.preventDefault()} onClick={() => decideTiptapChanges(editor.view, "all", "reject")}><X aria-hidden className="h-3.5 w-3.5" />{t("rejectAll")}</button>
+      onMouseDown={(event) => event.preventDefault()} onClick={() => decideTiptapChanges(editor.view, "all", "reject")}><X aria-hidden className="h-3.5 w-3.5" /><span className="libera-btn-label">{t("rejectAll")}</span></button>
     <button type="button" className="libera-change-bar-accept inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-2.5 font-medium" title={t("acceptAllChangesTitle")}
-      onMouseDown={(event) => event.preventDefault()} onClick={() => decideTiptapChanges(editor.view, "all", "accept")}><Check aria-hidden className="h-3.5 w-3.5" />{t("acceptAll")}</button>
+      onMouseDown={(event) => event.preventDefault()} onClick={() => decideTiptapChanges(editor.view, "all", "accept")}><Check aria-hidden className="h-3.5 w-3.5" /><span className="libera-btn-label">{t("acceptAll")}</span></button>
     </> : null}
   </div>;
 }

@@ -128,7 +128,7 @@ export function IndexMismatch({ status }: { status: SearchIndexStatus }) {
         onClick={() => void run(() => searchIndexAction("reembed"))}
       >
         {busy ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null}
-        {t("reembedWithCurrent")}
+        <span className="libera-btn-label">{t("reembedWithCurrent")}</span>
       </button>
       {error ? <p className="text-destructive">{error}</p> : null}
     </div>
