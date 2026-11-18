@@ -15,6 +15,9 @@ export const SYMBOL_COMMANDS: Record<string, string> = {
   "\\ldots": "…", "\\dots": "…", "\\textellipsis": "…", "\\textendash": "–", "\\textemdash": "—",
   "\\textbullet": "•", "\\textperiodcentered": "·", "\\S": "§", "\\P": "¶", "\\copyright": "©", "\\textcopyright": "©",
   "\\textregistered": "®", "\\texttrademark": "™", "\\dag": "†", "\\ddag": "‡", "\\textdagger": "†", "\\textdaggerdbl": "‡",
+  // AASTeX's angle marks and the time and angle marks over the decimal point (`250\arcdeg`, `08\fs59`), in text.
+  "\\arcdeg": "°", "\\arcmin": "′", "\\arcsec": "″", "\\fdg": ".°", "\\farcm": ".′", "\\farcs": ".″",
+  "\\fd": ".ᵈ", "\\fh": ".ʰ", "\\fm": ".ᵐ", "\\fs": ".ˢ", "\\fp": ".ᵖ",
   // amssymb's tick, in text (results tables).
   "\\checkmark": "✓",
   "\\textbackslash": "\\", "\\textasciitilde": "~", "\\textasciicircum": "^", "\\textbar": "|", "\\textless": "<", "\\textgreater": ">",

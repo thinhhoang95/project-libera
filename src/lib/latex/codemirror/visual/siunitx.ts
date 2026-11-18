@@ -136,6 +136,25 @@ export function siunitxUnits(text: string, perMode = "power", config?: SiunitxCo
         if (text[i + 1] === "%") { literal += "\\%"; i += 2; continue; }
         return null;
       }
+      // A unit a document wrote as a macro (`\newcommand*{\GeV}{\ensuremath{\text{GeV}}\xspace}`, 2611.16454): its text, read as written.
+      if (name === "xspace") { i += name.length + 1; continue; }
+      if (name === "ensuremath" && !prefix && !per && power === null) {
+        const after = i + name.length + 1;
+        const group = text[after] === "{" ? readGroup(text, after, TEX_GROUPS) : null;
+        if (!group) return null;
+        text = `${text.slice(0, after)}${group.content}${text.slice(group.end)}`;
+        i = after;
+        continue;
+      }
+      // A letter set in a font inside a literal unit (`\SI{3}{GeV/\textit{c}^2}`, 2611.16397): italic for `\textit`, upright for the others.
+      if (/^(?:textit|mathit|textrm|mathrm|text|textup|textnormal)$/.test(name) && !prefix && !per && power === null) {
+        const after = i + name.length + 1;
+        const group = text[after] === "{" ? readGroup(text, after, TEX_GROUPS) : null;
+        if (!group || !/^[A-Za-z]+$/.test(group.content)) return null;
+        literal += `\\${/it$/.test(name) ? "mathit" : "mathrm"}{${group.content}}`;
+        i = group.end;
+        continue;
+      }
       i += name.length + 1;
       if (name in PREFIXES) { prefix += PREFIXES[name]; continue; }
       if (name === "per") { per = true; continue; }

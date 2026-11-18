@@ -70,6 +70,11 @@ export const KATEX_MACROS: Record<string, string> = {
   // AASTeX's solar and Earth symbols (2611.08676's `\left(…\right)_{\sun}`).
   "\\sun": "\\odot",
   "\\earth": "\\oplus",
+  // AASTeX's angle and time marks (aas_macros: `\arcdeg` is `\hbox{$^\circ$}`), and the forms that put the mark over the decimal point
+  // (`\fdg` is `\hbox{$.\!\!^\circ$}`, `\fs` is `\hbox{$.\!\!^{\rm s}$}`; 2611.16046's `08\fs59`, 2611.19134's `0\fdg 3539`).
+  "\\arcdeg": "{}^{\\circ}", "\\arcmin": "{}^{\\prime}", "\\arcsec": "{}^{\\prime\\prime}",
+  "\\fdg": "{.\\!\\!^{\\circ}}", "\\farcm": "{.\\!\\!^{\\prime}}", "\\farcs": "{.\\!\\!^{\\prime\\prime}}",
+  "\\fd": "{.\\!\\!^{\\rm d}}", "\\fh": "{.\\!\\!^{\\rm h}}", "\\fm": "{.\\!\\!^{\\rm m}}", "\\fs": "{.\\!\\!^{\\rm s}}", "\\fp": "{.\\!\\!^{\\rm p}}",
   // TeX's delimiters KaTeX lacks (2611.11568's `\Big\arrowvert`): the bars they draw. `\bracevert`, a brace's middle
   // piece, is a thicker bar in TeX.
   "\\arrowvert": "\\vert",
@@ -770,11 +775,23 @@ function eqnoForKatex(latex: string) {
   });
 }
 
+/** `\mathchar'26\mkern-9mu d`: the bar of `\hbar` backed up over the letter after it. */
+const BARRED_LETTER = /\\mathchar\s*['"]26\s*\\mkern\s*-\s*9\s*mu\s*(?:\\,\s*)?([A-Za-z])(?![A-Za-z])/g;
+/** TeX's line-height and indent lengths (`\baselineskip`, `\normalbaselineskip`, `\parindent`) and their use as a multiple of one (`.5\baselineskip`). */
+const LINE_LENGTH = /\\(?:baselineskip|normalbaselineskip|parindent)(?![A-Za-z@])/;
+const LINE_LENGTH_USE = /(?:(?<![\w.])(-?(?:\d+\.?\d*|\.\d+))\s*)?\\(baselineskip|normalbaselineskip|parindent)(?![A-Za-z@])/g;
+
 /**
  * LaTeX KaTeX lacks, written as what it can draw: `\textsc{Base}` as `\text{B{\small ASE}}` (small capitals),
  * and Batch Norm's `\widehat\mathrm{x}` as `\widehat{\mathrm{x}}`.
  */
 export function forKatex(latex: string) {
+  // Plain TeX's barred letter, `{\mathchar'26\mkern-9mu d}` (2611.13129's quantized differential): `\mathchar'26` is the bar `\hbar` is
+  // built from, so `h` is `\hbar` and another letter is drawn with a short bar over its stem. Any other `\mathchar` is left (KaTeX fails).
+  if (latex.includes("\\mathchar")) latex = latex.replace(BARRED_LETTER, (_, letter: string) => (letter === "h" ? "\\hbar " : `\\mathord{\\mathrlap{\\mkern1.5mu\\raisebox{0.02em}{$\\scriptstyle-$}}${letter}}`));
+  // A length in line heights (`\hspace{.1\baselineskip} \rule{.5pt}{.5\baselineskip}`, 2611.13338): KaTeX knows only units, so
+  // the factor times the line (1.2em, TeX's 12pt over 10pt) or the paragraph indent (1.5em).
+  if (LINE_LENGTH.test(latex)) latex = latex.replace(LINE_LENGTH_USE, (_, factor: string | undefined, name: string) => `${Math.round((factor ? Number(factor) || 0 : 1) * (name === "parindent" ? 1.5 : 1.2) * 1000) / 1000}em`);
   // `\raise.17ex\hbox{…}` (Mask R-CNN's `\app`, a raised ∼): KaTeX has no \raise or \lower; the box is drawn in place.
   let out = latex.includes("\\raise") || latex.includes("\\lower") ? latex.replace(RAISE, "") : latex;
   // The small-capitals switch in a text box (`$F\in\mbox{\sc Files}$`, 2610.37006): `\textsc`.
