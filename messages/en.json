@@ -8299,6 +8299,8 @@
     }
   },
   "find": {
+    "findInNote": "Find in note",
+    "findInFile": "Find in file",
     "previousMatch": "Previous match (Shift+Enter)",
     "nextMatch": "Next match (Enter)",
     "close": "Close (Esc)",

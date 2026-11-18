@@ -8299,6 +8299,8 @@
     }
   },
   "find": {
+    "findInNote": "Tìm trong ghi chú",
+    "findInFile": "Tìm trong tệp",
     "previousMatch": "Kết quả trước (Shift+Enter)",
     "nextMatch": "Kết quả sau (Enter)",
     "close": "Đóng (Esc)",

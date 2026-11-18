@@ -8299,6 +8299,8 @@
     }
   },
   "find": {
+    "findInNote": "在笔记中查找",
+    "findInFile": "在文件中查找",
     "previousMatch": "上一个匹配（Shift+Enter）",
     "nextMatch": "下一个匹配（Enter）",
     "close": "关闭（Esc）",

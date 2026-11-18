@@ -8299,6 +8299,8 @@
     }
   },
   "find": {
+    "findInNote": "Rechercher dans la note",
+    "findInFile": "Rechercher dans le fichier",
     "previousMatch": "Occurrence précédente (Maj+Entrée)",
     "nextMatch": "Occurrence suivante (Entrée)",
     "close": "Fermer (Échap)",
