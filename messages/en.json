@@ -5467,12 +5467,15 @@
     "migrate": "Migrate",
     "warning": {
       "renamed": "{count, plural, one {# file has} other {# files have}} the same name as a file in the destination and will be renamed to keep both.",
+      "renamed-records": "{count, plural, one {# file is} other {# files are}} renamed because stars, tags, comments, reference attachments or other records of an earlier file are kept at the destination name.",
       "cross-device": "The notebooks are on different drives, so files are copied and then removed from the source. Their creation dates are not kept.",
       "inbound-images": "{count, plural, one {# note that stays shows} other {# notes that stay show}} images you are moving. Those images will no longer show there.",
       "inbound-links": "{count, plural, one {# note links} other {# notes link}} to files you are moving. Those links will stop working.",
       "outbound-links": "{count, plural, one {# moving note has links} other {# moving notes have links}} that will no longer find their file from the new place.",
       "latex-left-behind": "Moving LaTeX files use {count, plural, one {# file} other {# files}} that you are not moving. Add them to keep the project compiling.",
       "latex-includes-moving": "{count, plural, one {# LaTeX file that stays uses} other {# LaTeX files that stay use}} files you are moving.",
+      "latex-shadowed": "{count, plural, one {# reference in a moving LaTeX file} other {# references in moving LaTeX files}} will use a different file, or none, after the move.",
+      "latex-citations": "{count, plural, one {# moving LaTeX file cites} other {# moving LaTeX files cite}} references that the destination notebook does not have. References are not copied with LaTeX files.",
       "latex-incomplete": "{source} has more or larger LaTeX sources than the check reads, so LaTeX dependencies may be missing from this review."
     }
   },
