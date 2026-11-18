@@ -5394,6 +5394,8 @@
     "unmatchedOwn": "{candidates} already {count, plural, one {has} other {have}} records of {count, plural, one {its} other {their}} own, so {count, plural, one {it is} other {they are}} probably another file.",
     "unmatchedSeveral": "Several files have this name: {candidates}.",
     "unmatchedSharedName": "Other missing files have the same name, so which is which can't be told.",
+    "unmatchedDifferent": "{candidates} {count, plural, one {has} other {have}} this name but {count, plural, one {is} other {are}} not the file these records were made for (the content differs), so nothing is moved.",
+    "unmatchedElsewhere": "{candidates} may be this file (under another name, or in another notebook), but that can't be told for sure, so nothing is moved. Put the file back where it was, or keep these records.",
     "working": "Working…",
     "unmatchedLine": "{records} · {reason}"
   },

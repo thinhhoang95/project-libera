@@ -310,17 +310,31 @@ async function migrateLegacyPythonSidecar(documentPath: string, alsoMoving?: str
   await rm(legacyFile, { force: true });
 }
 
-export async function movePythonSidecar(from: string, to: string) {
+/**
+ * Moves a note's Python code with the note. By default it replaces the code
+ * at the destination; with `replace: false` (Try to fix) it never does:
+ * false, and the code stays where it is, when the destination has some.
+ * True when it moved or there was nothing to move.
+ */
+export async function movePythonSidecar(from: string, to: string, { replace = true }: { replace?: boolean } = {}) {
   await migratePythonSidecar(from, to);
   const source = pythonSidecarFile(from);
-  if (!(await pathExists(source.absolutePath))) return;
+  if (!(await pathExists(source.absolutePath))) return true;
+  const destination = pythonSidecarFile(to);
+  if (!replace && await pathExists(destination.absolutePath)) return false;
   const code = await readFile(source.absolutePath, "utf8");
   const figures = (await readdir(path.dirname(source.absolutePath))).filter((name) => parsePythonFigureSource(name)).map((name) => `${pythonFigureSourcePrefix(from)}/${name}`);
-  const destination = pythonSidecarFile(to);
   const previous = source.notebook === destination.notebook ? [...previousPythonFigureSources(code), ...figures] : [];
   await writeFile(source.absolutePath, withPreviousPythonFigureSources(code, previous));
-  await moveFileIfExists(source.absolutePath, destination.absolutePath);
+  if (replace) await moveFileIfExists(source.absolutePath, destination.absolutePath);
+  else {
+    // Created exclusively: code saved there meanwhile is never replaced.
+    try { await copyFileIfExists(source.absolutePath, destination.absolutePath, { exclusive: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return false; throw error; }
+    await rm(source.absolutePath, { force: true });
+  }
   await removeEmptyAssetParents(source.notebook, path.dirname(source.absolutePath));
+  return true;
 }
 
 export async function copyPythonSidecar(from: string, to: string) {

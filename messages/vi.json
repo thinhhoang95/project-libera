@@ -5394,6 +5394,8 @@
     "unmatchedOwn": "{candidates} đã {count, plural, one {có} other {có}} bản ghi của {count, plural, one {riêng nó} other {riêng chúng}}, nên {count, plural, one {có lẽ đó là} other {có lẽ đó là}} một tệp khác.",
     "unmatchedSeveral": "Có nhiều tệp mang tên này: {candidates}.",
     "unmatchedSharedName": "Các tệp bị thiếu khác có cùng tên, nên không thể phân biệt được tệp nào là tệp nào.",
+    "unmatchedDifferent": "{candidates} mang tên này nhưng không phải là tệp mà các bản ghi này được tạo cho (nội dung khác), nên không có gì được chuyển.",
+    "unmatchedElsewhere": "{candidates} có thể là tệp này (dưới tên khác hoặc trong sổ tay khác), nhưng không chắc chắn, nên không có gì được chuyển. Hãy đưa tệp về chỗ cũ, hoặc giữ các bản ghi này.",
     "working": "Đang xử lý…",
     "unmatchedLine": "{records} · {reason}"
   },

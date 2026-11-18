@@ -5394,6 +5394,8 @@
     "unmatchedOwn": "{candidates}已有{count, plural, one {自己的} other {各自的}}记录，因此{count, plural, one {它} other {它们}}很可能是另一个文件。",
     "unmatchedSeveral": "有多个文件使用此名称：{candidates}。",
     "unmatchedSharedName": "其他缺失的文件也使用此名称，因此无法判断哪一个是哪一个。",
+    "unmatchedDifferent": "{candidates}使用此名称，但不是这些记录所属的文件（内容不同），因此不会移动任何内容。",
+    "unmatchedElsewhere": "{candidates}可能就是此文件（名称不同，或位于另一个笔记本中），但无法确定，因此不会移动任何内容。请把文件放回原处，或保留这些记录。",
     "working": "正在处理…",
     "unmatchedLine": "{records} · {reason}"
   },
