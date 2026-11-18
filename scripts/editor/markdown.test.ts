@@ -54,10 +54,11 @@ function create(content: string) {
   return new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), Mathematics], content, contentType: "markdown" });
 }
 
-async function setControlledInput(input: HTMLInputElement, value: string) {
+async function setControlledInput(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => { input.focus(); });
   await act(async () => {
-    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    const prototype = input instanceof dom.window.HTMLTextAreaElement ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(input, value);
     const event = new dom.window.Event("propertychange", { bubbles: true });
     Object.defineProperty(event, "propertyName", { value: "value" });
     input.dispatchEvent(event);
@@ -292,13 +293,19 @@ test("highlight seams merge only between runs of one color", () => {
   assert.equal(mergeHighlightSeams("y>>>a<<<r>>>b<<<r>>>c<<<"), "y>>>a<<<r>>>bc<<<");
 });
 
-test("visual find matches case-insensitively across inline formatting but not across blocks", () => {
+test("visual find matches case-insensitively across inline formatting but not across blocks", async () => {
+  const { compileFind, DEFAULT_FIND_OPTIONS } = await import("../../src/lib/find");
+  const finder = (query: string, mode: "plain" | "pattern" = "plain") => {
+    const compiled = compileFind(query, { ...DEFAULT_FIND_OPTIONS, mode, flavor: "markdown" });
+    assert.ok(compiled.ok);
+    return compiled.finder;
+  };
   const editor = create("One **two** one\n\nONE");
   try {
-    assert.equal(findTiptapTextMatches(editor.state.doc, "one").length, 3);
-    assert.equal(findTiptapTextMatches(editor.state.doc, "ONE TWO").length, 1);
-    assert.equal(findTiptapTextMatches(editor.state.doc, "one one").length, 0);
-    assert.equal(findTiptapTextMatches(editor.state.doc, "o?e", { wildcards: true }).length, 3);
+    assert.equal(findTiptapTextMatches(editor.state.doc, finder("one")).length, 3);
+    assert.equal(findTiptapTextMatches(editor.state.doc, finder("ONE TWO")).length, 1);
+    assert.equal(findTiptapTextMatches(editor.state.doc, finder("one one")).length, 0);
+    assert.equal(findTiptapTextMatches(editor.state.doc, finder("o?e", "pattern")).length, 3);
   } finally {
     editor.destroy();
   }
@@ -784,7 +791,7 @@ test("visual editor opens find with Mod-F, highlights matches, navigates, and cl
     assert.match(host.textContent ?? "", /1\/3/);
     assert.equal(host.querySelectorAll(".markdown-editor-find-match-active").length, 1);
     assert.equal(host.querySelectorAll(".markdown-editor-find-match").length, 3);
-    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Next match"]')!.click(); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label^="Next match"]')!.click(); });
     assert.match(host.textContent ?? "", /2\/3/);
     assert.ok(host.querySelector("strong .markdown-editor-find-match-active"));
     await act(async () => {
@@ -836,10 +843,11 @@ test("visual find replaces one or all wildcard matches in single undoable edits"
     });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
     await setControlledInput(host.querySelector<HTMLInputElement>('[aria-label="Find in note"]')!, "A?pha");
-    await act(async () => { host.querySelector<HTMLInputElement>('[aria-label="Wildcard matches"]')!.click(); });
-    await setControlledInput(host.querySelector<HTMLInputElement>('[aria-label="Replace with"]')!, "Z");
+    const patternMode = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find((button) => button.textContent === "Pattern")!;
+    await act(async () => { patternMode.click(); });
+    await setControlledInput(host.querySelector<HTMLTextAreaElement>('[aria-label="Replace with"]')!, "Z");
     assert.match(host.textContent ?? "", /1\/3/);
-    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Next match"]')!.click(); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label^="Next match"]')!.click(); });
     // Select the explicit Replace button rather than relying on toolbar order.
     const replaceButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace")!;
     await act(async () => { replaceButton.click(); });
@@ -850,7 +858,7 @@ test("visual find replaces one or all wildcard matches in single undoable edits"
     await settleVisualDraft();
     assert.equal(changes.at(-1), original);
 
-    const replaceAllButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace all")!;
+    const replaceAllButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace all" || button.textContent === "All")!;
     await act(async () => { replaceAllButton.click(); });
     await settleVisualDraft();
     assert.equal(changes.at(-1), "Z **beta Z** Z");
@@ -861,6 +869,10 @@ test("visual find replaces one or all wildcard matches in single undoable edits"
   } finally {
     await act(async () => root.unmount());
     host.remove();
+    // The find mode is remembered per editor kind; later tests expect Plain.
+    const { resetFindStoreForTests } = await import("../../src/lib/find/settings-store");
+    try { globalThis.localStorage?.removeItem("libera.find.settings.v1"); } catch { /* no storage */ }
+    resetFindStoreForTests();
   }
 });
 
@@ -1151,9 +1163,15 @@ test("source editor converts rich HTML paste to Markdown and replaces the select
 
 test('find navigation retains matches and block caches map offsets through edits', async () => {
   const { TiptapFind, tiptapFindPluginKey, updateTiptapFind } = await import('../../src/lib/tiptap-find');
+  const { compileFind, DEFAULT_FIND_OPTIONS } = await import('../../src/lib/find');
+  const finder = (query: string) => {
+    const compiled = compileFind(query, { ...DEFAULT_FIND_OPTIONS, flavor: 'markdown' });
+    assert.ok(compiled.ok);
+    return compiled.finder;
+  };
   const editor = new Editor({ extensions: [...createMarkdownExtensions('Notes/find.md'), TiptapFind], content: 'one **one**\n\nLater one', contentType: 'markdown' });
   try {
-    updateTiptapFind(editor, { query: 'one' });
+    updateTiptapFind(editor, { finder: finder('one') });
     const before = tiptapFindPluginKey.getState(editor.state)!;
     updateTiptapFind(editor, { activeMatchIndex: 1 });
     const selected = tiptapFindPluginKey.getState(editor.state)!;
@@ -1161,8 +1179,8 @@ test('find navigation retains matches and block caches map offsets through edits
     assert.equal(editor.view.dom.querySelectorAll('.markdown-editor-find-match-active').length, 1);
     editor.commands.insertContentAt(1, 'Prefix ');
     const after = tiptapFindPluginKey.getState(editor.state)!;
-    assert.deepEqual(after.matches, before.matches.map(match => ({ from: match.from + 7, to: match.to + 7 })));
-    updateTiptapFind(editor, { query: 'Later' });
+    assert.deepEqual(after.matches.map(match => ({ from: match.from, to: match.to })), before.matches.map(match => ({ from: match.from + 7, to: match.to + 7 })));
+    updateTiptapFind(editor, { finder: finder('Later') });
     assert.equal(tiptapFindPluginKey.getState(editor.state)!.matches.length, 1);
   } finally { editor.destroy(); }
 });

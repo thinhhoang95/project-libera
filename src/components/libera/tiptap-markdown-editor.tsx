@@ -7,17 +7,18 @@ import { TiptapChangeBar } from "./tiptap-change-bar";
 import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
 import { useTiptapAgentReview } from "./use-tiptap-agent-review";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { MarkdownSelectionLinkOption, MarkdownTabViewState, PendingVisualInsertion } from "@/components/libera/types";
 import { convertClipboardHtmlToMarkdown, isSourceWrapperHtml, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { changeTiptapHeadingLevels, getTiptapBlockInsertionRange, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { createMathExtensions } from "@/lib/tiptap-math";
 import { TiptapMarkdownMacros } from "@/lib/tiptap-macros";
 import { ExpandMacrosButton } from "./expand-macros-button";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Braces, Bold, Italic, Underline, Strikethrough, Superscript, Subscript, Asterisk, List, ListOrdered, ListIndentDecrease, ListIndentIncrease, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText, PenLine } from "lucide-react";
+import { Braces, Bold, Italic, Underline, Strikethrough, Superscript, Subscript, Asterisk, List, ListOrdered, ListIndentDecrease, ListIndentIncrease, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Scissors, ScanText, PenLine } from "lucide-react";
 import katex from "katex";
 import { Selection, type Transaction } from "@tiptap/pm/state";
 import { captureVisualScrollAnchor, startVisualScrollRestore, type VisualScrollAnchor, type VisualScrollRestore } from "@/lib/tiptap-scroll-anchor";
@@ -32,7 +33,12 @@ import type { PdfQuoteSource } from "@/lib/references/pdf-quote";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, revealTiptapMarkdownRange, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
-import { TiptapFind, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
+import { TiptapFind, tiptapFindMatchRun, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
+import { replaceTiptapFindMatches } from "@/lib/tiptap-find-replace";
+import { describeMatch } from "@/lib/find";
+import type { FindPreset } from "@/lib/find/presets";
+import { FindReplaceBar } from "@/components/libera/find/find-replace-bar";
+import { useFindQuery } from "@/components/libera/find/use-find-query";
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-colors";
 import { apiRequest } from "@/components/libera/api-client";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
@@ -232,9 +238,18 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const [uploadCount, setUploadCount] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
-  const [replaceQuery, setReplaceQuery] = useState("");
-  const [wildcardMatches, setWildcardMatches] = useState(false);
+  const find = useFindQuery("rich", "markdown");
+  const tFind = useTranslations("find");
+  const [findInSelection, setFindInSelection] = useState(false);
+  // Selections In selection can use: the one find opened with, and the last
+  // one moving between matches made (which is not the reader's own).
+  // Whether find is open, for handlers that run twice before a render (Escape in the bar).
+  const findOpenRef = useRef(false);
+  const findSelectionRef = useRef<{ opening: { from: number; to: number; doc: ProseMirrorNode } | null; selectedMatch: { from: number; to: number } | null }>({ opening: null, selectedMatch: null });
+  const [markdownReplacement, setMarkdownReplacement] = useState(false);
+  // Replace All's counts, shown until the query or replacement changes.
+  const [replaceSummary, setReplaceSummary] = useState<{ replaced: number; skipped: number; key: string } | null>(null);
+  const replaceSummaryKey = `${find.finder?.key ?? ""}\u0000${find.replacement}`;
   const imageInput = useRef<HTMLInputElement>(null);
   const toolbarRef = useHorizontalToolbarScroll();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -301,7 +316,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     // from recording remote edits (shared tabs only).
     ...(shared ? [TiptapCollabHistory] : []),
     HighlightTool,
-    TiptapFind,
+    TiptapFind.configure({ mathMarkers }),
     TiptapReview,
     TiptapChanges.configure({ documentPath }),
     TiptapHeadingNumbering,
@@ -494,7 +509,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     // Subscribe only to UI data, never a DecorationSet containing document nodes.
     find: (() => {
       const find = tiptapFindPluginKey.getState(current.state);
-      return find ? { matches: find.matches, activeMatchIndex: find.activeMatchIndex } : undefined;
+      return find ? { matches: find.matches, activeMatchIndex: find.activeMatchIndex, incomplete: find.incomplete } : undefined;
     })(),
     heading: current.isActive("heading") ? String(current.getAttributes("heading").level) : "0",
     fontSize: current.getAttributes("textStyle").fontSize ?? "",
@@ -513,6 +528,20 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     });
   }
   useCanvasViewStateCapture(captureVisualState);
+
+  // While the bar is open, the compiled query drives the find plugin.
+  const activeFinder = findOpen && find.query ? find.finder : null;
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !findOpen) return;
+    updateTiptapFind(editor, { finder: activeFinder, activeMatchIndex: 0 });
+    if (!activeFinder) return;
+    scrollRestoreRef.current?.cancel();
+    requestAnimationFrame(() => {
+      scrollContainerRef.current
+        ?.querySelector<HTMLElement>(".markdown-editor-find-match-active")
+        ?.scrollIntoView?.({ block: "center", inline: "nearest" });
+    });
+  }, [editor, findOpen, activeFinder]);
 
   useLayoutEffect(() => {
     dropQuoteRef.current = (source, pos) => {
@@ -910,19 +939,22 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     if (!editor || !matches.length) return;
     const normalizedIndex = (matchIndex + matches.length) % matches.length;
     const match = matches[normalizedIndex];
-    editor.commands.setTextSelection(match);
+    editor.commands.setTextSelection({ from: match.from, to: match.to });
+    findSelectionRef.current.selectedMatch = { from: match.from, to: match.to };
     updateTiptapFind(editor, { activeMatchIndex: normalizedIndex });
     scrollToActiveFindMatch();
   }
 
   function openFind() {
     if (!editor) return;
-    const { from, to } = editor.state.selection;
+    const { from, to, empty } = editor.state.selection;
     const selectedText = editor.state.doc.textBetween(from, to, "\n", "\n");
-    const query = selectedText && !selectedText.includes("\n") ? selectedText : findQuery;
+    if (selectedText && !selectedText.includes("\n")) find.setQuery(selectedText);
+    // In selection uses this selection, unless the reader selects something else.
+    findSelectionRef.current.opening = empty ? null : { from, to, doc: editor.state.doc };
+    findSelectionRef.current.selectedMatch = null;
+    findOpenRef.current = true;
     setFindOpen(true);
-    if (query !== findQuery) setFindQuery(query);
-    updateTiptapFind(editor, { query, wildcards: wildcardMatches, activeMatchIndex: 0 });
     requestAnimationFrame(() => {
       findInputRef.current?.focus();
       findInputRef.current?.select();
@@ -931,12 +963,15 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   }
 
   function closeFind() {
-    if (!editor) return;
+    if (!editor || !findOpenRef.current) return;
+    findOpenRef.current = false;
     const container = scrollContainerRef.current;
     const scrollLeft = container?.scrollLeft ?? 0;
     const scrollTop = container?.scrollTop ?? 0;
     setFindOpen(false);
-    updateTiptapFind(editor, { query: "", activeMatchIndex: 0 });
+    setFindInSelection(false);
+    setReplaceSummary(null);
+    updateTiptapFind(editor, { finder: null, within: null, activeMatchIndex: 0 });
     editor.commands.focus(undefined, { scrollIntoView: false });
     requestAnimationFrame(() => {
       if (!container) return;
@@ -945,60 +980,41 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     });
   }
 
-  function updateFindQuery(query: string) {
+  function toggleFindInSelection() {
     if (!editor) return;
-    setFindQuery(query);
-    updateTiptapFind(editor, { query, wildcards: wildcardMatches, activeMatchIndex: 0 });
-    if (query) scrollToActiveFindMatch();
-  }
-
-  function updateWildcardMatches(enabled: boolean) {
-    if (!editor) return;
-    setWildcardMatches(enabled);
-    updateTiptapFind(editor, { query: findQuery, wildcards: enabled, activeMatchIndex: 0 });
-    if (findQuery) scrollToActiveFindMatch();
-  }
-
-  function replaceMatches(replaceAll: boolean) {
-    if (!editor) return;
-    const find = tiptapFindPluginKey.getState(editor.state);
-    if (!find?.matches.length) return;
-    const matches = replaceAll ? find.matches : [find.matches[find.activeMatchIndex]];
-    let transaction = editor.state.tr;
-    for (const match of matches.toReversed()) {
-      transaction = transaction.insertText(replaceQuery, match.from, match.to);
+    if (findInSelection) {
+      setFindInSelection(false);
+      updateTiptapFind(editor, { within: null, activeMatchIndex: 0 });
+      return;
     }
-    transaction.setMeta(tiptapFindPluginKey, { activeMatchIndex: 0 });
-    editor.view.dispatch(transaction);
-    if (!replaceAll) {
-      const nextFind = tiptapFindPluginKey.getState(editor.state);
-      const nextOffset = matches[0].from + replaceQuery.length;
-      const followingIndex = nextFind?.matches.findIndex((match) => match.from >= nextOffset) ?? -1;
-      updateTiptapFind(editor, { activeMatchIndex: followingIndex < 0 ? 0 : followingIndex });
-    }
+    // The reader's selection; not one that moving between matches made.
+    const { from, to, empty } = editor.state.selection;
+    const picked = findSelectionRef.current.selectedMatch;
+    const own = !empty && !(picked && picked.from === from && picked.to === to) ? { from, to } : null;
+    const opening = findSelectionRef.current.opening?.doc === editor.state.doc ? findSelectionRef.current.opening : null;
+    const range = own ?? (opening ? { from: opening.from, to: opening.to } : null);
+    if (!range) return;
+    setFindInSelection(true);
+    updateTiptapFind(editor, { within: [range], activeMatchIndex: 0 });
     scrollToActiveFindMatch();
   }
 
-  function handleFindKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (!editor) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeFind();
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      const activeMatchIndex = tiptapFindPluginKey.getState(editor.state)?.activeMatchIndex ?? 0;
-      selectFindMatch(activeMatchIndex + (event.shiftKey ? -1 : 1));
+  function replaceFindMatches(replaceAll: boolean) {
+    if (!editor || !find.replacer) return;
+    const current = tiptapFindPluginKey.getState(editor.state);
+    if (!current?.matches.length) return;
+    const index = current.activeMatchIndex;
+    const matches = replaceAll ? current.matches : [current.matches[index]];
+    const result = replaceTiptapFindMatches(editor, matches, { replacer: find.replacer, markdown: markdownReplacement, firstCounter: replaceAll ? 1 : index + 1 });
+    if (replaceAll) setReplaceSummary({ replaced: result.replaced, skipped: result.skipped, key: replaceSummaryKey });
+    else {
+      const end = result.end;
+      const next = tiptapFindPluginKey.getState(editor.state);
+      // After a replacement, the match that follows it; a skipped match just moves on.
+      const followingIndex = end === null ? index + 1 : next?.matches.findIndex((match) => match.from >= end) ?? -1;
+      updateTiptapFind(editor, { activeMatchIndex: followingIndex < 0 ? 0 : followingIndex });
     }
-  }
-
-  function handleReplaceKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeFind();
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      replaceMatches(false);
-    }
+    scrollToActiveFindMatch();
   }
 
   function fixChatGptEquations() {
@@ -1037,9 +1053,12 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   }
 
   const findMatches = state.find?.matches ?? [];
-  const currentFindMatchNumber = findMatches.length
-    ? (state.find?.activeMatchIndex ?? 0) + 1
-    : 0;
+  const activeFindIndex = state.find?.activeMatchIndex ?? 0;
+  const activeFindMatch = findOpen && find.finder ? findMatches[activeFindIndex] : undefined;
+  const activeFindRun = activeFindMatch ? tiptapFindMatchRun(editor.state.doc, activeFindMatch, tiptapFindPluginKey.getState(editor.state)?.reading) : null;
+  const findPreview = activeFindMatch && activeFindRun && find.finder
+    ? describeMatch(activeFindRun.text, activeFindMatch.reading, find.finder, find.replacer, activeFindIndex + 1)
+    : null;
 
   return (
     <div ref={rootRef} className="libera-visual-editor flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
@@ -1172,39 +1191,26 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           </TiptapCitationLayer>
         </div>
         {findOpen ? (
-          <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
-            <div className="flex min-w-0 items-center gap-1">
-              <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
-              <input ref={findInputRef} aria-label={t("findInNote")} className="h-8 min-w-24 flex-1 border-0 px-1 text-sm outline-none"
-                value={findQuery} placeholder={t("findInNote")} onChange={(event) => updateFindQuery(event.target.value)} onKeyDown={handleFindKeyDown} />
-              <span className="min-w-16 text-center text-xs text-muted-foreground">
-                {t("findMatchCount", findQuery ? { current: currentFindMatchNumber, total: findMatches.length } : { current: 0, total: 0 })}
-              </span>
-              <button type="button" aria-label={t("previousMatch")} title={t("previousMatch")} disabled={!findMatches.length}
-                className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => selectFindMatch((state.find?.activeMatchIndex ?? 0) - 1)}>
-                <ChevronUp aria-hidden className="h-4 w-4" />
-              </button>
-              <button type="button" aria-label={t("nextMatch")} title={t("nextMatch")} disabled={!findMatches.length}
-                className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => selectFindMatch((state.find?.activeMatchIndex ?? 0) + 1)}>
-                <ChevronDown aria-hidden className="h-4 w-4" />
-              </button>
-              <button type="button" aria-label={t("closeFind")} title={t("close")} className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted" onClick={closeFind}>
-                <X aria-hidden className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="flex min-w-0 items-center gap-1 pl-7">
-              <input aria-label={t("replaceWith")} className="h-8 min-w-20 flex-1 rounded border border-border bg-background px-2 text-sm outline-none"
-                value={replaceQuery} placeholder={t("replaceWith")} onChange={(event) => setReplaceQuery(event.target.value)} onKeyDown={handleReplaceKeyDown} />
-              <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!findMatches.length} onClick={() => replaceMatches(false)}>{t("replace")}</button>
-              <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!findMatches.length} onClick={() => replaceMatches(true)}>{t("replaceAll")}</button>
-              <label className="flex shrink-0 items-center gap-1 px-1 text-xs text-muted-foreground" title={t("wildcardsTitle")}>
-                <input type="checkbox" aria-label={t("wildcardMatches")} checked={wildcardMatches} onChange={(event) => updateWildcardMatches(event.target.checked)} />
-                {t("wildcards")}
-              </label>
-            </div>
-          </div>
+          <FindReplaceBar
+            className="absolute right-3 top-3 z-20"
+            find={find}
+            matchCount={find.finder ? findMatches.length : 0}
+            activeIndex={activeFindIndex}
+            incomplete={!!state.find?.incomplete}
+            preview={findPreview}
+            summary={replaceSummary?.key === replaceSummaryKey ? replaceSummary : null}
+            placeholder={tFind("findInNote")}
+            findInputRef={findInputRef}
+            onNext={() => selectFindMatch(activeFindIndex + 1)}
+            onPrevious={() => selectFindMatch(activeFindIndex - 1)}
+            onClose={closeFind}
+            onReplace={() => replaceFindMatches(false)}
+            onReplaceAll={() => replaceFindMatches(true)}
+            showScopes
+            inSelection={{ active: findInSelection, onToggle: toggleFindInSelection }}
+            markdownReplacement={{ active: markdownReplacement, onToggle: () => setMarkdownReplacement((active) => !active) }}
+            onPresetApplied={(preset: FindPreset) => setMarkdownReplacement(!!preset.markdownReplacement)}
+          />
         ) : null}
         <TiptapChangeBar editor={editor} />
       </div>

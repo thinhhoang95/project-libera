@@ -19,6 +19,8 @@ export type FindLimits = {
   skipped?: TextRange[];
   /** Precomputed regions of the text, when the caller already has them. */
   regions?: TextRegions;
+  /** An extra test a match must pass; a rejected match lets the search go on from the next position. */
+  accept?: (start: number, end: number) => boolean;
 };
 
 export interface Finder {
@@ -62,6 +64,7 @@ function regexGroups(source: string): PatternGroup[] {
 function makeAccept(text: string, options: FindOptions, limits: FindLimits | undefined) {
   const checks: ((start: number, end: number) => boolean)[] = [];
   if (options.wholeWord) checks.push((start, end) => onWordBoundaries(text, start, end));
+  if (limits?.accept) checks.push(limits.accept);
   if (limits?.within) {
     const within = limits.within;
     checks.push((start, end) => withinRanges(within, start, end));

@@ -5,7 +5,9 @@ import { JSDOM } from "jsdom";
 import { Editor } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
-import { TiptapFind, createFindState, tiptapFindPluginKey, tiptapFindWork, updateTiptapFind, type TiptapFindState } from "../../src/lib/tiptap-find";
+import { createMathExtensions } from "../../src/lib/tiptap-math";
+import { compileFind, DEFAULT_FIND_OPTIONS, type Finder, type FindOptions } from "../../src/lib/find";
+import { TiptapFind, createFindState, tiptapFindPluginKey, tiptapFindWork, updateTiptapFind, type TiptapFindRange, type TiptapFindState } from "../../src/lib/tiptap-find";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "DOMParser", "MutationObserver", "getComputedStyle"] as const) Object.defineProperty(globalThis, key, { value: key === "getComputedStyle" ? dom.window.getComputedStyle.bind(dom.window) : dom.window[key], configurable: true });
@@ -27,7 +29,12 @@ function sampleMarkdown(next: () => number, paragraphs: number) {
   }).join("\n\n");
 }
 function mount(content: string) {
-  return new Editor({ extensions: [...createMarkdownExtensions("Notes/a.md"), TiptapFind], content, contentType: "markdown" });
+  return new Editor({ extensions: [...createMarkdownExtensions("Notes/a.md"), ...createMathExtensions(), TiptapFind], content, contentType: "markdown" });
+}
+function finderFor(query: string, options: Partial<FindOptions> = {}): Finder {
+  const compiled = compileFind(query, { ...DEFAULT_FIND_OPTIONS, flavor: "markdown", ...options });
+  assert.ok(compiled.ok, query);
+  return compiled.finder;
 }
 const findState = (editor: Editor) => tiptapFindPluginKey.getState(editor.state)!;
 const describe = (state: TiptapFindState) => ({
@@ -41,12 +48,27 @@ function textPositions(doc: ProseMirrorNode) {
   return positions;
 }
 
-for (const [label, query, wildcards] of [["plain", "foo", false], ["wildcard", "fo*r", true], ["short", "o", false]] as const) {
+type RandomCase = { label: string; finder: Finder; math?: boolean; within?: boolean };
+const RANDOM_CASES: RandomCase[] = [
+  { label: "plain", finder: finderFor("foo") },
+  { label: "pattern", finder: finderFor("fo*r", { mode: "pattern" }) },
+  { label: "short", finder: finderFor("o") },
+  { label: "captures", finder: finderFor("(\\w+) (\\w+)", { mode: "regex" }) },
+  { label: "math", finder: finderFor("$*$", { mode: "pattern" }), math: true },
+  { label: "inside math", finder: finderFor("x", { scope: "insideMath" }), math: true },
+  { label: "in selection", finder: finderFor("foo"), within: true },
+];
+const MATH = ["$x+foo$", "$fo x$", "\\[\nx^2 bar\n\\]"];
+
+for (const { label, finder, math, within: limited } of RANDOM_CASES) {
   test(`incremental Find equals the full rebuild after random edits (${label})`, () => {
     const next = random(label.length * 7919);
-    const editor = mount(sampleMarkdown(next, 40));
+    const source = sampleMarkdown(next, 40);
+    const editor = mount(math ? source.split("\n\n").map((block, index) => `${block}\n\n${MATH[index % MATH.length]}`).join("\n\n") : source);
     try {
-      updateTiptapFind(editor, { query, wildcards });
+      const size = editor.state.doc.content.size;
+      const within: TiptapFindRange[] | null = limited ? [{ from: Math.floor(size / 4), to: Math.floor(size * 3 / 4) }] : null;
+      updateTiptapFind(editor, { finder, within });
       let hits = 0;
       Object.assign(tiptapFindWork, { incremental: 0, fallback: 0 });
       for (let step = 0; step < 400; step++) {
@@ -66,14 +88,18 @@ for (const [label, query, wildcards] of [["plain", "foo", false], ["wildcard", "
             else if (kind < 0.75) tr.split(clamp(at));
             else if (kind < 0.85) tr.replaceWith(clamp(at), clamp(at + 3), editor.schema.text("foo bar foo"));
             else if (kind < 0.92) tr.addMark(clamp(at), clamp(at + 6), editor.schema.marks.bold.create());
-            else tr.insertText("", clamp(at), clamp(at));
+            else if (kind < 0.96) {
+              const node = tr.doc.nodeAt(clamp(at));
+              if (node?.type.name === "inlineMath") tr.setNodeMarkup(clamp(at), undefined, { ...node.attrs, latex: `${node.attrs.latex} x` });
+              else tr.insertText("x", clamp(at));
+            } else tr.insertText("", clamp(at), clamp(at));
           } catch { /* an edit that does not apply to this document shape */ }
         }
         if (next() < 0.3) tr.setMeta(tiptapFindPluginKey, { activeMatchIndex: Math.floor(next() * 50) });
         const update = tr.getMeta(tiptapFindPluginKey) as { activeMatchIndex?: number } | undefined;
         editor.view.dispatch(tr);
         const after = findState(editor);
-        const expected = createFindState(editor.state.doc, query, update?.activeMatchIndex ?? before.activeMatchIndex, wildcards);
+        const expected = createFindState(editor.state.doc, finder, update?.activeMatchIndex ?? before.activeMatchIndex, { within: after.within });
         assert.deepEqual(describe(after), describe(expected), `step ${step}`);
         hits += after.matches.length;
       }
@@ -88,7 +114,8 @@ test("an edit in one block searches only that block and creates only its decorat
   const next = random(11);
   const editor = mount(sampleMarkdown(next, 300));
   try {
-    updateTiptapFind(editor, { query: "foo" });
+    const finder = finderFor("foo");
+    updateTiptapFind(editor, { finder });
     const total = findState(editor).matches.length;
     assert.ok(total > 100);
     let target = 0;
@@ -98,11 +125,11 @@ test("an edit in one block searches only that block and creates only its decorat
     assert.deepEqual({ incremental: tiptapFindWork.incremental, fallback: tiptapFindWork.fallback }, { incremental: 1, fallback: 0 });
     assert.ok(tiptapFindWork.blocksVisited <= 2, `visited ${tiptapFindWork.blocksVisited} text blocks`);
     assert.ok(tiptapFindWork.decorationsCreated <= 12, `created ${tiptapFindWork.decorationsCreated} decorations`);
-    const full = createFindState(editor.state.doc, "foo", 0);
+    const full = createFindState(editor.state.doc, finder, 0);
     assert.deepEqual(describe(findState(editor)), describe(full));
     // A full rebuild visits every block and creates every decoration.
     Object.assign(tiptapFindWork, { blocksVisited: 0 });
-    createFindState(editor.state.doc, "foo");
+    createFindState(editor.state.doc, finder);
     assert.ok(tiptapFindWork.blocksVisited > 250);
   } finally { editor.destroy(); }
 });
