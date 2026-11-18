@@ -453,10 +453,15 @@ function ResultStep({ result, busy, onResume }: { result: MigrationResult; busy:
       <p className="font-medium">{t("recordsNotUpdated")}</p>
       <PathList paths={result.bookkeeping} />
     </div>}
+    {(result.missing?.length ?? 0) > 0 && <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+      <p className="font-medium">{t("missingHeading")}</p>
+      <PathList paths={result.missing ?? []} />
+    </div>}
     {result.leftovers.length > 0 ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
       <p className="font-medium">{t("leftoversHeading")}</p>
       <PathList paths={result.leftovers} />
     </div> : result.check === "clean" ? <p className="text-muted-foreground">{t("checkedClean", { source: result.source })}</p>
       : result.check === "unverified" ? <p className="text-muted-foreground">{t("checkedUnverified", { source: result.source })}</p> : null}
+    {done && result.check !== "unverified" && result.bookkeeping.length === 0 && <p className="text-muted-foreground">{t("checkedRecordsFollowed")}</p>}
   </div>;
 }
