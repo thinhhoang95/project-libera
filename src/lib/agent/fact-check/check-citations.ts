@@ -4,7 +4,8 @@ import { locatorPages, pdfPageForPrinted } from "@/lib/references/pages";
 import type { ReferenceEntry } from "@/lib/references/types";
 import { attachmentPaths } from "../references-tool";
 import { runSubagents, type SubagentResult, type SubagentTask } from "../subagents";
-import { ok, plural, ToolError, type AgentTool, type ToolContext } from "../tools";
+import { agentT, ok, plural, ToolError, type AgentTool, type ToolContext } from "../tools";
+import type { AgentT } from "../translate";
 import { webSearchTool } from "../web-search";
 import { findQuote, normalizeUrl, sourceTextLoader, verifyEvidence, verifyWebSources, type EvidenceQuote, type SourceTextLoader } from "./evidence";
 import { checkExistence, type ExistenceOptions, type ExistenceReport } from "./existence";
@@ -229,8 +230,8 @@ function uncitedTool(listing: CitationListing, filesByKey: Map<string, string[]>
       required: ["claims"],
       additionalProperties: false,
     },
-    describe: (args) => `Submitting ${plural(Array.isArray(args.claims) ? args.claims.length : 0, "uncited claim")}`,
-    async run(args) {
+    describe: (args, t) => t("factCheck.checkCitations.describeUncited", { count: Array.isArray(args.claims) ? args.claims.length : 0 }),
+    async run(args, context) {
       const problems: string[] = [];
       for (const claim of args.claims as SubmittedClaim[]) {
         if (!findQuote(claim.sentence, listing.text)) problems.push(`“${claim.sentence.slice(0, 80)}” is not in the document; copy the sentence exactly.`);
@@ -241,12 +242,12 @@ function uncitedTool(listing: CitationListing, filesByKey: Map<string, string[]>
         for (const item of claim.evidence) if (!filesByKey.get(key)!.includes(item.path)) problems.push(`Evidence path ${item.path} is not a file of @${key}.`);
       }
       if (problems.length) throw new ToolError(problems.join("\n"));
-      return ok("Received. The check is complete.", plural((args.claims as unknown[]).length, "claim"));
+      return ok("Received. The check is complete.", agentT(context)("factCheck.checkCitations.claims", { count: (args.claims as unknown[]).length }));
     },
   };
 }
 
-function uncitedTask(listing: CitationListing): { task: SubagentTask; filesByKey: Map<string, string[]>; entries: Map<string, ReferenceEntry> } | null {
+function uncitedTask(listing: CitationListing, t: AgentT): { task: SubagentTask; filesByKey: Map<string, string[]>; entries: Map<string, ReferenceEntry> } | null {
   const entries = new Map<string, ReferenceEntry>();
   const filesByKey = new Map<string, string[]>();
   for (const entry of Object.values(listing.library.entries)) {
@@ -264,7 +265,7 @@ function uncitedTask(listing: CitationListing): { task: SubagentTask; filesByKey
   ].join("\n\n");
   const files = [listing.path, ...new Set([...filesByKey.values()].flat())];
   return {
-    task: { label: "Looking for uncited claims", system: UNCITED_SYSTEM, prompt, tools: scopedReadTools(files), limits: CHECK_LIMITS, submitTool: uncitedTool(listing, filesByKey) },
+    task: { label: t("factCheck.checkCitations.uncitedLabel"), system: UNCITED_SYSTEM, prompt, tools: scopedReadTools(files), limits: CHECK_LIMITS, submitTool: uncitedTool(listing, filesByKey) },
     filesByKey, entries,
   };
 }
@@ -318,8 +319,9 @@ function step(context: ToolContext, summary: string, result: string, detail?: st
 }
 
 export async function checkCitations(context: ToolContext, args: { path: string; occurrences?: string[] | null; missingReferences?: boolean }, deps: FactCheckDependencies = {}) {
+  const t = agentT(context);
   const listing = await listCitations(context, args.path);
-  if (!listing.occurrences.length) return { text: `${listing.path} has no [@key] citations, so there is nothing to check.`, result: "No citations" };
+  if (!listing.occurrences.length) return { text: `${listing.path} has no [@key] citations, so there is nothing to check.`, result: t("factCheck.checkCitations.noCitations") };
   const known = new Set(listing.occurrences.map((occurrence) => occurrence.id));
   const requested = args.occurrences ?? [...known];
   const unknown = requested.filter((id) => !known.has(id));
@@ -328,17 +330,17 @@ export async function checkCitations(context: ToolContext, args: { path: string;
   const done = state.checked.get(listing.path) ?? new Set<string>();
   const ids = new Set(requested.filter((id) => !done.has(id)));
   const skipped = requested.filter((id) => done.has(id));
-  if (!ids.size) return { text: `${skipped.join(", ")} ${skipped.length === 1 ? "was" : "were"} already checked in this turn; their comments and suggestions are recorded.`, result: "Already checked" };
+  if (!ids.size) return { text: `${skipped.join(", ")} ${skipped.length === 1 ? "was" : "were"} already checked in this turn; their comments and suggestions are recorded.`, result: t("factCheck.checkCitations.alreadyChecked") };
 
   const webSearch = !!context.allowWebSearch;
   const { batches, statics } = planBatches(listing, ids, { webSearch });
   const loader = sourceTextLoader(context);
   const missingReferences = args.missingReferences !== false && ids.size === listing.occurrences.length;
-  const uncited = missingReferences ? uncitedTask(listing) : null;
+  const uncited = missingReferences ? uncitedTask(listing, t) : null;
 
   const returnedByBatch = batches.map(() => new Set<string>());
   const tasks: SubagentTask[] = batches.map((batch, index) => ({
-    label: `Checking ${batch.sources.map((source) => source.key).join(", ")} (${plural(batch.assignments.length, "claim")})`,
+    label: t("factCheck.checkCitations.batchLabel", { keys: batch.sources.map((source) => source.key).join(", "), count: batch.assignments.length }),
     system: VERIFIER_SYSTEM,
     prompt: batchPrompt(listing, batch, webSearch),
     tools: [...scopedReadTools([...new Set([...batch.sources.flatMap((source) => readableFiles(source).map((file) => file.path)), listing.path])]), ...(webSearch ? [recordingWebSearch(returnedByBatch[index])] : [])],
@@ -350,7 +352,7 @@ export async function checkCitations(context: ToolContext, args: { path: string;
   const estimate = batches.reduce((sum, batch) => sum + estimateBatchTokens(batch), 0) + (uncited ? 120_000 : 0);
   const left = context.budget ? Math.max(0, context.budget.maxInputTokens - context.budget.inputTokens) : undefined;
   const plan = `${plural(tasks.length, "subagent")} (${plural(batches.length, "batch", "batches")} for ${plural(batches.reduce((sum, batch) => sum + batch.sources.length, 0), "source")}${uncited ? ", 1 for uncited claims" : ""}), estimated ~${estimate.toLocaleString("en")} input tokens${left !== undefined ? ` of the ${left.toLocaleString("en")} left in this run's budget` : ""}`;
-  if (tasks.length) step(context, `Planning the fact-check of ${listing.path}`, plural(tasks.length, "subagent"), plan);
+  if (tasks.length) step(context, t("factCheck.checkCitations.planning", { path: listing.path }), t("factCheck.checkCitations.subagents", { count: tasks.length }), plan);
 
   const existenceEntries = [...new Set(listing.occurrences.filter((occurrence) => ids.has(occurrence.id)).flatMap((occurrence) => occurrence.items.flatMap((item) => item.entryId ? [item.entryId] : [])))]
     .map((id) => listing.library.entries[id]).filter(Boolean);
@@ -407,7 +409,8 @@ export async function checkCitations(context: ToolContext, args: { path: string;
     `<report>\n${report}\n</report>`,
     `The comments and suggested edits are saved when you finish your reply. Put the report above in your reply as it is (without the <report> tags); you may add one or two sentences on the most important findings.`,
   ].join("\n\n");
-  return { text, result: `${plural(results.length, "verdict")}${notChecked.length ? `, ${new Set(notChecked.map((item) => item.occurrence)).size} not checked` : ""}`, detail: report };
+  const notCheckedCount = new Set(notChecked.map((item) => item.occurrence)).size;
+  return { text, result: notChecked.length ? t("factCheck.checkCitations.verdictsNotChecked", { count: results.length, notChecked: notCheckedCount }) : t("factCheck.checkCitations.verdicts", { count: results.length }), detail: report };
 }
 
 export function createCheckCitationsTool(deps: FactCheckDependencies = {}): AgentTool {
@@ -430,7 +433,7 @@ Usage:
       required: ["path"],
       additionalProperties: false,
     },
-    describe: (args) => `Checking the citations in ${String(args.path ?? "the document")}`,
+    describe: (args, t) => args.path ? t("factCheck.checkCitations.describe", { path: String(args.path) }) : t("factCheck.checkCitations.describeDocument"),
     async run(args, context) {
       if (typeof args.path !== "string" || !args.path.trim()) throw new ToolError("path is required.");
       if (args.missingReferences !== undefined && typeof args.missingReferences !== "boolean") throw new ToolError("missingReferences must be true or false.");

@@ -17,7 +17,7 @@ import {
   type DefinitionEntry,
 } from "@/lib/definitions";
 import { checkDefinitionCards, uncoveredDefinitionPassages, type DefinitionSource } from "@/lib/definitions-validation";
-import { missingFileError, ok, plural, readCurrentText, requireString, resolve, ToolError, type AgentSkill, type AgentTool, type ToolContext } from "../tools";
+import { agentT, missingFileError, ok, plural, readCurrentText, requireString, resolve, ToolError, type AgentSkill, type AgentTool, type ToolContext } from "../tools";
 import { statLibraryPath, type ResolvedPath } from "../library";
 
 // Definitions and notation: the agent reads a document through and saves a
@@ -127,8 +127,12 @@ const saveDefinitionsTool: AgentTool = {
     required: ["path", "entries"],
     additionalProperties: false,
   },
-  describe: (args) => `Saving ${Array.isArray(args.entries) ? plural(args.entries.length, "card") : "cards"} for ${String(args.path ?? "the document")}`,
+  describe: (args, t) => {
+    const path = String(args.path ?? t("skills.extractDefinitions.describe.theDocument"));
+    return Array.isArray(args.entries) ? t("skills.extractDefinitions.describe.save", { count: args.entries.length, path }) : t("skills.extractDefinitions.describe.saveCards", { path });
+  },
   async run(args, context) {
+    const t = agentT(context);
     const resolved = await resolve(context, requireString(args, "path"));
     if (!supportsDefinitions(resolved.path)) throw new ToolError(`${resolved.path} is not a Markdown, LaTeX or PDF document.`);
     const stats = await statLibraryPath(resolved);
@@ -161,7 +165,7 @@ const saveDefinitionsTool: AgentTool = {
     const first = !state.saved.has(resolved.path);
     // Nothing valid on the first call: keep the previous cards rather than replace them with none.
     if (first && !accepted.length) {
-      return { text: `No cards were saved; the previous cards are unchanged. Fix these and call SaveDefinitions again:\n${problems.join("\n")}`, isError: true, result: `${plural(problems.length, "card")} rejected`, detail: problems.join("\n") };
+      return { text: `No cards were saved; the previous cards are unchanged. Fix these and call SaveDefinitions again:\n${problems.join("\n")}`, isError: true, result: t("skills.extractDefinitions.result.rejected", { count: problems.length }), detail: problems.join("\n") };
     }
     const merged = new Map<string, DefinitionEntry>();
     for (const entry of [...(state.saved.get(resolved.path) ?? []), ...accepted]) {
@@ -190,11 +194,11 @@ const saveDefinitionsTool: AgentTool = {
       return {
         text: `${summary}\n\n${plural(problems.length, "card")} ${problems.length === 1 ? "was" : "were"} rejected and not saved. Fix these and send only those cards again:\n${problems.join("\n")}${noteText}`,
         isError: true,
-        result: `${plural(accepted.length, "card")} saved, ${problems.length} rejected`,
+        result: t("skills.extractDefinitions.result.savedRejected", { saved: accepted.length, rejected: problems.length }),
         detail: problems.join("\n"),
       };
     }
-    return ok(`${summary}${noteText}`, `${plural(entries.length, "card")} saved`);
+    return ok(`${summary}${noteText}`, t("skills.extractDefinitions.result.saved", { count: entries.length }));
   },
 };
 

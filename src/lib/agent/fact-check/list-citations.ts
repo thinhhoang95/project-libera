@@ -12,7 +12,7 @@ import { documentStyleOverride } from "@/lib/references/document-style";
 import type { CitationItem, ReferenceEntry, ReferenceLibrary } from "@/lib/references/types";
 import { locatorPages, pdfPageForPrinted, printedRange, type PrintedRange } from "@/lib/references/pages";
 import type { PdfTextPage } from "@/lib/types";
-import { lineOfOffset, missingFileError, ok, readCurrentText, requireString, resolve, ToolError, type AgentTool, type ToolContext } from "../tools";
+import { agentT, lineOfOffset, missingFileError, ok, readCurrentText, requireString, resolve, ToolError, type AgentTool, type ToolContext } from "../tools";
 import { statLibraryPath } from "../library";
 import { entryAuthors, entryYear, formatReferences, readNotebookLibrary } from "../references-tool";
 
@@ -369,11 +369,13 @@ Usage:
     required: ["path"],
     additionalProperties: false,
   },
-  describe: (args) => `Listing the citations in ${String(args.path ?? "the document")}`,
+  describe: (args, t) => args.path ? t("factCheck.listCitations.describe", { path: String(args.path) }) : t("factCheck.listCitations.describeDocument"),
   async run(args, context) {
     const listing = await listCitations(context, requireString(args, "path"));
     const text = formatListing(listing);
     const problems = listing.occurrences.reduce((sum, occurrence) => sum + occurrence.problems.length, 0);
-    return ok(text, `${listing.occurrences.length} citation${listing.occurrences.length === 1 ? "" : "s"}${problems ? `, ${problems} problem${problems === 1 ? "" : "s"}` : ""}`, text.slice(0, 1_500));
+    const t = agentT(context);
+    const count = listing.occurrences.length;
+    return ok(text, problems ? t("factCheck.listCitations.citationsWithProblems", { count, problems }) : t("factCheck.listCitations.citations", { count }), text.slice(0, 1_500));
   },
 };

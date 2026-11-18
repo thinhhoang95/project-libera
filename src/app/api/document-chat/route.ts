@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { getServerT } from "@/lib/i18n/server-locale";
 import { getAiChatModels, getAiCustomInstruction, getAiFunctionOptions } from "@/lib/ai-preferences";
 import { createOpenRouterCompletion, streamOpenRouterCompletion, type OpenRouterGeneration, type OpenRouterMessage } from "@/lib/openrouter";
 import type { TokenUsage } from "@/lib/chat-token-usage";
@@ -42,9 +43,10 @@ function logChatUsage(model: string, sessionId: string | undefined, usage: Token
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
+  const t = await getServerT("aiRoutes");
   try {
     const raw = await request.text();
-    if (raw.length > 48_000_000) return jsonError("This chat is too large. Start a new chat or remove some attachments.", 413);
+    if (raw.length > 48_000_000) return jsonError(t("documentChat.tooLarge"), 413);
     let body: { messages?: unknown; model?: unknown; sessionId?: unknown; reasoningEffort?: unknown; stream?: boolean } | null;
     try { body = JSON.parse(raw); } catch { return jsonError("Invalid chat request.", 400); }
     if (!validateChatMessages(body?.messages) || body.messages.at(-1)?.role !== "user") return jsonError("Invalid chat messages.", 400);
@@ -79,13 +81,13 @@ export async function POST(request: NextRequest) {
               send({ type: "usage", usage });
             } })) {
               content += text;
-              if (content.length > 100_000) throw new Error("The response exceeded the size limit.");
+              if (content.length > 100_000) throw new Error(t("documentChat.sizeLimit"));
               send({ type: "delta", text });
             }
-            if (!content.trim()) throw new Error("The model returned an empty response. Please try again.");
+            if (!content.trim()) throw new Error(t("documentChat.empty"));
             send({ type: "done", model });
           } catch (error) {
-            send({ type: "error", message: signal.aborted ? "Response stopped or timed out." : error instanceof Error ? error.message : "Chat failed." });
+            send({ type: "error", message: signal.aborted ? t("documentChat.stoppedOrTimedOut") : error instanceof Error ? error.message : t("documentChat.failedFallback") });
           } finally {
             if (!cancellation.signal.aborted) controller.close();
             cancellation.abort();
@@ -97,9 +99,9 @@ export async function POST(request: NextRequest) {
     }
     const result = await createOpenRouterCompletion(messages, { ...completionOptions, signal: AbortSignal.any([request.signal, AbortSignal.timeout(120_000)]) });
     logChatUsage(model, completionOptions.sessionId, result.usage, result.generation ?? {});
-    if (!result.content.trim()) return jsonError("The model returned an empty response. Please try again.", 502);
+    if (!result.content.trim()) return jsonError(t("documentChat.empty"), 502);
     return NextResponse.json({ text: result.content, model, usage: result.usage });
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Document chat failed.", 500);
+    return jsonError(error instanceof Error ? error.message : t("documentChat.failed"), 500);
   }
 }

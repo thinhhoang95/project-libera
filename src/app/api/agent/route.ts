@@ -18,7 +18,9 @@ import { RunSnapshots } from "@/lib/agent/snapshots";
 import { AGENT_SKILLS } from "@/lib/agent/skills";
 import { DEFINITIONS_SKILL } from "@/lib/agent/skills/extract-definitions";
 import { toolsForPermission, type ToolContext } from "@/lib/agent/tools";
-import { isAgentPermission, type AgentEvent } from "@/lib/agent/types";
+import { createAgentT } from "@/lib/agent/translate";
+import { fitAgentEvent, isAgentPermission, type AgentEvent } from "@/lib/agent/types";
+import { resolveLocale } from "@/lib/i18n/server-locale";
 
 export const runtime = "nodejs";
 
@@ -100,8 +102,10 @@ async function sharedNotebooks(notebooks: string[]) {
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
+  // Notices the user reads are in the interface language; "Invalid …" refusals mean a bug in the client, not a user mistake.
+  const t = await createAgentT(await resolveLocale());
   const raw = await request.text();
-  if (raw.length > MAX_BODY_CHARS) return jsonError("This request is too large. Start a new chat, or close some unsaved documents.", 413);
+  if (raw.length > MAX_BODY_CHARS) return jsonError(t("route.requestTooLarge"), 413);
   let body: AgentRequestBody | null;
   try { body = JSON.parse(raw); } catch { return jsonError("Invalid agent request.", 400); }
   if (!body || !validateChatMessages(body.messages) || body.messages.at(-1)?.role !== "user") return jsonError("Invalid chat messages.", 400);
@@ -111,7 +115,7 @@ export async function POST(request: NextRequest) {
   if (body.activeFile !== undefined && body.activeFile !== null && typeof body.activeFile !== "string") return jsonError("Invalid active file.", 400);
   if (body.notebook !== undefined && body.notebook !== null && typeof body.notebook !== "string") return jsonError("Invalid notebook.", 400);
   if (!isPathList(body.openFiles ?? [])) return jsonError("Invalid open files.", 400);
-  if (!isDraftMap(body.drafts ?? {})) return jsonError("Unsaved drafts are invalid or too large.", 413);
+  if (!isDraftMap(body.drafts ?? {})) return jsonError(t("route.draftsTooLarge"), 413);
   if (body.webSearch !== undefined && typeof body.webSearch !== "boolean") return jsonError("Invalid web search setting.", 400);
   const allowWebSearch = body.webSearch === true;
   if (body.review !== undefined && typeof body.review !== "boolean") return jsonError("Invalid review setting.", 400);
@@ -132,7 +136,7 @@ export async function POST(request: NextRequest) {
   const [activeFile] = body.activeFile ? await libraryFiles([body.activeFile as string], notebooks) : [];
   const requestedNotebook = typeof body.notebook === "string" && notebooks.includes(body.notebook) ? body.notebook : null;
   const notebook = activeFile ? activeFile.split("/")[0] : requestedNotebook;
-  if (permission === "notebook" && !notebook) return jsonError("Open a file or select a notebook so the agent knows which notebook it may change.", 400);
+  if (permission === "notebook" && !notebook) return jsonError(t("route.selectNotebook"), 400);
   // In a shared notebook "notebook" is "Suggest in notebook": every change
   // there is a suggestion others review (plan M3.4), so it needs no refusal.
 
@@ -212,12 +216,12 @@ ${skillInstruction}` : ""}
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: AgentEvent) => {
-        if (!cancellation.signal.aborted) controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+        if (!cancellation.signal.aborted) controller.enqueue(encoder.encode(JSON.stringify(fitAgentEvent(event)) + "\n"));
       };
       try {
         const profile = await getModelProfile(model, signal);
         if (profile.known && !profile.supportsTools) {
-          send({ type: "error", message: `${model} cannot call tools on OpenRouter, so it cannot work in Agent mode. Choose another model, or switch to Chat.` });
+          send({ type: "error", message: t("route.modelCannotCallTools", { model }) });
           return;
         }
         send({ type: "run_started", runId, model });
@@ -245,15 +249,17 @@ ${skillInstruction}` : ""}
           runConfig: { model, profile, reasoningEffort, promptCaching: options.promptCaching },
           // One budget for the run and every child run it starts.
           budget: { maxInputTokens: DEFAULT_RUN_LIMITS.maxInputTokens, inputTokens: 0 },
+          t,
         };
         const result = await runAgent({
           model, profile, reasoningEffort, sessionId,
           promptCaching: options.promptCaching,
           system, messages: conversation, tools, context, emit: send, signal,
         });
-        send({ type: "done", outcome: result.outcome, ...(result.message ? { message: result.message } : {}) });
+        const notice = result.userMessage ?? result.message;
+        send({ type: "done", outcome: result.outcome, ...(notice ? { message: notice } : {}) });
       } catch (error) {
-        send({ type: "error", message: signal.aborted ? "The agent was stopped." : error instanceof Error ? error.message : "The agent run failed." });
+        send({ type: "error", message: signal.aborted ? t("route.stopped") : error instanceof Error ? error.message : t("route.runFailed") });
       } finally {
         if (!cancellation.signal.aborted) controller.close();
         cancellation.abort();

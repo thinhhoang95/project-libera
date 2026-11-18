@@ -12,6 +12,7 @@ import { RunSnapshots } from "../../src/lib/agent/snapshots";
 import { activeTools, toolsForPermission, type ToolContext } from "../../src/lib/agent/tools";
 import { formatWebSearchResult, webSearchTool } from "../../src/lib/agent/web-search";
 import type { AgentEvent } from "../../src/lib/agent/types";
+import { englishAgentT } from "../../src/lib/agent/translate";
 
 const profile = { contextLength: 200_000, supportsTools: true, known: true };
 
@@ -95,7 +96,7 @@ test("WebSearch asks the run's model with the web plugin and returns the answer 
     assert.deepEqual(events, [{ type: "usage", usage: { inputTokens: 3000, outputTokens: 120 } }]);
     assert.deepEqual(ctx.usage, { inputTokens: 3000, outputTokens: 120 });
     assert.equal(ctx.budget!.inputTokens, 3000);
-    assert.equal(webSearchTool.describe({ query: "Smith 2020" }), "Searching the web for “Smith 2020”");
+    assert.equal(webSearchTool.describe({ query: "Smith 2020" }, englishAgentT), "Searching the web for “Smith 2020”");
     assert.match(formatWebSearchResult("q", { model: "m", answer: "", citations: [] }), /\(The search returned no answer\.\)\n\nNo pages were cited; treat the answer as unsourced\./);
   });
 });

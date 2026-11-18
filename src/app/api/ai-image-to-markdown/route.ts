@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { getServerT } from "@/lib/i18n/server-locale";
 import { getAiFunctionOptions, withAiCustomInstruction } from "@/lib/ai-preferences";
 import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
 import { getMarkdownImageAssetBySource, toStorageError } from "@/lib/storage";
@@ -37,6 +38,7 @@ export async function POST(request: NextRequest) {
     return authError;
   }
 
+  const t = await getServerT("aiRoutes");
   try {
     const body = (await request.json()) as {
       documentPath?: string;
@@ -50,7 +52,7 @@ export async function POST(request: NextRequest) {
       : await getMarkdownImageAssetBySource(body.documentPath ?? "", imageSource);
 
     if (image.body.byteLength > MAX_IMAGE_BYTES) {
-      return jsonError("Image is too large to convert in one request.", 413);
+      return jsonError(t("imageToMarkdown.tooLarge"), 413);
     }
 
     const markdown = await createOpenRouterMarkdownCompletion([
@@ -80,7 +82,7 @@ export async function POST(request: NextRequest) {
     ], { ...getAiFunctionOptions("imageToMarkdown"), signal: request.signal });
 
     if (!markdown.trim()) {
-      return jsonError("AI image conversion returned an empty response.", 502);
+      return jsonError(t("imageToMarkdown.empty"), 502);
     }
 
     return NextResponse.json({ markdown });
@@ -92,9 +94,7 @@ export async function POST(request: NextRequest) {
     }
 
     return jsonError(
-      `AI image conversion failed: ${
-        error instanceof Error ? error.message : "AI image conversion failed."
-      }`,
+      t("imageToMarkdown.failed", { detail: error instanceof Error ? error.message : t("unknownError") }),
       500,
     );
   }

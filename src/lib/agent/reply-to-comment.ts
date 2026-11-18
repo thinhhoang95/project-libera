@@ -6,7 +6,7 @@ import { addReviewReply } from "@/lib/storage/markdown-reviews";
 import { addPdfCommentReply } from "@/lib/storage/pdf-comments";
 import { isTextFileType } from "@/lib/types";
 import { localThreads, pdfThreads, sharedThreads, shortQuote, threadLocation, type CommentThread } from "./read-comments";
-import { missingFileError, ok, readCurrentText, requireString, resolve, sharedDocFor, ToolError, type AgentTool, type ToolContext } from "./tools";
+import { agentT, missingFileError, ok, readCurrentText, requireString, resolve, sharedDocFor, ToolError, type AgentTool, type ToolContext } from "./tools";
 
 // ReplyToComment: a reply in an existing review thread, posted at once, so
 // the agent follows up where the conversation already is instead of opening
@@ -64,7 +64,7 @@ Usage:
     required: ["file_path", "thread_id", "text"],
     additionalProperties: false,
   },
-  describe: (args) => `Replying to a comment on ${String(args.file_path ?? "a file")}`,
+  describe: (args, t) => args.file_path ? t("replyToComment.describe", { path: String(args.file_path) }) : t("replyToComment.describeFile"),
   async run(args, context) {
     const resolved = await resolve(context, requireString(args, "file_path"));
     const threadId = requireString(args, "thread_id").trim();
@@ -147,7 +147,7 @@ Usage:
       queued
         ? `Your reply in thread ${threadId} on ${resolved.path}${about}, at ${where}, is queued: the collaboration server cannot be reached now, so it is sent when it can. Do not post it again.`
         : `Replied in thread ${threadId} on ${resolved.path}${about}, at ${where}. It is in the Comments panel now.`,
-      queued ? "Reply queued" : "Replied",
+      agentT(context)(queued ? "replyToComment.queued" : "replyToComment.replied"),
       text,
     );
   },

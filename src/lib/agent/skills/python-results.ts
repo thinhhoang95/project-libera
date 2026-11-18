@@ -8,6 +8,7 @@ import { DEFAULT_PYTHON_TIMEOUT_MS, MAX_PYTHON_TIMEOUT_MS, PythonRunError, runPy
 import { installPythonPackages, PYTHON_RUNTIME } from "@/lib/python/runtime";
 import { ownsPythonFigureSource, parsePythonFigureSource, PYTHON_CELL_ID, pythonSidecarPath, replacePythonFigureSources, upsertPythonCell } from "@/lib/python/sidecar";
 import {
+  agentT,
   assertWritable,
   ok,
   optionalInteger,
@@ -22,6 +23,7 @@ import {
   type AgentTool,
   type ToolContext,
 } from "../tools";
+import type { AgentT } from "../translate";
 
 // Python in notes: the agent writes code into the note's sidecar
 // (`analysis.md` → `_assets/analysis.md/analysis.py`, cells marked `# %% [id]`), runs it with
@@ -97,11 +99,11 @@ function formatCell(cell: PythonCellResult, inNote: Set<string>) {
   return lines.join("\n");
 }
 
-function summary(result: PythonRunResult) {
+function summary(result: PythonRunResult, t: AgentT) {
   const failed = result.cells.find((cell) => cell.error);
-  if (result.timedOut) return "Timed out";
-  if (failed) return `${failed.id ? `[${failed.id}]` : "Setup"} failed: ${failed.error!.type}`;
-  return result.figures.length ? plural(result.figures.length, "figure") : `${plural(result.cells.length, "cell")} ran`;
+  if (result.timedOut) return t("skills.pythonResults.result.timedOut");
+  if (failed) return failed.id ? t("skills.pythonResults.result.cellFailed", { id: failed.id, type: failed.error!.type }) : t("skills.pythonResults.result.setupFailed", { type: failed.error!.type });
+  return result.figures.length ? t("skills.pythonResults.result.figures", { count: result.figures.length }) : t("skills.pythonResults.result.cellsRan", { count: result.cells.length });
 }
 
 const runPythonTool: AgentTool = {
@@ -127,7 +129,7 @@ Usage:
     required: ["document"],
     additionalProperties: false,
   },
-  describe: (args) => args.cell ? `Running Python cell ${String(args.cell)}` : `Running the Python of ${String(args.document ?? "a note")}`,
+  describe: (args, t) => args.cell ? t("skills.pythonResults.describe.runCell", { cell: String(args.cell) }) : t("skills.pythonResults.describe.runDocument", { document: String(args.document ?? t("skills.pythonResults.describe.aNote")) }),
   async run(args, context) {
     const document = await resolve(context, requireString(args, "document"));
     if (getFileType(document.path) !== "markdown") throw new ToolError(`${document.path} is not a Markdown note. RunPython puts figures into a note (.md); its code lives in the note's sidecar (${pythonSidecarPath(document.path)}).`);
@@ -179,7 +181,7 @@ Usage:
     else if (result.notRun.length) lines.push(`Not run, because of the error: ${result.notRun.join(", ")}.`);
     if (updated.orphaned.length) lines.push(`The note still shows ${plural(updated.orphaned.length, "figure")} these cells no longer draw: ${updated.orphaned.join(", ")}. Remove those images with Edit, or draw the figures again.`);
     const failed = result.timedOut || result.cells.some((entry) => entry.error);
-    return { text: lines.join("\n\n"), isError: failed, result: summary(result), detail: lines.slice(1).join("\n\n").slice(0, 1_500) };
+    return { text: lines.join("\n\n"), isError: failed, result: summary(result, agentT(context)), detail: lines.slice(1).join("\n\n").slice(0, 1_500) };
   },
 };
 
@@ -197,7 +199,7 @@ Usage:
     required: ["packages"],
     additionalProperties: false,
   },
-  describe: (args) => `Installing ${Array.isArray(args.packages) ? args.packages.join(", ") : "Python packages"}`,
+  describe: (args, t) => Array.isArray(args.packages) ? t("skills.pythonResults.describe.install", { packages: args.packages.join(", ") }) : t("skills.pythonResults.describe.installFallback"),
   async run(args, context) {
     if (context.permission === "read-only") throw new ToolError("You are in Read Only mode and cannot install packages.");
     const packages = args.packages;
@@ -205,7 +207,7 @@ Usage:
     if (packages.length > 10) throw new ToolError("Install at most 10 packages at a time.");
     try {
       const output = await installPythonPackages(packages as string[], context.signal);
-      return ok(`Installed ${packages.join(", ")}.${output ? `\n${output.split("\n").slice(-12).join("\n")}` : ""}`, "Installed");
+      return ok(`Installed ${packages.join(", ")}.${output ? `\n${output.split("\n").slice(-12).join("\n")}` : ""}`, agentT(context)("skills.pythonResults.result.installed"));
     } catch (error) {
       throw new ToolError(error instanceof Error ? error.message : "Installing failed.");
     }

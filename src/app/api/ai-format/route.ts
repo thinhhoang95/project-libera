@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { getServerT } from "@/lib/i18n/server-locale";
 import { AiTaskChoiceError, getAiTaskOptions, withAiCustomInstruction } from "@/lib/ai-preferences";
 import { createOpenRouterCompletion, createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
 import { LATEX_FORMAT_PROMPT, normalizeLatexOutput } from "@/lib/latex/ai-prompts";
@@ -24,16 +25,17 @@ export async function POST(request: NextRequest) {
     return authError;
   }
 
+  const t = await getServerT("aiRoutes");
   try {
     const body = (await request.json()) as { text?: string; format?: string; model?: unknown; reasoningEffort?: unknown };
     const text = body.text ?? "";
 
     if (!text.trim()) {
-      return jsonError("Select text to format.", 400);
+      return jsonError(t("format.selectText"), 400);
     }
 
     if (text.length > MAX_FORMAT_TEXT_LENGTH) {
-      return jsonError("Selection is too large to format in one request.", 413);
+      return jsonError(t("format.tooLarge"), 413);
     }
 
     const options = getAiTaskOptions("formatting", body);
@@ -54,16 +56,14 @@ export async function POST(request: NextRequest) {
       ], { ...options, signal: request.signal });
 
     if (!formattedText.trim()) {
-      return jsonError("AI formatting returned an empty response.", 502);
+      return jsonError(t("format.empty"), 502);
     }
 
     return NextResponse.json({ formattedText });
   } catch (error) {
     if (error instanceof AiTaskChoiceError) return jsonError(error.message, 400);
     return jsonError(
-      `AI formatting failed: ${
-        error instanceof Error ? error.message : "AI formatting failed."
-      }`,
+      t("format.failed", { detail: error instanceof Error ? error.message : t("unknownError") }),
       500,
     );
   }

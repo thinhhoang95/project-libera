@@ -35,7 +35,7 @@ import {
   type PdfOutlineFile,
 } from "@/lib/pdf-outline";
 import { runSubagents, type SubagentResult, type SubagentTask } from "../subagents";
-import { missingFileError, ok, plural, requireString, resolve, ToolError, type AgentSkill, type AgentTool, type ToolContext, type ToolResult } from "../tools";
+import { agentT, missingFileError, ok, plural, requireString, resolve, ToolError, type AgentSkill, type AgentTool, type ToolContext, type ToolResult } from "../tools";
 import { statLibraryPath } from "../library";
 
 // PDF outlines: a PDF without bookmarks gets an outline the agent generates,
@@ -152,8 +152,9 @@ export function submitOutlineTool(range: PageRange, compactPages: Map<number, st
       required: ["entries"],
       additionalProperties: false,
     },
-    describe: (args) => `Submitting ${plural(Array.isArray(args.entries) ? args.entries.length : 0, "heading")} for pages ${range.from}–${range.to}`,
-    async run(args) {
+    describe: (args, t) => t("skills.generatePdfOutline.describe.submit", { count: Array.isArray(args.entries) ? args.entries.length : 0, from: range.from, to: range.to }),
+    async run(args, context) {
+      const t = agentT(context);
       calls++;
       const strict = calls === 1;
       const problems: string[] = [];
@@ -181,7 +182,7 @@ export function submitOutlineTool(range: PageRange, compactPages: Map<number, st
       // Stable: headings on one page keep the order given.
       accepted.entries = drafts.map((draft, index) => ({ draft, index })).sort((left, right) => left.draft.page - right.draft.page || left.index - right.index).map(({ draft }) => draft);
       accepted.notes = notes;
-      return ok(`Received ${plural(drafts.length, "heading")}.`, plural(drafts.length, "heading"));
+      return ok(`Received ${plural(drafts.length, "heading")}.`, t("skills.generatePdfOutline.result.headings", { count: drafts.length }));
     },
   };
   return { tool, accepted };
@@ -408,6 +409,7 @@ async function loadWork(context: ToolContext, path: string): Promise<OutlineWork
 // ---------------------------------------------------------------------------
 
 export async function generateOutline(context: ToolContext, args: { path: string; pages?: unknown; ignoreEmbedded?: boolean }, deps: PdfOutlineDependencies = {}): Promise<ToolResult> {
+  const t = agentT(context);
   const resolved = await resolve(context, args.path);
   if (getFileType(resolved.path) !== "pdf") throw new ToolError(`${resolved.path} is not a PDF. GenerateOutline outlines PDFs; Markdown and LaTeX outlines come from their headings.`);
   const stats = await statLibraryPath(resolved);
@@ -424,7 +426,7 @@ export async function generateOutline(context: ToolContext, args: { path: string
   if (!range && !args.ignoreEmbedded) {
     const embedded = await (deps.embedded ?? readEmbeddedPdfOutline)(path).catch(() => [] as PdfOutlineEntry[]);
     if (embedded.length) {
-      return ok(`${path} has its own bookmarks (${plural(embedded.length, "entry", "entries")}), which the Outlines tab shows, so nothing was generated. Call GenerateOutline with ignoreEmbedded: true only if the user asked for an AI outline anyway.`, "Has its own bookmarks");
+      return ok(`${path} has its own bookmarks (${plural(embedded.length, "entry", "entries")}), which the Outlines tab shows, so nothing was generated. Call GenerateOutline with ignoreEmbedded: true only if the user asked for an AI outline anyway.`, t("skills.generatePdfOutline.result.hasOwnBookmarks"));
     }
   }
   const textChars = pages.reduce((sum, page) => sum + page.text.trim().length, 0);
@@ -444,7 +446,7 @@ export async function generateOutline(context: ToolContext, args: { path: string
 
   const submits = chunks.map((chunk) => submitOutlineTool(chunk, new Map([...compactPages].filter(([page]) => page >= chunk.from && page <= chunk.to))));
   const tasks: SubagentTask[] = chunks.map((chunk, index) => ({
-    label: `Outlining pages ${chunk.from}–${chunk.to}`,
+    label: t("skills.generatePdfOutline.label.outliningPages", { from: chunk.from, to: chunk.to }),
     system: OUTLINER_SYSTEM,
     prompt: outlinerPrompt({
       path, pageCount, range: chunk,
@@ -460,7 +462,7 @@ export async function generateOutline(context: ToolContext, args: { path: string
   const estimate = Math.round(chars / 3.5) * 2 + tasks.length * 2_500;
   const left = context.budget ? Math.max(0, context.budget.maxInputTokens - context.budget.inputTokens) : undefined;
   const plan = `${plural(tasks.length, "subagent")} for ${range ? `pages ${range.from}–${range.to}` : `${plural(pageCount, "page")}`} (at most ${OUTLINE_CONCURRENCY} at once${toc ? `, with the table of contents on page${toc.range.from === toc.range.to ? ` ${toc.range.from}` : `s ${toc.range.from}–${toc.range.to}`}` : ""}), estimated ~${estimate.toLocaleString("en")} input tokens${left !== undefined ? ` of the ${left.toLocaleString("en")} left in this run's budget` : ""}`;
-  step(context, `Planning the outline of ${path}`, plural(tasks.length, "subagent"), plan);
+  step(context, t("skills.generatePdfOutline.summary.planning", { path }), t("skills.generatePdfOutline.result.subagents", { count: tasks.length }), plan);
 
   const results: SubagentResult[] = context.runConfig
     ? await runSubagents(context, tasks, { concurrency: OUTLINE_CONCURRENCY })
@@ -512,7 +514,7 @@ export async function generateOutline(context: ToolContext, args: { path: string
     `<outline>\n${listing(work.entries, new Set(problems.flatMap((problem) => problem.id ? [problem.id] : [])))}\n</outline>`,
     outlineErrors(problems).length ? "Fix the errors with AmendOutline (by id), reading the pages they are about when you need to." : "Check the warnings; fix any that are real with AmendOutline, then reply.",
   ].filter(Boolean).join("\n\n");
-  return ok(text, `${plural(work.entries.length, "entry", "entries")}, ${plural(outlineErrors(problems).length, "error")}`, describeProblems(problems));
+  return ok(text, t("skills.generatePdfOutline.result.generated", { entries: work.entries.length, errors: outlineErrors(problems).length }), describeProblems(problems));
 }
 
 export function createGenerateOutlineTool(deps: PdfOutlineDependencies = {}): AgentTool {
@@ -535,7 +537,10 @@ Usage:
       required: ["path"],
       additionalProperties: false,
     },
-    describe: (args) => `Outlining ${args.pages ? `pages ${String(args.pages)} of ` : ""}${String(args.path ?? "the PDF")}`,
+    describe: (args, t) => {
+      const path = String(args.path ?? t("skills.generatePdfOutline.describe.thePdf"));
+      return args.pages ? t("skills.generatePdfOutline.describe.outlinePages", { pages: String(args.pages), path }) : t("skills.generatePdfOutline.describe.outline", { path });
+    },
     async run(args, context) {
       if (args.ignoreEmbedded !== undefined && typeof args.ignoreEmbedded !== "boolean") throw new ToolError("ignoreEmbedded must be true or false.");
       return generateOutline(context, { path: requireString(args, "path"), pages: args.pages, ignoreEmbedded: args.ignoreEmbedded === true }, deps);
@@ -649,8 +654,9 @@ The whole outline is verified again and saved; the result lists what is left. An
     required: ["path", "operations"],
     additionalProperties: false,
   },
-  describe: (args) => `Amending ${plural(Array.isArray(args.operations) ? args.operations.length : 0, "outline entry", "outline entries")} of ${String(args.path ?? "the PDF")}`,
+  describe: (args, t) => t("skills.generatePdfOutline.describe.amend", { count: Array.isArray(args.operations) ? args.operations.length : 0, path: String(args.path ?? t("skills.generatePdfOutline.describe.thePdf")) }),
   async run(args, context) {
+    const t = agentT(context);
     const resolved = await resolve(context, requireString(args, "path"));
     if (getFileType(resolved.path) !== "pdf") throw new ToolError(`${resolved.path} is not a PDF.`);
     if (!Array.isArray(args.operations) || !args.operations.length) throw new ToolError("operations must be a non-empty list.");
@@ -664,7 +670,7 @@ The whole outline is verified again and saved; the result lists what is left. An
     const applied = applyOutlineOperations(work.entries, args.operations as Operation[], work.pageCount);
     const appliedCount = args.operations.length - applied.problems.length;
     if (!appliedCount) {
-      return { text: `No operation applied, so the outline is unchanged:\n${applied.problems.map((problem) => `- ${problem}`).join("\n")}`, isError: true, result: "Nothing applied", detail: applied.problems.join("\n") };
+      return { text: `No operation applied, so the outline is unchanged:\n${applied.problems.map((problem) => `- ${problem}`).join("\n")}`, isError: true, result: t("skills.generatePdfOutline.result.nothingApplied"), detail: applied.problems.join("\n") };
     }
     work.entries = applied.entries;
     work.amended = true;
@@ -678,9 +684,9 @@ The whole outline is verified again and saved; the result lists what is left. An
       describeProblems(problems),
       `<outline>\n${listing(work.entries, focus)}\n</outline>`,
     ].filter(Boolean).join("\n\n");
-    const result = `${plural(appliedCount, "change")}, ${plural(errors.length, "error")} left`;
+    const result = t("skills.generatePdfOutline.result.amended", { changes: appliedCount, errors: errors.length });
     return applied.problems.length
-      ? { text, isError: true, result: `${result}, ${applied.problems.length} skipped`, detail: applied.problems.join("\n") }
+      ? { text, isError: true, result: t("skills.generatePdfOutline.result.amendedSkipped", { changes: appliedCount, errors: errors.length, skipped: applied.problems.length }), detail: applied.problems.join("\n") }
       : ok(text, result, describeProblems(problems));
   },
 };

@@ -1,6 +1,6 @@
 import { getAiFunctionOptions } from "@/lib/ai-preferences";
 import { createOpenRouterCompletion, type WebCitation } from "@/lib/openrouter";
-import { budgetExhausted, ok, optionalInteger, plural, quoted, recordUsage, requireString, ToolError, type AgentTool } from "./tools";
+import { agentT, budgetExhausted, ok, optionalInteger, quoted, recordUsage, requireString, ToolError, type AgentTool } from "./tools";
 
 // WebSearch: a separate OpenRouter completion with the web plugin, offered
 // only when the user turned on "Allow web search" for the run. The model that
@@ -57,7 +57,8 @@ Usage:
     required: ["query"],
     additionalProperties: false,
   },
-  describe: (args) => `Searching the web for ${quoted(args.query)}`,
+  // The message carries the quotation marks of its language; quoted() supplies the clipped text between “ and ”.
+  describe: (args, t) => t("webSearch.describe", { query: quoted(args.query).slice(1, -1) }),
   async run(args, context) {
     if (!context.allowWebSearch) throw new ToolError("Web search is off for this run. Answer from the library, and tell the user they can turn on \"Allow web search\" in the AI panel.");
     const query = requireString(args, "query").trim().slice(0, 1_000);
@@ -80,7 +81,8 @@ Usage:
         const result: WebSearchResult = { model, answer: completion.content, citations: completion.webCitations ?? [] };
         const text = formatWebSearchResult(query, result);
         const count = new Set(result.citations.map((citation) => citation.url)).size;
-        return ok(text, count ? plural(count, "source") : "No sources cited", text);
+        const t = agentT(context);
+        return ok(text, count ? t("webSearch.sources", { count }) : t("webSearch.noSources"), text);
       } catch (error) {
         if (context.signal.aborted) throw error;
         failures.push(`${model}: ${error instanceof Error ? error.message : "the request failed"}`);

@@ -1,5 +1,5 @@
 import { globToRegExp } from "../glob";
-import { ALL_TOOLS, ok, optionalString, resolve, ToolError, type AgentTool, type ToolContext, type ToolResult } from "../tools";
+import { agentT, ALL_TOOLS, ok, optionalString, resolve, ToolError, type AgentTool, type ToolContext, type ToolResult } from "../tools";
 
 // A read scope for child runs: Read, Grep and Glob wrapped so they reach only
 // the files a check is about (its sources' attachments and the document).
@@ -68,21 +68,22 @@ export function scopedReadTools(paths: string[]): AgentTool[] {
           matched++;
           parts.push(result.text);
         }
-        if (!matched) return ok(`No matches for ${JSON.stringify(String(args.pattern ?? ""))} in ${scope.paths.join(", ")}.`, "No matches");
-        return ok(parts.join("\n\n"), matched === 1 && last ? last.result : `Matches in ${matched} files`, parts.join("\n\n").slice(0, 1_500));
+        const t = agentT(context);
+        if (!matched) return ok(`No matches for ${JSON.stringify(String(args.pattern ?? ""))} in ${scope.paths.join(", ")}.`, t("factCheck.readScope.noMatches"));
+        return ok(parts.join("\n\n"), matched === 1 && last ? last.result : t("factCheck.readScope.matchesInFiles", { count: matched }), parts.join("\n\n").slice(0, 1_500));
       },
     },
     {
       ...glob,
       description: `Lists the files this check may read whose path or name matches a glob pattern, e.g. "*.pdf".${note}`,
-      async run(args) {
+      async run(args, context) {
         const pattern = typeof args.pattern === "string" && args.pattern.trim() ? args.pattern.trim() : "*";
         let matcher: RegExp;
         try { matcher = globToRegExp(pattern); }
         catch { throw new ToolError(`"${pattern}" is not a valid glob pattern.`); }
         const matches = scope.paths.filter((filePath) => matcher.test(filePath) || matcher.test(filePath.split("/").slice(1).join("/")) || matcher.test(filePath.split("/").at(-1)!));
-        if (!matches.length) return ok(`No files you may read match "${pattern}". You may read: ${scope.paths.join(", ")}.`, "No matches");
-        return ok(matches.join("\n"), `${matches.length} file${matches.length === 1 ? "" : "s"}`);
+        if (!matches.length) return ok(`No files you may read match "${pattern}". You may read: ${scope.paths.join(", ")}.`, agentT(context)("factCheck.readScope.noMatches"));
+        return ok(matches.join("\n"), agentT(context)("factCheck.readScope.files", { count: matches.length }));
       },
     },
   ];

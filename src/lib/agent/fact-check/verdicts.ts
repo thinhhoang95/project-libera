@@ -1,4 +1,4 @@
-import { ok, plural, ToolError, type AgentTool } from "../tools";
+import { agentT, ok, plural, ToolError, type AgentTool } from "../tools";
 import type { DroppedEvidence, EvidenceQuote, VerifiedEvidence, WebQuote } from "./evidence";
 
 // Verdicts: what a checker child submits for each (occurrence, cited work)
@@ -128,8 +128,8 @@ export function submitVerdictsTool(assignments: Assignment[]): AgentTool {
 - suggestedText: when the claim overstates or misstates the source, the claim sentence rewritten to match it, keeping the citation token.
 - suggestedCitation: when the locator or key is wrong, the corrected citation token, e.g. "[@smith2020, p. 7]".`,
     parameters: VERDICTS_SCHEMA,
-    describe: (args) => `Submitting ${plural(Array.isArray(args.verdicts) ? args.verdicts.length : 0, "verdict")}`,
-    async run(args) {
+    describe: (args, t) => t("factCheck.verdicts.describe", { count: Array.isArray(args.verdicts) ? args.verdicts.length : 0 }),
+    async run(args, context) {
       const verdicts = args.verdicts as SubmittedVerdict[];
       const problems: string[] = [];
       const seen = new Set<string>();
@@ -151,7 +151,7 @@ export function submitVerdictsTool(assignments: Assignment[]): AgentTool {
       const missing = [...pairs.keys()].filter((id) => !seen.has(id)).map((id) => id.replace("|", " / @"));
       if (missing.length) problems.push(`Missing verdicts for: ${missing.join(", ")}.`);
       if (problems.length) throw new ToolError(problems.join("\n"));
-      return ok(`Received ${plural(verdicts.length, "verdict")}. The check is complete.`, plural(verdicts.length, "verdict"));
+      return ok(`Received ${plural(verdicts.length, "verdict")}. The check is complete.`, agentT(context)("factCheck.verdicts.submitted", { count: verdicts.length }));
     },
   };
 }

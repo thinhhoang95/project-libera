@@ -14,6 +14,7 @@ import { formatWebSearchResult } from "../../src/lib/agent/web-search";
 import { readReferenceLibrary } from "../../src/lib/storage/references";
 import { fixtureFetch, testHttpClient, testSettings, type FetchLog } from "./references-resolve-helpers";
 import { addWorks, entryId, makeContext, withLibrary, work, writePdf, writeText } from "./references-factcheck-helpers";
+import { englishAgentT } from "../../src/lib/agent/translate";
 
 // ---------------------------------------------------------------------------
 // References tool
@@ -53,7 +54,7 @@ test("References is offered in every permission and looks entries up by key, ali
     assert.match((await referencesTool.run({ query: "2021" }, context)).text, /@lee2021 /);
     assert.match((await referencesTool.run({ query: "attention", limit: 1 }, context)).text, /Showing 1 of 2 matches/);
     assert.match((await referencesTool.run({ query: "nonexistent words" }, context)).text, /No entries .* match/);
-    assert.equal(referencesTool.describe({ keys: ["a", "b"] }), "Looking up @a, @b in References");
+    assert.equal(referencesTool.describe({ keys: ["a", "b"] }, englishAgentT), "Looking up @a, @b in References");
 
     await assert.rejects(referencesTool.run({}, makeContext("read-only", { notebook: null }).context), /No notebook is selected/);
   });

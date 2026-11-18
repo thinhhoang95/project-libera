@@ -8032,5 +8032,270 @@
     "no": "Non",
     "ok": "OK",
     "error": "Erreur"
+  },
+  "agentServer": {
+    "route": {
+      "requestTooLarge": "Cette requête est trop volumineuse. Démarrez une nouvelle conversation ou fermez quelques documents non enregistrés.",
+      "draftsTooLarge": "Les brouillons non enregistrés sont invalides ou trop volumineux.",
+      "selectNotebook": "Ouvrez un fichier ou sélectionnez un carnet pour que l’agent sache quel carnet il peut modifier.",
+      "modelCannotCallTools": "{model} ne peut pas appeler d’outils sur OpenRouter et ne peut donc pas fonctionner en mode Agent. Choisissez un autre modèle ou passez en Chat.",
+      "stopped": "L’agent a été arrêté.",
+      "runFailed": "L’exécution de l’agent a échoué."
+    },
+    "runner": {
+      "calling": "Appel de {name}",
+      "finishingSkills": "Finalisation des compétences",
+      "skillCouldNotFinish": "Une compétence n’a pas pu se terminer.",
+      "timeLimit": "Arrêt après {minutes, plural, one {# minute} other {# minutes}}, la limite de durée d’une exécution.",
+      "inputTokenLimit": "Arrêt après {tokens, number} jetons d’entrée utilisés, la limite d’une exécution.",
+      "budgetUsedUp": "Arrêt : le budget de jetons de l’exécution ({tokens, number} jetons d’entrée, exécutions enfants comprises) est épuisé.",
+      "contextFull": "Arrêt : la conversation ne tient plus dans la fenêtre de contexte du modèle. Démarrez une nouvelle conversation pour continuer.",
+      "stuck": "Arrêt : l’agent répétait la même étape.",
+      "stepLimit": "Arrêt après {steps, plural, one {# étape} other {# étapes}}, la limite d’une exécution. Demandez à l’agent de continuer s’il reste du travail."
+    },
+    "tools": {
+      "read": {
+        "describe": "Lecture de {path}",
+        "describePages": "Lecture de {path} (pages {pages})",
+        "describeUnknown": "Lecture d’un fichier",
+        "segments": "{count, plural, one {# segment} other {# segments}}",
+        "emptyPdf": "PDF vide",
+        "noTextLayer": "Aucune couche de texte",
+        "pdfPages": "Pages {ranges} sur {total}",
+        "emptyFile": "Fichier vide",
+        "linesPartial": "Lignes {start}-{end} sur {total}",
+        "lines": "{count, plural, one {# ligne} other {# lignes}}"
+      },
+      "glob": {
+        "describe": "Recherche des fichiers correspondant à {pattern}",
+        "describeIn": "Recherche des fichiers correspondant à {pattern} dans {path}",
+        "noMatches": "Aucune correspondance",
+        "files": "{count, plural, one {# fichier} other {# fichiers}}"
+      },
+      "grep": {
+        "describe": "Recherche de {pattern}",
+        "describeIn": "Recherche de {pattern} dans {path}",
+        "noMatches": "Aucune correspondance",
+        "files": "{count, plural, one {# fichier} other {# fichiers}}",
+        "matchesInFiles": "{matches, plural, one {# correspondance} other {# correspondances}} dans {files, plural, one {# fichier} other {# fichiers}}"
+      },
+      "edit": {
+        "describe": "Modification de {path}",
+        "describeUnknown": "Modification d’un fichier",
+        "suggested": "Suggéré, en attente de relecture",
+        "replacements": "{count, plural, one {# remplacement} other {# remplacements}}",
+        "edited": "Modifié"
+      },
+      "write": {
+        "describe": "Écriture de {path}",
+        "describeUnknown": "Écriture d’un fichier",
+        "suggested": "Suggéré, en attente de relecture",
+        "unchanged": "Inchangé",
+        "created": "Créé, {count, plural, one {# ligne} other {# lignes}}",
+        "overwrote": "Écrasé, {count, plural, one {# ligne} other {# lignes}}"
+      },
+      "taskCreate": {
+        "describe": "Ajout de la tâche {subject}",
+        "result": "Tâche #{id}"
+      },
+      "taskUpdate": {
+        "describe": "Mise à jour de la tâche #{id}",
+        "describeStatus": "Mise à jour de la tâche #{id} ({status, select, pending {en attente} in_progress {en cours} completed {terminée} deleted {supprimée} other {{statusText}}})",
+        "statusResult": "#{id} {status, select, pending {en attente} in_progress {en cours} completed {terminée} deleted {supprimée} other {{statusText}}}",
+        "updated": "#{id} mise à jour"
+      },
+      "skill": {
+        "describe": "Chargement de la compétence {name}",
+        "describeUnknown": "Chargement de la compétence demandée",
+        "unavailable": "Indisponible ici",
+        "alreadyLoaded": "Déjà chargée",
+        "loaded": "Chargée"
+      }
+    },
+    "skills": {
+      "generatePdfOutline": {
+        "describe": {
+          "submit": "Envoi de {count, plural, one {# titre} other {# titres}} pour les pages {from}–{to}",
+          "thePdf": "ce PDF",
+          "outline": "Génération du plan de {path}",
+          "outlinePages": "Génération du plan des pages {pages} de {path}",
+          "amend": "Modification de {count, plural, one {# entrée} other {# entrées}} du plan de {path}"
+        },
+        "label": {
+          "outliningPages": "Plan des pages {from}–{to}"
+        },
+        "summary": {
+          "planning": "Préparation du plan de {path}"
+        },
+        "result": {
+          "headings": "{count, plural, one {# titre} other {# titres}}",
+          "hasOwnBookmarks": "Contient ses propres signets",
+          "subagents": "{count, plural, one {# sous-agent} other {# sous-agents}}",
+          "generated": "{entries, plural, one {# entrée} other {# entrées}}, {errors, plural, one {# erreur} other {# erreurs}}",
+          "nothingApplied": "Rien n’a été appliqué",
+          "amended": "{changes, plural, one {# modification} other {# modifications}}, {errors, plural, one {# erreur restante} other {# erreurs restantes}}",
+          "amendedSkipped": "{changes, plural, one {# modification} other {# modifications}}, {errors, plural, one {# erreur restante} other {# erreurs restantes}}, {skipped, plural, one {# ignorée} other {# ignorées}}"
+        }
+      },
+      "pythonResults": {
+        "describe": {
+          "runCell": "Exécution de la cellule Python {cell}",
+          "runDocument": "Exécution du code Python de {document}",
+          "aNote": "la note",
+          "install": "Installation de {packages}",
+          "installFallback": "Installation de paquets Python"
+        },
+        "result": {
+          "timedOut": "Délai dépassé",
+          "cellFailed": "[{id}] a échoué : {type}",
+          "setupFailed": "L’initialisation a échoué : {type}",
+          "figures": "{count, plural, one {# figure} other {# figures}}",
+          "cellsRan": "{count, plural, one {# cellule exécutée} other {# cellules exécutées}}",
+          "installed": "Installation terminée"
+        }
+      },
+      "extractDefinitions": {
+        "describe": {
+          "save": "Enregistrement de {count, plural, one {# fiche} other {# fiches}} pour {path}",
+          "saveCards": "Enregistrement de fiches pour {path}",
+          "theDocument": "le document"
+        },
+        "result": {
+          "rejected": "{count, plural, one {# fiche rejetée} other {# fiches rejetées}}",
+          "savedRejected": "{saved, plural, one {# fiche enregistrée} other {# fiches enregistrées}}, {rejected, plural, one {# rejetée} other {# rejetées}}",
+          "saved": "{count, plural, one {# fiche enregistrée} other {# fiches enregistrées}}"
+        }
+      },
+      "leaveReviewComments": {
+        "describe": {
+          "comment": "Commentaire sur {path}",
+          "aFile": "un fichier"
+        },
+        "summary": {
+          "adding": "Ajout des commentaires de relecture à {path}",
+          "checking": "Vérification des commentaires de relecture"
+        },
+        "result": {
+          "toFix": "{count, plural, one {# commentaire à corriger} other {# commentaires à corriger}}",
+          "placed": "{count, plural, one {# commentaire placé} other {# commentaires placés}}",
+          "removed": "{count, plural, one {# commentaire supprimé} other {# commentaires supprimés}}",
+          "updated": "Mis à jour",
+          "fileGone": "Le fichier n’existe plus",
+          "sharedAdded": "{added, plural, one {# commentaire partagé ajouté} other {# commentaires partagés ajoutés}}{failed, plural, =0 {} one { ; # n’a pas pu être ajouté} other { ; # n’ont pas pu être ajoutés}}{dropped, plural, =0 {} one { ; # n’a pas pu être placé} other { ; # n’ont pas pu être placés}}",
+          "added": "{added, plural, one {# commentaire ajouté} other {# commentaires ajoutés}}{dropped, plural, =0 {} one { ; # n’a pas pu être placé} other { ; # n’ont pas pu être placés}}",
+          "saveFailed": "Impossible d’enregistrer les commentaires : {message}",
+          "unknownError": "erreur inconnue"
+        }
+      }
+    },
+    "webSearch": {
+      "describe": "Recherche web : « {query} »",
+      "sources": "{count, plural, one {# source} other {# sources}}",
+      "noSources": "Aucune source citée"
+    },
+    "suggestEdit": {
+      "describe": "Suggestion d’une modification dans {path}",
+      "describeFile": "Suggestion d’une modification dans un fichier",
+      "replaced": "Suggestion remplacée",
+      "recorded": "Suggestion enregistrée",
+      "adding": "Ajout de modifications suggérées à {path}",
+      "fileGone": "Le fichier n’existe plus",
+      "addedEdits": "{count, plural, one {# modification suggérée ajoutée} other {# modifications suggérées ajoutées}}",
+      "addedEditsNotes": "{count, plural, one {# modification suggérée ajoutée} other {# modifications suggérées ajoutées}} ; {notes}",
+      "addedShared": "{count, plural, one {# suggestion partagée ajoutée} other {# suggestions partagées ajoutées}}",
+      "addedSharedNotes": "{count, plural, one {# suggestion partagée ajoutée} other {# suggestions partagées ajoutées}} ; {notes}",
+      "noteFailed": "{count, plural, one {# n’a pas pu être ajoutée} other {# n’ont pas pu être ajoutées}}",
+      "noteLost": "{count, plural, one {# ne correspondait plus au texte} other {# ne correspondaient plus au texte}}",
+      "noteSeparator": " ; ",
+      "saveFailed": "Impossible d’enregistrer les modifications suggérées : {message}",
+      "unknownError": "erreur inconnue"
+    },
+    "referencesTool": {
+      "describeKeys": "Recherche de {keys} dans les références",
+      "describeQuery": "Recherche dans les références : « {query} »",
+      "describeList": "Liste des références",
+      "libraryEmpty": "Bibliothèque vide",
+      "noMatches": "Aucun résultat",
+      "entries": "{count, plural, one {# entrée} other {# entrées}}"
+    },
+    "readComments": {
+      "describe": "Lecture des commentaires de {path}",
+      "describeFile": "Lecture des commentaires d’un fichier",
+      "counts": "{open, plural, one {# fil ouvert} other {# fils ouverts}}, {resolved, plural, one {# fil résolu} other {# fils résolus}}",
+      "noComments": "Aucun commentaire"
+    },
+    "replyToComment": {
+      "describe": "Réponse à un commentaire dans {path}",
+      "describeFile": "Réponse à un commentaire dans un fichier",
+      "queued": "Réponse en attente d’envoi",
+      "replied": "Réponse publiée"
+    },
+    "factCheck": {
+      "listCitations": {
+        "describe": "Liste des citations de {path}",
+        "describeDocument": "Liste des citations du document",
+        "citations": "{count, plural, one {# citation} other {# citations}}",
+        "citationsWithProblems": "{count, plural, one {# citation} other {# citations}}, {problems, plural, one {# problème} other {# problèmes}}"
+      },
+      "verdicts": {
+        "describe": "Envoi de {count, plural, one {# verdict} other {# verdicts}}",
+        "submitted": "{count, plural, one {# verdict} other {# verdicts}}"
+      },
+      "readScope": {
+        "noMatches": "Aucun résultat",
+        "matchesInFiles": "Résultats dans {count, plural, one {# fichier} other {# fichiers}}",
+        "files": "{count, plural, one {# fichier} other {# fichiers}}"
+      },
+      "checkCitations": {
+        "describe": "Vérification des citations de {path}",
+        "describeDocument": "Vérification des citations du document",
+        "describeUncited": "Envoi de {count, plural, one {# affirmation sans citation} other {# affirmations sans citation}}",
+        "claims": "{count, plural, one {# affirmation} other {# affirmations}}",
+        "uncitedLabel": "Recherche d’affirmations sans citation",
+        "noCitations": "Aucune citation",
+        "alreadyChecked": "Déjà vérifié",
+        "batchLabel": "Vérification de {keys} ({count, plural, one {# affirmation} other {# affirmations}})",
+        "planning": "Préparation de la vérification des faits de {path}",
+        "subagents": "{count, plural, one {# sous-agent} other {# sous-agents}}",
+        "verdicts": "{count, plural, one {# verdict} other {# verdicts}}",
+        "verdictsNotChecked": "{count, plural, one {# verdict} other {# verdicts}}, {notChecked, plural, one {# non vérifiée} other {# non vérifiées}}"
+      }
+    }
+  },
+  "aiRoutes": {
+    "unknownError": "erreur inconnue",
+    "format": {
+      "selectText": "Sélectionnez du texte à mettre en forme.",
+      "tooLarge": "La sélection est trop volumineuse pour être mise en forme en une seule requête.",
+      "empty": "La mise en forme par IA a renvoyé une réponse vide.",
+      "failed": "Échec de la mise en forme par IA : {detail}"
+    },
+    "rewrite": {
+      "selectText": "Sélectionnez du texte à réécrire.",
+      "enterPrompt": "Saisissez une instruction de réécriture.",
+      "tooLarge": "La sélection est trop volumineuse pour être réécrite en une seule requête.",
+      "promptTooLong": "L’instruction de réécriture est trop longue.",
+      "empty": "La réécriture par IA a renvoyé une réponse vide.",
+      "failed": "Échec de la réécriture par IA : {detail}"
+    },
+    "write": {
+      "enterPrompt": "Saisissez une instruction décrivant ce qu’il faut écrire.",
+      "promptTooLong": "L’instruction d’écriture est trop longue.",
+      "empty": "Rédiger avec l’IA a renvoyé une réponse vide.",
+      "failed": "Échec de Rédiger avec l’IA : {detail}"
+    },
+    "imageToMarkdown": {
+      "tooLarge": "L’image est trop volumineuse pour être convertie en une seule requête.",
+      "empty": "La conversion d’image par IA a renvoyé une réponse vide.",
+      "failed": "Échec de la conversion d’image par IA : {detail}"
+    },
+    "documentChat": {
+      "tooLarge": "Cette conversation est trop volumineuse. Démarrez une nouvelle conversation ou retirez certaines pièces jointes.",
+      "sizeLimit": "La réponse a dépassé la taille limite.",
+      "empty": "Le modèle a renvoyé une réponse vide. Veuillez réessayer.",
+      "stoppedOrTimedOut": "Réponse interrompue ou délai dépassé.",
+      "failedFallback": "Échec de la conversation.",
+      "failed": "Échec de la conversation sur le document."
+    }
   }
 }

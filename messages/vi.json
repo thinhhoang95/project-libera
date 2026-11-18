@@ -8032,5 +8032,270 @@
     "no": "Không",
     "ok": "OK",
     "error": "Lỗi"
+  },
+  "agentServer": {
+    "route": {
+      "requestTooLarge": "Yêu cầu này quá lớn. Hãy bắt đầu cuộc trò chuyện mới hoặc đóng bớt một số tài liệu chưa lưu.",
+      "draftsTooLarge": "Các bản nháp chưa lưu không hợp lệ hoặc quá lớn.",
+      "selectNotebook": "Hãy mở một tệp hoặc chọn một sổ tay để tác nhân biết được sổ tay nào nó có thể thay đổi.",
+      "modelCannotCallTools": "{model} không thể gọi công cụ trên OpenRouter nên không dùng được ở chế độ Tác nhân. Hãy chọn mô hình khác hoặc chuyển sang Trò chuyện.",
+      "stopped": "Tác nhân đã dừng.",
+      "runFailed": "Lần chạy của tác nhân đã thất bại."
+    },
+    "runner": {
+      "calling": "Đang gọi {name}",
+      "finishingSkills": "Đang hoàn tất các kỹ năng",
+      "skillCouldNotFinish": "Một kỹ năng không thể hoàn tất.",
+      "timeLimit": "Đã dừng sau {minutes, plural, other {# phút}}, giới hạn thời gian cho một lần chạy.",
+      "inputTokenLimit": "Đã dừng sau khi dùng {tokens, number} token đầu vào, giới hạn cho một lần chạy.",
+      "budgetUsedUp": "Đã dừng vì ngân sách token của lần chạy ({tokens, number} token đầu vào, gồm cả các lần chạy con) đã hết.",
+      "contextFull": "Đã dừng vì cuộc trò chuyện không còn vừa trong cửa sổ ngữ cảnh của mô hình. Hãy bắt đầu cuộc trò chuyện mới để tiếp tục.",
+      "stuck": "Đã dừng vì tác nhân cứ lặp lại cùng một bước.",
+      "stepLimit": "Đã dừng sau {steps, plural, other {# bước}}, giới hạn cho một lần chạy. Hãy yêu cầu tác nhân tiếp tục nếu còn việc phải làm."
+    },
+    "tools": {
+      "read": {
+        "describe": "Đang đọc {path}",
+        "describePages": "Đang đọc {path} (trang {pages})",
+        "describeUnknown": "Đang đọc một tệp",
+        "segments": "{count, plural, other {# đoạn}}",
+        "emptyPdf": "PDF trống",
+        "noTextLayer": "Không có lớp văn bản",
+        "pdfPages": "Trang {ranges} trên tổng {total}",
+        "emptyFile": "Tệp trống",
+        "linesPartial": "Dòng {start}-{end} trên tổng {total}",
+        "lines": "{count, plural, other {# dòng}}"
+      },
+      "glob": {
+        "describe": "Đang tìm các tệp khớp với {pattern}",
+        "describeIn": "Đang tìm các tệp khớp với {pattern} trong {path}",
+        "noMatches": "Không có kết quả khớp",
+        "files": "{count, plural, other {# tệp}}"
+      },
+      "grep": {
+        "describe": "Đang tìm kiếm {pattern}",
+        "describeIn": "Đang tìm kiếm {pattern} trong {path}",
+        "noMatches": "Không có kết quả khớp",
+        "files": "{count, plural, other {# tệp}}",
+        "matchesInFiles": "{matches, plural, other {# kết quả khớp}} trong {files, plural, other {# tệp}}"
+      },
+      "edit": {
+        "describe": "Đang chỉnh sửa {path}",
+        "describeUnknown": "Đang chỉnh sửa một tệp",
+        "suggested": "Đã đề xuất, chờ rà soát",
+        "replacements": "{count, plural, other {# lần thay thế}}",
+        "edited": "Đã chỉnh sửa"
+      },
+      "write": {
+        "describe": "Đang ghi {path}",
+        "describeUnknown": "Đang ghi một tệp",
+        "suggested": "Đã đề xuất, chờ rà soát",
+        "unchanged": "Không thay đổi",
+        "created": "Đã tạo, {count, plural, other {# dòng}}",
+        "overwrote": "Đã ghi đè, {count, plural, other {# dòng}}"
+      },
+      "taskCreate": {
+        "describe": "Đang thêm tác vụ {subject}",
+        "result": "Tác vụ #{id}"
+      },
+      "taskUpdate": {
+        "describe": "Đang cập nhật tác vụ #{id}",
+        "describeStatus": "Đang cập nhật tác vụ #{id} ({status, select, pending {đang chờ} in_progress {đang thực hiện} completed {đã hoàn thành} deleted {đã xóa} other {{statusText}}})",
+        "statusResult": "#{id} {status, select, pending {đang chờ} in_progress {đang thực hiện} completed {đã hoàn thành} deleted {đã xóa} other {{statusText}}}",
+        "updated": "#{id} đã cập nhật"
+      },
+      "skill": {
+        "describe": "Đang tải kỹ năng {name}",
+        "describeUnknown": "Đang tải kỹ năng được yêu cầu",
+        "unavailable": "Không khả dụng ở đây",
+        "alreadyLoaded": "Đã tải sẵn",
+        "loaded": "Đã tải"
+      }
+    },
+    "skills": {
+      "generatePdfOutline": {
+        "describe": {
+          "submit": "Đang gửi {count, plural, other {# tiêu đề}} cho các trang {from}–{to}",
+          "thePdf": "PDF",
+          "outline": "Đang tạo dàn ý cho {path}",
+          "outlinePages": "Đang tạo dàn ý cho trang {pages} của {path}",
+          "amend": "Đang sửa {count, plural, other {# mục dàn ý}} của {path}"
+        },
+        "label": {
+          "outliningPages": "Dàn ý trang {from}–{to}"
+        },
+        "summary": {
+          "planning": "Đang lập kế hoạch dàn ý cho {path}"
+        },
+        "result": {
+          "headings": "{count, plural, other {# tiêu đề}}",
+          "hasOwnBookmarks": "Đã có dấu trang riêng",
+          "subagents": "{count, plural, other {# tác nhân con}}",
+          "generated": "{entries, plural, other {# mục}}, {errors, plural, other {# lỗi}}",
+          "nothingApplied": "Không có gì được áp dụng",
+          "amended": "{changes, plural, other {# thay đổi}}, còn {errors, plural, other {# lỗi}}",
+          "amendedSkipped": "{changes, plural, other {# thay đổi}}, còn {errors, plural, other {# lỗi}}, {skipped, plural, other {# bị bỏ qua}}"
+        }
+      },
+      "pythonResults": {
+        "describe": {
+          "runCell": "Đang chạy ô Python {cell}",
+          "runDocument": "Đang chạy Python của {document}",
+          "aNote": "một ghi chú",
+          "install": "Đang cài đặt {packages}",
+          "installFallback": "Đang cài đặt các gói Python"
+        },
+        "result": {
+          "timedOut": "Hết thời gian chờ",
+          "cellFailed": "[{id}] thất bại: {type}",
+          "setupFailed": "Phần thiết lập thất bại: {type}",
+          "figures": "{count, plural, other {# hình}}",
+          "cellsRan": "{count, plural, other {# ô đã chạy}}",
+          "installed": "Đã cài đặt"
+        }
+      },
+      "extractDefinitions": {
+        "describe": {
+          "save": "Đang lưu {count, plural, other {# thẻ ghi nhớ}} cho {path}",
+          "saveCards": "Đang lưu các thẻ ghi nhớ cho {path}",
+          "theDocument": "tài liệu"
+        },
+        "result": {
+          "rejected": "{count, plural, other {# thẻ ghi nhớ bị từ chối}}",
+          "savedRejected": "{saved, plural, other {# thẻ ghi nhớ đã lưu}}, {rejected, plural, other {# bị từ chối}}",
+          "saved": "{count, plural, other {# thẻ ghi nhớ đã lưu}}"
+        }
+      },
+      "leaveReviewComments": {
+        "describe": {
+          "comment": "Đang nhận xét về {path}",
+          "aFile": "một tệp"
+        },
+        "summary": {
+          "adding": "Đang thêm nhận xét rà soát vào {path}",
+          "checking": "Đang kiểm tra nhận xét rà soát"
+        },
+        "result": {
+          "toFix": "{count, plural, other {# nhận xét cần sửa}}",
+          "placed": "{count, plural, other {# nhận xét đã được đặt}}",
+          "removed": "{count, plural, other {# nhận xét đã bị xóa}}",
+          "updated": "Đã cập nhật",
+          "fileGone": "Tệp không còn tồn tại",
+          "sharedAdded": "{added, plural, other {# nhận xét chia sẻ đã được thêm}}{failed, plural, =0 {} other {; # không thể thêm}}{dropped, plural, =0 {} other {; # không thể đặt}}",
+          "added": "{added, plural, other {# nhận xét đã được thêm}}{dropped, plural, =0 {} other {; # không thể đặt}}",
+          "saveFailed": "Không thể lưu các nhận xét: {message}",
+          "unknownError": "lỗi không xác định"
+        }
+      }
+    },
+    "webSearch": {
+      "describe": "Đang tìm kiếm trên web: “{query}”",
+      "sources": "{count, plural, other {# nguồn}}",
+      "noSources": "Không có nguồn nào được trích dẫn"
+    },
+    "suggestEdit": {
+      "describe": "Đang đề xuất chỉnh sửa trong {path}",
+      "describeFile": "Đang đề xuất chỉnh sửa trong một tệp",
+      "replaced": "Đã thay thế đề xuất",
+      "recorded": "Đã ghi lại đề xuất",
+      "adding": "Đang thêm các chỉnh sửa được đề xuất vào {path}",
+      "fileGone": "Tệp không còn tồn tại",
+      "addedEdits": "Đã thêm {count, plural, other {# chỉnh sửa được đề xuất}}",
+      "addedEditsNotes": "Đã thêm {count, plural, other {# chỉnh sửa được đề xuất}}; {notes}",
+      "addedShared": "Đã thêm {count, plural, other {# đề xuất chung}}",
+      "addedSharedNotes": "Đã thêm {count, plural, other {# đề xuất chung}}; {notes}",
+      "noteFailed": "{count, plural, other {# mục}} không thể thêm",
+      "noteLost": "{count, plural, other {# mục}} không còn khớp với văn bản",
+      "noteSeparator": "; ",
+      "saveFailed": "Không thể lưu các chỉnh sửa được đề xuất: {message}",
+      "unknownError": "lỗi không xác định"
+    },
+    "referencesTool": {
+      "describeKeys": "Đang tra cứu {keys} trong Tài liệu tham khảo",
+      "describeQuery": "Đang tìm trong Tài liệu tham khảo: “{query}”",
+      "describeList": "Đang liệt kê Tài liệu tham khảo",
+      "libraryEmpty": "Thư viện trống",
+      "noMatches": "Không có kết quả",
+      "entries": "{count, plural, other {# mục}}"
+    },
+    "readComments": {
+      "describe": "Đang đọc nhận xét trên {path}",
+      "describeFile": "Đang đọc nhận xét trên một tệp",
+      "counts": "{open, plural, other {# chuỗi nhận xét đang mở}}, {resolved, plural, other {# chuỗi nhận xét đã giải quyết}}",
+      "noComments": "Không có nhận xét"
+    },
+    "replyToComment": {
+      "describe": "Đang trả lời một nhận xét trên {path}",
+      "describeFile": "Đang trả lời một nhận xét trên một tệp",
+      "queued": "Câu trả lời đang chờ gửi",
+      "replied": "Đã trả lời"
+    },
+    "factCheck": {
+      "listCitations": {
+        "describe": "Đang liệt kê các trích dẫn trong {path}",
+        "describeDocument": "Đang liệt kê các trích dẫn trong tài liệu",
+        "citations": "{count, plural, other {# trích dẫn}}",
+        "citationsWithProblems": "{count, plural, other {# trích dẫn}}, {problems, plural, other {# vấn đề}}"
+      },
+      "verdicts": {
+        "describe": "Đang gửi {count, plural, other {# kết luận}}",
+        "submitted": "{count, plural, other {# kết luận}}"
+      },
+      "readScope": {
+        "noMatches": "Không có kết quả",
+        "matchesInFiles": "Có kết quả trong {count, plural, other {# tệp}}",
+        "files": "{count, plural, other {# tệp}}"
+      },
+      "checkCitations": {
+        "describe": "Đang kiểm tra các trích dẫn trong {path}",
+        "describeDocument": "Đang kiểm tra các trích dẫn trong tài liệu",
+        "describeUncited": "Đang gửi {count, plural, other {# nhận định chưa có trích dẫn}}",
+        "claims": "{count, plural, other {# nhận định}}",
+        "uncitedLabel": "Đang tìm các nhận định chưa có trích dẫn",
+        "noCitations": "Không có trích dẫn",
+        "alreadyChecked": "Đã kiểm tra",
+        "batchLabel": "Đang kiểm tra {keys} ({count, plural, other {# nhận định}})",
+        "planning": "Đang lập kế hoạch kiểm tra trích dẫn của {path}",
+        "subagents": "{count, plural, other {# tác nhân con}}",
+        "verdicts": "{count, plural, other {# kết luận}}",
+        "verdictsNotChecked": "{count, plural, other {# kết luận}}, {notChecked, plural, other {# chưa kiểm tra}}"
+      }
+    }
+  },
+  "aiRoutes": {
+    "unknownError": "lỗi không xác định",
+    "format": {
+      "selectText": "Hãy chọn văn bản cần định dạng.",
+      "tooLarge": "Vùng chọn quá lớn để định dạng trong một yêu cầu.",
+      "empty": "Định dạng bằng AI đã trả về phản hồi trống.",
+      "failed": "Định dạng bằng AI thất bại: {detail}"
+    },
+    "rewrite": {
+      "selectText": "Hãy chọn văn bản cần viết lại.",
+      "enterPrompt": "Hãy nhập yêu cầu viết lại.",
+      "tooLarge": "Vùng chọn quá lớn để viết lại trong một yêu cầu.",
+      "promptTooLong": "Yêu cầu viết lại quá dài.",
+      "empty": "Viết lại bằng AI đã trả về phản hồi trống.",
+      "failed": "Viết lại bằng AI thất bại: {detail}"
+    },
+    "write": {
+      "enterPrompt": "Hãy nhập yêu cầu mô tả nội dung cần viết.",
+      "promptTooLong": "Yêu cầu viết quá dài.",
+      "empty": "Viết với AI đã trả về phản hồi trống.",
+      "failed": "Viết với AI thất bại: {detail}"
+    },
+    "imageToMarkdown": {
+      "tooLarge": "Hình ảnh quá lớn để chuyển đổi trong một yêu cầu.",
+      "empty": "Chuyển đổi hình ảnh bằng AI đã trả về phản hồi trống.",
+      "failed": "Chuyển đổi hình ảnh bằng AI thất bại: {detail}"
+    },
+    "documentChat": {
+      "tooLarge": "Cuộc trò chuyện này quá lớn. Hãy bắt đầu cuộc trò chuyện mới hoặc gỡ bớt một số tệp đính kèm.",
+      "sizeLimit": "Phản hồi đã vượt quá giới hạn kích thước.",
+      "empty": "Mô hình đã trả về phản hồi trống. Vui lòng thử lại.",
+      "stoppedOrTimedOut": "Phản hồi đã dừng hoặc hết thời gian chờ.",
+      "failedFallback": "Cuộc trò chuyện thất bại.",
+      "failed": "Trò chuyện về tài liệu thất bại."
+    }
   }
 }

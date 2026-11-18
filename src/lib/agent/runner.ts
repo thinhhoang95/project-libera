@@ -1,7 +1,7 @@
 import { StorageError } from "@/lib/storage/errors";
 import type { TokenUsage } from "@/lib/chat-token-usage";
 import { callModel, type AgentMessage, type ModelProfile, type ToolCall } from "./model";
-import { activeTools, addUsage, budgetExhausted, hasOpenTasks, toolSchemas, ToolError, type AgentTool, type ToolContext } from "./tools";
+import { activeTools, addUsage, agentT, budgetExhausted, hasOpenTasks, toolSchemas, ToolError, type AgentTool, type ToolContext } from "./tools";
 import type { AgentEvent, AgentOutcome } from "./types";
 
 // The agent loop: ask the model, run every tool it calls, append the results,
@@ -42,7 +42,10 @@ export type RunAgentOptions = {
 
 export type RunResult = {
   outcome: AgentOutcome;
+  /** Why the run ended early, in English: a child run's reason is read by the model that started it. */
   message?: string;
+  /** `message` in the interface language, for the user. */
+  userMessage?: string;
   /** Text of the last assistant message that had any. */
   finalText: string;
   /** Tokens of every turn, plus what tools spent for the run (web searches, child runs). */
@@ -50,6 +53,8 @@ export type RunResult = {
 };
 
 type LoopState = { finalText: string };
+
+type LoopEnd = { outcome: AgentOutcome; message?: string; userMessage?: string };
 
 type PreparedCall = { call: ToolCall; tool?: AgentTool; args: Record<string, unknown>; error?: string };
 
@@ -92,7 +97,8 @@ function shorten(text: string, limit: number) {
 async function runPrepared(prepared: PreparedCall, context: ToolContext, emit: (event: AgentEvent) => void): Promise<string> {
   const { call, tool } = prepared;
   const name = tool?.name ?? call.function.name;
-  const summary = tool && !prepared.error ? tool.describe(prepared.args) : `Calling ${name}`;
+  const t = agentT(context);
+  const summary = tool && !prepared.error ? tool.describe(prepared.args, t) : t("runner.calling", { name });
   const diff = tool?.name === "Edit" && typeof prepared.args.old_string === "string" && typeof prepared.args.new_string === "string"
     ? { removed: shorten(prepared.args.old_string, 4_000), added: shorten(prepared.args.new_string, 4_000) }
     : undefined;
@@ -167,7 +173,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
   const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   options.context.usage = usage;
   const state: LoopState = { finalText: "" };
-  let result: { outcome: AgentOutcome; message?: string };
+  let result: LoopEnd;
   try {
     result = await runLoop(options, state);
   } finally {
@@ -176,16 +182,17 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
     catch (error) {
       // Report as a step: an "error" event would end the client's stream before "done".
       const id = `skills-${Date.now()}`;
-      options.emit({ type: "tool_started", id, name: "Skill", summary: "Finishing skills" });
-      options.emit({ type: "tool_finished", id, status: "error", result: error instanceof Error ? error.message.slice(0, 300) : "A skill could not finish." });
+      options.emit({ type: "tool_started", id, name: "Skill", summary: agentT(options.context)("runner.finishingSkills") });
+      options.emit({ type: "tool_finished", id, status: "error", result: error instanceof Error ? error.message.slice(0, 300) : agentT(options.context)("runner.skillCouldNotFinish") });
     }
   }
   return { ...result, finalText: state.finalText, usage: { ...usage } };
 }
 
-async function runLoop(options: RunAgentOptions, state: LoopState): Promise<{ outcome: AgentOutcome; message?: string }> {
+async function runLoop(options: RunAgentOptions, state: LoopState): Promise<LoopEnd> {
   const limits = { ...DEFAULT_RUN_LIMITS, ...options.limits };
   const { context, emit, signal } = options;
+  const t = agentT(context);
   const messages: AgentMessage[] = [{ role: "system", content: options.system }, ...options.messages];
   const toolNames = new Map<string, string>();
   const started = Date.now();
@@ -200,13 +207,21 @@ async function runLoop(options: RunAgentOptions, state: LoopState): Promise<{ ou
   try {
     for (let iteration = 0; iteration < limits.maxIterations; iteration++) {
       if (signal.aborted) return { outcome: "stopped" };
-      if (Date.now() - started > limits.maxMillis) return { outcome: "limit", message: `Stopped after ${Math.round(limits.maxMillis / 60_000)} minutes, the time limit for one run.` };
-      if (inputTokens > limits.maxInputTokens) return { outcome: "limit", message: `Stopped after using ${inputTokens.toLocaleString("en")} input tokens, the limit for one run.` };
-      if (budgetExhausted(context)) return { outcome: "limit", message: `Stopped because the run's token budget (${context.budget!.maxInputTokens.toLocaleString("en")} input tokens, child runs included) is used up.` };
+      if (Date.now() - started > limits.maxMillis) {
+        const minutes = Math.round(limits.maxMillis / 60_000);
+        return { outcome: "limit", message: `Stopped after ${minutes} minutes, the time limit for one run.`, userMessage: t("runner.timeLimit", { minutes }) };
+      }
+      if (inputTokens > limits.maxInputTokens) {
+        return { outcome: "limit", message: `Stopped after using ${inputTokens.toLocaleString("en")} input tokens, the limit for one run.`, userMessage: t("runner.inputTokenLimit", { tokens: inputTokens }) };
+      }
+      if (budgetExhausted(context)) {
+        const budget = context.budget!.maxInputTokens;
+        return { outcome: "limit", message: `Stopped because the run's token budget (${budget.toLocaleString("en")} input tokens, child runs included) is used up.`, userMessage: t("runner.budgetUsedUp", { tokens: budget }) };
+      }
       if (lastPromptTokens > options.profile.contextLength * 0.7) {
         const removed = compactToolResults(messages, toolNames);
         if (!removed && lastPromptTokens > options.profile.contextLength * 0.92) {
-          return { outcome: "limit", message: "Stopped because the conversation no longer fits in the model's context window. Start a new chat to continue." };
+          return { outcome: "limit", message: "Stopped because the conversation no longer fits in the model's context window. Start a new chat to continue.", userMessage: t("runner.contextFull") };
         }
       }
 
@@ -281,13 +296,13 @@ async function runLoop(options: RunAgentOptions, state: LoopState): Promise<{ ou
         const signature = `${call.function.name}:${(() => { try { return canonical(JSON.parse(call.function.arguments || "{}")); } catch { return call.function.arguments; } })()}`;
         repeat = signature === repeat.signature ? { ...repeat, count: repeat.count + 1 } : { signature, count: 1, nudged: false };
       }
-      if (repeat.count >= HARD_REPEAT_LIMIT) return { outcome: "stuck", message: "Stopped because the agent kept repeating the same step." };
+      if (repeat.count >= HARD_REPEAT_LIMIT) return { outcome: "stuck", message: "Stopped because the agent kept repeating the same step.", userMessage: t("runner.stuck") };
       if (repeat.count >= SOFT_REPEAT_LIMIT && !repeat.nudged) {
         repeat.nudged = true;
         messages.push(nudge("You are repeating the same tool call with the same arguments. It will not give a different result; try a different approach, or answer with what you have."));
       }
     }
-    return { outcome: "limit", message: `Stopped after ${limits.maxIterations} steps, the limit for one run. Ask the agent to continue if there is more to do.` };
+    return { outcome: "limit", message: `Stopped after ${limits.maxIterations} steps, the limit for one run. Ask the agent to continue if there is more to do.`, userMessage: t("runner.stepLimit", { steps: limits.maxIterations }) };
   } catch (error) {
     if (signal.aborted) return { outcome: "stopped" };
     return { outcome: "error", message: error instanceof Error ? error.message : "The agent run failed." };

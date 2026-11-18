@@ -9,7 +9,7 @@ import {
   type CommentPlacement, type DraftComment,
 } from "../review-comments";
 import {
-  closestLines, findEditTarget, lineOfOffset, missingFileError, ok, plural, readCurrentText, requireString, resolve, sharedDocFor, ToolError,
+  agentT, closestLines, findEditTarget, lineOfOffset, missingFileError, ok, plural, readCurrentText, requireString, resolve, sharedDocFor, ToolError,
   type AgentSkill, type AgentTool, type ToolContext,
 } from "../tools";
 import { replyToCommentTool } from "../reply-to-comment";
@@ -84,8 +84,9 @@ Usage:
     required: ["file_path", "old_string", "new_string"],
     additionalProperties: false,
   },
-  describe: (args) => `Commenting on ${String(args.file_path ?? "a file")}`,
+  describe: (args, t) => t("skills.leaveReviewComments.describe.comment", { path: String(args.file_path ?? t("skills.leaveReviewComments.describe.aFile")) }),
   async run(args, context) {
+    const t = agentT(context);
     const resolved = await resolve(context, requireString(args, "file_path"));
     if (isSharedNotebookPath(resolved.path)) await assertSharedCommentable(context, resolved);
     const oldString = requireString(args, "old_string", { allowEmpty: true });
@@ -147,9 +148,9 @@ Usage:
       target.note ?? "",
       shown.length ? `Review copy now:\n${region(rendered, Math.min(...shown), Math.max(...shown))}` : "",
     ].filter(Boolean).join("\n");
-    const result = problems ? `${plural(problems, "comment")} to fix`
-      : added.length ? `${plural(added.length, "comment")} placed`
-      : removed > 0 ? `${plural(removed, "comment")} removed` : "Updated";
+    const result = problems ? t("skills.leaveReviewComments.result.toFix", { count: problems })
+      : added.length ? t("skills.leaveReviewComments.result.placed", { count: added.length })
+      : removed > 0 ? t("skills.leaveReviewComments.result.removed", { count: removed }) : t("skills.leaveReviewComments.result.updated");
     return ok(text, result, added.map((placement) => placement.text).join("\n\n—\n\n") || undefined);
   },
 };
@@ -185,6 +186,7 @@ function listProblems(placements: CommentPlacement[], original: string) {
 
 /** Compile every review copy: send problems back to the model, or save the comments to the review. */
 export async function finishComments(context: ToolContext, { final }: { final: boolean }): Promise<string | null> {
+  const t = agentT(context);
   const copies = context.skillState.get(NAME) as Map<string, ReviewCopy> | undefined;
   if (!copies?.size) return null;
   const compiled: { copy: ReviewCopy; placements: CommentPlacement[] }[] = [];
@@ -195,8 +197,8 @@ export async function finishComments(context: ToolContext, { final }: { final: b
     if (!current) {
       copies.delete(copy.path);
       const id = `comments-${randomUUID()}`;
-      context.emit({ type: "tool_started", id, name: "ReviewComments", summary: `Adding review comments to ${copy.path}` });
-      context.emit({ type: "tool_finished", id, status: "error", result: "The file no longer exists", detail: copy.comments.map((comment) => comment.text).join("\n\n—\n\n") });
+      context.emit({ type: "tool_started", id, name: "ReviewComments", summary: t("skills.leaveReviewComments.summary.adding", { path: copy.path }) });
+      context.emit({ type: "tool_finished", id, status: "error", result: t("skills.leaveReviewComments.result.fileGone"), detail: copy.comments.map((comment) => comment.text).join("\n\n—\n\n") });
       continue;
     }
     const updated = { ...copy, original: current.content, comments: rebaseComments(copy.comments, copy.original, current.content) };
@@ -211,8 +213,8 @@ export async function finishComments(context: ToolContext, { final }: { final: b
       return lines.length ? [`${copy.path}:`, ...lines] : [];
     }).join("\n");
     const id = `comments-${randomUUID()}`;
-    context.emit({ type: "tool_started", id, name: "ReviewComments", summary: "Checking review comments" });
-    context.emit({ type: "tool_finished", id, status: "error", result: `${plural(problems.length, "comment")} to fix`, detail: report });
+    context.emit({ type: "tool_started", id, name: "ReviewComments", summary: t("skills.leaveReviewComments.summary.checking") });
+    context.emit({ type: "tool_finished", id, status: "error", result: t("skills.leaveReviewComments.result.toFix", { count: problems.length }), detail: report });
     return `Your review comments are not finished: ${plural(problems.length, "comment")} cannot be attached where you put ${problems.length === 1 ? "it" : "them"}.\n${report}\nFix each one with LeaveComment: move the :::comment block to directly beneath the paragraph it is about, or remove it. Then finish your reply again.`;
   }
 
@@ -222,7 +224,7 @@ export async function finishComments(context: ToolContext, { final }: { final: b
       earlier.anchor?.start === placement.anchor!.start && earlier.anchor?.end === placement.anchor!.end && earlier.text === placement.text));
     const dropped = placements.filter((placement) => placement.problem);
     const id = `comments-${randomUUID()}`;
-    context.emit({ type: "tool_started", id, name: "ReviewComments", summary: `Adding review comments to ${copy.path}` });
+    context.emit({ type: "tool_started", id, name: "ReviewComments", summary: t("skills.leaveReviewComments.summary.adding", { path: copy.path }) });
     try {
       // A notebook shared since the comments were drafted gets shared threads
       // too: never local notes posing as review comments.
@@ -231,7 +233,7 @@ export async function finishComments(context: ToolContext, { final }: { final: b
         context.emit({ type: "comments_added", path: copy.path, count: placed.length - failures.length });
         context.emit({
           type: "tool_finished", id, status: dropped.length || failures.length ? "error" : "ok",
-          result: `${plural(placed.length - failures.length, "shared comment")} added${failures.length ? `; ${failures.length} could not be added` : ""}${dropped.length ? `; ${dropped.length} could not be placed` : ""}`,
+          result: t("skills.leaveReviewComments.result.sharedAdded", { added: placed.length - failures.length, failed: failures.length, dropped: dropped.length }),
           ...(dropped.length || failures.length ? { detail: [...failures, ...dropped.map((placement) => `${describePlacement(copy.original, placement)}\n\n${placement.text}`)].join("\n\n—\n\n") } : {}),
         });
         continue;
@@ -240,11 +242,11 @@ export async function finishComments(context: ToolContext, { final }: { final: b
       context.emit({ type: "comments_added", path: copy.path, count: placed.length });
       context.emit({
         type: "tool_finished", id, status: dropped.length ? "error" : "ok",
-        result: `${plural(placed.length, "comment")} added${dropped.length ? `; ${dropped.length} could not be placed` : ""}`,
+        result: t("skills.leaveReviewComments.result.added", { added: placed.length, dropped: dropped.length }),
         ...(dropped.length ? { detail: dropped.map((placement) => `${describePlacement(copy.original, placement)}\n\n${placement.text}`).join("\n\n—\n\n") } : {}),
       });
     } catch (error) {
-      context.emit({ type: "tool_finished", id, status: "error", result: `Could not save the comments: ${error instanceof Error ? error.message : "unknown error"}`, detail: placed.map((placement) => placement.text).join("\n\n—\n\n") });
+      context.emit({ type: "tool_finished", id, status: "error", result: t("skills.leaveReviewComments.result.saveFailed", { message: error instanceof Error ? error.message : t("skills.leaveReviewComments.result.unknownError") }), detail: placed.map((placement) => placement.text).join("\n\n—\n\n") });
     }
   }
   return null;

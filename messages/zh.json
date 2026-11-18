@@ -8032,5 +8032,270 @@
     "no": "否",
     "ok": "确定",
     "error": "错误"
+  },
+  "agentServer": {
+    "route": {
+      "requestTooLarge": "此请求太大。请开始新的对话，或关闭一些未保存的文档。",
+      "draftsTooLarge": "未保存的草稿无效或太大。",
+      "selectNotebook": "请打开一个文件或选择一个笔记本，以便智能体知道可以修改哪个笔记本。",
+      "modelCannotCallTools": "{model} 无法在 OpenRouter 上调用工具，因此不能用于智能体模式。请选择其他模型，或切换到聊天。",
+      "stopped": "智能体已停止。",
+      "runFailed": "智能体运行失败。"
+    },
+    "runner": {
+      "calling": "正在调用 {name}",
+      "finishingSkills": "正在完成技能",
+      "skillCouldNotFinish": "有一项技能未能完成。",
+      "timeLimit": "已在 {minutes, plural, other {# 分钟}}后停止，这是单次运行的时间上限。",
+      "inputTokenLimit": "已在使用 {tokens, number} 个输入令牌后停止，这是单次运行的上限。",
+      "budgetUsedUp": "已停止：本次运行的令牌预算（{tokens, number} 个输入令牌，含子运行）已用完。",
+      "contextFull": "已停止：对话已超出模型的上下文窗口。请开始新的对话以继续。",
+      "stuck": "已停止：智能体一直在重复同一步骤。",
+      "stepLimit": "已在 {steps, plural, other {# 步}}后停止，这是单次运行的上限。如果还有未完成的工作，请让智能体继续。"
+    },
+    "tools": {
+      "read": {
+        "describe": "正在读取 {path}",
+        "describePages": "正在读取 {path}（页码 {pages}）",
+        "describeUnknown": "正在读取文件",
+        "segments": "{count, plural, other {# 段}}",
+        "emptyPdf": "空 PDF",
+        "noTextLayer": "无文本层",
+        "pdfPages": "第 {ranges} 页，共 {total} 页",
+        "emptyFile": "空文件",
+        "linesPartial": "第 {start}-{end} 行，共 {total} 行",
+        "lines": "{count, plural, other {# 行}}"
+      },
+      "glob": {
+        "describe": "正在查找匹配 {pattern} 的文件",
+        "describeIn": "正在 {path} 中查找匹配 {pattern} 的文件",
+        "noMatches": "无匹配",
+        "files": "{count, plural, other {# 个文件}}"
+      },
+      "grep": {
+        "describe": "正在搜索 {pattern}",
+        "describeIn": "正在 {path} 中搜索 {pattern}",
+        "noMatches": "无匹配",
+        "files": "{count, plural, other {# 个文件}}",
+        "matchesInFiles": "{files, plural, other {# 个文件}}中有 {matches, plural, other {# 处匹配}}"
+      },
+      "edit": {
+        "describe": "正在编辑 {path}",
+        "describeUnknown": "正在编辑文件",
+        "suggested": "已建议，待审阅",
+        "replacements": "{count, plural, other {# 处替换}}",
+        "edited": "已编辑"
+      },
+      "write": {
+        "describe": "正在写入 {path}",
+        "describeUnknown": "正在写入文件",
+        "suggested": "已建议，待审阅",
+        "unchanged": "未更改",
+        "created": "已创建，{count, plural, other {# 行}}",
+        "overwrote": "已覆盖，{count, plural, other {# 行}}"
+      },
+      "taskCreate": {
+        "describe": "正在添加任务 {subject}",
+        "result": "任务 #{id}"
+      },
+      "taskUpdate": {
+        "describe": "正在更新任务 #{id}",
+        "describeStatus": "正在更新任务 #{id}（{status, select, pending {待处理} in_progress {进行中} completed {已完成} deleted {已删除} other {{statusText}}}）",
+        "statusResult": "#{id} {status, select, pending {待处理} in_progress {进行中} completed {已完成} deleted {已删除} other {{statusText}}}",
+        "updated": "#{id} 已更新"
+      },
+      "skill": {
+        "describe": "正在加载 {name} 技能",
+        "describeUnknown": "正在加载所请求的技能",
+        "unavailable": "此处不可用",
+        "alreadyLoaded": "已加载过",
+        "loaded": "已加载"
+      }
+    },
+    "skills": {
+      "generatePdfOutline": {
+        "describe": {
+          "submit": "正在提交 {count, plural, other {# 个标题}}，对应第 {from}–{to} 页",
+          "thePdf": "PDF",
+          "outline": "正在为 {path} 生成大纲",
+          "outlinePages": "正在为 {path} 的第 {pages} 页生成大纲",
+          "amend": "正在修改 {path} 的 {count, plural, other {# 个大纲条目}}"
+        },
+        "label": {
+          "outliningPages": "第 {from}–{to} 页的大纲"
+        },
+        "summary": {
+          "planning": "正在规划 {path} 的大纲"
+        },
+        "result": {
+          "headings": "{count, plural, other {# 个标题}}",
+          "hasOwnBookmarks": "已有自带书签",
+          "subagents": "{count, plural, other {# 个子智能体}}",
+          "generated": "{entries, plural, other {# 个条目}}，{errors, plural, other {# 个错误}}",
+          "nothingApplied": "未应用任何操作",
+          "amended": "{changes, plural, other {# 项更改}}，仍有 {errors, plural, other {# 个错误}}",
+          "amendedSkipped": "{changes, plural, other {# 项更改}}，仍有 {errors, plural, other {# 个错误}}，{skipped, plural, other {# 项被跳过}}"
+        }
+      },
+      "pythonResults": {
+        "describe": {
+          "runCell": "正在运行 Python 单元 {cell}",
+          "runDocument": "正在运行 {document} 的 Python",
+          "aNote": "笔记",
+          "install": "正在安装 {packages}",
+          "installFallback": "正在安装 Python 包"
+        },
+        "result": {
+          "timedOut": "已超时",
+          "cellFailed": "[{id}] 失败：{type}",
+          "setupFailed": "设置代码失败：{type}",
+          "figures": "{count, plural, other {# 张图}}",
+          "cellsRan": "{count, plural, other {已运行 # 个单元}}",
+          "installed": "已安装"
+        }
+      },
+      "extractDefinitions": {
+        "describe": {
+          "save": "正在为 {path} 保存 {count, plural, other {# 张卡片}}",
+          "saveCards": "正在为 {path} 保存卡片",
+          "theDocument": "文档"
+        },
+        "result": {
+          "rejected": "{count, plural, other {# 张卡片被拒绝}}",
+          "savedRejected": "{saved, plural, other {已保存 # 张卡片}}，{rejected, plural, other {# 张被拒绝}}",
+          "saved": "{count, plural, other {已保存 # 张卡片}}"
+        }
+      },
+      "leaveReviewComments": {
+        "describe": {
+          "comment": "正在评论 {path}",
+          "aFile": "文件"
+        },
+        "summary": {
+          "adding": "正在向 {path} 添加审阅评论",
+          "checking": "正在检查审阅评论"
+        },
+        "result": {
+          "toFix": "{count, plural, other {# 条评论待修复}}",
+          "placed": "{count, plural, other {已放置 # 条评论}}",
+          "removed": "{count, plural, other {已移除 # 条评论}}",
+          "updated": "已更新",
+          "fileGone": "文件已不存在",
+          "sharedAdded": "{added, plural, other {已添加 # 条共享评论}}{failed, plural, =0 {} other {；# 条无法添加}}{dropped, plural, =0 {} other {；# 条无法放置}}",
+          "added": "{added, plural, other {已添加 # 条评论}}{dropped, plural, =0 {} other {；# 条无法放置}}",
+          "saveFailed": "无法保存评论：{message}",
+          "unknownError": "未知错误"
+        }
+      }
+    },
+    "webSearch": {
+      "describe": "正在网络上搜索“{query}”",
+      "sources": "{count, plural, other {# 个来源}}",
+      "noSources": "未引用任何来源"
+    },
+    "suggestEdit": {
+      "describe": "正在为 {path} 建议编辑",
+      "describeFile": "正在为文件建议编辑",
+      "replaced": "建议已替换",
+      "recorded": "建议已记录",
+      "adding": "正在向 {path} 添加建议的编辑",
+      "fileGone": "文件已不存在",
+      "addedEdits": "已添加 {count, plural, other {# 条建议的编辑}}",
+      "addedEditsNotes": "已添加 {count, plural, other {# 条建议的编辑}}；{notes}",
+      "addedShared": "已添加 {count, plural, other {# 条共享建议}}",
+      "addedSharedNotes": "已添加 {count, plural, other {# 条共享建议}}；{notes}",
+      "noteFailed": "{count, plural, other {# 条}}无法添加",
+      "noteLost": "{count, plural, other {# 条}}与文本不再匹配",
+      "noteSeparator": "；",
+      "saveFailed": "无法保存建议的编辑：{message}",
+      "unknownError": "未知错误"
+    },
+    "referencesTool": {
+      "describeKeys": "正在参考文献中查找 {keys}",
+      "describeQuery": "正在参考文献中搜索“{query}”",
+      "describeList": "正在列出参考文献",
+      "libraryEmpty": "文献库为空",
+      "noMatches": "无匹配项",
+      "entries": "{count, plural, other {# 个条目}}"
+    },
+    "readComments": {
+      "describe": "正在读取 {path} 上的评论",
+      "describeFile": "正在读取文件上的评论",
+      "counts": "{open, plural, other {# 个进行中的评论线程}}，{resolved, plural, other {# 个已解决的评论线程}}",
+      "noComments": "没有评论"
+    },
+    "replyToComment": {
+      "describe": "正在回复 {path} 上的评论",
+      "describeFile": "正在回复文件上的评论",
+      "queued": "回复已排队",
+      "replied": "已回复"
+    },
+    "factCheck": {
+      "listCitations": {
+        "describe": "正在列出 {path} 中的引用",
+        "describeDocument": "正在列出文档中的引用",
+        "citations": "{count, plural, other {# 条引用}}",
+        "citationsWithProblems": "{count, plural, other {# 条引用}}，{problems, plural, other {# 个问题}}"
+      },
+      "verdicts": {
+        "describe": "正在提交 {count, plural, other {# 条结论}}",
+        "submitted": "{count, plural, other {# 条结论}}"
+      },
+      "readScope": {
+        "noMatches": "无匹配项",
+        "matchesInFiles": "在 {count, plural, other {# 个文件}}中有匹配",
+        "files": "{count, plural, other {# 个文件}}"
+      },
+      "checkCitations": {
+        "describe": "正在核查 {path} 中的引用",
+        "describeDocument": "正在核查文档中的引用",
+        "describeUncited": "正在提交 {count, plural, other {# 条未引用的论断}}",
+        "claims": "{count, plural, other {# 条论断}}",
+        "uncitedLabel": "正在查找未引用的论断",
+        "noCitations": "没有引用",
+        "alreadyChecked": "已核查",
+        "batchLabel": "正在核查 {keys}（{count, plural, other {# 条论断}}）",
+        "planning": "正在规划对 {path} 的核查",
+        "subagents": "{count, plural, other {# 个子智能体}}",
+        "verdicts": "{count, plural, other {# 条结论}}",
+        "verdictsNotChecked": "{count, plural, other {# 条结论}}，{notChecked, plural, other {# 项未核查}}"
+      }
+    }
+  },
+  "aiRoutes": {
+    "unknownError": "未知错误",
+    "format": {
+      "selectText": "请选择要格式化的文本。",
+      "tooLarge": "所选内容太大，无法在一次请求中格式化。",
+      "empty": "AI 格式化返回了空响应。",
+      "failed": "AI 格式化失败：{detail}"
+    },
+    "rewrite": {
+      "selectText": "请选择要改写的文本。",
+      "enterPrompt": "请输入改写提示。",
+      "tooLarge": "所选内容太大，无法在一次请求中改写。",
+      "promptTooLong": "改写提示太长。",
+      "empty": "AI 改写返回了空响应。",
+      "failed": "AI 改写失败：{detail}"
+    },
+    "write": {
+      "enterPrompt": "请输入描述要写什么的提示。",
+      "promptTooLong": "写作提示太长。",
+      "empty": "AI 写作返回了空响应。",
+      "failed": "AI 写作失败：{detail}"
+    },
+    "imageToMarkdown": {
+      "tooLarge": "图片太大，无法在一次请求中转换。",
+      "empty": "AI 图片转换返回了空响应。",
+      "failed": "AI 图片转换失败：{detail}"
+    },
+    "documentChat": {
+      "tooLarge": "此对话太大。请开始新的对话，或移除一些附件。",
+      "sizeLimit": "响应超出了大小限制。",
+      "empty": "模型返回了空响应。请重试。",
+      "stoppedOrTimedOut": "响应已停止或已超时。",
+      "failedFallback": "聊天失败。",
+      "failed": "文档聊天失败。"
+    }
   }
 }

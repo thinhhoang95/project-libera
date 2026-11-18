@@ -1,7 +1,7 @@
 import { readReferenceLibrary } from "@/lib/storage/references";
 import { DEFAULT_CSL_STYLE, type CslName, type ReferenceEntry, type ReferenceLibrary } from "@/lib/references/types";
 import { formatCitationDocument, isBundledCslStyle, libraryEntriesByKey, loadCitationFormatter, loadCslStyle } from "@/lib/references/format";
-import { ok, optionalInteger, plural, quoted, ToolError, type AgentTool, type ToolContext } from "./tools";
+import { agentT, ok, optionalInteger, plural, quoted, ToolError, type AgentTool, type ToolContext } from "./tools";
 
 // References: read-only lookup in the current notebook's reference library.
 // The library is a hidden file the other tools never read, so this is how the
@@ -174,19 +174,21 @@ Usage:
     },
     additionalProperties: false,
   },
-  describe: (args) => {
+  describe: (args, t) => {
     const keys = stringList(args.keys, "keys").slice(0, 3);
-    if (keys.length) return `Looking up ${keys.map((key) => `@${key.replace(/^@/, "")}`).join(", ")} in References`;
-    return args.query ? `Searching References for ${quoted(args.query)}` : "Listing References";
+    if (keys.length) return t("referencesTool.describeKeys", { keys: keys.map((key) => `@${key.replace(/^@/, "")}`).join(", ") });
+    // The message carries the quotation marks of its language; quoted() supplies the clipped text between “ and ”.
+    return args.query ? t("referencesTool.describeQuery", { query: quoted(args.query).slice(1, -1) }) : t("referencesTool.describeList");
   },
   async run(args, context) {
     const keys = stringList(args.keys, "keys");
     const query = typeof args.query === "string" ? args.query.trim() : "";
     if (args.query !== undefined && args.query !== null && typeof args.query !== "string") throw new ToolError("query must be a string.");
     const limit = optionalInteger(args, "limit", { min: 1, max: MAX_LIMIT }) ?? DEFAULT_LIMIT;
+    const t = agentT(context);
     const library = await readNotebookLibrary(context);
     const total = Object.keys(library.entries).length;
-    if (!total) return ok(`The References library of "${context.notebook}" is empty: there are no citation keys to cite.`, "Library is empty");
+    if (!total) return ok(`The References library of "${context.notebook}" is empty: there are no citation keys to cite.`, t("referencesTool.libraryEmpty"));
 
     const { found, missing } = lookupReferenceKeys(library, keys);
     let matches = found;
@@ -203,9 +205,9 @@ Usage:
       matches.length > shown.length ? `(Showing ${shown.length} of ${matches.length} matches; narrow the query or raise limit.)` : "",
     ].filter(Boolean);
     if (!shown.length) {
-      return ok([`No entries in the References library of "${context.notebook}" (${plural(total, "entry", "entries")}) match${query ? ` ${quoted(query)}` : ""}.`, ...notes].join("\n"), "No matches");
+      return ok([`No entries in the References library of "${context.notebook}" (${plural(total, "entry", "entries")}) match${query ? ` ${quoted(query)}` : ""}.`, ...notes].join("\n"), t("referencesTool.noMatches"));
     }
     const body = shown.map((entry) => describeReferenceEntry(entry, formatted.get(entry.id)!)).join("\n\n");
-    return ok([body, ...notes].join("\n\n"), plural(shown.length, "entry", "entries"), body.slice(0, 1_500));
+    return ok([body, ...notes].join("\n\n"), t("referencesTool.entries", { count: shown.length }), body.slice(0, 1_500));
   },
 };

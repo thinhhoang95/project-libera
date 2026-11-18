@@ -191,3 +191,25 @@ export function compactAgentRunRecord(run: AgentRunRecord): AgentRunRecord {
   const steps = run.steps.filter((step) => step.kind !== "tool" || dropped >= overflow || (dropped++, false));
   return { ...run, steps: steps.slice(-MAX_STORED_STEPS) };
 }
+
+/** Stored limits for the lines the user reads (see validateAgentRunRecord); a translation may run longer than English. */
+const MAX_SUMMARY_CHARS = 1_000;
+const MAX_RESULT_CHARS = 2_000;
+
+function fit(text: string, limit: number) {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+}
+
+/** Keeps an event's activity line and result line within what history storage accepts. */
+export function fitAgentEvent(event: AgentEvent): AgentEvent {
+  switch (event.type) {
+    case "tool_started": return event.summary.length > MAX_SUMMARY_CHARS ? { ...event, summary: fit(event.summary, MAX_SUMMARY_CHARS) } : event;
+    case "tool_finished": return event.result !== undefined && event.result.length > MAX_RESULT_CHARS ? { ...event, result: fit(event.result, MAX_RESULT_CHARS) } : event;
+    case "subagent_step": {
+      const { summary, result } = event.step;
+      if (summary.length <= MAX_SUMMARY_CHARS && (result === undefined || result.length <= MAX_RESULT_CHARS)) return event;
+      return { ...event, step: { ...event.step, summary: fit(summary, MAX_SUMMARY_CHARS), ...(result === undefined ? {} : { result: fit(result, MAX_RESULT_CHARS) }) } };
+    }
+    default: return event;
+  }
+}

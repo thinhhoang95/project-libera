@@ -6,7 +6,7 @@ import { addAgentSuggestions } from "@/lib/storage/markdown-reviews";
 import { isTextFileType } from "@/lib/types";
 import { agentSuggestionTitle, anchorAt, mapAnchor, reviewBlocks, type ReviewAnchor, type ReviewRange } from "@/lib/markdown-review";
 import {
-  closestLines, findEditTarget, lineOfOffset, missingFileError, ok, optionalString, plural, quoted, readCurrentText, requireString, resolve, sharedDocFor, ToolError,
+  agentT, closestLines, findEditTarget, lineOfOffset, missingFileError, ok, optionalString, plural, quoted, readCurrentText, requireString, resolve, sharedDocFor, ToolError,
   type AgentTool, type ToolContext,
 } from "./tools";
 
@@ -97,7 +97,7 @@ Usage:
     required: ["path", "before", "after", "reason"],
     additionalProperties: false,
   },
-  describe: (args) => `Suggesting an edit to ${String(args.path ?? "a file")}`,
+  describe: (args, t) => args.path ? t("suggestEdit.describe", { path: String(args.path) }) : t("suggestEdit.describeFile"),
   async run(args, context) {
     const resolved = await resolve(context, requireString(args, "path"));
     const shared = await sharedDocFor(context, resolved);
@@ -150,7 +150,8 @@ Usage:
       lost.length ? `${plural(lost.length, "earlier suggestion")} for this file no longer match${lost.length === 1 ? "es" : ""} its text and ${lost.length === 1 ? "was" : "were"} dropped: ${lost.map((item) => quoted(item.anchor.quote)).join(", ")}.` : "",
       target.note ?? "",
     ].filter(Boolean).join("\n");
-    return ok(text, replaced ? "Suggestion replaced" : "Suggestion recorded", `${anchor.quote}\n→\n${replacement || "(delete passage)"}`);
+    const t = agentT(context);
+    return ok(text, t(replaced ? "suggestEdit.replaced" : "suggestEdit.recorded"), `${anchor.quote}\n→\n${replacement || "(delete passage)"}`);
   },
 };
 
@@ -176,11 +177,12 @@ export async function finishSuggestedEdits(context: ToolContext): Promise<null> 
   for (const file of [...files.values()]) {
     files.delete(file.path);
     if (!file.suggestions.length) continue;
-    const summary = `Adding suggested edits to ${file.path}`;
+    const t = agentT(context);
+    const summary = t("suggestEdit.adding", { path: file.path });
     let current: { content: string } | null = null;
     try { current = await readCurrentText(context, await resolve(context, file.path)); } catch { current = null; }
     if (!current) {
-      reportStep(context, summary, "error", "The file no longer exists", describeSuggestions(file.suggestions));
+      reportStep(context, summary, "error", t("suggestEdit.fileGone"), describeSuggestions(file.suggestions));
       continue;
     }
     const { kept, lost } = rebase(file, current.content);
@@ -197,10 +199,10 @@ export async function finishSuggestedEdits(context: ToolContext): Promise<null> 
       }
       context.emit({ type: "suggestions_added", path: file.path, count: kept.length });
       reportStep(context, summary, lost.length ? "error" : "ok",
-        `${plural(kept.length, "suggested edit")} added${lost.length ? `; ${lost.length} no longer matched the text` : ""}`,
+        lost.length ? t("suggestEdit.addedEditsNotes", { count: kept.length, notes: t("suggestEdit.noteLost", { count: lost.length }) }) : t("suggestEdit.addedEdits", { count: kept.length }),
         lost.length ? describeSuggestions(lost) : undefined);
     } catch (error) {
-      reportStep(context, summary, "error", `Could not save the suggested edits: ${error instanceof Error ? error.message : "unknown error"}`, describeSuggestions(kept));
+      reportStep(context, summary, "error", t("suggestEdit.saveFailed", { message: error instanceof Error ? error.message : t("suggestEdit.unknownError") }), describeSuggestions(kept));
     }
   }
   return null;
@@ -238,8 +240,9 @@ async function finishShared(context: ToolContext, path: string, text: string, ke
     await context.snapshots.recordSuggestions(path, ids);
   }
   context.emit({ type: "suggestions_added", path, count: added });
-  const notes = [failed.length ? `${failed.length} could not be added` : "", lost.length ? `${lost.length} no longer matched the text` : ""].filter(Boolean);
+  const t = agentT(context);
+  const notes = [failed.length ? t("suggestEdit.noteFailed", { count: failed.length }) : "", lost.length ? t("suggestEdit.noteLost", { count: lost.length }) : ""].filter(Boolean);
   reportStep(context, summary, notes.length ? "error" : "ok",
-    `${plural(added, "shared suggestion")} added${notes.length ? `; ${notes.join("; ")}` : ""}`,
+    notes.length ? t("suggestEdit.addedSharedNotes", { count: added, notes: notes.join(t("suggestEdit.noteSeparator")) }) : t("suggestEdit.addedShared", { count: added }),
     failed.length || lost.length ? describeSuggestions([...failed, ...lost]) : undefined);
 }

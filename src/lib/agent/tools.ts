@@ -19,6 +19,7 @@ import { resolveLibraryPath, statLibraryPath, suggestSimilarPath, walkLibraryFil
 import { hashContent, type RunSnapshots } from "./snapshots";
 import { withReviewWrite } from "./review-store";
 import type { AgentEvent, AgentPermission, AgentTask, AgentTaskStatus } from "./types";
+import { englishAgentT, type AgentT } from "./translate";
 import type { ModelProfile, ToolSchema } from "./model";
 import type { TokenUsage } from "@/lib/chat-token-usage";
 import { webSearchTool, WEB_SEARCH_TOOL } from "./web-search";
@@ -80,7 +81,17 @@ export type ToolContext = {
   usage?: TokenUsage;
   /** Set by a tool whose call ends the run (a child's submit tool); the loop stops after the current calls. */
   finishRequested?: boolean;
+  /**
+   * Translates what the user reads: activity lines, result lines, limit notices. Never use it for text the model
+   * reads (a tool's `text`, errors, instructions). Absent in tests and scripts: use `agentT(context)`.
+   */
+  t?: AgentT;
 };
+
+/** The context's translator, English when the run has none. */
+export function agentT(context: Pick<ToolContext, "t">): AgentT {
+  return context.t ?? englishAgentT;
+}
 
 export function addUsage(total: TokenUsage, usage: TokenUsage) {
   total.inputTokens += usage.inputTokens;
@@ -116,8 +127,8 @@ export type AgentTool = {
   kind: "read" | "write" | "comment";
   description: string;
   parameters: Record<string, unknown>;
-  /** Plain-language activity line for the UI. */
-  describe(args: Record<string, unknown>): string;
+  /** Plain-language activity line for the UI, in the interface language (`t` translates `agentServer` messages). */
+  describe(args: Record<string, unknown>, t: AgentT): string;
   run(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 };
 
@@ -356,16 +367,17 @@ async function readAudioTranscript(context: ToolContext, resolved: ResolvedPath)
   if (body.length > context.maxResultChars) body = `${body.slice(0, body.lastIndexOf("\n", context.maxResultChars))}\n\n(Transcript cut short.)`;
   const speakers = transcript.speakers.map((speaker) => speaker.name).join(", ");
   const header = `Transcript of ${resolved.path} (${formatClock(transcript.audio.duration)}${speakers ? `; ${speakers}` : ""})${stale ? ". The recording changed after it was transcribed." : ""}. Link to a moment as [3:05](${resolved.path.split("/").map(encodeURIComponent).join("/")}#t=185), the time in seconds.`;
-  return ok(`${header}\n\n${body}`, `${plural(lines.length, "segment")}`);
+  return ok(`${header}\n\n${body}`, agentT(context)("tools.read.segments", { count: lines.length }));
 }
 
 async function readPdf(context: ToolContext, resolved: ResolvedPath, pagesArgument: string | undefined) {
+  const t = agentT(context);
   let pages: PdfTextPage[];
   try { pages = (await readPdfTextCache(resolved.path)).pages; }
   catch (error) { throw new ToolError(`Could not extract text from ${resolved.path}: ${error instanceof Error ? error.message : "unknown error"}.`); }
-  if (!pages.length) return ok(`${resolved.path} has no pages.`, "Empty PDF");
+  if (!pages.length) return ok(`${resolved.path} has no pages.`, t("tools.read.emptyPdf"));
   if (!pages.some((page) => page.text.trim())) {
-    return ok(`${resolved.path} has ${plural(pages.length, "page")} but no extractable text. It is probably scanned images; its content cannot be read as text.`, "No text layer");
+    return ok(`${resolved.path} has ${plural(pages.length, "page")} but no extractable text. It is probably scanned images; its content cannot be read as text.`, t("tools.read.noTextLayer"));
   }
   let selected: number[];
   if (pagesArgument) selected = parsePages(pagesArgument, pages.length);
@@ -391,7 +403,7 @@ async function readPdf(context: ToolContext, resolved: ResolvedPath, pagesArgume
     : "";
   // Cap the pages, never the note on how to read the rest.
   const text = `${capText(`PDF ${resolved.path}: ${plural(pages.length, "page")}, text extracted from the PDF.\n\n${body}`, context.maxResultChars - footer.length, "Read fewer pages at a time.")}${footer}`;
-  return ok(text, `Pages ${describePageRanges(selected)} of ${pages.length}`, preview(body));
+  return ok(text, t("tools.read.pdfPages", { ranges: describePageRanges(selected), total: pages.length }), preview(body));
 }
 
 /** Points from a note to its Python sidecar, which sits in the note's assets folder, out of sight. */
@@ -428,8 +440,11 @@ Usage:
     required: ["file_path"],
     additionalProperties: false,
   },
-  describe: (args) => `Reading ${String(args.file_path ?? "a file")}${args.pages ? ` (pages ${String(args.pages)})` : ""}`,
+  describe: (args, t) => args.file_path === undefined || args.file_path === null ? t("tools.read.describeUnknown")
+    : args.pages ? t("tools.read.describePages", { path: String(args.file_path), pages: String(args.pages) })
+    : t("tools.read.describe", { path: String(args.file_path) }),
   async run(args, context) {
+    const t = agentT(context);
     const resolved = await resolve(context, requireString(args, "file_path"));
     const fileType = getFileType(resolved.path);
     if (fileType === "pdf") {
@@ -444,7 +459,7 @@ Usage:
     const lines = splitLines(current.content);
     if (!current.content.length) {
       context.fileState.set(resolved.path, { hash: hashContent(current.content), partial: false });
-      return ok(`${resolved.path} exists but is empty.`, "Empty file");
+      return ok(`${resolved.path} exists but is empty.`, t("tools.read.emptyFile"));
     }
     const offset = optionalInteger(args, "offset", { min: 1 }) ?? 1;
     const limit = optionalInteger(args, "limit", { min: 1 }) ?? READ_LINE_LIMIT;
@@ -465,7 +480,7 @@ Usage:
       await pythonSidecarNote(resolved),
       current.shared ? `(This file is in a shared notebook; you are reading the live shared document. Collaborators may change it while you work.${canSuggestShared(current.shared) ? " Your Edit and Write become suggestions, attributed to “AI on behalf of” the user, that others accept or reject; the text changes only when one is accepted." : ` The user's role (${current.shared.role}) cannot change or suggest changes to it.`})` : "",
     ].filter(Boolean).join("\n");
-    return ok(notes ? `${body}\n\n${notes}` : body, partial ? `Lines ${offset}-${shownEnd} of ${lines.length}` : plural(lines.length, "line"));
+    return ok(notes ? `${body}\n\n${notes}` : body, partial ? t("tools.read.linesPartial", { start: offset, end: shownEnd, total: lines.length }) : t("tools.read.lines", { count: lines.length }));
   },
 };
 
@@ -489,8 +504,9 @@ Usage:
     required: ["pattern"],
     additionalProperties: false,
   },
-  describe: (args) => `Finding files matching ${quoted(args.pattern)}${args.path ? ` in ${String(args.path)}` : ""}`,
+  describe: (args, t) => args.path ? t("tools.glob.describeIn", { pattern: quoted(args.pattern), path: String(args.path) }) : t("tools.glob.describe", { pattern: quoted(args.pattern) }),
   async run(args, context) {
+    const t = agentT(context);
     let pattern = requireString(args, "pattern").trim();
     const root = await resolveSearchRoot(context, optionalString(args, "path"));
     if (root) {
@@ -509,11 +525,11 @@ Usage:
       if (matcher.test(relative)) matches.push(entry);
     }
     const where = root ? root.path : "the library";
-    if (!matches.length) return ok(`No files matched "${pattern}" in ${where}.`, "No matches");
+    if (!matches.length) return ok(`No files matched "${pattern}" in ${where}.`, t("tools.glob.noMatches"));
     matches.sort((left, right) => right.mtimeMs - left.mtimeMs);
     const shown = matches.slice(0, GLOB_LIMIT).map((entry) => entry.path);
     const footer = matches.length > GLOB_LIMIT ? `\n\n(Showing ${GLOB_LIMIT} of ${matches.length.toLocaleString("en")} matches; narrow the pattern or path.)` : "";
-    return ok(`${shown.join("\n")}${footer}`, plural(matches.length, "file"), preview(shown.join("\n")));
+    return ok(`${shown.join("\n")}${footer}`, t("tools.glob.files", { count: matches.length }), preview(shown.join("\n")));
   },
 };
 
@@ -621,8 +637,9 @@ Usage:
     required: ["pattern"],
     additionalProperties: false,
   },
-  describe: (args) => `Searching for ${quoted(args.pattern)}${args.path ? ` in ${String(args.path)}` : ""}`,
+  describe: (args, t) => args.path ? t("tools.grep.describeIn", { pattern: quoted(args.pattern), path: String(args.path) }) : t("tools.grep.describe", { pattern: quoted(args.pattern) }),
   async run(args, context) {
+    const t = agentT(context);
     let pattern = requireString(args, "pattern");
     let caseInsensitive = optionalBoolean(args, "-i") ?? false;
     // ripgrep-style inline flag.
@@ -732,13 +749,13 @@ Usage:
     if (untranscribed) notes.push(`${plural(untranscribed, "recording")} had no transcript to search.`);
     const where = root ? root.path : "the library";
     if (!entries.length) {
-      return ok([`No matches for ${JSON.stringify(pattern)} in ${where}.`, ...notes].join("\n"), "No matches");
+      return ok([`No matches for ${JSON.stringify(pattern)} in ${where}.`, ...notes].join("\n"), t("tools.grep.noMatches"));
     }
     const page = entries.slice(offset, offset + headLimit);
     if (offset && !page.length) throw new ToolError(`offset ${offset} is past the end; there are ${entries.length} entries.`);
     if (offset + page.length < entries.length) notes.unshift(`(Showing entries ${offset + 1}-${offset + page.length} of ${entries.length.toLocaleString("en")}. Use offset to see more, or narrow the pattern, path or glob.)`);
     const text = capText([page.join("\n"), ...notes].join("\n\n"), context.maxResultChars, "Narrow the pattern, path or glob, or lower head_limit.");
-    const result = options.mode === "files_with_matches" ? `${plural(hits.length, "file")}` : `${plural(totalMatches, "match", "matches")} in ${plural(hits.length, "file")}`;
+    const result = options.mode === "files_with_matches" ? t("tools.grep.files", { count: hits.length }) : t("tools.grep.matchesInFiles", { matches: totalMatches, files: hits.length });
     return ok(text, result, preview(page.join("\n")));
   },
 };
@@ -1078,8 +1095,9 @@ Usage:
     required: ["file_path", "old_string", "new_string"],
     additionalProperties: false,
   },
-  describe: (args) => `Editing ${String(args.file_path ?? "a file")}`,
+  describe: (args, t) => args.file_path === undefined || args.file_path === null ? t("tools.edit.describeUnknown") : t("tools.edit.describe", { path: String(args.file_path) }),
   async run(args, context) {
+    const t = agentT(context);
     const resolved = await resolve(context, requireString(args, "file_path"));
     const oldString = requireString(args, "old_string", { allowEmpty: true });
     const newString = requireString(args, "new_string", { allowEmpty: true });
@@ -1117,10 +1135,10 @@ Usage:
     const snippet = snippetAround(next, firstStart, firstStart + replacement.length);
     if (suggested) {
       const text = [suggestionNote(resolved, suggested), target.note, `Proposed region (the file still reads as before):\n${snippet}`].filter(Boolean).join("\n");
-      return ok(text, "Suggested, pending review", snippet);
+      return ok(text, t("tools.edit.suggested"), snippet);
     }
     const text = [`Edited ${resolved.path}${count > 1 ? ` (${count} replacements)` : ""}.`, target.note, `Edited region:\n${snippet}`].filter(Boolean).join("\n");
-    return ok(text, count > 1 ? `${count} replacements` : "Edited", snippet);
+    return ok(text, count > 1 ? t("tools.edit.replacements", { count }) : t("tools.edit.edited"), snippet);
   },
 };
 
@@ -1143,8 +1161,9 @@ Usage:
     required: ["file_path", "content"],
     additionalProperties: false,
   },
-  describe: (args) => `Writing ${String(args.file_path ?? "a file")}`,
+  describe: (args, t) => args.file_path === undefined || args.file_path === null ? t("tools.write.describeUnknown") : t("tools.write.describe", { path: String(args.file_path) }),
   async run(args, context) {
+    const t = agentT(context);
     const resolved = await resolve(context, requireString(args, "file_path"));
     const content = requireString(args, "content", { allowEmpty: true });
     const stats = await statLibraryPath(resolved);
@@ -1161,13 +1180,13 @@ Usage:
       const state = context.fileState.get(resolved.path);
       if (!state || state.partial) throw new ToolError(`${resolved.path} already exists. Read the whole file before overwriting it, or use Edit to change part of it.`);
       if (hashContent(current.content) !== state.hash) throw new ToolError(`${resolved.path} changed since you read it. Read it again before overwriting it.`);
-      if (current.content === content) return ok(`${resolved.path} already has this content; nothing changed.`, "Unchanged");
+      if (current.content === content) return ok(`${resolved.path} already has this content; nothing changed.`, t("tools.write.unchanged"));
       previous = current;
     }
     const suggested = await writeAgentFile(context, resolved, content, previous);
     const lineCount = splitLines(content).length;
-    if (suggested) return ok(suggestionNote(resolved, suggested), "Suggested, pending review", preview(content));
-    return ok(`${exists ? "Overwrote" : "Created"} ${resolved.path} (${plural(lineCount, "line")}).`, `${exists ? "Overwrote" : "Created"}, ${plural(lineCount, "line")}`, preview(content));
+    if (suggested) return ok(suggestionNote(resolved, suggested), t("tools.write.suggested"), preview(content));
+    return ok(`${exists ? "Overwrote" : "Created"} ${resolved.path} (${plural(lineCount, "line")}).`, t(exists ? "tools.write.overwrote" : "tools.write.created", { count: lineCount }), preview(content));
   },
 };
 
@@ -1194,16 +1213,22 @@ Usage:
     required: ["subject"],
     additionalProperties: false,
   },
-  describe: (args) => `Adding task ${quoted(args.subject)}`,
+  describe: (args, t) => t("tools.taskCreate.describe", { subject: quoted(args.subject) }),
   async run(args, context) {
     const subject = requireString(args, "subject").trim().slice(0, 300);
     if (context.tasks.length >= 50) throw new ToolError("The task list is full (50 tasks). Complete or delete tasks first.");
     const id = String(context.tasks.reduce((max, task) => Math.max(max, Number(task.id)), 0) + 1);
     context.tasks.push({ id, subject, status: "pending" });
     context.emit({ type: "tasks_updated", tasks: context.tasks.map((task) => ({ ...task })) });
-    return ok(`Created task #${id}.\n\n${formatTasks(context.tasks)}`, `Task #${id}`);
+    return ok(`Created task #${id}.\n\n${formatTasks(context.tasks)}`, agentT(context)("tools.taskCreate.result", { id }));
   },
 };
+
+/** Message values for a task line: a known status selects its translated word, any other is shown as given. */
+function taskStatusValues(id: string, status: string) {
+  const known = status === "pending" || status === "in_progress" || status === "completed" || status === "deleted";
+  return { id, status: known ? status : "other", statusText: status.replace("_", " ") };
+}
 
 const taskUpdateTool: AgentTool = {
   name: "TaskUpdate",
@@ -1223,7 +1248,10 @@ Usage:
     required: ["taskId"],
     additionalProperties: false,
   },
-  describe: (args) => `Updating task #${String(args.taskId ?? "?").replace(/^#/, "")}${args.status ? ` (${String(args.status).replace("_", " ")})` : ""}`,
+  describe: (args, t) => {
+    const id = String(args.taskId ?? "?").replace(/^#/, "");
+    return args.status ? t("tools.taskUpdate.describeStatus", taskStatusValues(id, String(args.status))) : t("tools.taskUpdate.describe", { id });
+  },
   async run(args, context) {
     const raw = args.taskId;
     const taskId = String(typeof raw === "number" ? raw : requireString(args, "taskId")).replace(/^#/, "").trim();
@@ -1239,7 +1267,7 @@ Usage:
       if (subject?.trim()) task.subject = subject.trim().slice(0, 300);
     }
     context.emit({ type: "tasks_updated", tasks: context.tasks.map((task) => ({ ...task })) });
-    return ok(formatTasks(context.tasks), status ? `#${taskId} ${status.replace("_", " ")}` : `#${taskId} updated`);
+    return ok(formatTasks(context.tasks), status ? agentT(context)("tools.taskUpdate.statusResult", taskStatusValues(taskId, status)) : agentT(context)("tools.taskUpdate.updated", { id: taskId }));
   },
 };
 
@@ -1260,22 +1288,23 @@ Usage:
     required: ["name"],
     additionalProperties: false,
   },
-  describe: (args) => `Loading the ${String(args.name ?? "requested")} skill`,
+  describe: (args, t) => args.name === undefined || args.name === null ? t("tools.skill.describeUnknown") : t("tools.skill.describe", { name: String(args.name) }),
   async run(args, context) {
+    const t = agentT(context);
     const name = requireString(args, "name").trim().replace(/^\//, "");
     const skill = context.skills.find((candidate) => candidate.name === name) ?? context.skills.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase());
     if (!skill) {
       throw new ToolError(context.skills.length ? `There is no skill named "${name}". Available skills: ${context.skills.map((candidate) => candidate.name).join(", ")}.` : "No skills are available.");
     }
     const unavailable = skill.unavailable?.(context);
-    if (unavailable) return ok(unavailable, "Not available here");
+    if (unavailable) return ok(unavailable, t("tools.skill.unavailable"));
     const tools = skill.tools?.map((tool) => tool.name) ?? [];
     if (context.loadedSkills.has(skill.name)) {
-      return ok(`The ${skill.name} skill is already loaded; follow its instructions from earlier in this turn.${tools.length ? ` Its tools: ${tools.join(", ")}.` : ""}`, "Already loaded");
+      return ok(`The ${skill.name} skill is already loaded; follow its instructions from earlier in this turn.${tools.length ? ` Its tools: ${tools.join(", ")}.` : ""}`, t("tools.skill.alreadyLoaded"));
     }
     context.loadedSkills.add(skill.name);
     const footer = tools.length ? `\n\n(Tools now available: ${tools.join(", ")}.)` : "";
-    return ok(`<skill name="${skill.name}">\n${skill.instructions.trim()}\n</skill>${footer}`, "Loaded", preview(skill.instructions));
+    return ok(`<skill name="${skill.name}">\n${skill.instructions.trim()}\n</skill>${footer}`, t("tools.skill.loaded"), preview(skill.instructions));
   },
 };
 

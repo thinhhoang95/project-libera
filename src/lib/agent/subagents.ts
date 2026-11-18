@@ -153,6 +153,7 @@ function childContext(parent: ToolContext, emit: (event: AgentEvent) => void, ru
     ...(parent.allowWebSearch ? { allowWebSearch: true } : {}),
     ...(parent.runConfig ? { runConfig: parent.runConfig } : {}),
     ...(parent.budget ? { budget: parent.budget } : {}),
+    ...(parent.t ? { t: parent.t } : {}),
   };
 }
 

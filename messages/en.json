@@ -8032,5 +8032,270 @@
     "no": "No",
     "ok": "OK",
     "error": "Error"
+  },
+  "agentServer": {
+    "route": {
+      "requestTooLarge": "This request is too large. Start a new chat, or close some unsaved documents.",
+      "draftsTooLarge": "Unsaved drafts are invalid or too large.",
+      "selectNotebook": "Open a file or select a notebook so the agent knows which notebook it may change.",
+      "modelCannotCallTools": "{model} cannot call tools on OpenRouter, so it cannot work in Agent mode. Choose another model, or switch to Chat.",
+      "stopped": "The agent was stopped.",
+      "runFailed": "The agent run failed."
+    },
+    "runner": {
+      "calling": "Calling {name}",
+      "finishingSkills": "Finishing skills",
+      "skillCouldNotFinish": "A skill could not finish.",
+      "timeLimit": "Stopped after {minutes, plural, one {# minute} other {# minutes}}, the time limit for one run.",
+      "inputTokenLimit": "Stopped after using {tokens, number} input tokens, the limit for one run.",
+      "budgetUsedUp": "Stopped because the run’s token budget ({tokens, number} input tokens, child runs included) is used up.",
+      "contextFull": "Stopped because the conversation no longer fits in the model’s context window. Start a new chat to continue.",
+      "stuck": "Stopped because the agent kept repeating the same step.",
+      "stepLimit": "Stopped after {steps, plural, one {# step} other {# steps}}, the limit for one run. Ask the agent to continue if there is more to do."
+    },
+    "tools": {
+      "read": {
+        "describe": "Reading {path}",
+        "describePages": "Reading {path} (pages {pages})",
+        "describeUnknown": "Reading a file",
+        "segments": "{count, plural, one {# segment} other {# segments}}",
+        "emptyPdf": "Empty PDF",
+        "noTextLayer": "No text layer",
+        "pdfPages": "Pages {ranges} of {total}",
+        "emptyFile": "Empty file",
+        "linesPartial": "Lines {start}-{end} of {total}",
+        "lines": "{count, plural, one {# line} other {# lines}}"
+      },
+      "glob": {
+        "describe": "Finding files matching {pattern}",
+        "describeIn": "Finding files matching {pattern} in {path}",
+        "noMatches": "No matches",
+        "files": "{count, plural, one {# file} other {# files}}"
+      },
+      "grep": {
+        "describe": "Searching for {pattern}",
+        "describeIn": "Searching for {pattern} in {path}",
+        "noMatches": "No matches",
+        "files": "{count, plural, one {# file} other {# files}}",
+        "matchesInFiles": "{matches, plural, one {# match} other {# matches}} in {files, plural, one {# file} other {# files}}"
+      },
+      "edit": {
+        "describe": "Editing {path}",
+        "describeUnknown": "Editing a file",
+        "suggested": "Suggested, pending review",
+        "replacements": "{count, plural, one {# replacement} other {# replacements}}",
+        "edited": "Edited"
+      },
+      "write": {
+        "describe": "Writing {path}",
+        "describeUnknown": "Writing a file",
+        "suggested": "Suggested, pending review",
+        "unchanged": "Unchanged",
+        "created": "Created, {count, plural, one {# line} other {# lines}}",
+        "overwrote": "Overwrote, {count, plural, one {# line} other {# lines}}"
+      },
+      "taskCreate": {
+        "describe": "Adding task {subject}",
+        "result": "Task #{id}"
+      },
+      "taskUpdate": {
+        "describe": "Updating task #{id}",
+        "describeStatus": "Updating task #{id} ({status, select, pending {pending} in_progress {in progress} completed {completed} deleted {deleted} other {{statusText}}})",
+        "statusResult": "#{id} {status, select, pending {pending} in_progress {in progress} completed {completed} deleted {deleted} other {{statusText}}}",
+        "updated": "#{id} updated"
+      },
+      "skill": {
+        "describe": "Loading the {name} skill",
+        "describeUnknown": "Loading the requested skill",
+        "unavailable": "Not available here",
+        "alreadyLoaded": "Already loaded",
+        "loaded": "Loaded"
+      }
+    },
+    "skills": {
+      "generatePdfOutline": {
+        "describe": {
+          "submit": "Submitting {count, plural, one {# heading} other {# headings}} for pages {from}–{to}",
+          "thePdf": "the PDF",
+          "outline": "Outlining {path}",
+          "outlinePages": "Outlining pages {pages} of {path}",
+          "amend": "Amending {count, plural, one {# outline entry} other {# outline entries}} of {path}"
+        },
+        "label": {
+          "outliningPages": "Outlining pages {from}–{to}"
+        },
+        "summary": {
+          "planning": "Planning the outline of {path}"
+        },
+        "result": {
+          "headings": "{count, plural, one {# heading} other {# headings}}",
+          "hasOwnBookmarks": "Has its own bookmarks",
+          "subagents": "{count, plural, one {# subagent} other {# subagents}}",
+          "generated": "{entries, plural, one {# entry} other {# entries}}, {errors, plural, one {# error} other {# errors}}",
+          "nothingApplied": "Nothing applied",
+          "amended": "{changes, plural, one {# change} other {# changes}}, {errors, plural, one {# error} other {# errors}} left",
+          "amendedSkipped": "{changes, plural, one {# change} other {# changes}}, {errors, plural, one {# error} other {# errors}} left, {skipped, plural, other {# skipped}}"
+        }
+      },
+      "pythonResults": {
+        "describe": {
+          "runCell": "Running Python cell {cell}",
+          "runDocument": "Running the Python of {document}",
+          "aNote": "a note",
+          "install": "Installing {packages}",
+          "installFallback": "Installing Python packages"
+        },
+        "result": {
+          "timedOut": "Timed out",
+          "cellFailed": "[{id}] failed: {type}",
+          "setupFailed": "Setup failed: {type}",
+          "figures": "{count, plural, one {# figure} other {# figures}}",
+          "cellsRan": "{count, plural, one {# cell ran} other {# cells ran}}",
+          "installed": "Installed"
+        }
+      },
+      "extractDefinitions": {
+        "describe": {
+          "save": "Saving {count, plural, one {# card} other {# cards}} for {path}",
+          "saveCards": "Saving cards for {path}",
+          "theDocument": "the document"
+        },
+        "result": {
+          "rejected": "{count, plural, one {# card} other {# cards}} rejected",
+          "savedRejected": "{saved, plural, one {# card} other {# cards}} saved, {rejected, plural, other {# rejected}}",
+          "saved": "{count, plural, one {# card} other {# cards}} saved"
+        }
+      },
+      "leaveReviewComments": {
+        "describe": {
+          "comment": "Commenting on {path}",
+          "aFile": "a file"
+        },
+        "summary": {
+          "adding": "Adding review comments to {path}",
+          "checking": "Checking review comments"
+        },
+        "result": {
+          "toFix": "{count, plural, one {# comment} other {# comments}} to fix",
+          "placed": "{count, plural, one {# comment} other {# comments}} placed",
+          "removed": "{count, plural, one {# comment} other {# comments}} removed",
+          "updated": "Updated",
+          "fileGone": "The file no longer exists",
+          "sharedAdded": "{added, plural, one {# shared comment} other {# shared comments}} added{failed, plural, =0 {} other {; # could not be added}}{dropped, plural, =0 {} other {; # could not be placed}}",
+          "added": "{added, plural, one {# comment} other {# comments}} added{dropped, plural, =0 {} other {; # could not be placed}}",
+          "saveFailed": "Could not save the comments: {message}",
+          "unknownError": "unknown error"
+        }
+      }
+    },
+    "webSearch": {
+      "describe": "Searching the web for “{query}”",
+      "sources": "{count, plural, one {# source} other {# sources}}",
+      "noSources": "No sources cited"
+    },
+    "suggestEdit": {
+      "describe": "Suggesting an edit to {path}",
+      "describeFile": "Suggesting an edit to a file",
+      "replaced": "Suggestion replaced",
+      "recorded": "Suggestion recorded",
+      "adding": "Adding suggested edits to {path}",
+      "fileGone": "The file no longer exists",
+      "addedEdits": "{count, plural, one {# suggested edit added} other {# suggested edits added}}",
+      "addedEditsNotes": "{count, plural, one {# suggested edit added} other {# suggested edits added}}; {notes}",
+      "addedShared": "{count, plural, one {# shared suggestion added} other {# shared suggestions added}}",
+      "addedSharedNotes": "{count, plural, one {# shared suggestion added} other {# shared suggestions added}}; {notes}",
+      "noteFailed": "{count, plural, one {# could not be added} other {# could not be added}}",
+      "noteLost": "{count, plural, one {# no longer matched the text} other {# no longer matched the text}}",
+      "noteSeparator": "; ",
+      "saveFailed": "Could not save the suggested edits: {message}",
+      "unknownError": "unknown error"
+    },
+    "referencesTool": {
+      "describeKeys": "Looking up {keys} in References",
+      "describeQuery": "Searching References for “{query}”",
+      "describeList": "Listing References",
+      "libraryEmpty": "Library is empty",
+      "noMatches": "No matches",
+      "entries": "{count, plural, one {# entry} other {# entries}}"
+    },
+    "readComments": {
+      "describe": "Reading comments on {path}",
+      "describeFile": "Reading comments on a file",
+      "counts": "{open, plural, one {# open thread} other {# open threads}}, {resolved, plural, one {# resolved thread} other {# resolved threads}}",
+      "noComments": "No comments"
+    },
+    "replyToComment": {
+      "describe": "Replying to a comment on {path}",
+      "describeFile": "Replying to a comment on a file",
+      "queued": "Reply queued",
+      "replied": "Replied"
+    },
+    "factCheck": {
+      "listCitations": {
+        "describe": "Listing the citations in {path}",
+        "describeDocument": "Listing the citations in the document",
+        "citations": "{count, plural, one {# citation} other {# citations}}",
+        "citationsWithProblems": "{count, plural, one {# citation} other {# citations}}, {problems, plural, one {# problem} other {# problems}}"
+      },
+      "verdicts": {
+        "describe": "Submitting {count, plural, one {# verdict} other {# verdicts}}",
+        "submitted": "{count, plural, one {# verdict} other {# verdicts}}"
+      },
+      "readScope": {
+        "noMatches": "No matches",
+        "matchesInFiles": "Matches in {count, plural, one {# file} other {# files}}",
+        "files": "{count, plural, one {# file} other {# files}}"
+      },
+      "checkCitations": {
+        "describe": "Checking the citations in {path}",
+        "describeDocument": "Checking the citations in the document",
+        "describeUncited": "Submitting {count, plural, one {# uncited claim} other {# uncited claims}}",
+        "claims": "{count, plural, one {# claim} other {# claims}}",
+        "uncitedLabel": "Looking for uncited claims",
+        "noCitations": "No citations",
+        "alreadyChecked": "Already checked",
+        "batchLabel": "Checking {keys} ({count, plural, one {# claim} other {# claims}})",
+        "planning": "Planning the fact-check of {path}",
+        "subagents": "{count, plural, one {# subagent} other {# subagents}}",
+        "verdicts": "{count, plural, one {# verdict} other {# verdicts}}",
+        "verdictsNotChecked": "{count, plural, one {# verdict} other {# verdicts}}, {notChecked, plural, one {# not checked} other {# not checked}}"
+      }
+    }
+  },
+  "aiRoutes": {
+    "unknownError": "unknown error",
+    "format": {
+      "selectText": "Select text to format.",
+      "tooLarge": "Selection is too large to format in one request.",
+      "empty": "AI formatting returned an empty response.",
+      "failed": "AI formatting failed: {detail}"
+    },
+    "rewrite": {
+      "selectText": "Select text to rewrite.",
+      "enterPrompt": "Enter a rewrite prompt.",
+      "tooLarge": "Selection is too large to rewrite in one request.",
+      "promptTooLong": "Rewrite prompt is too long.",
+      "empty": "AI rewrite returned an empty response.",
+      "failed": "AI rewrite failed: {detail}"
+    },
+    "write": {
+      "enterPrompt": "Enter a prompt describing what to write.",
+      "promptTooLong": "Write prompt is too long.",
+      "empty": "Write with AI returned an empty response.",
+      "failed": "Write with AI failed: {detail}"
+    },
+    "imageToMarkdown": {
+      "tooLarge": "Image is too large to convert in one request.",
+      "empty": "AI image conversion returned an empty response.",
+      "failed": "AI image conversion failed: {detail}"
+    },
+    "documentChat": {
+      "tooLarge": "This chat is too large. Start a new chat or remove some attachments.",
+      "sizeLimit": "The response exceeded the size limit.",
+      "empty": "The model returned an empty response. Please try again.",
+      "stoppedOrTimedOut": "Response stopped or timed out.",
+      "failedFallback": "Chat failed.",
+      "failed": "Document chat failed."
+    }
   }
 }
