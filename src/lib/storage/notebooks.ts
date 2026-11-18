@@ -157,7 +157,8 @@ export async function renameNotebook(
   return getTree();
 }
 
-export async function deleteNotebook(name: string) {
+/** `byMigration`: the migration that made this notebook removes it again while undoing itself, so its own journal does not hold it. */
+export async function deleteNotebook(name: string, { byMigration = false } = {}) {
   if (getLinkedFolder(assertSafeSegment(name, "Notebook name"))) {
     // Never delete a user's own folder from disk through the notebook action.
     throw new StorageError("Remove the folder from Libera instead. Its files stay on disk.", 409);
@@ -168,7 +169,7 @@ export async function deleteNotebook(name: string) {
   const marker = sharedNotebookMarker(assertSafeSegment(name, "Notebook name"));
   if (marker && !marker.revoked) throw new SharedDocumentError(name);
 
-  await assertNotebookNotMigrating(name, "deleted");
+  if (!byMigration) await assertNotebookNotMigrating(name, "deleted");
   await ensureAdminRoot();
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);

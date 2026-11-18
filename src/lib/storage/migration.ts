@@ -1565,7 +1565,7 @@ async function runMoving(journal: Journal, continueRemaining: boolean): Promise<
 async function rollBackCreatedNotebook(journal: Journal) {
   if (!journal.createdNotebook) return;
   try {
-    if (await untouched(journal.destination.notebook)) await deleteNotebook(journal.destination.notebook);
+    if (await untouched(journal.destination.notebook)) await deleteNotebook(journal.destination.notebook, { byMigration: true });
   } catch (error) { console.error("[migration] Could not remove the empty notebook:", error); }
 }
 

@@ -96,8 +96,6 @@ type Fingerprint = { size: number; mtimeMs: number; hash?: string };
 type Slot = "free" | "same" | "done" | "taken";
 /** The kinds readOrphans lists, by the side file kind that holds them. */
 const SET_ASIDE_KINDS: Record<string, string> = { annotations: "pdf-annotations", outline: "pdf-outline", definitions: "definitions" };
-/** Records that are files (side files, Python code), as against stars, comments and the like that follow in their stores. */
-const FILE_RECORDS = new Set([...Object.values(SIDECAR_RECORDS).filter(Boolean) as string[], PYTHON]);
 
 const plural = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
 const under = (libraryPath: string, notebook: string) => libraryPath.startsWith(`${notebook}/`);
@@ -631,7 +629,7 @@ export async function applyNotebookRepair(name: string, token: string): Promise<
     });
     // The undo history of the agent runs that changed these notes follows them, as after a move in the app (files.ts recordFileMove).
     await step("The agent's undo history", async () => {
-      const texts = new Map(moved.filter((move) => isTextFileType(getFileType(baseName(move.to)))).map((move) => [move.from, { to: move.to }]));
+      const texts = new Map(moved.filter((move) => isTextFileType(getFileType(baseName(move.to)) ?? undefined)).map((move) => [move.from, { to: move.to }]));
       if (!texts.size) return;
       // Imported here: snapshots reaches back into storage through shared-writes.
       const { recordMovedRunFiles } = await import("@/lib/agent/snapshots");

@@ -71,12 +71,14 @@ test("records that did not follow keep the final check from being clean", () => 
   await writeLibraryFile("Src/a.md", "a");
   const request: MigrationRequest = { source: "Src", paths: ["Src/a.md"], destination: { notebook: "Dst" } };
   const plan = await planned(request);
-  // A crash inside a finalize step: on resume that step is reported, not run again.
-  setMigrationFaultForTests((point) => { if (point === "finalize:history") throw new Error("simulated crash"); });
-  await assert.rejects(runMigration(request, plan.token), /simulated crash/);
-  setMigrationFaultForTests(null);
+  // A finalize step that fails, and fails again when the resume retries it: it is passed over and its note is kept.
+  setMigrationFaultForTests((point) => { if (point === "finalizing:history") throw new Error("simulated failure"); });
+  const first = await runMigration(request, plan.token);
+  assert.equal(first.state, "interrupted");
+  assert.notEqual(first.check, "clean");
   const [interrupted] = await listInterruptedMigrations();
   const result = await resumeMigration(interrupted.id, "continue");
+  setMigrationFaultForTests(null);
   assert.equal(result.state, "done");
   assert.ok(result.bookkeeping.length > 0);
   assert.equal(result.check, "incomplete");
