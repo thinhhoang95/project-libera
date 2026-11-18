@@ -3043,6 +3043,7 @@
     "uploadPhotosMenu": "Importer des photos…",
     "useAsReferenceButton": "Utiliser comme référence",
     "useAsReferenceMenu": "Utiliser comme référence",
+    "reusePromptMenu": "Réutiliser la requête",
     "useAsReferenceTitle": "Envoyer au panneau comme photos de référence",
     "subtitle": "{filtering, select, yes {{shown} sur {total, plural, one {# photo} other {# photos}}} other {{total, plural, one {# photo} other {# photos}}}}{kind, select, shared {{unavailable, select, yes { · Partagé · {role} · synchronisation interrompue} other { · Partagé · {role}}}} album { · gallery/{folder}} archive { · Masquées de la galerie} other {}}",
     "albumCardSubtitle": "{direct, select, yes {Photo} other {{count, plural, one {# élément} other {# éléments}}}}{sharing, select, owner { · Partagé par vous} member { · Partagé avec vous · {role}} other {}}",

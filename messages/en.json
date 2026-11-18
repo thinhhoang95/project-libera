@@ -3043,6 +3043,7 @@
     "uploadPhotosMenu": "Upload Photos…",
     "useAsReferenceButton": "Use as reference",
     "useAsReferenceMenu": "Use as Reference",
+    "reusePromptMenu": "Reuse Prompt",
     "useAsReferenceTitle": "Send to the panel as reference photos",
     "subtitle": "{filtering, select, yes {{shown} of {total, plural, one {# photo} other {# photos}}} other {{total, plural, one {# photo} other {# photos}}}}{kind, select, shared {{unavailable, select, yes { · Shared · {role} · not syncing right now} other { · Shared · {role}}}} album { · gallery/{folder}} archive { · Hidden from the gallery} other {}}",
     "albumCardSubtitle": "{direct, select, yes {Photo} other {{count, plural, one {# item} other {# items}}}}{sharing, select, owner { · Shared by you} member { · Shared with you · {role}} other {}}",

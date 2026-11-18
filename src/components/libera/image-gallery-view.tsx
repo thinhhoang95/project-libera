@@ -53,7 +53,7 @@ import type { Thread } from "@/lib/collab/protocol/api";
 import { collabClient } from "@/lib/collab/ui/client";
 import { useCollabStatus, useHostEvents } from "@/lib/collab/ui/hooks";
 import { ModalDialog } from "@/components/libera/modal-dialog";
-import { commandMenuItems, disabledMenu, menuCommands, type NativeMenuEntry } from "@/components/libera/native-menu";
+import { commandMenuItems, disabledMenu, menuCommands, popupNativeMenu, type NativeMenuEntry } from "@/components/libera/native-menu";
 import { VirtualPhotoGrid } from "@/components/libera/virtual-photo-grid";
 import { PhotoViewer, type PhotoViewerChat, type PhotoViewerViewState } from "@/components/libera/photo-viewer";
 import type { GalleryTabPlacement } from "@/components/libera/gallery-tabs";
@@ -542,7 +542,34 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   function openPhotoMenu(photo: GalleryPhoto, event: ReactMouseEvent) {
     event.preventDefault();
     const photoIds = selected.has(photo.id) ? [...selected] : [photo.id];
-    setPhotoMenu({ photo, photoIds, x: Math.min(event.clientX, window.innerWidth - 240), y: event.clientY });
+    const point = { x: event.clientX, y: event.clientY };
+    // Electron shows a native menu; a browser has none, so it keeps the in-page one.
+    void popupNativeMenu(photoMenuEntries(photo, photoIds), point).then((shown) => {
+      if (!shown) setPhotoMenu({ photo, photoIds, x: Math.min(point.x, window.innerWidth - 240), y: point.y });
+    });
+  }
+
+  /** The photo context menu's items: the in-page menu's, plus Use as Reference and Reuse Prompt as in the viewer. */
+  function photoMenuEntries(photo: GalleryPhoto, photoIds: string[]): NativeMenuEntry[] {
+    const count = photoIds.length;
+    const chosen = photoIds.flatMap((id) => { const entry = photoById.get(id); return entry ? [entry] : []; });
+    if (inArchive) {
+      return [
+        { id: "restore", label: t("restoreToGalleryPhotos", { count }), onSelect: () => void restoreFromArchive(photoIds) },
+        { id: "delete", label: t("deletePhotosMenu", { count }), onSelect: () => setDialog({ kind: "delete-photos", ids: photoIds, archived: true }) },
+      ];
+    }
+    const shared = photoIds.some((id) => photoById.get(id)?.shared);
+    const canShareOne = canShare && count === 1 && !photo.shared && !photo.name.toLowerCase().endsWith(".svg");
+    return [
+      ...(onOpenInCanvas && count === 1 ? [...openChoices(photo), { type: "separator" as const }] : []),
+      ...(count === 1 && photo.prompt ? [{ id: "reuse-prompt", label: t("reusePromptMenu"), onSelect: () => reusePrompt(photo.prompt ?? "") }] : []),
+      { id: "use-as-reference", label: t("useAsReferenceMenu"), onSelect: () => sendToReferences(chosen.map((entry) => ({ name: entry.name, url: galleryRawUrl(entry) }))) },
+      { type: "separator" },
+      ...(canShareOne ? [{ id: "share", label: t("sharePhotoMenu"), onSelect: () => setDialog({ kind: "share", photo }) }] : []),
+      shared ? { id: "save-to-gallery", label: t("saveToGalleryPhotos", { count }), onSelect: () => void saveToGallery(photoIds) }
+        : { id: "archive", label: t("moveToArchivePhotos", { count }), onSelect: () => void sendToArchive(photoIds) },
+    ];
   }
 
   useEffect(() => {

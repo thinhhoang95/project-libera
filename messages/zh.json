@@ -3043,6 +3043,7 @@
     "uploadPhotosMenu": "上传照片…",
     "useAsReferenceButton": "用作参考",
     "useAsReferenceMenu": "用作参考",
+    "reusePromptMenu": "复用提示词",
     "useAsReferenceTitle": "作为参考照片发送到面板",
     "subtitle": "{filtering, select, yes {{shown} / {total, plural, one {# 张照片} other {# 张照片}}} other {{total, plural, one {# 张照片} other {# 张照片}}}}{kind, select, shared {{unavailable, select, yes { · 共享 · {role} · 当前无法同步} other { · 共享 · {role}}}} album { · 图库/{folder}} archive { · 已从图库中隐藏} other {}}",
     "albumCardSubtitle": "{direct, select, yes {照片} other {{count, plural, one {# 项} other {# 项}}}}{sharing, select, owner { · 由您共享} member { · 与您共享 · {role}} other {}}",

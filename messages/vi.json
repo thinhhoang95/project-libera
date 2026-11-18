@@ -3043,6 +3043,7 @@
     "uploadPhotosMenu": "Tải lên ảnh…",
     "useAsReferenceButton": "Dùng làm tham chiếu",
     "useAsReferenceMenu": "Dùng làm tham chiếu",
+    "reusePromptMenu": "Dùng lại lời nhắc",
     "useAsReferenceTitle": "Gửi đến bảng làm ảnh tham chiếu",
     "subtitle": "{filtering, select, yes {{shown} trên tổng {total, plural, one {# ảnh} other {# ảnh}}} other {{total, plural, one {# ảnh} other {# ảnh}}}}{kind, select, shared {{unavailable, select, yes { · Đã chia sẻ · {role} · hiện không đồng bộ} other { · Đã chia sẻ · {role}}}} album { · thư viện/{folder}} archive { · Ẩn khỏi thư viện} other {}}",
     "albumCardSubtitle": "{direct, select, yes {Ảnh} other {{count, plural, one {# mục} other {# mục}}}}{sharing, select, owner { · Bạn chia sẻ} member { · Được chia sẻ với bạn · {role}} other {}}",

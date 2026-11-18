@@ -216,8 +216,8 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
       title={t("dialogTitle", { name: notebook })}
       description={plan ? t("descriptionFix") : cleanup ? t("descriptionCleanup") : t("descriptionCheck")}
       panelClassName="max-w-2xl"
-      footer={<>
-        {report && <span role="status" className="mr-auto text-xs text-muted-foreground">{t("footerCounts", { files: report.counts.files, notes: report.counts.notes, sideFiles: report.counts.sidecars, seconds: format.number(report.durationMs / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}</span>}
+      footer={<div className="flex w-full flex-col gap-3">
+        <div className="flex flex-nowrap items-center justify-end gap-2">
         {cleanup ? <>
           <button className={secondary} type="button" disabled={fixing !== null} onClick={() => { setCleanup(null); setFixError(""); }}>{tCommon("back")}</button>
           <button className={danger} type="button" disabled={fixing !== null || !cleanup.items.length || (lost > 0 && !understood)} onClick={() => void applyCleanup()}>
@@ -236,7 +236,9 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
             : <button className={secondary} type="button" onClick={checkAgain}>{t("checkAgain")}</button>}
           <button className={primary} type="button" onClick={onClose}>{tCommon("close")}</button>
         </>}
-      </>}
+        </div>
+        {report && <span role="status" className="text-xs text-muted-foreground">{t("footerCounts", { files: report.counts.files, notes: report.counts.notes, sideFiles: report.counts.sidecars, seconds: format.number(report.durationMs / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}</span>}
+      </div>}
       onClose={onClose}
     >
       {fixError && <p role="alert" className="mb-2 text-sm text-destructive [overflow-wrap:anywhere]">{fixError}</p>}
