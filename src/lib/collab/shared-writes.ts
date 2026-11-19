@@ -42,6 +42,8 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { moveReviewPath } from "@/lib/storage/markdown-reviews";
+import { moveReferenceAttachments } from "@/lib/storage/references";
 import { getFileNode, getTree } from "@/lib/storage/tree";
 import { movePathDerivedRecords, readLiberaFile } from "@/lib/storage/files";
 import { SIDECAR_KINDS } from "@/lib/storage/sidecars";
@@ -717,14 +719,16 @@ const SIDECARS_MOVED_ELSEWHERE = new Set(["ink", "transcript", "audio-peaks", "p
  * annotations, definitions of a note or LaTeX file, and any kind added to
  * SIDECAR_KINDS later), moved with it as a local rename does. Never replaces a
  * record already at the destination; one that cannot move stays where it is.
+ * Returns what stayed, for a caller that must tell the user (a folder rename).
  */
-async function moveSharedLocalRecords(from: string, to: string) {
-  if (from === to) return;
+async function moveSharedLocalRecords(from: string, to: string): Promise<string[]> {
+  const stayed: string[] = [];
+  if (from === to) return stayed;
   const source = splitFilePath(from);
   const target = splitFilePath(to);
   const fromType = getFileType(source.name);
   const toType = getFileType(target.name);
-  if (!fromType || !toType) return;
+  if (!fromType || !toType) return stayed;
   for (const kind of SIDECAR_KINDS) {
     if (SIDECARS_MOVED_ELSEWHERE.has(kind.id) || (kind.id === "definitions" && fromType === "pdf")) continue;
     if (!kind.appliesTo(fromType) || !kind.appliesTo(toType)) continue;
@@ -737,9 +741,14 @@ async function moveSharedLocalRecords(from: string, to: string) {
       await copyFileIfExists(old, next, { exclusive: true });
       await rm(old, { force: true });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") console.error(`[shared-writes] Could not move the ${kind.id} record of ${from} to ${to}:`, error);
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") stayed.push(`${kind.id} of ${from} (${to} already has one)`);
+      else {
+        console.error(`[shared-writes] Could not move the ${kind.id} record of ${from} to ${to}:`, error);
+        stayed.push(`${kind.id} of ${from}`);
+      }
     }
   }
+  return stayed;
 }
 
 /** Delete via the manifest; the host removes the working copy and syncs the deletion. */
@@ -784,11 +793,23 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
     }
     throw new StorageError("Destination folder already exists.", 409);
   }
+  // The files under the folder, as the manifest has them before the rename: their records move with them below.
+  const files = sourcePath === nextPath ? [] : (await listSharedEntries(current.notebook, options)).filter((entry) => entry.kind !== "folder" && entry.path.startsWith(`${sourcePath}/`));
   const config = hostConfig(sourcePath, options);
   await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/") }, config));
+  // The manifest has renamed; the records kept on this computer follow, as for a local folder rename.
+  // Every step runs, and what could not move is reported (the rename itself cannot be taken back).
+  const stayed: string[] = [];
+  for (const file of files) stayed.push(...await moveSharedLocalRecords(file.path, nextPath + file.path.slice(sourcePath.length)));
+  // Reviews and reference attachments follow by folder; the notebook's tethered .bib follows through the same "moved" event.
+  await moveReviewPath(sourcePath, nextPath).catch((error) => { console.error(`[shared-writes] Could not move the reviews of ${sourcePath}:`, error); stayed.push(`review comments under ${sourcePath}`); });
+  await moveReferenceAttachments(sourcePath, nextPath);
   await renameFileMetadataPathPrefix(sourcePath, nextPath);
   await renameNotebookPanelExpandedPathPrefix(sourcePath, nextPath);
   notifySearchChanges();
+  if (stayed.length) {
+    throw new StorageError(`The folder was renamed, but these records could not be moved with it and stay at the old path: ${stayed.join("; ")}. Run Check Notebook to settle them.`, 500);
+  }
   return getTree();
 }
 

@@ -635,7 +635,8 @@ export type HostEvent =
       projectId: string;
       notebook: string;
       added: string[];
-      moves: { from: string; to: string }[];
+      /** `fileId` is the file's identity across the move, so a swap or a chain of renames is told apart from one file moving on. */
+      moves: { from: string; to: string; fileId?: string }[];
       removed: string[];
     }
   /**
