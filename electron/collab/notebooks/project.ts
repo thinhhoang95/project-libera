@@ -3432,13 +3432,13 @@ export class SharedProject {
   // Separate from files-changed, which also fires for every text write and
   // must not make the tree reload while someone types.
   private treeChanged(previous: Record<string, LayoutRecord>, next: Record<string, LayoutRecord>): void {
-    const moves: { from: string; to: string }[] = [];
+    const moves: { from: string; to: string; fileId: string }[] = [];
     const removed: string[] = [];
     const added: string[] = [];
     for (const [fileId, record] of Object.entries(next)) {
       const before = previous[fileId];
       if (!before) added.push(this.liberaPath(record.path));
-      else if (before.path !== record.path) moves.push({ from: this.liberaPath(before.path), to: this.liberaPath(record.path) });
+      else if (before.path !== record.path) moves.push({ from: this.liberaPath(before.path), to: this.liberaPath(record.path), fileId });
     }
     for (const [fileId, record] of Object.entries(previous)) {
       if (!next[fileId]) removed.push(this.liberaPath(record.path));
