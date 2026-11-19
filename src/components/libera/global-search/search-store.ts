@@ -102,25 +102,88 @@ export function onSearchRequest(handler: (parts: SearchQueryPart[]) => void) {
   };
 }
 
-export async function refreshSearchStatus(scan = false) {
+/** The last status published, as JSON: a reply that says the same thing publishes nothing. */
+let publishedStatusKey = "";
+
+function publishStatus(status: SearchIndexStatus) {
+  const key = JSON.stringify(status);
+  if (key === publishedStatusKey && state.status && !state.statusError && !state.statusFailed) return;
+  publishedStatusKey = key;
+  setState({ status, statusError: "", statusFailed: false });
+}
+
+let statusFlight: { scan: boolean; promise: Promise<SearchIndexStatus | null> } | null = null;
+
+/** One status request at a time: a call made while one is out (a scan covers a plain one) shares its answer. */
+export function refreshSearchStatus(scan = false): Promise<SearchIndexStatus | null> {
+  if (statusFlight && (!scan || statusFlight.scan)) return statusFlight.promise;
   if (scan) lastScanRequest = Date.now();
+  const flight = {
+    scan,
+    promise: apiRequest<SearchIndexStatus>(`/api/search/status${scan ? "?scan=1" : ""}`).then(
+      (status) => {
+        publishStatus(status);
+        return status;
+      },
+      (error) => {
+        const statusError = error instanceof Error ? error.message : "";
+        if (!state.statusFailed || state.statusError !== statusError) setState({ statusError, statusFailed: true });
+        return null;
+      },
+    ).finally(() => {
+      if (statusFlight === flight) statusFlight = null;
+    }),
+  };
+  statusFlight = flight;
+  return flight.promise;
+}
+
+/** Index requests in flight (this page's and the background one), so the background one does not pile on. */
+let indexRequests = 0;
+
+export async function searchIndexAction(action: "build" | "scan" | "background" | "rebuild" | "reembed" | "pause" | "resume") {
+  indexRequests += 1;
   try {
-    const status = await apiRequest<SearchIndexStatus>(`/api/search/status${scan ? "?scan=1" : ""}`);
-    setState({ status, statusError: "", statusFailed: false });
+    const status = await apiRequest<SearchIndexStatus>("/api/search/index", {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    });
+    publishStatus(status);
     return status;
-  } catch (error) {
-    setState({ statusError: error instanceof Error ? error.message : "", statusFailed: true });
-    return null;
+  } finally {
+    indexRequests -= 1;
   }
 }
 
-export async function searchIndexAction(action: "build" | "scan" | "background" | "rebuild" | "reembed" | "pause" | "resume") {
-  const status = await apiRequest<SearchIndexStatus>("/api/search/index", {
-    method: "POST",
-    body: JSON.stringify({ action }),
-  });
-  setState({ status, statusError: "", statusFailed: false });
-  return status;
+const BACKGROUND_FIRST_MS = 20_000;
+const BACKGROUND_EVERY_MS = 10 * 60_000;
+
+/**
+ * Ask the server for a background index pass now and then (it applies the
+ * Preferences and its own pacing). A pass is skipped while another index
+ * request is out, and while the window is hidden: showing it runs the pass if
+ * one came due. Returns the stop function.
+ */
+export function startBackgroundIndexing(first = BACKGROUND_FIRST_MS, every = BACKGROUND_EVERY_MS) {
+  let due = false;
+  const run = () => {
+    if (document.visibilityState === "hidden") { due = true; return; }
+    if (indexRequests) return;
+    due = false;
+    indexRequests += 1;
+    void apiRequest("/api/search/index", { method: "POST", body: JSON.stringify({ action: "background" }) })
+      .catch(() => undefined)
+      .finally(() => { indexRequests -= 1; });
+  };
+  const shown = () => { if (due && document.visibilityState !== "hidden") run(); };
+  const firstTimer = setTimeout(run, first);
+  const interval = setInterval(run, every);
+  document.addEventListener("visibilitychange", shown);
+  return () => {
+    clearTimeout(firstTimer);
+    clearInterval(interval);
+    document.removeEventListener("visibilitychange", shown);
+  };
 }
 
 // Files changed by another program or sync client reach the index only through a scan.
