@@ -69,6 +69,12 @@ export type HubToReplica =
   | { t: "closed"; docId: string; reason: string }
   /** Every update of this port up to and including `seq` is committed to the host's SQLite. */
   | { t: "ack"; docId: string; seq: number }
+  /**
+   * An update was not fully integrated (it depends on discarded state or does
+   * not decode) and is not acknowledged. The replica keeps its unsaved state,
+   * attaches again and re-sends what the hub lacks.
+   */
+  | { t: "resync"; docId: string; subdoc: Subdoc }
   | { t: "error"; docId: string; message: string };
 
 /** Origins used for Yjs transactions so bindings can tell edits apart. */

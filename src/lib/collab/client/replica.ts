@@ -351,6 +351,9 @@ export class CollabReplica {
         return;
       }
       case "ack":
+        // Until the resync completes, the unsaved state stays: an ack for an
+        // update sent after a dropped one would otherwise cover it.
+        if (this.resyncPending) return;
         if (message.seq > this.ackedSeq) this.ackedSeq = Math.min(message.seq, this.sentSeq);
         // Observers of the unsaved count learn that everything is confirmed now.
         // No snapshot field changed, so the snapshot keeps its identity and the
@@ -358,6 +361,15 @@ export class CollabReplica {
         if (this.ackedSeq >= this.sentSeq && !this.queue.length) {
           for (const listener of [...this.listeners]) listener();
           for (const listener of [...this.durabilityListeners]) listener();
+        }
+        return;
+      case "resync":
+        // The hub dropped part of an update: keep the unsaved state, attach
+        // again and send back what the hub lacks (completeReattach).
+        this.needsResync = true;
+        if (!this.resyncPending) {
+          this.resyncPending = true;
+          this.attach();
         }
         return;
       case "rejected":
