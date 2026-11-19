@@ -182,7 +182,7 @@ const PENDING_MOVE_LIMIT = 2_000;
 const PENDING_MOVE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 function rememberPendingMove(from: string, to: string) {
-  const key = `${from} ${to}`;
+  const key = `${from}\u0000${to}`;
   if (pendingMoves.size >= PENDING_MOVE_LIMIT && !pendingMoves.has(key)) return;
   pendingMoves.set(key, { from, to, at: Date.now() });
 }
