@@ -352,8 +352,15 @@ export function usePendingSavesVersion() {
   return useSyncExternalStore(subscribe, () => version, () => 0);
 }
 
+/**
+ * Re-renders only when one of these files' unsaved state changes (a key of the
+ * dirty ones), not for registrations or other files; read `pendingSaves.isDirty` after it.
+ */
+export function usePendingSavesDirty(paths: readonly string[]) {
+  return useSyncExternalStore(subscribe, () => paths.filter((path) => pendingSaves.isDirty(path)).join("\n"), () => "");
+}
+
 /** Whether a file has unsaved ink or annotations. */
 export function useHasPendingSaves(path: string) {
-  usePendingSavesVersion();
-  return pendingSaves.isDirty(path);
+  return useSyncExternalStore(subscribe, () => pendingSaves.isDirty(path), () => false);
 }
