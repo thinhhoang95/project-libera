@@ -47,7 +47,8 @@ function companionBytes(raw: Buffer): Uint8Array | null {
     const value = JSON.parse(raw.toString("utf8")) as Record<string, unknown> | null;
     if (!value || typeof value !== "object" || typeof value.version !== "number" || !Array.isArray(value.segments) || !Array.isArray(value.speakers)) return null;
     // A correction waiting to be shared is the transcript being shared now.
-    const { [PENDING_KEY]: _pending, ...transcript } = value;
+    const transcript = { ...value };
+    delete transcript[PENDING_KEY];
     return Buffer.from(JSON.stringify(transcript), "utf8");
   } catch {
     return null;

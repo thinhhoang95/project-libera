@@ -173,7 +173,7 @@ export interface FolderLeaseRequest {
 
 /** What a takedown fence froze: every live document of the project and its final sequence. */
 export interface ProjectClosingResponse {
-  docs: Array<{ docId: string; kind: DocKind; serverSeq: number }>;
+  docs: Array<{ docId: string; kind: DocKind | "manifest" | "pdf"; serverSeq: number }>;
 }
 
 export interface FolderLease {

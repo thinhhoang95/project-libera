@@ -572,8 +572,10 @@ export async function writeMarkdownImageAsset(
  */
 export type MarkdownAssetRead = { authoritative?: boolean };
 
-async function readAssetBytes(libraryPath: string, absolutePath: string, read: MarkdownAssetRead) {
-  return (read.authoritative ? await readSharedAuthorityBytes(libraryPath) : null) ?? await readFile(absolutePath);
+async function readAssetBytes(libraryPath: string, absolutePath: string, read: MarkdownAssetRead): Promise<Buffer<ArrayBuffer>> {
+  const authority = read.authoritative ? await readSharedAuthorityBytes(libraryPath) : null;
+  // Copied into an ArrayBuffer-backed Buffer: the body type a Response accepts.
+  return authority ? Buffer.from(authority) : await readFile(absolutePath);
 }
 
 export async function getMarkdownImageAsset(documentPath: string, assetPath: string, read: MarkdownAssetRead = {}) {
