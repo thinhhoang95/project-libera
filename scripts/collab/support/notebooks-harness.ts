@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { ControlHandler, ControlRouter } from "../../../electron/collab/control/types";
-import { CollabHost, type FetchLike } from "../../../electron/collab/core";
+import { CollabHost, type DocHub, type FetchLike } from "../../../electron/collab/core";
 import { NotebookServiceImpl } from "../../../electron/collab/notebooks/service";
 import type { Timings } from "../../../electron/collab/notebooks/project";
 import type { HostEvent } from "../../../src/lib/collab/local-api";
@@ -48,11 +48,16 @@ export async function until(condition: () => boolean | Promise<boolean>, label: 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * `skip` option for known intermittent tests: they race notebook sync timing
- * and fail on some runs. Off by default so npm run test:collab stays
- * reliable; LIBERA_COLLAB_INTERMITTENT=1 runs them (docs/collaboration/testing.md).
+ * Waits until a document's hub holds `text` before a test edits it. share()
+ * creates each document's first text on the server (createSharedDocument), and
+ * whenIdle() covers the project's queue, not document sync: right after a share
+ * the local hub can still be empty. An edit made then is concurrent with that
+ * first text, and Yjs orders the two by client ID, so "insert at 0" lands
+ * before or after it at random.
  */
-export const intermittent = process.env.LIBERA_COLLAB_INTERMITTENT === "1" ? false : "intermittent; LIBERA_COLLAB_INTERMITTENT=1 runs it";
+export async function untilText(hub: Pick<DocHub, "getText">, text: string, label = `document holds ${JSON.stringify(text)}`): Promise<void> {
+  await until(() => hub.getText("content") === text, label);
+}
 
 const quiet = { warn() {}, error() {} };
 const debugLogger = (name: string) => ({

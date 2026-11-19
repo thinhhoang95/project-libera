@@ -1,6 +1,6 @@
 # Collaboration testing
 
-**Last updated:** 18 Oct 2026
+**Last updated:** 19 Nov 2026
 
 This page explains how to run the collaboration tests, what each one proves, and how long it takes. It covers the harness from plan M1.12: the chaos proxy, the multi-host cluster driver, the convergence fuzzer, the durability matrix for source-plan §3.2, the performance checks for §10, and the soak runner.
 
@@ -25,7 +25,6 @@ The harness needs nothing beyond the repo's dependencies. There is no Docker and
 | `LIBERA_COLLAB_FUZZ_PATH` | unset | With the seed, jumps straight to the failing schedule (printed on failure) |
 | `LIBERA_COLLAB_FUZZ_SHRINK` | unset | `1` lets fast-check shrink a failing schedule (slow: each run takes seconds) |
 | `LIBERA_COLLAB_PERF_SLACK` | 3 | Multiplier on the §10 budgets in assertions, so a loaded CI machine does not flake. The measured numbers are always printed. |
-| `LIBERA_COLLAB_INTERMITTENT` | unset | `1` also runs the known intermittent tests, skipped by default because they race notebook sync timing and fail on some runs: "terminal text preservation keeps a late external edit…", "remote takedown preserves text newer than the debounced disk copy", "a legacy host's offline edits resume with its original client sequence identity" and "matching account IDs on separate servers do not reuse local sync authority" |
 | `LIBERA_HARNESS_DEBUG` | unset | `1` prints host warnings and every host event |
 
 Every measurement is printed as a line starting with `[collab-perf]`, so `npm run test:collab 2>&1 | grep collab-perf` shows them all.

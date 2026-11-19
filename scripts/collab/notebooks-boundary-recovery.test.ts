@@ -13,7 +13,7 @@ import { HostStore } from "../../electron/collab/core/store";
 import { openDatabase } from "../../electron/collab/core/sqlite";
 import { isFinderCopy, mayStillBeCopying, sha256 } from "../../electron/collab/notebooks/fs-ops";
 import { ContentKeys, ManifestKeys, type ManifestEntry } from "../../src/lib/collab/protocol/schema";
-import { api, closePeer, intermittent, makePeer, register, sleep, tempRoot, until, writeTree, type Peer } from "./support/notebooks-harness";
+import { api, closePeer, makePeer, register, sleep, tempRoot, until, untilText, writeTree, type Peer } from "./support/notebooks-harness";
 import { removeDataDir, startServerProcess } from "./support/server-process";
 
 const quiet = { warn() {}, error() {} };
@@ -275,7 +275,7 @@ test("Finder's copy placeholder and recent empty files are not judged yet", () =
   assert.equal(mayStillBeCopying({ size: 10, mtimeMs: now, birthtimeMs: now }, now), false);
 });
 
-test("a legacy host's offline edits resume with its original client sequence identity", { timeout: 40_000, skip: intermittent }, async () => {
+test("a legacy host's offline edits resume with its original client sequence identity", { timeout: 40_000 }, async () => {
   const temp = tempRoot("libera-legacy-offline-resume-");
   const server = await startServerProcess();
   let peer: Peer | undefined;
@@ -291,6 +291,7 @@ test("a legacy host's offline edits resume with its original client sequence ide
     const docId = peer.service.resolvePath("Legacy/note.md")!.docId;
     const hub = peer.host.acquire(docId);
     try {
+      await untilText(hub, "base\n");
       hub.applyLocalChange("content", (doc) => doc.getText(ContentKeys.source).insert(0, "common\n"), { source: "typing" });
       await until(() => hub.pendingCount === 0, "legacy sequence acknowledged");
       peer.host.setAccount(null);

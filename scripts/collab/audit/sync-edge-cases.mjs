@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { api, closePeer, intermittent, invite, makePeer, readText, register, sleep, tempRoot, until, writeTree } from '../support/notebooks-harness.ts';
+import { api, closePeer, invite, makePeer, readText, register, sleep, tempRoot, until, untilText, writeTree } from '../support/notebooks-harness.ts';
 import { removeDataDir, startServerProcess } from '../support/server-process.ts';
 import { ControlRoutes } from '../../../src/lib/collab/local-api.ts';
 import { ContentKeys, ManifestKeys } from '../../../src/lib/collab/protocol/schema.ts';
@@ -147,7 +147,7 @@ test('additional sync edge cases', { timeout: 180000 }, async (t) => {
                 await clean();
             }
         });
-        await t.test('remote takedown preserves text newer than the debounced disk copy', { skip: intermittent }, async () => {
+        await t.test('remote takedown preserves text newer than the debounced disk copy', async () => {
             const owner = await makePeer(temp.dir, 'takedown-owner', server, ownerAuth, { timings: { writeDebounceMs: 10000, writeMaxWaitMs: 30000 } });
             peers.push(owner);
             try {
@@ -155,6 +155,7 @@ test('additional sync edge cases', { timeout: 180000 }, async (t) => {
                 const docId = owner.service.resolvePath('RemoteTakedown/note.md').docId;
                 const hub = owner.host.acquire(docId);
                 try {
+                    await untilText(hub, 'original\n');
                     hub.applyLocalChange('content', doc => doc.getText(ContentKeys.source).insert(0, 'latest\n'), { source: 'typing' });
                     await until(() => hub.pendingCount === 0, 'last edit acknowledged');
                     assert.equal(readText(path.join(owner.library, 'RemoteTakedown'), 'note.md'), 'original\n');

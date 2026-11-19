@@ -8,7 +8,7 @@ import test from "node:test";
 import { CollabRuntime } from "../../../electron/collab/control/runtime.ts";
 import { sha256 } from "../../../electron/collab/notebooks/fs-ops.ts";
 import { ContentKeys, ManifestKeys } from "../../../src/lib/collab/protocol/schema.ts";
-import { api, closePeer, intermittent, makePeer, register, sleep, tempRoot, until, writeTree } from "../support/notebooks-harness.ts";
+import { api, closePeer, makePeer, register, sleep, tempRoot, until, untilText, writeTree } from "../support/notebooks-harness.ts";
 import { removeDataDir, startServerProcess } from "../support/server-process.ts";
 
 const observe = (name, value) => console.log(`BOUNDARY ${name} ${JSON.stringify(value)}`);
@@ -218,7 +218,7 @@ test("sync boundary review", { timeout: 120_000 }, async (t) => {
   }
 });
 
-test("matching account IDs on separate servers do not reuse local sync authority", { timeout: 90_000, skip: intermittent }, async () => {
+test("matching account IDs on separate servers do not reuse local sync authority", { timeout: 90_000 }, async () => {
   const temp = tempRoot("libera-server-identity-review-");
   const seed = await startServerProcess();
   let serverA;
@@ -250,6 +250,7 @@ test("matching account IDs on separate servers do not reuse local sync authority
     const docId = runtime.notebooks.resolvePath("ServerBound/note.md").docId;
     const seedHub = runtime.host.acquire(docId);
     try {
+      await untilText(seedHub, "common ");
       seedHub.applyLocalChange("content", (doc) => doc.getText(ContentKeys.source).insert(7, "baseline\n"), { source: "typing" });
       await until(() => seedHub.pendingCount === 0, "pre-backup edit acknowledged");
     } finally { runtime.host.release(docId); }

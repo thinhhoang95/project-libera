@@ -227,10 +227,19 @@ metadata check and throttled upkeep), the suites found one more bug, which preda
 Pre-existing lint warnings: unused `invite` in `scripts/collab/audit-1112-follower-authority.test.ts`;
 missing `refreshTree` dependency in `use-libera-workspace.ts`.
 
-### Skipped as intermittent (opt-in with `LIBERA_COLLAB_INTERMITTENT=1`, since 216340b)
+### Skipped as intermittent until this round's follow-up (now run by default)
+
+These four were skipped unless `LIBERA_COLLAB_INTERMITTENT=1` (since 216340b). All four had one
+cause, in the tests: each typed into a just-shared document right after `share()` and `whenIdle()`.
+A share creates each document's first text on the server (`createSharedDocument`), and `whenIdle()`
+covers the project's queue, not document sync, so the local hub could still be empty. The edit was
+then concurrent with the first text, and Yjs orders concurrent inserts by client ID: about half the
+runs put it after that text (`base\ncommon\n`, `original\nlatest\n`, `baseline\ncommon `). Each now
+waits for the hub to hold the shared text (`untilText` in `scripts/collab/support/notebooks-harness.ts`)
+before typing; the switch and its env var are gone.
 
 - `scripts/collab/notebooks-boundary-recovery.test.ts:278` — a legacy host's offline edits resume with its original client sequence identity
-- `scripts/collab/notebooks-share-lifecycle-recovery.test.ts:209` — terminal text preservation keeps a late external edit and archives the latest shared text
+- `scripts/collab/notebooks-share-lifecycle-recovery.test.ts:209` — terminal text preservation keeps a late external edit and archives the latest shared text (also waits for the project to go idle again, so its write hook catches preservation's write)
 - `scripts/collab/audit/sync-boundary-review.mjs:221` — matching account IDs on separate servers do not reuse local sync authority
 - `scripts/collab/audit/sync-edge-cases.mjs:150` — remote takedown preserves text newer than the debounced disk copy
 
