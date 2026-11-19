@@ -14,6 +14,7 @@ import type * as Y from "yjs";
 
 import type { FileBlobResponse, FileListEntry, FileListResponse, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
+import type { ProjectClosingResponse } from "../../../src/lib/collab/protocol/api";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { roleAtLeast } from "../../../src/lib/collab/protocol/roles";
 import {
@@ -74,7 +75,7 @@ import {
   type NotebookWalk,
   type WriteGuard,
 } from "./fs-ops";
-import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
+import { computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
 import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState } from "./scan-reads";
 import { PdfCommentService } from "./pdf-comments";
 import { AUDIO_EXTENSIONS, MARKDOWN_EXTENSIONS } from "../../../src/lib/storage/constants";
@@ -623,13 +624,22 @@ export class SharedProject {
     }
   }
 
-  /** Export current binaries even on a follower, before deleting server access. */
-  prepareLocalConversion(): Promise<number> {
+  /**
+   * Export the current text, PDF marks, comments and binaries even on a
+   * follower, before deleting server access. `beginFence` makes the server stop
+   * accepting document and comment writes and reports each document's final
+   * sequence; everything is exported from state taken after that, so no late
+   * change can exist only on the server. Returns the manifest sequence to delete against.
+   */
+  prepareLocalConversion(beginFence: () => Promise<ProjectClosingResponse>): Promise<number> {
     return this.enqueueExplicit(async () => {
       const hub = this.manifestHub;
       if (!hub || !this.manifestReady() || !hub.getStatus().connected || hub.pendingCount > 0) {
         throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
       }
+      const fence = await beginFence();
+      await this.catchUpWithFence(fence);
+      if (hub.pendingCount > 0) throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
       const sequence = this.ctx.host.store.getDocMeta(this.info.manifestDocId)?.lastSeenServerSeq ?? 0;
       const entries = this.readEntries();
       const layout = computeLayout(entries.values());
@@ -655,6 +665,14 @@ export class SharedProject {
           await writeFileAtomic(target, bytes, contentGuard(target, expected, guard));
         }
       }
+      // The fence froze text, PDF marks and comments too: write the final text and the
+      // PDF sidecars now, while the server can still answer, not after it is deleted.
+      await this.preserveLatestText();
+      try { await this.pdfs.exportLocal(); }
+      catch (error) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not export the PDF notes`, error);
+        throw new ControlError(503, "offline", "Could not export the PDF notes. The shared project was kept.");
+      }
       // The server project is deleted next: make the exported (and previously
       // materialized text) files and their folders durable first.
       const exported: string[] = [];
@@ -675,6 +693,22 @@ export class SharedProject {
       if (!await current()) throw new ControlError(409, "conflict", "The notebook changed during its local export. Retry taking it down.");
       return sequence;
     });
+  }
+
+  /** Waits until every document this device holds open has the updates the takedown fence froze on the server. */
+  private async catchUpWithFence(fence: ProjectClosingResponse): Promise<void> {
+    const finalSeq = new Map(fence.docs.map((doc) => [doc.docId, doc.serverSeq]));
+    const held = [
+      this.info.manifestDocId,
+      ...[...this.docs.values()].filter((doc) => this.docReady(doc)).map((doc) => doc.docId),
+      ...this.pdfs.openDocIds(),
+    ];
+    const behind = () => held.filter((docId) => (this.ctx.host.store.getDocMeta(docId)?.lastSeenServerSeq ?? 0) < (finalSeq.get(docId) ?? 0));
+    const deadline = Date.now() + HYDRATION_WAIT_MS;
+    while (behind().length > 0) {
+      if (this.stopped || Date.now() > deadline) throw new ControlError(503, "offline", "This notebook is still receiving its latest changes. The shared project was kept; retry taking it down.");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
   }
 
   /** Resolves once the queue is empty and no write, scan or manifest pass is pending. */
@@ -3084,23 +3118,28 @@ export class SharedProject {
               const file = moving.find((entry) => entry.kind !== "folder" && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === manifestPathKey(relative));
               if (file) this.assertRenameKeepsRecords(file, relative, to);
             }
-            await this.writeManifest((map, doc) => {
-              for (const entry of updates) map.set(entry.fileId, entryRecord(entry));
-              for (const entry of this.inkCompanionMoves(doc, relative, to, folder, now)) {
-                map.set(entry.fileId, entryRecord(entry));
-                paths.push(entry.path);
-              }
-              if (!folder) {
-                for (const entry of this.transcriptCompanionMoves(doc, relative, to, now)) {
+            // A folder of many files is several transactions: one manifest update
+            // over the server's limit would never sync.
+            for (const [index, batch] of splitManifestBatches(updates, manifestEntryBytes).entries()) {
+              await this.writeManifest((map, doc) => {
+                for (const entry of batch) map.set(entry.fileId, entryRecord(entry));
+                if (index > 0) return;
+                for (const entry of this.inkCompanionMoves(doc, relative, to, folder, now)) {
                   map.set(entry.fileId, entryRecord(entry));
                   paths.push(entry.path);
                 }
-                for (const entry of this.pythonCompanionMoves(doc, relative, to, now)) {
-                  map.set(entry.fileId, entryRecord(entry));
-                  paths.push(entry.path);
+                if (!folder) {
+                  for (const entry of this.transcriptCompanionMoves(doc, relative, to, now)) {
+                    map.set(entry.fileId, entryRecord(entry));
+                    paths.push(entry.path);
+                  }
+                  for (const entry of this.pythonCompanionMoves(doc, relative, to, now)) {
+                    map.set(entry.fileId, entryRecord(entry));
+                    paths.push(entry.path);
+                  }
                 }
-              }
-            }, { source: "typing" });
+              }, { source: "typing" });
+            }
             break;
           }
           case "delete": {
@@ -3111,18 +3150,22 @@ export class SharedProject {
               throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
             }
             const displayed = computeLayout(this.entries.values()).paths;
-            await this.writeManifest((map, doc) => {
-              for (const entry of removing) map.delete(entry.fileId);
-              for (const entry of this.transcriptCompanion([...readManifest(doc).values()], relative)) {
-                map.delete(entry.fileId);
-                paths.push(entry.path);
-              }
-              // Someone deleted it on purpose, so its ink goes too (archived on disk like the file).
-              for (const entry of this.inkCompanions(doc, relative)) {
-                map.delete(entry.fileId);
-                paths.push(entry.path);
-              }
-            }, { source: "typing" });
+            // Many entries are removed in several transactions (see rename).
+            for (const [index, batch] of splitManifestBatches(removing, () => 256).entries()) {
+              await this.writeManifest((map, doc) => {
+                for (const entry of batch) map.delete(entry.fileId);
+                if (index > 0) return;
+                for (const entry of this.transcriptCompanion([...readManifest(doc).values()], relative)) {
+                  map.delete(entry.fileId);
+                  paths.push(entry.path);
+                }
+                // Someone deleted it on purpose, so its ink goes too (archived on disk like the file).
+                for (const entry of this.inkCompanions(doc, relative)) {
+                  map.delete(entry.fileId);
+                  paths.push(entry.path);
+                }
+              }, { source: "typing" });
+            }
             paths.push(...removing.map((entry) => displayed.get(entry.fileId)!));
             break;
           }

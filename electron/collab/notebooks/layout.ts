@@ -54,6 +54,38 @@ export function entryRecord(entry: ManifestEntry): Record<string, unknown> {
   return JSON.parse(JSON.stringify(entry)) as Record<string, unknown>;
 }
 
+/**
+ * Budget for the entries one manifest transaction carries. A Yjs update cannot
+ * be split afterwards and the server refuses one over SyncLimits.maxUpdateBytes
+ * (4 MiB), so a big batch (initial share, a folder rename or delete) is written
+ * as several transactions, each far below that.
+ */
+export const MANIFEST_BATCH_BYTES = 256 * 1024;
+
+/** Groups items so that each group's estimated size stays within `budget` (an item over it gets a group of its own). */
+export function splitManifestBatches<T>(items: readonly T[], sizeOf: (item: T) => number, budget: number = MANIFEST_BATCH_BYTES): T[][] {
+  const groups: T[][] = [];
+  let current: T[] = [];
+  let bytes = 0;
+  for (const item of items) {
+    const size = sizeOf(item);
+    if (current.length > 0 && bytes + size > budget) {
+      groups.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(item);
+    bytes += size;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+/** Rough bytes an entry adds to a manifest update (its JSON plus Yjs bookkeeping). */
+export function manifestEntryBytes(entry: ManifestEntry): number {
+  return utf8ByteLength(JSON.stringify(entry)) * 2 + 64;
+}
+
 export interface Layout {
   /** fileId → disk path relative to the notebook root. */
   paths: Map<string, string>;

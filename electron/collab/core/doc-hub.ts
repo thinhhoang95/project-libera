@@ -395,6 +395,11 @@ export class DocHub implements CompactionTarget {
     return this.pendingLocal.size;
   }
 
+  /** Why this document can never fully sync (an update over the size limit was skipped), if it can't. */
+  get syncBlockedDetail(): string | undefined {
+    return this.unsendableDetail;
+  }
+
   get replicaCount(): number {
     let count = 0;
     for (const replica of this.replicas) if (!replica.isDetached) count += 1;

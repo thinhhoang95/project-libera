@@ -46,10 +46,14 @@ function locate(relativePath: string) {
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   if (assertSupportedFileName(name) !== "audio") throw new StorageError("Transcripts belong to audio files.");
   const shared = isSharedNotebookPath(relativePath);
+  const companionFile = filePathFromParts(notebook, [...pathParts.slice(0, -1), `${name}${TRANSCRIPT_COMPANION_SUFFIX}`]);
   return {
     audio: filePathFromParts(notebook, pathParts),
     sidecar: transcriptPath(notebook, pathParts),
-    companion: shared ? filePathFromParts(notebook, [...pathParts.slice(0, -1), `${name}${TRANSCRIPT_COMPANION_SUFFIX}`]) : null,
+    companion: shared ? companionFile : null,
+    // After a takedown the notebook is ordinary again but the shared companion
+    // still sits beside the recording, holding the newest transcript.
+    companionFile,
   };
 }
 
@@ -135,7 +139,7 @@ async function readSidecarFile(file: string): Promise<{ transcript: Transcript; 
 
 /** The transcript, and whether the audio changed since it was made. */
 export async function readTranscript(relativePath: string): Promise<{ transcript: Transcript | null; stale: boolean; shared: boolean; pending?: boolean }> {
-  const { audio, sidecar, companion } = locate(relativePath);
+  const { audio, sidecar, companion, companionFile } = locate(relativePath);
   const stats = await stat(audio).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -145,7 +149,16 @@ export async function readTranscript(relativePath: string): Promise<{ transcript
   const local = await readSidecarFile(sidecar);
   const pending = Boolean(companion && local?.pending);
   const fromCompanion = companion && !pending ? await readTranscriptFile(companion) : null;
-  const transcript = pending ? local!.transcript : fromCompanion ?? local?.transcript ?? null;
+  let transcript = pending ? local!.transcript : fromCompanion ?? local?.transcript ?? null;
+  if (!transcript && !companion) {
+    // Not shared (any more): a companion left by a takedown is the transcript. Adopt
+    // it as the local sidecar so renames, copies and later edits carry it like any other.
+    transcript = await readTranscriptFile(companionFile).catch(() => null);
+    if (transcript) {
+      const signature = await readFileSignature(audio).catch(() => null);
+      if (signature) await writeLocal(sidecar, transcript, audio, signature, transcript.audio.contentHash).catch(() => undefined);
+    }
+  }
   if (!transcript) return { transcript: null, stale: false, shared: false };
   // Older transcripts only stored size. New transcripts use portable content
   // identity, detecting same-size replacements without penalizing copies/sync.

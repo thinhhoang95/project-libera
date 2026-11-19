@@ -30,6 +30,7 @@ import {
 } from "../protocol.js";
 import { DocumentMissingError, type Room, type RoomMember } from "./room.js";
 import type { SyncServer } from "./server.js";
+import { ProjectClosingError } from "./store.js";
 import { SyncTimings } from "./timings.js";
 
 /** A document open on this socket. `role` is updated in place by membershipChanged. */
@@ -383,6 +384,11 @@ export class Session implements RoomMember {
       })
       .catch((error: unknown) => {
         this.failedWrites.set(failedKey, Math.min(message.clientSeq, this.failedWrites.get(failedKey) ?? Infinity));
+        // A takedown fence is expected, not a fault: the client keeps the update queued and resends it.
+        if (error instanceof ProjectClosingError) {
+          this.server.context.log.info({ docId: message.docId }, "Update refused: the project is being taken down");
+          return this.sendError("internal", error.message, message.docId);
+        }
         this.server.context.log.error({ err: error, docId: message.docId }, "Sync update failed");
         this.server.reportError(error, "update", {
           docId: message.docId,
