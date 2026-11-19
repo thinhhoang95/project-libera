@@ -2,19 +2,39 @@
 
 // Collaborators on a live PDF: their pointers and strokes in progress on each
 // page, and where everyone is reading on a rail beside the pages. A layer per
-// page subscribes for itself, so a moving pointer never re-renders the page.
+// page subscribes to its own page, so a moving pointer never re-renders the page
+// or the layers of other pages.
 
 import { useTranslations } from "next-intl";
-import { memo, useSyncExternalStore } from "react";
+import { memo, useState, useSyncExternalStore } from "react";
 import type { PdfAnnotation, PdfAnnotationRect } from "@/lib/types";
-import type { PdfGhost, PdfPresenceSnapshot, PdfPresenceStore, PdfRemoteUser } from "@/lib/collab/pdf/presence";
+import type { PdfGhost, PdfPageSelection, PdfPageSnapshot, PdfPresenceSnapshot, PdfPresenceStore, PdfRemoteUser } from "@/lib/collab/pdf/presence";
 
 const EMPTY: PdfPresenceSnapshot = { users: [], ghosts: [] };
 const noSubscribe = () => () => {};
 const noSnapshot = () => EMPTY;
+const EMPTY_PAGE: PdfPageSnapshot = { pointers: [], ghosts: [] };
+const NO_SELECTIONS: PdfPageSelection[] = [];
 
 function usePresence(store: PdfPresenceStore | null): PdfPresenceSnapshot {
   return useSyncExternalStore(store?.subscribe ?? noSubscribe, store?.getSnapshot ?? noSnapshot, noSnapshot);
+}
+
+/** One page's pointers and strokes; re-renders only when those change. */
+function usePagePresence(store: PdfPresenceStore | null, pageNumber: number): PdfPageSnapshot {
+  return useSyncExternalStore(store?.subscribe ?? noSubscribe, () => store?.getPageSnapshot(pageNumber) ?? EMPTY_PAGE, () => EMPTY_PAGE);
+}
+
+/** Who selected which of these marks; re-renders only when that changes. */
+function usePageSelections(store: PdfPresenceStore | null, marks: readonly PdfAnnotation[]): PdfPageSelection[] {
+  const [last] = useState(() => ({ key: "", value: NO_SELECTIONS }));
+  return useSyncExternalStore(store?.subscribe ?? noSubscribe, () => {
+    const next = store?.selectionsOf(new Set(marks.map((mark) => mark.id))) ?? NO_SELECTIONS;
+    if (!next.length) return NO_SELECTIONS;
+    const key = JSON.stringify(next);
+    if (key !== last.key) { last.key = key; last.value = next; }
+    return last.value;
+  }, () => NO_SELECTIONS);
 }
 
 function markBounds(mark: PdfAnnotation): PdfAnnotationRect[] {
@@ -53,10 +73,9 @@ export interface PdfPresenceLayerProps {
 }
 
 export const PdfPresenceLayer = memo(function PdfPresenceLayer({ store, pageNumber, width, height, zoom, marks }: PdfPresenceLayerProps) {
-  const { users, ghosts } = usePresence(store);
-  const pageGhosts = ghosts.filter((ghost) => ghost.page === pageNumber);
-  const pointers = users.filter((user) => user.presence?.pointer?.page === pageNumber);
-  const selections = users.flatMap((user) => (user.presence?.selection ?? []).flatMap((id) => {
+  const { pointers, ghosts: pageGhosts } = usePagePresence(store, pageNumber);
+  const selected = usePageSelections(store, marks);
+  const selections = selected.flatMap((user) => user.ids.flatMap((id) => {
     const mark = marks.find((candidate) => candidate.id === id);
     return mark ? markBounds(mark).map((rect, index) => ({ key: `${user.clientId}:${id}:${index}`, rect, color: user.color })) : [];
   }));

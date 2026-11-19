@@ -82,6 +82,21 @@ export interface PdfPresenceSnapshot {
   ghosts: PdfGhost[];
 }
 
+/** What one page draws of others: pointers and strokes in progress on it. */
+export interface PdfPageSnapshot {
+  pointers: PdfRemoteUser[];
+  ghosts: PdfGhost[];
+}
+
+/** One collaborator's selected marks among those a page shows. */
+export interface PdfPageSelection {
+  clientId: number;
+  color: string;
+  ids: string[];
+}
+
+const NO_PAGE: PdfPageSnapshot = { pointers: [], ghosts: [] };
+
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -231,6 +246,46 @@ export class PdfPresenceStore {
   }
 
   getSnapshot = (): PdfPresenceSnapshot => this.snapshot;
+
+  private readonly pages = new Map<number, { from: PdfPresenceSnapshot; value: PdfPageSnapshot }>();
+
+  /**
+   * What a page draws, as the same object while that page's pointers and
+   * strokes are unchanged, so a layer subscribed to it ignores other pages.
+   */
+  getPageSnapshot = (page: number): PdfPageSnapshot => {
+    const known = this.pages.get(page);
+    if (known?.from === this.snapshot) return known.value;
+    const pointers = this.snapshot.users.filter((user) => user.presence?.pointer?.page === page);
+    const ghosts = this.snapshot.ghosts.filter((ghost) => ghost.page === page);
+    let value: PdfPageSnapshot = pointers.length || ghosts.length ? { pointers, ghosts } : NO_PAGE;
+    if (known) {
+      const before = known.value;
+      const same = before.ghosts.length === ghosts.length && before.ghosts.every((ghost, index) => ghost === ghosts[index])
+        && before.pointers.length === pointers.length
+        && before.pointers.every((user, index) => {
+          const now = pointers[index];
+          const there = user.presence?.pointer;
+          const here = now.presence?.pointer;
+          return user.clientId === now.clientId && user.name === now.name && user.color === now.color && there?.x === here?.x && there?.y === here?.y;
+        });
+      if (same) value = before;
+    }
+    this.pages.set(page, { from: this.snapshot, value });
+    return value;
+  };
+
+  /** Who has selected which of these marks; empty when nobody selected any. */
+  selectionsOf(markIds: ReadonlySet<string>): PdfPageSelection[] {
+    const found: PdfPageSelection[] = [];
+    for (const user of this.snapshot.users) {
+      const selection = user.presence?.selection;
+      if (!selection?.length) continue;
+      const ids = selection.filter((id) => markIds.has(id));
+      if (ids.length) found.push({ clientId: user.clientId, color: user.color, ids });
+    }
+    return found;
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);

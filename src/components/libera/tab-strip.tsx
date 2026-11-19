@@ -19,7 +19,7 @@ import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { isCompilableLatexPath } from "@/lib/latex/project";
 import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
 import { RequestReviewButton } from "./collab/reviews";
-import { pendingSaves, usePendingSavesVersion } from "./pending-saves";
+import { pendingSaves, usePendingSavesDirty } from "./pending-saves";
 import { useAppMenuFileActions, useAppMenuItems, withMenuActions } from "./app-menu";
 
 /** Switches the active file between the Visual and Source editors. */
@@ -206,7 +206,8 @@ export const TabStrip = memo(function TabStrip({
   onCloseCanvasPanel,
   onCloseOtherCanvasPanels,
 }: TabStripProps) {
-  usePendingSavesVersion();
+  // Wakes only when a shown tab's unsaved state changes (the dots and Save below read it).
+  usePendingSavesDirty(tabs.map((tab) => tab.file.path));
   const t = useTranslations("tabStrip");
   const tabName = useTabName();
   const [draggingTabId, setDraggingTabId] = useState("");
