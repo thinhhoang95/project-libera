@@ -42,7 +42,7 @@ function doc(docId: string, path: string): ResolvedDoc {
   return { docId, projectId: "p1", fileId: `f_${docId}`, path, kind: "markdown", role: "editor", readOnly: false };
 }
 
-function sync(pending: number, state: SyncStatus["state"] = "saving"): SyncStatus {
+function sync(pending: number, state: SyncStatus["state"] = "syncing"): SyncStatus {
   return { state, pending, oldestPendingAgeMs: 0, lastAckAt: null, connected: true };
 }
 
