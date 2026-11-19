@@ -2,7 +2,7 @@ import type { EditorState, Text, Transaction } from "@codemirror/state";
 import type { WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { readGroup, readOptional, TEX_GROUPS } from "../../../macros/core";
-import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, equationAlias, isInLatexComment, isPartLabelMacro, macroAt, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
+import { boxTitleOf, definitionExtentAround, definitionExtentAt, emptyLatexDefinitions, equationAlias, isInLatexComment, isPartLabelMacro, macroAt, macroEnvironment, readBoxDefinitions, type LatexBoxDefinition, type LatexDefinitions } from "../../macros/definitions";
 import { expandLatexMacros, expandLatexMacroUse, expandMacroUseWithProvenance, needsMathMode, provenanceOf, readMacroArguments, substituteArguments } from "../../macros/expand";
 import { expansionState, placeAtCall } from "./macro-provenance";
 import { CAPTION_OF, colorWrapper, coloredHeading, enumerateItemLabel, enumitemListStart, floatAlias, formatCounterValue, environmentName, FLOAT_KINDS, JMLR_REF_WORDS, floatKind, KOMA_CAPTION, LIST_CONTINUES, listOptionMap, restatableTheorem, stripTexComments, wrappedTheorem } from "../../macros/numbering";
@@ -2364,8 +2364,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       return false;
     }
     const theorem = defs.theorems.get(name);
-    const user = defs.environments.get(name);
     const block = TEXT_BLOCKS[name];
+    const user = defs.environments.get(name) ?? (theorem || block || name === "proof" ? undefined : macroEnvironment(defs, name, node.from));
     // AASTeX 7's `contribution` prints an "Author Contributions" section, as `acknowledgments` prints its own (astro-ph.EP 2611.16040).
     const contribution = name === "contribution" && !user && !theorem && !block && AASTEX.test(defs.documentClass ?? "");
     if (!theorem && !user && !block && name !== "proof" && !ACKNOWLEDGMENTS.test(name) && !contribution) return undefined;
@@ -3004,6 +3004,16 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         const end = ctrl.to + digits[0].length;
         emit({ kind: "symbol", from: node.from, to: end, reveal: "touch", replaces: [{ from: node.from, to: end, widget: new PrintedTextWidget(formatCounterValue(Number(digits[1]), "roman"), read(state, node.from, end)) }] });
         consumed.push([node.from, end]);
+        return false;
+      }
+    }
+    // orcidlink's `\orcidlink{0000-…}` in text (an author list, 2611.08473): the small green iD mark front matter draws, the project's
+    // own TikZ definition of it is not read (definitions.ts). A click shows the command.
+    if (name === "orcidlink" && structural && !macroAt(defs, name, node.from) && !hasDirectError(node)) {
+      const id = args.filter((arg) => !arg.optional)[0];
+      if (id && id.node.from === ctrl.to) {
+        emit({ kind: "symbol", from: node.from, to: id.node.to, reveal: "touch", replaces: [{ from: node.from, to: id.node.to, widget: new PrintedTextWidget("iD", read(state, node.from, id.node.to), "#a6ce39") }] });
+        consumed.push([node.from, id.node.to]);
         return false;
       }
     }
