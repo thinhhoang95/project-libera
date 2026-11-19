@@ -2,7 +2,7 @@
 // changed file must stay quiet before it is imported, how much one scan may
 // read, and the back-off for a walk that cannot finish.
 
-import { readIfExists, SLOW_READ } from "./fs-ops";
+import { readIfExists, SLOW_READ, statIfExists } from "./fs-ops";
 
 /**
  * The collaboration server's default blob limit (server MAX_BLOB_BYTES). The
@@ -69,6 +69,12 @@ export async function readShared(absolute: string, ms: number, observed: { size:
     const bytes = await Promise.race([flight.promise, slow]);
     // The file changed while it was read: those bytes are not one version.
     if (bytes && bytes !== SLOW_READ && bytes.byteLength !== observed.size) return SLOW_READ;
+    // A rewrite that kept the length is invisible to the length check; the
+    // stat taken after the read must still be the one the read began under.
+    if (bytes && bytes !== SLOW_READ) {
+      const after = await statIfExists(absolute);
+      if (!after || after.size !== observed.size || after.mtimeMs !== observed.mtimeMs) return SLOW_READ;
+    }
     return bytes;
   } finally {
     clearTimeout(timer);

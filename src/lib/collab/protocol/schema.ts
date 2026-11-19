@@ -269,6 +269,25 @@ export function manifestPathError(path: string): string | null {
   return null;
 }
 
+/** The longest suffix Libera adds to a file's name for a sidecar (`<name>.transcript`, `<name>.json`). */
+const SIDECAR_SUFFIX_BYTES = ".transcript".length;
+
+/**
+ * manifestPathError plus room for sidecar names, for names being created now.
+ * Existing entries may sit at the full segment limit and stay valid (the
+ * server keeps validating with manifestPathError alone).
+ *
+ * Whitespace: a segment may start with whitespace (it ends with neither
+ * whitespace nor a dot); src/lib/storage/paths.ts therefore trims only the end.
+ */
+export function manifestNewNameError(path: string): string | null {
+  const problem = manifestPathError(path);
+  if (problem) return problem;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  if (utf8ByteLength(name) + SIDECAR_SUFFIX_BYTES > MAX_SEGMENT_BYTES) return "The name is too long to keep room for its transcript and annotation files.";
+  return null;
+}
+
 /** Case-insensitive key used to detect two manifest entries that clash on disk. */
 export function manifestPathKey(path: string): string {
   return path.normalize("NFC").toLowerCase();

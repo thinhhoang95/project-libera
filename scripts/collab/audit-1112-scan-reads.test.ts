@@ -9,7 +9,7 @@
 // on the prototype, only the members scan() uses), over real files.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,7 +29,8 @@ const tempRoot = () => {
 const keepAlive = setInterval(() => {}, 1000);
 after(() => { clearInterval(keepAlive); for (const root of roots) rmSync(root, { recursive: true, force: true }); });
 
-const OLD = Date.now() - 60_000;
+// Whole seconds: utimes and stat then agree exactly (the read is checked against a stat taken after it).
+const OLD = Math.floor((Date.now() - 60_000) / 1000) * 1000;
 
 /** Records the paths read through fs.promises.readFile. */
 function spyReads(delay?: (file: string) => Promise<void>) {
@@ -92,6 +93,8 @@ const runScan = (value: Rig) => (value.project as unknown as { scan(): Promise<v
 function put(root: string, relative: string, text: string, times: { mtimeMs: number; ctimeMs: number }): WalkEntry {
   mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
   writeFileSync(path.join(root, relative), text);
+  // The read is validated against a stat taken after it: the file really has these times.
+  utimesSync(path.join(root, relative), times.mtimeMs / 1000, times.mtimeMs / 1000);
   return { relative, kind: "file", size: Buffer.byteLength(text), mtimeMs: times.mtimeMs, ctimeMs: times.ctimeMs, birthtimeMs: times.mtimeMs };
 }
 
@@ -187,7 +190,8 @@ describe("SYNC-2: one read per path", () => {
     assert.equal(typeof answer, "symbol");
     release();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    const fresh = await readShared(target, 1000, { ...entry, mtimeMs: OLD + 5000 });
+    utimesSync(target, (OLD + 5000) / 1000, (OLD + 5000) / 1000);
+    const fresh =await readShared(target, 1000, { ...entry, mtimeMs: OLD + 5000 });
     assert.ok(Buffer.isBuffer(fresh), "a new read starts once the old one has ended");
     assert.equal(spy.reads.length, 2);
   });
