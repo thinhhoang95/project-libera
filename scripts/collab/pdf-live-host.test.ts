@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -513,15 +514,16 @@ test("F12: a copied PDF is seeded from the host snapshot before anyone can open 
 });
 
 test("F15/F16: sidecar imports keep their original source hash and isolate invalid records", { timeout: 60_000 }, async () => {
+  // Finding 15: a sidecar whose stored hash is not this PDF's bytes is another PDF's and imports nothing, so the fixture records the real hash.
+  const pdfHash = createHash("sha256").update(PDF).digest("hex");
   const invalid = { ...note("invalid-local", "x".repeat(10_001)), updatedAt: "invalid" };
-  const setup = await pair("libera-pdf-import-validation-", { "paper.pdf": PDF }, "commenter", (root) => writeSidecar(root, "paper.pdf", [highlight("old-version"), invalid], { source: { size: 123, contentHash: "b".repeat(64) } }));
+  const setup = await pair("libera-pdf-import-validation-", { "paper.pdf": PDF }, "commenter", (root) => writeSidecar(root, "paper.pdf", [highlight("old-version"), invalid], { source: { size: PDF.length, contentHash: pdfHash } }));
   try {
     await enable(setup);
     const mine = (await resolvePdf(setup.owner, "Papers/paper.pdf"))!;
     const hub = setup.owner.host.acquire(mine.docId);
     await until(() => marksIn(hub).length === 1, "the valid record imports");
-    assert.equal(marksOf(hub.getDoc("annotations")).get("old-version")!.get("sourceHash"), "b".repeat(64));
-    assert.notEqual(mine.blobHash, "b".repeat(64));
+    assert.equal(marksOf(hub.getDoc("annotations")).get("old-version")!.get("sourceHash"), pdfHash);
     assert.equal(marksOf(hub.getDoc("annotations")).has("invalid-local"), false);
     await until(() => existsSync(path.join(setup.ownerRoot, ".libera", "collab", "rejected-pdf")), "invalid sidecar remains recoverable");
     assert.equal(hub.getStatus().state, "saved-remote", "the queue was never poisoned");
