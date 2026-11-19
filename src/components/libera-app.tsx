@@ -867,8 +867,7 @@ export function LiberaApp({
           collapsed={notebooksCollapsed}
           expanded={workspace.expanded}
           fileInteractions={workspace.fileInteractions}
-          query={workspace.query}
-          searchResults={workspace.searchResults}
+          searchStore={workspace.sidebarSearch}
           selectedNotebookName={workspace.selectedNotebook?.name ?? ""}
           tree={workspace.tree}
           textareaRef={workspace.textareaRef}
@@ -897,7 +896,6 @@ export function LiberaApp({
           onMoveFile={workspace.moveFileToFolder}
           onOpenFile={workspace.openFile}
           onLogout={workspace.handleLogout}
-          onQueryChange={workspace.setQuery}
           onRenameFolder={workspace.renameFolderFromPrompt}
           onRenameFile={workspace.renameFileNodeFromPrompt}
           onSelectNotebook={workspace.selectNotebook}

@@ -33,6 +33,7 @@ import { expandedNoteName } from "@/components/libera/default-names";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { expandMarkdownMacros } from "@/lib/markdown-macros";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
+import { ReviewPaneContext } from "./review-viewport";
 import { useNotebookCodeBlockRenderer } from "./slide-live-blocks";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { GalleryPhotoPicker, galleryPhotoFile } from "@/components/libera/gallery-photo-picker";
@@ -1944,6 +1945,7 @@ function WorkspacePanelContent({
   }
 
   return (
+    <ReviewPaneContext.Provider value={activeTab.id}>
     <div className="libera-document-workspace flex h-full min-h-0 flex-col overflow-hidden">
       {activeTab.error ? (
         <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
@@ -2359,5 +2361,6 @@ function WorkspacePanelContent({
         />
       )}
     </div>
+    </ReviewPaneContext.Provider>
   );
 }

@@ -121,7 +121,7 @@ import { useTranslations } from "next-intl";
 import { DEFAULT_UNTITLED_NAME, RECOVERED_REVIEW_NAME } from "./default-names";
 import { announceReferenceLibraryChange } from "@/lib/references/import";
 import { referenceMoveSummary, type ReferenceMoveNoticeState } from "./references/reference-move-notice";
-import { searchNotebookTree } from "./notebook-search";
+import { createSidebarSearchStore } from "./sidebar-search-store";
 import { useWhereWasITracker, whereWasITracker } from "./where-was-i-tracker";
 
 const TYPING: Provenance = { source: "typing" };
@@ -375,7 +375,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const notebookSelectionWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/preferences/last-notebook", {
     method: "PUT", body, keepalive: !window.liberaPersistence,
   }), (error) => setWorkspaceError(error instanceof Error ? error.message : tRef.current("rememberNotebookError"))), []);
-  const [query, setQuery] = useState("");
+  const [sidebarSearch] = useState(createSidebarSearchStore);
   const [fileInteractions, setFileInteractions] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [aiFormatting, setAiFormatting] = useState(false);
@@ -474,7 +474,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       canvas.restore(session.canvasLayout, session.tabs.map((tab) => tab.id), session.activeTabId);
       setSelectedNotebookName(session.selectedNotebookName);
       applyExpanded(new Set(session.expandedPaths));
-      setQuery("");
+      sidebarSearch.reset();
       setScreenshotSnipSession(null);
       setSaveDraftTabId(null);
     },
@@ -524,11 +524,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     return () => window.cancelAnimationFrame(animationFrame);
   }, []);
-
-  const searchResults = useMemo<SearchResult[]>(
-    () => searchNotebookTree(visibleTree, query, { includeNotebooks: true, limit: 12 }),
-    [query, visibleTree],
-  );
 
   function persistNotebookPanelExpansion(nextExpanded: Set<string>) {
     if (workspaceManager.activeWorkspace) return;
@@ -4635,7 +4630,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function selectSearchResult(result: SearchResult) {
-    setQuery("");
+    sidebarSearch.reset();
     updateExpanded((current) => new Set(current).add(result.notebook));
 
     if (result.type === "file") {
@@ -4698,8 +4693,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setActiveTabId(tabId);
   }
 
+  // The tab ids joined: effects that only follow which tabs are open key on this,
+  // so a draft, caret or scroll publication does not rerun them.
+  const tabIdsKey = useMemo(() => JSON.stringify(tabs.map((tab) => tab.id)), [tabs]);
+
   useEffect(() => {
-    const openTabIds = new Set(tabs.map((tab) => tab.id));
+    const openTabIds = new Set<string>(JSON.parse(tabIdsKey));
 
     activeTabHistoryRef.current = activeTabHistoryRef.current.filter((tabId) =>
       openTabIds.has(tabId),
@@ -4713,11 +4712,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       activeTabId,
       ...activeTabHistoryRef.current.filter((tabId) => tabId !== activeTabId),
     ];
-  }, [activeTabId, tabs]);
+  }, [activeTabId, tabIdsKey]);
+
+  // The window listeners below stay installed; they read the latest tabs and
+  // handlers from here instead of being removed and added on every publication.
+  const latestShortcutState = useRef({ tabs, activeTabId, closeTab });
+  useLayoutEffect(() => {
+    latestShortcutState.current = { tabs, activeTabId, closeTab };
+  });
 
   useEffect(() => {
     function activateShortcutTab(tabId: string) {
-      const tab = tabs.find((currentTab) => currentTab.id === tabId);
+      const tab = latestShortcutState.current.tabs.find((currentTab) => currentTab.id === tabId);
 
       if (tab && !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab)) {
         const interactedAt = new Date().toISOString();
@@ -4742,6 +4748,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     function cycleOrderedTab() {
+      const { tabs, activeTabId } = latestShortcutState.current;
+
       if (!tabs.length) {
         return;
       }
@@ -4753,6 +4761,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     function toggleRecentTab() {
+      const { tabs, activeTabId } = latestShortcutState.current;
       const openTabIds = new Set(tabs.map((tab) => tab.id));
       const recentTabId = activeTabHistoryRef.current.find(
         (tabId) => tabId !== activeTabId && openTabIds.has(tabId),
@@ -4785,7 +4794,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeTabId, tabs]);
+  }, []);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -4800,6 +4809,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       event.preventDefault();
 
+      const { activeTabId, closeTab } = latestShortcutState.current;
+
       if (activeTabId) {
         closeTab(activeTabId);
       }
@@ -4810,10 +4821,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeTabId, closeTab]);
+  }, []);
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
+      const { tabs } = latestShortcutState.current;
       if (tabs.some((tab) => !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) || pendingSaves.anyDirty(tabs.map((tab) => tab.file.path)) || getSharedDocRegistry().unconfirmedDocumentCount() > 0) {
         event.preventDefault();
         event.returnValue = "";
@@ -4821,7 +4833,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
     window.addEventListener("beforeunload", protectUnsavedDrafts);
     return () => window.removeEventListener("beforeunload", protectUnsavedDrafts);
-  }, [tabs]);
+  }, []);
 
   // Every draft publication and view-state report re-renders the shell, and the
   // functions above are new on each render. These forward to the latest ones
@@ -4959,13 +4971,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       noteDialogSubmitting,
       imageMarkdownConverting,
       password,
-      query,
+      sidebarSearch,
       fileInteractions,
       files,
       recentFiles,
       screenshotSnipSession,
       pendingVisualInsertions,
-      searchResults,
       selectedNotebook,
       selectedNotebookName,
       tabs,
@@ -5003,7 +5014,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       refreshAfterAgentChanges,
       setActiveTabViewState,
       setPassword,
-      setQuery,
     },
   };
 }

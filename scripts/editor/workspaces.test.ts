@@ -596,7 +596,7 @@ test("sorting controls and group changes stay in their workspace across switches
     const manager = workspace.workspaceManager;
     const panel = createElement(NotebookPanel, {
       activeTabId: workspace.activeTabId, expanded: workspace.expanded, fileInteractions: workspace.fileInteractions,
-      query: workspace.query, searchResults: workspace.searchResults, selectedNotebookName: workspace.selectedNotebookName,
+      searchStore: workspace.sidebarSearch, selectedNotebookName: workspace.selectedNotebookName,
       tree: workspace.tree, uploadInputRef: workspace.uploadInputRef, workspaceActive: Boolean(manager.activeWorkspace),
       onDuplicateMarkdown: workspace.duplicateMarkdown, onCopyFile: workspace.copyFileFromPrompt,
       onArchiveFile: workspace.archiveFileNode, onArchiveFolder: workspace.archiveFolderNode,
@@ -607,7 +607,7 @@ test("sorting controls and group changes stay in their workspace across switches
       onDeleteFolder: workspace.deleteFolderFromPrompt, onDownloadFile: workspace.downloadFile,
       onDownloadNotebook: workspace.downloadNotebook, onEditNotebook: workspace.openEditNotebookDialog,
       onEditNotebookGroup: workspace.openEditNotebookGroupDialog, onMoveFile: workspace.moveFileToFolder,
-      onOpenFile: workspace.openFile, onQueryChange: workspace.setQuery, onRenameFolder: workspace.renameFolderFromPrompt,
+      onOpenFile: workspace.openFile, onRenameFolder: workspace.renameFolderFromPrompt,
       onRenameFile: workspace.renameFileNodeFromPrompt, onSelectNotebook: workspace.selectNotebook,
       onSelectSearchResult: workspace.selectSearchResult, onStartUpload: workspace.startUpload,
       onToggleFileStar: workspace.toggleFileStar, onEditFileTags: workspace.openFileTagsDialog, onToggleNotebook: workspace.toggleNotebook,

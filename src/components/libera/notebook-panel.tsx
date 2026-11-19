@@ -37,6 +37,7 @@ import { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import { SidebarSearch } from "@/components/libera/sidebar-search";
+import type { SidebarSearchStore } from "@/components/libera/sidebar-search-store";
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import type { OpenTabViewState, SearchResult } from "@/components/libera/types";
 import type {
@@ -97,8 +98,7 @@ export type NotebookPanelProps = {
   activeTabId: string;
   expanded: Set<string>;
   fileInteractions: Record<string, string>;
-  query: string;
-  searchResults: SearchResult[];
+  searchStore: SidebarSearchStore;
   selectedNotebookName: string;
   tree: LiberaTree;
   uploadInputRef: RefObject<HTMLInputElement | null>;
@@ -124,7 +124,6 @@ export type NotebookPanelProps = {
   onEditNotebookGroup: (group: LiberaNotebookGroup) => void;
   onMoveFile: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
-  onQueryChange: (query: string) => void;
   onRenameFolder: (folder: LiberaFolderNode) => Promise<void>;
   onRenameFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
@@ -591,8 +590,7 @@ function NotebookPanelContent({
   activeTabId,
   expanded,
   fileInteractions,
-  query,
-  searchResults,
+  searchStore,
   selectedNotebookName,
   tree,
   uploadInputRef,
@@ -617,7 +615,6 @@ function NotebookPanelContent({
   onEditNotebookGroup,
   onMoveFile,
   onOpenFile,
-  onQueryChange,
   onRenameFolder,
   onRenameFile,
   onSelectNotebook,
@@ -936,11 +933,10 @@ function NotebookPanelContent({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <SidebarSearch
-        query={query}
-        searchResults={searchResults}
+        store={searchStore}
+        tree={tree}
         placeholder={t("searchPlaceholder")}
         onDeepSearch={openDeepSearch}
-        onQueryChange={onQueryChange}
         onSelectSearchResult={onSelectSearchResult}
       />
 
