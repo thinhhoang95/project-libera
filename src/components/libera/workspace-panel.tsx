@@ -68,7 +68,7 @@ import {
 } from "@/components/libera/markdown-slides-viewer";
 import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
 import { MarkdownTextWidth } from "./markdown-text-width";
-import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
+import { useMarkdownDisplayPreference, useMarkdownDisplayPreferenceActions } from "./markdown-display-preferences";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { NotebookHome } from "@/components/libera/notebook-home";
@@ -718,11 +718,11 @@ function WorkspacePanelContent({
   const [markdownSelectedText, setMarkdownSelectedText] = useState("");
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
   const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
-  const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
   const [markdownSplitPercent, setMarkdownSplitPercent] = useState(
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
   );
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const markdownSplitSeparatorRef = useRef<HTMLDivElement | null>(null);
   const latestMarkdownSplit = useRef(markdownSplitPercent);
   useLayoutEffect(() => { latestMarkdownSplit.current = markdownSplitPercent; }, [markdownSplitPercent]);
   const stopMarkdownSplitDragRef = useRef<(() => void) | null>(null);
@@ -752,8 +752,9 @@ function WorkspacePanelContent({
     activeTab?.file.fileType === "markdown" && isMarkdownSlidesPath(activeTab.file.path);
   const activeMarkdownViewState =
     activeTab?.file.fileType === "markdown" ? activeTab.viewState?.markdown : undefined;
-  const { preferences: displayPreferences, updatePreferences: updateDisplayPreferences } = useMarkdownDisplayPreferences();
-  const markdownZoom = displayPreferences.textScale;
+  const { updatePreferences: updateDisplayPreferences } = useMarkdownDisplayPreferenceActions();
+  // Only Markdown and LaTeX tabs show the zoom, so other panes stay still while the slider moves.
+  const markdownZoom = useMarkdownDisplayPreference("textScale", activeFileType === "markdown" || activeFileType === "latex");
   const markdownZoomScale = markdownZoom / 100;
   const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
   // Each editor's typeface comes from its theme (Preferences → Markdown → Themes).
@@ -1633,11 +1634,12 @@ function WorkspacePanelContent({
     }
   }
 
-  function updateMarkdownSplitFromPointer(clientX: number, clientY: number) {
+  /** Where the split sits for a pointer position, or null when the layout has no size. */
+  function markdownSplitPercentAt(clientX: number, clientY: number) {
     const container = markdownSplitContainerRef.current;
 
     if (!container) {
-      return;
+      return null;
     }
 
     const rect = container.getBoundingClientRect();
@@ -1645,11 +1647,18 @@ function WorkspacePanelContent({
     const size = isDesktopSplit ? rect.width : rect.height;
 
     if (size <= 0) {
-      return;
+      return null;
     }
 
     const offset = isDesktopSplit ? clientX - rect.left : clientY - rect.top;
-    saveMarkdownSplitPercent((offset / size) * 100, false);
+    return clampMarkdownSplitPercent((offset / size) * 100);
+  }
+
+  // A drag moves the split through a CSS variable once per frame; React hears about it once, at the end.
+  function paintMarkdownSplit(percent: number) {
+    latestMarkdownSplit.current = percent;
+    markdownSplitContainerRef.current?.style.setProperty("--markdown-split", `${percent}%`);
+    markdownSplitSeparatorRef.current?.setAttribute("aria-valuenow", String(Math.round(percent)));
   }
 
   function handleMarkdownSplitPointerDown(
@@ -1658,16 +1667,31 @@ function WorkspacePanelContent({
     event.preventDefault();
     stopMarkdownSplitDragRef.current?.();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setMarkdownSplitDragging(true);
-    updateMarkdownSplitFromPointer(event.clientX, event.clientY);
+    const container = markdownSplitContainerRef.current;
+    container?.classList.add("select-none");
+    let pointer: { x: number; y: number } | null = { x: event.clientX, y: event.clientY };
+    let frame = 0;
+
+    function paintPointer() {
+      frame = 0;
+      if (!pointer) return;
+      const percent = markdownSplitPercentAt(pointer.x, pointer.y);
+      pointer = null;
+      if (percent !== null) paintMarkdownSplit(percent);
+    }
+
+    paintPointer();
 
     function handlePointerMove(pointerEvent: PointerEvent) {
-      updateMarkdownSplitFromPointer(pointerEvent.clientX, pointerEvent.clientY);
+      pointer = { x: pointerEvent.clientX, y: pointerEvent.clientY };
+      if (!frame) frame = window.requestAnimationFrame(paintPointer);
     }
 
     function stopDragging() {
       stopMarkdownSplitDragRef.current = null;
-      setMarkdownSplitDragging(false);
+      window.cancelAnimationFrame(frame);
+      paintPointer();
+      container?.classList.remove("select-none");
       saveMarkdownSplitPercent(latestMarkdownSplit.current);
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", stopDragging);
@@ -2076,9 +2100,7 @@ function WorkspacePanelContent({
           ) : (
             <div
               ref={markdownSplitContainerRef}
-              className={`markdown-split-grid min-h-0 flex-1 overflow-hidden ${
-                markdownSplitDragging ? "select-none" : ""
-              }`}
+              className="markdown-split-grid min-h-0 flex-1 overflow-hidden"
               style={
                 {
                   "--markdown-split": `${markdownSplitPercent}%`,
@@ -2139,6 +2161,7 @@ function WorkspacePanelContent({
               />
               )}
               <div
+                ref={markdownSplitSeparatorRef}
                 aria-label={t("resizeMarkdownEditorAndPreview")}
                 aria-orientation="vertical"
                 aria-valuemax={MAX_MARKDOWN_SPLIT_PERCENT}

@@ -177,7 +177,8 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
   // The workspace renders on the client only, so storage can seed the state.
   const [splitPercent, setSplitPercent] = useState(readStoredSplit);
   const latestSplit = useRef(splitPercent);
-  const [dragging, setDragging] = useState(false);
+  const splitPointerRef = useRef<{ x: number; y: number; frame: number } | null>(null);
+  const splitSeparatorRef = useRef<HTMLDivElement>(null);
   const [bibEntries, setBibEntries] = useState<BibEntrySummary[]>([]);
   const splitRef = useRef<HTMLDivElement>(null);
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -628,19 +629,51 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
     }
   }
 
-  function updateSplit(clientX: number, clientY: number) {
+  function splitPercentAt(clientX: number, clientY: number) {
     const container = splitRef.current;
-    if (!container) return;
+    if (!container) return null;
     const rect = container.getBoundingClientRect();
     const wide = window.matchMedia("(min-width: 1024px)").matches;
-    const percent = Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, ((wide ? clientX - rect.left : clientY - rect.top) / (wide ? rect.width : rect.height)) * 100));
-    setSplit(percent);
+    return Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, ((wide ? clientX - rect.left : clientY - rect.top) / (wide ? rect.width : rect.height)) * 100));
+  }
+
+  // A drag moves the split through a CSS variable once per frame; React hears about it once, at the end.
+  function paintSplit() {
+    const pointer = splitPointerRef.current;
+    if (!pointer) return;
+    pointer.frame = 0;
+    const percent = splitPercentAt(pointer.x, pointer.y);
+    if (percent === null) return;
+    latestSplit.current = percent;
+    splitRef.current?.style.setProperty("--markdown-split", `${percent}%`);
+    splitSeparatorRef.current?.setAttribute("aria-valuenow", String(Math.round(percent)));
+  }
+
+  function updateSplit(clientX: number, clientY: number) {
+    const pointer = splitPointerRef.current;
+    if (!pointer) return;
+    pointer.x = clientX;
+    pointer.y = clientY;
+    if (!pointer.frame) pointer.frame = requestAnimationFrame(paintSplit);
   }
 
   function startSplitDrag(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDragging(true);
+    splitPointerRef.current = { x: event.clientX, y: event.clientY, frame: 0 };
+    splitRef.current?.classList.add("select-none");
+  }
+
+  /** Paints where the pointer last was, then hands the split to React and storage. */
+  function endSplitDrag(clientX?: number, clientY?: number) {
+    const pointer = splitPointerRef.current;
+    if (!pointer) return;
+    if (clientX !== undefined && clientY !== undefined) { pointer.x = clientX; pointer.y = clientY; }
+    cancelAnimationFrame(pointer.frame);
+    paintSplit();
+    splitPointerRef.current = null;
+    splitRef.current?.classList.remove("select-none");
+    setSplit(latestSplit.current, true);
   }
 
   /* ---- Diagnostics -------------------------------------------------------------- */
@@ -863,12 +896,13 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
       ) : isTex ? (
         <div
           ref={splitRef}
-          className={`markdown-split-grid min-h-0 flex-1 overflow-hidden ${dragging ? "select-none" : ""}`}
+          className="markdown-split-grid min-h-0 flex-1 overflow-hidden"
           // Hidden, the editor stacks over the log; the preview stays mounted to keep its PDF and place.
           style={pdfHidden ? { display: "flex", flexDirection: "column" } : { "--markdown-split": `${splitPercent}%` } as CSSProperties}
         >
           <div className="grid min-h-0 min-w-0 flex-1">{editor}</div>
           <div
+            ref={splitSeparatorRef}
             aria-label={t("resizeEditorAndPdf")}
             aria-orientation="vertical"
             aria-valuemax={MAX_SPLIT}
@@ -882,12 +916,10 @@ export function LatexWorkspace({ tab, files, fontFamily, visualFontFamily, fontS
             onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) updateSplit(event.clientX, event.clientY); }}
             onPointerUp={(event) => {
               if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-              updateSplit(event.clientX, event.clientY);
-              setSplit(latestSplit.current, true);
-              setDragging(false);
+              endSplitDrag(event.clientX, event.clientY);
               event.currentTarget.releasePointerCapture(event.pointerId);
             }}
-            onLostPointerCapture={() => { setDragging(false); setSplit(latestSplit.current, true); }}
+            onLostPointerCapture={() => endSplitDrag()}
             onKeyDown={(event) => {
               const step = event.shiftKey ? 10 : 5;
               if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); setSplit(Math.max(MIN_SPLIT, latestSplit.current - step), true); }
