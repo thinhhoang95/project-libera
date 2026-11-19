@@ -421,6 +421,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   // Register the recap before shared attachment effects can report a baseline.
   useWhereWasITracker(tabs, (tabId) => sharedRegistry.isSharedTab(tabId), getTabDraft, tree.notebooks);
   const sharedTabIds = useSharedTabs(tabs, {
+    enabled: authenticated,
     onText: mirrorSharedText,
     onAttached: (tabId, session) => {
       // The recap's baseline is the shared text before a pending draft is applied.

@@ -390,7 +390,9 @@ export class SharedDocRegistry {
     entry.session = session;
     entry.unsubscribe.push(
       replica.subscribeChanges(() => this.emit()),
-      replica.subscribeDurability(() => this.emitDurability()),
+      // Sync status moves the unconfirmed count (an edit just became pending, or
+      // was confirmed) without touching the version, so it wakes this channel.
+      replica.subscribe(() => this.emitDurability()),
       replica.onRebuild((subdoc) => {
         if (subdoc !== "content") return;
         // The old history refers to items of a destroyed Y.Doc.

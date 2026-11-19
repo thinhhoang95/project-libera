@@ -49,6 +49,12 @@ export interface CollabStatusStoreOptions {
 
 const INITIAL: CollabSnapshot = { phase: "loading", status: null };
 
+function sameSnapshot(a: CollabSnapshot, b: CollabSnapshot): boolean {
+  if (a.phase !== b.phase || a.error !== b.error) return false;
+  if (a.status === b.status) return true;
+  return a.status !== null && b.status !== null && JSON.stringify(a.status) === JSON.stringify(b.status);
+}
+
 export function createCollabStatusStore(options: CollabStatusStoreOptions = {}): CollabStatusStore {
   const client = options.client ?? collabClient;
   const subscribeEvents = options.subscribeEvents ?? subscribeHostEvents;
@@ -68,6 +74,9 @@ export function createCollabStatusStore(options: CollabStatusStoreOptions = {}):
   let requestSeq = 0;
 
   function emit(next: CollabSnapshot) {
+    // Identical payloads (the host re-sends, a refresh confirms an event) keep
+    // the snapshot, so no subscriber re-renders for nothing.
+    if (sameSnapshot(snapshot, next)) return;
     snapshot = next;
     for (const listener of [...listeners]) listener();
   }

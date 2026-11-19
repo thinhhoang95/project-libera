@@ -67,8 +67,13 @@ test("an acknowledgement fires the durability listener without bumping the regis
     assert.equal(versionWakes, 0, "version subscribers were not woken");
     assert.equal(replica.getSnapshot(), snapshot, "no snapshot field changed, so the snapshot keeps its identity");
 
-    // A real snapshot change still bumps the version.
+    // Sync status alone leaves the version alone (the replica's own subscribers still hear it).
     hub({ t: "status", docId, status: { state: "offline", pending: 0, oldestPendingAgeMs: 0, lastAckAt: null, connected: false } });
+    assert.equal(registry.getVersion(), version);
+    assert.equal(replicaWakes, 2);
+
+    // A structural snapshot change still bumps the version.
+    hub({ t: "closed", docId, reason: "hub-shutdown" });
     assert.equal(registry.getVersion(), version + 1);
     assert.equal(versionWakes, 1);
   } finally {
