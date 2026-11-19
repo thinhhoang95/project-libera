@@ -123,7 +123,7 @@ export class ManifestIntents {
    * was before this host changed it. `acknowledged`: the server has every
    * update of ours, so a state that still holds `to` is settled.
    */
-  reconcile(entries: ReadonlyMap<string, unknown>, acknowledged: boolean): Map<string, EntryRecord> {
+  reconcile(entries: { get(fileId: string): unknown }, acknowledged: boolean): Map<string, EntryRecord> {
     const now = this.now();
     const rewrites = new Map<string, EntryRecord>();
     for (const [key, intent] of [...this.intents]) {
