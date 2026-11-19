@@ -13,6 +13,8 @@ import {
   bindActor,
   isPlainJsonRecord,
   ManifestKeys,
+  manifestEntryShapeError,
+  manifestNewNameError,
   manifestPathError,
   MAX_ALBUM_CAPTION_LENGTH,
   PDF_IMMUTABLE_FIELDS,
@@ -24,6 +26,7 @@ import {
   pdfMarkFieldViolation, pdfAnchorViolation as anchorValueViolation, pdfMarkValuesViolation,
   type Actor,
   type AiFeature,
+  type DocKind,
   type ProjectKind,
   type Provenance,
   type ProvenanceSource,
@@ -377,13 +380,58 @@ export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKi
       const entry = files.get(key);
       if (entry === undefined) continue;
       if (!isPlainRecord(entry)) return `files/${key} must be a plain JSON object.`;
+      // A notebook entry is held to the desktop's own parse, so an update the
+      // server accepts is never one a client has to skip (finding 35).
+      const shape = album ? null : manifestEntryShapeError(key, entry);
+      if (shape) return `files/${key}: ${shape}`;
       const problem = album ? albumEntryViolation(entry) : manifestPathError(entry.path as string);
       if (problem) return `files/${key}: ${problem}`;
       const identity = album ? null : notebookEntryIdentityViolation(entry);
       if (identity) return `files/${key}: ${identity}`;
+      if (!album) {
+        // A name must leave room for its sidecar files, but only when it is new
+        // or renamed: entries already in the manifest stay valid.
+        const previous = previousEntry(before, key);
+        if (!previous || baseName(previous.path as string) !== baseName(entry.path as string)) {
+          const nameProblem = manifestNewNameError(entry.path as string);
+          if (nameProblem) return `files/${key}: ${nameProblem}`;
+        }
+      }
     }
   }
   return null;
+}
+
+function previousEntry(before: Y.Doc | undefined, fileId: string): JsonRecord | null {
+  const value = before?.getMap<unknown>(ManifestKeys.files).get(fileId);
+  return isPlainRecord(value) && typeof value.path === "string" ? value : null;
+}
+
+function baseName(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+/** What a changed notebook entry points at that this update introduces (an unchanged reference was checked when it was added). */
+export interface ManifestReferences {
+  docs: Map<string, DocKind>;
+  blobs: Set<string>;
+}
+
+export function newManifestReferences(after: Y.Doc, changed: ChangedTypes, before: Y.Doc): ManifestReferences {
+  const found: ManifestReferences = { docs: new Map(), blobs: new Set() };
+  for (const [type, keys] of changed) {
+    if (rootName(after, type) !== ManifestKeys.files || !(type instanceof Y.Map)) continue;
+    for (const key of keys) {
+      if (key === null) continue;
+      const entry: unknown = type.get(key);
+      if (!isPlainRecord(entry)) continue;
+      const previous: unknown = before.getMap<unknown>(ManifestKeys.files).get(key);
+      const prior = isPlainRecord(previous) ? previous : null;
+      if (entry.kind === "doc" && typeof entry.docId === "string" && (prior?.docId !== entry.docId || prior?.docKind !== entry.docKind)) found.docs.set(entry.docId, entry.docKind as DocKind);
+      if (entry.kind === "blob" && typeof entry.blobHash === "string" && prior?.blobHash !== entry.blobHash) found.blobs.add(entry.blobHash);
+    }
+  }
+  return found;
 }
 
 /** A document id becomes a file name on every client, so it must be a plain id (the syntax the documents API enforces). */

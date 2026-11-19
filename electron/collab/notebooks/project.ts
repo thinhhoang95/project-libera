@@ -31,6 +31,7 @@ import {
   type ManifestEntry,
 } from "../../../src/lib/collab/protocol/schema";
 import { stripPhotoMetadata } from "../../../src/lib/collab/photo-metadata";
+import { ApiClientError } from "../core/api-client";
 import type { Logger } from "../core/clock";
 import type { DocHub } from "../core/doc-hub";
 import type { CollabHost } from "../core/host";
@@ -116,6 +117,9 @@ const MAX_REPORTED_PATHS = 10_000;
 
 /** Longest wait between retries of a failed state.json write. */
 const MAX_SAVE_RETRY_MS = 5 * 60_000;
+/** A blob that cannot be downloaded is retried on a doubling delay up to this, and reported as refused after this many failures (or at once on a 404). */
+const MAX_BLOB_RETRY_MS = 5 * 60_000;
+const UNRESOLVABLE_BLOB_FAILURES = 5;
 
 /** Longest wait between a follower's probes of a path that still has not arrived. */
 const FOLLOWER_DISK_MAX_PROBE_MS = 5 * 60_000;
@@ -366,6 +370,8 @@ export class SharedProject {
   private saveFailures = 0;
   private readonly missingSince = new Map<string, number>();
   private readonly refusedLogged = new Set<string>();
+  /** Blobs that could not be downloaded: failures so far and the earliest next try (finding 35). */
+  private readonly blobFailures = new Map<string, { count: number; nextAt: number }>();
   private stopped = false;
   private stopping: Promise<void> | null = null;
   private started = false;
@@ -1081,7 +1087,8 @@ export class SharedProject {
       } else if (entry.kind === "blob" && entry.blobHash && (record.hash !== entry.blobHash || this.baselineMissing.has(fileId))) {
         const placed = await this.placeBlob(entry, record);
         if (placed) touched.add(desired);
-        else needsRetry = true;
+        // A blob on its download backoff wakes the manifest itself; the fixed-cadence retry would only spin.
+        else if (!this.blobBackingOff(entry.blobHash as string)) needsRetry = true;
       }
     }
 
@@ -1373,12 +1380,35 @@ export class SharedProject {
     }
     const api = this.ctx.host.api;
     if (!api) return null;
+    // A blob that keeps failing is tried on a growing delay, not on every pass.
+    if (this.blobBackingOff(hash)) return null;
     try {
-      return await api.downloadBlob(this.info.projectId, hash);
+      const bytes = await api.downloadBlob(this.info.projectId, hash);
+      this.blobFailures.delete(hash);
+      this.refusedLogged.delete(`blob:${hash}`);
+      return bytes;
     } catch (error) {
-      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not download blob ${hash}`, error);
+      const count = (this.blobFailures.get(hash)?.count ?? 0) + 1;
+      const delay = Math.min(MAX_BLOB_RETRY_MS, this.ctx.timings.retryMs * 2 ** (count - 1));
+      this.blobFailures.set(hash, { count, nextAt: Date.now() + delay });
+      // The server says it has no such blob, or it failed repeatedly: the entry
+      // cannot be resolved. Say so once, then keep trying only on the backoff.
+      const missing = error instanceof ApiClientError && error.status === 404;
+      if ((missing || count >= UNRESOLVABLE_BLOB_FAILURES) && !this.refusedLogged.has(`blob:${hash}`)) {
+        this.refusedLogged.add(`blob:${hash}`);
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: refused blob ${hash}: ${missing ? "the server does not have it" : `it could not be downloaded ${count} times`}. Its file is not placed.`, error);
+      } else if (count < UNRESOLVABLE_BLOB_FAILURES && !missing) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not download blob ${hash}`, error);
+      }
+      this.later(delay, () => { this.scheduleManifest(0); });
       return null;
     }
+  }
+
+  /** True while a blob's last download failed and its next try is not due. */
+  private blobBackingOff(hash: string): boolean {
+    const failure = this.blobFailures.get(hash);
+    return failure !== undefined && failure.nextAt > Date.now();
   }
 
   /**
@@ -3028,6 +3058,12 @@ export class SharedProject {
     return Promise.resolve({ entries: list });
   }
 
+  /** A name being created or renamed must leave room for its sidecar files (existing names are not re-judged). */
+  private assertNewName(relative: string): void {
+    const problem = manifestNewNameError(relative);
+    if (problem) throw new ControlError(400, "bad-request", problem);
+  }
+
   /** create-file, create-folder, write-blob, rename and delete, through the manifest; the disk follows. */
   fileOp(request: FileOpRequest): Promise<FileOpResult> {
     return this.enqueueExplicit(async () => {
@@ -3059,6 +3095,7 @@ export class SharedProject {
           case "create-file":
           case "create-folder": {
             this.assertFree(relative, []);
+            this.assertNewName(relative);
             const fileId = randomId("fil");
             let created: ManifestEntry;
             if (request.op === "create-folder") {
@@ -3127,6 +3164,7 @@ export class SharedProject {
               throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
             }
             this.assertFree(to, moving.map((entry) => entry.fileId));
+            this.assertNewName(to);
             const displayed = computeLayout(this.entries.values()).paths;
             const depth = relative.split("/").length;
             const updates = moving.map((entry) => {
