@@ -44,6 +44,7 @@ import {
 } from "@/components/libera/references/reference-render-context";
 import type { ReferenceAttachment } from "@/lib/references/types";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
+import { clearLiveReadingPosition, setLiveMarkdownLine } from "./live-reading-position";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { VoiceMemoViewer } from "@/components/libera/audio/voice-memo-viewer";
 import { RecordingTabView } from "@/components/libera/recording/recording-tab-view";
@@ -226,6 +227,8 @@ const MARKDOWN_SCROLL_VIEW_STATE_DELAY_MS = 150;
 const MARKDOWN_SCROLL_VIEW_STATE_KEYS: ReadonlySet<string> = new Set<keyof MarkdownTabViewState>([
   "editorScrollLeft", "editorScrollTop", "previewScrollLeft", "previewScrollTop",
   "visualScrollLeft", "visualScrollTop", "visualScrollAnchorPos", "visualScrollAnchorOffset",
+  // The outline's line moves as headings are crossed: a reading position too.
+  "line",
 ]);
 const MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS = 0.6;
 const MARKDOWN_SPLIT_STORAGE_KEY = "libera.markdownEditorPreviewSplitPercent";
@@ -886,6 +889,15 @@ function WorkspacePanelContent({
   }, [takePendingScrollViewState]);
   useCanvasViewStateCapture(flushScrollViewState);
   useLayoutEffect(() => flushScrollViewState, [flushScrollViewState]);
+  // The live line only bridges the wait before it is stored; a tab left behind
+  // goes back to its stored one.
+  useLayoutEffect(() => {
+    if (!activeTabId) return;
+    return () => {
+      flushScrollViewState();
+      clearLiveReadingPosition(activeTabId);
+    };
+  }, [activeTabId, flushScrollViewState]);
 
   const updateMarkdownViewState = useCallback(
     (patch: MarkdownTabViewState) => {
@@ -901,11 +913,12 @@ function WorkspacePanelContent({
   );
 
   /** A per-frame report from a scrolling editor or preview: scroll positions
-   * wait for a pause, anything else that changed (the outline's line, a
-   * selection) is stored now, as it always was. */
+   * and the outline's line wait for a pause (the outline reads the live line
+   * meanwhile), anything else that changed (a selection) is stored now. */
   const reportMarkdownScrollViewState = useCallback(
     (patch: MarkdownTabViewState) => {
       if (!activeTabId) return;
+      if ("line" in patch) setLiveMarkdownLine(activeTabId, patch.line);
       const stored = storedMarkdownViewStateRef.current;
       const urgent = (Object.keys(patch) as (keyof MarkdownTabViewState)[])
         .some((key) => !MARKDOWN_SCROLL_VIEW_STATE_KEYS.has(key) && patch[key] !== stored?.[key]);
@@ -1601,7 +1614,7 @@ function WorkspacePanelContent({
   function handleMarkdownPreviewScroll(event: ReactUIEvent<HTMLElement>) {
     const preview = event.currentTarget;
 
-    updateMarkdownViewState({
+    reportMarkdownScrollViewState({
       previewScrollLeft: preview.scrollLeft,
       previewScrollTop: preview.scrollTop,
     });
@@ -2276,6 +2289,7 @@ function WorkspacePanelContent({
         <NoteMathMarkersProvider value={markdownPreferences}>
           <PdfViewer
             key={activeTab.id}
+            tabId={activeTab.id}
             src={activeTab.rawUrl}
             filePath={activeTab.file.path}
             initialViewState={activePdfViewState}

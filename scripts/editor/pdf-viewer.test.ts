@@ -9,9 +9,12 @@ import type { PdfTabViewState } from "../../src/components/libera/types";
 import type { PdfAnnotation, PdfSpaceAnnotation } from "../../src/lib/types";
 import { PDF_DETAIL_MARGIN, PDF_MAX_CANVAS_PIXELS } from "../../src/components/libera/pdf-rendering";
 import { captureCanvasViewState } from "../../src/components/libera/canvas-view-state";
+import { getLivePdfPage } from "../../src/components/libera/live-reading-position";
 import { assignTextPieces, usePdfSpaceRaster } from "../../src/components/libera/pdf-space-raster";
 import { usePdfDetailCanvas } from "../../src/components/libera/use-pdf-detail-canvas";
 import { IDENTITY_PAGE_GEOMETRY, pdfPageGeometry, type PdfPageGeometry } from "../../src/lib/pdf-space-geometry";
+
+const LIVE_TAB = "Papers/paper.pdf";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -110,7 +113,7 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
   }
   async function mount(initialViewState?: PdfTabViewState) {
     await act(async () => root.render(createElement(PdfViewer, {
-      src: "/paper.pdf", filePath: "paper.pdf", initialViewState,
+      src: "/paper.pdf", filePath: "paper.pdf", initialViewState, tabId: LIVE_TAB,
       onViewStateChange: (patch) => changes.push(patch),
       // The workspace recreates these callbacks during its own state updates.
       onCancelScreenshotSnip: () => undefined,
@@ -268,6 +271,50 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       });
       assert.equal(pageIndicator(), "Page 4/5");
       await unmount();
+    });
+    await t.test("scrolling across pages tells the workspace nothing until the pause, then page and position together", async () => {
+      normalLoad();
+      changes.length = 0;
+      await mount();
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      assert.equal(changes.filter((change) => change.pageCount !== undefined).length, 1, "the page count is published once, at load");
+      changes.length = 0;
+      const scroller = host.querySelector<HTMLElement>(".libera-pdf-viewer .overflow-auto")!;
+      const pageIndicator = () => Array.from(host.querySelectorAll("span"))
+        .find((element) => /^Page \d+\/5$/.test(element.textContent ?? ""))?.textContent;
+      scroller.getBoundingClientRect = () => ({ top: 0, height: 600 } as DOMRect);
+      for (const page of host.querySelectorAll<HTMLElement>("[data-pdf-page-number]")) {
+        const pageNumber = Number(page.dataset.pdfPageNumber);
+        page.getBoundingClientRect = () => {
+          const top = 100 + (pageNumber - 1) * 812 - scroller.scrollTop;
+          return { top, bottom: top + 792 } as DOMRect;
+        };
+      }
+      // Events 100 ms apart, each pause shorter than the store delay, crossing pages 2 to 4.
+      for (const scrollTop of [820, 1230, 1640, 2050, 2470]) {
+        await act(async () => {
+          scroller.scrollTop = scrollTop;
+          scroller.dispatchEvent(new dom.window.Event("scroll"));
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        });
+      }
+      const livePage = getLivePdfPage(LIVE_TAB);
+      assert.ok(livePage !== undefined && livePage > 1, "readers elsewhere get the live page");
+      assert.equal(pageIndicator(), `Page ${livePage}/5`, "the indicator is live and agrees");
+      assert.equal(changes.length, 0, "page changes during the scroll reach no one");
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
+      assert.deepEqual(changes, [{ scrollTop: 2470, scrollLeft: 0, page: 4 }], "the pause stores position and page once");
+      // A capture mid-gesture stores the page that is held with the position.
+      changes.length = 0;
+      await act(async () => {
+        scroller.scrollTop = 100;
+        scroller.dispatchEvent(new dom.window.Event("scroll"));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        captureCanvasViewState();
+      });
+      assert.deepEqual(changes, [{ scrollTop: 100, scrollLeft: 0, page: 1 }]);
+      await unmount();
+      assert.equal(getLivePdfPage(LIVE_TAB), undefined, "a closed viewer leaves no live page behind");
     });
     await t.test("scroll bursts coalesce and the final position flushes on unmount", async () => {
       normalLoad();
