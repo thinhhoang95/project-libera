@@ -57,6 +57,41 @@ function inside the shared files (`project.ts`, `service.ts`, `doc-hub.ts`, `sha
 
 Each round starts from the merged result of the previous one (`fix/sync-audit-1119`).
 
+## Round A results (merged)
+
+All six branches merged into `fix/sync-audit-1119`; one textual conflict (an import line in
+`project.ts`). After merging, root `tsc` found only test-typing errors (fixed), server `tsc` was
+clean, and eslint on every changed file found one unused import (removed) and one warning that
+already exists on `main`. The full suites have not been run yet.
+
+| Package | Status | Gaps carried forward |
+|---|---|---|
+| P1 (6, 7, 43) | fixed | The server gates updates after a failed write instead of adding a new reject reason (older hosts could not decode one); resends follow the existing backoff with no attempt cap. |
+| P2 (3, 4, 29) | fixed | `markDeleted` now means a server-confirmed deletion only. A pending move is the record keeping its old path plus the move journal; `materializeDoc` can still write a doc at its old path while its move is pending (P8). A doc edited externally and renamed before the scan sees the edit stays at the old name and is imported as a new file. |
+| P3 (1, 13, 20, 25) | 1 and 13 partly | 1: host and routes accept `expectedFileId`, but tree nodes carry no file id, so the UI sends none (P11). 13: the bibliography tether and per-file records under a renamed shared folder are not moved (P4). 25: a create refused in the race window leaves an orphan server document or blob. |
+| P7a (12, 19, 22, 28, 34) | fixed (19: rename + edit still gives two entries) | `manifestNewNameError` (room for sidecar suffixes) is used by the scan only; whether `fileOp` creates and the server enforce it is open (P4). A late copy whose bytes match no retired hash is now imported, not archived. |
+| P9 (10, 14, 15, 21, 41) | 10, 14 and 21 partly | 10: the revision check is a narrow window, not an atomic compare-and-swap. 14: pending PDF moves are in memory only; the audio route gets chunking and retry but no pending-move replay (`transcripts.ts`, P12). 21: authors with no ink file on this disk yet are not merged (P12, now possible with the listing). |
+| P10 (9, 11, 16, 17) | 17 partly | 9: after a 409 the tab keeps its draft, but every save is refused until the tab's saved text is refreshed from disk (P11). 11: a job finishing after the user's edits ends in error and its result is dropped. 17: rollback is in memory; a crash mid-move is not resumed. |
+
+Added on the integration branch between rounds: `GET /projects/:id/file-entries`
+(`listEntries` in `project.ts`, `listProjectEntries` in `host-client.ts`, `listSharedEntries` in
+`shared-writes.ts`) — the manifest's entries at the layout's paths, read without the disk or the
+project queue. Round B uses it for tree file ids, ink authors and downloads.
+
+## Round B plan (adjusted after round A)
+
+| Package | Findings and carried gaps |
+|---|---|
+| P5 leases | 31, 40 |
+| P6 share and takedown | 8, 18, 32, 33 |
+| P7b scanner liveness and battery | 30, 37, 38 (scan side) |
+| P8 promotion and materialization | 2, 23, 28 (materialize part), 38 (placement), 39; skip docs whose move is pending (P2 note) |
+| P11 UI tree identity and refresh | 1 (UI side: tree nodes in shared notebooks carry the listed file id; rename/delete send it), 24 (retarget by file id), 36; after a refused save, refresh the tab's saved text from disk and keep the draft |
+| P12 authoritative reads | 26 (list from `listSharedEntries`), 27, 42; 21 gap (enumerate ink authors from the listing); 14 gap (audio pending-move replay in `transcripts.ts`) |
+
+Round C (P4): 5, 35; 13 leftovers (bibliography tether, per-file records under a renamed shared
+folder); decide whether new names must pass `manifestNewNameError` in `fileOp` and on the server.
+
 ## Findings (verbatim from the review)
 
 ### Highest risk for data and file identity

@@ -118,11 +118,11 @@ function silentFactory(): { factory: (url: string) => WebSocketLike; opened: () 
         onerror: null,
         send: () => {},
         close: () => {
-          socket.readyState = 3;
+          (socket as { readyState: number }).readyState = 3;
         },
       } as unknown as WebSocketLike;
       setImmediate(() => {
-        socket.readyState = 1;
+        (socket as { readyState: number }).readyState = 1;
         opened += 1;
         socket.onopen?.({});
       });

@@ -146,7 +146,7 @@ test("host: rename keeps a file's kind and records, moves a note's Python, and c
   let injected = false;
   const injections: Array<() => void> = [];
   const racing: FetchLike = async (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+    const url = input;
     if (!injected && init?.method === "POST" && /\/documents$/.test(new URL(url).pathname) && injections.length) {
       injected = true;
       injections.shift()!();

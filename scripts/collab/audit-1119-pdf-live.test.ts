@@ -19,7 +19,7 @@ type RuntimeInternals = {
   sidecarBelongsToPdf(doc: unknown, sidecar: unknown, sidecarFile: string): Promise<boolean | null>;
 };
 
-function withRuntime(run: (runtime: PdfMarksRuntime & RuntimeInternals, root: string) => Promise<void>) {
+function withRuntime(run: (runtime: RuntimeInternals, root: string) => Promise<void>) {
   return async () => {
     const temp = tempDir("libera-audit-1119-pdf-");
     const root = temp.file("notebook");
@@ -31,7 +31,7 @@ function withRuntime(run: (runtime: PdfMarksRuntime & RuntimeInternals, root: st
     const runtime = new PdfMarksRuntime({ host, logger: quietLogger, projectId: "prj_test", notebook: "Notebook", root, writeMs: 60_000,
       role: () => "commenter", canWriteDisk: () => true, guard: () => ({ root, canCommit: async () => true }),
       authorityReady: () => true, recordLive: async () => {}, filesChanged() {}, commentsChanged() {}, manifest: () => manifest });
-    try { await run(runtime as unknown as PdfMarksRuntime & RuntimeInternals, root); }
+    try { await run(runtime as unknown as RuntimeInternals, root); }
     finally { await runtime.stop(); await host.stop(); manifest.destroy(); temp.cleanup(); }
   };
 }

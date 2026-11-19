@@ -46,7 +46,7 @@ import { getFileNode, getTree } from "@/lib/storage/tree";
 import { movePathDerivedRecords, readLiberaFile } from "@/lib/storage/files";
 import { SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
-import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
+import { removeFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
 import { CollabHostError, resolveSharedPdf, livePdfSnapshot, readProjectBlob, listProjectEntries, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
