@@ -401,6 +401,16 @@ export interface FileBlobResponse {
   contentBase64: string | null;
 }
 
+/**
+ * What a file operation did: the Libera paths it touched and, for a create or a
+ * blob write, the file's id. A create answers with the path the layout gave
+ * the new file, which is not the requested one when another file took it.
+ */
+export interface FileOpResult {
+  paths: string[];
+  fileId?: string;
+}
+
 export interface FileOpRequest {
   /**
    * `write-blob` adds a binary file (an upload, a pasted image, an edited

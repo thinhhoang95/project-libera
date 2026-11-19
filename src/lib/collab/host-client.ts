@@ -230,7 +230,7 @@ export function readProjectBlob(projectId: string, relative: string, config?: Ho
   return hostJson(`${ControlRoutes.fileBlob(projectId)}?path=${encodeURIComponent(relative)}`, { config });
 }
 
-export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<{ paths: string[] }> {
+export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<import("./local-api").FileOpResult> {
   return hostJson(ControlRoutes.files(projectId), { method: "POST", body: request, config });
 }
 

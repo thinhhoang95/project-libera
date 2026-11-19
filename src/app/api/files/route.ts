@@ -85,6 +85,8 @@ export async function PATCH(request: NextRequest) {
       destinationDirectory?: string;
       copy?: boolean;
       archive?: boolean;
+      /** The shared file the caller saw at `path`; a rename of another file there is refused. */
+      fileId?: string;
     };
 
     if (body.archive) {
@@ -105,7 +107,7 @@ export async function PATCH(request: NextRequest) {
 
     if (body.destinationDirectory) {
       if (isSharedNotebookPath(body.path ?? "")) {
-        return NextResponse.json(await moveSharedFile(body.path ?? "", body.destinationDirectory, body.destinationName));
+        return NextResponse.json(await moveSharedFile(body.path ?? "", body.destinationDirectory, body.destinationName, { expectedFileId: body.fileId }));
       }
       if (isSharedNotebookPath(body.destinationDirectory)) throw new StorageError("Moving files between shared and other notebooks is not supported. Use Copy to create a separate file in the destination notebook.", 409);
       return NextResponse.json(
@@ -122,7 +124,7 @@ export async function PATCH(request: NextRequest) {
         const current = splitFilePath(body.path ?? "");
         const notebook = body.destinationNotebook ? assertSafeSegment(body.destinationNotebook, "Notebook name") : current.notebook;
         const parent = notebook === current.notebook ? current.pathParts.slice(0, -1) : [];
-        return NextResponse.json(await moveSharedFile(body.path ?? "", [notebook, ...parent].join("/"), body.destinationName));
+        return NextResponse.json(await moveSharedFile(body.path ?? "", [notebook, ...parent].join("/"), body.destinationName, { expectedFileId: body.fileId }));
       }
       if (isSharedNotebookPath(body.destinationNotebook ?? "")) throw new StorageError("Moving files between shared and other notebooks is not supported. Use Copy to create a separate file in the destination notebook.", 409);
       return NextResponse.json(
@@ -152,8 +154,8 @@ export async function DELETE(request: NextRequest) {
 
   try {
     const filePath = request.nextUrl.searchParams.get("path") ?? "";
-    const remove = isSharedNotebookPath(filePath) ? deleteSharedFile : deleteFile;
-    return NextResponse.json(await remove(filePath));
+    const fileId = request.nextUrl.searchParams.get("fileId") || undefined;
+    return NextResponse.json(isSharedNotebookPath(filePath) ? await deleteSharedFile(filePath, { expectedFileId: fileId }) : await deleteFile(filePath));
   } catch (error) {
     return handleError(error);
   }

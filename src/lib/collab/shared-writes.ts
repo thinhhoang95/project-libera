@@ -43,13 +43,14 @@ import {
 } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { getFileNode, getTree } from "@/lib/storage/tree";
-import { readLiberaFile } from "@/lib/storage/files";
+import { movePathDerivedRecords, readLiberaFile } from "@/lib/storage/files";
+import { SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
 import { CollabHostError, resolveSharedPdf, livePdfSnapshot, readProjectBlob, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
-import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
+import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, FileOpResult, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
 import { SharedDocumentError, isSharedNotebookPath, sharedManifestPath, sharedNotebookMarker } from "./shared-notebook";
@@ -80,6 +81,16 @@ export const MAX_STAGED_BLOB_BYTES = 100 * 1024 * 1024;
 export interface SharedWriteOptions {
   /** Defaults to the host this launch was given (LIBERA_COLLAB_HOST_URL/TOKEN). */
   config?: HostClientConfig | null;
+}
+
+/** Options of a rename or delete of one file: the file the caller saw at the path. */
+export interface SharedIdentityOptions extends SharedWriteOptions {
+  /**
+   * The file id the UI showed at this path. The host refuses (409) when the
+   * path now belongs to another file, instead of acting on whatever is there.
+   * Without it the host acts on the file at the path.
+   */
+  expectedFileId?: string;
 }
 
 function hostConfig(liberaPath: string, options: SharedWriteOptions): HostClientConfig {
@@ -390,7 +401,7 @@ function manifestTarget(liberaPath: string): { notebook: string; projectId: stri
 }
 
 /** Creates a new file in a shared notebook (a text document, or a blob for other types). Returns the Libera paths created. */
-export async function createSharedFile(liberaPath: string, content: string, options: SharedWriteOptions = {}): Promise<{ paths: string[] }> {
+export async function createSharedFile(liberaPath: string, content: string, options: SharedWriteOptions = {}): Promise<FileOpResult> {
   const target = manifestTarget(liberaPath);
   const config = hostConfig(liberaPath, options);
   return host(liberaPath, () => fileOp(target.projectId, { op: "create-file", path: target.path, content }, config));
@@ -433,7 +444,7 @@ export async function saveSharedFileText(liberaPath: string, content: string, op
  * existing one, as a manifest blob. A new text file (.md, .tex, …) becomes a
  * document instead. Returns the Libera paths written.
  */
-export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean; expectedFileId?: string; expectedBlobHash?: string; pdfSeed?: import("./protocol/pdf").PdfImportRequest } = {}): Promise<{ paths: string[] }> {
+export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean; expectedFileId?: string; expectedBlobHash?: string; pdfSeed?: import("./protocol/pdf").PdfImportRequest } = {}): Promise<FileOpResult> {
   const target = manifestTarget(liberaPath);
   if (bytes.byteLength > MAX_STAGED_BLOB_BYTES) {
     throw new SharedWriteError(
@@ -597,9 +608,11 @@ export async function createSharedMarkdownFile(notebook: string, name: string, c
   await assertSharedDirectoryExists(parentDirectory, relativeFilePath(parent.notebook, parent.pathParts), "Destination folder is not a folder.", options);
   if (await pathExists(filePathFromParts(parent.notebook, targetParts))) throw new StorageError("File already exists.", 409);
   const liberaPath = relativeFilePath(parent.notebook, targetParts);
-  await createSharedFile(liberaPath, content, options);
-  notifySearchChanges([liberaPath]);
-  return savedFile(liberaPath, Buffer.byteLength(content), async () => content);
+  const created = await createSharedFile(liberaPath, content, options);
+  // The path the host's layout gave the file: another device's create can take the name first.
+  const placed = created.paths[0] ?? liberaPath;
+  notifySearchChanges([placed]);
+  return savedFile(placed, Buffer.byteLength(content), async () => content);
 }
 
 /** Creates a folder through the manifest so collaborators receive it too. */
@@ -628,7 +641,7 @@ async function sameItem(left: string, right: string): Promise<boolean> {
 }
 
 /** Rename or move within a shared notebook, preserving the manifest entry and document identity. */
-export async function moveSharedFile(relativePath: string, destinationDirectory: string, destinationName?: string, options: SharedWriteOptions = {}) {
+export async function moveSharedFile(relativePath: string, destinationDirectory: string, destinationName?: string, options: SharedIdentityOptions = {}) {
   await ensureAdminRoot();
   const current = splitFilePath(relativePath);
   const destination = splitDirectoryPath(destinationDirectory);
@@ -648,28 +661,65 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
     throw new StorageError("Destination file already exists.", 409);
   }
   const config = hostConfig(sourcePath, options);
-  await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: nextParts.join("/") }, config));
+  await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: nextParts.join("/"), ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}) }, config));
   if (getFileType(current.name) === "audio" && sourcePath !== nextPath) {
     // The host moved (or dropped) the companion transcript in the same manifest change.
     await followSharedAudioChanges([{ from: sourcePath, to: nextPath }], []);
   }
   // A PDF's local side-cars (annotations, outline, definitions, text cache) follow it now, before the host's event does.
   if (getFileType(current.name) === "pdf" && sourcePath !== nextPath) await followSharedPdfChanges([{ from: sourcePath, to: nextPath }], []);
-  // The host moves the file's ink with it (or drops it when the type changes), in the same change.
-  await renameFileMetadataPath(sourcePath, nextPath);
+  // The host moves the file's ink, transcript and Python code with it in the same change (and refuses a rename that would lose one).
+  // The records kept on this computer follow here, as for a local file.
+  await moveSharedLocalRecords(sourcePath, nextPath);
+  await movePathDerivedRecords(sourcePath, nextPath);
   notifySearchChanges([sourcePath, nextPath]);
   return savedFile(nextPath, moving.size, () => readSharedText(nextPath, options).then((result) => result.text, () => undefined));
 }
 
+// Records of a file that SIDECAR_KINDS lists and that something else already moves in a shared
+// notebook: the host (ink and transcripts are manifest entries), the PDF reconciliation
+// (marks, outline, text cache, definitions), or nothing (a waveform cache is made again).
+const SIDECARS_MOVED_ELSEWHERE = new Set(["ink", "transcript", "audio-peaks", "pdf-annotations", "pdf-outline", "pdf-text"]);
+
+/**
+ * The records of a renamed shared file that live only on this computer (image
+ * annotations, definitions of a note or LaTeX file, and any kind added to
+ * SIDECAR_KINDS later), moved with it as a local rename does. Never replaces a
+ * record already at the destination; one that cannot move stays where it is.
+ */
+async function moveSharedLocalRecords(from: string, to: string) {
+  if (from === to) return;
+  const source = splitFilePath(from);
+  const target = splitFilePath(to);
+  const fromType = getFileType(source.name);
+  const toType = getFileType(target.name);
+  if (!fromType || !toType) return;
+  for (const kind of SIDECAR_KINDS) {
+    if (SIDECARS_MOVED_ELSEWHERE.has(kind.id) || (kind.id === "definitions" && fromType === "pdf")) continue;
+    if (!kind.appliesTo(fromType) || !kind.appliesTo(toType)) continue;
+    const old = kind.filePath(source.notebook, source.pathParts);
+    const next = kind.filePath(target.notebook, target.pathParts);
+    if (old === next || !(await pathExists(old))) continue;
+    try {
+      if (kind.layout === "folder") continue;
+      // Created exclusively, like the Python sidecar's move: a record saved there meanwhile is never replaced.
+      await copyFileIfExists(old, next, { exclusive: true });
+      await rm(old, { force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") console.error(`[shared-writes] Could not move the ${kind.id} record of ${from} to ${to}:`, error);
+    }
+  }
+}
+
 /** Delete via the manifest; the host removes the working copy and syncs the deletion. */
-export async function deleteSharedFile(relativePath: string, options: SharedWriteOptions = {}): Promise<LiberaTree> {
+export async function deleteSharedFile(relativePath: string, options: SharedIdentityOptions = {}): Promise<LiberaTree> {
   await ensureAdminRoot();
   const current = splitFilePath(relativePath);
   const liberaPath = relativeFilePath(current.notebook, current.pathParts);
   await getSharedFileNode(current.notebook, current.pathParts, options);
   const target = manifestTarget(liberaPath);
   const config = hostConfig(liberaPath, options);
-  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
+  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path, ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}) }, config));
   if (getFileType(current.name) === "audio") {
     // The host deleted the companion transcript in the same manifest change.
     await followSharedAudioChanges([], [liberaPath]);
@@ -811,8 +861,9 @@ async function createSharedBlobAtFreeName(directory: string, libraryPath: (name:
     const candidate = index === 0 ? fileName : `${stem}-${index}${extension}`;
     if (await pathExists(path.join(directory, candidate))) continue;
     try {
-      await writeSharedBlob(libraryPath(candidate), bytes, { ...options, createOnly: true });
-      return candidate;
+      const placed = await writeSharedBlob(libraryPath(candidate), bytes, { ...options, createOnly: true });
+      // The name the host's layout gave it, which differs when another device created the same name at once.
+      return placed.paths[0] ? path.posix.basename(placed.paths[0]) : candidate;
     } catch (error) {
       if (!isSharedNameTaken(error)) throw error;
     }
@@ -833,12 +884,13 @@ export async function writeSharedUpload(notebook: string, upload: File, destinat
   if (await pathExists(filePathFromParts(destination.notebook, targetParts))) throw new StorageError(`File already exists: ${safeName}`, 409);
   const liberaPath = relativeFilePath(destination.notebook, targetParts);
   // createOnly: the disk may lag the manifest, so a free name here proves nothing about the shared notebook.
-  await writeSharedBlob(liberaPath, new Uint8Array(await upload.arrayBuffer()), { ...options, createOnly: true }).catch((error) => {
+  const created = await writeSharedBlob(liberaPath, new Uint8Array(await upload.arrayBuffer()), { ...options, createOnly: true }).catch((error) => {
     if (isSharedNameTaken(error)) throw new StorageError(`File already exists: ${safeName}`, 409);
     throw error;
   });
-  notifySearchChanges([liberaPath]);
-  return savedNode(liberaPath, upload.size);
+  const placed = created.paths[0] ?? liberaPath;
+  notifySearchChanges([placed]);
+  return savedNode(placed, upload.size);
 }
 
 /** writeMarkdownImageAsset for a document in a shared notebook: the image becomes a blob under the notebook's _assets. */
