@@ -19,7 +19,11 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
  */
 export const IMPORT_QUIET_MS = 3000;
 
-/** Reads of different paths that may be outstanding at once (a timed-out read keeps running). */
+/**
+ * Reads of different paths that may be outstanding at once in one notebook (a
+ * timed-out read keeps running). The count is per notebook: a stalled provider
+ * under one notebook must not make the scans of the others defer forever.
+ */
 export const MAX_OUTSTANDING_READS = 4;
 
 /** Bytes one scan reads of files it has not shared yet; the rest wait for the next scan. */
@@ -37,16 +41,28 @@ interface Flight {
   mtimeMs: number;
 }
 
-const flights = new Map<string, Flight>();
+/** Reads of callers that name no notebook share this pool. */
+const SHARED_POOL = {};
+const pools = new WeakMap<object, Map<string, Flight>>();
+
+function poolOf(owner: object): Map<string, Flight> {
+  let pool = pools.get(owner);
+  if (!pool) {
+    pool = new Map();
+    pools.set(owner, pool);
+  }
+  return pool;
+}
 
 /**
  * readWithin with one read per path: a read given up on keeps running, and
  * the next scan joins it instead of starting another. The result is used only
  * while the file still has the size and mtime it had when that read began;
  * otherwise this answers SLOW_READ until the old read ends. At most
- * MAX_OUTSTANDING_READS paths are read at a time.
+ * MAX_OUTSTANDING_READS paths are read at a time per `owner` (the notebook).
  */
-export async function readShared(absolute: string, ms: number, observed: { size: number; mtimeMs: number }): Promise<Buffer | null | typeof SLOW_READ> {
+export async function readShared(absolute: string, ms: number, observed: { size: number; mtimeMs: number }, owner: object = SHARED_POOL): Promise<Buffer | null | typeof SLOW_READ> {
+  const flights = poolOf(owner);
   let flight = flights.get(absolute);
   if (flight && (flight.size !== observed.size || flight.mtimeMs !== observed.mtimeMs)) return SLOW_READ;
   if (!flight) {

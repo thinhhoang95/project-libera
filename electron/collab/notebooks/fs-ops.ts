@@ -192,18 +192,37 @@ export async function checkWriteGuard(guard?: WriteGuard): Promise<void> {
   if (guard && !(await guard.canCommit())) throw new WriteCancelledError();
 }
 
+/** Longest a content guard waits on the disk before it refuses the commit (a stalled provider). */
+export const guardTimings = { readMs: 10_000 };
+
 /** Fence the exact destination observation across IO and busy-file retries. */
 export function contentGuard(absolute: string, expected: string | null, guard: WriteGuard): WriteGuard {
   return { root: guard.root, canCommit: async () => {
     if (!(await guard.canCommit())) return false;
     await resolveInside(guard.root, toRelative(guard.root, absolute));
-    const before = await statIfExists(absolute);
-    const bytes = await readIfExists(absolute);
-    // A file replaced or rewritten while it was being read and hashed is not
-    // the observation that hash describes: the longest part of the check-then-act window.
-    const after = await statIfExists(absolute);
-    if (before?.mtimeMs !== after?.mtimeMs || before?.size !== after?.size || before?.ino !== after?.ino) return false;
-    return (bytes === null ? null : sha256(bytes)) === expected;
+    // Bounded: a provider that stalls must not hold the project queue (and
+    // with it stopping). Nothing is committed on a timeout; the caller retries later.
+    const observation = (async () => {
+      const before = await statIfExists(absolute);
+      const bytes = await readIfExists(absolute);
+      // A file replaced or rewritten while it was being read and hashed is not
+      // the observation that hash describes: the longest part of the check-then-act window.
+      const after = await statIfExists(absolute);
+      if (before?.mtimeMs !== after?.mtimeMs || before?.size !== after?.size || before?.ino !== after?.ino) return false;
+      return (bytes === null ? null : sha256(bytes)) === expected;
+    })();
+    // A read given up on must not surface later as an unhandled rejection.
+    observation.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const slow = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), guardTimings.readMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([observation, slow]);
+    } finally {
+      clearTimeout(timer);
+    }
   } };
 }
 
