@@ -25,16 +25,23 @@ function usePagePresence(store: PdfPresenceStore | null, pageNumber: number): Pd
   return useSyncExternalStore(store?.subscribe ?? noSubscribe, () => store?.getPageSnapshot(pageNumber) ?? EMPTY_PAGE, () => EMPTY_PAGE);
 }
 
+/** Hands back the previous list while an equal one comes in, so the layer keeps its props. */
+function createSelectionsHold() {
+  let key = "";
+  let value = NO_SELECTIONS;
+  return (next: PdfPageSelection[]) => {
+    if (!next.length) return NO_SELECTIONS;
+    const nextKey = JSON.stringify(next);
+    if (nextKey !== key) { key = nextKey; value = next; }
+    return value;
+  };
+}
+
 /** Who selected which of these marks; re-renders only when that changes. */
 function usePageSelections(store: PdfPresenceStore | null, marks: readonly PdfAnnotation[]): PdfPageSelection[] {
-  const [last] = useState(() => ({ key: "", value: NO_SELECTIONS }));
-  return useSyncExternalStore(store?.subscribe ?? noSubscribe, () => {
-    const next = store?.selectionsOf(new Set(marks.map((mark) => mark.id))) ?? NO_SELECTIONS;
-    if (!next.length) return NO_SELECTIONS;
-    const key = JSON.stringify(next);
-    if (key !== last.key) { last.key = key; last.value = next; }
-    return last.value;
-  }, () => NO_SELECTIONS);
+  const [hold] = useState(createSelectionsHold);
+  return useSyncExternalStore(store?.subscribe ?? noSubscribe,
+    () => hold(store?.selectionsOf(new Set(marks.map((mark) => mark.id))) ?? NO_SELECTIONS), () => NO_SELECTIONS);
 }
 
 function markBounds(mark: PdfAnnotation): PdfAnnotationRect[] {
