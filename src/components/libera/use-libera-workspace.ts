@@ -51,6 +51,7 @@ import {
   resolveMarkdownFileLink,
   type MarkdownFileLinkMetadata,
 } from "@/lib/markdown-file-links";
+import { applyFileMetadata, mergeTree, type FileMetadataResult } from "@/lib/tree-merge";
 import { findMarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
 import { annotationLinkLabel, findRememberedAnnotation } from "@/lib/annotation-links";
 import {
@@ -589,8 +590,31 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       try { nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true"); }
       catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshArchivedError")); }
     }
-    appliedTreeRef.current = nextTree;
-    setTree(nextTree);
+    // Keep the objects of everything unchanged, so the sidebar re-renders only what differs.
+    const shown = mergeTree(appliedTreeRef.current, nextTree);
+    appliedTreeRef.current = shown;
+    setTree(shown);
+  }
+
+  /**
+   * Shared working-copy writes: read only those files' metadata and patch it
+   * into the shown tree. Anything that read cannot settle reads the whole tree.
+   */
+  async function refreshFiles(paths: string[]) {
+    const shown = appliedTreeRef.current;
+    if (shown) {
+      const { files } = await apiRequest<{ files: FileMetadataResult[] }>("/api/tree/files", {
+        method: "POST", body: JSON.stringify({ paths }),
+      });
+      // A tree applied meanwhile is newer than the one this read was matched to.
+      const current = appliedTreeRef.current;
+      const patched = current ? applyFileMetadata(current, files) : null;
+      if (patched) {
+        if (patched !== current) { appliedTreeRef.current = patched; setTree(patched); }
+        return;
+      }
+    }
+    await refreshTree(undefined, { onlyIfChanged: true });
   }
 
   /**
@@ -598,17 +622,21 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    * was applied meanwhile it may be older than this one, so fetch again (twice
    * at most) rather than keep it.
    */
-  async function refreshTree(expandNotebook?: string, options?: { onlyIfChanged?: boolean }) {
+  async function refreshTree(expandNotebook?: string, options?: { onlyIfChanged?: boolean; maintain?: boolean }) {
+    // A background check may skip sidecar upkeep the server did recently; loads and focus returns do it.
+    const url = options?.onlyIfChanged && !options.maintain
+      ? "/api/tree?includeArchive=true&maintenance=throttled" : "/api/tree?includeArchive=true";
     let treeAtStart = appliedTreeRef.current;
-    let nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+    let nextTree = await apiRequest<LiberaTree>(url);
     if (options?.onlyIfChanged) {
       for (let retries = 0; appliedTreeRef.current !== treeAtStart && retries < 2; retries++) {
         treeAtStart = appliedTreeRef.current;
-        nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+        nextTree = await apiRequest<LiberaTree>(url);
       }
-      if (appliedTreeRef.current !== treeAtStart || JSON.stringify(nextTree) === JSON.stringify(treeAtStart)) {
-        return appliedTreeRef.current ?? nextTree;
-      }
+      if (appliedTreeRef.current !== treeAtStart) return appliedTreeRef.current ?? nextTree;
+      // The same content gives back the shown tree itself: nothing is applied.
+      nextTree = mergeTree(treeAtStart, nextTree);
+      if (nextTree === treeAtStart) return nextTree;
     }
     await applyCompleteTree(nextTree);
     setSelectedNotebookName((current) => {
@@ -650,7 +678,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       running = true;
       lastStartedAt = Date.now();
       // A failed background check is not worth an error banner; the next one retries.
-      void latestFocusRefresh.current(undefined, { onlyIfChanged: true })
+      void latestFocusRefresh.current(undefined, { onlyIfChanged: true, maintain: true })
         .catch(() => undefined)
         .finally(() => { running = false; });
     };
@@ -3766,22 +3794,25 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   // Shared working-copy writes can change links without changing the file layout.
   // Refresh for both host event types, and follow open tabs whose file moved.
-  const latestTreeChange = useRef({ refreshTree, retargetOpenTab });
+  const latestTreeChange = useRef({ refreshTree, refreshFiles, retargetOpenTab });
   useLayoutEffect(() => {
-    latestTreeChange.current = { refreshTree, retargetOpenTab };
+    latestTreeChange.current = { refreshTree, refreshFiles, retargetOpenTab };
   });
   useEffect(() => {
     if (!authenticated) return;
     let active = true;
     // Moves run strictly in the order they happened, each after the previous fetch settled.
     let movesDone: Promise<void> = Promise.resolve();
+    // Tabs follow their files first, but a move lookup that hangs must not freeze the file list.
+    const afterMoves = async () => {
+      await Promise.race([movesDone, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+      return active;
+    };
     const stop = subscribeSharedTreeChanges(
       subscribeHostEvents,
       async () => {
-        // Tabs follow their files first, but a move lookup that hangs must not freeze the file list.
-        await Promise.race([movesDone, new Promise((resolve) => setTimeout(resolve, 10_000))]);
-        if (!active) return;
-        // Most shared edits change no file's metadata; an identical tree is not applied, so nothing re-renders.
+        if (!await afterMoves()) return;
+        // The tree itself is replaced only where it differs, so an unchanged library re-renders nothing.
         try { await latestTreeChange.current.refreshTree(undefined, { onlyIfChanged: true }); }
         catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshTreeError")); }
       },
@@ -3797,6 +3828,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
             }
           }
         });
+      },
+      undefined,
+      async (paths) => {
+        if (!await afterMoves()) return;
+        try { await latestTreeChange.current.refreshFiles(paths); }
+        catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshTreeError")); }
       },
     );
     return () => {

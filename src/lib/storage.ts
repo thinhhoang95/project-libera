@@ -52,7 +52,7 @@ export {
   getAdminRoot,
 } from "@/lib/storage/paths";
 export { readNotebookLatexAutoCompile, writeNotebookLatexAutoCompile } from "@/lib/storage/notebook-latex-settings";
-export { getTree } from "@/lib/storage/tree";
+export { getFileMetadata, getTree } from "@/lib/storage/tree";
 export {
   readImageAnnotations,
   readPdfAnnotations,
