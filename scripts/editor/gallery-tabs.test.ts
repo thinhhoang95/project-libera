@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { useLiberaWorkspace } from "../../src/components/libera/use-libera-workspace";
 import { emptyTree } from "../../src/components/libera/api-client";
 import { applyGallery } from "../../src/components/libera/gallery-store";
-import { createGalleryTab, galleryTabId, isGalleryTab, reconcileGalleryTabs, restoreGalleryTab } from "../../src/components/libera/gallery-tabs";
+import { createGalleryTab, galleryTabId, galleryTabKey, isGalleryTab, reconcileGalleryTabs, restoreGalleryTab } from "../../src/components/libera/gallery-tabs";
 import { ImageViewer } from "../../src/components/libera/image-viewer";
 import { emptyWorkspaceLibrary, emptyWorkspaceSession, parseWorkspaceLibrary, remapWorkspacePaths } from "../../src/lib/workspaces";
 import { listCanvasPanes, visibleCanvasTabIds } from "../../src/lib/canvas-layout";
@@ -191,4 +191,22 @@ test("gallery photos open in tabs, split right and down, follow gallery changes,
     delete window.liberaWorkspaces;
     dom.window.close();
   }
+});
+
+test("reconciling visits no catalog entries without a gallery tab, and indexes a catalog once", () => {
+  const notebookTab = { id: "Notes/a.md", file: { kind: "file" as const, name: "a.md", path: "Notes/a.md", notebook: "Notes", fileType: "markdown" as const, createdAt: date, updatedAt: date, size: 1 }, draft: "x", saved: "x", status: "clean" as const };
+  let reads = 0;
+  const photos = Array.from({ length: 50 }, (_, index) => photo(`p${index}`, `${index}.png`));
+  const counted = new Proxy(photos, { get(target, key, receiver) { if (key === "map" || (typeof key === "string" && /^\d+$/.test(key))) reads++; return Reflect.get(target, key, receiver); } });
+  for (let round = 0; round < 5; round++) reconcileGalleryTabs([{ ...notebookTab, draft: `x${round}` }], counted);
+  assert.equal(reads, 0, "no photo tab, so the catalog is not touched");
+
+  const tabs = [notebookTab, createGalleryTab(photos[3])];
+  reconcileGalleryTabs(tabs, counted);
+  const afterFirst = reads;
+  assert.ok(afterFirst > 0);
+  for (let round = 0; round < 5; round++) reconcileGalleryTabs([...tabs], counted);
+  assert.equal(reads, afterFirst, "the photo index is reused for the same catalog array");
+  assert.equal(galleryTabKey(tabs), galleryTabKey([{ ...notebookTab, draft: "changed" }, tabs[1]]), "drafts do not change the key");
+  assert.notEqual(galleryTabKey(tabs), galleryTabKey([notebookTab]));
 });

@@ -4,6 +4,8 @@ import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { galleryPhotoSummary } from "../../src/lib/gallery-catalog";
+import { emptyTree } from "../../src/components/libera/api-client";
+import { emptyWorkspaceLibrary } from "../../src/lib/workspaces";
 import type { GalleryPhoto } from "../../src/lib/image-generation";
 
 const photo = (id: number, prompt = `prompt ${id}`): GalleryPhoto => ({ id: `cache${id}`, path: `${id}.png`, name: `${id}.png`, folder: "", albumIds: [], createdAt: "2026-10-01T00:00:00Z", updatedAt: "v1", size: 1, starred: false, edited: false, prompt });
@@ -53,4 +55,32 @@ test("pagination cannot overwrite a mutation completed while it was loading", as
     await pending;
     assert.deepEqual((await loadedGallery())!.photos.map((entry) => entry.id), ["cache2"]);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("an unchanged catalog refresh does not re-render the workspace hook", async () => {
+  const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
+  for (const key of ["window", "document", "navigator", "HTMLElement", "Node"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.startsWith("/api/gallery")) return Response.json({ root: "/gallery", albums: [], photos: [galleryPhotoSummary(photo(1))], revision: "r1", cursor: null });
+    if (href.startsWith("/api/workspaces")) return Response.json(emptyWorkspaceLibrary());
+    if (href.startsWith("/api/tree")) return Response.json(emptyTree());
+    return Response.json({});
+  };
+  const { refreshGallery } = await import("../../src/components/libera/gallery-store");
+  const { useLiberaWorkspace } = await import("../../src/components/libera/use-libera-workspace");
+  let renders = 0;
+  function Harness() { renders++; useLiberaWorkspace(true); return null; }
+  const root = createRoot(document.getElementById("root")!);
+  try {
+    await act(async () => { root.render(createElement(Harness)); });
+    await act(async () => { await refreshGallery(); });
+    await act(async () => { await refreshGallery(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    const before = renders;
+    await act(async () => { await refreshGallery(); });
+    assert.equal(renders, before, "loading flips of an unchanged catalog do not wake the shell");
+  } finally { await act(async () => root.unmount()); globalThis.fetch = originalFetch; dom.window.close(); }
 });

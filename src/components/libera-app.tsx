@@ -203,16 +203,17 @@ export function LiberaApp({
     };
   }, []);
 
+  // Kept across effect restarts, so a tab change that leaves the count alone sends nothing.
+  const publishedDirtyCount = useRef(-1);
   useEffect(() => {
     // Shared tabs count as 0: their edits are already in the host's SQLite,
     // unless the host was lost or has not confirmed them yet.
     const sharedTabIds = workspace.sharedTabIds;
     const registry = getSharedDocRegistry();
-    let published = -1;
     const publish = () => {
       const unsavedDocumentCount = dirtyDocumentCount(workspace.tabs, (tabId) => sharedTabIds.has(tabId)) + registry.unconfirmedDocumentCount();
-      if (unsavedDocumentCount === published) return;
-      published = unsavedDocumentCount;
+      if (unsavedDocumentCount === publishedDirtyCount.current) return;
+      publishedDirtyCount.current = unsavedDocumentCount;
       void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
     };
     publish();
