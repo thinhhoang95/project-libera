@@ -164,7 +164,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   useEffect(() => { if (lastTab.current && lastTab.current.id === tabId) lastTab.current.doc = doc; }, [doc, tabId]);
 
   // ---- Shared documents: threads from the collab server, anchors in the replica.
-  const { session: sharedSession } = useSharedTab(tabId, "review");
+  const { session: sharedSession } = useSharedTab(tabId, "review", { snapshot: false });
   const sharedReplica = sharedSession?.replica ?? null;
   const sharedResolved = sharedSession?.resolved ?? null;
   const [projection, setProjection] = useState<SharedReviewProjection | null>(null);

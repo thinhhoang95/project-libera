@@ -9,7 +9,7 @@
 //     plus a panel-level hold on the replica while the panel shows it.
 //   useSharedPresence(session)                    remote users for avatars.
 
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type * as Y from "yjs";
 import { remoteUsers, type RemoteUser } from "../awareness";
 import { getCollabStatusStore, type CollabSnapshot } from "../ui/status-store";
@@ -38,11 +38,43 @@ export interface UseSharedTabsOptions {
   onAttached?(tabId: string, session: SharedDocSession): void;
   /** The shared text changed, by this window (`local`) or by someone else. Not debounced. */
   onEdit?(tabId: string, local: boolean): void;
+  /**
+   * False until the user is signed in: the status route needs a session, so
+   * nothing is fetched (or retried) before. Defaults to true.
+   */
+  enabled?: boolean;
 }
 
 const noopSubscribe = () => () => {};
 const NO_STATUS: CollabSnapshot = { phase: "disabled", status: null };
-const noStatus = () => NO_STATUS;
+
+interface SharedIdentity {
+  notebooks: readonly string[];
+  account: { id: string; name: string; color: string } | null;
+}
+
+const NO_IDENTITY: SharedIdentity = { notebooks: [], account: null };
+
+/**
+ * Reduces the host status to what binding needs (shared notebook names and the
+ * account), returning the same object while those stay equal, so connection,
+ * command-count and retry changes do not wake the root.
+ */
+function createIdentitySelector() {
+  let key = "";
+  let value = NO_IDENTITY;
+  return (snapshot: CollabSnapshot): SharedIdentity => {
+    const status = snapshot.status;
+    const notebooks = [...new Set((status?.projects ?? []).map((project) => project.notebook))].sort();
+    const account = status?.account ? { id: status.account.id, name: status.account.displayName || status.account.email, color: status.account.color } : null;
+    const next = JSON.stringify([notebooks, account]);
+    if (next !== key) {
+      key = next;
+      value = notebooks.length || account ? { notebooks, account } : NO_IDENTITY;
+    }
+    return value;
+  };
+}
 
 function useRegistryVersion() {
   const registry = getSharedDocRegistry();
@@ -62,23 +94,26 @@ export function useSharedTabs(tabs: readonly TabLike[], options: UseSharedTabsOp
   const version = useRegistryVersion();
   // Without the desktop bridge nothing can be attached, so the status is not
   // even fetched: every tab behaves exactly as without collaboration.
-  const statusStore = registry.available ? getCollabStatusStore() : null;
-  const { status } = useSyncExternalStore(statusStore?.subscribe ?? noopSubscribe, statusStore?.getSnapshot ?? noStatus, noStatus);
+  const statusStore = registry.available && options.enabled !== false ? getCollabStatusStore() : null;
+  const [select] = useState(createIdentitySelector);
+  const getIdentity = useMemo(() => {
+    const getSnapshot = statusStore?.getSnapshot;
+    return () => select(getSnapshot ? getSnapshot() : NO_STATUS);
+  }, [statusStore, select]);
+  const { notebooks, account } = useSyncExternalStore(statusStore?.subscribe ?? noopSubscribe, getIdentity, () => NO_IDENTITY);
   const latest = useRef(options);
   useEffect(() => { latest.current = options; });
 
-  const projects = status?.projects;
-  const sharedNotebooks = useMemo(() => new Set((projects ?? []).map((project) => project.notebook)), [projects]);
+  const sharedNotebooks = useMemo(() => new Set(notebooks), [notebooks]);
   const candidates = useMemo(
     () => tabs.filter((tab) => isShareableTab(tab, sharedNotebooks)).map((tab) => [tab.id, tab.file.path] as const),
     [tabs, sharedNotebooks],
   );
   const candidateKey = candidates.map(([id, path]) => `${id}\u0000${path}`).join("\u0001");
 
-  const account = status?.account;
   useEffect(() => {
     if (!account) return;
-    registry.setLocalUser({ name: account.displayName || account.email, color: account.color, userId: account.id });
+    registry.setLocalUser({ name: account.name, color: account.color, userId: account.id });
   }, [registry, account]);
 
   // Bind and release. Re-runs when the candidates change or the resolution
@@ -181,7 +216,10 @@ const NONE: SharedTabState = { kind: "none" };
  * tab it also holds the replica (`holder` names the panel), so a second panel
  * on the same document keeps it open when the first one closes.
  */
-export function useSharedTab(tabId: string | undefined, holder: string): SharedTabView {
+export function useSharedTab(tabId: string | undefined, holder: string, options: { snapshot?: boolean } = {}): SharedTabView {
+  // Callers that only need `state` / `session` pass `snapshot: false`, so the
+  // document's sync status never wakes them.
+  const watchSnapshot = options.snapshot !== false;
   const registry = getSharedDocRegistry();
   const version = useRegistryVersion();
   const state = useMemo(() => {
@@ -196,8 +234,8 @@ export function useSharedTab(tabId: string | undefined, holder: string): SharedT
     return () => lease.release();
   }, [registry, resolved, holder]);
   const snapshot = useSyncExternalStore(
-    session?.replica.subscribe ?? noopSubscribe,
-    session?.replica.getSnapshot ?? nullSnapshot,
+    watchSnapshot ? session?.replica.subscribe ?? noopSubscribe : noopSubscribe,
+    watchSnapshot ? session?.replica.getSnapshot ?? nullSnapshot : nullSnapshot,
     nullSnapshot,
   );
   return { state, session, snapshot };
