@@ -20,7 +20,8 @@ import { markdownLinkWorkspacePath } from "@/lib/markdown-file-links";
 import { ChatFileComposer, type ChatCommentTarget } from "./chat-file-composer";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
-import { useDraftRevision, useLiveValue, type ChromeTab } from "./tab-chrome";
+import { useDraftRevisionFor, useLiveValueFor, viewKey, type ChromeTab } from "./tab-chrome";
+import { LiveMessage, streamingMessages, withLiveReplies } from "./chat-streaming";
 import { readAgentEvents, readChatResponse } from "./chat-stream-client";
 import { AgentRunView } from "./agent-activity";
 import { AgentReviewStrip } from "./agent-review-strip";
@@ -212,7 +213,8 @@ function LiveDocumentChip({ readOpenTabs, tabId, liveText = false, context, ...r
   tabId: string | undefined;
   liveText?: boolean;
 }) {
-  useDraftRevision();
+  // Only this tab's text, page count and reading position wake the chip.
+  useDraftRevisionFor(tabId === undefined ? [] : [tabId, viewKey(tabId)]);
   const tab = tabId === undefined ? undefined : readOpenTabs().find((item) => item.id === tabId);
   const pageCount = tab?.viewState?.pdf?.pageCount;
   const shown = useMemo<ChatContext>(() => liveText && tab
@@ -517,7 +519,9 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
   // The note in view contributes its draft, so the scope is read from the tab through the draft revision
   // and the panel renders only when the definitions change, not on each keystroke's publication.
   const macroCache = useRef<{ messages: ChatMessage[] | undefined; text: string; key: string; scope: MarkdownMacroScope | undefined } | null>(null);
-  const macroScope = useLiveValue(() => {
+  // While the panel is collapsed nothing shows the scope, so drafts are not scanned; it is read again when shown.
+  const macroScope = useLiveValueFor(collapsed || !activeTabId ? [] : [activeTabId], () => {
+    if (collapsed) return macroCache.current?.scope;
     const text = document ? liveDocument(document).text : "";
     const cached = macroCache.current;
     if (cached && cached.messages === chatMessages && cached.text === text) return cached.scope;
@@ -552,18 +556,31 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
   const hasContextTray = !!chat && ((!agentMode && !!includedDocument) || !!includedComments || !!viewedPhoto || !!chat.selections.length || !!chat.photos?.length);
   const pendingPhoto = photoAlreadyIncluded ? null : includedPhoto;
 
-  // The clock for timestamp labels: idle while the panel is collapsed or its window is hidden
-  // (each tick re-renders the whole panel), and set again when it is shown.
+  // The clock for timestamp labels, which differ only by day (today shows the time alone): it moves at
+  // local midnight, and when the window is shown or focused again after one passed. Idle while collapsed.
   useEffect(() => {
     if (collapsed) return;
     const doc = detachedContainer?.ownerDocument ?? globalThis.document;
-    const tick = () => { if (doc.visibilityState !== "hidden") setNow(new Date()); };
-    tick();
-    const timer = window.setInterval(tick, 60_000);
-    doc.addEventListener("visibilitychange", tick);
+    let timer: number | undefined;
+    const sync = () => {
+      if (doc.visibilityState === "hidden") return;
+      // The same state back means no render.
+      setNow((current) => current.toDateString() === new Date().toDateString() ? current : new Date());
+    };
+    const arm = () => {
+      const time = new Date();
+      const midnight = new Date(time.getFullYear(), time.getMonth(), time.getDate() + 1);
+      timer = window.setTimeout(() => { sync(); arm(); }, Math.max(1000, midnight.getTime() - time.getTime()));
+    };
+    sync();
+    arm();
+    const view = doc.defaultView ?? window;
+    doc.addEventListener("visibilitychange", sync);
+    view.addEventListener("focus", sync);
     return () => {
-      window.clearInterval(timer);
-      doc.removeEventListener("visibilitychange", tick);
+      window.clearTimeout(timer);
+      doc.removeEventListener("visibilitychange", sync);
+      view.removeEventListener("focus", sync);
     };
   }, [collapsed, detachedContainer]);
 
@@ -621,7 +638,8 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
 
   useEffect(() => {
     const flush = () => {
-      if (latestStore.current) historyWriter.schedule({ kind: "history", value: latestStore.current });
+      // A streaming reply's newest text lives outside the panel's state (chat-streaming.tsx); a save takes it along.
+      if (latestStore.current) historyWriter.schedule({ kind: "history", value: withLiveReplies(latestStore.current) });
       return Promise.all([historyWriter.flush(), fontSizeWrite.current]);
     };
     const unregister = registerStateFlusher(flush);
@@ -643,6 +661,12 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
     const log = logRef.current;
     if (log && followResponseRef.current) log.scrollTop = log.scrollHeight;
   }, [chat?.messages.length, lastMessageText, lastMessageSteps, pending]);
+
+  // A streaming reply grows outside the panel's renders; its message calls this to keep the log at the end.
+  const followLog = useCallback(() => {
+    const log = logRef.current;
+    if (log && followResponseRef.current) log.scrollTop = log.scrollHeight;
+  }, []);
 
   const searchResults = useMemo(() => searchOpen && store ? searchChatMessages(store.chats, searchQuery) : [], [searchOpen, searchQuery, store]);
   const showingSearchResults = searchOpen && !!searchQuery.trim();
@@ -1091,22 +1115,33 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
     let runStarted = false;
     let completed = false;
     let syncQueue = Promise.resolve();
-    function publish(status?: "streaming" | "interrupted") {
+    // The panel's copy of the reply is refreshed at least this often while it streams (see publish).
+    const CHECKPOINT_MS = 2000;
+    let savedAt = 0;
+    function publish(status?: "streaming" | "interrupted", chunk = false) {
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
       updateTimer = undefined;
       const text = run ? agentRunText(run) : answer;
       if (run ? !runStarted : !text) return;
       createdAt ??= new Date().toISOString();
       const record = run ? compactAgentRunRecord(structuredClone(run)) : undefined;
+      const assistant: ChatMessage = { id: assistantId, role: "assistant", text, status, createdAt, ...(record ? { agent: record } : {}) };
+      // Text and step updates of a reply already in the chat go to the message itself (chat-streaming.tsx),
+      // so the panel does not render for each; start, end, interruption and new steps still go through it.
+      // The message keeps the final text too, until the panel has rendered it.
+      streamingMessages.set(assistant);
+      if (status === "streaming") {
+        if (chunk && savedAt && Date.now() - savedAt < CHECKPOINT_MS) return;
+        savedAt = Date.now();
+      }
       updateChat(id, (current) => {
-        const assistant: ChatMessage = { id: assistantId, role: "assistant", text, status, createdAt, ...(record ? { agent: record } : {}) };
         return { ...current, messages: current.messages.some((item) => item.id === assistantId)
           ? current.messages.map((item) => item.id === assistantId ? assistant : item)
           : [...current.messages, assistant] };
       }, status !== "streaming");
     }
     function schedule() {
-      if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming"), 50);
+      if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming", true), 50);
     }
     try {
       if (!replay) {
@@ -1280,7 +1315,7 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
           const first = !answer;
           answer += text;
           if (first) publish("streaming");
-          else if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming"), 50);
+          else if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming", true), 50);
         }, (usage) => {
           updateChat(id, (current) => ({ ...current, usageRequests: current.usageRequests?.map((request) => request.id === assistantId ? { ...request, usage } : request) }), false);
         }, (key) => tStream(key));
@@ -1304,6 +1339,7 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
       }
     } finally {
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
+      window.setTimeout(() => streamingMessages.clear(assistantId), 1000);
       if (requestsRef.current.get(id) === controller) requestsRef.current.delete(id);
       writeScopesRef.current.delete(id);
       setRunningIds((current) => { const next = new Set(current); next.delete(id); return next; });
@@ -1481,7 +1517,8 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
 
   // The macOS AI menu's chat group. The panel stays mounted while collapsed, so these always work.
   // Read from the tab through the draft revision, so only a change of the answer renders the panel.
-  const factCheckPath = useLiveValue(() => {
+  // The menu entry stays right while collapsed, so this follows the tab in view even then.
+  const factCheckPath = useLiveValueFor(activeTab ? [activeTab.id] : [], () => {
     if (activeTab?.file.fileType !== "markdown" || activeTab.untitled) return null;
     const draft = readOpenTabs().find((item) => item.id === activeTab.id)?.draft;
     return draft !== undefined && mayHaveCitations(draft) ? activeTab.file.path : null;
@@ -1676,9 +1713,9 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
           </div>)}{editing?.id === message.id ? <div className="space-y-2">
             <textarea autoFocus aria-label={t("editMessage")} className="min-h-20 w-full resize-y rounded-lg border border-input bg-card p-2 text-sm outline-none focus:border-ring" value={editing.text} onChange={(event) => setEditing({ id: message.id, text: event.target.value })} onKeyDown={(event) => { if (event.key === "Escape") setEditing(null); else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submitEdit(); } }} />
             <div className="flex items-center justify-end gap-2"><span className="mr-auto text-xs text-muted-foreground">{t("laterMessagesReplaced")}</span><button type="button" className="rounded-lg border border-border px-3 py-1 text-xs hover:bg-muted" onClick={() => setEditing(null)}>{tc("cancel")}</button><button type="button" className="rounded-lg bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50" disabled={!editing.text.trim() && !message.photos?.length} onClick={submitEdit}>{t("saveAndRegenerate")}</button></div>
-          </div> : message.agent ? <AgentRunView run={message.agent} streaming={message.status === "streaming"} mathMarkers={mathMarkers} macroScope={macroScope} fontSize={fontSize}
-            undoing={undoingRunId === message.agent.runId} onUndo={(paths) => void undoAgentChanges(message.id, message.agent!, paths)} onOpenFile={(path) => agentWorkspace?.openFile(path)} onOpenFileLink={openChatFileLink} />
-            : <ChatMessageMarkdown message={message} mathMarkers={mathMarkers} macroScope={macroScope} fontSize={fontSize} onOpenFileLink={openChatFileLink} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">{t("responseInterrupted")}</p>}
+          </div> : <LiveMessage message={message} onGrow={followLog} render={(shown) => shown.agent ? <AgentRunView run={shown.agent} streaming={shown.status === "streaming"} mathMarkers={mathMarkers} macroScope={macroScope} fontSize={fontSize}
+            undoing={undoingRunId === shown.agent.runId} onUndo={(paths) => void undoAgentChanges(message.id, message.agent!, paths)} onOpenFile={(path) => agentWorkspace?.openFile(path)} onOpenFileLink={openChatFileLink} />
+            : <ChatMessageMarkdown message={shown} mathMarkers={mathMarkers} macroScope={macroScope} fontSize={fontSize} onOpenFileLink={openChatFileLink} />} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">{t("responseInterrupted")}</p>}
           {message.role === "assistant" && message.status !== "streaming" && <div className="flex items-center gap-1 text-muted-foreground">
             <button type="button" className={buttonClass} aria-label={t("copyResponseMarkdown")} title={t("copyResponseMarkdown")} onClick={() => void copyResponse(message)}>{copiedId === message.id ? <Check aria-hidden size={14} /> : <Copy aria-hidden size={14} />}</button>
             {(() => {
