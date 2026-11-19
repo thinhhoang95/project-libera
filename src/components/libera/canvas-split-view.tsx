@@ -42,13 +42,21 @@ type CanvasSplitViewProps = {
   onResizeSplit: (splitId: string, ratio: number) => void;
 };
 
-type ResizeDrag = { split: CanvasSplitNode; rect: CanvasRect; ratio: number };
+type ResizeDrag = { split: CanvasSplitNode; rect: CanvasRect };
+/** What a drag needs between pointer moves; it never goes through React state. */
+type ResizeGesture = ResizeDrag & { layout: CanvasLayout; ratio: number; pointer: { x: number; y: number } | null; frame: number };
 type DropTarget = { paneId: string; zone: CanvasDropZone };
 
 const percent = (value: number) => `${value * 100}%`;
 
 function rectStyle(rect: CanvasRect): CSSProperties {
   return { left: percent(rect.x), top: percent(rect.y), width: percent(rect.width), height: percent(rect.height) };
+}
+
+function handleStyle(splitNode: CanvasSplitNode, rect: CanvasRect): CSSProperties {
+  return splitNode.direction === "row"
+    ? { left: percent(rect.x + rect.width * splitNode.ratio), top: percent(rect.y), height: percent(rect.height) }
+    : { top: percent(rect.y + rect.height * splitNode.ratio), left: percent(rect.x), width: percent(rect.width) };
 }
 
 function hasTabDrag(event: ReactDragEvent) {
@@ -97,9 +105,10 @@ export function CanvasSplitView({
   const tabName = useTabName();
   const containerRef = useRef<HTMLDivElement>(null);
   const [resizeDrag, setResizeDrag] = useState<ResizeDrag | null>(null);
+  const gestureRef = useRef<ResizeGesture | null>(null);
   const [tabDragActive, setTabDragActive] = useState(false);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
-  const shownLayout = resizeDrag ? resizeCanvasSplit(layout, resizeDrag.split.id, resizeDrag.ratio) : layout;
+  const shownLayout = layout;
   const { panes, handles } = computeCanvasGeometry(shownLayout.root);
   const split = panes.length > 1;
   const visibleTabIds = new Set(panes.map(({ pane }) => pane.tabId).filter(Boolean));
@@ -129,34 +138,79 @@ export function CanvasSplitView({
     };
   }, [resizeDrag]);
 
-  function ratioFromPointer(drag: ResizeDrag, clientX: number, clientY: number) {
+  function ratioFromPointer(drag: ResizeDrag, clientX: number, clientY: number, fallback: number) {
     const bounds = containerRef.current?.getBoundingClientRect();
-    if (!bounds) return drag.ratio;
+    if (!bounds) return fallback;
     return drag.split.direction === "row"
       ? ((clientX - bounds.left) / Math.max(1, bounds.width) - drag.rect.x) / Math.max(0.0001, drag.rect.width)
       : ((clientY - bounds.top) / Math.max(1, bounds.height) - drag.rect.y) / Math.max(0.0001, drag.rect.height);
+  }
+
+  // A drag moves the panes and handles by writing their boxes straight to the DOM, once per frame;
+  // React hears about the new ratio once, when the drag ends.
+  function paintRatio(gesture: ResizeGesture, ratio: number) {
+    gesture.ratio = ratio;
+    const container = containerRef.current;
+    if (!container) return;
+    const geometry = computeCanvasGeometry(resizeCanvasSplit(gesture.layout, gesture.split.id, ratio).root);
+    const box = (element: Element | null, style: CSSProperties) => {
+      if (element instanceof HTMLElement) Object.assign(element.style, style);
+    };
+    for (const { pane, rect } of geometry.panes) {
+      box(container.querySelector(`[data-canvas-pane-id="${pane.id}"]`), rectStyle(rect));
+    }
+    for (const { split: splitNode, rect } of geometry.handles) {
+      const handle = container.querySelector(`[data-canvas-handle-id="${splitNode.id}"]`);
+      box(handle, handleStyle(splitNode, rect));
+      handle?.setAttribute("aria-valuenow", String(Math.round(splitNode.ratio * 100)));
+    }
+  }
+
+  function paintPointer(gesture: ResizeGesture) {
+    gesture.frame = 0;
+    if (!gesture.pointer) return;
+    const { x, y } = gesture.pointer;
+    gesture.pointer = null;
+    paintRatio(gesture, ratioFromPointer(gesture, x, y, gesture.ratio));
   }
 
   function startResize(event: ReactPointerEvent<HTMLDivElement>, splitNode: CanvasSplitNode, rect: CanvasRect) {
     if (event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setResizeDrag({ split: splitNode, rect, ratio: splitNode.ratio });
+    gestureRef.current = { split: splitNode, rect, layout, ratio: splitNode.ratio, pointer: null, frame: 0 };
+    setResizeDrag({ split: splitNode, rect });
   }
 
   function moveResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!resizeDrag || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
-    const ratio = ratioFromPointer(resizeDrag, event.clientX, event.clientY);
-    setResizeDrag((current) => (current ? { ...current, ratio } : current));
+    const gesture = gestureRef.current;
+    if (!gesture || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    gesture.pointer = { x: event.clientX, y: event.clientY };
+    if (!gesture.frame) gesture.frame = window.requestAnimationFrame(() => paintPointer(gesture));
+  }
+
+  /** Ends the gesture; a cancelled one puts the panes back where the layout has them. */
+  function endGesture(commit: { x: number; y: number } | null) {
+    const gesture = gestureRef.current;
+    if (!gesture) return;
+    gestureRef.current = null;
+    window.cancelAnimationFrame(gesture.frame);
+    if (commit) {
+      const ratio = ratioFromPointer(gesture, commit.x, commit.y, gesture.ratio);
+      paintRatio(gesture, ratio);
+      onResizeSplit(gesture.split.id, ratio);
+    } else {
+      paintRatio(gesture, gesture.split.ratio);
+    }
+    setResizeDrag(null);
   }
 
   function finishResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!resizeDrag) return;
+    if (!gestureRef.current) return;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    onResizeSplit(resizeDrag.split.id, ratioFromPointer(resizeDrag, event.clientX, event.clientY));
-    setResizeDrag(null);
+    endGesture({ x: event.clientX, y: event.clientY });
   }
 
   function resizeWithKeyboard(event: ReactKeyboardEvent<HTMLDivElement>, splitNode: CanvasSplitNode) {
@@ -215,6 +269,7 @@ export function CanvasSplitView({
           <section
             key={pane.id}
             aria-label={split ? (tab ? t("panelLabel", { name: tabName(tab) }) : t("panelLabelEmpty")) : undefined}
+            data-canvas-pane-id={pane.id}
             className="libera-canvas-pane absolute flex min-h-0 min-w-0 flex-col overflow-hidden"
             data-canvas-pane-focused={focused ? "true" : "false"}
             // The command palette reads the focused panel's toolbars.
@@ -289,14 +344,10 @@ export function CanvasSplitView({
       })}
       {handles.map(({ split: splitNode, rect }) => {
         const row = splitNode.direction === "row";
-        const boundary = row ? rect.x + rect.width * splitNode.ratio : rect.y + rect.height * splitNode.ratio;
-        const style: CSSProperties = row
-          ? { left: percent(boundary), top: percent(rect.y), height: percent(rect.height) }
-          : { top: percent(boundary), left: percent(rect.x), width: percent(rect.width) };
-
         return (
           <div
             key={splitNode.id}
+            data-canvas-handle-id={splitNode.id}
             role="separator"
             aria-orientation={row ? "vertical" : "horizontal"}
             aria-label={row ? t("resizeSideBySide") : t("resizeStacked")}
@@ -308,11 +359,11 @@ export function CanvasSplitView({
             className="libera-canvas-split-handle absolute z-30 touch-none"
             data-direction={splitNode.direction}
             data-active={resizeDrag?.split.id === splitNode.id ? "true" : undefined}
-            style={style}
+            style={handleStyle(splitNode, rect)}
             onDoubleClick={() => onResizeSplit(splitNode.id, 0.5)}
             onKeyDown={(event) => resizeWithKeyboard(event, splitNode)}
-            onLostPointerCapture={() => setResizeDrag(null)}
-            onPointerCancel={() => setResizeDrag(null)}
+            onLostPointerCapture={() => endGesture(null)}
+            onPointerCancel={() => endGesture(null)}
             onPointerDown={(event) => startResize(event, splitNode, rect)}
             onPointerMove={moveResize}
             onPointerUp={finishResize}

@@ -57,7 +57,7 @@ import { LatexChangeBar } from "./latex-change-bar";
 import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
 import { getLatexSnippets } from "./latex-snippets-store";
 import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "../codemirror-text-width";
-import { useMarkdownDisplayPreferences } from "../markdown-display-preferences";
+import { useMarkdownDisplayPreference } from "../markdown-display-preferences";
 import { latexImagePaste, type LatexImageHandler } from "@/lib/latex/codemirror/image-paste";
 import { activeFindRanges, searchKeymapWithoutPanel } from "@/lib/find/codemirror";
 import { CodeMirrorFindSession } from "@/lib/find/codemirror-session";
@@ -283,7 +283,7 @@ export function LatexEditor({
   const [pasteDialog, setPasteDialog] = useState<PasteDialogState | null>(null);
   const [pasteNotice, setPasteNotice] = useState<PasteNoticeState | null>(null);
   const [imageNotice, setImageNotice] = useState<(LatexImageInsertResult & { id: number }) | null>(null);
-  const { preferences: { latexSpellcheck: spellcheckSetting } } = useMarkdownDisplayPreferences();
+  const spellcheckSetting = useMarkdownDisplayPreference("latexSpellcheck");
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
   /** The find & replace bar (Mod-F, Mod-H): its fields, keys and searches; one per editor, kept across view rebuilds. */

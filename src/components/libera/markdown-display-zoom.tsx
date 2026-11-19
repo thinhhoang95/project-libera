@@ -2,7 +2,7 @@
 
 import { ZoomIn } from "lucide-react";
 import { useFormatter, useTranslations } from "next-intl";
-import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
+import { useMarkdownDisplayPreferenceActions } from "./markdown-display-preferences";
 
 type Props = {
   markdownBaseFontSize: number;
@@ -15,7 +15,7 @@ type Props = {
 export function MarkdownDisplayZoom({ markdownBaseFontSize, markdownZoom, onMarkdownZoomChange, compact = false }: Props) {
   const t = useTranslations("markdownDisplayZoom");
   const format = useFormatter();
-  const { flushPreferences } = useMarkdownDisplayPreferences();
+  const { flushPreferences } = useMarkdownDisplayPreferenceActions();
   const markdownFontSize = markdownBaseFontSize * (markdownZoom / 100);
   const formattedFontSize = format.number(markdownFontSize, { maximumFractionDigits: 1 });
   const sizeLabel = t("sizeLabel", { size: formattedFontSize, zoom: markdownZoom / 100 });

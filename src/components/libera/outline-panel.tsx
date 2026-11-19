@@ -16,7 +16,7 @@ import { useTranslations } from "next-intl";
 import { createPortal } from "react-dom";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
-import { useMarkdownDisplayPreferences } from "@/components/libera/markdown-display-preferences";
+import { useMarkdownDisplayPreference, useMarkdownDisplayPreferenceActions } from "@/components/libera/markdown-display-preferences";
 import { MarkdownSlidesOutlinePreview } from "@/components/libera/markdown-slides-outline-preview";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import type { OpenTab } from "@/components/libera/types";
@@ -390,7 +390,8 @@ export function OutlinePanel({
   onSetDraft,
   mathMarkers,
 }: OutlinePanelProps) {
-  const { preferences: { outlineExpansionLevel }, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
+  const outlineExpansionLevel = useMarkdownDisplayPreference("outlineExpansionLevel");
+  const { updatePreferences, flushPreferences } = useMarkdownDisplayPreferenceActions();
   const t = useTranslations("outlinePanel");
   const [view, setView] = useState<OutlinePanelView>(readStoredOutlineView);
 
