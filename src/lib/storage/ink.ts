@@ -337,15 +337,27 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
     }
     if (shared) {
       // Other authors' files on a follower's disk may lag the host: merge their acknowledged strokes.
-      const { readSharedBlob } = await import("@/lib/collab/shared-writes");
-      others = (await Promise.all(others.map(async (file) => {
-        const theirs = await readSharedBlob(inkLibraryPath(notebook, pathParts, inkFileName(chunk, file.author.key))).catch(() => null);
-        if (!theirs || theirs.contentBase64 === null) return file;
+      const { listSharedEntries, readSharedBlob } = await import("@/lib/collab/shared-writes");
+      const readAuthor = async (authorKey: string) => {
+        const theirs = await readSharedBlob(inkLibraryPath(notebook, pathParts, inkFileName(chunk, authorKey))).catch(() => null);
+        if (!theirs || theirs.contentBase64 === null) return null;
         try {
           const parsed = normalizeInkAuthorFile(JSON.parse(Buffer.from(theirs.contentBase64, "base64").toString("utf8")));
-          return parsed && parsed.author.key === file.author.key ? parsed : file;
-        } catch { return file; }
-      })));
+          return parsed && parsed.author.key === authorKey ? parsed : null;
+        } catch { return null; }
+      };
+      others = await Promise.all(others.map(async (file) => (await readAuthor(file.author.key)) ?? file));
+      // Authors whose files have not reached this disk yet: the manifest lists them under the drawing's ink folder.
+      const known = new Set([author.key, ...others.map((file) => file.author.key)]);
+      const listed = await listSharedEntries(notebook).catch(() => []);
+      const folderPrefix = `${inkLibraryPath(notebook, pathParts)}/`;
+      const arrived: string[] = [];
+      for (const entry of listed) {
+        if (entry.kind !== "blob" || !entry.path.startsWith(folderPrefix)) continue;
+        const parsed = parseInkFileName(entry.path.slice(folderPrefix.length));
+        if (parsed && parsed.chunk === chunk && !known.has(parsed.author)) { known.add(parsed.author); arrived.push(parsed.author); }
+      }
+      others = [...others, ...(await Promise.all(arrived.map(readAuthor))).filter((file): file is InkAuthorFile => file !== null)];
     }
     if (own && !canWriteInkFile(own)) throw new StorageError("This ink was saved by a newer version of Libera. Update Libera to change it.", 409);
     if (!own) {

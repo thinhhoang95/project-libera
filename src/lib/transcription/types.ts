@@ -106,6 +106,12 @@ export type TranscriptPayload = {
   job: TranscriptionJob | null;
 };
 
+/** GET /api/transcripts/progress?path=… : the job's status only, polled while it runs. */
+export type TranscriptProgressPayload = {
+  path: string;
+  job: TranscriptionJob | null;
+};
+
 /** GET /api/audio/peaks?path=… : a waveform overview, each value the loudest sample in its bucket (0–1). */
 export type AudioPeaksPayload = {
   duration: number;

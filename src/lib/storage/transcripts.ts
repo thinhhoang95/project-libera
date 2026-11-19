@@ -7,7 +7,7 @@ import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { writeJsonForSource } from "@/lib/storage/fs-utils";
-import { assertFileSignature, readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
+import { assertFileSignature, readCachedFileContentHash, readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
 import { audioSidecarDirectories, audioSidecarPaths, filePathFromParts, notebookPath, splitFilePath, transcriptPath } from "@/lib/storage/paths";
 import { cleanSegments, countWords } from "@/lib/transcription/edits";
 import { TRANSCRIPT_VERSION, type Transcript, type TranscriptSegment, type TranscriptSpeaker } from "@/lib/transcription/types";
@@ -149,7 +149,7 @@ export async function readTranscript(relativePath: string): Promise<{ transcript
   if (!transcript) return { transcript: null, stale: false, shared: false };
   // Older transcripts only stored size. New transcripts use portable content
   // identity, detecting same-size replacements without penalizing copies/sync.
-  const stale = stats.size !== transcript.audio.size || Boolean(transcript.audio.contentHash && await readFileContentHash(audio) !== transcript.audio.contentHash);
+  const stale = stats.size !== transcript.audio.size || Boolean(transcript.audio.contentHash && await readCachedFileContentHash(audio) !== transcript.audio.contentHash);
   return { transcript, stale, shared: Boolean(fromCompanion), ...(pending ? { pending } : {}) };
 }
 
@@ -331,22 +331,32 @@ export async function copyTranscript(fromPath: string, toPath: string) {
   const { transcript } = await readTranscript(fromPath);
   if (!transcript) return;
   const destination = locate(toPath);
-  const signature = await readFileSignature(destination.audio);
+  // The copy's own sidecar needs the copied recording's identity on disk.
+  const writeSidecar = async () => writeLocal(destination.sidecar, transcript, destination.audio, await readFileSignature(destination.audio));
   if (destination.companion) {
     const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
-    await writeSharedBlob(transcriptCompanionPath(toPath), new TextEncoder().encode(JSON.stringify(transcript)), { createOnly: true }).catch(async () => {
-      await writeLocal(destination.sidecar, transcript, destination.audio, signature);
+    // The host's answer is the authority: the recording may not have reached this disk yet, so it is not read here.
+    await writeSharedBlob(transcriptCompanionPath(toPath), new TextEncoder().encode(JSON.stringify(transcript)), { createOnly: true }).catch(async (error: unknown) => {
+      // The recording is already copied; without it on this disk the transcript cannot be kept beside it, and is not worth failing the copy.
+      await writeSidecar().catch((failure: NodeJS.ErrnoException) => {
+        if (failure.code !== "ENOENT") throw failure;
+        console.warn(`The transcript of ${toPath} was not copied: ${error instanceof Error ? error.message : error}`);
+      });
     });
   } else {
-    await writeLocal(destination.sidecar, transcript, destination.audio, signature);
+    await writeSidecar();
   }
 }
 
 /** Discard local sidecars of externally deleted recordings, retaining offline files. */
 export async function pruneAudioSidecars(notebook: string) {
   // Missing cloud files are not deletion intent. Retain the local recovery
-  // sources left by identity-checked shared lifecycle transfers.
-  if (isSharedNotebookPath(notebook)) return;
+  // sources left by identity-checked shared lifecycle transfers. Moves that
+  // waited for their recording are retried here, on every library refresh.
+  if (isSharedNotebookPath(notebook)) {
+    await replayPendingAudioMoves(notebook);
+    return;
+  }
   async function visit(directory: string, parts: string[] = []) {
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); }
@@ -367,6 +377,67 @@ export async function pruneAudioSidecars(notebook: string) {
   await visit(peaks);
 }
 
+/** Moves whose destination recording had not arrived (or matched) when the host reported them; replayed later. */
+const PENDING_AUDIO_MOVES = Symbol.for("libera.pendingAudioSidecarMoves");
+type PendingAudioMove = { from: string; to: string; at: number };
+const pendingAudioState = globalThis as { [PENDING_AUDIO_MOVES]?: Map<string, PendingAudioMove> };
+const pendingAudioMoves = pendingAudioState[PENDING_AUDIO_MOVES] ??= new Map<string, PendingAudioMove>();
+const PENDING_MOVE_LIMIT = 2_000;
+const PENDING_MOVE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+function rememberPendingAudioMove(from: string, to: string) {
+  const key = `${from} ${to}`;
+  if (pendingAudioMoves.size >= PENDING_MOVE_LIMIT && !pendingAudioMoves.has(key)) return;
+  pendingAudioMoves.set(key, { from, to, at: Date.now() });
+}
+
+/**
+ * Copies the sidecars of one moved recording. `waiting` is true when a
+ * transcript was left behind only because the recording at the destination is
+ * not there yet (or not these bytes yet): a cloud folder delivers it late.
+ */
+async function followOneAudioMove(from: string, to: string): Promise<{ changed: number; waiting: boolean }> {
+  let changed = 0;
+  let waiting = false;
+  try {
+    if (getFileType(from) !== "audio" || getFileType(to) !== "audio" || from === to) return { changed, waiting };
+    const source = splitFilePath(from);
+    const target = splitFilePath(to);
+    const targetAudio = filePathFromParts(target.notebook, target.pathParts);
+    const next = audioSidecarPaths(target.notebook, target.pathParts);
+    for (const [index, sidecar] of audioSidecarPaths(source.notebook, source.pathParts).entries()) {
+      let mismatch = false;
+      if (await copyLifecycleSidecar(sidecar, next[index], notebookPath(target.notebook), async (bytes) => {
+        const transcript = parseTranscript(JSON.parse(bytes.toString("utf8")));
+        if (!transcript?.audio.contentHash) return false;
+        // A recording that is missing or still arriving has no bytes to match yet.
+        const matches = await readCachedFileContentHash(targetAudio).then((hash) => hash === transcript.audio.contentHash, () => false);
+        if (!matches) mismatch = true;
+        return matches;
+      })) changed += 1;
+      else if (mismatch) waiting = true;
+    }
+  } catch { /* Retain ambiguous sidecars, including occupied destinations and swaps. */ }
+  return { changed, waiting };
+}
+
+/**
+ * Retries the pending audio moves of `notebook` (all when omitted). A move is
+ * done once its transcript was copied, or its source or destination sidecar no
+ * longer calls for it; it expires after PENDING_MOVE_TTL_MS.
+ */
+export async function replayPendingAudioMoves(notebook?: string) {
+  let changed = 0;
+  for (const [key, move] of [...pendingAudioMoves]) {
+    if (Date.now() - move.at > PENDING_MOVE_TTL_MS) { pendingAudioMoves.delete(key); continue; }
+    try { if (notebook !== undefined && splitFilePath(move.to).notebook !== notebook) continue; } catch { pendingAudioMoves.delete(key); continue; }
+    const result = await followOneAudioMove(move.from, move.to);
+    changed += result.changed;
+    if (!result.waiting) pendingAudioMoves.delete(key);
+  }
+  return changed;
+}
+
 /**
  * Keeps the sidecars on this computer in step with a shared notebook's files
  * when they move or go away, whoever did it: the collab host moves the
@@ -381,20 +452,11 @@ export async function followSharedAudioChanges(moves: Array<{ from: string; to: 
       for (const sidecar of audioSidecarPaths(source.notebook, source.pathParts)) await preserveLifecycleSidecar(sidecar, notebookPath(source.notebook));
     } catch { /* Keep the active source when its recovery target is unavailable. */ }
   }
-  let changed = 0;
+  let changed = await replayPendingAudioMoves();
   for (const { from, to } of moves) {
-    try {
-      if (getFileType(from) !== "audio" || getFileType(to) !== "audio" || from === to) continue;
-      const source = splitFilePath(from);
-      const target = splitFilePath(to);
-      const next = audioSidecarPaths(target.notebook, target.pathParts);
-      for (const [index, sidecar] of audioSidecarPaths(source.notebook, source.pathParts).entries()) {
-        if (await copyLifecycleSidecar(sidecar, next[index], notebookPath(target.notebook), async (bytes) => {
-          const transcript = parseTranscript(JSON.parse(bytes.toString("utf8")));
-          return !!transcript?.audio.contentHash && transcript.audio.contentHash === await readFileContentHash(filePathFromParts(target.notebook, target.pathParts));
-        })) changed += 1;
-      }
-    } catch { /* Retain ambiguous sidecars, including occupied destinations and swaps. */ }
+    const result = await followOneAudioMove(from, to);
+    changed += result.changed;
+    if (result.waiting) rememberPendingAudioMove(from, to);
   }
   // A path-only removal is not evidence that these local notes were reviewed.
   return changed;

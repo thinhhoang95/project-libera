@@ -54,3 +54,25 @@ export async function readFileContentHash(filePath: string) {
   void task.finally(() => { if (contentHashes.get(signature) === task) contentHashes.delete(signature); }).catch(() => undefined);
   return task;
 }
+
+// The hash a recording had when last read, kept across requests so a viewer
+// polling a transcript never re-reads an unchanged recording. Only for
+// freshness hints: a check that guards a write uses readFileContentHash, which
+// reads the bytes again. The key is the file's identity (size, mtime, ctime and
+// inode), so a replaced or rewritten file hashes again.
+const cachedHashes = new Map<string, string>();
+const CACHED_HASH_LIMIT = 64;
+export async function readCachedFileContentHash(filePath: string) {
+  const signature = await readFileSignature(filePath);
+  const known = cachedHashes.get(signature);
+  if (known) {
+    // Most recently used last, so the oldest entry is the one that goes.
+    cachedHashes.delete(signature);
+    cachedHashes.set(signature, known);
+    return known;
+  }
+  const hash = await readFileContentHash(filePath);
+  cachedHashes.set(signature, hash);
+  if (cachedHashes.size > CACHED_HASH_LIMIT) cachedHashes.delete(cachedHashes.keys().next().value as string);
+  return hash;
+}

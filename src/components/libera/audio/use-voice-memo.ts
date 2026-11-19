@@ -5,7 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { apiRequest } from "@/components/libera/api-client";
 import { beginAiActivity } from "@/lib/ai-activity";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
-import type { AudioPeaksPayload, TranscriptionJob, TranscriptionSetupStatus, TranscriptPayload, TranscriptSegment } from "@/lib/transcription/types";
+import type { AudioPeaksPayload, TranscriptionJob, TranscriptionSetupStatus, TranscriptPayload, TranscriptProgressPayload, TranscriptSegment } from "@/lib/transcription/types";
 
 const ACTIVE_STATES = new Set<TranscriptionJob["state"]>(["queued", "decoding", "diarizing", "transcribing", "saving"]);
 
@@ -57,11 +57,29 @@ export function useTranscript(path: string) {
   const active = isJobActive(payload?.job);
   // Light the workspace glow for as long as this recording is being transcribed.
   useEffect(() => (active ? beginAiActivity() : undefined), [active]);
+  // While a job runs only its status is polled (no transcript, no recording
+  // read); the full transcript is fetched once, when the job has finished.
   useEffect(() => {
     if (!active) return;
-    const timer = window.setInterval(() => void refresh(), 1000);
-    return () => window.clearInterval(timer);
-  }, [active, refresh]);
+    let finished = false;
+    let polling = false;
+    const timer = window.setInterval(() => {
+      if (polling || finished) return;
+      polling = true;
+      apiRequest<TranscriptProgressPayload>(`/api/transcripts/progress?path=${encodeURIComponent(path)}`).then((progress) => {
+        if (finished || progress.path !== pathRef.current) return;
+        setLoaded((previous) => (previous?.path === progress.path ? { ...previous, job: progress.job } : previous));
+        if (!isJobActive(progress.job)) {
+          finished = true;
+          void refresh();
+        }
+      }, fail).finally(() => { polling = false; });
+    }, 1000);
+    return () => {
+      finished = true;
+      window.clearInterval(timer);
+    };
+  }, [active, fail, path, refresh]);
 
   const send = useCallback(
     (init: RequestInit, query = "") => apiRequest<TranscriptPayload>(`/api/transcripts${query}`, init).then(apply, fail),
