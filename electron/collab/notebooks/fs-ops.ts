@@ -392,6 +392,43 @@ async function moveExclusive(from: string, to: string, guard?: WriteGuard): Prom
   catch (error) { await fs.rm(to, { force: true }).catch(() => undefined); throw error; }
 }
 
+/**
+ * Moves `from` to exactly `to` and never replaces anything there: when `to`
+ * exists, or appears while the move runs, DestinationTakenError is thrown and
+ * `from` is left where it is. A case-only rename on a case-insensitive volume
+ * reports the destination as taken (both names are one file), so callers that
+ * allow those use movePath for that case.
+ */
+export async function movePathExclusive(from: string, to: string, guard?: WriteGuard): Promise<void> {
+  await ensureDirectory(path.dirname(to), guard);
+  await moveExclusive(from, to, guard);
+}
+
+/**
+ * Publishes new bytes at exactly `absolute` without ever replacing a file
+ * there: the bytes are staged in a temp file, then hard-linked into place
+ * (exclusive), or, without hard links, renamed over a name claimed with an
+ * empty file. Throws DestinationTakenError when the name is already in use.
+ */
+export async function writeFileExclusive(absolute: string, bytes: Uint8Array, guard?: WriteGuard): Promise<Stats> {
+  const directory = path.dirname(absolute);
+  await ensureDirectory(directory, guard);
+  const temporary = path.join(directory, `${TEMP_PREFIX}${randomBytes(6).toString("hex")}`);
+  try {
+    await checkWriteGuard(guard);
+    await fs.writeFile(temporary, bytes, { flag: "wx" });
+    await checkWriteGuard(guard);
+    if (!await linkExclusive(temporary, absolute)) {
+      await claimName(absolute);
+      try { await renameWithRetry(temporary, absolute, guard); }
+      catch (error) { await fs.rm(absolute, { force: true }).catch(() => undefined); throw error; }
+    }
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
+  return fs.lstat(absolute);
+}
+
 /** Moves `from` into `directory` under a free name derived from `name`; the name is claimed exclusively. */
 export async function movePathUnique(from: string, directory: string, name: string, guard?: WriteGuard): Promise<string> {
   await ensureDirectory(directory, guard);
