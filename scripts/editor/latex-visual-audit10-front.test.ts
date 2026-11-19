@@ -463,3 +463,65 @@ test("2611.09126: cas-sc's \\corref is part of the title block", () => {
   assert.ok(view.contentDOM.querySelector(".cm-vis-title-block"), "a title block");
   view.destroy();
 });
+
+const CERN = String.raw`\documentclass[ALICE,manyauthors]{cernphprep}
+\begin{document}
+%%%%%%%%%%%%%%%  Title page %%%%%%%%%%%%%%%%%%%%%%%%
+\begin{titlepage}
+% the dates below correspond to CERN approval
+% please don't touch: EB chairs will take care
+\PHyear{2026}       % required, will be obtained from CERN
+\PHnumber{296}      % required, will be obtained from CERN
+\PHdate{03 November}  % required, will be obtained from CERN
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%% Put your own title + short title here:
+\title{Correlations and fluctuations of flow in Pb--Pb and Xe--Xe collisions at the LHC}
+\ShortTitle{Correlation and fluctuation of flow with ESE}   % appears on left page headers
+
+%%% Do not change the next lines
+\Collaboration{ALICE Collaboration\thanks{See Appendix~\ref{app:collab} for the list of collaboration members}}
+\ShortAuthor{ALICE Collaboration} % appears on right page headers, do not change
+
+\begin{abstract}
+Measurements of anisotropic flow provide strong constraints.
+\end{abstract}
+\end{titlepage}
+
+\setcounter{page}{2} %please do not remove this line
+
+\section{Introduction}
+Text.
+\appendix
+\section{The ALICE Collaboration}\label{app:collab}
+Members.
+\end{document}
+`;
+
+// nucl-ex 2611.08473: the CERN preprint class's title page (report number, title, collaboration, abstract in a titlepage) was source.
+test("2611.08473: a cernphprep title page is a title block with the collaboration as author; titlepage is transparent; clicks show the source", () => {
+  const view = mount(CERN);
+  assert.deepEqual(left(view), []);
+  const block = view.contentDOM.querySelector<HTMLElement>(".cm-vis-title-block");
+  assert.ok(block, "a title block");
+  const shown = plain(block!);
+  assert.match(shown, /Correlations and fluctuations of flow/);
+  assert.match(shown, /ALICE Collaboration/);
+  assert.match(shown, /CERN-EP-2026-296/);
+  assert.match(shown, /03 November 2026/);
+  assert.ok(!/ShortTitle|ShortAuthor|PHyear/.test(shown), shown);
+  assert.ok(shows(view, "Measurements of anisotropic flow"), "the abstract is drawn");
+  assert.ok(widgetWith(view, "Abstract"), "with its heading");
+  assert.ok(!shows(view, "\\begin{titlepage}"), "the titlepage lines fold away");
+  block!.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, altKey: true }));
+  assert.ok(shows(view, "\\PHyear{2026}") || shows(view, "\\Collaboration{ALICE"), "Alt-click shows the source");
+  view.destroy();
+});
+
+test("2611.08473: a click on the collaboration of a cernphprep title page shows the source", () => {
+  const view = mount(CERN);
+  const block = view.contentDOM.querySelector<HTMLElement>(".cm-vis-title-block")!;
+  click(block.querySelector(".cm-vis-author")!);
+  assert.ok(shows(view, "\\Collaboration{ALICE"), "the command is shown");
+  view.destroy();
+});

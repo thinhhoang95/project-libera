@@ -1210,7 +1210,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (aastexTitle && ref.from === aastexTitle.from && ref.to <= aastexTitle.to && ref.from >= from) {
         const span = aloneOnLines(doc, aastexTitle.from, aastexTitle.to)!;
         consumed.push([span.from, span.to]);
-        if (structural) emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(aastexTitle.title, aastexTitle.author, null, span.to - span.from, null, aastexTitle.notes, aastexTitle.details) }] });
+        if (structural) emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(aastexTitle.title, aastexTitle.author, aastexTitle.date ?? null, span.to - span.from, null, aastexTitle.notes, aastexTitle.details) }] });
         return false;
       }
       // A node starting before an `\iffalse`'s `\fi` and running past it (`\iffalse \section{A} \fi more`): only what follows is drawn.
@@ -5130,11 +5130,13 @@ const AASTEX_DECLARATIONS = /^(?:title|shorttitle|shortauthors|author|affiliatio
  * `\affiliation{1}{…}`, `\correspondingauthor`, `keypoints`; physics.space-ph 2610.30517), IOP (`\author`, `\affil`, `\email`;
  * physics.ins-det 2611.12369) and the Open Journal of Astrophysics (astro-ph.IM 2611.19899).
  */
-const FRONT_RUN_CLASS = /^(?:aastex\d*|emulateapj|agujournal\d*|iopjournal|openjournal)$/;
+const FRONT_RUN_CLASS = /^(?:aastex\d*|emulateapj|agujournal\d*|iopjournal|openjournal|cernphprep)$/;
 const AGU_DECLARATIONS = /^(?:title|authors|affiliation|correspondingauthor|authorrunninghead|journalname|vspace|vskip|thanks)$/;
+// CERN's preprint class (`cernphprep`, nucl-ex 2611.08473): the report number and date, the title and the collaboration that signs, in a `titlepage`.
+const CERN_DECLARATIONS = /^(?:PHyear|PHnumber|PHdate|title|ShortTitle|Collaboration|ShortAuthor|thanks)$/;
 const IOP_DECLARATIONS = /^(?:articletype|title|author|affil|email|keywords|orcid|vspace|vskip|thanks|ead)$/;
 
-type AastexFrontMatter = { from: number; to: number; title: string | null; author: string | null; notes: Array<[string, string]>; details?: FrontDetailsView | null };
+type AastexFrontMatter = { from: number; to: number; title: string | null; author: string | null; notes: Array<[string, string]>; details?: FrontDetailsView | null; date?: string | null };
 
 /**
  * AASTeX's front matter (2611.08676), which the class prints without `\maketitle`: the run of `\title`, `\author[orcid=…]{…}`,
@@ -5146,7 +5148,8 @@ type AastexFrontMatter = { from: number; to: number; title: string | null; autho
 function aastexFrontMatter(text: string, documentClass: string, whole = false): AastexFrontMatter | null {
   const agu = /^agujournal/.test(documentClass);
   const iop = documentClass === "iopjournal";
-  const declarations = agu ? AGU_DECLARATIONS : iop ? IOP_DECLARATIONS : AASTEX_DECLARATIONS;
+  const cern = documentClass === "cernphprep";
+  const declarations = agu ? AGU_DECLARATIONS : iop ? IOP_DECLARATIONS : cern ? CERN_DECLARATIONS : AASTEX_DECLARATIONS;
   type Declaration = { name: string; optional: string | null; groups: string[] };
   type Run = { start: number; end: number; items: Declaration[] };
   let run: Run | null = null;
@@ -5198,6 +5201,8 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
   }
   run ??= held;
   if (!run) return null;
+  // A comment after the last command on its line (`\ShortAuthor{…} % appears on right page headers`) is part of the line.
+  run.end += /^[ \t]*%[^\n]*/.exec(text.slice(run.end))?.[0].length ?? 0;
   // Before AASTeX 7 every `\email` is printed; since, only `\email[show]{…}`.
   const allEmails = /^aastex6\d*$/.test(documentClass) || documentClass === "emulateapj" || iop;
   let title: string | null = null;
@@ -5207,11 +5212,15 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
   const keywords: string[] = [];
   // AGU's and IOP's affiliations are numbered lines after the authors, not each author's own.
   const places: FrontDetailsView["places"] = [];
+  let cernYear = "", cernNumber = "", cernDate = "";
   for (const item of run.items) {
     const last = item.groups.at(-1);
     if (last === undefined) continue;
     if (item.name === "title") title = last.replace(/\\vspace\*?\s*\{[^{}]*\}/g, "").trim();
-    else if (item.name === "authors") authors.push({ name: last, places: [] });
+    else if (item.name === "authors" || (cern && item.name === "Collaboration")) authors.push({ name: last, places: [] });
+    else if (item.name === "PHyear") cernYear = last;
+    else if (item.name === "PHnumber") cernNumber = last;
+    else if (item.name === "PHdate") cernDate = last;
     else if (item.name === "author") authors.push({ name: iop ? last.replace(/\\orcid\s*\{[^{}]*\}/g, "").trim() : last, places: [] });
     else if (agu && item.name === "affiliation") places.push({ label: item.groups.length > 1 ? `${item.groups[0]} ` : "", latex: last, editable: false });
     else if (iop && item.name === "affil") places.push({ label: "", latex: last, editable: false });
@@ -5231,7 +5240,8 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
   if (emails.length) notes.push([emails.length > 1 ? "Emails" : "Email", emails.join(", ")]);
   if (keywords.length) notes.push(["Keywords", keywords.join(", ")]);
   const author = authors.length ? authors.map(({ name, places }) => [name, ...places.map((place) => `{\\small ${place}}`)].join(" \\\\ ")).join(" \\and ") : null;
-  return { from: run.start, to: run.end, title, author, notes, details: places.length ? { subtitle: null, authorLines: [], places, notes: [] } : null };
+  if (cernNumber) notes.unshift(["Report", `CERN-EP-${cernYear}-${cernNumber}`]);
+  return { from: run.start, to: run.end, title, author, notes, date: cernDate ? `${cernDate} ${cernYear}`.trim() : null, details: places.length ? { subtitle: null, authorLines: [], places, notes: [] } : null };
 }
 
 /** AASTeX's front matter in the body (cached per document version), at document positions; null when there is none. */

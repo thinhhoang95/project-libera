@@ -124,6 +124,8 @@ export const WRAPPER_ENVIRONMENTS: Record<string, { args: string; lines?: string
   // `\begin{hangparas}{3ex}{1}` (a hanging indent for the paragraphs).
   // revtex's `onecolumngrid` / `twocolumngrid` used as environments around a reference list (cond-mat 2611.14200): the column layout only.
   onecolumngrid: { args: "" }, twocolumngrid: { args: "" },
+  // `titlepage` (CERN's preprint class, nucl-ex 2611.08473): its commands and abstract are drawn where they stand, its lines fold away.
+  titlepage: { args: "" },
   sloppypar: { args: "" }, samepage: { args: "" }, hangparas: { args: "mm" },
   // lineno's `nolinenumbers` / `linenumbers` (cs.RO 2611.20185) and the `KeepFromToc` wrapper of a contents list (math.OA 2611.08668): they change only what the page margin or the contents list holds.
   nolinenumbers: { args: "" }, linenumbers: { args: "o" }, KeepFromToc: { args: "" },
