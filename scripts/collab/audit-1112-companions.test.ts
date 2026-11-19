@@ -217,7 +217,7 @@ test("STALE-2: a recording's transcript moves and goes in the recording's own ma
       assert.ok(paths().includes("z.m4a.transcript") && !paths().includes("a.m4a.transcript"), paths().join(", "));
       assert.equal((await call({ op: "delete", path: "b.m4a" })).status, 200);
       assert.ok(!paths().includes("b.m4a.transcript"), paths().join(", "));
-      // Finding 13 (round A, P3): a rename that would change the file's type, and lose its transcript, is refused instead.
+      // Finding 20 (round A, P3): a rename that would change the file's type, and lose its transcript, is refused instead.
       assert.equal((await call({ op: "rename", path: "c.m4a", to: "c.png" })).status, 409);
       assert.ok(paths().includes("c.m4a") && paths().includes("c.m4a.transcript"), paths().join(", "));
     } finally {
