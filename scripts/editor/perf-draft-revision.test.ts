@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test, { mock } from "node:test";
 import { JSDOM } from "jsdom";
-import { act, createElement, Profiler, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { act, createElement, Profiler, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { changedDraftKeys, draftRevision, useChromeTabs, useDraftRevisionFor, viewKey } from "../../src/components/libera/tab-chrome";
 import { useStableHandlers } from "../../src/components/libera/use-stable-handlers";
 import { flushPendingState } from "../../src/components/libera/deferred-save";
@@ -62,9 +62,10 @@ test("a caret publication bumps nothing, and a draft in tab X wakes only what fo
   const commits = { x: 0, y: 0, strip: 0 };
   let bumps = 0;
   const stop = draftRevision.subscribe(() => { bumps++; });
+  const onRender = (id: string) => { commits[id as keyof typeof commits]++; };
   function Follower({ keys, name }: { keys: string[]; name: "x" | "y" | "strip" }) {
     useDraftRevisionFor(keys);
-    return createElement(Profiler, { id: name, onRender: () => { commits[name]++; } }, null);
+    return createElement(Profiler, { id: name, onRender }, null);
   }
   function Shell({ tabs }: { tabs: OpenTab[] }) {
     usePublishedTabs(tabs);
@@ -115,7 +116,7 @@ test("the review strip counts lines once per baseline and text, and ignores othe
   const noop = () => undefined;
   let stripCommits = 0;
   const strip = createElement(Profiler, { id: "strip", onRender: () => { stripCommits++; } } as never, createElement(AgentReviewStrip, { readTabDraft, onOpenFile: noop, onReverted: noop, onError: noop }));
-  function Shell({ tabs, children }: { tabs: OpenTab[]; children: ReactNode }) {
+  function Shell({ tabs, children }: { tabs: OpenTab[]; children?: ReactNode }) {
     usePublishedTabs(tabs);
     return useMemo(() => createElement("div", null, children), [children]);
   }
@@ -123,21 +124,21 @@ test("the review strip counts lines once per baseline and text, and ignores othe
   const a = tabOf("Notes/a.md", { draft: "a\nb\n" });
   const other = tabOf("z", { draft: "z" });
   try {
-    await act(async () => root.render(createElement(Shell, { tabs: [a, other], children: strip })));
+    await act(async () => root.render(createElement(Shell, { tabs: [a, other] }, strip)));
     await settle();
     await settle();
     assert.match(document.body.textContent ?? "", /\+1/);
     const countedBefore = counted;
     const commitsBefore = stripCommits;
     // Caret, and another tab's text: no render, no line diff.
-    await act(async () => root.render(createElement(Shell, { tabs: [{ ...a, viewState: { markdown: { line: 1, selectionStart: 2 } } }, { ...other, draft: "zz" }], children: strip })));
+    await act(async () => root.render(createElement(Shell, { tabs: [{ ...a, viewState: { markdown: { line: 1, selectionStart: 2 } } }, { ...other, draft: "zz" }] }, strip)));
     assert.equal(stripCommits, commitsBefore, "the strip did not render");
     assert.equal(counted, countedBefore, "no line diff ran");
     // A global bump with the same text re-reads but takes the counts from the cache.
     await act(async () => draftRevision.bump());
     assert.equal(counted, countedBefore, "unchanged baseline and text reuse their counts");
     draft = "a\nb\nc\nd\n";
-    await act(async () => root.render(createElement(Shell, { tabs: [{ ...a, draft }, other], children: strip })));
+    await act(async () => root.render(createElement(Shell, { tabs: [{ ...a, draft }, other] }, strip)));
     assert.match(document.body.textContent ?? "", /\+3/, "the reviewed file's own text still updates the counts");
     assert.equal(counted, countedBefore + 1);
   } finally {
@@ -183,9 +184,7 @@ async function mountPanel() {
     const activeTab = useMemo(() => chrome.find((tab) => tab.id === "a"), [chrome]);
     const readers = useStableHandlers({ readOpenTabs: () => tabs });
     usePublishedTabs(tabs);
-    const onCollapsedChange = useCallback(noop, []);
-    const onCreateDraft = useCallback(noop, []);
-    return createElement(DocumentChatPanel, { activeTab, tabs: chrome, readOpenTabs: readers.readOpenTabs, files, collapsed, mathMarkers, onCollapsedChange, onCreateDraft });
+    return createElement(DocumentChatPanel, { activeTab, tabs: chrome, readOpenTabs: readers.readOpenTabs, files, collapsed, mathMarkers, onCollapsedChange: noop, onCreateDraft: noop });
   }
   const settle = async () => { await act(flushPendingState); await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
   return {

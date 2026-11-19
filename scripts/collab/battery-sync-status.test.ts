@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { createElement, type ReactElement } from "react";
+import { createElement, Profiler, type ReactElement } from "react";
 import { cleanup, flush, hostStatus, project, render } from "./ui-support";
 
 import { SharedDocRegistry, setSharedDocRegistry } from "../../src/lib/collab/client/registry";
@@ -79,22 +79,24 @@ async function setup(options: { enabled?: boolean; status?: () => HostStatus } =
   });
   setCollabStatusStore(store);
   const renders = { root: 0, paneB: 0, badgeA: 0 };
-  const Root = ({ enabled }: { enabled: boolean }): ReactElement => {
-    renders.root += 1;
+  // Counted from Profiler callbacks: each probe sits alone under its own Profiler.
+  const onRender = (id: string) => { renders[id as keyof typeof renders] += 1; };
+  function Root({ enabled }: { enabled: boolean }): ReactElement {
     useSharedTabs(TABS, { onText: () => {}, enabled });
     return createElement("div");
-  };
-  const PaneB = (): ReactElement => {
-    renders.paneB += 1;
+  }
+  function PaneB(): ReactElement {
     useSharedTab("tB", "pane-b", { snapshot: false });
     return createElement("div");
-  };
-  const BadgeA = (): ReactElement => {
-    renders.badgeA += 1;
+  }
+  function BadgeA(): ReactElement {
     useSharedTab("tA", "badge-a");
     return createElement("div");
-  };
-  const App = ({ enabled }: { enabled: boolean }): ReactElement => createElement("div", null, createElement(Root, { enabled }), createElement(PaneB), createElement(BadgeA));
+  }
+  const App = ({ enabled }: { enabled: boolean }): ReactElement => createElement("div", null,
+    createElement(Profiler, { id: "root", onRender }, createElement(Root, { enabled })),
+    createElement(Profiler, { id: "paneB", onRender }, createElement(PaneB)),
+    createElement(Profiler, { id: "badgeA", onRender }, createElement(BadgeA)));
   const view = await render(createElement(App, { enabled: options.enabled ?? true }));
   await flush();
   const emit = (event: HostEvent) => events.forEach((listener) => listener(event));
