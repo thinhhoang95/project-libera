@@ -23,6 +23,7 @@ import {
   ManifestKeys,
   albumImageType,
   albumPathError,
+  manifestNewNameError,
   manifestPathKey,
   type AlbumPhotoRecord,
   type ManifestEntry,
@@ -1223,7 +1224,9 @@ export class SharedProject {
     if (!this.info.album || this.keepsLocation()) return null;
     const stripped = stripPhotoMetadata(bytes, albumImageType(relative) ?? "");
     if (!stripped) return null;
-    const stats = await writeFileAtomic(absolute, stripped, this.diskGuard());
+    // Fenced on the bytes the caller read (after the file settled): a change
+    // made since then is another person's version and is never replaced.
+    const stats = await writeFileAtomic(absolute, stripped, contentGuard(absolute, sha256(bytes), this.diskGuard()));
     return { bytes: stripped, size: stats.size, mtimeMs: stats.mtimeMs };
   }
 
@@ -1888,7 +1891,12 @@ export class SharedProject {
     const files = new Map<string, WalkEntry>();
     const directories = new Map<string, WalkEntry>();
     for (const entry of walked.entries) (entry.kind === "file" ? files : directories).set(entry.relative, entry);
-    const skipped = new Set(walked.skipped);
+    // The manifest compares names as manifestPathKey (case-folded NFC); a
+    // cloud-delivered alternate spelling of a known name is that file, not a move.
+    const fileKeys = new Map<string, WalkEntry>();
+    for (const entry of files.values()) fileKeys.set(manifestPathKey(entry.relative), fileKeys.get(manifestPathKey(entry.relative)) ?? entry);
+    const directoryKeys = new Set([...directories.values()].map((entry) => manifestPathKey(entry.relative)));
+    const skipped = new Set(walked.skipped.map(manifestPathKey));
     // Compared as manifest keys: fs.watch can spell a name differently
     // (Unicode normalization, case) from the walk on the same volume.
     const dirty = new Set([...this.dirtyPaths].map(manifestPathKey));
@@ -1896,7 +1904,7 @@ export class SharedProject {
     const verifyAll = this.verifyAll;
     this.verifyAll = false;
     this.noticeMissedEvents(files, verifyAll, walkStartedAt);
-    const known = new Set([...Object.values(this.state.layout), ...this.readEntries().values()].map((record) => record.path));
+    const known = new Set([...Object.values(this.state.layout), ...this.readEntries().values()].map((record) => manifestPathKey(record.path)));
     // Parents of known entries are known too: a folder implied by "a/b.md"
     // must not become a new folder entry on every machine that sees it.
     for (const relative of [...known]) {
@@ -1915,16 +1923,17 @@ export class SharedProject {
     let quietDeferMs = Infinity;
 
     for (const [fileId, record] of Object.entries(this.state.layout)) {
-      if ([...skipped].some((item) => record.path === item || record.path.startsWith(`${item}/`))) {
+      const recordKey = manifestPathKey(record.path);
+      if ([...skipped].some((item) => recordKey === item || recordKey.startsWith(`${item}/`))) {
         this.missingSince.delete(fileId);
         continue;
       }
       if (record.kind === "folder") {
-        if (directories.has(record.path)) this.missingSince.delete(fileId);
+        if (directoryKeys.has(recordKey)) this.missingSince.delete(fileId);
         else missing.push(fileId);
         continue;
       }
-      const seen = files.get(record.path);
+      const seen = files.get(record.path) ?? fileKeys.get(recordKey);
       if (!seen) {
         if (record.hash && !this.baselineMissing.has(fileId)) missing.push(fileId);
         continue;
@@ -1952,7 +1961,7 @@ export class SharedProject {
         this.verified.set(fileId, { ctimeMs: seen.ctimeMs, at: performance.now() });
         continue;
       }
-      const absolute = await resolveInside(this.info.root, record.path).catch(() => null);
+      const absolute = await resolveInside(this.info.root, seen.relative).catch(() => null);
       const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, seen) : null;
       if (read === SLOW_READ) {
         needsRetry = true;
@@ -1963,15 +1972,7 @@ export class SharedProject {
       // Pending until what it found is handled; see settleVerification.
       this.verified.set(fileId, { ctimeMs: seen.ctimeMs, at: performance.now(), pending: true });
       let hash = sha256(bytes);
-      if (hash !== record.hash && record.kind === "blob" && this.canEdit) {
-        const stripped = await this.stripForUpload(absolute, record.path, bytes).catch(() => null);
-        if (stripped) {
-          bytes = stripped.bytes;
-          hash = sha256(bytes);
-          Object.assign(seen, { size: stripped.size, mtimeMs: stripped.mtimeMs });
-        }
-      }
-      if (hash === record.hash) {
+      const settleSame = () => {
         this.baselineMissing.delete(fileId);
         this.settleVerification(fileId);
         // A verification that found nothing new must not rewrite state.json.
@@ -1979,6 +1980,16 @@ export class SharedProject {
           Object.assign(record, { size: seen.size, mtimeMs: seen.mtimeMs });
           this.saveSoon();
         }
+      };
+      if (hash === record.hash) {
+        settleSame();
+        continue;
+      }
+      // An open SQLite database (sidecar beside it) cannot be copied
+      // consistently; it is looked at again once it is closed, as a new file is.
+      if (record.kind === "blob" && isActiveSqliteDatabase(this.info.root, seen.relative)) {
+        this.verified.delete(fileId);
+        needsRetry = true;
         continue;
       }
       // Another program may still be writing these bytes: the verification
@@ -1990,6 +2001,31 @@ export class SharedProject {
         // when its size and mtime are what the record already holds.
         this.verified.delete(fileId);
         continue;
+      }
+      // Only a settled file is rewritten (an album's location details are
+      // removed), and only if it still holds the bytes just read.
+      if (record.kind === "blob" && this.canEdit) {
+        let stripped: { bytes: Uint8Array; size: number; mtimeMs: number } | null = null;
+        try {
+          stripped = await this.stripForUpload(absolute, seen.relative, bytes);
+        } catch (error) {
+          // The file changed under the rewrite: judge it again next scan
+          // rather than uploading photo bytes that still carry location data.
+          if (error instanceof WriteCancelledError) {
+            this.verified.delete(fileId);
+            needsRetry = true;
+            continue;
+          }
+        }
+        if (stripped) {
+          bytes = stripped.bytes;
+          hash = sha256(bytes);
+          Object.assign(seen, { size: stripped.size, mtimeMs: stripped.mtimeMs });
+          if (hash === record.hash) {
+            settleSame();
+            continue;
+          }
+        }
       }
       if (record.kind === "doc" && record.docId) {
         const runtime = this.docs.get(record.docId);
@@ -2025,6 +2061,15 @@ export class SharedProject {
         needsRetry = true;
         continue;
       }
+      // The upload took time: publish the new hash only if the file on disk is
+      // still the snapshot that was hashed (same stat, same bytes).
+      const afterUpload = await statIfExists(absolute);
+      const reread = afterUpload && afterUpload.size === seen.size && afterUpload.mtimeMs === seen.mtimeMs ? await readIfExists(absolute) : null;
+      if (!reread || sha256(reread) !== hash) {
+        this.verified.delete(fileId);
+        needsRetry = true;
+        continue;
+      }
       operations.push((map, doc) => {
         const current = readManifest(doc).get(fileId);
         if (!current || current.kind !== "blob" || current.blobHash !== entry.blobHash) return;
@@ -2042,7 +2087,7 @@ export class SharedProject {
     if (!this.canEdit) return;
 
     // New files and folders the layout does not know.
-    const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array | null; hash: string }> = [];
+    const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array | null; hash: string; quiet: boolean }> = [];
     /** Bytes still to read this scan, and bytes of new files held in memory. */
     let readBudget = SCAN_READ_BUDGET_BYTES;
     let retainedBytes = 0;
@@ -2053,7 +2098,7 @@ export class SharedProject {
       if (record && record.kind !== "folder" && record.hash) missingSizes.add(record.size);
     }
     for (const [relative, entry] of files) {
-      if (known.has(relative)) continue;
+      if (known.has(manifestPathKey(relative))) continue;
       // An external LaTeX build's products would be uploaded again at every compile.
       if (isGeneratedPath(relative)) continue;
       // An open SQLite database (sidecar beside it) cannot be copied consistently.
@@ -2108,9 +2153,12 @@ export class SharedProject {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
         continue;
       }
-      const conflictOf = this.isLateCopy(relative, hash, entry.mtimeMs) ? null : this.conflictCopyOf(relative, hash);
-      if (this.isLateCopy(relative, hash, entry.mtimeMs) || conflictOf) {
-        const guard = this.diskGuard();
+      const lateCopy = this.isLateCopy(relative, hash);
+      const conflictOf = lateCopy ? null : this.conflictCopyOf(relative, hash);
+      if ((lateCopy || conflictOf) && stillChanging === 0) {
+        // Fenced on the bytes just judged: an album deletes the file, so a
+        // different photo that replaced it meanwhile must survive.
+        const guard = contentGuard(absolute as string, hash, this.diskGuard());
         const canCommit = guard.canCommit;
         guard.canCommit = async () => await canCommit() && this.pathFree(this.manifestDoc(), relative);
         await this.archive(relative, guard);
@@ -2121,15 +2169,24 @@ export class SharedProject {
       // Contents are kept only up to a budget; the rest is read again when shared.
       if (retainedBytes + bytes.byteLength > FRESH_RETAIN_BYTES) bytes = null;
       else retainedBytes += bytes.byteLength;
-      fresh.push({ entry, bytes, hash });
+      fresh.push({ entry, bytes, hash, quiet: stillChanging === 0 });
     }
 
-    // Delete + create of the same bytes is a rename (or a move).
+    // Delete + create of the same bytes is a rename (or a move), but only when
+    // nothing else could explain the new file: a delayed original or an
+    // intentional byte-identical copy looks the same. Anything ambiguous is
+    // imported as a new entry instead (the missing one is restored as usual).
     for (const fileId of [...missing]) {
       const record = this.state.layout[fileId];
       if (record.kind === "folder" || !record.hash) continue;
-      const index = fresh.findIndex((candidate) => candidate.hash === record.hash && compatibleKind(record, candidate.entry.relative));
-      if (index < 0) continue;
+      const candidates = fresh.filter((candidate) => candidate.hash === record.hash);
+      if (candidates.length !== 1 || !compatibleKind(record, candidates[0].entry.relative)) continue;
+      const sameBytes = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && other.hash === record.hash);
+      if (sameBytes.length > 0 || [...missing].some((otherId) => otherId !== fileId && this.state.layout[otherId]?.hash === record.hash)) continue;
+      // The original must still be absent now, not only when the walk began.
+      const original = await resolveInside(this.info.root, record.path).catch(() => null);
+      if (original && (await statIfExists(original))) continue;
+      const index = fresh.indexOf(candidates[0]);
       const [match] = fresh.splice(index, 1);
       missing.splice(missing.indexOf(fileId), 1);
       this.missingSince.delete(fileId);
@@ -2148,6 +2205,11 @@ export class SharedProject {
         map.set(fileId, entryRecord({ ...current, path: match.entry.relative, updatedAt: now }));
         // Its ink moves with it; the disk follows the manifest, as for any rename.
         for (const ink of this.inkCompanionMoves(doc, record.path, match.entry.relative, false, now)) map.set(ink.fileId, entryRecord(ink));
+        // A recording's transcript follows it, as in an explicit rename.
+        for (const transcript of this.transcriptCompanionMoves(doc, record.path, match.entry.relative, now)) {
+          map.set(transcript.fileId, entryRecord(transcript));
+          touched.add(transcript.path);
+        }
         this.retirePath(record.path, knownHashes(record));
         Object.assign(record, { path: match.entry.relative, size: match.entry.size, mtimeMs: match.entry.mtimeMs });
         if (record.docId) this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: record.hash ?? null });
@@ -2165,6 +2227,21 @@ export class SharedProject {
     if (this.canEdit) {
       for (const candidate of fresh) {
         if (this.state.externalAdoptionRequired) continue;
+        // Read early only to look for a rename; it counts as new once quiet.
+        if (!candidate.quiet) {
+          quietDeferMs = Math.min(quietDeferMs, Math.max(1, quietWaitMs(candidate.entry, now, this.ctx.timings.importQuietMs)));
+          continue;
+        }
+        // A name with no room for its `.transcript` / `.json` sidecars is not
+        // shared (existing entries are not affected); the notebook says why once.
+        const nameProblem = manifestNewNameError(candidate.entry.relative);
+        if (nameProblem) {
+          if (!scanReads.oversized.has(candidate.entry.relative)) {
+            scanReads.oversized.add(candidate.entry.relative);
+            this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${candidate.entry.relative} is not shared. ${nameProblem}`);
+          }
+          continue;
+        }
         let candidateBytes = candidate.bytes;
         if (!candidateBytes) {
           const absolute = await resolveInside(this.info.root, candidate.entry.relative).catch(() => null);
@@ -2181,7 +2258,7 @@ export class SharedProject {
           continue;
         }
         operations.push((map, doc) => {
-          if (this.isLateCopy(created.path, candidate.hash, candidate.entry.mtimeMs) || !this.pathFree(doc, created.path)) {
+          if (this.isLateCopy(created.path, candidate.hash) || !this.pathFree(doc, created.path)) {
             delete this.state.layout[created.fileId];
             return;
           }
@@ -2196,7 +2273,7 @@ export class SharedProject {
       }
       for (const [relative, entry] of directories) {
         if (this.info.album) break;
-        if (known.has(relative) || this.pathRetired(relative) || this.state.externalAdoptionRequired || isGeneratedPath(`${relative}/x`)) continue;
+        if (known.has(manifestPathKey(relative)) || this.pathRetired(relative) || this.state.externalAdoptionRequired || isGeneratedPath(`${relative}/x`)) continue;
         const fileId = randomId("fil");
         const created: ManifestEntry = { fileId, path: relative, kind: "folder", createdBy: accountId, createdAt: now, updatedAt: now };
         operations.push((map, doc) => {
@@ -2232,13 +2309,8 @@ export class SharedProject {
     if (needsRetry) this.scheduleRetry();
   }
 
-  /** When this process retired each path, and when it started (the cutoff for paths retired earlier). */
-  private readonly retiredAt = new Map<string, number>();
-  private readonly startedAt = Date.now();
-
   private retirePath(relative: string, hashes: string[] = []): void {
     const key = manifestPathKey(relative);
-    this.retiredAt.set(key, Date.now());
     const known = this.retired.get(key);
     const added = hashes.filter((hash) => !known?.has(hash));
     if (known && added.length === 0) return;
@@ -2251,18 +2323,15 @@ export class SharedProject {
    * late delivery from a sync client), not a file someone just put there.
    * Only the bytes can tell, so a path whose old bytes are unknown stays safe.
    */
-  private isLateCopy(relative: string, hash: string, mtimeMs?: number): boolean {
-    const key = manifestPathKey(relative);
-    const hashes = this.retired.get(key);
+  private isLateCopy(relative: string, hash: string): boolean {
+    const hashes = this.retired.get(manifestPathKey(relative));
     if (hashes === undefined) return false;
-    if (hashes.size === 0 || hashes.has(hash)) return true;
-    // A finite hash history cannot prove where late bytes came from: an older
-    // version delivered after a delete is not in it, but a sync client keeps
-    // its original mtime. Unknown bytes count as a new file only when written
-    // after the retirement (this process's, else its own start); older ones
-    // are set aside in `_archive`, never deleted.
-    if (mtimeMs === undefined) return true;
-    return mtimeMs <= (this.retiredAt.get(key) ?? this.startedAt);
+    if (hashes.has(hash)) return true;
+    // Bytes the retired entry never had are not that file, whatever their
+    // mtime says (a photo copied in keeps its camera's old mtime). With no
+    // history at all nothing can tell them apart; a notebook sets the file
+    // aside in `_archive`, but an album deletes, so it imports instead.
+    return hashes.size === 0 && !this.info.album;
   }
 
   private reportArchived(relative: string, reason: "removed" | "conflict-copy" = "removed"): void {
@@ -2397,7 +2466,13 @@ export class SharedProject {
   private async createFromDisk(entry: WalkEntry, bytes: Uint8Array, hash: string, accountId: string, now: number): Promise<ManifestEntry | null> {
     const api = this.ctx.host.api;
     if (!api) return null;
-    const stripped = await this.stripForUpload(path.join(this.info.root, ...entry.relative.split("/")), entry.relative, bytes).catch(() => null);
+    let stripped: { bytes: Uint8Array; size: number; mtimeMs: number } | null = null;
+    try {
+      stripped = await this.stripForUpload(path.join(this.info.root, ...entry.relative.split("/")), entry.relative, bytes);
+    } catch (error) {
+      // Changed under the rewrite: not shared until it is judged again.
+      if (error instanceof WriteCancelledError) return null;
+    }
     if (stripped) {
       bytes = stripped.bytes;
       hash = sha256(bytes);

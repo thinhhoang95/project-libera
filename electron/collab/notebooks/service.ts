@@ -45,7 +45,7 @@ import type { CollabHostEvent } from "../core/host";
 import { normalizedServerUrl, sameAuthority } from "../core/authority";
 import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter, type NotebookService } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, isNotFound, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
+import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, isActiveSqliteDatabase, randomId, readIfExists, isNotFound, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord } from "./layout";
 import { isPdfDocId, isPdfPath, PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
@@ -1679,6 +1679,9 @@ export class NotebookServiceImpl implements NotebookService {
         files.push(before?.kind === "folder" ? before : { path: item.relative, kind: "folder", fileId: randomId("fil") });
         continue;
       }
+      // An open SQLite database (WAL/SHM/journal beside it) cannot be read
+      // consistently; the scan shares it once it is closed.
+      if (isActiveSqliteDatabase(root, item.relative)) continue;
       const absolute = path.join(root, ...item.relative.split("/"));
       let bytes: Uint8Array | null = await readIfExists(absolute);
       if (!bytes) continue;
