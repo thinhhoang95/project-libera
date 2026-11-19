@@ -375,3 +375,91 @@ test("2611.19899: openjournal's title (a \\vspace in it) is drawn, and authors.t
   authors.destroy();
   view.destroy();
 });
+
+const AUTHBLK = String.raw`\documentclass[11pt,twoside,a4paper]{article}
+\usepackage{authblk}
+\begin{document}
+
+\title{Optimal radio labelings for the Cartesian product of a path and the Heawood graph}
+
+\author[a]{Payal Vasoya\thanks{E-mail: \texttt{prvasoya92@gmail.com}}}
+\author[a]{Miral Doshi\thanks{E-mail: \texttt{doshi.miral55@gmail.com}}}
+\author[b]{Devsi Bantva\thanks{E-mail: \texttt{devsi.bantva@gmail.com}}}
+\affil[a]{{\small Gujarat Technological University, Ahmedabad 382 424, Gujarat, India}}
+\affil[b]{{\small Lukhdhirji Engineering College, Morvi 363 642, Gujarat, India}}
+
+\pagestyle{myheadings}
+\markboth{\centerline{Payal Vasoya, Miral Doshi and Devsi Bantva }}{\centerline{Optimal radio labelings}}
+
+\date{}
+\openup 0.8\jot
+\maketitle
+
+\begin{abstract} A radio labeling is a map. \end{abstract}
+
+\section{Introduction}
+Text.
+\end{document}
+`;
+
+// cs.DM 2611.13813: authblk's title block with \markboth, \date{} and \openup 0.8\jot before \maketitle stayed source.
+test("2611.13813: an authblk title block (labelled authors and \\affil) with \\markboth and \\openup in the run is drawn; a click shows the source", () => {
+  const view = mount(AUTHBLK);
+  assert.deepEqual(left(view), []);
+  const block = view.contentDOM.querySelector<HTMLElement>(".cm-vis-title-block");
+  assert.ok(block, "a title block");
+  const shown = plain(block!);
+  assert.match(shown, /Optimal radio labelings/);
+  for (const name of ["Payal Vasoya", "Miral Doshi", "Devsi Bantva"]) assert.ok(shown.includes(name), name);
+  assert.match(shown, /Gujarat Technological University/);
+  assert.match(shown, /Lukhdhirji Engineering College/);
+  assert.ok(!/\\|markboth|openup/.test(shown), shown);
+  block!.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, altKey: true }));
+  assert.ok(shows(view, "\\author[a]{Payal Vasoya"), "Alt-click shows the source");
+  view.destroy();
+});
+
+test("2611.13813: \\openup alone on a line is a hidden spacing setting", () => {
+  const view = mount("\\documentclass{article}\n\\begin{document}\nText.\n\n\\openup 0.8\\jot\n\nMore.\n\\end{document}\n");
+  assert.deepEqual(left(view), []);
+  view.destroy();
+});
+
+const CAS = String.raw`\documentclass[a4paper, fleqn]{cas-sc}
+\begin{document}
+\author[1]{Junjie Huang}[style=chinese]
+\corref{cor}
+\ead{junjiehuang@swu.edu.cn}
+
+\author[1,2]{Tao Jia}[style=chinese]
+\corref{cor}
+\ead{tjia@swu.edu.cn}
+\cortext[cor]{Corresponding author}
+
+\affiliation[1]{organization={College of Computer, Southwest University},
+    city={Chongqing},
+    country={China}}
+\affiliation[2]{organization={Chongqing Normal University},
+    city={Chongqing},
+    country={China}}
+
+\shorttitle{PAGSL}
+\title [mode = title]{PAGSL: Path-Augmenting Graph Structure Learning}
+
+\begin{abstract}
+Scholars.
+\end{abstract}
+\maketitle
+\section{Intro}
+Text.
+\end{document}
+`;
+
+// cs.SI 2611.09126: cas-sc's \corref{cor} after an author stayed source.
+test("2611.09126: cas-sc's \\corref is part of the title block", () => {
+  const view = mount(CAS);
+  const left_ = left(view);
+  assert.ok(!left_.includes("corref"), left_.join(","));
+  assert.ok(view.contentDOM.querySelector(".cm-vis-title-block"), "a title block");
+  view.destroy();
+});

@@ -144,7 +144,7 @@ function layoutExtent(state: EditorState, at: number, command: string) {
   const text = read(state, at, Math.min(state.doc.length, at + 400));
   let i = text[0] === "*" ? 1 : 0;
   const rest = () => text.slice(i);
-  if (/^\\(?:vskip|hskip|vglue|hglue|kern)$/.test(command)) i += PRIMITIVE_GLUE.exec(rest())?.[0].length ?? 0;
+  if (/^\\(?:vskip|hskip|vglue|hglue|kern|openup)$/.test(command)) i += PRIMITIVE_GLUE.exec(rest())?.[0].length ?? 0;
   // `\vspace*{2pt}`: the star keeps the grammar from attaching the group, which follows as text.
   else if (/^\\(?:vspace|hspace|addvspace|Needspace|needspace)$/.test(command)) i += /^\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
   else if (/^\\(?:setlength|addtolength)$/.test(command)) i += /^\s*\\[A-Za-z@]+\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
@@ -3306,7 +3306,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
-    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip|Needspace|needspace|penalty|looseness|urlstyle)$/.test(text) && !hasDirectError(node)) {
+    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip|Needspace|needspace|penalty|looseness|urlstyle|openup)$/.test(text) && !hasDirectError(node)) {
       const end = layoutExtent(state, ctrl.to, text);
       if (end > ctrl.to || /skip$/.test(text)) {
         const horizontal = /^\\h/.test(text);
@@ -5039,7 +5039,8 @@ const titleCache = new WeakMap<Text, Map<string, ReturnType<typeof scanTitlePart
 
 /** The class that decides how the title block reads its commands: JHEP's `jheppub` package (over `article`) gives its own. */
 export function titleClass(defs: { packages: readonly string[] }, documentClass: string | null) {
-  return defs.packages.includes("jheppub") ? "jheppub" : documentClass;
+  // authblk (over a plain class): each `\author[a]{Name}` adds an author, `\affil[a]{…}` is the address labelled a (cs.DM 2611.13813).
+  return defs.packages.includes("jheppub") ? "jheppub" : defs.packages.includes("authblk") && /^(?:article|report|book|memoir|scrartcl|scrreprt|scrbook)$/.test(documentClass ?? "") ? "authblk" : documentClass;
 }
 
 /** `\title`, `\author` and `\date` before a `\maketitle` at `pos` (cached per document version). */
@@ -5297,7 +5298,7 @@ function abstractIn(content: string) {
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo|makeatletter|makeatother|IEEEpubid|IEEEaftertitletext|IEEEpubidadjcol|markboth|markright|TITLE|RUNTITLE|RUNAUTHOR|ECRUNTITLE|ECRUNAUTHOR|ARTICLEAUTHORS|AUTHOR|AFF|EMAIL|URL|ABSTRACT|KEYWORDS|HISTORY|SUBJECTCLASS|AREAOFREVIEW|VOLUME|NO|MONTH|YEAR|FIRSTPAGE|LASTPAGE|SHORTYEAR|ISSUE|LONGFIRSTPAGE|DOI|MANUSCRIPTNO)$/;
+const TITLE_DECLARATIONS = /^(?:openup|corref|fnref|tnoteref|thanksref|title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo|makeatletter|makeatother|IEEEpubid|IEEEaftertitletext|IEEEpubidadjcol|markboth|markright|TITLE|RUNTITLE|RUNAUTHOR|ECRUNTITLE|ECRUNAUTHOR|ARTICLEAUTHORS|AUTHOR|AFF|EMAIL|URL|ABSTRACT|KEYWORDS|HISTORY|SUBJECTCLASS|AREAOFREVIEW|VOLUME|NO|MONTH|YEAR|FIRSTPAGE|LASTPAGE|SHORTYEAR|ISSUE|LONGFIRSTPAGE|DOI|MANUSCRIPTNO)$/;
 /** What ends a run of title declarations rather than staying source inside it: text, sections, environments. */
 const RUN_ENDERS = /^(?:begin|end|part|chapter|section|subsection|subsubsection|paragraph|subparagraph|item|maketitle|par|noindent|indent|bibliography|printbibliography|appendix|label|footnote|textbf|textit|emph|cite|ref|includegraphics|caption)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
@@ -5389,6 +5390,8 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
       // A definition's name and parameters (`\newcommand\x[1]{…}`, `\def\x#1{…}`), before its body.
       if (command[1] === "let") end += /^\s*\\[A-Za-z@]+\s*=?\s*(?:\\[A-Za-z@]+|\\.)/.exec(text.slice(end, end + 120))?.[0].length ?? 0;
       else if (TITLE_DEFINITIONS.test(command[1])) end +=/^\s*(?:\\[A-Za-z@]+|\{\s*\\[A-Za-z@]+\s*\})(?:#\d)*/.exec(text.slice(end, end + 80))?.[0].length ?? 0;
+      // `\openup 0.8\jot` (cs.DM 2611.13813): a spacing setting with its glue.
+      else if (command[1] === "openup") end += PRIMITIVE_GLUE.exec(text.slice(end, end + 60))?.[0].length ?? 0;
       for (;;) {
         // A&A's `\abstract` takes five groups, with comment lines between them (2611.07227).
         // `\author` with its `{` on the next line (cs.IT 2611.09184): one line break is space to TeX.
@@ -5452,7 +5455,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX, Cambridge's jfp. */
-export const ACCUMULATING_AUTHORS = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsbook|amsproc|elsarticle|cas-[sd]c|lmcs|IEEEojcsys|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
+export const ACCUMULATING_AUTHORS = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsbook|amsproc|elsarticle|cas-[sd]c|lmcs|IEEEojcsys|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub|authblk)$/;
 /** INFORMS' classes (informs3 and the journal variants): `TITLE{…}`, `ARTICLEAUTHORS{AUTHOR{…}AFF{…}}`, `ABSTRACT{…}` (econ.TH 2611.05708). */
 export const INFORMS = /^informs\d*(?:-[A-Za-z0-9-]+)?$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */

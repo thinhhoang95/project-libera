@@ -31,7 +31,7 @@ const INFORMS_CLASS = /^informs\d*(?:-[A-Za-z0-9-]+)?$/;
 // A&A's `aa` numbers its institutes as llncs does (`\institute{A \and B}`, `\inst{1}`).
 const LLNCS = /^(?:llncs|svjour3?|svmult|aa)$/;
 const ELSARTICLE = /^elsarticle$/;
-const SNJNL = /^sn-jnl$/;
+const SNJNL = /^(?:sn-jnl|authblk)$/;
 // Elsevier's CAS classes (cas-sc, cas-dc): elsarticle's commands with the address as `organization={…}, city={…}` keys.
 const CAS = /^cas-[sd]c$/;
 // The Logical Methods in Computer Science class: `\author[Short]{Name}[a]`, then an `\address` and `\email` per mark.
