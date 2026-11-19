@@ -2,7 +2,8 @@ import { prunePdfTextCaches } from "@/lib/storage/pdf-text-cache";
 import { pdfFilesOf, reconcilePdfSidecars } from "@/lib/storage/pdf-sidecars";
 import { inkSourceFilesOf, reconcileInkFolders } from "@/lib/storage/ink";
 import { pruneAudioSidecars } from "@/lib/storage/transcripts";
-import { populateRelatedNotebooks } from "@/lib/storage/notebook-links";
+import { extractNotebookLinkDestinations, populateRelatedNotebooks } from "@/lib/storage/notebook-links";
+import { readTextSnapshot } from "@/lib/storage/file-signature";
 import { scheduleReferenceReattach } from "@/lib/storage/references";
 import { readLastNotebookName } from "@/lib/storage/last-notebook";
 import type { Stats } from "node:fs";
@@ -337,12 +338,46 @@ async function getLinkedFolderNode(
   };
 }
 
+/** How often a notebook's sidecar upkeep runs on reads that allow it to be skipped. */
+export const TREE_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
+const maintenanceRanAt = new Map<string, number>();
+let maintenanceClock = () => Date.now();
+
+/** Tests: forget when upkeep last ran, and use the real clock again. */
+export function resetTreeMaintenance() {
+  maintenanceRanAt.clear();
+  maintenanceClock = () => Date.now();
+}
+
+/** Tests: the time the upkeep interval is measured against. */
+export function setTreeMaintenanceClock(now: () => number) {
+  maintenanceClock = now;
+}
+
+// Routine refreshes (shared edits) must not prune and reconcile every notebook
+// each time: that walks sidecar folders on disk for nothing.
+function maintenanceDue(notebook: string, mode: "always" | "throttled") {
+  if (mode === "always") return true;
+  const now = maintenanceClock();
+  const last = maintenanceRanAt.get(notebook);
+  if (last !== undefined && now >= last && now - last < TREE_MAINTENANCE_INTERVAL_MS) return false;
+  maintenanceRanAt.set(notebook, now);
+  return true;
+}
+
+async function maintainNotebookSidecars(notebook: string, children: LiberaTreeNode[]) {
+  await prunePdfTextCaches(notebook).catch(() => undefined);
+  await pruneAudioSidecars(notebook).catch(() => undefined);
+  await reconcilePdfSidecars(notebook, pdfFilesOf(children)).catch(() => undefined);
+  await reconcileInkFolders(notebook, inkSourceFilesOf(children)).catch(() => undefined);
+}
+
 /**
- * `maintenance: false` skips the sidecar upkeep (pruning, reconciling) that
- * normally runs for every notebook on each read: callers that only refresh a
- * view after a file event do not need it, and it rewrites files in cloud folders.
+ * Sidecar upkeep runs on every read unless `maintenance` is "throttled", which
+ * runs it at most once per notebook per TREE_MAINTENANCE_INTERVAL_MS.
  */
-export async function getTree(options: { includeArchive?: boolean; maintenance?: boolean } = {}): Promise<LiberaTree> {
+export async function getTree(options: { includeArchive?: boolean; maintenance?: "always" | "throttled" } = {}): Promise<LiberaTree> {
+  const maintenance = options.maintenance ?? "always";
   await ensureAdminRoot();
 
   const linkedFolders = getLinkedFolders();
@@ -375,11 +410,8 @@ export async function getTree(options: { includeArchive?: boolean; maintenance?:
     const children = await readTreeDirectory(entry.name, [], { showArchive });
     // A migration that has not finished may have moved a file but not yet its
     // sidecars: they are not orphans, and pruning them would lose them.
-    if (options.maintenance !== false && !(await isNotebookMigrating(entry.name))) {
-      await prunePdfTextCaches(entry.name).catch(() => undefined);
-      await pruneAudioSidecars(entry.name).catch(() => undefined);
-      await reconcilePdfSidecars(entry.name, pdfFilesOf(children)).catch(() => undefined);
-      await reconcileInkFolders(entry.name, inkSourceFilesOf(children)).catch(() => undefined);
+    if (maintenanceDue(entry.name, maintenance) && !(await isNotebookMigrating(entry.name))) {
+      await maintainNotebookSidecars(entry.name, children);
     }
 
     notebooks.push({
@@ -409,11 +441,8 @@ export async function getTree(options: { includeArchive?: boolean; maintenance?:
   for (const folder of linkedFolders) {
     const node = await getLinkedFolderNode(folder, { showArchive, validGroupIds });
     if (!node.folder?.missing) {
-      if (options.maintenance !== false && !(await isNotebookMigrating(folder.name))) {
-        await prunePdfTextCaches(folder.name).catch(() => undefined);
-        await pruneAudioSidecars(folder.name).catch(() => undefined);
-        await reconcilePdfSidecars(folder.name, pdfFilesOf(node.children)).catch(() => undefined);
-        await reconcileInkFolders(folder.name, inkSourceFilesOf(node.children)).catch(() => undefined);
+      if (maintenanceDue(folder.name, maintenance) && !(await isNotebookMigrating(folder.name))) {
+        await maintainNotebookSidecars(folder.name, node.children);
       }
     }
     notebooks.push(node);
@@ -424,7 +453,7 @@ export async function getTree(options: { includeArchive?: boolean; maintenance?:
 
   await populateRelatedNotebooks(notebooks);
   // Re-attach reference files moved outside Libera, in the background.
-  if (options.maintenance !== false) void scheduleReferenceReattach();
+  void scheduleReferenceReattach();
 
   return {
     archiveIncluded: showArchive,
@@ -517,4 +546,31 @@ export function attachFileIds(
     }
   };
   visit(nodes);
+}
+
+export type LiberaFileMetadata = {
+  node: LiberaFileNode;
+  /** A Markdown note's link targets as written; the shown tree resolves them against its files. */
+  linkDestinations?: string[];
+};
+
+/**
+ * The file nodes for just these library paths, in the same shape the tree
+ * gives them, with none of its walk or upkeep. An entry is null for a path
+ * that is gone, hidden or not a supported file: the caller then reads the
+ * whole tree.
+ */
+export async function getFileMetadata(paths: string[]): Promise<{ path: string; metadata: LiberaFileMetadata | null }[]> {
+  return Promise.all(paths.map(async (libraryPath) => {
+    try {
+      const [notebook, ...parts] = libraryPath.split("/");
+      if (!notebook || !parts.length || !isVisibleTreeFile(notebook, parts)) return { path: libraryPath, metadata: null };
+      const node = await getFileNode(notebook, parts);
+      if (node.fileType !== "markdown") return { path: libraryPath, metadata: { node } };
+      const snapshot = await readTextSnapshot(filePathFromParts(notebook, parts));
+      return { path: libraryPath, metadata: { node, linkDestinations: extractNotebookLinkDestinations(snapshot.content) } };
+    } catch {
+      return { path: libraryPath, metadata: null };
+    }
+  }));
 }

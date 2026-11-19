@@ -5,6 +5,7 @@ import { JSDOM } from "jsdom";
 import { act, createElement, memo, useCallback, useMemo, type ComponentProps, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { emptyTree } from "../../src/components/libera/api-client";
+import { createSidebarSearchStore } from "../../src/components/libera/sidebar-search-store";
 import { useStableHandlers } from "../../src/components/libera/use-stable-handlers";
 import type { OpenTab } from "../../src/components/libera/types";
 import { emptyWorkspaceSession } from "../../src/lib/workspaces";
@@ -96,7 +97,7 @@ test("the notebook tree does not render when only the active tab's draft changes
   const tree: LiberaTree = emptyTree();
   const expanded = new Set<string>();
   const fileInteractions = {};
-  const searchResults: Props["searchResults"] = [];
+  const searchStore = createSidebarSearchStore();
   const uploadInputRef = { current: null };
   const updateView = async () => undefined;
   const openedWith: string[] = [];
@@ -115,7 +116,7 @@ test("the notebook tree does not render when only the active tab's draft changes
       onCreateNotebookGroup: noOp, onDeleteNotebook: asyncNoOp, onDeleteNotebookGroup: asyncNoOp, onDeleteFile: asyncNoOp, onDeleteFolder: asyncNoOp,
       onDownloadFile: noOp, onDownloadNotebook: noOp, onEditNotebook: noOp, onEditNotebookGroup: noOp, onMoveFile: asyncNoOp,
       onOpenFile: async (file: LiberaFileNode) => { openedWith.push(`${file.path}@${draft}`); },
-      onQueryChange: noOp, onRenameFolder: asyncNoOp, onRenameFile: asyncNoOp, onSelectNotebook: noOp, onSelectSearchResult: noOp,
+      onRenameFolder: asyncNoOp, onRenameFile: asyncNoOp, onSelectNotebook: noOp, onSelectSearchResult: noOp,
       onStartUpload: noOp, onToggleFileStar: asyncNoOp, onEditFileTags: noOp, onToggleNotebook: noOp, onUploadChange: asyncNoOp,
       onUploadFiles: asyncNoOp, onUpdateNotebookViewOptions: asyncNoOp, onCloseDirectory: noOp,
     });
@@ -129,7 +130,7 @@ test("the notebook tree does not render when only the active tab's draft changes
       createElement(WorkspaceViewContext.Provider, { value: workspaceView },
         createElement(NotebookPanel, {
           ...stable, ...unstable, onOpenMigration, onManageWorkspace, workspaceActive: false, canOpenDirectories: false,
-          activeTabId: activeTab.id, expanded, fileInteractions, query: "", searchResults, selectedNotebookName: "", tree: treeProp, uploadInputRef,
+          activeTabId: activeTab.id, expanded, fileInteractions, searchStore, selectedNotebookName: "", tree: treeProp, uploadInputRef,
         } satisfies Props)));
   }
 
@@ -207,11 +208,11 @@ test("the left panel forwards identical props to the notebook panel when only th
       workspaceManager: { activeWorkspace: undefined, switching: false } as unknown as Props["workspaceManager"],
       fullTree: tree, tree, activePanel: "notebook", onPanelChange: noOp, collapsed: false, textareaRef: { current: null },
       onLogout: asyncNoOp, onSetDraft: noOp, onToggleCollapsed: noOp, onGeneratedFilesSaved: noOp,
-      activeTabId: "Notes/a.md", expanded: new Set(), fileInteractions: {}, query: "", searchResults: [], selectedNotebookName: "", uploadInputRef: { current: null },
+      activeTabId: "Notes/a.md", expanded: new Set(), fileInteractions: {}, searchStore: createSidebarSearchStore(), selectedNotebookName: "", uploadInputRef: { current: null },
       onDuplicateMarkdown: noOp, onCopyFile: asyncNoOp, onArchiveFile: asyncNoOp, onArchiveFolder: asyncNoOp, onCreateFolder: asyncNoOp,
       onCreateMarkdown: asyncNoOp, onCreateSlides: asyncNoOp, onCreateNotebook: noOp, onCreateNotebookGroup: noOp, onDeleteNotebook: asyncNoOp,
       onDeleteNotebookGroup: asyncNoOp, onDeleteFile: asyncNoOp, onDeleteFolder: asyncNoOp, onDownloadFile: noOp, onDownloadNotebook: noOp,
-      onEditNotebook: noOp, onEditNotebookGroup: noOp, onMoveFile: asyncNoOp, onOpenFile: asyncNoOp, onQueryChange: noOp, onRenameFolder: asyncNoOp,
+      onEditNotebook: noOp, onEditNotebookGroup: noOp, onMoveFile: asyncNoOp, onOpenFile: asyncNoOp, onRenameFolder: asyncNoOp,
       onRenameFile: asyncNoOp, onSelectNotebook: noOp, onSelectSearchResult: noOp, onStartUpload: noOp, onToggleFileStar: asyncNoOp,
       onEditFileTags: noOp, onToggleNotebook: noOp, onUploadChange: asyncNoOp, onUploadFiles: asyncNoOp, onUpdateNotebookViewOptions: asyncNoOp,
     };
@@ -221,10 +222,10 @@ test("the left panel forwards identical props to the notebook panel when only th
     await act(async () => root.render(render("one two three")));
     assert.equal(forwarded.length, 1, "the notebook panel received props once; later left-panel renders did not reach it");
     // Every forwarded prop is also identical on a further render that does reach the probe.
-    await act(async () => root.render(createElement(LeftPanel, { ...stableProps, activeTab: markdownTab("two"), query: "q" })));
+    await act(async () => root.render(createElement(LeftPanel, { ...stableProps, activeTab: markdownTab("two"), searchStore: createSidebarSearchStore() })));
     assert.equal(forwarded.length, 2);
     for (const key of Object.keys(forwarded[0])) {
-      if (key === "query") continue;
+      if (key === "searchStore") continue;
       assert.ok(Object.is(forwarded[0][key], forwarded[1][key]), `prop ${key} kept its identity`);
     }
   } finally {

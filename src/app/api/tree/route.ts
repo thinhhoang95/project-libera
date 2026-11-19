@@ -25,7 +25,10 @@ export async function GET(request: NextRequest) {
       if (notebook) await attachSharedFileIds([notebook], listSharedEntries, isShared);
       return NextResponse.json({ notebook });
     }
-    const tree = await getTree({ includeArchive });
+    const tree = await getTree({
+      includeArchive,
+      maintenance: request.nextUrl.searchParams.get("maintenance") === "throttled" ? "throttled" : "always",
+    });
     await attachSharedFileIds(tree.notebooks, listSharedEntries, isShared);
     return NextResponse.json(tree);
   } catch (error) {

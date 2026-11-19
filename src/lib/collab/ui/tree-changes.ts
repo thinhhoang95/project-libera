@@ -13,6 +13,8 @@ export type RefreshScope = { notebooks: string[] | null };
  * type it runs at most this often.
  */
 export const SHARED_TREE_REFRESH_MS = 2000;
+/** A batch touching more files than this is cheaper to read as a whole tree. */
+export const MAX_INCREMENTAL_PATHS = 100;
 /** How long one refresh may run before the next is allowed to start anyway. */
 export const REFRESH_STUCK_MS = 30_000;
 
@@ -155,7 +157,9 @@ export function replaceNotebook(tree: LiberaTree, fresh: LiberaNotebookNode): Li
 
 /**
  * Batch working-copy writes as well as structural changes for the sidebar's
- * link index. The refresh is told which notebooks the batch touched. A batch that comes due while the window is hidden waits, and
+ * link index. A batch of only writes goes to `onFilesChanged` with the written
+ * paths (when given), a light check of those files; any structural change in
+ * the batch makes it a `refresh`, told which notebooks the batch touched. A batch that comes due while the window is hidden waits, and
  * runs once when the window is shown again. Refreshes never overlap: events
  * that arrive during one cause exactly one more when it settles.
  *
@@ -168,6 +172,7 @@ export function subscribeSharedTreeChanges(
   refresh: (scope: RefreshScope) => void | Promise<unknown>,
   onMoves: (moves: FileMove[]) => void,
   visibility: WindowVisibility | null = documentVisibility(),
+  onFilesChanged?: (paths: string[]) => void | Promise<unknown>,
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** A batch came due while the window was hidden. */
@@ -176,6 +181,9 @@ export function subscribeSharedTreeChanges(
   /** Events arrived while a refresh was in flight. */
   let rerun = false;
   let closed = false;
+  /** What the pending batch holds: a structural change needs a refresh, writes only their files. */
+  let structural = false;
+  const written = new Set<string>();
   /** The notebooks events named since the last refresh started; `pendingAll` when one named none. */
   const pending = new Set<string>();
   let pendingAll = false;
@@ -183,7 +191,11 @@ export function subscribeSharedTreeChanges(
     deferred = false;
     if (running) { rerun = true; return; }
     running = true;
+    const paths = [...written];
+    const incremental = !structural && paths.length > 0 && paths.length <= MAX_INCREMENTAL_PATHS && onFilesChanged !== undefined;
     const scope: RefreshScope = { notebooks: pendingAll ? null : [...pending] };
+    structural = false;
+    written.clear();
     pending.clear();
     pendingAll = false;
     let done = false;
@@ -200,7 +212,7 @@ export function subscribeSharedTreeChanges(
       else run();
     };
     let result: void | Promise<unknown>;
-    try { result = refresh(scope); } catch { settled(); return; }
+    try { result = incremental ? onFilesChanged!(paths) : refresh(scope); } catch { settled(); return; }
     if (result && typeof (result as Promise<unknown>).then === "function") {
       (result as Promise<unknown>).then(settled, settled);
     } else settled();
@@ -210,7 +222,9 @@ export function subscribeSharedTreeChanges(
     if (event.t === "tree-changed") {
       const planned = planMoves(event.moves);
       if (planned.length) onMoves(planned);
+      structural = true;
     } else if (!event.paths.length) return;
+    else for (const changed of event.paths) written.add(changed);
     const named = eventNotebooks(event);
     if (named) for (const name of named) pending.add(name);
     else pendingAll = true;

@@ -16,7 +16,7 @@ import { useTranslations } from "next-intl";
 import { createPortal } from "react-dom";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
-import { useMarkdownDisplayPreferences } from "@/components/libera/markdown-display-preferences";
+import { useMarkdownDisplayPreference, useMarkdownDisplayPreferenceActions } from "@/components/libera/markdown-display-preferences";
 import { MarkdownSlidesOutlinePreview } from "@/components/libera/markdown-slides-outline-preview";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import type { OpenTab } from "@/components/libera/types";
@@ -25,6 +25,7 @@ import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { LiberaFileNode } from "@/lib/types";
+import { useLiveMarkdownLine } from "./live-reading-position";
 
 type OutlinePanelProps = {
   activeTab?: OpenTab;
@@ -389,7 +390,8 @@ export function OutlinePanel({
   onSetDraft,
   mathMarkers,
 }: OutlinePanelProps) {
-  const { preferences: { outlineExpansionLevel }, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
+  const outlineExpansionLevel = useMarkdownDisplayPreference("outlineExpansionLevel");
+  const { updatePreferences, flushPreferences } = useMarkdownDisplayPreferenceActions();
   const t = useTranslations("outlinePanel");
   const [view, setView] = useState<OutlinePanelView>(readStoredOutlineView);
 
@@ -549,7 +551,10 @@ function MarkdownOutline({
     [headings, normalizedQuery, expansionLevel, expandedHeadings],
   );
   const outlineIsCurrent = outlineState.draft === (activeTab?.draft ?? "");
+  // The line scrolling reports lives here until it is stored at a pause.
+  const liveMarkdownLine = useLiveMarkdownLine(activeTab?.id);
   const activeMarkdownLine =
+    liveMarkdownLine ??
     activeTab?.viewState?.markdown?.line ??
     (typeof activeTab?.viewState?.markdown?.selectionStart === "number"
       ? lineForOffset(activeTab.draft, activeTab.viewState.markdown.selectionStart)

@@ -67,8 +67,13 @@ test("an acknowledgement fires the durability listener without bumping the regis
     assert.equal(versionWakes, 0, "version subscribers were not woken");
     assert.equal(replica.getSnapshot(), snapshot, "no snapshot field changed, so the snapshot keeps its identity");
 
-    // A real snapshot change still bumps the version.
+    // Sync status alone leaves the version alone (the replica's own subscribers still hear it).
     hub({ t: "status", docId, status: { state: "offline", pending: 0, oldestPendingAgeMs: 0, lastAckAt: null, connected: false } });
+    assert.equal(registry.getVersion(), version);
+    assert.equal(replicaWakes, 2);
+
+    // A structural snapshot change still bumps the version.
+    hub({ t: "closed", docId, reason: "hub-shutdown" });
     assert.equal(registry.getVersion(), version + 1);
     assert.equal(versionWakes, 1);
   } finally {
@@ -121,7 +126,7 @@ function newStore(shared: SharedReplicaLike, api: ThreadApi) {
   });
 }
 
-test("typing in a document without comments does not materialize the text, and every edit is still announced", async () => {
+test("typing in a document without comments does not materialize the text or announce a projection", async () => {
   const shared = replica();
   const store = newStore(shared, fakeApi({}));
   await store.load();
@@ -130,7 +135,6 @@ test("typing in a document without comments does not materialize the text, and e
   store.subscribeProjection((projection) => published.push(projection));
   const counter = countToString(shared.ytext);
   try {
-    // The first rebuild after subscribing announces itself once.
     shared.ytext.insert(0, "x");
     await turn();
     const woken = published.length;
@@ -140,7 +144,7 @@ test("typing in a document without comments does not materialize the text, and e
       await turn();
     }
     assert.equal(counter.calls, 0, "no toString per keystroke");
-    assert.equal(published.length, woken + 30, "each edit is announced: the pending selection follows the text");
+    assert.equal(published.length, woken, "an edit that moves no comment announces nothing: the review context follows the text itself where it needs every edit");
     assert.equal(store.getProjection().text, shared.ytext.toString(), "the text is still correct on demand");
     assert.equal(counter.calls >= 1, true);
   } finally {
@@ -181,10 +185,8 @@ test("unchanged threads keep their identity through edits that move no thread", 
     shared.ytext.insert(shared.ytext.length, " Third.");
     await turn();
     const after = store.getProjection();
-    assert.notEqual(after, before, "the projection itself is rebuilt");
-    assert.equal(after.threads[0], before.threads[0], "the unchanged thread is the same object");
-    assert.equal(published.length, 1, "the edit is announced");
-    assert.equal(published[0].threads[0], before.threads[0], "with the same thread object");
+    assert.equal(after, before, "nothing moved, so the projection is kept");
+    assert.equal(published.length, 0, "and nothing is announced");
     assert.equal(after.text, shared.ytext.toString(), "text reflects the edit");
 
     // An edit before the comment moves its anchor: a new object, announced.
@@ -193,7 +195,7 @@ test("unchanged threads keep their identity through edits that move no thread", 
     const moved = store.getProjection();
     assert.notEqual(moved.threads[0], before.threads[0]);
     assert.equal(moved.threads[0].anchor.start, before.threads[0].anchor.start + "Intro. ".length);
-    assert.equal(published.length, 2, "and so is the edit that moved the thread");
+    assert.equal(published.length, 1, "and the edit that moved the thread is announced");
   } finally {
     store.destroy();
   }

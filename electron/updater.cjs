@@ -155,7 +155,11 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
         throw new Error(um("documentStateUnavailable"));
       }
 
-      dirtyDocumentCount = Number.isInteger(count) && count > 0 ? Math.min(count, 10_000) : 0;
+      const next = Number.isInteger(count) && count > 0 ? Math.min(count, 10_000) : 0;
+      const changed = (next > 0) !== (dirtyDocumentCount > 0);
+      dirtyDocumentCount = next;
+      // The renderer only sees whether anything is unsaved, so a new count alone is not news.
+      if (!changed) return;
       publishState({ hasUnsavedDocuments: dirtyDocumentCount > 0 });
     });
   }

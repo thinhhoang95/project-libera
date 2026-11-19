@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type * as Y from "yjs";
 import type { OpenTab } from "@/components/libera/types";
+import { useDraftRevisionFor } from "@/components/libera/tab-chrome";
 import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { classCommandSource, classTheoremSource, isInLatexComment, loadKey, readLatexInputs } from "@/lib/latex/macros/definitions";
 import { findInclusion, includeTargets } from "@/lib/latex/macros/project-numbering";
@@ -22,8 +23,8 @@ const MAX_FILES = 24;
 const MAX_DEPTH = 4;
 /** Files a body's includes read at most, for numbering: a paper's tables and figures can be files of their own (2405.14734 has 29). */
 const MAX_INCLUDES = 400;
-/** How often open dependencies are checked for edits (they live in other tabs). */
-const POLL_MS = 1500;
+/** The slow check that finds a shared dependency tab once it attaches (edits and disk changes arrive as events). */
+const FALLBACK_MS = 30_000;
 
 /** An open tab's current text: a shared tab's Y.Text (its React draft is not kept up to date), else its draft. */
 export function liveTabText(tab: OpenTab): string {
@@ -208,12 +209,13 @@ export async function collectBodyIncludes(options: {
 
 /**
  * A version of a set of files that changes when any of them does: on disk
- * (`updatedAt`) or in an open tab, shared ones included. Open tabs are
- * checked every few seconds, since their edits happen in other editors.
+ * (`updatedAt`) or in an open tab, shared ones included. Nothing polls: a tab's
+ * text arrives as a draft publication under its path (tab-chrome.ts), a shared
+ * tab's Y.Text is observed, and disk changes arrive through `updatedAt`.
  */
 export function useDependencyVersion(paths: readonly string[], readOpenTabs: () => OpenTab[], updatedAt: ReadonlyMap<string, string | number | undefined>) {
   const key = paths.join("\u0000");
-  // Each open dependency's last text and its hash: an unchanged text is not hashed again at every poll.
+  // Each open dependency's last text and its hash: an unchanged text is not hashed again at every check.
   // A shared tab is known unchanged from its Y.Text's edit count, without copying the text out.
   const hashes = useRef(new Map<string, { text: string; hash: string; ytext?: Y.Text; revision?: number }>());
   const signature = () => {
@@ -239,23 +241,62 @@ export function useDependencyVersion(paths: readonly string[], readOpenTabs: () 
     }).join("\u0000"));
   };
   const [version, setVersion] = useState("");
+  // Moves only when one of these files' tabs is opened, closed or has new text.
+  const draftRevision = useDraftRevisionFor(paths);
+  const check = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!paths.length) return;
-    const check = () => {
+    const watched = new Map<Y.Text, () => void>();
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const run = () => {
       // Nothing builds while the window is hidden; showing it checks at once.
       if (document.visibilityState === "hidden") return;
       const next = signature();
       setVersion((current) => (current === next ? current : next));
     };
-    check();
-    const timer = setInterval(check, POLL_MS);
-    document.addEventListener("visibilitychange", check);
+    // Shared tabs edit their Y.Text before (or without) a draft publication, so each attached one is observed.
+    const watch = () => {
+      const live = new Set<Y.Text>();
+      for (const tab of readOpenTabs()) {
+        if (!paths.includes(tab.file.path)) continue;
+        const ytext = sharedTabText(tab);
+        if (!ytext) continue;
+        live.add(ytext);
+        if (!watched.has(ytext)) {
+          textRevision(ytext);
+          const listener = () => run();
+          ytext.observe(listener);
+          watched.set(ytext, listener);
+        }
+      }
+      for (const [ytext, listener] of watched) if (!live.has(ytext)) { ytext.unobserve(listener); watched.delete(ytext); }
+    };
+    const checkNow = () => {
+      if (document.visibilityState === "hidden") return;
+      watch();
+      run();
+    };
+    check.current = checkNow;
+    // The only poll left: a shared tab attaches without an event this hook hears, so a slow visible-only check finds it.
+    const arm = () => {
+      if (timer === undefined && document.visibilityState !== "hidden") timer = setInterval(checkNow, FALLBACK_MS);
+    };
+    const disarm = () => { if (timer !== undefined) { clearInterval(timer); timer = undefined; } };
+    const visibility = () => {
+      if (document.visibilityState === "hidden") disarm(); else { arm(); checkNow(); }
+    };
+    checkNow();
+    arm();
+    document.addEventListener("visibilitychange", visibility);
     return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", check);
+      check.current = null;
+      disarm();
+      document.removeEventListener("visibilitychange", visibility);
+      for (const [ytext, listener] of watched) ytext.unobserve(listener);
     };
     // `key` stands for the paths; the signature reads the current tabs and versions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, updatedAt]);
+  useEffect(() => { check.current?.(); }, [draftRevision]);
   return version;
 }

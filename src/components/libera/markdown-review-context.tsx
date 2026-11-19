@@ -19,6 +19,7 @@ import { useSuggestions } from "./collab/suggestions/use-suggestions";
 import { agenticGroupId, reviewThreadsForPlanning, syncAgenticReviewSuggestions, withOverlayStatuses } from "@/lib/collab/client/agentic-review";
 import { registerSuggestionReplyHandler } from "@/lib/collab/client/suggestions";
 import { pendingReviewOpen, subscribeReviewOpen } from "@/lib/collab/client/reviews";
+import { createViewportStore, ReviewViewportContext } from "./review-viewport";
 
 type EditorBridge = {
   isComposing: () => boolean; snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void;
@@ -40,8 +41,6 @@ type ContextValue = {
   selection: ReviewSelection | null; selectedThread: string | null; chatReview: boolean;
   /** Set for a shared document; null keeps every local behaviour. */
   shared: SharedReviewState | null;
-  /** The source range the editor shows (shared documents align the sidebar to it). */
-  viewport: ReviewRange | null; reportViewport: (range: ReviewRange | null) => void;
   register: (bridge: EditorBridge) => () => void;
   /** The active editor's selection in source offsets, or null (nothing selected, or no editor). */
   editorSelection: () => ReviewRange | null;
@@ -54,7 +53,8 @@ type ContextValue = {
   recoverDraft: (key: string, snapshot: string) => void;
   stop: () => void; reportError: (message: string) => void;
 };
-const ReviewContext = createContext<ContextValue | null>(null);
+/** Exported so tests can stand in for the provider. */
+export const ReviewContext = createContext<ContextValue | null>(null);
 export const useMarkdownReview = () => useContext(ReviewContext);
 // Comment operations a shared document sends to its SharedReviewStore. The
 // agentic-review session (toggle, sync, undo, redo, new-round, plan and
@@ -85,7 +85,8 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const [selection, setSelection] = useState<ReviewSelection | null>(null);
   const [selectedThread, selectThread] = useState<string | null>(null);
   const [chatReview, setChatReviewState] = useState(false);
-  const [viewport, setViewport] = useState<ReviewRange | null>(null);
+  // The scroll position lives outside the context value (see review-viewport.ts).
+  const [viewportStore] = useState(createViewportStore);
   const bridge = useRef<EditorBridge | null>(null);
   const current = useRef({ activeTab, getDraft, applyDraft, openChat, openComments, recoverDraft });
   useLayoutEffect(() => { current.current = { activeTab, getDraft, applyDraft, openChat, openComments, recoverDraft }; }, [activeTab, getDraft, applyDraft, openChat, openComments, recoverDraft]);
@@ -131,7 +132,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     pending.current = null;
     busyRef.current = false;
     latest.current = null;
-    queueMicrotask(() => { if (!disposed) { setBusy(""); setError(""); setSelection(null); selectThread(null); setRecovery(false); setViewport(null); publish(null); } });
+    queueMicrotask(() => { if (!disposed) { setBusy(""); setError(""); setSelection(null); selectThread(null); setRecovery(false); viewportStore.report(null); publish(null); } });
     const prior = lastTab.current;
     lastTab.current = null;
     if (!key || !localStore) return () => { disposed = true; };
@@ -160,11 +161,11 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       pending.current = null;
       busyRef.current = false;
     };
-  }, [key, tabId, publish, localStore]);
+  }, [key, tabId, publish, localStore, viewportStore]);
   useEffect(() => { if (lastTab.current && lastTab.current.id === tabId) lastTab.current.doc = doc; }, [doc, tabId]);
 
   // ---- Shared documents: threads from the collab server, anchors in the replica.
-  const { session: sharedSession } = useSharedTab(tabId, "review");
+  const { session: sharedSession } = useSharedTab(tabId, "review", { snapshot: false });
   const sharedReplica = sharedSession?.replica ?? null;
   const sharedResolved = sharedSession?.resolved ?? null;
   const [projection, setProjection] = useState<SharedReviewProjection | null>(null);
@@ -373,7 +374,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   // generation finishes to avoid invalidating its CAS. A shared document's
   // comments are anchored in the replica, so only an agentic-review session
   // needs this there.
-  const mapped = useMemo(() => doc?.key === key && draft !== undefined ? tracker.advance(doc, draft) : null, [doc, key, draft, tracker]);
+  const mapped = useMemo(() => doc?.key === key && draft !== undefined ? tracker.shown(doc, draft) : null, [doc, key, draft, tracker]);
   const syncEligible = !!doc && !!mapped && !error && !recovery && (sharedProjection ? !!doc.session : !!(doc.threads.length || doc.session || doc.agentSuggestions?.length));
   const syncDue = syncEligible && doc.snapshot !== draft && !busy;
   useLayoutEffect(() => { if (mapped) tabRef.current!.due = syncEligible; }, [mapped, syncEligible, tabRef]);
@@ -462,13 +463,31 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   // identity so they also do not trigger a full visual comment remapping.
   // Shared threads are already resolved against the live text; the local
   // document only contributes Review Mode's switch and agentic review.
+  // The projection no longer changes with every text edit (only when a comment
+  // can move), so what must follow each edit listens to the text itself: the
+  // proposals of an agentic-review session map onto it, and an open selection
+  // popover resolves its anchor in it. Everything else reads the live text on demand.
+  const sharedNeedsText = !!sharedProjection && !!doc && doc.key === key && (!!doc.session || doc.undo.length > 0 || !!doc.redo?.length);
+  const followText = !!sharedProjection && !!sharedReplica && (sharedNeedsText || !!selection?.anchor);
+  const [textTick, setTextTick] = useState(0);
+  useEffect(() => {
+    if (!followText || !sharedReplica) return;
+    const bump = () => setTextTick((count) => count + 1);
+    let ytext = sharedReplica.ytext;
+    ytext.observe(bump);
+    const off = sharedReplica.onRebuild(() => { ytext.unobserve(bump); ytext = sharedReplica.ytext; ytext.observe(bump); bump(); });
+    return () => { off(); ytext.unobserve(bump); };
+  }, [followText, sharedReplica]);
+  const tick = followText ? textTick : 0;
   const shown = useMemo(() => {
     if (sharedProjection) {
-      const base = doc?.key === key ? syncReview(doc, sharedProjection.text) : null;
+      const base = doc?.key === key ? (sharedNeedsText ? syncReview(doc, sharedProjection.text) : doc) : null;
       return sharedReviewDocument(sharedProjection, base && suggestionsSnapshot ? withOverlayStatuses(base, suggestionsSnapshot.groups) : base);
     }
     return mapped;
-  }, [doc, key, mapped, sharedProjection, suggestionsSnapshot]);
+    // `tick` re-maps a session's proposals when the shared text changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, key, mapped, sharedProjection, suggestionsSnapshot, sharedNeedsText, tick]);
   const shared = useMemo<SharedReviewState | null>(() => sharedProjection ? {
     docId: sharedProjection.docId, projectId: sharedProjection.projectId, projection: sharedProjection,
     reattachCandidates: (threadId) => sharedStore.current?.reattachCandidates(threadId) ?? [],
@@ -482,21 +501,19 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       setSelection({ range: expanded, x, y, ...(replica && expanded.end <= replica.ytext.length ? { anchor: relativeRange(replica.ytext, expanded.start, expanded.end) } : {}) });
     } catch (cause) { setError(cause instanceof Error ? cause.message : tRef.current("selectionFailed")); }
   }, [snapshot, sharedReplica]);
-  // A collaborator's edit moves the selected passage; the projection changes
-  // with every text change, so resolving here keeps the popover on it.
+  // A collaborator's edit moves the selected passage; resolving it again on
+  // each text change (`tick`) keeps the popover on it.
   const liveSelection = useMemo<ReviewSelection | null>(() => {
     if (!selection?.anchor || !sharedReplica || !sharedProjection) return selection;
     const range = resolveRelativeRange(sharedReplica.ytext, selection.anchor.start, selection.anchor.end);
     if (!range || range.end <= range.start) return null;
     return range.start === selection.range.start && range.end === selection.range.end ? selection : { ...selection, range };
-  }, [selection, sharedReplica, sharedProjection]);
-  const reportViewport = useCallback((range: ReviewRange | null) => {
-    setViewport((previous) => previous?.start === range?.start && previous?.end === range?.end ? previous : range);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection, sharedReplica, sharedProjection, tick]);
   const editorSelection = useCallback(() => {
     try { return bridge.current?.selection?.() ?? null; } catch { return null; }
   }, []);
-  const value = useMemo<ContextValue>(() => ({ editorSelection, doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection: liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate,
+  const value = useMemo<ContextValue>(() => ({ editorSelection, doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection: liveSelection, selectedThread, chatReview, shared, register, select, snapshot, reload, action, generate,
     selectThread: (id) => { selectThread(id); if (id) current.current.openComments(); },
     showComments: () => current.current.openComments(),
     clearSelection: () => setSelection(null), focus: (range) => bridge.current?.focus(range),
@@ -504,6 +521,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     restore: () => { try { const saved = latest.current; if (!saved || !current.current.activeTab) return; const before = snapshot(); if (!current.current.applyDraft(current.current.activeTab.id, before, saved.snapshot)) throw new Error(tRef.current("documentChangedRetry")); bridge.current?.apply(saved.snapshot); setRecovery(false); } catch (cause) { setError(cause instanceof Error ? cause.message : tRef.current("recoveryFailed")); } },
     stop: () => pending.current?.abort(), reportError: setError,
     recoverDraft: (key, text) => current.current.recoverDraft(key, text),
-  }), [editorSelection, shown, busy, locked, error, recovery, liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate]);
-  return <ReviewContext.Provider value={value}>{children}</ReviewContext.Provider>;
+  }), [editorSelection, shown, busy, locked, error, recovery, liveSelection, selectedThread, chatReview, shared, register, select, snapshot, reload, action, generate]);
+  const viewportValue = useMemo(() => ({ store: viewportStore, tabId: tabId ?? null }), [viewportStore, tabId]);
+  return <ReviewContext.Provider value={value}><ReviewViewportContext.Provider value={viewportValue}>{children}</ReviewViewportContext.Provider></ReviewContext.Provider>;
 }

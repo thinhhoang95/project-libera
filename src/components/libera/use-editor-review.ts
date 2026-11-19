@@ -11,6 +11,7 @@ import { tiptapChangesKey, type ChangeDecider, type TiptapChangesMeta } from "@/
 import { installCodeMirrorReview, setCodeMirrorReviewLocked, setReviewHighlights } from "@/lib/codemirror-review";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownReview } from "./markdown-review-context";
+import { useReviewViewportReporter } from "./review-viewport";
 
 function sourceCommentPoint(input: { getBoundingClientRect: () => DOMRect }) {
   const rect = input.getBoundingClientRect();
@@ -148,7 +149,8 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
   }, [view, register, sourceTextarea]);
   useEffect(() => { if (view) { installCodeMirrorReview(view); setCodeMirrorReviewLocked(view, !!r?.locked); } }, [view, r?.locked]);
   const sharedDoc = !!r?.shared;
-  const reportViewport = r?.reportViewport;
+  // Null unless a Comments rail follows this pane's document.
+  const reportViewport = useReviewViewportReporter();
   useEffect(() => {
     if (!view || !sharedDoc || !reportViewport) return;
     const left = () => view.contentDOM.getBoundingClientRect().left + 4;
@@ -233,7 +235,8 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
   }, [editor, register, lastValue, read, replace]);
   useEffect(() => { if (editor && editor.isEditable !== !r?.locked) editor.setEditable(!r?.locked, false); }, [editor, r?.locked]);
   const sharedDoc = !!r?.shared;
-  const reportViewport = r?.reportViewport;
+  // Null unless a Comments rail follows this pane's document.
+  const reportViewport = useReviewViewportReporter();
   useEffect(() => {
     if (!editor || !sharedDoc || !reportViewport) return;
     const root = editor.view.dom;

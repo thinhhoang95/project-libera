@@ -2,7 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { memo, useEffect, useRef, type RefObject } from "react";
-import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
+import { useMarkdownDisplayPreference, useMarkdownDisplayPreferenceActions } from "./markdown-display-preferences";
 import { TEXT_WIDTH_PREFERENCE_KEY, type TextWidthKind } from "@/lib/markdown-display-preferences";
 
 /** Native dragging/keyboard input updates only CSS, never document React state. */
@@ -15,9 +15,9 @@ export const MarkdownTextWidth = memo(function MarkdownTextWidth({
   kind?: TextWidthKind;
 }) {
   const t = useTranslations("markdownTextWidth");
-  const { preferences, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
+  const { updatePreferences, flushPreferences } = useMarkdownDisplayPreferenceActions();
   const preferenceKey = TEXT_WIDTH_PREFERENCE_KEY[kind];
-  const textWidth = preferences[preferenceKey];
+  const textWidth = useMarkdownDisplayPreference(preferenceKey);
   const inputRef = useRef<HTMLInputElement>(null);
   const frameRef = useRef<number | null>(null);
   const pendingRef = useRef(textWidth);

@@ -67,6 +67,17 @@ export interface ReplicaSnapshot {
   hostConnected: boolean;
 }
 
+const LOCKED_STATES = new Set(["read-only", "access-changed"]);
+
+/** True when only the sync status changed in a way that is not attachment or a lock. */
+function statusOnlyChange(before: ReplicaSnapshot, after: ReplicaSnapshot): boolean {
+  if (before.status === after.status) return false;
+  if (before.attached !== after.attached || before.meta !== after.meta || before.rejection !== after.rejection ||
+      before.closed !== after.closed || before.error !== after.error || before.generation !== after.generation ||
+      before.hostConnected !== after.hostConnected) return false;
+  return LOCKED_STATES.has(before.status?.state ?? "") === LOCKED_STATES.has(after.status?.state ?? "");
+}
+
 export interface ReplicaOptions {
   /** Schedules a flush of queued local updates. Defaults to the next animation frame (with a timer fallback). */
   schedule?: (flush: () => void) => void;
@@ -218,9 +229,13 @@ export class CollabReplica {
   }
 
   private publish(patch: Partial<ReplicaSnapshot>) {
-    this.snapshot = { ...this.snapshot, ...patch };
+    const before = this.snapshot;
+    this.snapshot = { ...before, ...patch };
     for (const listener of [...this.listeners]) listener();
-    for (const listener of [...this.changeListeners]) listener();
+    // The registry turns change listeners into a window-wide re-render, so they
+    // only hear what binding, attachment and document replacement depend on.
+    // Sync status (phase, pending count, server ack) goes to `subscribe` only.
+    if (!statusOnlyChange(before, this.snapshot)) for (const listener of [...this.changeListeners]) listener();
   }
 
   private installDoc(subdoc: Subdoc, doc: Y.Doc) {

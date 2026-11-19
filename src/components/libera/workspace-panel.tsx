@@ -33,6 +33,7 @@ import { expandedNoteName } from "@/components/libera/default-names";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { expandMarkdownMacros } from "@/lib/markdown-macros";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
+import { ReviewPaneContext } from "./review-viewport";
 import { useNotebookCodeBlockRenderer } from "./slide-live-blocks";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { GalleryPhotoPicker, galleryPhotoFile } from "@/components/libera/gallery-photo-picker";
@@ -44,6 +45,7 @@ import {
 } from "@/components/libera/references/reference-render-context";
 import type { ReferenceAttachment } from "@/lib/references/types";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
+import { clearLiveReadingPosition, setLiveMarkdownLine } from "./live-reading-position";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { VoiceMemoViewer } from "@/components/libera/audio/voice-memo-viewer";
 import { RecordingTabView } from "@/components/libera/recording/recording-tab-view";
@@ -67,7 +69,7 @@ import {
 } from "@/components/libera/markdown-slides-viewer";
 import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
 import { MarkdownTextWidth } from "./markdown-text-width";
-import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
+import { useMarkdownDisplayPreference, useMarkdownDisplayPreferenceActions } from "./markdown-display-preferences";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { NotebookHome } from "@/components/libera/notebook-home";
@@ -226,6 +228,8 @@ const MARKDOWN_SCROLL_VIEW_STATE_DELAY_MS = 150;
 const MARKDOWN_SCROLL_VIEW_STATE_KEYS: ReadonlySet<string> = new Set<keyof MarkdownTabViewState>([
   "editorScrollLeft", "editorScrollTop", "previewScrollLeft", "previewScrollTop",
   "visualScrollLeft", "visualScrollTop", "visualScrollAnchorPos", "visualScrollAnchorOffset",
+  // The outline's line moves as headings are crossed: a reading position too.
+  "line",
 ]);
 const MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS = 0.6;
 const MARKDOWN_SPLIT_STORAGE_KEY = "libera.markdownEditorPreviewSplitPercent";
@@ -715,11 +719,11 @@ function WorkspacePanelContent({
   const [markdownSelectedText, setMarkdownSelectedText] = useState("");
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
   const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
-  const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
   const [markdownSplitPercent, setMarkdownSplitPercent] = useState(
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
   );
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const markdownSplitSeparatorRef = useRef<HTMLDivElement | null>(null);
   const latestMarkdownSplit = useRef(markdownSplitPercent);
   useLayoutEffect(() => { latestMarkdownSplit.current = markdownSplitPercent; }, [markdownSplitPercent]);
   const stopMarkdownSplitDragRef = useRef<(() => void) | null>(null);
@@ -749,8 +753,9 @@ function WorkspacePanelContent({
     activeTab?.file.fileType === "markdown" && isMarkdownSlidesPath(activeTab.file.path);
   const activeMarkdownViewState =
     activeTab?.file.fileType === "markdown" ? activeTab.viewState?.markdown : undefined;
-  const { preferences: displayPreferences, updatePreferences: updateDisplayPreferences } = useMarkdownDisplayPreferences();
-  const markdownZoom = displayPreferences.textScale;
+  const { updatePreferences: updateDisplayPreferences } = useMarkdownDisplayPreferenceActions();
+  // Only Markdown and LaTeX tabs show the zoom, so other panes stay still while the slider moves.
+  const markdownZoom = useMarkdownDisplayPreference("textScale", activeFileType === "markdown" || activeFileType === "latex");
   const markdownZoomScale = markdownZoom / 100;
   const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
   // Each editor's typeface comes from its theme (Preferences → Markdown → Themes).
@@ -886,6 +891,15 @@ function WorkspacePanelContent({
   }, [takePendingScrollViewState]);
   useCanvasViewStateCapture(flushScrollViewState);
   useLayoutEffect(() => flushScrollViewState, [flushScrollViewState]);
+  // The live line only bridges the wait before it is stored; a tab left behind
+  // goes back to its stored one.
+  useLayoutEffect(() => {
+    if (!activeTabId) return;
+    return () => {
+      flushScrollViewState();
+      clearLiveReadingPosition(activeTabId);
+    };
+  }, [activeTabId, flushScrollViewState]);
 
   const updateMarkdownViewState = useCallback(
     (patch: MarkdownTabViewState) => {
@@ -901,11 +915,12 @@ function WorkspacePanelContent({
   );
 
   /** A per-frame report from a scrolling editor or preview: scroll positions
-   * wait for a pause, anything else that changed (the outline's line, a
-   * selection) is stored now, as it always was. */
+   * and the outline's line wait for a pause (the outline reads the live line
+   * meanwhile), anything else that changed (a selection) is stored now. */
   const reportMarkdownScrollViewState = useCallback(
     (patch: MarkdownTabViewState) => {
       if (!activeTabId) return;
+      if ("line" in patch) setLiveMarkdownLine(activeTabId, patch.line);
       const stored = storedMarkdownViewStateRef.current;
       const urgent = (Object.keys(patch) as (keyof MarkdownTabViewState)[])
         .some((key) => !MARKDOWN_SCROLL_VIEW_STATE_KEYS.has(key) && patch[key] !== stored?.[key]);
@@ -1601,7 +1616,7 @@ function WorkspacePanelContent({
   function handleMarkdownPreviewScroll(event: ReactUIEvent<HTMLElement>) {
     const preview = event.currentTarget;
 
-    updateMarkdownViewState({
+    reportMarkdownScrollViewState({
       previewScrollLeft: preview.scrollLeft,
       previewScrollTop: preview.scrollTop,
     });
@@ -1620,11 +1635,12 @@ function WorkspacePanelContent({
     }
   }
 
-  function updateMarkdownSplitFromPointer(clientX: number, clientY: number) {
+  /** Where the split sits for a pointer position, or null when the layout has no size. */
+  function markdownSplitPercentAt(clientX: number, clientY: number) {
     const container = markdownSplitContainerRef.current;
 
     if (!container) {
-      return;
+      return null;
     }
 
     const rect = container.getBoundingClientRect();
@@ -1632,11 +1648,18 @@ function WorkspacePanelContent({
     const size = isDesktopSplit ? rect.width : rect.height;
 
     if (size <= 0) {
-      return;
+      return null;
     }
 
     const offset = isDesktopSplit ? clientX - rect.left : clientY - rect.top;
-    saveMarkdownSplitPercent((offset / size) * 100, false);
+    return clampMarkdownSplitPercent((offset / size) * 100);
+  }
+
+  // A drag moves the split through a CSS variable once per frame; React hears about it once, at the end.
+  function paintMarkdownSplit(percent: number) {
+    latestMarkdownSplit.current = percent;
+    markdownSplitContainerRef.current?.style.setProperty("--markdown-split", `${percent}%`);
+    markdownSplitSeparatorRef.current?.setAttribute("aria-valuenow", String(Math.round(percent)));
   }
 
   function handleMarkdownSplitPointerDown(
@@ -1645,16 +1668,31 @@ function WorkspacePanelContent({
     event.preventDefault();
     stopMarkdownSplitDragRef.current?.();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setMarkdownSplitDragging(true);
-    updateMarkdownSplitFromPointer(event.clientX, event.clientY);
+    const container = markdownSplitContainerRef.current;
+    container?.classList.add("select-none");
+    let pointer: { x: number; y: number } | null = { x: event.clientX, y: event.clientY };
+    let frame = 0;
+
+    function paintPointer() {
+      frame = 0;
+      if (!pointer) return;
+      const percent = markdownSplitPercentAt(pointer.x, pointer.y);
+      pointer = null;
+      if (percent !== null) paintMarkdownSplit(percent);
+    }
+
+    paintPointer();
 
     function handlePointerMove(pointerEvent: PointerEvent) {
-      updateMarkdownSplitFromPointer(pointerEvent.clientX, pointerEvent.clientY);
+      pointer = { x: pointerEvent.clientX, y: pointerEvent.clientY };
+      if (!frame) frame = window.requestAnimationFrame(paintPointer);
     }
 
     function stopDragging() {
       stopMarkdownSplitDragRef.current = null;
-      setMarkdownSplitDragging(false);
+      window.cancelAnimationFrame(frame);
+      paintPointer();
+      container?.classList.remove("select-none");
       saveMarkdownSplitPercent(latestMarkdownSplit.current);
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", stopDragging);
@@ -1907,6 +1945,7 @@ function WorkspacePanelContent({
   }
 
   return (
+    <ReviewPaneContext.Provider value={activeTab.id}>
     <div className="libera-document-workspace flex h-full min-h-0 flex-col overflow-hidden">
       {activeTab.error ? (
         <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
@@ -2063,9 +2102,7 @@ function WorkspacePanelContent({
           ) : (
             <div
               ref={markdownSplitContainerRef}
-              className={`markdown-split-grid min-h-0 flex-1 overflow-hidden ${
-                markdownSplitDragging ? "select-none" : ""
-              }`}
+              className="markdown-split-grid min-h-0 flex-1 overflow-hidden"
               style={
                 {
                   "--markdown-split": `${markdownSplitPercent}%`,
@@ -2126,6 +2163,7 @@ function WorkspacePanelContent({
               />
               )}
               <div
+                ref={markdownSplitSeparatorRef}
                 aria-label={t("resizeMarkdownEditorAndPreview")}
                 aria-orientation="vertical"
                 aria-valuemax={MAX_MARKDOWN_SPLIT_PERCENT}
@@ -2276,6 +2314,7 @@ function WorkspacePanelContent({
         <NoteMathMarkersProvider value={markdownPreferences}>
           <PdfViewer
             key={activeTab.id}
+            tabId={activeTab.id}
             src={activeTab.rawUrl}
             filePath={activeTab.file.path}
             initialViewState={activePdfViewState}
@@ -2322,5 +2361,6 @@ function WorkspacePanelContent({
         />
       )}
     </div>
+    </ReviewPaneContext.Provider>
   );
 }

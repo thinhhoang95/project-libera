@@ -622,13 +622,40 @@ export class SharedReviewStore implements ReviewStore {
     const ytext = this.options.replica.ytext;
     const anchors = this.options.replica.annotations.getMap(AnnotationKeys.anchors);
     const onChange = () => this.changed();
-    const onText = () => {
+    const onText = (event: Y.YTextEvent) => {
       this.textEpoch += 1;
-      this.changed();
+      // A transaction that moves no comment publishes nothing: readers take the
+      // live text from the projection's `text`, which reads it on demand.
+      if (this.movesThreads(event)) this.changed();
     };
     ytext.observe(onText);
     anchors.observe(onChange);
     this.unobserve = [() => ytext.unobserve(onText), () => anchors.unobserve(onChange)];
+  }
+
+  /** Whether this text change can alter a projected thread: an anchor moved or was lost, or an edit touched the context kept around one. */
+  private movesThreads(event: Y.YTextEvent): boolean {
+    if (this.scheduled) return true;
+    const threads = this.projection.threads;
+    if (!threads.length) return false;
+    const replica = this.options.replica;
+    for (const thread of threads) {
+      const record = readAnchor(replica.annotations, thread.shared.anchorId);
+      const resolved = record ? resolveAnchor(replica.ytext, record) : null;
+      const attached = resolved?.state === "attached";
+      if (attached !== (thread.anchor.state === "attached")) return true;
+      if (attached ? resolved.start !== thread.anchor.start || resolved.end !== thread.anchor.end : (resolved?.start ?? 0) !== thread.anchor.start || thread.shared.collapsedAt !== (resolved?.start ?? null)) return true;
+    }
+    // Where the transaction retained, inserted or deleted, in the new text.
+    let position = 0;
+    const touched: number[] = [];
+    for (const op of event.delta) {
+      if (typeof op.retain === "number") position += op.retain;
+      else if (typeof op.insert === "string") { touched.push(position); position += op.insert.length; touched.push(position); }
+      else if (typeof op.delete === "number") touched.push(position);
+      else if (op.insert !== undefined) { touched.push(position); position += 1; touched.push(position); }
+    }
+    return threads.some((thread) => thread.anchor.state === "attached" && touched.some((at) => at >= thread.anchor.start - CONTEXT && at <= thread.anchor.end + CONTEXT));
   }
 
   private changed(): void {
@@ -640,10 +667,9 @@ export class SharedReviewStore implements ReviewStore {
       this.projection = this.build();
       this.syncDetachedStatus(this.projection.threads);
       const projection = this.projection;
-      // Every text change is announced, even one that moves no thread: the
-      // review context resolves the pending selection and the local review
-      // against the projection, so it must hear each one. Unchanged threads
-      // keep their objects, which is what spares the comment list.
+      // Only changes that can alter a thread are announced (see `movesThreads`);
+      // the review context follows the text itself where it needs every edit.
+      // Unchanged threads keep their objects, which is what spares the comment list.
       for (const listener of [...this.projectionListeners]) listener(projection);
       if (this.listeners.size) {
         const doc = this.document();

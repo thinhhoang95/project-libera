@@ -37,13 +37,33 @@ export function createGalleryTab(photo: GalleryPhoto, viewState?: OpenTabViewSta
   };
 }
 
+// One index per catalog array, reused until a refresh installs a new array.
+const photoIndexes = new WeakMap<GalleryPhoto[], Map<string, GalleryPhoto>>();
+function photoIndex(photos: GalleryPhoto[]) {
+  let index = photoIndexes.get(photos);
+  if (!index) {
+    index = new Map(photos.map((photo) => [photo.id, photo]));
+    photoIndexes.set(photos, index);
+  }
+  return index;
+}
+
+/** The ids of the open gallery photos, joined: stable while only drafts or view state change. */
+export function galleryTabKey(tabs: OpenTab[]) {
+  let key = "";
+  for (const tab of tabs) if (isGalleryTab(tab)) key += `${tab.gallery.photoId}\n`;
+  return key;
+}
+
 /**
  * Lines open gallery tabs up with the gallery. Photos that moved into an album
  * folder, were renamed or edited keep their tab with a fresh name and URL;
  * tabs whose photo is gone are listed in `closedTabIds` for the caller to close.
  */
 export function reconcileGalleryTabs(tabs: OpenTab[], photos: GalleryPhoto[]) {
-  const photoById = new Map(photos.map((photo) => [photo.id, photo]));
+  // Most reconciliations have nothing to do: leave a large catalog untouched.
+  if (!tabs.some(isGalleryTab)) return { tabs, closedTabIds: [] as string[] };
+  const photoById = photoIndex(photos);
   const closedTabIds: string[] = [];
   let changed = false;
   const next = tabs.map((tab) => {

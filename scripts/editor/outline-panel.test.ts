@@ -5,6 +5,7 @@ import { act, createElement, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { MarkdownDisplayPreferencesProvider } from "../../src/components/libera/markdown-display-preferences";
 import { OutlinePanel } from "../../src/components/libera/outline-panel";
+import { clearLiveReadingPosition, setLiveMarkdownLine } from "../../src/components/libera/live-reading-position";
 import { PdfAnnotationsPanel } from "../../src/components/libera/pdf-annotations-panel";
 import type { OpenTab } from "../../src/components/libera/types";
 
@@ -216,6 +217,41 @@ test("outline depth collapses descendants, supports manual expansion and searche
     assert.equal(host.querySelector("select")?.value, "1", "The saved level is restored after remount");
     assert.deepEqual(visibleHeadings(), ["First", "Second"]);
   } finally {
+    await act(async () => root.unmount());
+    globalThis.fetch = previousFetch;
+    host.remove();
+  }
+});
+
+test("the highlighted heading follows the live line while scrolling, ahead of the stored one", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ textWidth: 62, textScale: 120, outlineExpansionLevel: 6 });
+  const draft = "# First\n\ntext\n\n# Second\n\ntext\n\n# Third\n";
+  const activeTab: OpenTab = {
+    id: "Notebook/live.md", draft, saved: draft, status: "clean",
+    viewState: { markdown: { line: 1 } },
+    file: { kind: "file", name: "live.md", path: "Notebook/live.md", notebook: "Notebook", fileType: "markdown", createdAt: "", updatedAt: "", size: 0 },
+  };
+  const selected = () => Array.from(host.querySelectorAll('[role="treeitem"][aria-selected="true"]'), (item) => item.querySelector(".whitespace-normal")?.textContent);
+  try {
+    await act(async () => root.render(createElement(
+      MarkdownDisplayPreferencesProvider,
+      { initialPreferences: { textWidth: 62, textScale: 120, outlineExpansionLevel: 6 } },
+      createElement(OutlinePanel, { activeTab, textareaRef: createRef<HTMLTextAreaElement>(), onOpenFile: async () => {}, onSetDraft: () => {} }),
+    )));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    assert.deepEqual(selected(), ["First"], "the stored line shows when nothing is live");
+    await act(async () => setLiveMarkdownLine(activeTab.id, 5));
+    assert.deepEqual(selected(), ["Second"], "a live line moves the highlight without any tab update");
+    await act(async () => setLiveMarkdownLine(activeTab.id, 9));
+    assert.deepEqual(selected(), ["Third"]);
+    await act(async () => clearLiveReadingPosition(activeTab.id));
+    assert.deepEqual(selected(), ["First"], "clearing falls back to the stored line");
+  } finally {
+    clearLiveReadingPosition(activeTab.id);
     await act(async () => root.unmount());
     globalThis.fetch = previousFetch;
     host.remove();

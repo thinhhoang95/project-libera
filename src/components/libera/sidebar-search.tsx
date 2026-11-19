@@ -1,27 +1,37 @@
+import { useDeferredValue, useMemo, useSyncExternalStore } from "react";
 import { useTranslations } from "next-intl";
 import { BookOpen, FileSearch, Search, X } from "lucide-react";
 import { FileTypeIcon } from "@/components/libera/file-type";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
+import { searchNotebookTree } from "@/components/libera/notebook-search";
+import type { SidebarSearchStore } from "@/components/libera/sidebar-search-store";
 import type { SearchResult } from "@/components/libera/types";
+import type { LiberaTree } from "@/lib/types";
 
 type SidebarSearchProps = {
-  query: string;
-  searchResults: SearchResult[];
+  store: SidebarSearchStore;
+  tree: LiberaTree;
   placeholder?: string;
   onDeepSearch: (query: string) => void;
-  onQueryChange: (query: string) => void;
   onSelectSearchResult: (result: SearchResult) => void;
 };
 
 export function SidebarSearch({
-  query,
-  searchResults,
+  store,
+  tree,
   placeholder,
   onDeepSearch,
-  onQueryChange,
   onSelectSearchResult,
 }: SidebarSearchProps) {
   const t = useTranslations("sidebarSearch");
+  const query = useSyncExternalStore(store.subscribe, store.get, store.get);
+  // The library walk runs after the keystroke has painted.
+  const deferredQuery = useDeferredValue(query);
+  const searchResults = useMemo<SearchResult[]>(
+    () => searchNotebookTree(tree, deferredQuery, { includeNotebooks: true, limit: 12 }),
+    [deferredQuery, tree],
+  );
+  const onQueryChange = store.set;
   const label = placeholder ?? t("placeholder");
   const normalizedQuery = query.trim();
   const suggestionsOpen = Boolean(normalizedQuery);

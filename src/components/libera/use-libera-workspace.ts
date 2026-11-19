@@ -52,6 +52,7 @@ import {
   resolveMarkdownFileLink,
   type MarkdownFileLinkMetadata,
 } from "@/lib/markdown-file-links";
+import { applyFileMetadata, mergeTree, type FileMetadataResult } from "@/lib/tree-merge";
 import { findMarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
 import { annotationLinkLabel, findRememberedAnnotation } from "@/lib/annotation-links";
 import {
@@ -68,8 +69,8 @@ import { createDeferredSave, flushPendingState, registerStateFlusher } from "./d
 import { useCanvasLayout } from "./use-canvas-layout";
 import { captureCanvasViewState } from "./canvas-view-state";
 import { mergeSourceScrollState } from "@/lib/markdown-source-scroll";
-import { useGallery } from "./gallery-store";
-import { createGalleryTab, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
+import { useGalleryContents } from "./gallery-store";
+import { createGalleryTab, galleryTabKey, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
 import { createRecordingTab, isRecordingTab, recordingTabId } from "./recording/recording-tabs";
 import { createPageTab, isPageTab, type PageKind } from "./page-tabs";
 import { focusedCanvasPane } from "@/lib/canvas-layout";
@@ -121,7 +122,7 @@ import { useTranslations } from "next-intl";
 import { DEFAULT_UNTITLED_NAME, RECOVERED_REVIEW_NAME } from "./default-names";
 import { announceReferenceLibraryChange } from "@/lib/references/import";
 import { referenceMoveSummary, type ReferenceMoveNoticeState } from "./references/reference-move-notice";
-import { searchNotebookTree } from "./notebook-search";
+import { createSidebarSearchStore } from "./sidebar-search-store";
 import { useWhereWasITracker, whereWasITracker } from "./where-was-i-tracker";
 import { textVersion } from "@/lib/text-version";
 
@@ -376,7 +377,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const notebookSelectionWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/preferences/last-notebook", {
     method: "PUT", body, keepalive: !window.liberaPersistence,
   }), (error) => setWorkspaceError(error instanceof Error ? error.message : tRef.current("rememberNotebookError"))), []);
-  const [query, setQuery] = useState("");
+  const [sidebarSearch] = useState(createSidebarSearchStore);
   const [fileInteractions, setFileInteractions] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [aiFormatting, setAiFormatting] = useState(false);
@@ -423,6 +424,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   // Register the recap before shared attachment effects can report a baseline.
   useWhereWasITracker(tabs, (tabId) => sharedRegistry.isSharedTab(tabId), getTabDraft, tree.notebooks);
   const sharedTabIds = useSharedTabs(tabs, {
+    enabled: authenticated,
     onText: mirrorSharedText,
     onAttached: (tabId, session) => {
       // The recap's baseline is the shared text before a pending draft is applied.
@@ -474,7 +476,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       canvas.restore(session.canvasLayout, session.tabs.map((tab) => tab.id), session.activeTabId);
       setSelectedNotebookName(session.selectedNotebookName);
       applyExpanded(new Set(session.expandedPaths));
-      setQuery("");
+      sidebarSearch.reset();
       setScreenshotSnipSession(null);
       setSaveDraftTabId(null);
     },
@@ -524,11 +526,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     return () => window.cancelAnimationFrame(animationFrame);
   }, []);
-
-  const searchResults = useMemo<SearchResult[]>(
-    () => searchNotebookTree(visibleTree, query, { includeNotebooks: true, limit: 12 }),
-    [query, visibleTree],
-  );
 
   function persistNotebookPanelExpansion(nextExpanded: Set<string>) {
     if (workspaceManager.activeWorkspace) return;
@@ -591,8 +588,31 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       try { nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true"); }
       catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshArchivedError")); }
     }
-    appliedTreeRef.current = nextTree;
-    setTree(nextTree);
+    // Keep the objects of everything unchanged, so the sidebar re-renders only what differs.
+    const shown = mergeTree(appliedTreeRef.current, nextTree);
+    appliedTreeRef.current = shown;
+    setTree(shown);
+  }
+
+  /**
+   * Shared working-copy writes: read only those files' metadata and patch it
+   * into the shown tree. Anything that read cannot settle reads the whole tree.
+   */
+  async function refreshFiles(paths: string[]) {
+    const shown = appliedTreeRef.current;
+    if (shown) {
+      const { files } = await apiRequest<{ files: FileMetadataResult[] }>("/api/tree/files", {
+        method: "POST", body: JSON.stringify({ paths }),
+      });
+      // A tree applied meanwhile is newer than the one this read was matched to.
+      const current = appliedTreeRef.current;
+      const patched = current ? applyFileMetadata(current, files) : null;
+      if (patched) {
+        if (patched !== current) { appliedTreeRef.current = patched; setTree(patched); }
+        return;
+      }
+    }
+    await refreshTree(undefined, { onlyIfChanged: true });
   }
 
   /**
@@ -600,17 +620,21 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    * was applied meanwhile it may be older than this one, so fetch again (twice
    * at most) rather than keep it.
    */
-  async function refreshTree(expandNotebook?: string, options?: { onlyIfChanged?: boolean }) {
+  async function refreshTree(expandNotebook?: string, options?: { onlyIfChanged?: boolean; maintain?: boolean }) {
+    // A background check may skip sidecar upkeep the server did recently; loads and focus returns do it.
+    const url = options?.onlyIfChanged && !options.maintain
+      ? "/api/tree?includeArchive=true&maintenance=throttled" : "/api/tree?includeArchive=true";
     let treeAtStart = appliedTreeRef.current;
-    let nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+    let nextTree = await apiRequest<LiberaTree>(url);
     if (options?.onlyIfChanged) {
       for (let retries = 0; appliedTreeRef.current !== treeAtStart && retries < 2; retries++) {
         treeAtStart = appliedTreeRef.current;
-        nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+        nextTree = await apiRequest<LiberaTree>(url);
       }
-      if (appliedTreeRef.current !== treeAtStart || JSON.stringify(nextTree) === JSON.stringify(treeAtStart)) {
-        return appliedTreeRef.current ?? nextTree;
-      }
+      if (appliedTreeRef.current !== treeAtStart) return appliedTreeRef.current ?? nextTree;
+      // The same content gives back the shown tree itself: nothing is applied.
+      nextTree = mergeTree(treeAtStart, nextTree);
+      if (nextTree === treeAtStart) return nextTree;
     }
     await applyCompleteTree(nextTree);
     setSelectedNotebookName((current) => {
@@ -674,7 +698,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       running = true;
       lastStartedAt = Date.now();
       // A failed background check is not worth an error banner; the next one retries.
-      void latestFocusRefresh.current(undefined, { onlyIfChanged: true })
+      void latestFocusRefresh.current(undefined, { onlyIfChanged: true, maintain: true })
         .catch(() => undefined)
         .finally(() => { running = false; });
     };
@@ -1423,17 +1447,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   // The gallery store is shared with the gallery view, so moves into albums,
   // edits and deletions there reach open photo tabs here.
-  const galleryContents = useGallery().contents;
+  // It listens only while a photo tab is open, and reconciles when the catalog
+  // or the set of photo tabs changes, not for drafts or view state.
+  const openGalleryKey = galleryTabKey(tabs);
+  const galleryContents = useGalleryContents(openGalleryKey !== "");
+  const closeTabsWithoutConfirmRef = useRef(closeTabsWithoutConfirm);
   useEffect(() => {
-    if (!galleryContents) return;
-    const reconciled = reconcileGalleryTabs(tabs, galleryContents.photos);
-    if (reconciled.tabs !== tabs) {
+    closeTabsWithoutConfirmRef.current = closeTabsWithoutConfirm;
+  }, [closeTabsWithoutConfirm]);
+  useEffect(() => {
+    if (!galleryContents || !openGalleryKey) return;
+    const reconciled = reconcileGalleryTabs(tabsRef.current, galleryContents.photos);
+    if (reconciled.tabs !== tabsRef.current) {
       const changed = new Map(reconciled.tabs.map((tab) => [tab.id, tab]));
       setTabs((currentTabs) => currentTabs.map((tab) => isGalleryTab(tab) ? changed.get(tab.id) ?? tab : tab));
     }
     // Called from an effect, and photos that were deleted have no place to keep.
-    if (reconciled.closedTabIds.length) closeTabsWithoutConfirm(reconciled.closedTabIds, { remember: false });
-  }, [closeTabsWithoutConfirm, galleryContents, tabs]);
+    if (reconciled.closedTabIds.length) closeTabsWithoutConfirmRef.current(reconciled.closedTabIds, { remember: false });
+  }, [galleryContents, openGalleryKey]);
 
   const closeTab = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
@@ -3820,21 +3851,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   // Shared working-copy writes can change links without changing the file layout.
   // Refresh for both host event types, and follow open tabs whose file moved.
-  const latestTreeChange = useRef({ refreshNotebooks, retargetOpenTabs });
+  const latestTreeChange = useRef({ refreshNotebooks, refreshFiles, retargetOpenTabs });
   useLayoutEffect(() => {
-    latestTreeChange.current = { refreshNotebooks, retargetOpenTabs };
+    latestTreeChange.current = { refreshNotebooks, refreshFiles, retargetOpenTabs };
   });
   useEffect(() => {
     if (!authenticated) return;
     let active = true;
     // Moves run strictly in the order they happened, each after the previous fetch settled.
     let movesDone: Promise<void> = Promise.resolve();
+    // Tabs follow their files first, but a move lookup that hangs must not freeze the file list.
+    const afterMoves = async () => {
+      await Promise.race([movesDone, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+      return active;
+    };
     const stop = subscribeSharedTreeChanges(
       subscribeHostEvents,
       async (scope: RefreshScope) => {
-        // Tabs follow their files first, but a move lookup that hangs must not freeze the file list.
-        await Promise.race([movesDone, new Promise((resolve) => setTimeout(resolve, 10_000))]);
-        if (!active) return;
+        if (!await afterMoves()) return;
         // Only the notebooks the events touched, and only those this window shows; an identical result is not applied, so nothing re-renders.
         try { await latestTreeChange.current.refreshNotebooks(scope); }
         catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshTreeError")); }
@@ -3856,6 +3890,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           const items = found.filter((item): item is { from: string; payload: LiberaFilePayload } => item !== null);
           if (items.length) latestTreeChange.current.retargetOpenTabs(items);
         });
+      },
+      undefined,
+      async (paths) => {
+        if (!await afterMoves()) return;
+        try { await latestTreeChange.current.refreshFiles(paths); }
+        catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshTreeError")); }
       },
     );
     return () => {
@@ -4660,7 +4700,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function selectSearchResult(result: SearchResult) {
-    setQuery("");
+    sidebarSearch.reset();
     updateExpanded((current) => new Set(current).add(result.notebook));
 
     if (result.type === "file") {
@@ -4723,8 +4763,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setActiveTabId(tabId);
   }
 
+  // The tab ids joined: effects that only follow which tabs are open key on this,
+  // so a draft, caret or scroll publication does not rerun them.
+  const tabIdsKey = useMemo(() => JSON.stringify(tabs.map((tab) => tab.id)), [tabs]);
+
   useEffect(() => {
-    const openTabIds = new Set(tabs.map((tab) => tab.id));
+    const openTabIds = new Set<string>(JSON.parse(tabIdsKey));
 
     activeTabHistoryRef.current = activeTabHistoryRef.current.filter((tabId) =>
       openTabIds.has(tabId),
@@ -4738,11 +4782,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       activeTabId,
       ...activeTabHistoryRef.current.filter((tabId) => tabId !== activeTabId),
     ];
-  }, [activeTabId, tabs]);
+  }, [activeTabId, tabIdsKey]);
+
+  // The window listeners below stay installed; they read the latest tabs and
+  // handlers from here instead of being removed and added on every publication.
+  const latestShortcutState = useRef({ tabs, activeTabId, closeTab });
+  useLayoutEffect(() => {
+    latestShortcutState.current = { tabs, activeTabId, closeTab };
+  });
 
   useEffect(() => {
     function activateShortcutTab(tabId: string) {
-      const tab = tabs.find((currentTab) => currentTab.id === tabId);
+      const tab = latestShortcutState.current.tabs.find((currentTab) => currentTab.id === tabId);
 
       if (tab && !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab)) {
         const interactedAt = new Date().toISOString();
@@ -4767,6 +4818,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     function cycleOrderedTab() {
+      const { tabs, activeTabId } = latestShortcutState.current;
+
       if (!tabs.length) {
         return;
       }
@@ -4778,6 +4831,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     function toggleRecentTab() {
+      const { tabs, activeTabId } = latestShortcutState.current;
       const openTabIds = new Set(tabs.map((tab) => tab.id));
       const recentTabId = activeTabHistoryRef.current.find(
         (tabId) => tabId !== activeTabId && openTabIds.has(tabId),
@@ -4810,7 +4864,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeTabId, tabs]);
+  }, []);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -4825,6 +4879,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       event.preventDefault();
 
+      const { activeTabId, closeTab } = latestShortcutState.current;
+
       if (activeTabId) {
         closeTab(activeTabId);
       }
@@ -4835,10 +4891,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeTabId, closeTab]);
+  }, []);
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
+      const { tabs } = latestShortcutState.current;
       if (tabs.some((tab) => !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) || pendingSaves.anyDirty(tabs.map((tab) => tab.file.path)) || getSharedDocRegistry().unconfirmedDocumentCount() > 0) {
         event.preventDefault();
         event.returnValue = "";
@@ -4846,7 +4903,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
     window.addEventListener("beforeunload", protectUnsavedDrafts);
     return () => window.removeEventListener("beforeunload", protectUnsavedDrafts);
-  }, [tabs]);
+  }, []);
 
   // Every draft publication and view-state report re-renders the shell, and the
   // functions above are new on each render. These forward to the latest ones
@@ -4984,13 +5041,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       noteDialogSubmitting,
       imageMarkdownConverting,
       password,
-      query,
+      sidebarSearch,
       fileInteractions,
       files,
       recentFiles,
       screenshotSnipSession,
       pendingVisualInsertions,
-      searchResults,
       selectedNotebook,
       selectedNotebookName,
       tabs,
@@ -5028,7 +5084,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       refreshAfterAgentChanges,
       setActiveTabViewState,
       setPassword,
-      setQuery,
     },
   };
 }

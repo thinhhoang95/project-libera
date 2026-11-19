@@ -36,8 +36,10 @@ import { requestSharedAlbum } from "@/components/libera/gallery-store";
 import { SearchView } from "@/components/libera/global-search/search-view";
 import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
+import { startBackgroundIndexing } from "@/components/libera/global-search/search-store";
 import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
 import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
+import { useOpenReferenceDrafts } from "@/components/libera/references/use-reference-citations";
 import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
 import { useReferencePaletteCommands } from "@/components/libera/references/reference-palette-commands";
 import { closedReferencesMenuItems } from "@/components/libera/references/references-panel";
@@ -203,16 +205,17 @@ export function LiberaApp({
     };
   }, []);
 
+  // Kept across effect restarts, so a tab change that leaves the count alone sends nothing.
+  const publishedDirtyCount = useRef(-1);
   useEffect(() => {
     // Shared tabs count as 0: their edits are already in the host's SQLite,
     // unless the host was lost or has not confirmed them yet.
     const sharedTabIds = workspace.sharedTabIds;
     const registry = getSharedDocRegistry();
-    let published = -1;
     const publish = () => {
       const unsavedDocumentCount = dirtyDocumentCount(workspace.tabs, (tabId) => sharedTabIds.has(tabId)) + registry.unconfirmedDocumentCount();
-      if (unsavedDocumentCount === published) return;
-      published = unsavedDocumentCount;
+      if (unsavedDocumentCount === publishedDirtyCount.current) return;
+      publishedDirtyCount.current = unsavedDocumentCount;
       void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
     };
     publish();
@@ -321,7 +324,12 @@ export function LiberaApp({
   const chromeTabs = useChromeTabs(workspace.tabs);
   const activeChromeTab = useMemo(() => chromeTabs.find((tab) => tab.id === workspace.activeTabId), [chromeTabs, workspace.activeTabId]);
   // What they show that is computed from a draft re-checks after each publication (tab-chrome.ts).
-  useEffect(() => { draftRevision.bump(); }, [workspace.tabs]);
+  // Only the tabs whose text (or page count) changed move their revisions; a caret report moves none.
+  const publishedTabs = useRef<typeof workspace.tabs | null>(null);
+  useEffect(() => {
+    draftRevision.publish(publishedTabs.current, workspace.tabs);
+    publishedTabs.current = workspace.tabs;
+  }, [workspace.tabs]);
   // Read when the user acts, from the tabs of the latest commit. Never call these while rendering.
   const tabReaders = useStableHandlers({
     readOpenTabs: () => workspace.tabs,
@@ -351,12 +359,9 @@ export function LiberaApp({
     setNotebooksCollapsed(false);
     if (workspace.selectedNotebookName !== notebook) workspace.selectNotebook(notebook);
   });
-  const openReferenceDrafts = useMemo(
-    () => workspace.tabs
-      .filter((tab) => (tab.file.fileType === "markdown" || isLatexCitingPath(tab.file.path)) && !tab.untitled && tab.draft !== tab.saved)
-      .map((tab) => ({ path: tab.file.path, text: tab.draft })),
-    [workspace.tabs],
-  );
+  // The References rail is the only reader of the drafts, so nothing is collected while it is closed.
+  const referencesOpen = activeLeftPanel === "references";
+  const openReferenceDrafts = useOpenReferenceDrafts(workspace.tabs, referencesOpen);
   const activeLatexSource = workspace.activeTab?.file.fileType === "latex" && isLatexCitingPath(workspace.activeTab.file.name) && !workspace.activeTab.page ? workspace.activeTab : null;
   const activeTabFile = workspace.activeTab && !workspace.activeTab.untitled ? workspace.activeTab.file : null;
   const activePdfPath = activeTabFile?.fileType === "pdf" ? activeTabFile.path : null;
@@ -365,9 +370,9 @@ export function LiberaApp({
     () => activePdfPath ? { notebook: activePdfNotebook, path: activePdfPath } : null,
     [activePdfNotebook, activePdfPath],
   );
-  const activeMarkdownDraft = workspace.activeMarkdownDraft;
+  const activeMarkdownDraft = referencesOpen ? workspace.activeMarkdownDraft : null;
   const activeDocumentPath = workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null;
-  const activeLatexDraft = activeLatexSource ? activeLatexSource.draft : null;
+  const activeLatexDraft = referencesOpen && activeLatexSource ? activeLatexSource.draft : null;
   const activeLatexPath = activeLatexSource && !activeLatexSource.untitled ? activeLatexSource.file.path : null;
   const canCite = workspace.activeTab?.file.fileType === "markdown" || Boolean(activeLatexSource);
   const citeSyntax = activeLatexSource ? "latex" : "markdown";
@@ -469,15 +474,7 @@ export function LiberaApp({
   // when background indexing is off and limits how often it scans.
   useEffect(() => {
     if (!authenticated) return;
-    const update = () => {
-      void apiRequest("/api/search/index", { method: "POST", body: JSON.stringify({ action: "background" }) }).catch(() => undefined);
-    };
-    const first = window.setTimeout(update, 20_000);
-    const interval = window.setInterval(update, 10 * 60_000);
-    return () => {
-      window.clearTimeout(first);
-      window.clearInterval(interval);
-    };
+    return startBackgroundIndexing();
   }, [authenticated]);
 
   // Python in notes is part of the app: on a new computer its runtime is set
@@ -870,8 +867,7 @@ export function LiberaApp({
           collapsed={notebooksCollapsed}
           expanded={workspace.expanded}
           fileInteractions={workspace.fileInteractions}
-          query={workspace.query}
-          searchResults={workspace.searchResults}
+          searchStore={workspace.sidebarSearch}
           selectedNotebookName={workspace.selectedNotebook?.name ?? ""}
           tree={workspace.tree}
           textareaRef={workspace.textareaRef}
@@ -900,7 +896,6 @@ export function LiberaApp({
           onMoveFile={workspace.moveFileToFolder}
           onOpenFile={workspace.openFile}
           onLogout={workspace.handleLogout}
-          onQueryChange={workspace.setQuery}
           onRenameFolder={workspace.renameFolderFromPrompt}
           onRenameFile={workspace.renameFileNodeFromPrompt}
           onSelectNotebook={workspace.selectNotebook}

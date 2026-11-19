@@ -151,6 +151,15 @@ export function useGallery() {
   return useSyncExternalStore(subscribe, () => state, () => state);
 }
 
+/**
+ * Just the catalog, so loading and error flips do not wake the reader. While
+ * `enabled` is false it does not listen at all (the next render reads afresh).
+ */
+export function useGalleryContents(enabled = true) {
+  return useSyncExternalStore(enabled ? subscribe : noSubscribe, () => state.contents, () => state.contents);
+}
+function noSubscribe() { return () => undefined; }
+
 /** Lets the gallery hand a photo's prompt back to the generation panel. */
 export function reusePrompt(prompt: string) {
   promptListeners.forEach((listener) => listener(prompt));
