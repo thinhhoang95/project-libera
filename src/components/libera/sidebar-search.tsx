@@ -5,7 +5,8 @@ import { FileTypeIcon } from "@/components/libera/file-type";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import { searchNotebookTree } from "@/components/libera/notebook-search";
 import type { SidebarSearchStore } from "@/components/libera/sidebar-search-store";
-import type { LiberaTree, SearchResult } from "@/components/libera/types";
+import type { SearchResult } from "@/components/libera/types";
+import type { LiberaTree } from "@/lib/types";
 
 type SidebarSearchProps = {
   store: SidebarSearchStore;
