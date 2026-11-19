@@ -14,7 +14,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { entryRecord } from "../../electron/collab/notebooks/layout";
-import type { FileOpRequest } from "../../src/lib/collab/local-api";
+import type { FileListResponse, FileOpRequest } from "../../src/lib/collab/local-api";
 import { ControlRoutes } from "../../src/lib/collab/local-api";
 import type { FetchLike } from "../../electron/collab/core";
 import { ManifestKeys } from "../../src/lib/collab/protocol/schema";
@@ -207,6 +207,15 @@ test("host: rename keeps a file's kind and records, moves a note's Python, and c
     const body = created.body as { paths: string[]; fileId?: string };
     assert.ok(body.fileId, "the created file's id is returned");
     assert.deepEqual(body.paths, ["Notes/fresh.md"]);
+
+    // The authoritative file list names the same id at the same path, and keeps the renamed files under their new names.
+    const listed = await alice.router.call("GET", ControlRoutes.fileEntries(projectId));
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    const listedEntries = (listed.body as FileListResponse).entries;
+    assert.equal(listedEntries.find((entry) => entry.path === "fresh.md")?.fileId, body.fileId);
+    assert.equal(listedEntries.find((entry) => entry.path === "fresh.md")?.kind, "doc");
+    assert.ok(listedEntries.some((entry) => entry.path === "memo.mp3" && entry.kind === "blob" && entry.blobHash));
+    assert.equal(listedEntries.some((entry) => entry.path === "a.md" || entry.path === "memo.m4a"), false, "renamed-away paths are not listed");
 
     // 25: the name is taken by another file while the create is in flight: refused, never answered with the other file's path.
     const hub = alice.host.acquire(JSON.parse(readFileSync(path.join(root, ".libera-shared.json"), "utf8")).manifestDocId);

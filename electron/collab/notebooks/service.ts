@@ -2125,6 +2125,9 @@ export class NotebookServiceImpl implements NotebookService {
     router.add("GET", decodeURIComponent(ControlRoutes.fileBlob(":projectId")), wrap(async (request) => ({
       body: await this.runningProject(request.params.projectId).readBlob(request.query.get("path") ?? ""),
     })));
+    router.add("GET", decodeURIComponent(ControlRoutes.fileEntries(":projectId")), wrap(async (request) => ({
+      body: await this.runningProject(request.params.projectId).listEntries(),
+    })));
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
     router.add("GET", ControlRoutes.pdfResolve, wrap(async (request) => {
       const relative = request.query.get("path") ?? "";

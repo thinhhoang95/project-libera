@@ -49,7 +49,7 @@ import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
-import { CollabHostError, resolveSharedPdf, livePdfSnapshot, readProjectBlob, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
+import { CollabHostError, resolveSharedPdf, livePdfSnapshot, readProjectBlob, listProjectEntries, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
 import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, FileOpResult, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
@@ -405,6 +405,20 @@ export async function createSharedFile(liberaPath: string, content: string, opti
   const target = manifestTarget(liberaPath);
   const config = hostConfig(liberaPath, options);
   return host(liberaPath, () => fileOp(target.projectId, { op: "create-file", path: target.path, content }, config));
+}
+
+/**
+ * A shared notebook's authoritative file list, with Libera paths
+ * (`<notebook>/<path>`): what the manifest holds, which on a follower can be
+ * ahead of the disk and never includes a deleted file still on disk.
+ */
+export async function listSharedEntries(notebook: string, options: SharedWriteOptions = {}): Promise<import("./local-api").FileListEntry[]> {
+  const marker = sharedNotebookMarker(notebook);
+  if (!marker?.projectId) throw new SharedWriteError(400, "not-shared", `${notebook} is not a shared notebook.`);
+  const config = hostConfig(notebook, options);
+  const result = await host(notebook, () => listProjectEntries(marker.projectId, config));
+  if (!result || !Array.isArray(result.entries)) throw new SharedWriteError(503, "unavailable", "The host did not return the shared notebook's file list.");
+  return result.entries.map((entry) => ({ ...entry, path: `${notebook}/${entry.path}` }));
 }
 
 /** The host's latest blob, independent of delayed cloud materialization. */

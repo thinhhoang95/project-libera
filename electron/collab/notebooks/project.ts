@@ -12,7 +12,7 @@ import path from "node:path";
 
 import type * as Y from "yjs";
 
-import type { FileBlobResponse, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
+import type { FileBlobResponse, FileListEntry, FileListResponse, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { roleAtLeast } from "../../../src/lib/collab/protocol/roles";
@@ -2678,6 +2678,34 @@ export class SharedProject {
       }
       return { fileId: entry.fileId, blobHash: entry.blobHash, contentBase64: Buffer.from(bytes).toString("base64") };
     });
+  }
+
+  /**
+   * The authoritative file list: every manifest entry at the path the layout
+   * gives it. Read from the manifest alone (no disk, no project queue), so a
+   * follower lists files the cloud has not delivered yet, and a stalled
+   * provider cannot hold the answer up.
+   */
+  listEntries(): Promise<FileListResponse> {
+    if (this.stopped) return Promise.reject(new ControlError(503, "offline", "The notebook is stopping."));
+    if (!this.manifestReady()) return Promise.reject(new ControlError(503, "offline", "The notebook's file list has not loaded yet."));
+    const entries = this.readEntries();
+    const list: FileListEntry[] = [];
+    for (const [fileId, placed] of computeLayout(entries.values()).paths) {
+      const entry = entries.get(fileId);
+      if (!entry) continue;
+      list.push({
+        fileId,
+        path: placed,
+        kind: entry.kind,
+        ...(entry.docId ? { docId: entry.docId } : {}),
+        ...(entry.docKind ? { docKind: entry.docKind } : {}),
+        ...(entry.blobHash ? { blobHash: entry.blobHash } : {}),
+        ...(entry.size !== undefined ? { size: entry.size } : {}),
+        updatedAt: entry.updatedAt,
+      });
+    }
+    return Promise.resolve({ entries: list });
   }
 
   /** create-file, create-folder, write-blob, rename and delete, through the manifest; the disk follows. */
