@@ -7,6 +7,7 @@
 import type { Kysely } from "kysely";
 import * as Y from "yjs";
 import { HttpError } from "../http/errors.js";
+import { closingFenceActive } from "./closing.js";
 
 import type { DB } from "../db/types.js";
 import type { Actor, DocKind, ProjectKind, Provenance, Role, Subdoc } from "../protocol.js";
@@ -152,7 +153,7 @@ export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promis
     // Takedown sets closing_at while holding every document row, so a write
     // that got the row lock afterwards sees it (and one before it commits first).
     const project = await trx.selectFrom("projects").select("closing_at").where("id", "=", row.project_id).executeTakeFirst();
-    if (project?.closing_at) throw new ProjectClosingError();
+    if (closingFenceActive(project?.closing_at)) throw new ProjectClosingError();
     if (input.requiredAccess) {
       const member = await trx.selectFrom("memberships").select("role")
         .where("project_id", "=", input.requiredAccess.projectId)

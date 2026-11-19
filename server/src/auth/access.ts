@@ -6,6 +6,7 @@ import type { Kysely } from "kysely";
 import type { Config } from "../config.js";
 import type { DB } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
+import { closingFenceActive } from "../sync/closing.js";
 import { can, type Action, type Actor, type DocKind, type Role } from "../protocol.js";
 import { TokenError, verifyAccessToken } from "./tokens.js";
 
@@ -146,7 +147,7 @@ export async function lockProjectAction(
   const project = member ? await trx.selectFrom("projects").select(["id", "closing_at"]).where("id", "=", projectId).where("deleted_at", "is", null).executeTakeFirst() : null;
   if (!member || !project) throw new HttpError("forbidden", "Your notebook access changed before this change could be saved.");
   // Takedown fence: no writes (comments, files, reviews) while the owner exports a final copy.
-  if (project.closing_at && action !== "read") {
+  if (closingFenceActive(project.closing_at) && action !== "read") {
     throw new HttpError("conflict", "This notebook is being taken down, so changes are paused. They can be saved again if the takedown is cancelled.", { closing: true });
   }
   if (!can(member.role, action, actor)) throw new HttpError("forbidden", `Your role (${member.role}) cannot ${action}.`);

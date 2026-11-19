@@ -10,6 +10,7 @@ import type { ServerContext } from "../context.js";
 import type { DB } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
 import { newId } from "../ids.js";
+import { closingFenceActive } from "../sync/closing.js";
 import {
   ApiRoutes,
   bindActor,
@@ -213,6 +214,11 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
         .where("project_id", "=", projectId).orderBy("id").forUpdate().execute();
       const members = await trx.selectFrom("memberships").select("account_id")
         .where("project_id", "=", projectId).orderBy("account_id").forUpdate().execute();
+      // A fence that lapsed (sync/closing.ts) may have let writes in after the owner's export.
+      const fence = await trx.selectFrom("projects").select("closing_at").where("id", "=", projectId).executeTakeFirst();
+      if (fence?.closing_at && !closingFenceActive(fence.closing_at)) {
+        throw new HttpError("conflict", "Changes were paused for this takedown too long, so the pause ended. Take the notebook down again.");
+      }
       if (body.expectedManifestSeq !== undefined) {
         const manifest = docs.find((doc) => doc.kind === "manifest");
         if (!manifest || manifest.last_server_seq !== body.expectedManifestSeq) {
@@ -249,7 +255,8 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
       const member = await trx.selectFrom("memberships").select("role")
         .where("project_id", "=", projectId).where("account_id", "=", accountId).forShare().executeTakeFirst();
       if (!member) throw new HttpError("forbidden", "Your notebook access changed before this change could be saved.");
-      await trx.updateTable("projects").set({ closing_at: new Date() }).where("id", "=", projectId).where("closing_at", "is", null).execute();
+      // Raised, or renewed by a retried takedown (a lapsed fence holds again from now).
+      await trx.updateTable("projects").set({ closing_at: new Date() }).where("id", "=", projectId).execute();
       return { docs: docs.map((doc) => ({ docId: doc.id, kind: doc.kind, serverSeq: doc.last_server_seq })) };
     });
   });

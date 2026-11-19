@@ -10,6 +10,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { MessageType, type ProjectClosingResponse } from "../src/protocol.js";
 import { json } from "./helpers.js";
 import { startSyncEnv, type SyncEnv } from "./support/sync-fixtures.js";
+import { closingFenceActive, PROJECT_CLOSING_TTL_MS } from "../src/sync/closing.js";
 
 let env: SyncEnv;
 before(async () => {
@@ -118,6 +119,39 @@ describe("audit 1119: lock order", () => {
       const memberships = firstIndex(statements, /from "memberships"[\s\S]*for update/i);
       assert.ok(documents >= 0 && memberships >= 0, "both locks were taken");
       assert.ok(documents < memberships, "documents first, then memberships (the order persistUpdate uses)");
+    } finally { await other.close(); }
+  });
+});
+
+describe("audit 1119: a takedown fence lapses", () => {
+  test("closingFenceActive holds for the TTL only", () => {
+    const now = Date.now();
+    assert.equal(closingFenceActive(null, now), false);
+    assert.equal(closingFenceActive(new Date(now - 1000), now), true);
+    assert.equal(closingFenceActive(new Date(now - PROJECT_CLOSING_TTL_MS - 1), now), false);
+  });
+
+  test("a fence left by a takedown that never finished stops pausing writes, and that takedown cannot delete", async () => {
+    const other = await startSyncEnv();
+    try {
+      const base = `/v1/projects/${other.project.id}`;
+      assert.equal((await json(other.server.url, `${base}/closing`, { method: "POST", token: other.owner.token, body: {} })).status, 200);
+      // The owner's app stopped mid-takedown: the fence is older than its lifetime.
+      await other.db.updateTable("projects").set({ closing_at: new Date(Date.now() - PROJECT_CLOSING_TTL_MS - 60_000) }).where("id", "=", other.project.id).execute();
+
+      const comment = await json(other.server.url, `/v1/documents/${other.docId}/threads`, { token: other.owner.token, body: thread("thr_lapsed_0001") });
+      assert.equal(comment.status, 201, "members can write again");
+      const client = await other.connect();
+      await client.open(other.docId);
+      await client.acked(client.edit(other.docId, "content", (doc) => doc.getText("source").insert(0, "after the lapse ")));
+      await client.close();
+
+      const stale = await json(other.server.url, base, { method: "DELETE", token: other.owner.token, body: {} });
+      assert.equal(stale.status, 409, "the export may have missed writes accepted after the lapse");
+
+      // A retried takedown raises the fence again, and its delete goes through.
+      assert.equal((await json(other.server.url, `${base}/closing`, { method: "POST", token: other.owner.token, body: {} })).status, 200);
+      assert.equal((await json(other.server.url, base, { method: "DELETE", token: other.owner.token, body: {} })).status, 204);
     } finally { await other.close(); }
   });
 });
