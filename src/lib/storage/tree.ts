@@ -337,7 +337,12 @@ async function getLinkedFolderNode(
   };
 }
 
-export async function getTree(options: { includeArchive?: boolean } = {}): Promise<LiberaTree> {
+/**
+ * `maintenance: false` skips the sidecar upkeep (pruning, reconciling) that
+ * normally runs for every notebook on each read: callers that only refresh a
+ * view after a file event do not need it, and it rewrites files in cloud folders.
+ */
+export async function getTree(options: { includeArchive?: boolean; maintenance?: boolean } = {}): Promise<LiberaTree> {
   await ensureAdminRoot();
 
   const linkedFolders = getLinkedFolders();
@@ -370,7 +375,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
     const children = await readTreeDirectory(entry.name, [], { showArchive });
     // A migration that has not finished may have moved a file but not yet its
     // sidecars: they are not orphans, and pruning them would lose them.
-    if (!(await isNotebookMigrating(entry.name))) {
+    if (options.maintenance !== false && !(await isNotebookMigrating(entry.name))) {
       await prunePdfTextCaches(entry.name).catch(() => undefined);
       await pruneAudioSidecars(entry.name).catch(() => undefined);
       await reconcilePdfSidecars(entry.name, pdfFilesOf(children)).catch(() => undefined);
@@ -404,7 +409,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
   for (const folder of linkedFolders) {
     const node = await getLinkedFolderNode(folder, { showArchive, validGroupIds });
     if (!node.folder?.missing) {
-      if (!(await isNotebookMigrating(folder.name))) {
+      if (options.maintenance !== false && !(await isNotebookMigrating(folder.name))) {
         await prunePdfTextCaches(folder.name).catch(() => undefined);
         await pruneAudioSidecars(folder.name).catch(() => undefined);
         await reconcilePdfSidecars(folder.name, pdfFilesOf(node.children)).catch(() => undefined);
@@ -419,7 +424,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
 
   await populateRelatedNotebooks(notebooks);
   // Re-attach reference files moved outside Libera, in the background.
-  void scheduleReferenceReattach();
+  if (options.maintenance !== false) void scheduleReferenceReattach();
 
   return {
     archiveIncluded: showArchive,
@@ -445,4 +450,71 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
     ),
     notebooks: notebooks.sort((left, right) => left.name.localeCompare(right.name)),
   };
+}
+
+/**
+ * One notebook's node, read without the library-wide upkeep `getTree` does
+ * (pruning, reconciling, reattaching): a shared edit refreshes just the
+ * notebook it touched. Links to files in other notebooks are not resolved here
+ * (that needs every notebook's files); the caller keeps the earlier ones.
+ * Null when there is no such notebook.
+ */
+export async function getNotebookNode(name: string, options: { includeArchive?: boolean } = {}): Promise<LiberaNotebookNode | null> {
+  if (!name || name.startsWith(".") || /[\\/\0]/.test(name)) return null;
+  await ensureAdminRoot();
+  const workspaceMetadata = await readWorkspaceMetadata();
+  const validGroupIds = new Set(workspaceMetadata.notebookGroups.map((group) => group.id));
+  const showArchive = Boolean(options.includeArchive || workspaceMetadata.notebookViewOptions.showArchive);
+  const linked = getLinkedFolders().find((folder) => folder.name === name);
+  let node: LiberaNotebookNode;
+  if (linked) {
+    node = await getLinkedFolderNode(linked, { showArchive, validGroupIds });
+  } else {
+    let notebookStats: Stats;
+    try {
+      notebookStats = await stat(notebookPath(name));
+    } catch {
+      return null;
+    }
+    if (!notebookStats.isDirectory()) return null;
+    const metadata = await readNotebookMetadata(name, notebookStats.birthtime.toISOString());
+    const children = await readTreeDirectory(name, [], { showArchive });
+    node = {
+      kind: "notebook",
+      name,
+      path: name,
+      createdAt: metadata.createdAt,
+      color: metadata.color,
+      emoji: metadata.emoji,
+      illustration: metadata.illustration,
+      illustrationPath: metadata.illustrationPath,
+      groupId: metadata.groupId && validGroupIds.has(metadata.groupId) ? metadata.groupId : null,
+      updatedAt: latestIsoDate(notebookStats.mtime.toISOString(), ...latestTreeNodeUpdatedAt(children)),
+      children,
+    };
+  }
+  await populateRelatedNotebooks([node]);
+  return node;
+}
+
+/**
+ * Gives each file node the shared file id the host listed for its path. Only
+ * where the listing agrees with the node: the tree is read from the working
+ * copy, which cloud sync can leave behind the manifest, and a different size
+ * means this path may still hold another file than the one the listing names.
+ * Without a verifiable match the node carries no id and the host checks nothing.
+ */
+export function attachFileIds(
+  nodes: LiberaTreeNode[],
+  entries: readonly { path: string; fileId: string; kind: "doc" | "blob" | "folder"; size?: number }[],
+) {
+  const byPath = new Map(entries.filter((entry) => entry.kind !== "folder").map((entry) => [entry.path, entry]));
+  const visit = (list: LiberaTreeNode[]) => {
+    for (const node of list) {
+      if (node.kind === "folder") { visit(node.children); continue; }
+      const entry = byPath.get(node.path);
+      if (entry && (entry.size === undefined || entry.size === node.size)) node.fileId = entry.fileId;
+    }
+  };
+  visit(nodes);
 }
