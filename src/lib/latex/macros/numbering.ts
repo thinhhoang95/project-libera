@@ -584,6 +584,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
   };
   /** Open `subequations` environments: their equations are numbered 3a, 3b. */
   const subequations: Array<{ node: number; parent: string; saved: number }> = [];
+  /** Open `subappendices` environments (the appendix package, in a chapter): their sections are 1.A, 1.B, the chapter's appendices. */
+  const subappendices: Array<{ node: number; saved: [number, number] }> = [];
 
   /**
    * Counters made to count as another by `\let\c@lemmaL\c@theorem` (the register of one set to the other's): they share
@@ -646,6 +648,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     if (name === "equation" && top) return `${top.parent}${formatCounterValue(value(name), "alph")}`;
     const custom = customFormat(name);
     if (custom !== undefined) return custom;
+    if (name === "section" && subappendices.length && depth < 8) return `${format("chapter", depth + 1)}.${formatCounterValue(value(name), "Alph")}`;
     // After AASTeX's `\restartappendixnumbering`: the appendix's letter, then the number (A1).
     if (appendixNumbered.has(name) && depth < 8) return `${format(chapters ? "chapter" : "section", depth + 1)}${value(name)}`;
     const own = name === "part" ? formatCounterValue(value(name), "Roman")
@@ -758,7 +761,7 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
     if (nestedFiles && name && includeDepth < 4 && !included.has(name)) nestedFiles.push([name, file ?? null]);
     if (!file) return;
     // An include at the top of the body (not in a list, float or formula group): numbered once for each state it starts from.
-    const remember = !includeDepth && !macroHost && !lists.length && !floats.length && !subequations.length;
+    const remember = !includeDepth && !macroHost && !lists.length && !floats.length && !subequations.length && !subappendices.length;
     const key = remember ? includeKey(name) : "";
     const known = remember ? includedResults.get(file)?.find((result) => result.key === key && result.nested.every(([inner, innerFile]) => (options.includes?.(inner) ?? null) === innerFile)) : undefined;
     if (known) {
@@ -1328,6 +1331,12 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
           counters.set(top, 0);
           reset(top);
         }
+        // The appendix package's `subappendices` (the end of a book's chapter): sections start again as 1.A, 1.B, until it ends.
+        if (env === "subappendices" && chapters) {
+          subappendices.push({ node: node.from, saved: [value("section"), value("subsection")] });
+          counters.set("section", 0);
+          reset("section");
+        }
         // AASTeX's `deluxetable`: its `\tablecaption` numbers it, and every `\label` in it refers to it (2611.08676 writes
         // one right after `\begin`); `\tablenum{A1}` gives its number instead.
         if (/^deluxetable\*?$/.test(env) && !defs.environments.has(env)) {
@@ -1427,6 +1436,8 @@ export function computeLatexNumbering(tree: Tree, read: Read, defs: LatexDefinit
         if (name === "ListEnvironment" || (name === "Environment" && defs.lists?.has(environmentName(ref.node, read) ?? ""))) popList();
         const group = subequations[subequations.length - 1];
         if (name === "Environment" && group?.node === ref.from) { subequations.pop(); counters.set("equation", group.saved); }
+        const appendices = subappendices[subappendices.length - 1];
+        if (name === "Environment" && appendices?.node === ref.from) { subappendices.pop(); counters.set("section", appendices.saved[0]); counters.set("subsection", appendices.saved[1]); }
       }
     },
   };
