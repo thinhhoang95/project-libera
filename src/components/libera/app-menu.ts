@@ -47,6 +47,22 @@ const RENDER_DEBOUNCE_MS = 300;
 const RENDER_MAX_WAIT_MS = 2000;
 let listening = false;
 
+// A render invalidates only the menus its provider shows; a sync rebuilds just
+// those and reuses the serialized output and action ids of the rest.
+type Dirty = Section | "editor";
+type MenuName = "file" | "format" | "insert" | "references" | "gallery" | "photo" | "view" | "tab" | "ai";
+const MENU_NAMES: MenuName[] = ["file", "format", "insert", "references", "gallery", "photo", "view", "tab", "ai"];
+const ALL_DIRTY: Dirty[] = ["file", "fileApp", "references", "gallery", "photo", "view", "tab", "ai", "editor"];
+/** The menus rebuilt when a provider's items change. The References menu also depends on whether the gallery is mounted. */
+const MENUS_OF: Record<Dirty, MenuName[]> = {
+  file: ["file"], fileApp: ["file"], references: ["references"], gallery: ["gallery", "references"], photo: ["photo"],
+  view: ["view"], tab: ["tab"], ai: ["ai"], editor: ["format", "insert"],
+};
+const dirty = new Set<Dirty>();
+// What a sync that has not finished (or was superseded) took, so a newer sync redoes it.
+let inflight = new Set<Dirty>();
+const built = new Map<MenuName, { entries: ReturnType<typeof serializeNativeMenu>; json: string; actions: Map<string, () => void> }>();
+
 /** Gives every leaf item without its own callback `run(id)`, for menus written as ids plus a dispatcher. */
 export function withMenuActions(items: NativeMenuEntry[], run: (id: string) => void): NativeMenuEntry[] {
   return items.map((item) => {
@@ -94,7 +110,12 @@ async function sync() {
   const bridge = window.liberaAppMenu;
   if (!bridge) return;
   const current = ++generation;
-  const editor = activeEditorProvider();
+  const taken = new Set<Dirty>([...dirty, ...inflight]);
+  dirty.clear();
+  inflight = taken;
+  const stale = new Set<MenuName>(MENU_NAMES.filter((name) => !built.has(name)));
+  for (const key of taken) for (const name of MENUS_OF[key]) stale.add(name);
+  const editor = stale.has("format") || stale.has("insert") ? activeEditorProvider() : undefined;
   const section = async (name: Section): Promise<NativeMenuEntry[]> => {
     const providers = [...sectionProviders[name]];
     if (MERGED_SECTIONS.has(name)) {
@@ -105,48 +126,53 @@ async function sync() {
     const provider = providers.reduce<SectionProvider | undefined>((best, candidate) => !best || candidate.priority >= best.priority ? candidate : best, undefined);
     return provider ? provider.read() : [];
   };
-  let fileItems: NativeMenuEntry[] = [];
-  let fileAppItems: NativeMenuEntry[] = [];
-  let referenceItems: NativeMenuEntry[] = [];
-  let galleryItems: NativeMenuEntry[] = [];
-  let photoItems: NativeMenuEntry[] = [];
-  let viewItems: NativeMenuEntry[] = [];
-  let tabItems: NativeMenuEntry[] = [];
-  let aiItems: NativeMenuEntry[] = [];
-  let editorMenus: AppEditorMenus = {};
+  const none = async (): Promise<NativeMenuEntry[]> => [];
+  const items: Partial<Record<MenuName, NativeMenuEntry[]>> = {};
   try {
-    [fileItems, fileAppItems, referenceItems, galleryItems, photoItems, viewItems, tabItems, aiItems, editorMenus] = await Promise.all([
-      section("file"), section("fileApp"), section("references"), section("gallery"), section("photo"), section("view"), section("tab"), section("ai"), editor ? editor.read() : {},
+    const [fileItems, fileAppItems, referenceItems, galleryItems, photoItems, viewItems, tabItems, aiItems, editorMenus] = await Promise.all([
+      stale.has("file") ? section("file") : none(), stale.has("file") ? section("fileApp") : none(),
+      stale.has("references") ? section("references") : none(), stale.has("gallery") ? section("gallery") : none(),
+      stale.has("photo") ? section("photo") : none(), stale.has("view") ? section("view") : none(),
+      stale.has("tab") ? section("tab") : none(), stale.has("ai") ? section("ai") : none(),
+      editor ? editor.read() : ({} as AppEditorMenus),
     ]);
+    // The active tab's file actions, then the app's File commands.
+    items.file = fileItems.length && fileAppItems.length ? [...fileItems, { type: "separator" }, ...fileAppItems] : [...fileItems, ...fileAppItems];
+    // The gallery is mounted only while it is the active view.
+    items.references = sectionProviders.gallery.size ? [] : referenceItems;
+    items.gallery = galleryItems;
+    items.photo = photoItems;
+    items.view = viewItems;
+    items.tab = tabItems;
+    items.ai = aiItems;
+    items.format = editorMenus.format ?? [];
+    items.insert = editorMenus.insert ?? [];
   } catch {
-    // Keep the menus already shown.
+    // Keep the menus already shown, and rebuild them on the next sync.
+    for (const key of taken) dirty.add(key);
     return;
   }
   if (current !== generation) return;
+  inflight = new Set();
+  for (const name of stale) {
+    const menuActions = new Map<string, () => void>();
+    const entries = serializeNativeMenu(items[name] ?? [], menuActions, `${name}:`);
+    built.set(name, { entries, json: JSON.stringify(entries), actions: menuActions });
+  }
   const next = new Map<string, () => void>();
-  const menus = {
-    // The active tab's file actions, then the app's File commands.
-    file: serializeNativeMenu(fileItems.length && fileAppItems.length ? [...fileItems, { type: "separator" }, ...fileAppItems] : [...fileItems, ...fileAppItems], next, "file:"),
-    format: serializeNativeMenu(editorMenus.format ?? [], next, "format:"),
-    insert: serializeNativeMenu(editorMenus.insert ?? [], next, "insert:"),
-    // The gallery is mounted only while it is the active view.
-    references: serializeNativeMenu(sectionProviders.gallery.size ? [] : referenceItems, next, "references:"),
-    gallery: serializeNativeMenu(galleryItems, next, "gallery:"),
-    photo: serializeNativeMenu(photoItems, next, "photo:"),
-    view: serializeNativeMenu(viewItems, next, "view:"),
-    tab: serializeNativeMenu(tabItems, next, "tab:"),
-    ai: serializeNativeMenu(aiItems, next, "ai:"),
-  };
+  for (const name of MENU_NAMES) for (const [id, run] of built.get(name)!.actions) next.set(id, run);
   actions = next;
-  const json = JSON.stringify(menus);
+  const json = MENU_NAMES.map((name) => built.get(name)!.json).join("|");
   if (json === lastSent) return;
   lastSent = json;
-  bridge.update(menus);
+  bridge.update(Object.fromEntries(MENU_NAMES.map((name) => [name, built.get(name)!.entries])) as Parameters<typeof bridge.update>[0]);
 }
 
 /** Rebuilds the menus soon; cheap to call often, as unchanged menus are not resent. */
-function scheduleSync() {
-  if (!window.liberaAppMenu || timer) return;
+function scheduleSync(keys: readonly Dirty[] = ALL_DIRTY) {
+  if (!window.liberaAppMenu) return;
+  for (const key of keys) dirty.add(key);
+  if (timer) return;
   timer = setTimeout(() => void sync(), 120);
 }
 
@@ -157,8 +183,9 @@ function scheduleSync() {
  * browser is idle. A window that is hidden or unfocused rebuilds when it regains
  * focus instead, so nothing is lost.
  */
-function markMenusDirty() {
+function markMenusDirty(key: Dirty) {
   if (!window.liberaAppMenu) return;
+  dirty.add(key);
   const now = Date.now();
   if (!dirtySince) dirtySince = now;
   // A prompt sync is already pending and will read these items too.
@@ -180,22 +207,23 @@ function listen() {
   if (listening || !bridge) return;
   listening = true;
   bridge.onSelect((id) => actions.get(id)?.());
-  document.addEventListener("focusin", scheduleSync, true);
-  window.addEventListener("focus", scheduleSync);
+  document.addEventListener("focusin", () => scheduleSync(), true);
+  window.addEventListener("focus", () => scheduleSync());
 }
 
-function useProvider<T extends object>(set: Set<T>, create: () => T, deps: unknown[]) {
-  // Every render may change the items (an editor's state, the active tab).
-  useLayoutEffect(() => markMenusDirty());
+function useProvider<T extends object>(key: Dirty, set: Set<T>, create: () => T, deps: unknown[]) {
+  // Every render may change the items (an editor's state, the active tab), but
+  // only the ones this provider shows.
+  useLayoutEffect(() => markMenusDirty(key));
   useEffect(() => {
     if (!window.liberaAppMenu) return;
     listen();
     const provider = create();
     set.add(provider);
-    scheduleSync();
+    scheduleSync([key]);
     return () => {
       set.delete(provider);
-      scheduleSync();
+      scheduleSync([key]);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
@@ -211,7 +239,7 @@ export function useAppMenuEditor(ref: RefObject<HTMLElement | null>, read: () =>
   useLayoutEffect(() => {
     latest.current = read;
   });
-  useProvider(editorProviders, () => ({ element: () => ref.current, read: () => latest.current() }), [ref]);
+  useProvider("editor", editorProviders, () => ({ element: () => ref.current, read: () => latest.current() }), [ref]);
 }
 
 function useSection(section: Section, priority: number, read: () => NativeMenuEntry[] | Promise<NativeMenuEntry[]>) {
@@ -219,7 +247,7 @@ function useSection(section: Section, priority: number, read: () => NativeMenuEn
   useLayoutEffect(() => {
     latest.current = read;
   });
-  useProvider(sectionProviders[section], () => ({ priority, read: () => latest.current() }), [section, priority]);
+  useProvider(section, sectionProviders[section], () => ({ priority, read: () => latest.current() }), [section, priority]);
 }
 
 /** Offers the active tab's file actions to the File menu while mounted. */
