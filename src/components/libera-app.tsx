@@ -36,6 +36,7 @@ import { requestSharedAlbum } from "@/components/libera/gallery-store";
 import { SearchView } from "@/components/libera/global-search/search-view";
 import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
+import { startBackgroundIndexing } from "@/components/libera/global-search/search-store";
 import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
 import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
 import { useOpenReferenceDrafts } from "@/components/libera/references/use-reference-citations";
@@ -473,15 +474,7 @@ export function LiberaApp({
   // when background indexing is off and limits how often it scans.
   useEffect(() => {
     if (!authenticated) return;
-    const update = () => {
-      void apiRequest("/api/search/index", { method: "POST", body: JSON.stringify({ action: "background" }) }).catch(() => undefined);
-    };
-    const first = window.setTimeout(update, 20_000);
-    const interval = window.setInterval(update, 10 * 60_000);
-    return () => {
-      window.clearTimeout(first);
-      window.clearInterval(interval);
-    };
+    return startBackgroundIndexing();
   }, [authenticated]);
 
   // Python in notes is part of the app: on a new computer its runtime is set
