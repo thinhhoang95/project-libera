@@ -89,8 +89,32 @@ project queue. Round B uses it for tree file ids, ink authors and downloads.
 | P11 UI tree identity and refresh | 1 (UI side: tree nodes in shared notebooks carry the listed file id; rename/delete send it), 24 (retarget by file id), 36; after a refused save, refresh the tab's saved text from disk and keep the draft |
 | P12 authoritative reads | 26 (list from `listSharedEntries`), 27, 42; 21 gap (enumerate ink authors from the listing); 14 gap (audio pending-move replay in `transcripts.ts`) |
 
-Round C (P4): 5, 35; 13 leftovers (bibliography tether, per-file records under a renamed shared
-folder); decide whether new names must pass `manifestNewNameError` in `fileOp` and on the server.
+## Round B results (merged)
+
+No textual conflicts. After merging: root and server `tsc` found two errors (the closing
+response's document kinds, and a `Buffer` type on shared image bytes), both fixed; eslint found
+one unused binding (fixed). Two detached test harnesses needed a stub for the new catch-up gate.
+
+| Package | Status | Notes and gaps |
+|---|---|---|
+| P5 (31, 40) | fixed | Discovery runs on its own timer every 2 × lease TTL (×battery scale), so a folder arriving through OneDrive is adopted within ~2 min (~8 on battery), not 20 s. A refused follower re-contests near the holder's expiry; after a clean release the takeover waits for that expiry (up to ~60 s). The server writes the contention timestamp once. |
+| P6 (8, 18, 32, 33) | fixed | 8: `POST/DELETE /projects/:id/closing` fence (migration 011); takedown needs a server reporting `takedownFence`. Text documents never opened on the owner's device are still not exported (unchanged). Added centrally: the fence lapses after an hour, a lapsed fence cannot delete, a retried takedown renews it. 18: linked folders are not covered (they cannot be shared). 33: share returns 503 `share-unfinished` instead of success with `synced: false`. |
+| P7b (30, 37, 38) | fixed | `contentGuard` gives up after 10 s, so a very large file on a slow drive retries its placement instead of blocking. An own-write is recognised by size and mtime only. |
+| P8 (2, 23, 28, 38, 39) | fixed | A writer does no disk work until the manifest and the document have had the server's `opened` in this runtime. Added centrally: the writer's scan waits for the same catch-up. `state.json` can lag a text flush by ~2 s. |
+| P11 (1, 24, 36, 9 follow-up) | 36 partly | Tree nodes in shared notebooks carry the listed file id (blobs only when the size matches); rename and delete send it. Moves in one event are one simultaneous mapping. A refresh reads only the affected notebook without sidecar maintenance; there is no cheap signature to skip the fetch, and full refreshes still run maintenance. Host `tree-changed` moves carry no file id yet (round C). |
+| P12 (26, 27, 42, 21 gap, 14 gap) | fixed | A shared notebook's ZIP and LaTeX build fail with an error when the host is up but cannot list or read, instead of falling back to disk. New `GET /api/transcripts/progress`. |
+
+Also fixed centrally: a literal NUL byte (a key separator in `pdf-sidecars.ts` from round A) that made git treat the file as binary.
+
+## Round C plan
+
+Three agents:
+
+| Package | Findings |
+|---|---|
+| P4a concurrent manifest field changes | 5 |
+| P4b manifest validation and unresolvable entries | 35; whether new names must pass `manifestNewNameError` in `fileOp` and on the server |
+| P4c shared rename leftovers and tree event ids | 13 leftovers (bibliography tether, per-file records under a renamed shared folder); file ids in host `tree-changed` moves |
 
 ## Findings (verbatim from the review)
 
