@@ -76,6 +76,7 @@ import {
   type WriteGuard,
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
+import { ManifestIntents, trackEntryWrites } from "./manifest-intents";
 import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState } from "./scan-reads";
 import { PdfCommentService } from "./pdf-comments";
 import { AUDIO_EXTENSIONS, MARKDOWN_EXTENSIONS } from "../../../src/lib/storage/constants";
@@ -386,6 +387,9 @@ export class SharedProject {
   /** Retired path keys, each with the content hashes known for it. */
   private readonly retired: Map<string, Set<string>>;
   private observedEntries = new Map<string, ManifestEntry>();
+  /** Field changes this host made to entries until the server has them: a concurrent whole-entry write must not undo them (see manifest-intents.ts). */
+  private readonly manifestIntents = new ManifestIntents();
+  private intentsScheduled = false;
   readonly pdfs: PdfMarksRuntime;
 
   private constructor(ctx: ProjectContext, info: ProjectInfo, state: ProjectState) {
@@ -509,8 +513,10 @@ export class SharedProject {
         }
         this.observedEntries = current;
         this.scheduleManifest(30);
+        this.scheduleIntents();
       }),
       hub.onStatus(() => {
+        this.scheduleIntents();
         if (this.noteCaughtUp(hub)) {
           // The manifest is the gate for every document's write too, and for the scan.
           this.scheduleManifest(30);
@@ -1457,7 +1463,8 @@ export class SharedProject {
     if (provenance.source === "external-file" && this.follower) throw new WriteCancelledError();
     const hub = this.manifestHub;
     if (!hub) throw new Error("The manifest is not open.");
-    hub.applyLocalChange("manifest", (doc) => {
+    // Every entry write goes through here, so this is where field changes are noted as intents.
+    trackEntryWrites(this.manifestDoc().getMap<unknown>(ManifestKeys.files), this.manifestIntents, () => hub.applyLocalChange("manifest", (doc) => {
       const files = doc.getMap<unknown>(ManifestKeys.files);
       fn(files, doc);
       // A removed photo takes its details with it; a new one gets a record.
@@ -1471,8 +1478,26 @@ export class SharedProject {
           if (photo.addedBy) photos.set(fileId, { ...photo });
         }
       }
-    }, provenance);
+    }, provenance));
     this.entries = this.readEntries();
+  }
+
+  /** After a merge (or an acknowledgement): writes again a field change that a concurrent whole-entry write reverted. */
+  private scheduleIntents(): void {
+    if (this.manifestIntents.size === 0 || this.intentsScheduled || this.stopped) return;
+    this.intentsScheduled = true;
+    // Not inside the hub's own notification: the write below is a transaction of its own.
+    queueMicrotask(() => {
+      this.intentsScheduled = false;
+      const hub = this.manifestHub;
+      if (this.stopped || !hub || !this.canEdit || !this.manifestCaughtUp()) return;
+      const files = this.manifestDoc().getMap<unknown>(ManifestKeys.files);
+      const rewrites = this.manifestIntents.reconcile(files, hub.pendingCount === 0);
+      if (rewrites.size === 0) return;
+      void this.writeManifest((map) => {
+        for (const [fileId, record] of rewrites) if (map.has(fileId)) map.set(fileId, record);
+      }, { source: "typing" }).catch((error) => this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not restore a concurrent change`, error));
+    });
   }
 
   // ------------------------------------------------------------ albums
