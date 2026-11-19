@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
 import { assertSupportedFileName } from "@/lib/storage/file-types";
 import { StorageError } from "@/lib/storage/errors";
-import { writeTranscript } from "@/lib/storage/transcripts";
+import { currentTranscriptVersion, writeTranscript } from "@/lib/storage/transcripts";
 import { readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
 import { detectAsrModel, detectDiarizationModels, SPEECH_MODELS } from "@/lib/transcription/models";
 import { transcribeWithOpenRouter } from "@/lib/transcription/openrouter-stt";
@@ -119,6 +119,8 @@ async function transcribe(job: JobRecord) {
   const signature = await readFileSignature(audioPath);
   const audioStats = await stat(audioPath);
   const contentHash = await readFileContentHash(audioPath);
+  // The transcript this job replaces. If it is another when the job finishes, the reader corrected it meanwhile.
+  const startVersion = await currentTranscriptVersion(job.path);
 
   const asrModel = engine === "local" ? await detectAsrModel() : null;
   if (engine === "local" && !asrModel) {
@@ -209,7 +211,8 @@ async function transcribe(job: JobRecord) {
       segments: ordered.segments,
       stats: { words: words.length, chunks: pieces.length, elapsedMs: Date.now() - started },
     };
-    await writeTranscript(job.path, transcript, { expectedSignature: signature, expectedContentHash: contentHash });
+    // A transcript edited while the job ran is kept as it is: the job's result is dropped (the job ends in error with that reason) rather than replacing the corrections.
+    await writeTranscript(job.path, transcript, { expectedSignature: signature, expectedContentHash: contentHash, expectedTranscriptVersion: startVersion });
     job.progress = 1;
   } finally {
     await worker.close(opened.handle);

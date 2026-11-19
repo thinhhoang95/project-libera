@@ -239,6 +239,8 @@ export type LiberaTree = {
 export type LiberaFilePayload = {
   file: LiberaFileNode;
   content?: string;
+  /** A text file's content version (src/lib/storage/files.ts textVersion). */
+  version?: string;
   rawUrl?: string;
 };
 

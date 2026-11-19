@@ -1,4 +1,5 @@
 import { copyLifecycleSidecar, preserveLifecycleSidecar } from "@/lib/storage/sidecar-lifecycle";
+import { createHash } from "node:crypto";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
@@ -156,6 +157,24 @@ async function writeLocal(file: string, transcript: Transcript, audio: string, s
   await writeJsonForSource(file, pending ? { ...transcript, [PENDING_KEY]: pending } : transcript, audio, signature, contentHash);
 }
 
+/**
+ * The version of a transcript's content ("" when there is none). A save that
+ * carries the version it was made from is refused when the latest transcript
+ * is another, so an edit or a finished transcription never replaces
+ * corrections made in between.
+ */
+export function transcriptVersion(transcript: Transcript | null) {
+  return transcript ? createHash("sha256").update(JSON.stringify(transcript)).digest("hex") : "";
+}
+
+export async function currentTranscriptVersion(relativePath: string) {
+  return transcriptVersion((await readTranscript(relativePath)).transcript);
+}
+
+function transcriptChanged() {
+  return new StorageError("The transcript changed since it was loaded, so this save was not applied. Reload it and try again.", 409);
+}
+
 /** A shared-transcript write lost to a newer shared version. */
 class TranscriptShareConflict extends Error {}
 
@@ -164,7 +183,7 @@ class TranscriptShareConflict extends Error {}
  * Search index it. In a shared notebook it goes to the members through the
  * collab host; when that is refused, it is kept on this computer.
  */
-export async function writeTranscript(relativePath: string, transcript: Transcript, options: { expectedSignature?: string; expectedContentHash?: string; sharedBase?: SharedBase; throwOnConflict?: boolean } = {}): Promise<{ shared: boolean }> {
+export async function writeTranscript(relativePath: string, transcript: Transcript, options: { expectedSignature?: string; expectedContentHash?: string; expectedTranscriptVersion?: string; sharedBase?: SharedBase; throwOnConflict?: boolean } = {}): Promise<{ shared: boolean }> {
   // A file a notebook migration is moving is written after the migration.
   await assertNotMigrating(relativePath);
   const { audio, sidecar, companion } = locate(relativePath);
@@ -173,6 +192,7 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
   if (options.expectedContentHash && await readFileContentHash(audio) !== options.expectedContentHash) {
     throw new StorageError("The recording changed during transcription. Transcribe it again.", 409);
   }
+  if (options.expectedTranscriptVersion !== undefined && await currentTranscriptVersion(relativePath) !== options.expectedTranscriptVersion) throw transcriptChanged();
   // Preserve the original identity when editing a stale transcript's speaker names.
   if (!transcript.audio.contentHash && (await stat(audio)).size === transcript.audio.size) {
     transcript = { ...transcript, audio: { ...transcript.audio, contentHash: await readFileContentHash(audio) } };
@@ -221,11 +241,13 @@ export async function renameTranscriptSpeakers(relativePath: string, names: Reco
  * newer transcript), replaced only if they are still that version. When
  * another member saves first, the edit is made again on their version.
  */
-async function mutateTranscript(relativePath: string, apply: (transcript: Transcript) => Transcript) {
+async function mutateTranscript(relativePath: string, apply: (transcript: Transcript) => Transcript, expectedVersion?: string) {
   const attempts = 3;
   for (let attempt = 1; ; attempt += 1) {
     const { transcript, base } = await loadForEdit(relativePath);
     if (!transcript) throw new StorageError("This recording has no transcript yet.", 404);
+    // Also on a retry: the version another member saved meanwhile is not the one the reader corrected.
+    if (expectedVersion !== undefined && transcriptVersion(transcript) !== expectedVersion) throw transcriptChanged();
     const edited = apply(transcript);
     try {
       await writeTranscript(relativePath, edited, { sharedBase: base, throwOnConflict: attempt < attempts });
@@ -263,7 +285,7 @@ async function loadForEdit(relativePath: string): Promise<{ transcript: Transcri
  * talk times stay as pyannote measured them; passage and word counts follow
  * the text.
  */
-export async function editTranscriptSegments(relativePath: string, value: unknown) {
+export async function editTranscriptSegments(relativePath: string, value: unknown, expectedVersion?: string) {
   return mutateTranscript(relativePath, (transcript) => {
     const segments = cleanSegments(value, transcript.speakers.length);
     if (!segments) throw new StorageError("The transcript edits are not readable.");
@@ -271,7 +293,7 @@ export async function editTranscriptSegments(relativePath: string, value: unknow
     transcript.speakers = transcript.speakers.map((speaker, index) => ({ ...speaker, segments: segments.filter((segment) => segment.speaker === index).length }));
     transcript.stats = { ...transcript.stats, words: countWords(segments) };
     return transcript;
-  });
+  }, expectedVersion);
 }
 
 export async function deleteTranscript(relativePath: string) {

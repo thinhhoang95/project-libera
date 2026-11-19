@@ -80,6 +80,8 @@ export async function PATCH(request: NextRequest) {
     const body = (await request.json()) as {
       path?: string;
       content?: string;
+      /** The textVersion of the text the editor opened; a save is refused (409) when the file is another. */
+      baseVersion?: string;
       destinationNotebook?: string;
       destinationName?: string;
       destinationDirectory?: string;
@@ -137,7 +139,7 @@ export async function PATCH(request: NextRequest) {
     // A shared notebook's text documents are saved through the shared document;
     // only a text file it holds as a file arrives here, and is replaced whole.
     if (isSharedNotebookPath(body.path ?? "")) return NextResponse.json(await saveSharedFileText(body.path ?? "", body.content ?? ""));
-    return NextResponse.json(await updateMarkdownFile(body.path ?? "", body.content ?? ""));
+    return NextResponse.json(await updateMarkdownFile(body.path ?? "", body.content ?? "", typeof body.baseVersion === "string" ? body.baseVersion : undefined));
   } catch (error) {
     return handleError(error);
   }

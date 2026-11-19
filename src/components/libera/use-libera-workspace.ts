@@ -122,6 +122,7 @@ import { announceReferenceLibraryChange } from "@/lib/references/import";
 import { referenceMoveSummary, type ReferenceMoveNoticeState } from "./references/reference-move-notice";
 import { searchNotebookTree } from "./notebook-search";
 import { useWhereWasITracker, whereWasITracker } from "./where-was-i-tracker";
+import { textVersion } from "@/lib/text-version";
 
 const TYPING: Provenance = { source: "typing" };
 /** Module-level, so the close and unload callbacks need no extra hook dependency. Shared tabs are never dirty. */
@@ -3094,11 +3095,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     updateTab(activeTab.id, (tab) => ({ ...tab, status: "saving", error: undefined }));
 
     try {
+      // The version of the text this tab last loaded or saved: the server refuses (409) to replace a file that is another version or is gone.
+      // The draft stays in the editor and the error shows on the tab.
+      const baseVersion = await textVersion(activeTab.saved);
       const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: activeTab.file.path,
           content: draft,
+          baseVersion,
         }),
       }, (payload) => ({ paths: [payload.file.path] }));
 

@@ -28,8 +28,11 @@ export function useTranscript(path: string) {
     pathRef.current = path;
   }, [path]);
 
+  // The version of the transcript last shown, sent with corrections so the server refuses to replace a newer one.
+  const versionRef = useRef<string | undefined>(undefined);
   const apply = useCallback((next: TranscriptPayload) => {
     if (next.path !== pathRef.current) return;
+    versionRef.current = next.version;
     setLoaded(next);
     setError("");
   }, []);
@@ -75,7 +78,7 @@ export function useTranscript(path: string) {
     renameSpeaker: (index: number, name: string) => send({ method: "PATCH", body: JSON.stringify({ path, speakers: { [index]: name } }) }),
     /** The reader's corrections, saved once the editing ends; `keepalive` lets the save outlive a closing window. */
     saveSegments: (segments: TranscriptSegment[], { keepalive = false } = {}) => {
-      const body = JSON.stringify({ path, segments });
+      const body = JSON.stringify({ path, segments, baseVersion: versionRef.current });
       // A keepalive request may carry at most 64 KB; a longer transcript is sent as usual.
       return apiRequest<TranscriptPayload>("/api/transcripts", { method: "PATCH", keepalive: keepalive && body.length < 60_000, body }).then(apply, (failure: unknown) => {
         fail(failure);
