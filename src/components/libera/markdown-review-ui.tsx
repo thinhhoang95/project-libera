@@ -14,6 +14,8 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MentionTextarea } from "./collab/mentions/mention-textarea";
 import { reviewIntent, reviewQuestion } from "@/lib/markdown-review";
 import { useMarkdownReview, type SharedReviewState } from "./markdown-review-context";
+import { useClockNow } from "./review-clock";
+import { useFollowReviewViewport, useReviewViewportStart } from "./review-viewport";
 import { apiRequest } from "./api-client";
 import { ChatFileComposer } from "./chat-file-composer";
 import { ListFilterButton, ShowMoreButton, usePagedList } from "./list-controls";
@@ -110,8 +112,9 @@ export function ReviewComments() {
   // Shared documents: the cards follow the editor's scroll position, so the
   // comments beside the text are the ones about it. A selected card keeps
   // the panel where it is.
-  const viewportStart = r?.shared ? r.viewport?.start : undefined;
   const followScroll = !!r?.shared && !r.selectedThread && !query;
+  useFollowReviewViewport(followScroll);
+  const viewportStart = useReviewViewportStart();
   useEffect(() => {
     const container = list.current;
     if (!followScroll || viewportStart === undefined || !container) return;
@@ -503,14 +506,8 @@ export function CommentBody({ text, preview = false, shared = false }: { text: s
   return <MarkdownRenderer content={text} baseFontSize={13} baseLineHeight={1.5} renderImages={false} contentTrust={shared ? "shared" : "local"} className={`review-comment-body min-w-0 wrap-anywhere${preview ? " review-comment-preview" : ""}`} />;
 }
 
-export function useNow(intervalMs = 60_000) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
-    return () => window.clearInterval(timer);
-  }, [intervalMs]);
-  return now;
-}
+/** The current time from the one shared minute clock; with `times` it re-renders only when one of their relative labels changes. */
+export const useNow = useClockNow;
 
 function AuthorAvatar({ user, ai }: { user: UserSummary; ai?: boolean }) {
   return <span aria-hidden className="review-comment-avatar inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white" style={{ background: user.color || "#64748b" }}>{ai ? <Sparkles size={10} /> : initials(user.displayName)}</span>;
@@ -568,7 +565,8 @@ function SharedThreadCard({ thread, index, shared, selected, cardRef, reply, set
 }) {
   const t = useTranslations("markdownReviewUi");
   const r = useMarkdownReview()!;
-  const now = useNow();
+  const times = useMemo(() => thread.messages.map((message) => Date.parse(message.createdAt)).filter(Number.isFinite), [thread.messages]);
+  const now = useNow(times);
   const info = thread.shared;
   const first = thread.messages[0];
   const me = shared.projection.me;

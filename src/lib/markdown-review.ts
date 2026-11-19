@@ -423,6 +423,25 @@ export class ReviewDraftTracker {
     }
     return this.mapped!;
   }
+  /**
+   * What the UI shows for `doc` followed to `draft`: `advance`, but the same
+   * object comes back while nothing a reader shows has moved (an empty review,
+   * or comments whose passages sit before or after the edit), so typing does
+   * not re-render everything that reads the review. Its `snapshot` always
+   * reads the followed draft.
+   */
+  shown(doc: ReviewDocument, draft: string): ReviewDocument {
+    const before = this.base === doc ? this.published : null;
+    const next = this.advance(doc, draft);
+    const priorText = this.publishedText;
+    if (before && priorText !== null && sameReviewView(before, priorText, next, this.text)) { this.publishedText = this.text; return before; }
+    const view = { ...next };
+    Object.defineProperty(view, "snapshot", { enumerable: true, get: () => this.text });
+    this.published = view; this.publishedText = this.text;
+    return view;
+  }
+  private published: ReviewDocument | null = null;
+  private publishedText: string | null = null;
   /** How many edits are waiting to be stored. */
   get count() { return this.grouped.length; }
   /** The followed draft: the text `edits()` leads to by default. */
@@ -445,6 +464,37 @@ export class ReviewDraftTracker {
     this.base = next; this.recorded = pending.edits; this.grouped = pending.grouped;
     this.mapped = replayReviewEdits(next, pending.edits, this.text); this.pending = null;
   }
+}
+/** Whether two views of a review show the same thing: every field but the text it follows is the same, and each comment and proposal sits on the same passage. */
+function sameReviewView(a: ReviewDocument, aText: string, b: ReviewDocument, bText: string): boolean {
+  const left = a as Record<string, unknown>, right = b as Record<string, unknown>;
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    if (key === "snapshot" || key === "threads" || key === "session" || key === "agentSuggestions") continue;
+    if (key === "redo") { if ((a.redo?.length ?? 0) !== (b.redo?.length ?? 0)) return false; continue; }
+    if (left[key] !== right[key]) return false;
+  }
+  if (a.threads.length !== b.threads.length) return false;
+  for (let index = 0; index < a.threads.length; index += 1) {
+    const x = a.threads[index], y = b.threads[index];
+    if (x.id !== y.id || x.status !== y.status || x.messages !== y.messages) return false;
+    const p = x.anchor, q = y.anchor;
+    if (p.state !== q.state || p.start !== q.start || p.end !== q.end || p.quote !== q.quote) return false;
+    // An edit inside the passage that keeps its length is still a change of what it quotes.
+    if (p.state === "attached" && aText.slice(p.start, p.end) !== bText.slice(q.start, q.end)) return false;
+  }
+  const sameEdits = (x: { start: number; end: number }[], y: { start: number; end: number }[]) => x.length === y.length && x.every((edit, index) => edit.start === y[index].start && edit.end === y[index].end);
+  const x = a.session, y = b.session;
+  if (!!x !== !!y) return false;
+  if (x && y) {
+    const l = x as Record<string, unknown>, r = y as Record<string, unknown>;
+    for (const key of new Set([...Object.keys(l), ...Object.keys(r)])) if (key !== "suggestions" && l[key] !== r[key]) return false;
+    if (x.suggestions.length !== y.suggestions.length || x.suggestions.some((s, index) => s.id !== y.suggestions[index].id || s.status !== y.suggestions[index].status || !sameEdits(s.edits, y.suggestions[index].edits))) return false;
+  }
+  const m = a.agentSuggestions, n = b.agentSuggestions;
+  if (!!m !== !!n) return false;
+  if (m && n && (m.length !== n.length || m.some((s, index) => s.id !== n[index].id || s.status !== n[index].status || !sameEdits(s.edits, n[index].edits) || !sameEdits(s.anchors, n[index].anchors)))) return false;
+  return true;
 }
 export function newReview(key: string, snapshot: string, id: string): ReviewDocument {
   return { schemaVersion: 1, key, id, snapshot, revision: 0, enabled: false, threads: [], undo: [] };

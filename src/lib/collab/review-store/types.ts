@@ -151,7 +151,8 @@ export function sharedReviewDocument(projection: SharedReviewProjection, base?: 
     ...(base?.session ? { session: base.session } : {}),
     ...(base?.round !== undefined ? { round: base.round } : {}),
     ...(base?.previousRounds ? { previousRounds: base.previousRounds } : {}),
-    snapshot: projection.text,
+    // Read when asked: a text change that moves no comment keeps this document.
+    get snapshot() { return projection.text; },
     threads: projection.threads,
   };
 }
